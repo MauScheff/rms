@@ -1,0 +1,5 @@
+spec: rms/contract/v0.1
+name: durable-store
+kind: capability
+meaning: Durable persistence capability for payment ledger state.
+

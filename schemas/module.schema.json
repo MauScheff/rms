@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:module:v0.1",
+  "title": "RMS Module Manifest v0.1",
+  "type": "object",
+  "required": [
+    "spec",
+    "module",
+    "profiles",
+    "owns",
+    "provides",
+    "requires",
+    "invariants",
+    "effects",
+    "compatibility",
+    "verification"
+  ],
+  "properties": {
+    "spec": {
+      "const": "rms/module/v0.1"
+    },
+    "module": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "kind",
+        "purpose"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "core",
+          "stateful",
+          "distributed",
+          "workflow",
+          "boundary"
+        ]
+      },
+      "contains": {
+        "const": "core"
+      },
+      "uniqueItems": true
+    },
+    "owns": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array"
+      }
+    },
+    "provides": {
+      "$ref": "#/$defs/contractGroups"
+    },
+    "requires": {
+      "$ref": "#/$defs/contractGroups"
+    },
+    "invariants": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/invariant"
+      }
+    },
+    "effects": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/effect"
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "compatibility": {
+      "type": "object",
+      "required": [
+        "policy"
+      ],
+      "additionalProperties": true
+    },
+    "verification": {
+      "type": "object",
+      "required": [
+        "laws",
+        "contracts",
+        "scenarios",
+        "boundaries"
+      ],
+      "properties": {
+        "laws": {
+          "type": "array"
+        },
+        "contracts": {
+          "type": "array"
+        },
+        "scenarios": {
+          "type": "array"
+        },
+        "boundaries": {
+          "type": "array"
+        },
+        "runtime": {
+          "type": "array"
+        },
+        "reconciliation": {
+          "type": "array"
+        }
+      },
+      "additionalProperties": true
+    },
+    "operations": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "patternProperties": {
+    "^x-": {}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "namedReference": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "contract": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "contractGroups": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/namedReference"
+        }
+      }
+    },
+    "invariant": {
+      "type": "object",
+      "required": [
+        "id",
+        "statement"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "enforced_by": {
+          "type": "string"
+        },
+        "verified_by": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "effect": {
+      "type": "object",
+      "required": [
+        "name",
+        "kind"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "capability": {
+          "type": "string"
+        },
+        "semantics": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "profiles": {
+            "contains": {
+              "const": "stateful"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "state"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "profiles": {
+            "contains": {
+              "const": "distributed"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "operations"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "profiles": {
+            "contains": {
+              "const": "workflow"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "state",
+          "workflow",
+          "operations"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "profiles": {
+            "contains": {
+              "const": "boundary"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "boundary"
+        ]
+      }
+    }
+  ]
+}

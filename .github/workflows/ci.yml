@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  rust-tooling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Validate examples
+        run: |
+          cargo run -p rms -- validate --root examples/minimal
+          cargo run -p rms -- validate --root examples/commerce
+          cargo run -p rms -- validate --root examples/rust
+      - name: Test Rust binding example
+        run: cargo test --manifest-path examples/rust/Cargo.toml --locked

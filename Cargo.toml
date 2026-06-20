@@ -1,0 +1,9 @@
+[workspace]
+members = ["tooling/rust/rms"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/reliable-modular-systems/reliable-modular-systems"
+

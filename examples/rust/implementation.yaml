@@ -1,0 +1,26 @@
+spec: rms/implementation/v0.1
+
+module: rust-example
+binding: rust
+
+source:
+  root: .
+  public_entrypoint: src/lib.rs
+
+commands:
+  build: cargo build --manifest-path Cargo.toml
+  verify: cargo test --manifest-path Cargo.toml
+  format: cargo fmt --manifest-path Cargo.toml --check
+
+toolchain:
+  cargo_manifest: Cargo.toml
+  package: rms-rust-example
+
+dependencies:
+  allowed_external_crates:
+    - serde
+
+architecture:
+  public_modules:
+    - widget
+

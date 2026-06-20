@@ -1,0 +1,45 @@
+spec: rms/module/v0.1
+
+module:
+  name: example
+  version: 0.1.0
+  kind: bounded-context
+  purpose: Demonstrate the minimum RMS module manifest
+
+profiles:
+  - core
+
+owns:
+  concepts:
+    - Example
+  data: []
+  decisions: []
+
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities: []
+
+invariants:
+  - id: example-is-valid
+    statement: Every accepted Example satisfies its constructor rules.
+    enforced_by: example-constructor
+    verified_by: verification/laws/example_is_valid
+
+effects: []
+
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws:
+    - verification/laws
+  contracts: []
+  scenarios:
+    - verification/scenarios
+  boundaries: []

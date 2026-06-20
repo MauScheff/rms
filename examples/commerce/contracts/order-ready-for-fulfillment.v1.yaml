@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: order-ready-for-fulfillment
+version: 1
+kind: event
+meaning: Ordering context fact that fulfillment may proceed.
+

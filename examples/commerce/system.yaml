@@ -1,0 +1,34 @@
+spec: rms/system/v0.1
+
+system:
+  name: commerce
+  version: 1.0.0
+  purpose: Accept, pay for, and fulfill customer orders
+
+contexts:
+  - ordering
+  - payments
+  - inventory
+  - fulfillment
+
+public_interfaces:
+  - name: commerce-api
+    contract: contracts/commerce-api.v1.yaml
+
+external_dependencies:
+  - payment-provider
+  - shipping-carrier
+
+workflows:
+  - checkout
+  - fulfillment
+
+invariants:
+  - id: shipment-requires-accepted-payment
+    statement: A shipment is released only after an accepted payment outcome.
+
+compatibility:
+  policy: backward-compatible-within-major
+
+glossary: GLOSSARY.md
+context_map: context-map.yaml

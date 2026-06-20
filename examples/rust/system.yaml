@@ -1,0 +1,24 @@
+spec: rms/system/v0.1
+
+system:
+  name: rust-example-system
+  version: 0.1.0
+  purpose: Demonstrate an RMS Rust implementation binding
+
+contexts:
+  - rust-example
+
+public_interfaces: []
+external_dependencies: []
+workflows: []
+
+invariants:
+  - id: accepted-widget-has-name
+    statement: Every accepted widget has a non-empty name.
+
+compatibility:
+  policy: backward-compatible-within-major
+
+glossary: GLOSSARY.md
+context_map: context-map.yaml
+

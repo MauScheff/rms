@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:implementation:v0.1",
+  "title": "RMS Implementation Binding v0.1",
+  "type": "object",
+  "required": [
+    "spec",
+    "module",
+    "binding",
+    "source",
+    "commands"
+  ],
+  "properties": {
+    "spec": {
+      "const": "rms/implementation/v0.1"
+    },
+    "module": {
+      "type": "string",
+      "minLength": 1
+    },
+    "binding": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "root",
+        "public_entrypoint"
+      ],
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "public_entrypoint": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "commands": {
+      "type": "object",
+      "required": [
+        "build",
+        "verify"
+      ],
+      "properties": {
+        "build": {
+          "type": "string"
+        },
+        "verify": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "architecture": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "generated": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "patternProperties": {
+    "^x-": {}
+  },
+  "additionalProperties": false
+}

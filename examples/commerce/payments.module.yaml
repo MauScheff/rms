@@ -1,0 +1,117 @@
+spec: rms/module/v0.1
+
+module:
+  name: payments
+  version: 1.0.0
+  kind: bounded-context
+  purpose: Own payment authorization, capture, refund, and provider reconciliation
+
+profiles:
+  - core
+  - stateful
+  - distributed
+  - boundary
+
+owns:
+  concepts:
+    - Payment
+    - Authorization
+    - Capture
+    - Refund
+  data:
+    - payment-ledger
+  identities:
+    - payment-id
+    - payment-operation-id
+  decisions:
+    - capture-eligibility
+    - refund-eligibility
+
+provides:
+  commands:
+    - name: authorize-payment
+      contract: contracts/authorize-payment.v1.yaml
+    - name: capture-payment
+      contract: contracts/capture-payment.v1.yaml
+    - name: refund-payment
+      contract: contracts/refund-payment.v1.yaml
+  queries:
+    - name: get-payment-status
+      contract: contracts/get-payment-status.v1.yaml
+  events:
+    - name: payment-outcome
+      contract: contracts/payment-outcome.v1.yaml
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities:
+    - name: payment-provider
+      contract: contracts/payment-provider.yaml
+    - name: durable-store
+      contract: contracts/durable-store.yaml
+
+invariants:
+  - id: capture-requires-authorization
+    statement: Capture is accepted only for an active authorization.
+    enforced_by: payment-aggregate
+    verified_by: verification/laws/capture_requires_authorization
+  - id: refund-within-capture
+    statement: Total accepted refunds never exceed captured value.
+    enforced_by: payment-aggregate
+    verified_by: verification/laws/refund_within_capture
+
+effects:
+  - name: payment-provider
+    kind: external-financial-operation
+    semantics:
+      idempotency: payment-operation-id
+      ordering: per-payment
+      consistency: external-eventual
+      timeout: unknown-outcome
+      retry: same-idempotency-key-only
+      compensation: refund-payment
+      reconciliation: required
+
+state:
+  model: docs/payment-lifecycle.md
+  consistency_boundary: one-payment
+  concurrency: optimistic-version
+  persistence: durable-ledger
+  migration_policy: versioned
+
+boundary:
+  accepted_contracts:
+    - authorize-payment.v1
+    - capture-payment.v1
+    - refund-payment.v1
+  validation: reject-before-domain-entry
+  authorization: service-or-operator-scope
+  malformed_input: reject-with-stable-error
+  deprecation: versioned-contract-policy
+
+compatibility:
+  policy: backward-compatible-within-major
+  events: versioned-integration-events
+  stored_state: explicit-migration
+
+verification:
+  laws:
+    - verification/laws
+  contracts:
+    - verification/contracts
+  scenarios:
+    - verification/scenarios
+  boundaries:
+    - verification/boundaries
+
+operations:
+  observability:
+    correlation: payment-id
+    causation: payment-operation-id
+  runtime_checks:
+    - ops/checks/payment-invariants
+  reconciliation:
+    - ops/reconcile/payment-provider
+  runbooks:
+    - ops/runbooks/unknown-payment-outcome.md

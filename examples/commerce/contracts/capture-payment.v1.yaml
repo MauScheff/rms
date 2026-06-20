@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: capture-payment
+version: 1
+kind: command
+meaning: Request capture against an active authorization.
+

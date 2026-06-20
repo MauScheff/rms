@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: payment-outcome
+version: 1
+kind: event
+meaning: Published fact for an accepted payment operation outcome.
+

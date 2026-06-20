@@ -1,0 +1,5 @@
+spec: rms/contract/v0.1
+name: payment-provider
+kind: capability
+meaning: External provider capability for authorization, capture, refund, and reconciliation.
+

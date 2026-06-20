@@ -1,0 +1,120 @@
+spec: rms/module/v0.1
+
+module:
+  name: checkout
+  version: 1.0.0
+  kind: workflow
+  purpose: Coordinate order submission, inventory reservation, and payment acceptance
+
+profiles:
+  - core
+  - stateful
+  - distributed
+  - workflow
+
+owns:
+  concepts:
+    - Checkout
+  data:
+    - checkout-coordination-state
+  decisions:
+    - retry-or-review
+  workflows:
+    - checkout
+
+provides:
+  commands:
+    - name: start-checkout
+      contract: contracts/start-checkout.v1.yaml
+  queries:
+    - name: get-checkout-status
+      contract: contracts/get-checkout-status.v1.yaml
+  events:
+    - name: checkout-completed
+      contract: contracts/checkout-completed.v1.yaml
+    - name: checkout-requires-review
+      contract: contracts/checkout-requires-review.v1.yaml
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities:
+    - name: submit-order
+      contract: contracts/submit-order.v1.yaml
+    - name: reserve-inventory
+      contract: contracts/reserve-inventory.v1.yaml
+    - name: authorize-payment
+      contract: contracts/authorize-payment.v1.yaml
+    - name: release-inventory
+      contract: contracts/release-inventory.v1.yaml
+    - name: durable-scheduler
+      contract: contracts/durable-scheduler.yaml
+
+invariants:
+  - id: one-terminal-outcome
+    statement: Each checkout reaches at most one accepted terminal outcome.
+    enforced_by: checkout-workflow
+    verified_by: verification/laws/one_terminal_outcome
+  - id: failed-payment-releases-reservation
+    statement: A checkout rejected for payment does not retain an active inventory reservation.
+    enforced_by: checkout-workflow
+    verified_by: verification/scenarios/payment_failure_releases_inventory
+
+effects:
+  - name: module-commands
+    kind: durable-messaging
+    semantics:
+      idempotency: checkout-step-id
+      ordering: per-checkout
+      consistency: eventual
+      timeout: pending-until-deadline
+      retry: bounded-with-same-step-id
+      compensation: workflow-specific
+      reconciliation: required
+
+state:
+  model: docs/checkout-lifecycle.md
+  consistency_boundary: one-checkout
+  concurrency: single-logical-writer
+  persistence: durable-workflow-state
+  migration_policy: versioned
+
+workflow:
+  trigger: start-checkout
+  completion:
+    - checkout-completed
+    - checkout-requires-review
+  deadlines:
+    inventory-reservation: PT2M
+    payment-authorization: PT3M
+  terminal_states:
+    - completed
+    - rejected
+    - manual-review
+  compensations:
+    payment-rejected: release-inventory
+  resumption: replay-from-durable-state
+
+compatibility:
+  policy: backward-compatible-within-major
+  stored_state: explicit-workflow-migration
+
+verification:
+  laws:
+    - verification/laws
+  contracts:
+    - verification/contracts
+  scenarios:
+    - verification/scenarios
+  boundaries: []
+
+operations:
+  observability:
+    correlation: checkout-id
+    causation: checkout-step-id
+  runtime_checks:
+    - ops/checks/stuck-checkouts
+  reconciliation:
+    - ops/reconcile/checkout-participants
+  runbooks:
+    - ops/runbooks/checkout-manual-review.md

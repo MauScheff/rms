@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: commerce-api
+version: 1
+kind: api
+meaning: Public commerce interface for checkout and fulfillment.
+

@@ -1,0 +1,9 @@
+spec: rms/context-map/v0.1
+
+contexts:
+  rust-example:
+    publishes: []
+    consumes: []
+
+relationships: []
+

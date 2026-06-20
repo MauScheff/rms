@@ -1,0 +1,2249 @@
+use anyhow::{anyhow, bail, Context, Result};
+use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
+use serde_json::{json, Value as JsonValue};
+use serde_yaml::Value as YamlValue;
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+use syn::{Item, UseTree, Visibility};
+use toml::Value as TomlValue;
+use walkdir::WalkDir;
+
+const VALIDATOR_NAME: &str = "rms";
+const VALIDATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Parser)]
+#[command(name = "rms")]
+#[command(about = "Reliable Modular Systems reference CLI")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Validate RMS manifests and referenced artifacts.
+    Validate {
+        /// Root directory to scan when explicit paths are not supplied.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Validate a specific module manifest.
+        #[arg(long)]
+        module: Vec<PathBuf>,
+
+        /// Validate a specific system manifest.
+        #[arg(long)]
+        system: Vec<PathBuf>,
+
+        /// Validate a specific context map.
+        #[arg(long = "context-map")]
+        context_map: Vec<PathBuf>,
+
+        /// Validate a specific implementation binding.
+        #[arg(long)]
+        implementation: Vec<PathBuf>,
+
+        /// Validate a specific conformance report.
+        #[arg(long)]
+        conformance: Vec<PathBuf>,
+
+        /// Emit machine-readable diagnostics.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Print a concise module brief.
+    Inspect {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+    },
+
+    /// Build a bounded agent context packet for a module.
+    Context {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Optional task description to include in the packet.
+        #[arg(long)]
+        task: Option<String>,
+
+        /// Repository or system root used to locate system/context/glossary files.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+
+    /// Emit a conformance report for a module.
+    Conformance {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Optional implementation binding.
+        #[arg(long)]
+        implementation: Option<PathBuf>,
+
+        /// Optional output file. Prints to stdout when omitted.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Run the verification command declared by an implementation binding.
+    Verify {
+        /// Path to implementation.yaml.
+        implementation: PathBuf,
+
+        /// Print the command without executing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Scaffold a new RMS system in a directory.
+    Init {
+        /// Directory to initialize.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Stable system name.
+        #[arg(long)]
+        name: String,
+
+        /// One-sentence system purpose.
+        #[arg(long)]
+        purpose: String,
+
+        /// Initial system version.
+        #[arg(long, default_value = "0.1.0")]
+        version: String,
+
+        /// Initial bounded context names.
+        #[arg(long = "context")]
+        context: Vec<String>,
+    },
+
+    /// Scaffold a new RMS module directory.
+    AddModule {
+        /// Directory where module artifacts should be created.
+        path: PathBuf,
+
+        /// Stable module name.
+        #[arg(long)]
+        name: String,
+
+        /// One-sentence module purpose.
+        #[arg(long)]
+        purpose: String,
+
+        /// Module kind.
+        #[arg(long, default_value = "module")]
+        kind: String,
+
+        /// Declared RMS profiles. `core` is added automatically when omitted.
+        #[arg(long = "profile")]
+        profile: Vec<String>,
+
+        /// Optional implementation binding to scaffold. Currently supports `rust`.
+        #[arg(long)]
+        binding: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct Diagnostic {
+    severity: Severity,
+    check: String,
+    path: String,
+    message: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+enum Severity {
+    Error,
+    Warning,
+    Info,
+}
+
+#[derive(Debug)]
+struct LoadedManifest {
+    path: PathBuf,
+    value: YamlValue,
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Validate {
+            root,
+            module,
+            system,
+            context_map,
+            implementation,
+            conformance,
+            json,
+        } => run_validate(
+            root,
+            module,
+            system,
+            context_map,
+            implementation,
+            conformance,
+            json,
+        ),
+        Commands::Inspect { module } => {
+            let manifest = load_manifest(&module)?;
+            print_module_brief(&manifest);
+            Ok(())
+        }
+        Commands::Context { module, task, root } => {
+            let manifest = load_manifest(&module)?;
+            print_context_packet(&manifest, &root, task.as_deref())?;
+            Ok(())
+        }
+        Commands::Conformance {
+            module,
+            implementation,
+            output,
+        } => {
+            let report = build_conformance_report(&module, implementation.as_deref())?;
+            let rendered = serde_json::to_string_pretty(&report)?;
+            if let Some(path) = output {
+                fs::write(path, rendered)?;
+            } else {
+                println!("{rendered}");
+            }
+            Ok(())
+        }
+        Commands::Verify {
+            implementation,
+            dry_run,
+        } => run_verify(&implementation, dry_run),
+        Commands::Init {
+            path,
+            name,
+            purpose,
+            version,
+            context,
+        } => run_init(&path, &name, &purpose, &version, &context),
+        Commands::AddModule {
+            path,
+            name,
+            purpose,
+            kind,
+            profile,
+            binding,
+        } => run_add_module(&path, &name, &purpose, &kind, &profile, binding.as_deref()),
+    }
+}
+
+fn run_validate(
+    root: PathBuf,
+    module: Vec<PathBuf>,
+    system: Vec<PathBuf>,
+    context_map: Vec<PathBuf>,
+    implementation: Vec<PathBuf>,
+    conformance: Vec<PathBuf>,
+    json_output: bool,
+) -> Result<()> {
+    let targets = discover_targets(
+        &root,
+        module,
+        system,
+        context_map,
+        implementation,
+        conformance,
+    )?;
+    let mut diagnostics = Vec::new();
+
+    for path in targets {
+        match load_manifest(&path) {
+            Ok(manifest) => validate_loaded_manifest(&manifest, &mut diagnostics),
+            Err(error) => diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                check: "manifest.parse".to_string(),
+                path: path.display().to_string(),
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&diagnostics)?);
+    } else if diagnostics.is_empty() {
+        println!("pass: no RMS validation diagnostics");
+    } else {
+        for diagnostic in &diagnostics {
+            println!(
+                "{} [{}] {}: {}",
+                severity_label(diagnostic.severity),
+                diagnostic.check,
+                diagnostic.path,
+                diagnostic.message
+            );
+        }
+    }
+
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        bail!("RMS validation failed");
+    }
+
+    Ok(())
+}
+
+fn discover_targets(
+    root: &Path,
+    modules: Vec<PathBuf>,
+    systems: Vec<PathBuf>,
+    context_maps: Vec<PathBuf>,
+    implementations: Vec<PathBuf>,
+    conformance_reports: Vec<PathBuf>,
+) -> Result<Vec<PathBuf>> {
+    let mut explicit = Vec::new();
+    explicit.extend(modules);
+    explicit.extend(systems);
+    explicit.extend(context_maps);
+    explicit.extend(implementations);
+    explicit.extend(conformance_reports);
+
+    if !explicit.is_empty() {
+        return Ok(explicit);
+    }
+
+    let mut found = BTreeSet::new();
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if matches!(
+            file_name,
+            "system.yaml"
+                | "context-map.yaml"
+                | "module.yaml"
+                | "implementation.yaml"
+                | "conformance-report.json"
+        ) || file_name.ends_with(".module.yaml")
+        {
+            found.insert(path.to_path_buf());
+        }
+    }
+
+    Ok(found.into_iter().collect())
+}
+
+fn validate_loaded_manifest(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let spec = get_str(&manifest.value, &["spec"]);
+    validate_against_embedded_schema(manifest, diagnostics);
+
+    match spec {
+        Some("rms/system/v0.1") => validate_system(manifest, diagnostics),
+        Some("rms/module/v0.1") => validate_module(manifest, diagnostics),
+        Some("rms/context-map/v0.1") => validate_context_map(manifest, diagnostics),
+        Some("rms/implementation/v0.1") => validate_implementation(manifest, diagnostics),
+        Some("rms/conformance/v0.1") => {}
+        Some(other) => diagnostics.push(error(
+            "manifest.spec",
+            &manifest.path,
+            format!("unsupported spec identifier `{other}`"),
+        )),
+        None => diagnostics.push(error(
+            "manifest.spec",
+            &manifest.path,
+            "missing required `spec` field",
+        )),
+    }
+
+    scan_for_secret_like_keys(&manifest.value, &manifest.path, diagnostics);
+}
+
+fn validate_against_embedded_schema(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(spec) = get_str(&manifest.value, &["spec"]) else {
+        return;
+    };
+    let Some(schema_source) = schema_for_spec(spec) else {
+        return;
+    };
+
+    let schema: JsonValue = match serde_json::from_str(schema_source) {
+        Ok(schema) => schema,
+        Err(error) => {
+            diagnostics.push(error_diagnostic(
+                "schema.internal.parse",
+                &manifest.path,
+                format!("embedded schema for `{spec}` could not be parsed: {error}"),
+            ));
+            return;
+        }
+    };
+
+    let instance = match serde_json::to_value(&manifest.value) {
+        Ok(instance) => instance,
+        Err(error) => {
+            diagnostics.push(error_diagnostic(
+                "schema.instance.convert",
+                &manifest.path,
+                format!("manifest could not be converted to JSON for schema validation: {error}"),
+            ));
+            return;
+        }
+    };
+
+    let validator = match jsonschema::validator_for(&schema) {
+        Ok(validator) => validator,
+        Err(error) => {
+            diagnostics.push(error_diagnostic(
+                "schema.internal.compile",
+                &manifest.path,
+                format!("embedded schema for `{spec}` could not be compiled: {error}"),
+            ));
+            return;
+        }
+    };
+
+    for validation_error in validator.iter_errors(&instance) {
+        diagnostics.push(error_diagnostic(
+            "schema.validate",
+            &manifest.path,
+            format!(
+                "{} at `{}`",
+                validation_error,
+                validation_error.instance_path()
+            ),
+        ));
+    }
+}
+
+fn schema_for_spec(spec: &str) -> Option<&'static str> {
+    match spec {
+        "rms/system/v0.1" => Some(include_str!("../../../../schemas/system.schema.json")),
+        "rms/module/v0.1" => Some(include_str!("../../../../schemas/module.schema.json")),
+        "rms/context-map/v0.1" => Some(include_str!("../../../../schemas/context-map.schema.json")),
+        "rms/implementation/v0.1" => Some(include_str!(
+            "../../../../schemas/implementation.schema.json"
+        )),
+        "rms/conformance/v0.1" => Some(include_str!("../../../../schemas/conformance.schema.json")),
+        _ => None,
+    }
+}
+
+fn validate_system(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    require_str(manifest, diagnostics, "system.name", &["system", "name"]);
+    require_str(
+        manifest,
+        diagnostics,
+        "system.version",
+        &["system", "version"],
+    );
+    require_str(
+        manifest,
+        diagnostics,
+        "system.purpose",
+        &["system", "purpose"],
+    );
+    require_array(manifest, diagnostics, "contexts", &["contexts"]);
+    require_array(
+        manifest,
+        diagnostics,
+        "public_interfaces",
+        &["public_interfaces"],
+    );
+    require_array(manifest, diagnostics, "invariants", &["invariants"]);
+    require_str(
+        manifest,
+        diagnostics,
+        "compatibility.policy",
+        &["compatibility", "policy"],
+    );
+
+    check_contract_refs(manifest, diagnostics, &["public_interfaces"]);
+    check_optional_path(manifest, diagnostics, &["glossary"]);
+    check_optional_path(manifest, diagnostics, &["context_map"]);
+}
+
+fn validate_module(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    require_str(manifest, diagnostics, "module.name", &["module", "name"]);
+    require_str(
+        manifest,
+        diagnostics,
+        "module.version",
+        &["module", "version"],
+    );
+    require_str(manifest, diagnostics, "module.kind", &["module", "kind"]);
+    require_str(
+        manifest,
+        diagnostics,
+        "module.purpose",
+        &["module", "purpose"],
+    );
+
+    for required in [
+        "profiles",
+        "owns",
+        "provides",
+        "requires",
+        "invariants",
+        "effects",
+        "compatibility",
+        "verification",
+    ] {
+        if get_path(&manifest.value, &[required]).is_none() {
+            diagnostics.push(error(
+                format!("module.required.{required}"),
+                &manifest.path,
+                format!("missing required `{required}` section"),
+            ));
+        }
+    }
+
+    let profiles = get_string_array(&manifest.value, &["profiles"]);
+    if !profiles.iter().any(|profile| profile == "core") {
+        diagnostics.push(error(
+            "profiles.core",
+            &manifest.path,
+            "`profiles` must include `core`",
+        ));
+    }
+    for profile in &profiles {
+        if !matches!(
+            profile.as_str(),
+            "core" | "stateful" | "distributed" | "workflow" | "boundary"
+        ) {
+            diagnostics.push(error(
+                "profiles.allowed",
+                &manifest.path,
+                format!("unknown profile `{profile}`"),
+            ));
+        }
+    }
+
+    require_str(
+        manifest,
+        diagnostics,
+        "compatibility.policy",
+        &["compatibility", "policy"],
+    );
+    require_verification_categories(manifest, diagnostics);
+    check_contract_refs(manifest, diagnostics, &["provides"]);
+    check_contract_refs(manifest, diagnostics, &["requires"]);
+    check_invariant_evidence(manifest, diagnostics);
+    check_verification_paths(manifest, diagnostics);
+    check_profile_obligations(manifest, diagnostics, &profiles);
+}
+
+fn validate_context_map(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    if get_path(&manifest.value, &["contexts"]).is_none()
+        && get_path(&manifest.value, &["relationships"]).is_none()
+    {
+        diagnostics.push(error(
+            "context-map.content",
+            &manifest.path,
+            "context map should declare `contexts`, `relationships`, or both",
+        ));
+    }
+    check_contract_refs(manifest, diagnostics, &["relationships"]);
+}
+
+fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    require_str(manifest, diagnostics, "module", &["module"]);
+    require_str(manifest, diagnostics, "binding", &["binding"]);
+    require_str(manifest, diagnostics, "source.root", &["source", "root"]);
+    require_str(
+        manifest,
+        diagnostics,
+        "source.public_entrypoint",
+        &["source", "public_entrypoint"],
+    );
+    require_str(
+        manifest,
+        diagnostics,
+        "commands.build",
+        &["commands", "build"],
+    );
+    require_str(
+        manifest,
+        diagnostics,
+        "commands.verify",
+        &["commands", "verify"],
+    );
+
+    check_optional_path(manifest, diagnostics, &["source", "root"]);
+    check_optional_path(manifest, diagnostics, &["source", "public_entrypoint"]);
+
+    if get_str(&manifest.value, &["binding"]) == Some("rust") {
+        validate_rust_implementation(manifest, diagnostics);
+    }
+}
+
+fn validate_rust_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let Some(source_root_ref) = get_str(&manifest.value, &["source", "root"]) else {
+        return;
+    };
+    let Some(public_entrypoint_ref) = get_str(&manifest.value, &["source", "public_entrypoint"])
+    else {
+        return;
+    };
+
+    let source_root = base.join(source_root_ref);
+    let public_entrypoint = base.join(public_entrypoint_ref);
+
+    if public_entrypoint.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        diagnostics.push(error(
+            "implementation.rust.public-entrypoint",
+            &manifest.path,
+            "`source.public_entrypoint` must point to a Rust source file",
+        ));
+    }
+
+    if public_entrypoint.exists()
+        && source_root.exists()
+        && !public_entrypoint.starts_with(&source_root)
+    {
+        diagnostics.push(error(
+            "implementation.rust.public-entrypoint",
+            &manifest.path,
+            "`source.public_entrypoint` must be inside `source.root` for Rust bindings",
+        ));
+    }
+
+    let cargo_manifest = rust_cargo_manifest_path(manifest, base, &source_root);
+    if !cargo_manifest.exists() {
+        diagnostics.push(error(
+            "implementation.rust.cargo-manifest",
+            &manifest.path,
+            format!(
+                "Rust binding requires a Cargo manifest at `{}`",
+                display_relative(base, &cargo_manifest)
+            ),
+        ));
+        return;
+    }
+
+    let cargo = match load_toml(&cargo_manifest) {
+        Ok(cargo) => cargo,
+        Err(load_error) => {
+            diagnostics.push(error(
+                "implementation.rust.cargo-manifest.parse",
+                &manifest.path,
+                format!(
+                    "failed to parse Cargo manifest `{}`: {load_error}",
+                    display_relative(base, &cargo_manifest)
+                ),
+            ));
+            return;
+        }
+    };
+
+    validate_cargo_package_shape(manifest, diagnostics, &cargo_manifest, &cargo);
+    validate_declared_rust_package(manifest, diagnostics, &cargo);
+    validate_rust_dependency_allowlist(manifest, diagnostics, &cargo);
+    validate_rust_public_modules(manifest, diagnostics, &public_entrypoint);
+    validate_rust_source_boundaries(manifest, diagnostics, &source_root);
+}
+
+fn rust_cargo_manifest_path(manifest: &LoadedManifest, base: &Path, source_root: &Path) -> PathBuf {
+    if let Some(path) = get_str(&manifest.value, &["toolchain", "cargo_manifest"]) {
+        base.join(path)
+    } else {
+        source_root.join("Cargo.toml")
+    }
+}
+
+fn validate_cargo_package_shape(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    cargo_manifest: &Path,
+    cargo: &TomlValue,
+) {
+    let has_package = cargo.get("package").and_then(TomlValue::as_table).is_some();
+    let has_workspace = cargo
+        .get("workspace")
+        .and_then(TomlValue::as_table)
+        .is_some();
+
+    if !has_package && !has_workspace {
+        diagnostics.push(error(
+            "implementation.rust.cargo-manifest.shape",
+            &manifest.path,
+            format!(
+                "Cargo manifest `{}` must declare `[package]` or `[workspace]`",
+                cargo_manifest.display()
+            ),
+        ));
+    }
+
+    if let Some(package) = cargo.get("package").and_then(TomlValue::as_table) {
+        if package.get("name").and_then(TomlValue::as_str).is_none() {
+            diagnostics.push(error(
+                "implementation.rust.package.name",
+                &manifest.path,
+                "Rust package bindings must declare `package.name`",
+            ));
+        }
+
+        if package.get("edition").and_then(TomlValue::as_str).is_none() {
+            diagnostics.push(warning(
+                "implementation.rust.package.edition",
+                &manifest.path,
+                "Rust package should declare `package.edition` explicitly",
+            ));
+        }
+    }
+}
+
+fn validate_declared_rust_package(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    cargo: &TomlValue,
+) {
+    let declared_package = get_str(&manifest.value, &["toolchain", "package"]);
+    let cargo_package = cargo
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(TomlValue::as_str);
+
+    match (declared_package, cargo_package) {
+        (Some(declared), Some(actual)) if declared != actual => diagnostics.push(error(
+            "implementation.rust.package.match",
+            &manifest.path,
+            format!("`toolchain.package` declares `{declared}` but Cargo package is `{actual}`"),
+        )),
+        (None, Some(actual)) => diagnostics.push(warning(
+            "implementation.rust.package.declared",
+            &manifest.path,
+            format!("Rust binding should declare `toolchain.package: {actual}`"),
+        )),
+        (None, None)
+            if cargo
+                .get("workspace")
+                .and_then(TomlValue::as_table)
+                .is_some() =>
+        {
+            diagnostics.push(warning(
+                "implementation.rust.package.declared",
+                &manifest.path,
+                "workspace Rust bindings should declare `toolchain.package`",
+            ));
+        }
+        _ => {}
+    }
+}
+
+fn validate_rust_dependency_allowlist(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    cargo: &TomlValue,
+) {
+    let dependencies = collect_rust_dependencies(cargo);
+    if dependencies.is_empty() {
+        return;
+    }
+
+    let allowed = get_string_array(
+        &manifest.value,
+        &["dependencies", "allowed_external_crates"],
+    );
+    if allowed.is_empty() {
+        diagnostics.push(warning(
+            "implementation.rust.dependencies.allowlist",
+            &manifest.path,
+            "Rust binding should declare `dependencies.allowed_external_crates` to make crate dependencies explicit",
+        ));
+        return;
+    }
+
+    let allowed: BTreeSet<_> = allowed.into_iter().collect();
+    for dependency in dependencies {
+        if !allowed.contains(&dependency) {
+            diagnostics.push(error(
+                "implementation.rust.dependencies.allowlist",
+                &manifest.path,
+                format!(
+                    "Cargo dependency `{dependency}` is not declared in `dependencies.allowed_external_crates`"
+                ),
+            ));
+        }
+    }
+}
+
+fn validate_rust_public_modules(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    public_entrypoint: &Path,
+) {
+    let allowed_modules = get_string_array(&manifest.value, &["architecture", "public_modules"]);
+    if allowed_modules.is_empty() || !public_entrypoint.exists() {
+        return;
+    }
+
+    let allowed: BTreeSet<_> = allowed_modules.into_iter().collect();
+    let source = match fs::read_to_string(public_entrypoint) {
+        Ok(source) => source,
+        Err(read_error) => {
+            diagnostics.push(error(
+                "implementation.rust.public-modules.read",
+                &manifest.path,
+                format!(
+                    "failed to read public entrypoint `{}`: {read_error}",
+                    public_entrypoint.display()
+                ),
+            ));
+            return;
+        }
+    };
+
+    for module in public_modules_declared_in_source(&source) {
+        if !allowed.contains(&module) {
+            diagnostics.push(error(
+                "implementation.rust.public-modules",
+                &manifest.path,
+                format!(
+                    "public module `{module}` is not declared in `architecture.public_modules`"
+                ),
+            ));
+        }
+    }
+}
+
+fn validate_rust_source_boundaries(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    source_root: &Path,
+) {
+    if !source_root.exists() {
+        return;
+    }
+
+    let allowed_external_crates: BTreeSet<_> = get_string_array(
+        &manifest.value,
+        &["dependencies", "allowed_external_crates"],
+    )
+    .into_iter()
+    .collect();
+    let public_modules: BTreeSet<_> =
+        get_string_array(&manifest.value, &["architecture", "public_modules"])
+            .into_iter()
+            .collect();
+    let mut local_modules = local_module_roots(source_root);
+    local_modules.extend(public_modules.iter().cloned());
+    let allowed_public_reexports: BTreeSet<_> = get_string_array(
+        &manifest.value,
+        &["architecture", "allowed_public_reexports"],
+    )
+    .into_iter()
+    .collect();
+
+    for path in rust_source_files(source_root) {
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(read_error) => {
+                diagnostics.push(error(
+                    "implementation.rust.source.read",
+                    &manifest.path,
+                    format!(
+                        "failed to read Rust source `{}`: {read_error}",
+                        path.display()
+                    ),
+                ));
+                continue;
+            }
+        };
+        let parsed = match syn::parse_file(&source) {
+            Ok(parsed) => parsed,
+            Err(parse_error) => {
+                diagnostics.push(error(
+                    "implementation.rust.source.parse",
+                    &manifest.path,
+                    format!(
+                        "failed to parse Rust source `{}`: {parse_error}",
+                        path.display()
+                    ),
+                ));
+                continue;
+            }
+        };
+
+        for import in collect_rust_imports(&parsed) {
+            match rust_import_root_kind(&import.root, &local_modules) {
+                RustImportRootKind::External => {
+                    if !allowed_external_crates.contains(&import.root) {
+                        diagnostics.push(error(
+                            "implementation.rust.imports.declared",
+                            &manifest.path,
+                            format!(
+                                "Rust source `{}` imports external crate `{}` not declared in `dependencies.allowed_external_crates`",
+                                path.display(),
+                                import.root
+                            ),
+                        ));
+                    }
+                    if import.is_public && !allowed_public_reexports.contains(&import.root) {
+                        diagnostics.push(error(
+                            "implementation.rust.reexports.external",
+                            &manifest.path,
+                            format!(
+                                "Rust source `{}` publicly re-exports external crate `{}` without `architecture.allowed_public_reexports`",
+                                path.display(),
+                                import.root
+                            ),
+                        ));
+                    }
+                }
+                RustImportRootKind::LocalModule => {
+                    if import.is_public
+                        && !public_modules.is_empty()
+                        && !public_modules.contains(&import.root)
+                    {
+                        diagnostics.push(error(
+                            "implementation.rust.reexports.private-module",
+                            &manifest.path,
+                            format!(
+                                "Rust source `{}` publicly re-exports local module `{}` that is not declared in `architecture.public_modules`",
+                                path.display(),
+                                import.root
+                            ),
+                        ));
+                    }
+                }
+                RustImportRootKind::Standard | RustImportRootKind::SelfQualified => {}
+            }
+        }
+    }
+}
+
+fn collect_rust_dependencies(cargo: &TomlValue) -> BTreeSet<String> {
+    let mut dependencies = BTreeSet::new();
+    for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        collect_dependency_table(cargo.get(table_name), &mut dependencies);
+    }
+
+    if let Some(targets) = cargo.get("target").and_then(TomlValue::as_table) {
+        for target in targets.values() {
+            collect_dependency_table(target.get("dependencies"), &mut dependencies);
+            collect_dependency_table(target.get("dev-dependencies"), &mut dependencies);
+            collect_dependency_table(target.get("build-dependencies"), &mut dependencies);
+        }
+    }
+
+    dependencies
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RustImport {
+    root: String,
+    is_public: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RustImportRootKind {
+    External,
+    LocalModule,
+    Standard,
+    SelfQualified,
+}
+
+fn rust_import_root_kind(root: &str, local_modules: &BTreeSet<String>) -> RustImportRootKind {
+    match root {
+        "std" | "core" | "alloc" => RustImportRootKind::Standard,
+        "crate" | "self" | "super" => RustImportRootKind::SelfQualified,
+        _ if local_modules.contains(root) => RustImportRootKind::LocalModule,
+        _ => RustImportRootKind::External,
+    }
+}
+
+fn rust_source_files(source_root: &Path) -> Vec<PathBuf> {
+    WalkDir::new(source_root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .filter(|path| !path_has_component(path, "target"))
+        .filter(|path| !path_has_component(path, ".git"))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("rs"))
+        .collect()
+}
+
+fn path_has_component(path: &Path, component: &str) -> bool {
+    path.components()
+        .any(|part| matches!(part, Component::Normal(value) if value == component))
+}
+
+fn collect_rust_imports(file: &syn::File) -> Vec<RustImport> {
+    let mut imports = Vec::new();
+    for item in &file.items {
+        match item {
+            Item::Use(item_use) => {
+                let is_public = matches!(item_use.vis, Visibility::Public(_));
+                collect_use_tree_roots(&item_use.tree, None, is_public, &mut imports);
+            }
+            Item::ExternCrate(extern_crate) => {
+                imports.push(RustImport {
+                    root: extern_crate.ident.to_string(),
+                    is_public: matches!(extern_crate.vis, Visibility::Public(_)),
+                });
+            }
+            _ => {}
+        }
+    }
+    imports
+}
+
+fn collect_use_tree_roots(
+    tree: &UseTree,
+    prefix: Option<String>,
+    is_public: bool,
+    imports: &mut Vec<RustImport>,
+) {
+    match tree {
+        UseTree::Path(path) => {
+            let root = prefix.unwrap_or_else(|| path.ident.to_string());
+            collect_use_tree_roots(&path.tree, Some(root), is_public, imports);
+        }
+        UseTree::Name(name) => imports.push(RustImport {
+            root: prefix.unwrap_or_else(|| name.ident.to_string()),
+            is_public,
+        }),
+        UseTree::Rename(rename) => imports.push(RustImport {
+            root: prefix.unwrap_or_else(|| rename.ident.to_string()),
+            is_public,
+        }),
+        UseTree::Glob(_) => {
+            if let Some(root) = prefix {
+                imports.push(RustImport {
+                    root: root.to_string(),
+                    is_public,
+                });
+            }
+        }
+        UseTree::Group(group) => {
+            for item in &group.items {
+                collect_use_tree_roots(item, prefix.clone(), is_public, imports);
+            }
+        }
+    }
+}
+
+fn local_module_roots(source_root: &Path) -> BTreeSet<String> {
+    let mut roots = BTreeSet::new();
+    let Ok(entries) = fs::read_dir(source_root) else {
+        return roots;
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+                if stem != "lib" && stem != "main" {
+                    roots.insert(stem.to_string());
+                }
+            }
+        } else if path.is_dir() {
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                roots.insert(name.to_string());
+            }
+        }
+    }
+
+    roots
+}
+
+fn collect_dependency_table(value: Option<&TomlValue>, dependencies: &mut BTreeSet<String>) {
+    let Some(table) = value.and_then(TomlValue::as_table) else {
+        return;
+    };
+    for name in table.keys() {
+        dependencies.insert(name.to_string());
+    }
+}
+
+fn public_modules_declared_in_source(source: &str) -> BTreeSet<String> {
+    let mut modules = BTreeSet::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("pub mod ") else {
+            continue;
+        };
+        let module = rest
+            .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+            .next()
+            .unwrap_or_default();
+        if !module.is_empty() {
+            modules.insert(module.to_string());
+        }
+    }
+    modules
+}
+
+fn load_toml(path: &Path) -> Result<TomlValue> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read TOML `{}`", path.display()))?;
+    contents
+        .parse::<TomlValue>()
+        .with_context(|| format!("failed to parse TOML `{}`", path.display()))
+}
+
+fn display_relative(base: &Path, path: &Path) -> String {
+    path.strip_prefix(base)
+        .unwrap_or(path)
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect::<PathBuf>()
+        .display()
+        .to_string()
+}
+
+fn require_verification_categories(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    for category in ["laws", "contracts", "scenarios", "boundaries"] {
+        require_array(
+            manifest,
+            diagnostics,
+            format!("verification.{category}"),
+            &["verification", category],
+        );
+    }
+}
+
+fn check_profile_obligations(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    profiles: &[String],
+) {
+    if profiles.iter().any(|profile| profile == "stateful")
+        && get_path(&manifest.value, &["state"]).is_none()
+    {
+        diagnostics.push(error(
+            "profile.stateful",
+            &manifest.path,
+            "stateful modules must declare a `state` section",
+        ));
+    }
+
+    if profiles.iter().any(|profile| profile == "distributed")
+        && get_path(&manifest.value, &["operations", "reconciliation"]).is_none()
+    {
+        diagnostics.push(error(
+            "profile.distributed.reconciliation",
+            &manifest.path,
+            "distributed modules must declare reconciliation or repair operations",
+        ));
+    }
+
+    if profiles.iter().any(|profile| profile == "workflow")
+        && get_path(&manifest.value, &["workflow"]).is_none()
+    {
+        diagnostics.push(error(
+            "profile.workflow",
+            &manifest.path,
+            "workflow modules must declare a `workflow` section",
+        ));
+    }
+
+    if profiles.iter().any(|profile| profile == "boundary")
+        && get_path(&manifest.value, &["boundary"]).is_none()
+    {
+        diagnostics.push(error(
+            "profile.boundary",
+            &manifest.path,
+            "boundary modules must declare a `boundary` section",
+        ));
+    }
+}
+
+fn check_contract_refs(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    path: &[&str],
+) {
+    let Some(value) = get_path(&manifest.value, path) else {
+        return;
+    };
+    collect_contract_paths(value, &mut |contract| {
+        check_relative_ref(
+            manifest,
+            diagnostics,
+            "references.contract",
+            contract,
+            "referenced contract does not exist",
+        );
+    });
+}
+
+fn check_invariant_evidence(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(invariants) =
+        get_path(&manifest.value, &["invariants"]).and_then(YamlValue::as_sequence)
+    else {
+        return;
+    };
+    for invariant in invariants {
+        if let Some(path) = get_str(invariant, &["verified_by"]) {
+            check_relative_ref(
+                manifest,
+                diagnostics,
+                "references.invariant-evidence",
+                path,
+                "referenced invariant evidence does not exist",
+            );
+        }
+    }
+}
+
+fn check_verification_paths(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(verification) = get_path(&manifest.value, &["verification"]) else {
+        return;
+    };
+    for category in [
+        "laws",
+        "contracts",
+        "scenarios",
+        "boundaries",
+        "runtime",
+        "reconciliation",
+    ] {
+        let Some(paths) = get_path(verification, &[category]).and_then(YamlValue::as_sequence)
+        else {
+            continue;
+        };
+        for path in paths.iter().filter_map(YamlValue::as_str) {
+            check_relative_ref(
+                manifest,
+                diagnostics,
+                format!("references.verification.{category}"),
+                path,
+                "referenced verification evidence does not exist",
+            );
+        }
+    }
+}
+
+fn check_optional_path(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    path: &[&str],
+) {
+    if let Some(reference) = get_str(&manifest.value, path) {
+        check_relative_ref(
+            manifest,
+            diagnostics,
+            format!("references.{}", path.join(".")),
+            reference,
+            "referenced path does not exist",
+        );
+    }
+}
+
+fn check_relative_ref(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    check: impl Into<String>,
+    reference: &str,
+    message: &str,
+) {
+    if reference.starts_with("http://")
+        || reference.starts_with("https://")
+        || reference.starts_with("urn:")
+    {
+        return;
+    }
+
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let full_path = base.join(reference);
+    if !full_path.exists() {
+        diagnostics.push(error(
+            check,
+            &manifest.path,
+            format!("{message}: `{reference}`"),
+        ));
+    }
+}
+
+fn collect_contract_paths(value: &YamlValue, emit: &mut impl FnMut(&str)) {
+    match value {
+        YamlValue::Mapping(mapping) => {
+            if let Some(contract) = mapping
+                .get(YamlValue::String("contract".to_string()))
+                .and_then(YamlValue::as_str)
+            {
+                emit(contract);
+            }
+            for child in mapping.values() {
+                collect_contract_paths(child, emit);
+            }
+        }
+        YamlValue::Sequence(items) => {
+            for item in items {
+                collect_contract_paths(item, emit);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn scan_for_secret_like_keys(value: &YamlValue, path: &Path, diagnostics: &mut Vec<Diagnostic>) {
+    fn walk(
+        value: &YamlValue,
+        key_path: &mut Vec<String>,
+        path: &Path,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        match value {
+            YamlValue::Mapping(mapping) => {
+                for (key, child) in mapping {
+                    let key_text = key.as_str().unwrap_or("<non-string-key>").to_string();
+                    key_path.push(key_text.clone());
+                    let normalized = key_text.to_ascii_lowercase().replace('-', "_");
+                    if matches!(
+                        normalized.as_str(),
+                        "secret" | "secrets" | "password" | "token" | "access_token" | "api_key"
+                    ) {
+                        diagnostics.push(error(
+                            "security.secret-key",
+                            path,
+                            format!(
+                                "canonical artifacts must not contain secret-bearing fields: `{}`",
+                                key_path.join(".")
+                            ),
+                        ));
+                    }
+                    walk(child, key_path, path, diagnostics);
+                    key_path.pop();
+                }
+            }
+            YamlValue::Sequence(items) => {
+                for item in items {
+                    walk(item, key_path, path, diagnostics);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    walk(value, &mut Vec::new(), path, diagnostics);
+}
+
+fn print_module_brief(manifest: &LoadedManifest) {
+    println!("# RMS Module Brief");
+    println!();
+    println!("Path: {}", manifest.path.display());
+    println!(
+        "Module: {} {}",
+        get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>"),
+        get_str(&manifest.value, &["module", "version"]).unwrap_or("")
+    );
+    println!(
+        "Purpose: {}",
+        get_str(&manifest.value, &["module", "purpose"]).unwrap_or("<missing>")
+    );
+    println!(
+        "Kind: {}",
+        get_str(&manifest.value, &["module", "kind"]).unwrap_or("<missing>")
+    );
+    print_string_list(
+        "Profiles",
+        &get_string_array(&manifest.value, &["profiles"]),
+    );
+    print_owned_terms(&manifest.value);
+    print_contract_groups("Provides", get_path(&manifest.value, &["provides"]));
+    print_contract_groups("Requires", get_path(&manifest.value, &["requires"]));
+    print_invariants(&manifest.value);
+    print_effects(&manifest.value);
+    println!(
+        "Compatibility: {}",
+        get_str(&manifest.value, &["compatibility", "policy"]).unwrap_or("<missing>")
+    );
+    print_verification(&manifest.value);
+}
+
+fn print_context_packet(manifest: &LoadedManifest, root: &Path, task: Option<&str>) -> Result<()> {
+    println!("# RMS Context Packet");
+    println!();
+    if let Some(task) = task {
+        println!("Task: {task}");
+        println!();
+    }
+
+    print_module_brief(manifest);
+
+    println!();
+    println!("## Canonical Files");
+    for file_name in ["system.yaml", "context-map.yaml", "GLOSSARY.md"] {
+        let path = root.join(file_name);
+        if path.exists() {
+            println!("- {}", path.display());
+        }
+    }
+
+    println!();
+    println!("## Public References");
+    for reference in referenced_paths(&manifest.value) {
+        let path = manifest
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(&reference);
+        println!("- {}", path.display());
+    }
+
+    println!();
+    println!("## Working Rules");
+    println!("- Preserve the owning module boundary.");
+    println!("- Update public contracts before implementation when public meaning changes.");
+    println!("- Declare new dependencies, effects, profile obligations, and recovery paths.");
+    println!("- Verify declared laws, contracts, scenarios, and boundaries that the task affects.");
+    Ok(())
+}
+
+fn build_conformance_report(module: &Path, implementation: Option<&Path>) -> Result<JsonValue> {
+    let manifest = load_manifest(module)?;
+    let mut diagnostics = Vec::new();
+    validate_loaded_manifest(&manifest, &mut diagnostics);
+
+    let implementation_name = if let Some(path) = implementation {
+        let implementation_manifest = load_manifest(path)?;
+        validate_loaded_manifest(&implementation_manifest, &mut diagnostics);
+        get_str(&implementation_manifest.value, &["binding"])
+            .unwrap_or("unknown")
+            .to_string()
+    } else {
+        "not-supplied".to_string()
+    };
+
+    let checks: Vec<JsonValue> = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            json!({
+                "id": diagnostic.check,
+                "category": diagnostic_category(&diagnostic.check),
+                "result": if diagnostic.severity == Severity::Error { "fail" } else { "skipped" },
+                "evidence": diagnostic.path,
+                "note": diagnostic.message,
+            })
+        })
+        .collect();
+
+    let result = if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        "fail"
+    } else if implementation.is_none() || has_empty_verification_category(&manifest.value) {
+        "partial"
+    } else {
+        "pass"
+    };
+
+    Ok(json!({
+        "spec": "rms/conformance/v0.1",
+        "subject": {
+            "module": get_str(&manifest.value, &["module", "name"]).unwrap_or("unknown"),
+            "version": get_str(&manifest.value, &["module", "version"]).unwrap_or("unknown"),
+            "implementation": implementation_name,
+        },
+        "source": {
+            "revision": source_revision().unwrap_or_else(|| "unknown".to_string()),
+        },
+        "profiles": get_string_array(&manifest.value, &["profiles"]),
+        "validator": {
+            "name": VALIDATOR_NAME,
+            "version": VALIDATOR_VERSION,
+        },
+        "result": result,
+        "checks": if checks.is_empty() {
+            vec![json!({
+                "id": "manifest.core",
+                "category": "manifest",
+                "result": "pass",
+                "evidence": module.display().to_string(),
+            })]
+        } else {
+            checks
+        },
+    }))
+}
+
+fn diagnostic_category(check: &str) -> &'static str {
+    match check.split('.').next().unwrap_or("other") {
+        "schema" | "manifest" | "module" | "context-map" | "implementation" => "manifest",
+        "references" => {
+            if check.contains("contract") {
+                "contracts"
+            } else if check.contains("verification") || check.contains("invariant") {
+                "laws"
+            } else {
+                "other"
+            }
+        }
+        "profiles" | "profile" => "profiles",
+        "compatibility" => "compatibility",
+        "effects" => "effects",
+        "security" => "security",
+        "contracts" => "contracts",
+        "dependencies" => "dependencies",
+        "operations" => "operations",
+        "ownership" => "ownership",
+        _ => "other",
+    }
+}
+
+fn run_verify(implementation: &Path, dry_run: bool) -> Result<()> {
+    let manifest = load_manifest(implementation)?;
+    let command = get_str(&manifest.value, &["commands", "verify"])
+        .ok_or_else(|| anyhow!("implementation binding does not declare `commands.verify`"))?;
+    let root = implementation.parent().unwrap_or_else(|| Path::new("."));
+
+    if dry_run {
+        println!("{command}");
+        return Ok(());
+    }
+
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(root)
+        .status()
+        .with_context(|| format!("failed to run verify command `{command}`"))?;
+
+    if !status.success() {
+        bail!("verify command failed with status {status}");
+    }
+
+    Ok(())
+}
+
+fn run_init(
+    path: &Path,
+    name: &str,
+    purpose: &str,
+    version: &str,
+    contexts: &[String],
+) -> Result<()> {
+    fs::create_dir_all(path)
+        .with_context(|| format!("failed to create init directory `{}`", path.display()))?;
+    let contexts = if contexts.is_empty() {
+        vec![name.to_string()]
+    } else {
+        contexts.to_vec()
+    };
+
+    write_new_file(
+        &path.join("system.yaml"),
+        &render_system_yaml(name, purpose, version, &contexts),
+    )?;
+    write_new_file(
+        &path.join("context-map.yaml"),
+        &render_context_map_yaml(&contexts),
+    )?;
+    write_new_file(&path.join("GLOSSARY.md"), &render_glossary_md(name))?;
+    write_new_file(&path.join("AGENTS.md"), INIT_AGENTS_MD)?;
+
+    println!("initialized RMS system at {}", path.display());
+    Ok(())
+}
+
+fn run_add_module(
+    path: &Path,
+    name: &str,
+    purpose: &str,
+    kind: &str,
+    profiles: &[String],
+    binding: Option<&str>,
+) -> Result<()> {
+    fs::create_dir_all(path)
+        .with_context(|| format!("failed to create module directory `{}`", path.display()))?;
+    fs::create_dir_all(path.join("contracts"))?;
+    for category in ["laws", "contracts", "scenarios", "boundaries"] {
+        let verification_dir = path.join("verification").join(category);
+        fs::create_dir_all(&verification_dir)?;
+        write_new_file(
+            &verification_dir.join("README.md"),
+            &format!("# {category}\n\nAdd RMS {category} evidence here.\n"),
+        )?;
+    }
+
+    let profiles = normalized_profiles(profiles);
+    write_new_file(
+        &path.join("module.yaml"),
+        &render_module_yaml(name, purpose, kind, &profiles),
+    )?;
+    write_new_file(
+        &path.join("contracts").join("README.md"),
+        "# Contracts\n\nAdd public RMS contracts here.\n",
+    )?;
+
+    if let Some(binding) = binding {
+        match binding {
+            "rust" => scaffold_rust_module(path, name)?,
+            other => bail!("unsupported scaffold binding `{other}`"),
+        }
+    }
+
+    println!("added RMS module at {}", path.display());
+    Ok(())
+}
+
+fn scaffold_rust_module(path: &Path, name: &str) -> Result<()> {
+    let package_name = sanitize_rust_package_name(name);
+    fs::create_dir_all(path.join("src"))?;
+    write_new_file(
+        &path.join("implementation.yaml"),
+        &render_rust_implementation_yaml(name, &package_name),
+    )?;
+    write_new_file(
+        &path.join("Cargo.toml"),
+        &render_rust_cargo_toml(&package_name),
+    )?;
+    write_new_file(
+        &path.join("src").join("lib.rs"),
+        "pub fn module_name() -> &'static str {\n    env!(\"CARGO_PKG_NAME\")\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn exposes_module_name() {\n        assert_eq!(super::module_name(), env!(\"CARGO_PKG_NAME\"));\n    }\n}\n",
+    )?;
+    Ok(())
+}
+
+fn normalized_profiles(profiles: &[String]) -> Vec<String> {
+    let mut normalized = BTreeSet::from(["core".to_string()]);
+    normalized.extend(profiles.iter().cloned());
+    normalized.into_iter().collect()
+}
+
+fn render_system_yaml(name: &str, purpose: &str, version: &str, contexts: &[String]) -> String {
+    format!(
+        "spec: rms/system/v0.1\n\nsystem:\n  name: {}\n  version: {}\n  purpose: {}\n\ncontexts:\n{}\n\npublic_interfaces: []\nexternal_dependencies: []\nworkflows: []\n\ninvariants: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nglossary: GLOSSARY.md\ncontext_map: context-map.yaml\n",
+        yaml_quote(name),
+        yaml_quote(version),
+        yaml_quote(purpose),
+        yaml_string_list(contexts, 2)
+    )
+}
+
+fn render_context_map_yaml(contexts: &[String]) -> String {
+    let mut rendered = "spec: rms/context-map/v0.1\n\ncontexts:\n".to_string();
+    for context in contexts {
+        rendered.push_str(&format!(
+            "  {}:\n    publishes: []\n    consumes: []\n",
+            yaml_quote(context)
+        ));
+    }
+    rendered.push_str("\nrelationships: []\n");
+    rendered
+}
+
+fn render_glossary_md(name: &str) -> String {
+    format!("# {name} Glossary\n\nAdd context-owned terms here.\n")
+}
+
+fn render_module_yaml(name: &str, purpose: &str, kind: &str, profiles: &[String]) -> String {
+    format!(
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n",
+        yaml_quote(name),
+        yaml_quote(kind),
+        yaml_quote(purpose),
+        yaml_string_list(profiles, 2)
+    )
+}
+
+fn render_rust_implementation_yaml(module_name: &str, package_name: &str) -> String {
+    format!(
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  public_modules: []\n",
+        yaml_quote(module_name),
+        yaml_quote(package_name),
+    )
+}
+
+fn render_rust_cargo_toml(package_name: &str) -> String {
+    format!(
+        "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n\n[workspace]\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\n"
+    )
+}
+
+fn yaml_string_list(values: &[String], indent: usize) -> String {
+    let prefix = " ".repeat(indent);
+    values
+        .iter()
+        .map(|value| format!("{prefix}- {}", yaml_quote(value)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn yaml_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn sanitize_rust_package_name(name: &str) -> String {
+    let mut output = String::new();
+    let mut previous_dash = false;
+    for character in name.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() || character == '_' {
+            output.push(character);
+            previous_dash = false;
+        } else if !previous_dash {
+            output.push('-');
+            previous_dash = true;
+        }
+    }
+    let trimmed = output.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "rms-module".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn write_new_file(path: &Path, contents: &str) -> Result<()> {
+    if path.exists() {
+        bail!("refusing to overwrite existing file `{}`", path.display());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, contents).with_context(|| format!("failed to write `{}`", path.display()))
+}
+
+const INIT_AGENTS_MD: &str = "# Agent Instructions\n\nThis repository follows Reliable Modular Systems.\n\nBefore changing behavior, identify the owning module, read its `module.yaml`, public contracts, declared effects, invariants, compatibility policy, and verification evidence. Keep implementation changes inside the owning boundary and run `rms validate --root .` before completion.\n";
+
+fn referenced_paths(value: &YamlValue) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+    collect_contract_paths(value, &mut |path| {
+        paths.insert(path.to_string());
+    });
+
+    if let Some(invariants) = get_path(value, &["invariants"]).and_then(YamlValue::as_sequence) {
+        for invariant in invariants {
+            if let Some(path) = get_str(invariant, &["verified_by"]) {
+                paths.insert(path.to_string());
+            }
+        }
+    }
+
+    if let Some(verification) = get_path(value, &["verification"]) {
+        for category in [
+            "laws",
+            "contracts",
+            "scenarios",
+            "boundaries",
+            "runtime",
+            "reconciliation",
+        ] {
+            if let Some(items) =
+                get_path(verification, &[category]).and_then(YamlValue::as_sequence)
+            {
+                for item in items.iter().filter_map(YamlValue::as_str) {
+                    paths.insert(item.to_string());
+                }
+            }
+        }
+    }
+
+    paths
+}
+
+fn has_empty_verification_category(value: &YamlValue) -> bool {
+    ["laws", "contracts", "scenarios", "boundaries"]
+        .iter()
+        .any(|category| {
+            get_path(value, &["verification", category])
+                .and_then(YamlValue::as_sequence)
+                .is_none_or(Vec::is_empty)
+        })
+}
+
+fn load_manifest(path: &Path) -> Result<LoadedManifest> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read manifest `{}`", path.display()))?;
+    let value = serde_yaml::from_str(&contents)
+        .with_context(|| format!("failed to parse YAML `{}`", path.display()))?;
+    Ok(LoadedManifest {
+        path: path.to_path_buf(),
+        value,
+    })
+}
+
+fn get_path<'a>(value: &'a YamlValue, path: &[&str]) -> Option<&'a YamlValue> {
+    let mut current = value;
+    for segment in path {
+        current = current
+            .as_mapping()?
+            .get(YamlValue::String((*segment).to_string()))?;
+    }
+    Some(current)
+}
+
+fn get_str<'a>(value: &'a YamlValue, path: &[&str]) -> Option<&'a str> {
+    get_path(value, path)?.as_str()
+}
+
+fn get_string_array(value: &YamlValue, path: &[&str]) -> Vec<String> {
+    get_path(value, path)
+        .and_then(YamlValue::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(YamlValue::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn require_str(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    check: impl Into<String>,
+    path: &[&str],
+) {
+    if get_str(&manifest.value, path).is_none() {
+        diagnostics.push(error(
+            check,
+            &manifest.path,
+            format!("missing required string `{}`", path.join(".")),
+        ));
+    }
+}
+
+fn require_array(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    check: impl Into<String>,
+    path: &[&str],
+) {
+    if get_path(&manifest.value, path)
+        .and_then(YamlValue::as_sequence)
+        .is_none()
+    {
+        diagnostics.push(error(
+            check,
+            &manifest.path,
+            format!("missing required array `{}`", path.join(".")),
+        ));
+    }
+}
+
+fn error(check: impl Into<String>, path: &Path, message: impl Into<String>) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        check: check.into(),
+        path: path.display().to_string(),
+        message: message.into(),
+    }
+}
+
+fn warning(check: impl Into<String>, path: &Path, message: impl Into<String>) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Warning,
+        check: check.into(),
+        path: path.display().to_string(),
+        message: message.into(),
+    }
+}
+
+fn error_diagnostic(
+    check: impl Into<String>,
+    path: &Path,
+    message: impl Into<String>,
+) -> Diagnostic {
+    error(check, path, message)
+}
+
+fn severity_label(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info => "info",
+    }
+}
+
+fn print_string_list(label: &str, items: &[String]) {
+    println!(
+        "{label}: {}",
+        if items.is_empty() {
+            "<none>".to_string()
+        } else {
+            items.join(", ")
+        }
+    );
+}
+
+fn print_owned_terms(value: &YamlValue) {
+    println!();
+    println!("## Ownership");
+    if let Some(owns) = get_path(value, &["owns"]).and_then(YamlValue::as_mapping) {
+        for (key, values) in owns {
+            let label = key.as_str().unwrap_or("<unknown>");
+            let items = values
+                .as_sequence()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(YamlValue::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            println!(
+                "- {label}: {}",
+                if items.is_empty() { "<none>" } else { &items }
+            );
+        }
+    } else {
+        println!("- <missing>");
+    }
+}
+
+fn print_contract_groups(label: &str, value: Option<&YamlValue>) {
+    println!();
+    println!("## {label}");
+    let Some(groups) = value.and_then(YamlValue::as_mapping) else {
+        println!("- <missing>");
+        return;
+    };
+    for (group, items) in groups {
+        let group = group.as_str().unwrap_or("<unknown>");
+        println!("- {group}:");
+        if let Some(items) = items.as_sequence() {
+            for item in items {
+                match item {
+                    YamlValue::String(name) => println!("  - {name}"),
+                    YamlValue::Mapping(mapping) => {
+                        let name = mapping
+                            .get(YamlValue::String("name".to_string()))
+                            .and_then(YamlValue::as_str)
+                            .unwrap_or("<unnamed>");
+                        let contract = mapping
+                            .get(YamlValue::String("contract".to_string()))
+                            .and_then(YamlValue::as_str)
+                            .unwrap_or("<no contract>");
+                        println!("  - {name} ({contract})");
+                    }
+                    _ => println!("  - <unsupported reference>"),
+                }
+            }
+        }
+    }
+}
+
+fn print_invariants(value: &YamlValue) {
+    println!();
+    println!("## Invariants");
+    let Some(invariants) = get_path(value, &["invariants"]).and_then(YamlValue::as_sequence) else {
+        println!("- <missing>");
+        return;
+    };
+    if invariants.is_empty() {
+        println!("- <none declared>");
+        return;
+    }
+    for invariant in invariants {
+        println!(
+            "- {}: {}",
+            get_str(invariant, &["id"]).unwrap_or("<missing-id>"),
+            get_str(invariant, &["statement"]).unwrap_or("<missing statement>")
+        );
+    }
+}
+
+fn print_effects(value: &YamlValue) {
+    println!();
+    println!("## Effects");
+    let Some(effects) = get_path(value, &["effects"]).and_then(YamlValue::as_sequence) else {
+        println!("- <missing>");
+        return;
+    };
+    if effects.is_empty() {
+        println!("- <none declared>");
+        return;
+    }
+    for effect in effects {
+        println!(
+            "- {} ({})",
+            get_str(effect, &["name"]).unwrap_or("<unnamed>"),
+            get_str(effect, &["kind"]).unwrap_or("<unknown-kind>")
+        );
+    }
+}
+
+fn print_verification(value: &YamlValue) {
+    println!();
+    println!("## Verification");
+    for category in ["laws", "contracts", "scenarios", "boundaries"] {
+        let items = get_string_array(value, &["verification", category]);
+        println!(
+            "- {category}: {}",
+            if items.is_empty() {
+                "<none>".to_string()
+            } else {
+                items.join(", ")
+            }
+        );
+    }
+}
+
+fn source_revision() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(format!(
+            "git:{}",
+            String::from_utf8_lossy(&output.stdout).trim()
+        ))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collects_contract_and_verification_references() {
+        let value: YamlValue = serde_yaml::from_str(
+            r#"
+provides:
+  commands:
+    - name: do-work
+      contract: contracts/do-work.yaml
+invariants:
+  - id: law
+    statement: Law holds.
+    verified_by: verification/laws/law
+verification:
+  laws:
+    - verification/laws
+  contracts: []
+  scenarios:
+    - verification/scenarios
+  boundaries: []
+"#,
+        )
+        .unwrap();
+
+        let references = referenced_paths(&value);
+
+        assert!(references.contains("contracts/do-work.yaml"));
+        assert!(references.contains("verification/laws/law"));
+        assert!(references.contains("verification/laws"));
+        assert!(references.contains("verification/scenarios"));
+    }
+
+    #[test]
+    fn empty_verification_category_makes_conformance_partial() {
+        let value: YamlValue = serde_yaml::from_str(
+            r#"
+verification:
+  laws:
+    - verification/laws
+  contracts: []
+  scenarios:
+    - verification/scenarios
+  boundaries: []
+"#,
+        )
+        .unwrap();
+
+        assert!(has_empty_verification_category(&value));
+    }
+
+    #[test]
+    fn schema_validation_reports_shape_errors() {
+        let value: YamlValue = serde_yaml::from_str(
+            r#"
+spec: rms/module/v0.1
+module:
+  name: example
+profiles:
+  - core
+owns: {}
+provides: {}
+requires: {}
+invariants: []
+effects: []
+compatibility: {}
+verification: {}
+"#,
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: PathBuf::from("module.yaml"),
+            value,
+        };
+        let mut diagnostics = Vec::new();
+
+        validate_against_embedded_schema(&manifest, &mut diagnostics);
+
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "schema.validate"));
+    }
+
+    #[test]
+    fn diagnostic_categories_are_conformance_schema_compatible() {
+        assert_eq!(diagnostic_category("schema.validate"), "manifest");
+        assert_eq!(diagnostic_category("references.contract"), "contracts");
+        assert_eq!(
+            diagnostic_category("profile.distributed.reconciliation"),
+            "profiles"
+        );
+        assert_eq!(diagnostic_category("security.secret-key"), "security");
+    }
+
+    #[test]
+    fn collects_rust_dependencies_from_cargo_manifest() {
+        let cargo: TomlValue = r#"
+[package]
+name = "example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = "1"
+
+[dev-dependencies]
+proptest = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+"#
+        .parse()
+        .unwrap();
+
+        let dependencies = collect_rust_dependencies(&cargo);
+
+        assert!(dependencies.contains("serde"));
+        assert!(dependencies.contains("proptest"));
+        assert!(dependencies.contains("libc"));
+    }
+
+    #[test]
+    fn extracts_public_modules_from_rust_entrypoint() {
+        let modules = public_modules_declared_in_source(
+            r#"
+pub mod widget;
+pub(crate) mod private;
+pub mod nested {
+}
+"#,
+        );
+
+        assert!(modules.contains("widget"));
+        assert!(modules.contains("nested"));
+        assert!(!modules.contains("private"));
+    }
+
+    #[test]
+    fn parses_public_and_private_rust_import_roots() {
+        let file = syn::parse_file(
+            r#"
+use serde::{Deserialize, Serialize};
+pub use widget::Widget;
+pub use external_crate::Thing;
+"#,
+        )
+        .unwrap();
+
+        let imports = collect_rust_imports(&file);
+
+        assert!(imports
+            .iter()
+            .any(|import| import.root == "serde" && !import.is_public));
+        assert!(imports
+            .iter()
+            .any(|import| import.root == "widget" && import.is_public));
+        assert!(imports
+            .iter()
+            .any(|import| import.root == "external_crate" && import.is_public));
+    }
+
+    #[test]
+    fn classifies_local_and_external_rust_imports() {
+        let local_modules = BTreeSet::from(["widget".to_string()]);
+
+        assert_eq!(
+            rust_import_root_kind("widget", &local_modules),
+            RustImportRootKind::LocalModule
+        );
+        assert_eq!(
+            rust_import_root_kind("serde", &local_modules),
+            RustImportRootKind::External
+        );
+        assert_eq!(
+            rust_import_root_kind("std", &local_modules),
+            RustImportRootKind::Standard
+        );
+        assert_eq!(
+            rust_import_root_kind("crate", &local_modules),
+            RustImportRootKind::SelfQualified
+        );
+    }
+
+    #[test]
+    fn detects_path_components_for_source_exclusions() {
+        assert!(path_has_component(
+            Path::new("crate/target/debug/out.rs"),
+            "target"
+        ));
+        assert!(!path_has_component(Path::new("crate/src/lib.rs"), "target"));
+    }
+
+    #[test]
+    fn init_scaffold_generates_valid_system_artifacts() {
+        let root = unique_test_dir("init");
+
+        run_init(
+            &root,
+            "example-system",
+            "Demonstrate RMS initialization.",
+            "0.1.0",
+            &[String::from("example")],
+        )
+        .unwrap();
+
+        let mut diagnostics = Vec::new();
+        for file in ["system.yaml", "context-map.yaml"] {
+            let manifest = load_manifest(&root.join(file)).unwrap();
+            validate_loaded_manifest(&manifest, &mut diagnostics);
+        }
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn rust_module_scaffold_generates_valid_binding_artifacts() {
+        let root = unique_test_dir("rust-module");
+
+        run_add_module(
+            &root,
+            "example-rust",
+            "Demonstrate Rust module scaffolding.",
+            "library",
+            &[],
+            Some("rust"),
+        )
+        .unwrap();
+
+        let mut diagnostics = Vec::new();
+        for file in ["module.yaml", "implementation.yaml"] {
+            let manifest = load_manifest(&root.join(file)).unwrap();
+            validate_loaded_manifest(&manifest, &mut diagnostics);
+        }
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("rms-{label}-{}-{nanos}", std::process::id()))
+    }
+}

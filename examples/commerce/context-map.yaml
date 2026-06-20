@@ -1,0 +1,41 @@
+spec: rms/context-map/v0.1
+
+contexts:
+  ordering:
+    publishes:
+      - order-submitted.v1
+      - order-ready-for-fulfillment.v1
+    consumes:
+      - payment-outcome.v1
+
+  payments:
+    publishes:
+      - payment-outcome.v1
+    consumes:
+      - payment-requested.v1
+    external_integrations:
+      - name: payment-provider
+        relationship: anti-corruption-layer
+
+  inventory:
+    publishes:
+      - inventory-reservation-outcome.v1
+    consumes:
+      - inventory-reservation-requested.v1
+
+  fulfillment:
+    publishes:
+      - shipment-status.v1
+    consumes:
+      - order-ready-for-fulfillment.v1
+
+relationships:
+  - upstream: ordering
+    downstream: payments
+    contract: contracts/payment-requested.v1.yaml
+  - upstream: payments
+    downstream: ordering
+    contract: contracts/payment-outcome.v1.yaml
+  - upstream: ordering
+    downstream: fulfillment
+    contract: contracts/order-ready-for-fulfillment.v1.yaml

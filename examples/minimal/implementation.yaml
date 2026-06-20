@@ -1,0 +1,16 @@
+spec: rms/implementation/v0.1
+
+module: example
+binding: fixture
+
+source:
+  root: src
+  public_entrypoint: src/example.txt
+
+commands:
+  build: test -f src/example.txt
+  verify: test -f verification/laws/example_is_valid
+  format: "true"
+
+architecture:
+  dependency_checker: manual-fixture-review

@@ -1,0 +1,39 @@
+{
+  "spec": "rms/conformance/v0.1",
+  "subject": {
+    "module": "example",
+    "version": "0.1.0",
+    "implementation": "illustrative-binding"
+  },
+  "source": {
+    "revision": "example:canonical-fixture"
+  },
+  "profiles": [
+    "core"
+  ],
+  "validator": {
+    "name": "rms-example-validator",
+    "version": "0.1.0"
+  },
+  "result": "partial",
+  "checks": [
+    {
+      "id": "manifest.schema",
+      "category": "manifest",
+      "result": "pass",
+      "evidence": "module.yaml"
+    },
+    {
+      "id": "contracts.public-surface",
+      "category": "contracts",
+      "result": "not-applicable",
+      "note": "The minimal example publishes no commands, queries, events, or capabilities."
+    },
+    {
+      "id": "laws.example-is-valid",
+      "category": "laws",
+      "result": "skipped",
+      "note": "This fixture demonstrates manifest and report shape; it does not include an executable implementation."
+    }
+  ]
+}

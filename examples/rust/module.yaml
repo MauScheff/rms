@@ -1,0 +1,51 @@
+spec: rms/module/v0.1
+
+module:
+  name: rust-example
+  version: 0.1.0
+  kind: library
+  purpose: Accept and expose validated widgets
+
+profiles:
+  - core
+
+owns:
+  concepts:
+    - Widget
+  data: []
+  decisions:
+    - widget-acceptance
+
+provides:
+  commands: []
+  queries:
+    - name: describe-widget
+      contract: contracts/describe-widget.v1.yaml
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities: []
+
+invariants:
+  - id: accepted-widget-has-name
+    statement: Every accepted widget has a non-empty name.
+    enforced_by: widget-constructor
+    verified_by: verification/laws/accepted_widget_has_name
+
+effects: []
+
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws:
+    - verification/laws
+  contracts:
+    - verification/contracts
+  scenarios:
+    - verification/scenarios
+  boundaries:
+    - verification/boundaries
+

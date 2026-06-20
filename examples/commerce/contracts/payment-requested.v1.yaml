@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: payment-requested
+version: 1
+kind: event
+meaning: Ordering context fact requesting payment coordination.
+

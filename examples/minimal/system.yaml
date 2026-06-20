@@ -1,0 +1,23 @@
+spec: rms/system/v0.1
+
+system:
+  name: example-system
+  version: 0.1.0
+  purpose: Demonstrate the minimum RMS system manifest
+
+contexts:
+  - example
+
+public_interfaces: []
+external_dependencies: []
+workflows: []
+
+invariants:
+  - id: owned-state-has-one-writer
+    statement: Each logical state set has one owning module.
+
+compatibility:
+  policy: backward-compatible-within-major
+
+glossary: GLOSSARY.md
+context_map: context-map.yaml

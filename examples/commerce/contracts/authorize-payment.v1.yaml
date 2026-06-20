@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: authorize-payment
+version: 1
+kind: command
+meaning: Request authorization for a payment amount.
+

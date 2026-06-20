@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: describe-widget
+version: 1
+kind: query
+meaning: Return the stable display name for a validated widget.
+

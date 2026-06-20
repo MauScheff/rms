@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:conformance:v0.1",
+  "title": "RMS Conformance Report v0.1",
+  "type": "object",
+  "required": [
+    "spec",
+    "subject",
+    "source",
+    "profiles",
+    "validator",
+    "result",
+    "checks"
+  ],
+  "properties": {
+    "spec": {
+      "const": "rms/conformance/v0.1"
+    },
+    "subject": {
+      "type": "object",
+      "required": [
+        "module",
+        "version",
+        "implementation"
+      ],
+      "properties": {
+        "module": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "implementation": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "string"
+        },
+        "artifact_digest": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "anyOf": [
+        {
+          "required": [
+            "revision"
+          ]
+        },
+        {
+          "required": [
+            "artifact_digest"
+          ]
+        }
+      ]
+    },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "contains": {
+        "const": "core"
+      }
+    },
+    "validator": {
+      "type": "object",
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "result": {
+      "enum": [
+        "pass",
+        "fail",
+        "partial"
+      ]
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "category",
+          "result"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "manifest",
+              "ownership",
+              "dependencies",
+              "effects",
+              "laws",
+              "contracts",
+              "scenarios",
+              "boundaries",
+              "profiles",
+              "compatibility",
+              "composition",
+              "operations",
+              "security",
+              "other"
+            ]
+          },
+          "result": {
+            "enum": [
+              "pass",
+              "fail",
+              "skipped",
+              "not-applicable"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "minItems": 1
+    },
+    "produced_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "patternProperties": {
+    "^x-": {}
+  },
+  "additionalProperties": false
+}

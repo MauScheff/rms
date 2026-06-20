@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:system:v0.1",
+  "title": "RMS System Manifest v0.1",
+  "type": "object",
+  "required": [
+    "spec",
+    "system",
+    "contexts",
+    "public_interfaces",
+    "invariants",
+    "compatibility"
+  ],
+  "properties": {
+    "spec": {
+      "const": "rms/system/v0.1"
+    },
+    "system": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "purpose"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "contexts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "public_interfaces": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/namedReference"
+      }
+    },
+    "external_dependencies": {
+      "type": "array"
+    },
+    "workflows": {
+      "type": "array"
+    },
+    "invariants": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/invariant"
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "required": [
+        "policy"
+      ],
+      "additionalProperties": true
+    },
+    "glossary": {
+      "type": "string"
+    },
+    "context_map": {
+      "type": "string"
+    }
+  },
+  "patternProperties": {
+    "^x-": {}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "namedReference": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "contract": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "invariant": {
+      "type": "object",
+      "required": [
+        "id",
+        "statement"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "statement": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

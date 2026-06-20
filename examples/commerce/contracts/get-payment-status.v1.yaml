@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: get-payment-status
+version: 1
+kind: query
+meaning: Return the accepted state of one payment.
+

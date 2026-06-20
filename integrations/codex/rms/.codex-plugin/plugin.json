@@ -1,0 +1,39 @@
+{
+  "name": "rms",
+  "version": "0.1.0",
+  "description": "Codex adapter for Reliable Modular Systems skills and workflows.",
+  "author": {
+    "name": "Reliable Modular Systems",
+    "url": "https://github.com/reliable-modular-systems/reliable-modular-systems"
+  },
+  "homepage": "https://github.com/reliable-modular-systems/reliable-modular-systems",
+  "repository": "https://github.com/reliable-modular-systems/reliable-modular-systems",
+  "license": "Apache-2.0",
+  "keywords": [
+    "architecture",
+    "modularity",
+    "agents",
+    "validation",
+    "reliability"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Reliable Modular Systems",
+    "shortDescription": "Build software through explicit module contracts.",
+    "longDescription": "RMS gives Codex bounded workflows for inspecting modules, implementing changes, evolving contracts, composing modules, and verifying conformance against canonical manifests.",
+    "developerName": "Reliable Modular Systems",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Code",
+      "Review",
+      "Workflow"
+    ],
+    "defaultPrompt": [
+      "Inspect this RMS module before changing it.",
+      "Implement this change within the owning module.",
+      "Verify this module against its RMS contracts."
+    ],
+    "brandColor": "#2563EB"
+  }
+}
+

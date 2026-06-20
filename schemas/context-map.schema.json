@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:context-map:v0.1",
+  "title": "RMS Context Map v0.1",
+  "type": "object",
+  "required": [
+    "spec",
+    "contexts",
+    "relationships"
+  ],
+  "properties": {
+    "spec": {
+      "const": "rms/context-map/v0.1"
+    },
+    "contexts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "upstream",
+          "downstream"
+        ],
+        "properties": {
+          "upstream": {
+            "type": "string"
+          },
+          "downstream": {
+            "type": "string"
+          },
+          "contract": {
+            "type": "string"
+          },
+          "relationship": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "patternProperties": {
+    "^x-": {}
+  },
+  "additionalProperties": false
+}
