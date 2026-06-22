@@ -9,6 +9,7 @@ The first reference implementation is the Rust CLI in `tooling/rust/rms`.
 ```bash
 cargo run -p rms -- init /tmp/rms-example --name rms-example --purpose "Try RMS"
 cargo run -p rms -- add-module /tmp/rms-example/modules/widget --name widget --purpose "Own widgets" --binding rust
+cargo run -p rms -- add-module /tmp/rms-example/modules/swift-widget --name swift-widget --purpose "Own Swift widgets" --binding swift
 cargo run -p rms -- validate --root examples/minimal
 cargo run -p rms -- inspect examples/minimal/module.yaml
 cargo run -p rms -- context examples/minimal/module.yaml --task "add a public command"
@@ -24,8 +25,8 @@ The CLI intentionally starts small:
 - inspects module ownership, profiles, contracts, effects, and verification;
 - emits bounded context packets for agents;
 - classifies manifest compatibility changes;
-- produces explicit partial/pass/fail conformance reports.
-- applies the first language binding when `implementation.yaml` declares `binding: rust`.
+- produces explicit partial/pass/fail conformance reports;
+- applies language binding checks when `implementation.yaml` declares `binding: rust` or `binding: swift`.
 
 ## Tooling Contract
 
@@ -41,7 +42,7 @@ Other implementations should preserve these command meanings even if flags and o
 | `rms check-compat` | Classify module manifest compatibility impact. |
 | `rms conformance` | Emit machine-readable evaluation evidence. |
 
-Language bindings belong beside or underneath `tooling/<language>/`. A binding may discover imports, public exports, effects, and native verification commands for a language, but it must not redefine RMS concepts. The first binding is Rust; Swift is next.
+Language bindings belong beside or underneath `tooling/<language>/`. A binding may discover imports, public exports, effects, and native verification commands for a language, but it must not redefine RMS concepts. The current reference bindings are Rust and Swift.
 
 ## Rust Binding
 
@@ -63,3 +64,21 @@ When an implementation binding declares `binding: rust`, the CLI checks:
 - for Stateful modules, `architecture.state_type` or `architecture.transition_function`, with declared symbols present in source.
 
 See `examples/rust`.
+
+## Swift Binding
+
+When an implementation binding declares `binding: swift`, the CLI checks:
+
+- `toolchain.package_manifest`, defaulting to `Package.swift`;
+- Swift package manifest shape and package name;
+- `toolchain.package` and `toolchain.target` declarations;
+- `source.public_entrypoint` as a Swift file inside `source.root`;
+- source-level imports against `dependencies.allowed_external_modules`;
+- public external re-exports against `architecture.allowed_public_reexports`;
+- public primitive type aliases unless listed in `architecture.allowed_primitive_type_aliases`;
+- public stored fields on domain structs unless listed in `architecture.allowed_public_field_structs`;
+- `fatalError`, `preconditionFailure`, `try!`, and `as!` in domain code unless `architecture.allow_traps: true`;
+- constructor evidence for public structs with private fields, unless listed in `architecture.allowed_missing_constructors`;
+- for Stateful modules, `architecture.state_type` or `architecture.transition_function`, with declared symbols present in source.
+
+See `examples/swift`.

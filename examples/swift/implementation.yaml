@@ -1,0 +1,23 @@
+spec: rms/implementation/v0.1
+
+module: swift-example
+binding: swift
+
+source:
+  root: Sources/RmsSwiftExample
+  public_entrypoint: Sources/RmsSwiftExample/RmsSwiftExample.swift
+
+commands:
+  build: swift build --package-path .
+  verify: swift test --package-path .
+
+toolchain:
+  package_manifest: Package.swift
+  package: rms-swift-example
+  target: RmsSwiftExample
+
+dependencies:
+  allowed_external_modules: []
+
+architecture:
+  public_modules: []

@@ -55,7 +55,7 @@ rms init ./my-system \
   --context core
 ```
 
-Add a Rust module:
+Add a module with a language binding:
 
 ```bash
 rms add-module ./my-system/modules/widget \
@@ -63,6 +63,12 @@ rms add-module ./my-system/modules/widget \
   --purpose "Own validated widgets" \
   --kind library \
   --binding rust
+
+rms add-module ./my-system/modules/swift-widget \
+  --name swift-widget \
+  --purpose "Own validated Swift widgets" \
+  --kind library \
+  --binding swift
 ```
 
 Validate the included examples:
@@ -71,6 +77,7 @@ Validate the included examples:
 rms validate --root examples/minimal
 rms validate --root examples/commerce
 rms validate --root examples/rust
+rms validate --root examples/swift
 ```
 
 Inspect a module:
@@ -161,7 +168,9 @@ This repository is RMS 0.1 Canonical Draft. The semantic core is frozen for pilo
 
 The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection, context packets, compatibility classification, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
 
-The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, and Stateful representation declarations. Swift is next.
+The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, and Stateful representation declarations.
+
+Swift is the second binding. It validates Swift package shape, target identity, source entrypoints, import allowlists, public re-exports, primitive type aliases, public stored fields, trap-based failure discipline, constructor evidence, and Stateful representation declarations.
 
 RMS should not be called 1.0 until it has survived a real reference application, a replacement or migration exercise, and at least one codebase primarily maintained through agents.
 

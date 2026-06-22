@@ -1,0 +1,50 @@
+spec: rms/module/v0.1
+
+module:
+  name: swift-example
+  version: 0.1.0
+  kind: library
+  purpose: Accept and expose validated Swift widgets
+
+profiles:
+  - core
+
+owns:
+  concepts:
+    - SwiftWidget
+  data: []
+  decisions:
+    - swift-widget-acceptance
+
+provides:
+  commands: []
+  queries:
+    - name: describe-swift-widget
+      contract: contracts/describe-swift-widget.v1.yaml
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities: []
+
+invariants:
+  - id: accepted-swift-widget-has-name
+    statement: Every accepted Swift widget has a non-empty name.
+    enforced_by: swift-widget-constructor
+    verified_by: verification/laws/accepted_swift_widget_has_name
+
+effects: []
+
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws:
+    - verification/laws
+  contracts:
+    - verification/contracts
+  scenarios:
+    - verification/scenarios
+  boundaries:
+    - verification/boundaries

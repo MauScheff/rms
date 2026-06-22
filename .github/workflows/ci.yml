@@ -22,6 +22,7 @@ jobs:
           cargo run -p rms -- validate --root examples/minimal
           cargo run -p rms -- validate --root examples/commerce
           cargo run -p rms -- validate --root examples/rust
+          cargo run -p rms -- validate --root examples/swift
       - name: Check compatibility smoke test
         run: cargo run -p rms -- check-compat examples/rust/module.yaml examples/rust/module.yaml
       - name: Validate scaffold roundtrip
@@ -36,6 +37,11 @@ jobs:
             --purpose "Own widgets" \
             --kind library \
             --binding rust
+          cargo run -p rms --locked -- add-module "$tmpdir/app/modules/swift-widget" \
+            --name swift-widget \
+            --purpose "Own Swift widgets" \
+            --kind library \
+            --binding swift
           cargo run -p rms --locked -- validate --root "$tmpdir/app"
           cargo generate-lockfile --manifest-path "$tmpdir/app/modules/widget/Cargo.toml"
           cargo test --manifest-path "$tmpdir/app/modules/widget/Cargo.toml" --locked

@@ -160,7 +160,7 @@ enum Commands {
         #[arg(long = "profile")]
         profile: Vec<String>,
 
-        /// Optional implementation binding to scaffold. Currently supports `rust`.
+        /// Optional implementation binding to scaffold. Currently supports `rust` and `swift`.
         #[arg(long)]
         binding: Option<String>,
     },
@@ -597,8 +597,10 @@ fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diag
     check_optional_path(manifest, diagnostics, &["source", "root"]);
     check_optional_path(manifest, diagnostics, &["source", "public_entrypoint"]);
 
-    if get_str(&manifest.value, &["binding"]) == Some("rust") {
-        validate_rust_implementation(manifest, diagnostics);
+    match get_str(&manifest.value, &["binding"]) {
+        Some("rust") => validate_rust_implementation(manifest, diagnostics),
+        Some("swift") => validate_swift_implementation(manifest, diagnostics),
+        _ => {}
     }
 }
 
@@ -668,6 +670,271 @@ fn validate_rust_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec
     validate_rust_public_modules(manifest, diagnostics, &public_entrypoint);
     validate_rust_source_boundaries(manifest, diagnostics, &source_root);
     validate_rust_typing(manifest, diagnostics, base, &source_root);
+}
+
+fn validate_swift_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let Some(source_root_ref) = get_str(&manifest.value, &["source", "root"]) else {
+        return;
+    };
+    let Some(public_entrypoint_ref) = get_str(&manifest.value, &["source", "public_entrypoint"])
+    else {
+        return;
+    };
+
+    let source_root = base.join(source_root_ref);
+    let public_entrypoint = base.join(public_entrypoint_ref);
+
+    if public_entrypoint.extension().and_then(|ext| ext.to_str()) != Some("swift") {
+        diagnostics.push(error(
+            "implementation.swift.public-entrypoint",
+            &manifest.path,
+            "`source.public_entrypoint` must point to a Swift source file",
+        ));
+    }
+
+    if public_entrypoint.exists()
+        && source_root.exists()
+        && !public_entrypoint.starts_with(&source_root)
+    {
+        diagnostics.push(error(
+            "implementation.swift.public-entrypoint",
+            &manifest.path,
+            "`source.public_entrypoint` must be inside `source.root` for Swift bindings",
+        ));
+    }
+
+    let package_manifest = swift_package_manifest_path(manifest, base);
+    if !package_manifest.exists() {
+        diagnostics.push(error(
+            "implementation.swift.package-manifest",
+            &manifest.path,
+            format!(
+                "Swift binding requires a package manifest at `{}`",
+                display_relative(base, &package_manifest)
+            ),
+        ));
+        return;
+    }
+
+    let package_source = match fs::read_to_string(&package_manifest) {
+        Ok(source) => source,
+        Err(read_error) => {
+            diagnostics.push(error(
+                "implementation.swift.package-manifest.read",
+                &manifest.path,
+                format!(
+                    "failed to read Swift package manifest `{}`: {read_error}",
+                    display_relative(base, &package_manifest)
+                ),
+            ));
+            return;
+        }
+    };
+
+    validate_swift_package_shape(manifest, diagnostics, &package_manifest, &package_source);
+    validate_declared_swift_package(manifest, diagnostics, &package_source);
+    validate_declared_swift_target(manifest, diagnostics, &source_root);
+    validate_swift_source_boundaries(manifest, diagnostics, &source_root);
+    validate_swift_typing(manifest, diagnostics, base, &source_root);
+}
+
+fn swift_package_manifest_path(manifest: &LoadedManifest, base: &Path) -> PathBuf {
+    if let Some(path) = get_str(&manifest.value, &["toolchain", "package_manifest"]) {
+        base.join(path)
+    } else {
+        base.join("Package.swift")
+    }
+}
+
+fn validate_swift_package_shape(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    package_manifest: &Path,
+    package_source: &str,
+) {
+    if !package_source.contains("import PackageDescription") || !package_source.contains("Package(")
+    {
+        diagnostics.push(error(
+            "implementation.swift.package-manifest.shape",
+            &manifest.path,
+            format!(
+                "Swift package manifest `{}` must import PackageDescription and declare `Package(...)`",
+                package_manifest.display()
+            ),
+        ));
+    }
+
+    if parse_swift_package_name(package_source).is_none() {
+        diagnostics.push(error(
+            "implementation.swift.package.name",
+            &manifest.path,
+            "Swift package bindings must declare a package `name`",
+        ));
+    }
+}
+
+fn validate_declared_swift_package(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    package_source: &str,
+) {
+    let declared_package = get_str(&manifest.value, &["toolchain", "package"]);
+    let package_name = parse_swift_package_name(package_source);
+
+    match (declared_package, package_name.as_deref()) {
+        (Some(declared), Some(actual)) if declared != actual => diagnostics.push(error(
+            "implementation.swift.package.match",
+            &manifest.path,
+            format!("`toolchain.package` declares `{declared}` but Swift package is `{actual}`"),
+        )),
+        (None, Some(actual)) => diagnostics.push(warning(
+            "implementation.swift.package.declared",
+            &manifest.path,
+            format!("Swift binding should declare `toolchain.package: {actual}`"),
+        )),
+        _ => {}
+    }
+}
+
+fn validate_declared_swift_target(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    source_root: &Path,
+) {
+    let Some(target) = get_str(&manifest.value, &["toolchain", "target"]) else {
+        diagnostics.push(warning(
+            "implementation.swift.target.declared",
+            &manifest.path,
+            "Swift binding should declare `toolchain.target`",
+        ));
+        return;
+    };
+
+    if source_root.exists()
+        && source_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_none_or(|name| name != target)
+    {
+        diagnostics.push(warning(
+            "implementation.swift.target.source-root",
+            &manifest.path,
+            format!("`source.root` usually points at `Sources/{target}` for Swift package targets"),
+        ));
+    }
+}
+
+fn validate_swift_source_boundaries(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    source_root: &Path,
+) {
+    if !source_root.exists() {
+        return;
+    }
+
+    let allowed_external_modules: BTreeSet<_> = get_string_array(
+        &manifest.value,
+        &["dependencies", "allowed_external_modules"],
+    )
+    .into_iter()
+    .collect();
+    let allowed_public_reexports: BTreeSet<_> = get_string_array(
+        &manifest.value,
+        &["architecture", "allowed_public_reexports"],
+    )
+    .into_iter()
+    .collect();
+    let target = get_str(&manifest.value, &["toolchain", "target"]);
+
+    for path in swift_source_files(source_root) {
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(read_error) => {
+                diagnostics.push(error(
+                    "implementation.swift.source.read",
+                    &manifest.path,
+                    format!(
+                        "failed to read Swift source `{}`: {read_error}",
+                        path.display()
+                    ),
+                ));
+                continue;
+            }
+        };
+
+        for import in collect_swift_imports(&source) {
+            if is_swift_standard_module(&import.module) || target == Some(import.module.as_str()) {
+                continue;
+            }
+
+            if !allowed_external_modules.contains(&import.module) {
+                diagnostics.push(error(
+                    "implementation.swift.imports.declared",
+                    &manifest.path,
+                    format!(
+                        "Swift source `{}` imports external module `{}` not declared in `dependencies.allowed_external_modules`",
+                        path.display(),
+                        import.module
+                    ),
+                ));
+            }
+
+            if import.is_public_reexport && !allowed_public_reexports.contains(&import.module) {
+                diagnostics.push(error(
+                    "implementation.swift.reexports.external",
+                    &manifest.path,
+                    format!(
+                        "Swift source `{}` publicly re-exports module `{}` without `architecture.allowed_public_reexports`",
+                        path.display(),
+                        import.module
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn validate_swift_typing(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    base: &Path,
+    source_root: &Path,
+) {
+    if !source_root.exists() {
+        return;
+    }
+
+    let module_manifest = load_binding_module_manifest(implementation, base);
+    let mut summary = SwiftTypingSummary::default();
+
+    for path in swift_source_files(source_root) {
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(read_error) => {
+                diagnostics.push(error(
+                    "implementation.swift.typing.source.read",
+                    &implementation.path,
+                    format!(
+                        "failed to read Swift source `{}`: {read_error}",
+                        path.display()
+                    ),
+                ));
+                continue;
+            }
+        };
+
+        inspect_swift_typing_file(implementation, diagnostics, &path, &source, &mut summary);
+    }
+
+    validate_swift_constructor_evidence(implementation, diagnostics, &summary);
+    validate_swift_stateful_representation(
+        implementation,
+        diagnostics,
+        module_manifest.as_ref(),
+        &summary,
+    );
 }
 
 fn rust_cargo_manifest_path(manifest: &LoadedManifest, base: &Path, source_root: &Path) -> PathBuf {
@@ -950,7 +1217,7 @@ fn validate_rust_typing(
         return;
     }
 
-    let module_manifest = load_rust_binding_module_manifest(implementation, base);
+    let module_manifest = load_binding_module_manifest(implementation, base);
     let mut summary = RustTypingSummary::default();
 
     for path in rust_source_files(source_root) {
@@ -1545,6 +1812,502 @@ fn public_modules_declared_in_source(source: &str) -> BTreeSet<String> {
     modules
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SwiftImport {
+    module: String,
+    is_public_reexport: bool,
+}
+
+#[derive(Default)]
+struct SwiftTypingSummary {
+    public_types: BTreeSet<String>,
+    private_types: BTreeSet<String>,
+    public_structs_with_private_fields: BTreeSet<String>,
+    public_structs_with_constructors: BTreeSet<String>,
+    functions: BTreeSet<String>,
+}
+
+#[derive(Default)]
+struct SwiftStructScan {
+    name: String,
+    depth: i32,
+    private_fields: usize,
+    public_fields: usize,
+    has_constructor: bool,
+}
+
+fn parse_swift_package_name(source: &str) -> Option<String> {
+    find_keyed_quoted_value(source, "name:")
+}
+
+fn find_keyed_quoted_value(source: &str, key: &str) -> Option<String> {
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        let Some(index) = trimmed.find(key) else {
+            continue;
+        };
+        let after_key = &trimmed[index + key.len()..];
+        let start = after_key.find('"')?;
+        let after_quote = &after_key[start + 1..];
+        let end = after_quote.find('"')?;
+        return Some(after_quote[..end].to_string());
+    }
+    None
+}
+
+fn swift_source_files(source_root: &Path) -> Vec<PathBuf> {
+    WalkDir::new(source_root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .filter(|path| !path_has_component(path, ".build"))
+        .filter(|path| !path_has_component(path, ".git"))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("swift"))
+        .collect()
+}
+
+fn collect_swift_imports(source: &str) -> Vec<SwiftImport> {
+    let mut imports = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+
+        let (rest, is_public_reexport) =
+            if let Some(rest) = trimmed.strip_prefix("@_exported import ") {
+                (rest, true)
+            } else if let Some(rest) = trimmed.strip_prefix("import ") {
+                (rest, false)
+            } else {
+                continue;
+            };
+
+        let rest = strip_swift_import_qualifier(rest.trim_start());
+        let module = rest
+            .split(|character: char| {
+                !(character.is_ascii_alphanumeric() || character == '_' || character == '.')
+            })
+            .next()
+            .unwrap_or_default()
+            .split('.')
+            .next()
+            .unwrap_or_default();
+        if !module.is_empty() {
+            imports.push(SwiftImport {
+                module: module.to_string(),
+                is_public_reexport,
+            });
+        }
+    }
+    imports
+}
+
+fn strip_swift_import_qualifier(value: &str) -> &str {
+    for qualifier in ["class ", "struct ", "enum ", "protocol ", "func ", "var "] {
+        if let Some(rest) = value.strip_prefix(qualifier) {
+            return rest.trim_start();
+        }
+    }
+    value
+}
+
+fn is_swift_standard_module(module: &str) -> bool {
+    matches!(
+        module,
+        "Swift"
+            | "Foundation"
+            | "Dispatch"
+            | "Darwin"
+            | "Glibc"
+            | "UIKit"
+            | "AppKit"
+            | "SwiftUI"
+            | "Combine"
+            | "Observation"
+            | "XCTest"
+    )
+}
+
+fn inspect_swift_typing_file(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    path: &Path,
+    source: &str,
+    summary: &mut SwiftTypingSummary,
+) {
+    let allowed_public_field_structs: BTreeSet<_> = get_string_array(
+        &implementation.value,
+        &["architecture", "allowed_public_field_structs"],
+    )
+    .into_iter()
+    .collect();
+    let allowed_primitive_aliases: BTreeSet<_> = get_string_array(
+        &implementation.value,
+        &["architecture", "allowed_primitive_type_aliases"],
+    )
+    .into_iter()
+    .collect();
+    let allow_traps =
+        get_bool(&implementation.value, &["architecture", "allow_traps"]).unwrap_or(false);
+    let mut current_struct: Option<SwiftStructScan> = None;
+
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+
+        if !allow_traps {
+            for trap in swift_traps_in_line(trimmed) {
+                diagnostics.push(error(
+                    "implementation.swift.typing.failure-discipline",
+                    &implementation.path,
+                    format!(
+                        "Swift source `{}` uses `{trap}` in domain code; prefer explicit result/error types for expected failures",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+
+        if let Some((name, target)) = parse_swift_public_typealias(trimmed) {
+            summary.public_types.insert(name.clone());
+            if is_swift_primitive_type(target) && !allowed_primitive_aliases.contains(name.as_str())
+            {
+                diagnostics.push(error(
+                    "implementation.swift.typing.primitive-alias",
+                    &implementation.path,
+                    format!(
+                        "public typealias `{name}` in `{}` points at a primitive; prefer an opaque value type or declare it in `architecture.allowed_primitive_type_aliases`",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+
+        if let Some(name) = parse_swift_declaration_name(trimmed, "enum") {
+            if has_swift_public_modifier(trimmed) {
+                summary.public_types.insert(name);
+            } else {
+                summary.private_types.insert(name);
+            }
+        }
+        if let Some(name) = parse_swift_function_name(trimmed) {
+            summary.functions.insert(name);
+        }
+
+        if let Some(scan) = current_struct.as_mut() {
+            if is_swift_public_field(trimmed) {
+                scan.public_fields += 1;
+            } else if is_swift_stored_field(trimmed) {
+                scan.private_fields += 1;
+            }
+            if is_swift_constructor_like(trimmed) {
+                scan.has_constructor = true;
+            }
+            scan.depth += swift_brace_delta(trimmed);
+            if scan.depth <= 0 {
+                finish_swift_struct_scan(
+                    implementation,
+                    diagnostics,
+                    path,
+                    &allowed_public_field_structs,
+                    summary,
+                    current_struct.take().unwrap(),
+                );
+            }
+            continue;
+        }
+
+        if let Some(name) = parse_swift_declaration_name(trimmed, "struct") {
+            if has_swift_public_modifier(trimmed) {
+                summary.public_types.insert(name.clone());
+                current_struct = Some(SwiftStructScan {
+                    name,
+                    depth: swift_brace_delta(trimmed).max(1),
+                    private_fields: 0,
+                    public_fields: 0,
+                    has_constructor: false,
+                });
+            } else {
+                summary.private_types.insert(name);
+            }
+        }
+    }
+
+    if let Some(scan) = current_struct {
+        finish_swift_struct_scan(
+            implementation,
+            diagnostics,
+            path,
+            &allowed_public_field_structs,
+            summary,
+            scan,
+        );
+    }
+}
+
+fn finish_swift_struct_scan(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    path: &Path,
+    allowed_public_field_structs: &BTreeSet<String>,
+    summary: &mut SwiftTypingSummary,
+    scan: SwiftStructScan,
+) {
+    if scan.public_fields > 0 && !allowed_public_field_structs.contains(&scan.name) {
+        diagnostics.push(error(
+            "implementation.swift.typing.public-fields",
+            &implementation.path,
+            format!(
+                "public struct `{}` in `{}` exposes {} public field(s); prefer private fields plus validated initializers/accessors or declare it in `architecture.allowed_public_field_structs`",
+                scan.name,
+                path.display(),
+                scan.public_fields
+            ),
+        ));
+    }
+
+    if scan.private_fields > 0 {
+        summary
+            .public_structs_with_private_fields
+            .insert(scan.name.clone());
+    }
+    if scan.has_constructor {
+        summary.public_structs_with_constructors.insert(scan.name);
+    }
+}
+
+fn validate_swift_constructor_evidence(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    summary: &SwiftTypingSummary,
+) {
+    let allowed_missing_constructors: BTreeSet<_> = get_string_array(
+        &implementation.value,
+        &["architecture", "allowed_missing_constructors"],
+    )
+    .into_iter()
+    .collect();
+
+    for struct_name in &summary.public_structs_with_private_fields {
+        if allowed_missing_constructors.contains(struct_name)
+            || summary
+                .public_structs_with_constructors
+                .contains(struct_name)
+        {
+            continue;
+        }
+        diagnostics.push(warning(
+            "implementation.swift.typing.constructor",
+            &implementation.path,
+            format!(
+                "public struct `{struct_name}` has private fields but no public initializer/factory evidence; add `init`, `new`, `parse`, or declare `architecture.allowed_missing_constructors`"
+            ),
+        ));
+    }
+}
+
+fn validate_swift_stateful_representation(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    module_manifest: Option<&LoadedManifest>,
+    summary: &SwiftTypingSummary,
+) {
+    let Some(module_manifest) = module_manifest else {
+        return;
+    };
+    let profiles = get_string_array(&module_manifest.value, &["profiles"]);
+    if !profiles.iter().any(|profile| profile == "stateful") {
+        return;
+    }
+
+    let state_type = get_str(&implementation.value, &["architecture", "state_type"]);
+    let transition_function = get_str(
+        &implementation.value,
+        &["architecture", "transition_function"],
+    );
+
+    if state_type.is_none() && transition_function.is_none() {
+        diagnostics.push(error(
+            "implementation.swift.typing.stateful-representation",
+            &implementation.path,
+            "stateful Swift bindings must declare `architecture.state_type` or `architecture.transition_function`",
+        ));
+        return;
+    }
+
+    if let Some(state_type) = state_type {
+        if !summary.public_types.contains(state_type) && !summary.private_types.contains(state_type)
+        {
+            diagnostics.push(error(
+                "implementation.swift.typing.state-type",
+                &implementation.path,
+                format!(
+                    "declared `architecture.state_type` `{state_type}` was not found in Swift source"
+                ),
+            ));
+        }
+    }
+
+    if let Some(transition_function) = transition_function {
+        if !summary.functions.contains(transition_function) {
+            diagnostics.push(error(
+                "implementation.swift.typing.transition-function",
+                &implementation.path,
+                format!("declared `architecture.transition_function` `{transition_function}` was not found in Swift source"),
+            ));
+        }
+    }
+}
+
+fn parse_swift_public_typealias(line: &str) -> Option<(String, &str)> {
+    if !has_swift_public_modifier(line) {
+        return None;
+    }
+    let rest = strip_swift_modifiers(line);
+    let rest = rest.strip_prefix("typealias ")?;
+    let (name, target) = rest.split_once('=')?;
+    Some((swift_identifier(name.trim())?.to_string(), target.trim()))
+}
+
+fn parse_swift_function_name(line: &str) -> Option<String> {
+    let rest = strip_swift_modifiers(line);
+    let rest = rest.strip_prefix("func ")?;
+    Some(swift_identifier(rest)?.to_string())
+}
+
+fn parse_swift_declaration_name(line: &str, kind: &str) -> Option<String> {
+    let rest = strip_swift_modifiers(line);
+    let rest = rest.strip_prefix(kind)?.trim_start();
+    Some(swift_identifier(rest)?.to_string())
+}
+
+fn strip_swift_modifiers(mut line: &str) -> &str {
+    loop {
+        let trimmed = line.trim_start();
+        let Some((token, rest)) = trimmed.split_once(char::is_whitespace) else {
+            return trimmed;
+        };
+        if matches!(
+            token,
+            "public"
+                | "open"
+                | "internal"
+                | "private"
+                | "fileprivate"
+                | "final"
+                | "static"
+                | "mutating"
+                | "nonmutating"
+        ) {
+            line = rest;
+        } else {
+            return trimmed;
+        }
+    }
+}
+
+fn has_swift_public_modifier(line: &str) -> bool {
+    line.split_whitespace()
+        .take_while(|token| !matches!(*token, "struct" | "enum" | "class" | "typealias" | "func"))
+        .any(|token| matches!(token, "public" | "open"))
+}
+
+fn swift_identifier(value: &str) -> Option<&str> {
+    let identifier = value
+        .trim_start()
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .next()
+        .unwrap_or_default();
+    if identifier.is_empty() {
+        None
+    } else {
+        Some(identifier)
+    }
+}
+
+fn is_swift_public_field(line: &str) -> bool {
+    let rest = strip_swift_modifiers(line);
+    has_swift_public_modifier(line)
+        && (rest.starts_with("let ") || rest.starts_with("var "))
+        && !line.contains('{')
+}
+
+fn is_swift_stored_field(line: &str) -> bool {
+    let rest = strip_swift_modifiers(line);
+    (rest.starts_with("let ") || rest.starts_with("var ")) && !line.contains('{')
+}
+
+fn is_swift_constructor_like(line: &str) -> bool {
+    let rest = strip_swift_modifiers(line);
+    has_swift_public_modifier(line)
+        && (rest.starts_with("init(")
+            || rest.starts_with("init?")
+            || rest.starts_with("init!")
+            || rest.starts_with("static func new(")
+            || rest.starts_with("static func parse(")
+            || rest.starts_with("static func from"))
+}
+
+fn swift_brace_delta(line: &str) -> i32 {
+    let open = line.chars().filter(|character| *character == '{').count() as i32;
+    let close = line.chars().filter(|character| *character == '}').count() as i32;
+    open - close
+}
+
+fn swift_traps_in_line(line: &str) -> Vec<&'static str> {
+    let mut traps = Vec::new();
+    if line.contains("fatalError(") {
+        traps.push("fatalError");
+    }
+    if line.contains("preconditionFailure(") {
+        traps.push("preconditionFailure");
+    }
+    if line.contains("try!") {
+        traps.push("try!");
+    }
+    if line.contains("as!") {
+        traps.push("as!");
+    }
+    traps
+}
+
+fn is_swift_primitive_type(value: &str) -> bool {
+    let Some(name) = swift_identifier(value.trim_start_matches('[').trim_start()) else {
+        return false;
+    };
+    matches!(
+        name,
+        "String"
+            | "Substring"
+            | "Bool"
+            | "Character"
+            | "Int"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "UInt"
+            | "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "Float"
+            | "Double"
+            | "Decimal"
+            | "Date"
+            | "UUID"
+            | "Data"
+    )
+}
+
 fn load_toml(path: &Path) -> Result<TomlValue> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read TOML `{}`", path.display()))?;
@@ -1563,7 +2326,7 @@ fn display_relative(base: &Path, path: &Path) -> String {
         .to_string()
 }
 
-fn load_rust_binding_module_manifest(
+fn load_binding_module_manifest(
     implementation: &LoadedManifest,
     base: &Path,
 ) -> Option<LoadedManifest> {
@@ -2512,6 +3275,7 @@ fn run_add_module(
     if let Some(binding) = binding {
         match binding {
             "rust" => scaffold_rust_module(path, name)?,
+            "swift" => scaffold_swift_module(path, name)?,
             other => bail!("unsupported scaffold binding `{other}`"),
         }
     }
@@ -2534,6 +3298,36 @@ fn scaffold_rust_module(path: &Path, name: &str) -> Result<()> {
     write_new_file(
         &path.join("src").join("lib.rs"),
         "pub fn module_name() -> &'static str {\n    env!(\"CARGO_PKG_NAME\")\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn exposes_module_name() {\n        assert_eq!(super::module_name(), env!(\"CARGO_PKG_NAME\"));\n    }\n}\n",
+    )?;
+    Ok(())
+}
+
+fn scaffold_swift_module(path: &Path, name: &str) -> Result<()> {
+    let package_name = sanitize_swift_package_name(name);
+    let target_name = sanitize_swift_target_name(name);
+    fs::create_dir_all(path.join("Sources").join(&target_name))?;
+    fs::create_dir_all(path.join("Tests").join(format!("{target_name}Tests")))?;
+    write_new_file(
+        &path.join("implementation.yaml"),
+        &render_swift_implementation_yaml(name, &package_name, &target_name),
+    )?;
+    write_new_file(
+        &path.join("Package.swift"),
+        &render_swift_package_swift(&package_name, &target_name),
+    )?;
+    write_new_file(
+        &path
+            .join("Sources")
+            .join(&target_name)
+            .join(format!("{target_name}.swift")),
+        &render_swift_source(&target_name),
+    )?;
+    write_new_file(
+        &path
+            .join("Tests")
+            .join(format!("{target_name}Tests"))
+            .join(format!("{target_name}Tests.swift")),
+        &render_swift_tests(&target_name),
     )?;
     Ok(())
 }
@@ -2594,6 +3388,41 @@ fn render_rust_cargo_toml(package_name: &str) -> String {
     )
 }
 
+fn render_swift_implementation_yaml(
+    module_name: &str,
+    package_name: &str,
+    target_name: &str,
+) -> String {
+    let source_root = format!("Sources/{target_name}");
+    let public_entrypoint = format!("Sources/{target_name}/{target_name}.swift");
+    format!(
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  public_modules: []\n",
+        yaml_quote(module_name),
+        yaml_quote(&source_root),
+        yaml_quote(&public_entrypoint),
+        yaml_quote(package_name),
+        yaml_quote(target_name),
+    )
+}
+
+fn render_swift_package_swift(package_name: &str, target_name: &str) -> String {
+    format!(
+        "// swift-tools-version: 5.9\nimport PackageDescription\n\nlet package = Package(\n    name: \"{package_name}\",\n    products: [\n        .library(name: \"{target_name}\", targets: [\"{target_name}\"])\n    ],\n    targets: [\n        .target(name: \"{target_name}\"),\n        .testTarget(name: \"{target_name}Tests\", dependencies: [\"{target_name}\"])\n    ]\n)\n"
+    )
+}
+
+fn render_swift_source(target_name: &str) -> String {
+    format!(
+        "import Foundation\n\npublic struct {target_name}Value: Equatable {{\n    private let rawValue: String\n\n    public init?(_ rawValue: String) {{\n        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)\n        guard !trimmed.isEmpty else {{ return nil }}\n        self.rawValue = trimmed\n    }}\n\n    public var value: String {{ rawValue }}\n}}\n"
+    )
+}
+
+fn render_swift_tests(target_name: &str) -> String {
+    format!(
+        "import XCTest\n@testable import {target_name}\n\nfinal class {target_name}Tests: XCTestCase {{\n    func testRejectsEmptyValue() {{\n        XCTAssertNil({target_name}Value(\"\"))\n    }}\n\n    func testAcceptsNonEmptyValue() {{\n        XCTAssertEqual({target_name}Value(\"example\")?.value, \"example\")\n    }}\n}}\n"
+    )
+}
+
 fn yaml_string_list(values: &[String], indent: usize) -> String {
     let prefix = " ".repeat(indent);
     values
@@ -2624,6 +3453,35 @@ fn sanitize_rust_package_name(name: &str) -> String {
         "rms-module".to_string()
     } else {
         trimmed
+    }
+}
+
+fn sanitize_swift_package_name(name: &str) -> String {
+    sanitize_rust_package_name(name)
+}
+
+fn sanitize_swift_target_name(name: &str) -> String {
+    let mut output = String::new();
+    let mut capitalize_next = true;
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            if output.is_empty() && character.is_ascii_digit() {
+                output.push_str("Rms");
+            }
+            if capitalize_next {
+                output.extend(character.to_uppercase());
+                capitalize_next = false;
+            } else {
+                output.push(character);
+            }
+        } else {
+            capitalize_next = true;
+        }
+    }
+    if output.is_empty() {
+        "RmsModule".to_string()
+    } else {
+        output
     }
 }
 
@@ -3120,6 +3978,27 @@ pub use external_crate::Thing;
     }
 
     #[test]
+    fn parses_swift_imports_and_public_reexports() {
+        let imports = collect_swift_imports(
+            r#"
+import Foundation
+import struct ExternalKit.Widget
+@_exported import PublicKit
+"#,
+        );
+
+        assert!(imports
+            .iter()
+            .any(|import| import.module == "Foundation" && !import.is_public_reexport));
+        assert!(imports
+            .iter()
+            .any(|import| import.module == "ExternalKit" && !import.is_public_reexport));
+        assert!(imports
+            .iter()
+            .any(|import| import.module == "PublicKit" && import.is_public_reexport));
+    }
+
+    #[test]
     fn detects_path_components_for_source_exclusions() {
         assert!(path_has_component(
             Path::new("crate/target/debug/out.rs"),
@@ -3162,6 +4041,30 @@ pub use external_crate::Thing;
             "library",
             &[],
             Some("rust"),
+        )
+        .unwrap();
+
+        let mut diagnostics = Vec::new();
+        for file in ["module.yaml", "implementation.yaml"] {
+            let manifest = load_manifest(&root.join(file)).unwrap();
+            validate_loaded_manifest(&manifest, &mut diagnostics);
+        }
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn swift_module_scaffold_generates_valid_binding_artifacts() {
+        let root = unique_test_dir("swift-module");
+
+        run_add_module(
+            &root,
+            "example-swift",
+            "Demonstrate Swift module scaffolding.",
+            "library",
+            &[],
+            Some("swift"),
         )
         .unwrap();
 
@@ -3259,6 +4162,94 @@ pub use external_crate::Thing;
             !diagnostics.iter().any(|diagnostic| diagnostic
                 .check
                 .starts_with("implementation.rust.typing.state")),
+            "{diagnostics:#?}"
+        );
+    }
+
+    #[test]
+    fn swift_typing_rejects_public_primitive_aliases() {
+        let root = swift_typing_fixture(
+            "swift-primitive-alias",
+            &["core"],
+            "",
+            "public typealias WidgetId = String\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "implementation.swift.typing.primitive-alias"));
+    }
+
+    #[test]
+    fn swift_typing_rejects_public_domain_fields() {
+        let root = swift_typing_fixture(
+            "swift-public-fields",
+            &["core"],
+            "",
+            "public struct Widget {\n    public let name: String\n}\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "implementation.swift.typing.public-fields"));
+    }
+
+    #[test]
+    fn swift_typing_rejects_traps_in_domain_code() {
+        let root = swift_typing_fixture(
+            "swift-traps",
+            &["core"],
+            "",
+            "public func parseWidget(_ value: String?) -> String {\n    guard let value else { fatalError(\"missing\") }\n    return value\n}\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "implementation.swift.typing.failure-discipline"
+        }));
+    }
+
+    #[test]
+    fn swift_typing_requires_stateful_representation_declaration() {
+        let root = swift_typing_fixture(
+            "swift-stateful-representation",
+            &["core", "stateful"],
+            "",
+            "public enum WidgetState {\n    case draft\n    case active\n}\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "implementation.swift.typing.stateful-representation"
+        }));
+    }
+
+    #[test]
+    fn swift_typing_accepts_declared_stateful_representation() {
+        let root = swift_typing_fixture(
+            "swift-stateful-ok",
+            &["core", "stateful"],
+            "  state_type: WidgetState\n  transition_function: transitionWidget\n",
+            "public enum WidgetState {\n    case draft\n    case active\n}\n\npublic func transitionWidget(_ state: WidgetState) -> WidgetState {\n    state\n}\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            !diagnostics.iter().any(|diagnostic| diagnostic
+                .check
+                .starts_with("implementation.swift.typing.state")),
             "{diagnostics:#?}"
         );
     }
@@ -3507,6 +4498,46 @@ verification:
             root.join("implementation.yaml"),
             format!(
                 "spec: rms/implementation/v0.1\n\nmodule: typing-fixture\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: typing-fixture\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  public_modules: []\n{architecture_extra}"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            format!(
+                "spec: rms/module/v0.1\n\nmodule:\n  name: typing-fixture\n  version: 0.1.0\n  kind: library\n  purpose: Test typing fixture\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\nstate:\n  model: docs/state.md\n  consistency_boundary: fixture\n  concurrency: single-threaded\n  migration_policy: none\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts: []\n  scenarios: []\n  boundaries: []\n",
+                profiles
+                    .iter()
+                    .map(|profile| format!("  - {profile}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        )
+        .unwrap();
+        root
+    }
+
+    fn swift_typing_fixture(
+        label: &str,
+        profiles: &[&str],
+        architecture_extra: &str,
+        source: &str,
+    ) -> PathBuf {
+        let root = unique_test_dir(label);
+        fs::create_dir_all(root.join("Sources/TypingFixture")).unwrap();
+        fs::write(
+            root.join("Package.swift"),
+            "// swift-tools-version: 5.9\nimport PackageDescription\n\nlet package = Package(\n    name: \"typing-fixture\",\n    targets: [.target(name: \"TypingFixture\")]\n)\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Sources/TypingFixture/TypingFixture.swift"),
+            source,
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            format!(
+                "spec: rms/implementation/v0.1\n\nmodule: typing-fixture\nbinding: swift\n\nsource:\n  root: Sources/TypingFixture\n  public_entrypoint: Sources/TypingFixture/TypingFixture.swift\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: typing-fixture\n  target: TypingFixture\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  public_modules: []\n{architecture_extra}"
             ),
         )
         .unwrap();

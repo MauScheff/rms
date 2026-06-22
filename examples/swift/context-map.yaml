@@ -1,0 +1,8 @@
+spec: rms/context-map/v0.1
+
+contexts:
+  swift-example:
+    publishes: []
+    consumes: []
+
+relationships: []

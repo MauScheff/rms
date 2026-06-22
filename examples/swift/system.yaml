@@ -1,0 +1,23 @@
+spec: rms/system/v0.1
+
+system:
+  name: swift-example-system
+  version: 0.1.0
+  purpose: Demonstrate an RMS Swift implementation binding
+
+contexts:
+  - swift-example
+
+public_interfaces: []
+external_dependencies: []
+workflows: []
+
+invariants:
+  - id: accepted-swift-widget-has-name
+    statement: Every accepted Swift widget has a non-empty name.
+
+compatibility:
+  policy: backward-compatible-within-major
+
+glossary: GLOSSARY.md
+context_map: context-map.yaml
