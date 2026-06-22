@@ -22,6 +22,7 @@ description: Implement a feature, fix, or refactor in an RMS project while prese
    - use opaque types and validated constructors for values with validity rules;
    - use explicit result types for expected domain failures;
    - use schemas and validators at untrusted or versioned boundaries;
+   - use query/projector-produced read models for derived facts; if such public types have private fields and no public constructor, declare them in `architecture.allowed_missing_constructors` and add evidence for the producing query/projector;
    - use a state model or transition function only when behavior depends on lifecycle order.
 8. When a change touches lifecycle behavior, update the declared state model before implementation and make illegal transitions rejected or unrepresentable.
 9. Keep decisions separate from external effects where practical.

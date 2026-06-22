@@ -24,6 +24,7 @@ description: Design and add a new RMS module or bounded context with a coherent 
    - values with validity rules: opaque types, validated constructors, or smart constructors;
    - expected domain failures: explicit result types rather than ambient exceptions;
    - untrusted or versioned input: runtime schemas and boundary validators;
+   - query/projector output: read models or result structs may omit public constructors only when the implementation binding declares `architecture.allowed_missing_constructors` and evidence names the producing query/projector;
    - lifecycle/order-dependent behavior: a state model, transition table, or state machine.
 8. Do not introduce a state machine only because a record has a status field. Use one when legal commands, facts, or invariants depend on lifecycle order.
 9. Define the consistency boundary, lifecycle, legal transitions, concurrency, persistence, and migration only if the Stateful profile applies. Illegal transitions must be rejected or made unrepresentable.

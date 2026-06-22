@@ -28,6 +28,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
    - values with validity rules: opaque types, validated constructors, or smart constructors;
    - expected domain failures: explicit result types;
    - untrusted or versioned input: schemas and boundary validators;
+   - query/projector-produced read models: private fields without public constructors only when `architecture.allowed_missing_constructors` and evidence name the producing query/projector;
    - lifecycle/order-dependent behavior: state model, transition table, or transition function.
 6. Do not add a state machine merely because a record has a status field. Use one only when legal behavior depends on lifecycle or order.
 7. Keep domain decisions separate from effects where practical. Move IO, clocks, randomness, storage, network, and vendor calls behind declared effects or capabilities.

@@ -6032,7 +6032,7 @@ fn validate_rust_constructor_evidence(
                 "implementation.rust.typing.constructor",
                 &implementation.path,
                 format!(
-                    "public struct `{struct_name}` has private fields but no public constructor evidence; add `new`/`try_new`/`parse` or declare `architecture.allowed_missing_constructors`"
+                    "public struct `{struct_name}` has private fields but no public constructor evidence; add `new`/`try_new`/`parse`, or if it is produced only by a query/projector declare `architecture.allowed_missing_constructors` and evidence the producer"
                 ),
             ));
             continue;
@@ -6042,7 +6042,7 @@ fn validate_rust_constructor_evidence(
                 "implementation.rust.typing.constructor",
                 &implementation.path,
                 format!(
-                    "public struct `{struct_name}` has private fields but no constructor-like method (`new`, `try_new`, `parse`, `from_*`); add one or declare `architecture.allowed_missing_constructors`"
+                    "public struct `{struct_name}` has private fields but no constructor-like method (`new`, `try_new`, `parse`, `from_*`); add one, or if it is produced only by a query/projector declare `architecture.allowed_missing_constructors` and evidence the producer"
                 ),
             ));
         }
@@ -6788,7 +6788,7 @@ fn validate_swift_constructor_evidence(
             "implementation.swift.typing.constructor",
             &implementation.path,
             format!(
-                "public struct `{struct_name}` has private fields but no public initializer/factory evidence; add `init`, `new`, `parse`, or declare `architecture.allowed_missing_constructors`"
+                "public struct `{struct_name}` has private fields but no public initializer/factory evidence; add `init`, `new`, `parse`, or if it is produced only by a query/projector declare `architecture.allowed_missing_constructors` and evidence the producer"
             ),
         ));
     }
@@ -12456,7 +12456,7 @@ fn render_module_readme(
     };
 
     format!(
-        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs or illegal transitions when applicable.\n5. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms verify implementation.yaml` when an implementation binding exists.\n\n## Agent Workflow\n\nUse `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms evolve-contract module.yaml --task \"<task>\"` when public meaning changes, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
+        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Representation Decisions\n\n- Public domain values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs or illegal transitions when applicable.\n5. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms verify implementation.yaml` when an implementation binding exists.\n\n## Agent Workflow\n\nUse `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms evolve-contract module.yaml --task \"<task>\"` when public meaning changes, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
         markdown_inline(name),
         markdown_inline(purpose),
         markdown_inline(kind),
@@ -13567,6 +13567,9 @@ import struct ExternalKit.Widget
         assert!(readme.contains(&format!("# {name}")));
         assert!(readme.contains(purpose));
         assert!(readme.contains(&format!("Implementation binding: `{binding}`")));
+        assert!(readme.contains("## Representation Decisions"));
+        assert!(readme.contains("query/projector"));
+        assert!(readme.contains("architecture.allowed_missing_constructors"));
         assert!(readme.contains("`module.yaml` is the source of module ownership"));
         assert!(readme.contains("Use `rms explain module.yaml`"));
         assert!(contracts.contains("Place public RMS contract files here"));

@@ -25,6 +25,7 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - values with validity rules cannot be constructed invalidly except through rejected boundary input;
    - expected domain failures are represented explicitly enough for callers to handle;
    - untrusted or versioned input is validated before domain entry;
+   - public read models or result structs without public constructors are declared in `architecture.allowed_missing_constructors` only when they are produced by a named query/projector with evidence;
    - lifecycle/order-dependent behavior has a state model, transition table, or transition function.
 9. Check negative cases. Verification should reject or make unrepresentable impossible variants, invalid constructors, malformed boundary input, and illegal state transitions.
 10. Check all declared profile obligations:

@@ -4,7 +4,7 @@ Covered by `cargo test --manifest-path Cargo.toml`, including deterministic scaf
 
 Executable coverage:
 
-- `rust_module_scaffold_generates_valid_binding_artifacts` verifies generated Rust `module.yaml` and `implementation.yaml` validate, the module README records the requested purpose and Rust binding, and generated contract/evidence guidance routes future work through public contracts and declared verification.
+- `rust_module_scaffold_generates_valid_binding_artifacts` verifies generated Rust `module.yaml` and `implementation.yaml` validate, the module README records the requested purpose and Rust binding, and generated guidance routes future work through public contracts, declared verification, constructor-backed domain values, and query-produced read-model exceptions.
 - `swift_module_scaffold_generates_valid_binding_artifacts` verifies the same scaffold guarantees for the Swift binding.
 - `rms release check --root .` runs a scaffold roundtrip that initializes a new RMS system, adds Rust and Swift modules, validates and composes the scaffold, and verifies the generated Rust binding.
 

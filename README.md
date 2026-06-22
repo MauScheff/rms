@@ -338,9 +338,9 @@ The Rust CLI is intentionally small but usable. It provides the first enforcemen
 
 The CLI is itself an RMS module bundle under `tooling/rust/rms/`: it has a `module.yaml`, published command contracts, an `implementation.yaml`, and evidence paths. This keeps the workbench subject to the same manifest, contract, effect, and verification discipline it asks projects to adopt.
 
-The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, Stateful representation declarations, and semantic function source symbols.
+The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, query-produced read-model exceptions, Stateful representation declarations, and semantic function source symbols.
 
-Swift is the second binding. It validates Swift package shape, target identity, source entrypoints, import allowlists, public re-exports, primitive type aliases, public stored fields, trap-based failure discipline, constructor evidence, and Stateful representation declarations.
+Swift is the second binding. It validates Swift package shape, target identity, source entrypoints, import allowlists, public re-exports, primitive type aliases, public stored fields, trap-based failure discipline, constructor evidence, query-produced read-model exceptions, and Stateful representation declarations.
 
 RMS should not be called 1.0 until it has survived a real reference application, a replacement or migration exercise, and at least one codebase primarily maintained through agents.
 

@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added `rms --version` for quick installed CLI version checks.
+- Clarified generated module and skill guidance for query-produced read models that intentionally use `architecture.allowed_missing_constructors`.
 
 ## 0.1.0-rc.3 - 2026-06-22
 
