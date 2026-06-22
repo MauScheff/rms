@@ -16,8 +16,13 @@ public_interfaces:
     contract: contracts/commerce-api.v1.yaml
 
 external_dependencies:
+  - durable-scheduler
+  - durable-store
   - payment-provider
+  - release-inventory
   - shipping-carrier
+  - reserve-inventory
+  - submit-order
 
 workflows:
   - checkout

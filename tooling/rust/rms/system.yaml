@@ -1,0 +1,27 @@
+spec: rms/system/v0.1
+
+system:
+  name: rms-workbench
+  version: 0.1.0-rc.1
+  purpose: Provide the RMS command-line workbench as a host-integrated tool.
+
+contexts:
+  - rms-workbench
+
+public_interfaces: []
+
+external_dependencies:
+  - filesystem
+  - git-revision-provider
+  - process-runner
+
+workflows: []
+
+invariants:
+  - id: host-capabilities-remain-explicit
+    statement: Repository file access, process execution, and git revision access are host capabilities required by the RMS CLI, not hidden module semantics.
+
+compatibility:
+  policy: backward-compatible-within-major
+
+context_map: context-map.yaml

@@ -62,8 +62,15 @@ invariants:
     verified_by: verification/laws/refund_within_capture
 
 effects:
+  - name: durable-store
+    kind: durable-storage
+    capability: durable-store
+    semantics:
+      consistency: per-payment
+      migration: versioned
   - name: payment-provider
     kind: external-financial-operation
+    capability: payment-provider
     semantics:
       idempotency: payment-operation-id
       ordering: per-payment

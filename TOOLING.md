@@ -304,6 +304,8 @@ Operationally incompatible change
 
 Checks whether declared requirements can be satisfied by available providers, including contract versions, operational semantics, service constraints, allowed effects, and forbidden dependency cycles.
 
+When a repository root contains multiple RMS systems, compose treats the discovered system manifests as one review universe and unions their declared `external_dependencies` before checking required capabilities. A module still needs a matching effect declaration for each external capability it requires.
+
 ### `package`
 
 Assembles a portable module package directory from the canonical manifest, referenced contracts and evidence, sibling implementation binding when present, generated conformance report, and `PACKAGE.json` metadata with source revision, validator identity, included files, sizes, and SHA-256 checksums. The resulting directory may be archived or used as an input to another registry or artifact system.

@@ -7452,10 +7452,30 @@ struct AtlasTraceStep {
     role: &'static str,
     title: String,
     body: String,
+    reading: AtlasTraceReading,
     node_ids: Vec<String>,
     edge_ids: Vec<String>,
     confidence: &'static str,
     source_refs: Vec<AtlasSourceRef>,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasTraceReading {
+    promise: String,
+    before: String,
+    after: String,
+    failure: String,
+    evidence: String,
+    impact: String,
+    justification: Vec<AtlasJustificationStep>,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasJustificationStep {
+    node_id: String,
+    label: String,
+    role: String,
+    detail: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -9076,15 +9096,116 @@ fn atlas_trace_step(
     edges: &[AtlasEdge],
 ) -> AtlasTraceStep {
     let node_ids = atlas_node_ids(nodes);
+    let body = body.into();
     AtlasTraceStep {
         id: id.to_string(),
         role,
         title: title.to_string(),
-        body: body.into(),
+        body: body.clone(),
+        reading: atlas_trace_reading(role, title, &body, nodes, confidence),
         edge_ids: atlas_trace_edge_ids(edges, &node_ids),
         node_ids,
         confidence,
         source_refs: collect_atlas_source_refs(nodes),
+    }
+}
+
+fn atlas_trace_reading(
+    role: &str,
+    title: &str,
+    body: &str,
+    nodes: &[&AtlasNode],
+    confidence: &str,
+) -> AtlasTraceReading {
+    let labels = atlas_label_list(nodes);
+    let evidence = if nodes.is_empty() {
+        "No concrete artifact node is attached to this step.".to_string()
+    } else {
+        format!("Derived from {}.", labels)
+    };
+    let confidence_note = match confidence {
+        "direct" => "The join is direct in the manifest or referenced artifact.",
+        "inferred" => "The join is inferred from matching declared semantic language.",
+        "module-level" => "The join is module-level evidence, not a specific trace link.",
+        _ => "The join is derived from available atlas evidence.",
+    };
+
+    AtlasTraceReading {
+        promise: format!("{title}: {body}"),
+        before: atlas_trace_before(role).to_string(),
+        after: atlas_trace_after(role).to_string(),
+        failure: atlas_trace_failure(role).to_string(),
+        evidence: format!("{evidence} {confidence_note}"),
+        impact: atlas_trace_impact(role).to_string(),
+        justification: nodes
+            .iter()
+            .map(|node| AtlasJustificationStep {
+                node_id: node.id.clone(),
+                label: node.label.clone(),
+                role: node.kind.clone(),
+                detail: node.summary.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn atlas_trace_before(role: &str) -> &'static str {
+    match role {
+        "entry" => "A caller or reader enters through a declared public surface.",
+        "boundary" => "Input is still outside the trusted module boundary.",
+        "rule" => "The module must preserve its declared law or invariant.",
+        "state" => "The behavior may depend on lifecycle, ordering, or stored state.",
+        "effect" => "The module is about to rely on an external capability or side effect.",
+        "outcome" => "The public result or event has not yet been emitted.",
+        "operate" => "Runtime truth may diverge and require operational recovery.",
+        "proof" => "The promise still needs evidence.",
+        "compatibility" => "Consumers may already depend on the public meaning.",
+        _ => "The trace is at an intermediate semantic step.",
+    }
+}
+
+fn atlas_trace_after(role: &str) -> &'static str {
+    match role {
+        "entry" => "The request follows the module's declared semantic path.",
+        "boundary" => "Only validated, accepted meaning should enter domain behavior.",
+        "rule" => "Accepted behavior remains inside the module's protected promise.",
+        "state" => "The next state must remain legal for the declared lifecycle.",
+        "effect" => "External truth must be reconciled through declared semantics.",
+        "outcome" => "Consumers observe the declared public result.",
+        "operate" => "Operators have declared checks, reconciliation, or runbooks.",
+        "proof" => "Evidence can be used to review or verify the promise.",
+        "compatibility" => "The change is assessed against the declared evolution policy.",
+        _ => "The trace continues through derived module evidence.",
+    }
+}
+
+fn atlas_trace_failure(role: &str) -> &'static str {
+    match role {
+        "entry" => "Changing the entrypoint can change public meaning.",
+        "boundary" => "Missing boundary evidence can let invalid or untrusted input masquerade as domain fact.",
+        "rule" => "Weakening the rule can make illegal behavior representable.",
+        "state" => "Missing state evidence can hide illegal transitions or migration risk.",
+        "effect" => "Undeclared effects make recovery and dependency review unreliable.",
+        "outcome" => "Outcome drift can break consumers even when internals still compile.",
+        "operate" => "Without operations evidence, runtime divergence is harder to debug.",
+        "proof" => "Without proof, the promise is asserted rather than demonstrated.",
+        "compatibility" => "Compatibility drift can break existing consumers or stored state.",
+        _ => "A weak trace link can hide RMS drift.",
+    }
+}
+
+fn atlas_trace_impact(role: &str) -> &'static str {
+    match role {
+        "entry" => "Review public contract compatibility.",
+        "boundary" => "Review validation and trust assumptions.",
+        "rule" => "Review invariants and law evidence.",
+        "state" => "Review lifecycle, concurrency, and migration promises.",
+        "effect" => "Review declared dependencies, effects, and recovery paths.",
+        "outcome" => "Review commands, queries, events, and consumer expectations.",
+        "operate" => "Review observability, reconciliation, and runbooks.",
+        "proof" => "Review whether evidence still proves the promise.",
+        "compatibility" => "Classify the change before release.",
+        _ => "Review this derived semantic link.",
     }
 }
 
@@ -10697,10 +10818,8 @@ fn compose_system(root: &Path) -> Result<ComposeReport> {
 
     let context_map = context_maps.first();
     let external_dependencies = systems
-        .first()
-        .map(|system| get_string_array(&system.value, &["external_dependencies"]))
-        .unwrap_or_default()
-        .into_iter()
+        .iter()
+        .flat_map(|system| get_string_array(&system.value, &["external_dependencies"]))
         .collect::<BTreeSet<_>>();
     let provided_requirements = provided_requirement_index(&modules);
 
@@ -13038,6 +13157,37 @@ verification:
         assert!(report.findings.iter().any(|finding| {
             finding.status == ComposeStatus::Unresolved
                 && finding.check == "requires.capabilities.provider"
+        }));
+    }
+
+    #[test]
+    fn compose_unions_external_dependencies_from_discovered_systems() {
+        let root = unique_test_dir("compose-external-union");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("alpha.system.yaml"),
+            "spec: rms/system/v0.1\n\nsystem:\n  name: alpha\n  version: 0.1.0\n  purpose: First system\n\ncontexts: []\npublic_interfaces: []\nexternal_dependencies: []\nworkflows: []\ninvariants: []\ncompatibility:\n  policy: backward-compatible-within-major\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("beta.system.yaml"),
+            "spec: rms/system/v0.1\n\nsystem:\n  name: beta\n  version: 0.1.0\n  purpose: Second system\n\ncontexts: []\npublic_interfaces: []\nexternal_dependencies:\n  - send-email\nworkflows: []\ninvariants: []\ncompatibility:\n  policy: backward-compatible-within-major\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("consumer.module.yaml"),
+            "spec: rms/module/v0.1\n\nmodule:\n  name: consumer\n  version: 0.1.0\n  kind: library\n  purpose: Test composition\n\nprofiles:\n  - core\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\nrequires:\n  modules: []\n  capabilities:\n    - name: send-email\n      contract: contracts/send-email.yaml\ninvariants: []\n\neffects:\n  - name: send-email\n    kind: external-message\n    capability: send-email\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts: []\n  scenarios: []\n  boundaries: []\n",
+        )
+        .unwrap();
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Pass);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::Satisfied
+                && finding.check == "requires.capabilities.external"
+                && finding.requirement.as_deref() == Some("send-email")
         }));
     }
 

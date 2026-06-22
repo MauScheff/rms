@@ -1,0 +1,11 @@
+spec: rms/context-map/v0.1
+
+contexts:
+  rms-workbench:
+    publishes: []
+    consumes:
+      - filesystem
+      - git-revision-provider
+      - process-runner
+
+relationships: []

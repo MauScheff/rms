@@ -61,8 +61,42 @@ invariants:
     verified_by: verification/scenarios/payment_failure_releases_inventory
 
 effects:
-  - name: module-commands
+  - name: submit-order
+    kind: external-command
+    capability: submit-order
+    semantics:
+      idempotency: checkout-step-id
+      ordering: per-checkout
+      consistency: eventual
+      timeout: pending-until-deadline
+      retry: bounded-with-same-step-id
+      compensation: workflow-specific
+      reconciliation: required
+  - name: reserve-inventory
+    kind: external-command
+    capability: reserve-inventory
+    semantics:
+      idempotency: checkout-step-id
+      ordering: per-checkout
+      consistency: eventual
+      timeout: pending-until-deadline
+      retry: bounded-with-same-step-id
+      compensation: release-inventory
+      reconciliation: required
+  - name: release-inventory
+    kind: external-command
+    capability: release-inventory
+    semantics:
+      idempotency: checkout-step-id
+      ordering: per-checkout
+      consistency: eventual
+      timeout: pending-until-deadline
+      retry: bounded-with-same-step-id
+      compensation: none
+      reconciliation: required
+  - name: durable-scheduler
     kind: durable-messaging
+    capability: durable-scheduler
     semantics:
       idempotency: checkout-step-id
       ordering: per-checkout

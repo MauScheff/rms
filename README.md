@@ -107,6 +107,7 @@ rms validate --root examples/swift
 Check whether discovered modules compose through declared public requirements:
 
 ```bash
+rms compose --root .
 rms compose --root examples/minimal
 ```
 
