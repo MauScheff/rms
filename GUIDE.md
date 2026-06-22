@@ -295,6 +295,22 @@ Use this decision rule:
 
 Each representation should have negative evidence: impossible variants, invalid constructors, malformed input, and illegal transitions should be rejected or made unrepresentable.
 
+### Put assumptions at the smallest honest boundary
+
+Do not scatter important assumptions through comments. Give each assumption an owner:
+
+| Assumption kind | Preferred home |
+|---|---|
+| Raw input shape | Boundary schema or parser |
+| Value validity | Opaque value plus validated constructor |
+| Contextual call requirement | Function precondition |
+| Always-true module property | Module invariant |
+| Consumer-visible promise | Public contract |
+| Lifecycle/order rule | State model or transition function |
+| External reality can diverge | Effect semantics and recovery path |
+
+Implementation bindings may declare semantic functions to connect these assumptions to source symbols, native annotations, and verification evidence. Annotate functions that carry meaning across a boundary or enforce an important law; do not annotate every helper.
+
 ### Use state machines where time matters
 
 Not every record needs a state machine. Use one when legal behavior depends on lifecycle or order.
@@ -326,7 +342,7 @@ Interpret: effect request -> external result
 Project: fact -> read model
 ```
 
-The exact functions are optional. The separation is the important part.
+The exact functions are optional. The separation is the important part. When these functions are declared in an implementation binding, RMS calls them semantic functions: constructors, parsers, decisions, transitions, projectors, adapters, or interpreters that discharge part of a module's declared meaning.
 
 Effects include:
 

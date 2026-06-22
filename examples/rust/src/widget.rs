@@ -20,9 +20,13 @@ impl Widget {
     }
 }
 
+pub fn describe_widget(widget: &Widget) -> &str {
+    widget.name()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Widget;
+    use super::{describe_widget, Widget};
 
     #[test]
     fn rejects_empty_name() {
@@ -35,5 +39,11 @@ mod tests {
 
         assert_eq!(widget.name(), "example");
     }
-}
 
+    #[test]
+    fn describes_widget_by_name() {
+        let widget = Widget::new("example").expect("valid widget");
+
+        assert_eq!(describe_widget(&widget), "example");
+    }
+}

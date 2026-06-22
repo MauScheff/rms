@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added `rms package` portable module package directories with conformance reports and SHA-256 file checksums.
+- Added contract schema validation with structured preconditions and postconditions.
+- Added implementation `semantic_functions` for mapping source symbols to contracts, invariants, assumptions, and evidence.
+- Added Rust validation for semantic function source symbols.
 - Added the `prune-module` skill and semantic-residue guidance for continuously removing unneeded artifacts.
 - Added `rms compose` manifest-level module composition checks.
 - Added Swift binding scaffolding, validation checks, and `examples/swift`.

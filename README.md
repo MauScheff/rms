@@ -21,7 +21,7 @@ RMS makes those promises explicit without requiring a framework, language, deplo
 ## What You Get
 
 - A canonical specification for modules, bounded contexts, contracts, effects, profiles, compatibility, and conformance.
-- YAML manifests for systems, context maps, modules, implementations, and conformance reports.
+- YAML manifests for systems, context maps, modules, contracts, implementations, and conformance reports.
 - Agent skills for inspecting modules, implementing changes, pruning semantic residue, adding modules, evolving contracts, composing modules, and verifying conformance.
 - A Rust reference CLI for validation, inspection, context packets, and conformance evidence.
 - Thin Codex and Claude integration guidance that adapts the same semantic model instead of creating agent-specific architecture.
@@ -113,6 +113,12 @@ Classify manifest compatibility:
 rms check-compat old/module.yaml new/module.yaml
 ```
 
+Package a module for sharing:
+
+```bash
+rms package examples/rust/module.yaml --output dist/rust-example.rms
+```
+
 ## Adopt RMS In A Project
 
 Start with one boundary. Do not model every folder.
@@ -121,8 +127,8 @@ Start with one boundary. Do not model every folder.
 2. Identify one domain boundary with real ownership, invariants, or replaceability pressure.
 3. Add `system.yaml`, `context-map.yaml`, and a `module.yaml`.
 4. Publish only the contracts other modules may depend on.
-5. Declare effects, compatibility, and the smallest meaningful verification evidence.
-6. Add an `implementation.yaml` that points to native build and verification commands.
+5. Declare effects, compatibility, assumptions, and the smallest meaningful verification evidence.
+6. Add an `implementation.yaml` that points to native build and verification commands. Use `semantic_functions` for implementation symbols that discharge important contracts, invariants, and assumptions.
 7. Run `rms validate`, then use `rms context` before implementation work.
 
 The core profile is always required. Add optional profiles only when they are true:
@@ -172,9 +178,9 @@ For any other coding agent, provide a context packet containing the system summa
 
 This repository is RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use: modules, ownership, contracts, invariants, effects, profiles, composition, substitutability, and conformance.
 
-The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection, composition checks, context packets, compatibility classification, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
+The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection, composition checks, context packets, compatibility classification, portable package directories, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
 
-The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, and Stateful representation declarations.
+The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, Stateful representation declarations, and semantic function source symbols.
 
 Swift is the second binding. It validates Swift package shape, target identity, source entrypoints, import allowlists, public re-exports, primitive type aliases, public stored fields, trap-based failure discipline, constructor evidence, and Stateful representation declarations.
 

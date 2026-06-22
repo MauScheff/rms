@@ -65,6 +65,12 @@ A module package is a transport-neutral distribution of a public module. It cont
 
 A conformance report is machine-readable evidence that a particular system or module implementation was evaluated against a named RMS version, profile set, source revision, implementation binding, and validator version.
 
+### 3.11 Semantic function
+
+A semantic function is an implementation-level function, method, parser, constructor, transition, adapter, or interpreter that carries a named part of a module's declared meaning.
+
+Semantic functions MAY be declared by an implementation binding to connect public contracts, invariants, assumptions, and verification evidence to concrete source symbols. A semantic function declaration MUST NOT create public meaning that is absent from the module manifest or published contracts.
+
 ## 4. Core profile requirements
 
 Every declared RMS module MUST satisfy the Core profile. Ordinary private components need not be modeled as separate RMS modules.
@@ -152,6 +158,8 @@ When relevant to consumers, a contract MUST also define:
 - versioning and compatibility policy;
 - service constraints when consumers depend on latency, throughput, availability, payload, resource, or cost bounds.
 
+Preconditions and postconditions SHOULD be stable, named, and stated in domain language when they affect consumers. Implementation-local assumptions SHOULD be discharged by types, validated constructors, boundary schemas, state models, or semantic function specifications rather than hidden in comments.
+
 ### 4.9 Communication
 
 Modules MAY communicate by direct in-process calls, commands, queries, events, or capabilities.
@@ -195,7 +203,31 @@ When relevant, this includes:
 
 Operational mechanisms MUST use the same public semantics and ownership boundaries as the implementation.
 
-### 4.13 Documentation freshness
+### 4.13 Semantic function bindings
+
+An implementation binding MAY declare semantic functions that map source symbols to module invariants, public contracts, assumptions, and evidence.
+
+Semantic function bindings SHOULD classify the source symbol using the smallest accurate role:
+
+- constructor: raw or internal input to a validated value;
+- parser: untrusted or versioned input to a boundary value;
+- decision: state and intent to a pure domain decision;
+- transition: state and accepted fact to new state;
+- projector: fact to read model;
+- adapter: external model to or from domain model;
+- interpreter: effect request to external result.
+
+For each semantic function, a binding SHOULD identify whether its assumptions are:
+
+- represented by input or output types;
+- checked as preconditions;
+- preserved as invariants;
+- guaranteed as postconditions;
+- demonstrated by verification evidence.
+
+Pure semantic functions SHOULD NOT perform undeclared effects. Effectful semantic functions MUST remain within the module's declared effects and required capabilities.
+
+### 4.14 Documentation freshness
 
 The manifest and public contracts MUST be updated when public meaning, ownership, dependencies, effects, or compatibility changes.
 
@@ -203,7 +235,7 @@ Agent instruction files MUST NOT be the sole source of architectural truth.
 
 Canonical semantic artifacts MUST agree. A contradiction among manifests, contracts, invariants, context language, or compatibility declarations is a conformance failure and MUST NOT be resolved by an agent through an undocumented precedence choice.
 
-### 4.14 Trust and secrets
+### 4.15 Trust and secrets
 
 Manifests, public contracts, conformance reports, and agent context packets MUST NOT contain credentials or production secrets.
 

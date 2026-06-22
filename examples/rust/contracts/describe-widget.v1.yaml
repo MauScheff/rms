@@ -4,3 +4,10 @@ version: 1
 kind: query
 meaning: Return the stable display name for a validated widget.
 
+preconditions:
+  - id: widget-is-validated
+    statement: The widget was accepted by the Widget constructor.
+
+postconditions:
+  - id: description-is-widget-name
+    statement: The returned description is the widget's stable non-empty name.

@@ -73,6 +73,12 @@
       "type": "object",
       "additionalProperties": true
     },
+    "semantic_functions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/semanticFunction"
+      }
+    },
     "generated": {
       "type": "array",
       "items": {
@@ -83,5 +89,122 @@
   "patternProperties": {
     "^x-": {}
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "semanticFunction": {
+      "type": "object",
+      "required": [
+        "id",
+        "symbol",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "constructor",
+            "parser",
+            "decision",
+            "transition",
+            "projector",
+            "adapter",
+            "interpreter"
+          ]
+        },
+        "purity": {
+          "enum": [
+            "pure",
+            "effectful",
+            "boundary"
+          ]
+        },
+        "discharges": {
+          "type": "object",
+          "properties": {
+            "contracts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "invariants": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "assumptions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "assumptions": {
+          "type": "object",
+          "properties": {
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "maintains": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "ensures": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "evidence": {
+          "type": "object",
+          "properties": {
+            "laws": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "contracts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "scenarios": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "boundaries": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  }
 }

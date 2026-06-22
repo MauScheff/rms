@@ -24,3 +24,36 @@ architecture:
   public_modules:
     - widget
 
+semantic_functions:
+  - id: widget-constructor
+    symbol: Widget::new
+    kind: constructor
+    purity: pure
+    discharges:
+      invariants:
+        - accepted-widget-has-name
+    assumptions:
+      ensures:
+        - when output is Some, output.name().trim() is not empty
+    evidence:
+      laws:
+        - verification/laws/accepted_widget_has_name
+      scenarios:
+        - verification/scenarios/widget_acceptance
+  - id: describe-widget-query
+    symbol: describe_widget
+    kind: projector
+    purity: pure
+    discharges:
+      contracts:
+        - contracts/describe-widget.v1.yaml
+      invariants:
+        - accepted-widget-has-name
+    assumptions:
+      requires:
+        - widget was constructed through Widget::new
+      ensures:
+        - output == widget.name()
+    evidence:
+      contracts:
+        - verification/contracts/describe_widget_contract

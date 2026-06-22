@@ -1,4 +1,3 @@
 pub mod widget;
 
-pub use widget::Widget;
-
+pub use widget::{describe_widget, Widget};

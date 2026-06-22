@@ -23,7 +23,7 @@ rms inspect <module>
 rms context <module> [task]
 rms init <path>
 rms add-module <path>
-rms validate [module]
+rms validate [module|contract|implementation]
 rms verify [module]
 rms check-compat <old> <new>
 rms compose [system]
@@ -38,12 +38,14 @@ The current reference implementation lives at `tooling/rust/rms` and implements 
 
 ```bash
 rms validate --root <path>
+rms validate --contract <contract.yaml>
 rms init <path> --name <system> --purpose <purpose>
 rms add-module <path> --name <module> --purpose <purpose> [--binding rust|swift]
 rms inspect <module.yaml>
 rms context <module.yaml> [--task "..."]
 rms compose --root <path>
 rms check-compat <old-module.yaml> <new-module.yaml>
+rms package <module.yaml> [--output <directory>]
 rms conformance <module.yaml> [--implementation implementation.yaml]
 rms verify <implementation.yaml>
 ```
@@ -58,7 +60,7 @@ Scaffolds a new RMS system with `system.yaml`, `context-map.yaml`, `GLOSSARY.md`
 
 Scaffolds a valid module directory with `module.yaml`, `contracts/`, and verification evidence directories. When `--binding rust` or `--binding swift` is supplied, it also creates a minimal native library and `implementation.yaml` that pass that binding's checks. The command refuses to overwrite existing files.
 
-The first language binding is Rust. A Rust implementation binding declares `binding: rust` in `implementation.yaml`; the CLI then checks Cargo manifest shape, package identity, public entrypoint placement, explicit external crate dependencies, source import roots, public external re-exports, declared public modules, primitive type aliases, public domain fields, failure discipline, constructor evidence, and Stateful representation declarations.
+The first language binding is Rust. A Rust implementation binding declares `binding: rust` in `implementation.yaml`; the CLI then checks Cargo manifest shape, package identity, public entrypoint placement, explicit external crate dependencies, source import roots, public external re-exports, declared public modules, primitive type aliases, public domain fields, failure discipline, constructor evidence, Stateful representation declarations, and semantic function source symbols.
 
 The second language binding is Swift. A Swift implementation binding declares `binding: swift` in `implementation.yaml`; the CLI then checks Swift package shape, package and target identity, public entrypoint placement, source imports against `dependencies.allowed_external_modules`, public re-exports, primitive type aliases, public stored fields, trap-based failure discipline, constructor evidence, and Stateful representation declarations.
 
@@ -133,7 +135,7 @@ Checks whether declared requirements can be satisfied by available providers, in
 
 ### `package`
 
-Assembles a portable module package from the canonical manifest, contracts, conformance requirements, implementation binding, and migration material. The resulting transport may be a directory or an input to another registry or artifact system.
+Assembles a portable module package directory from the canonical manifest, referenced contracts and evidence, sibling implementation binding when present, generated conformance report, and `PACKAGE.json` metadata with source revision, validator identity, included files, sizes, and SHA-256 checksums. The resulting directory may be archived or used as an input to another registry or artifact system.
 
 ### `conformance`
 
@@ -220,7 +222,7 @@ verify-module
 A practical pipeline is:
 
 ```text
-1. Validate manifests and schemas.
+1. Validate manifests, contracts, and schemas.
 2. Check dependency and ownership boundaries.
 3. Check public-contract and composition compatibility.
 4. Build through the implementation binding with pinned toolchain inputs.

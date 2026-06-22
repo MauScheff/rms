@@ -275,6 +275,32 @@ libraries
 
 Each public item should have a stable name and a contract location. Public items may also declare version, deprecation, authorization, and service-constraint metadata when consumers rely on it.
 
+### `contracts/*.yaml`
+
+A contract names the shape and meaning of one public command, query, event, capability, API, or data exchange. Preconditions and postconditions belong here when consumers must know them.
+
+```yaml
+spec: rms/contract/v0.1
+name: authorize-payment
+version: 1
+kind: command
+meaning: Request authorization for a payment amount.
+
+preconditions:
+  - id: positive-payment-amount
+    statement: The requested payment amount is greater than zero.
+
+postconditions:
+  - id: authorization-outcome-recorded
+    statement: The result is authorized, declined, or requires review.
+
+failure_categories:
+  - id: unusable-payment-method
+    statement: The payment method cannot be used for this buyer or amount.
+```
+
+Use domain language in contract assumptions. Implementation-specific expressions belong in `implementation.yaml` semantic function declarations or native code annotations.
+
 ### `requires`
 
 A module may require:
@@ -442,6 +468,27 @@ commands:
 architecture:
   dependency_checker: tools/check-module-boundaries
   contract_generator: tools/generate-payment-contracts
+
+semantic_functions:
+  - id: authorize-payment-decision
+    symbol: payments::authorize_payment
+    kind: decision
+    purity: pure
+    discharges:
+      contracts:
+        - contracts/authorize-payment.yaml
+      invariants:
+        - capture-requires-authorization
+    assumptions:
+      requires:
+        - amount.is_positive()
+      ensures:
+        - output.is_authorized_or_declined()
+    evidence:
+      laws:
+        - verification/laws/authorize_payment
+      scenarios:
+        - verification/scenarios/authorize_payment
 ```
 
 A Rust, Go, Python, Java, or remote-service implementation can satisfy the same semantic `module.yaml` with a different implementation binding.
@@ -458,9 +505,31 @@ Generated and private paths
 Required filesystem, network, and credential permissions
 Schema/code-generation commands
 Runtime adapter registration
+Semantic function declarations
 ```
 
 It must not redefine domain meaning or compatibility promises.
+
+### `semantic_functions`
+
+Semantic functions connect the portable RMS semantic set to implementation source symbols.
+
+Recommended fields:
+
+| Field | Meaning |
+|---|---|
+| `id` | Stable identifier for the semantic function declaration. |
+| `symbol` | Language-binding source symbol such as `Widget::new` or `payments::authorize_payment`. |
+| `kind` | `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, or `interpreter`. |
+| `purity` | `pure`, `effectful`, or `boundary`. |
+| `discharges.contracts` | Published contracts this function implements or helps satisfy. |
+| `discharges.invariants` | Module invariant identifiers this function enforces or preserves. |
+| `assumptions.requires` | Function-local preconditions that are not already represented by types. |
+| `assumptions.maintains` | Invariants preserved before and after execution. |
+| `assumptions.ensures` | Function-local postconditions. |
+| `evidence` | Law, contract, scenario, or boundary evidence paths for this function. |
+
+Prefer typed representations over repeated preconditions. A constructor or parser should discharge raw-value assumptions once, so later decision and transition functions can accept validated values.
 
 ## 6. `conformance-report.json`
 

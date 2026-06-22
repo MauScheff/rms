@@ -30,6 +30,12 @@ jobs:
           cargo run -p rms -- compose --root examples/minimal
           cargo run -p rms -- compose --root examples/rust
           cargo run -p rms -- compose --root examples/swift
+      - name: Package smoke test
+        run: |
+          tmpdir="$(mktemp -d)"
+          cargo run -p rms -- package examples/rust/module.yaml --output "$tmpdir/rust-example.rms"
+          test -f "$tmpdir/rust-example.rms/PACKAGE.json"
+          test -f "$tmpdir/rust-example.rms/conformance-report.json"
       - name: Validate scaffold roundtrip
         run: |
           tmpdir="$(mktemp -d)"

@@ -4,6 +4,7 @@ These JSON Schemas validate the structural shape of RMS 0.1 manifests:
 
 - `system.schema.json`
 - `module.schema.json`
+- `contract.schema.json`
 - `context-map.schema.json`
 - `implementation.schema.json`
 - `conformance.schema.json`

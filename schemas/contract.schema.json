@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:contract:v0.1",
+  "title": "RMS Contract v0.1",
+  "type": "object",
+  "required": [
+    "spec",
+    "name",
+    "kind",
+    "meaning"
+  ],
+  "properties": {
+    "spec": {
+      "const": "rms/contract/v0.1"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "string",
+          "minLength": 1
+        }
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1
+    },
+    "meaning": {
+      "type": "string",
+      "minLength": 1
+    },
+    "preconditions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/assumption"
+      }
+    },
+    "postconditions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/assumption"
+      }
+    },
+    "failure_categories": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/namedStatement"
+      }
+    },
+    "semantics": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "schema": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "examples": {
+      "type": "array"
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "patternProperties": {
+    "^x-": {}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "assumption": {
+      "type": "object",
+      "required": [
+        "id",
+        "statement"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checked_by": {
+          "type": "string"
+        },
+        "discharged_by": {
+          "type": "string"
+        },
+        "verified_by": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "namedStatement": {
+      "type": "object",
+      "required": [
+        "id",
+        "statement"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

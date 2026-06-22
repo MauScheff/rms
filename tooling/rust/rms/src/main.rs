@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -45,6 +46,10 @@ enum Commands {
         /// Validate a specific context map.
         #[arg(long = "context-map")]
         context_map: Vec<PathBuf>,
+
+        /// Validate a specific contract manifest.
+        #[arg(long)]
+        contract: Vec<PathBuf>,
 
         /// Validate a specific implementation binding.
         #[arg(long)]
@@ -125,6 +130,20 @@ enum Commands {
         /// Print the command without executing it.
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// Assemble a portable RMS module package directory.
+    Package {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Output directory. Defaults to dist/<module>-<version>.rms.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Replace an existing output directory.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Scaffold a new RMS system in a directory.
@@ -208,18 +227,20 @@ fn main() -> Result<()> {
             module,
             system,
             context_map,
+            contract,
             implementation,
             conformance,
             json,
-        } => run_validate(
+        } => run_validate(ValidateRequest {
             root,
             module,
             system,
             context_map,
+            contract,
             implementation,
             conformance,
             json,
-        ),
+        }),
         Commands::Inspect { module } => {
             let manifest = load_manifest(&module)?;
             print_module_brief(&manifest);
@@ -250,6 +271,11 @@ fn main() -> Result<()> {
             implementation,
             dry_run,
         } => run_verify(&implementation, dry_run),
+        Commands::Package {
+            module,
+            output,
+            force,
+        } => run_package(&module, output.as_deref(), force),
         Commands::Init {
             path,
             name,
@@ -268,22 +294,26 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_validate(
+struct ValidateRequest {
     root: PathBuf,
     module: Vec<PathBuf>,
     system: Vec<PathBuf>,
     context_map: Vec<PathBuf>,
+    contract: Vec<PathBuf>,
     implementation: Vec<PathBuf>,
     conformance: Vec<PathBuf>,
-    json_output: bool,
-) -> Result<()> {
+    json: bool,
+}
+
+fn run_validate(request: ValidateRequest) -> Result<()> {
     let targets = discover_targets(
-        &root,
-        module,
-        system,
-        context_map,
-        implementation,
-        conformance,
+        &request.root,
+        request.module,
+        request.system,
+        request.context_map,
+        request.contract,
+        request.implementation,
+        request.conformance,
     )?;
     let mut diagnostics = Vec::new();
 
@@ -299,7 +329,7 @@ fn run_validate(
         }
     }
 
-    if json_output {
+    if request.json {
         println!("{}", serde_json::to_string_pretty(&diagnostics)?);
     } else if diagnostics.is_empty() {
         println!("pass: no RMS validation diagnostics");
@@ -330,6 +360,7 @@ fn discover_targets(
     modules: Vec<PathBuf>,
     systems: Vec<PathBuf>,
     context_maps: Vec<PathBuf>,
+    contracts: Vec<PathBuf>,
     implementations: Vec<PathBuf>,
     conformance_reports: Vec<PathBuf>,
 ) -> Result<Vec<PathBuf>> {
@@ -337,6 +368,7 @@ fn discover_targets(
     explicit.extend(modules);
     explicit.extend(systems);
     explicit.extend(context_maps);
+    explicit.extend(contracts);
     explicit.extend(implementations);
     explicit.extend(conformance_reports);
 
@@ -375,6 +407,7 @@ fn is_supported_yaml_manifest(path: &Path) -> bool {
             line.trim(),
             "spec: rms/system/v0.1"
                 | "spec: rms/module/v0.1"
+                | "spec: rms/contract/v0.1"
                 | "spec: rms/context-map/v0.1"
                 | "spec: rms/implementation/v0.1"
         )
@@ -388,6 +421,7 @@ fn validate_loaded_manifest(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
     match spec {
         Some("rms/system/v0.1") => validate_system(manifest, diagnostics),
         Some("rms/module/v0.1") => validate_module(manifest, diagnostics),
+        Some("rms/contract/v0.1") => validate_contract(manifest, diagnostics),
         Some("rms/context-map/v0.1") => validate_context_map(manifest, diagnostics),
         Some("rms/implementation/v0.1") => validate_implementation(manifest, diagnostics),
         Some("rms/conformance/v0.1") => {}
@@ -467,6 +501,7 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
     match spec {
         "rms/system/v0.1" => Some(include_str!("../../../../schemas/system.schema.json")),
         "rms/module/v0.1" => Some(include_str!("../../../../schemas/module.schema.json")),
+        "rms/contract/v0.1" => Some(include_str!("../../../../schemas/contract.schema.json")),
         "rms/context-map/v0.1" => Some(include_str!("../../../../schemas/context-map.schema.json")),
         "rms/implementation/v0.1" => Some(include_str!(
             "../../../../schemas/implementation.schema.json"
@@ -580,6 +615,74 @@ fn validate_module(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>)
     check_profile_obligations(manifest, diagnostics, &profiles);
 }
 
+fn validate_contract(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    require_str(manifest, diagnostics, "contract.name", &["name"]);
+    require_str(manifest, diagnostics, "contract.kind", &["kind"]);
+    require_str(manifest, diagnostics, "contract.meaning", &["meaning"]);
+
+    for field in ["preconditions", "postconditions"] {
+        validate_contract_assumptions(manifest, diagnostics, field);
+    }
+    validate_contract_named_statements(manifest, diagnostics, "failure_categories");
+}
+
+fn validate_contract_assumptions(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    field: &str,
+) {
+    let Some(items) = get_path(&manifest.value, &[field]).and_then(YamlValue::as_sequence) else {
+        return;
+    };
+
+    let mut ids = BTreeSet::new();
+    for item in items {
+        let Some(id) = get_str(item, &["id"]) else {
+            continue;
+        };
+        if !ids.insert(id.to_string()) {
+            diagnostics.push(error(
+                format!("contract.{field}.duplicate-id"),
+                &manifest.path,
+                format!("duplicate `{field}` id `{id}`"),
+            ));
+        }
+        if let Some(path) = get_str(item, &["verified_by"]) {
+            check_relative_ref(
+                manifest,
+                diagnostics,
+                format!("references.contract.{field}.verified-by"),
+                path,
+                "referenced contract assumption evidence does not exist",
+            );
+        }
+    }
+}
+
+fn validate_contract_named_statements(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    field: &str,
+) {
+    let Some(items) = get_path(&manifest.value, &[field]).and_then(YamlValue::as_sequence) else {
+        return;
+    };
+
+    let mut ids = BTreeSet::new();
+    for item in items {
+        let Some(id) = get_str(item, &["id"]) else {
+            continue;
+        };
+        if !ids.insert(id.to_string()) {
+            diagnostics.push(error(
+                format!("contract.{field}.duplicate-id"),
+                &manifest.path,
+                format!("duplicate `{field}` id `{id}`"),
+            ));
+        }
+    }
+}
+
 fn validate_context_map(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
     if get_path(&manifest.value, &["contexts"]).is_none()
         && get_path(&manifest.value, &["relationships"]).is_none()
@@ -618,12 +721,98 @@ fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diag
 
     check_optional_path(manifest, diagnostics, &["source", "root"]);
     check_optional_path(manifest, diagnostics, &["source", "public_entrypoint"]);
+    validate_semantic_function_declarations(manifest, diagnostics);
 
     match get_str(&manifest.value, &["binding"]) {
         Some("rust") => validate_rust_implementation(manifest, diagnostics),
         Some("swift") => validate_swift_implementation(manifest, diagnostics),
         _ => {}
     }
+}
+
+fn validate_semantic_function_declarations(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(functions) = semantic_function_items(implementation) else {
+        return;
+    };
+
+    let base = implementation
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let module_manifest = load_binding_module_manifest(implementation, base);
+    let invariant_ids = module_manifest
+        .as_ref()
+        .map(module_invariant_ids)
+        .unwrap_or_default();
+    let mut ids = BTreeSet::new();
+
+    for function in functions {
+        if let Some(id) = get_str(function, &["id"]) {
+            if !ids.insert(id.to_string()) {
+                diagnostics.push(error(
+                    "implementation.semantic-functions.duplicate-id",
+                    &implementation.path,
+                    format!("duplicate semantic function id `{id}`"),
+                ));
+            }
+        }
+
+        for contract in get_string_array(function, &["discharges", "contracts"]) {
+            check_relative_ref(
+                implementation,
+                diagnostics,
+                "references.semantic-functions.contract",
+                &contract,
+                "semantic function references a contract that does not exist",
+            );
+        }
+
+        for invariant in get_string_array(function, &["discharges", "invariants"]) {
+            if module_manifest.is_some() && !invariant_ids.contains(&invariant) {
+                diagnostics.push(error(
+                    "implementation.semantic-functions.invariant",
+                    &implementation.path,
+                    format!(
+                        "semantic function references undeclared module invariant `{invariant}`"
+                    ),
+                ));
+            }
+        }
+
+        for category in ["laws", "contracts", "scenarios", "boundaries"] {
+            for path in get_string_array(function, &["evidence", category]) {
+                check_relative_ref(
+                    implementation,
+                    diagnostics,
+                    format!("references.semantic-functions.evidence.{category}"),
+                    &path,
+                    "semantic function references evidence that does not exist",
+                );
+            }
+        }
+    }
+}
+
+fn semantic_function_items(manifest: &LoadedManifest) -> Option<&[YamlValue]> {
+    get_path(&manifest.value, &["semantic_functions"])?
+        .as_sequence()
+        .map(Vec::as_slice)
+}
+
+fn module_invariant_ids(manifest: &LoadedManifest) -> BTreeSet<String> {
+    get_path(&manifest.value, &["invariants"])
+        .and_then(YamlValue::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| get_str(item, &["id"]))
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn validate_rust_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
@@ -1282,6 +1471,7 @@ fn validate_rust_typing(
         module_manifest.as_ref(),
         &summary,
     );
+    validate_rust_semantic_function_symbols(implementation, diagnostics, &summary);
 }
 
 fn inspect_rust_typing_file(
@@ -1497,6 +1687,61 @@ fn validate_rust_stateful_representation(
             ));
         }
     }
+}
+
+fn validate_rust_semantic_function_symbols(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    summary: &RustTypingSummary,
+) {
+    let Some(functions) = semantic_function_items(implementation) else {
+        return;
+    };
+
+    for function in functions {
+        let Some(symbol) = get_str(function, &["symbol"]) else {
+            continue;
+        };
+
+        if !rust_symbol_exists(summary, symbol) {
+            diagnostics.push(error(
+                "implementation.rust.semantic-functions.symbol",
+                &implementation.path,
+                format!("semantic function symbol `{symbol}` was not found in Rust source"),
+            ));
+        }
+    }
+}
+
+fn rust_symbol_exists(summary: &RustTypingSummary, symbol: &str) -> bool {
+    if summary.functions.contains(symbol) {
+        return true;
+    }
+
+    let parts: Vec<_> = symbol.split("::").filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() {
+        return false;
+    }
+
+    if let Some(function_name) = parts.last() {
+        if summary.functions.contains(*function_name) {
+            return true;
+        }
+    }
+
+    if parts.len() >= 2 {
+        let type_name = parts[parts.len() - 2];
+        let method_name = parts[parts.len() - 1];
+        if summary
+            .impl_methods
+            .get(type_name)
+            .is_some_and(|methods| methods.contains(method_name))
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn collect_rust_dependencies(cargo: &TomlValue) -> BTreeSet<String> {
@@ -2793,6 +3038,325 @@ fn run_verify(implementation: &Path, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+fn run_package(module: &Path, output: Option<&Path>, force: bool) -> Result<()> {
+    let package = package_module(module, output, force)?;
+    println!("packaged RMS module at {}", package.output.display());
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct PackageBuildResult {
+    output: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PackageManifest {
+    spec: &'static str,
+    module: String,
+    version: String,
+    source: PackageSource,
+    validator: PackageValidator,
+    files: Vec<PackageFile>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PackageSource {
+    revision: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PackageValidator {
+    name: &'static str,
+    version: &'static str,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PackageFile {
+    path: String,
+    bytes: u64,
+    sha256: String,
+}
+
+fn package_module(
+    module_path: &Path,
+    output: Option<&Path>,
+    force: bool,
+) -> Result<PackageBuildResult> {
+    let module = load_manifest(module_path)?;
+    if get_str(&module.value, &["spec"]) != Some("rms/module/v0.1") {
+        bail!("`{}` is not an RMS module manifest", module_path.display());
+    }
+
+    let mut diagnostics = Vec::new();
+    validate_loaded_manifest(&module, &mut diagnostics);
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        bail!(
+            "module has validation errors; run `rms validate --module {}`",
+            module_path.display()
+        );
+    }
+
+    let module_base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    let module_name = get_str(&module.value, &["module", "name"]).unwrap_or("module");
+    let module_version = get_str(&module.value, &["module", "version"]).unwrap_or("0.0.0");
+    let output = output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_package_output(module_name, module_version));
+
+    prepare_package_output(&output, force)?;
+
+    let mut sources = BTreeSet::new();
+    sources.insert(module.path.clone());
+    for reference in package_referenced_paths(&module.value) {
+        sources.insert(module_base.join(reference));
+    }
+
+    let implementation = sibling_implementation_manifest(module_base, module_name)?;
+    if let Some(implementation) = &implementation {
+        validate_loaded_manifest(implementation, &mut diagnostics);
+        if diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error)
+        {
+            bail!(
+                "implementation has validation errors; run `rms validate --implementation {}`",
+                implementation.path.display()
+            );
+        }
+        sources.insert(implementation.path.clone());
+    }
+
+    for source in &sources {
+        copy_package_source(module_base, source, &output)?;
+    }
+
+    let conformance = build_conformance_report(
+        &module.path,
+        implementation
+            .as_ref()
+            .map(|manifest| manifest.path.as_path()),
+    )?;
+    let conformance_path = output.join("conformance-report.json");
+    fs::write(
+        &conformance_path,
+        serde_json::to_string_pretty(&conformance)?,
+    )
+    .with_context(|| format!("failed to write `{}`", conformance_path.display()))?;
+
+    let file_entries = package_file_entries(&output)?;
+    let manifest = PackageManifest {
+        spec: "rms/package/v0.1",
+        module: module_name.to_string(),
+        version: module_version.to_string(),
+        source: PackageSource {
+            revision: source_revision().unwrap_or_else(|| "unknown".to_string()),
+        },
+        validator: PackageValidator {
+            name: VALIDATOR_NAME,
+            version: VALIDATOR_VERSION,
+        },
+        files: file_entries.clone(),
+    };
+
+    let package_manifest_path = output.join("PACKAGE.json");
+    fs::write(
+        &package_manifest_path,
+        serde_json::to_string_pretty(&manifest)?,
+    )
+    .with_context(|| format!("failed to write `{}`", package_manifest_path.display()))?;
+
+    Ok(PackageBuildResult { output })
+}
+
+fn default_package_output(module_name: &str, module_version: &str) -> PathBuf {
+    PathBuf::from("dist").join(format!(
+        "{}-{}.rms",
+        sanitize_package_component(module_name),
+        sanitize_package_component(module_version)
+    ))
+}
+
+fn sanitize_package_component(value: &str) -> String {
+    let mut output = String::new();
+    let mut previous_dash = false;
+    for character in value.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() || character == '_' || character == '.' {
+            output.push(character);
+            previous_dash = false;
+        } else if !previous_dash {
+            output.push('-');
+            previous_dash = true;
+        }
+    }
+    let output = output.trim_matches('-').to_string();
+    if output.is_empty() {
+        "module".to_string()
+    } else {
+        output
+    }
+}
+
+fn prepare_package_output(output: &Path, force: bool) -> Result<()> {
+    if output.exists() {
+        if !force {
+            bail!(
+                "output package directory `{}` already exists; use --force to replace it",
+                output.display()
+            );
+        }
+        fs::remove_dir_all(output)
+            .with_context(|| format!("failed to remove `{}`", output.display()))?;
+    }
+    fs::create_dir_all(output)
+        .with_context(|| format!("failed to create package directory `{}`", output.display()))
+}
+
+fn sibling_implementation_manifest(
+    module_base: &Path,
+    module_name: &str,
+) -> Result<Option<LoadedManifest>> {
+    let path = module_base.join("implementation.yaml");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let manifest = load_manifest(&path)?;
+    if get_str(&manifest.value, &["module"]) == Some(module_name) {
+        Ok(Some(manifest))
+    } else {
+        Ok(None)
+    }
+}
+
+fn package_referenced_paths(value: &YamlValue) -> BTreeSet<String> {
+    let mut paths = referenced_paths(value);
+
+    for path in [
+        get_str(value, &["state", "model"]),
+        get_str(value, &["state", "migration_policy"]),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if looks_like_path(path) {
+            paths.insert(path.to_string());
+        }
+    }
+
+    for path in package_string_array_refs(value, &["operations", "runtime_checks"]) {
+        paths.insert(path);
+    }
+    for path in package_string_array_refs(value, &["operations", "reconciliation"]) {
+        paths.insert(path);
+    }
+    for path in package_string_array_refs(value, &["operations", "migrations"]) {
+        paths.insert(path);
+    }
+    for path in package_string_array_refs(value, &["operations", "runbooks"]) {
+        paths.insert(path);
+    }
+
+    paths
+}
+
+fn package_string_array_refs(value: &YamlValue, path: &[&str]) -> Vec<String> {
+    get_string_array(value, path)
+        .into_iter()
+        .filter(|value| looks_like_path(value))
+        .collect()
+}
+
+fn looks_like_path(value: &str) -> bool {
+    value.contains('/')
+        || value.ends_with(".md")
+        || value.ends_with(".yaml")
+        || value.ends_with(".json")
+}
+
+fn copy_package_source(module_base: &Path, source: &Path, output: &Path) -> Result<()> {
+    let source = source
+        .canonicalize()
+        .with_context(|| format!("package source does not exist: `{}`", source.display()))?;
+    let module_base = module_base
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize `{}`", module_base.display()))?;
+    if !source.starts_with(&module_base) {
+        bail!(
+            "refusing to package file outside module directory: `{}`",
+            source.display()
+        );
+    }
+    if source.is_dir() {
+        for entry in WalkDir::new(&source)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+        {
+            copy_package_file(&module_base, entry.path(), output)?;
+        }
+        return Ok(());
+    }
+    copy_package_file(&module_base, &source, output)
+}
+
+fn copy_package_file(module_base: &Path, source: &Path, output: &Path) -> Result<()> {
+    let relative = source
+        .strip_prefix(module_base)
+        .with_context(|| format!("failed to relativize `{}`", source.display()))?;
+    let destination = output.join(relative);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(source, &destination).with_context(|| {
+        format!(
+            "failed to copy `{}` to `{}`",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn package_file_entries(output: &Path) -> Result<Vec<PackageFile>> {
+    let mut entries = Vec::new();
+    for entry in WalkDir::new(output)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let path = entry.path();
+        if path.file_name().and_then(|name| name.to_str()) == Some("PACKAGE.json") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(output)
+            .unwrap_or(path)
+            .components()
+            .filter(|component| !matches!(component, Component::CurDir))
+            .collect::<PathBuf>()
+            .display()
+            .to_string();
+        entries.push(PackageFile {
+            path: relative,
+            bytes: fs::metadata(path)?.len(),
+            sha256: sha256_file(path)?,
+        });
+    }
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(entries)
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read `{}`", path.display()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 fn run_check_compat(old: &Path, new: &Path, json_output: bool) -> Result<()> {
     let old_manifest = load_manifest(old)?;
     let new_manifest = load_manifest(new)?;
@@ -2877,7 +3441,7 @@ struct ProvidedRequirement {
 }
 
 fn compose_system(root: &Path) -> Result<ComposeReport> {
-    let targets = discover_targets(root, vec![], vec![], vec![], vec![], vec![])?;
+    let targets = discover_targets(root, vec![], vec![], vec![], vec![], vec![], vec![])?;
     let mut modules = BTreeMap::new();
     let mut systems = Vec::new();
     let mut context_maps = Vec::new();
@@ -4750,6 +5314,52 @@ import struct ExternalKit.Widget
     }
 
     #[test]
+    fn rust_semantic_functions_reject_missing_symbols() {
+        let root = rust_typing_fixture(
+            "semantic-missing-symbol",
+            &["core"],
+            "\nsemantic_functions:\n  - id: missing-decision\n    symbol: missing_decision\n    kind: decision\n    purity: pure\n",
+            "pub fn existing_decision() {}\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "implementation.rust.semantic-functions.symbol"
+        }));
+    }
+
+    #[test]
+    fn semantic_functions_reject_unknown_invariants() {
+        let root = rust_typing_fixture(
+            "semantic-unknown-invariant",
+            &["core"],
+            "\nsemantic_functions:\n  - id: existing-decision\n    symbol: existing_decision\n    kind: decision\n    purity: pure\n    discharges:\n      invariants:\n        - missing-invariant\n",
+            "pub fn existing_decision() {}\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "implementation.semantic-functions.invariant"
+        }));
+    }
+
+    #[test]
+    fn rust_semantic_functions_accept_method_symbols() {
+        let mut summary = RustTypingSummary::default();
+        summary
+            .impl_methods
+            .insert("Widget".to_string(), BTreeSet::from(["new".to_string()]));
+
+        assert!(rust_symbol_exists(&summary, "Widget::new"));
+        assert!(rust_symbol_exists(&summary, "crate::widget::Widget::new"));
+        assert!(!rust_symbol_exists(&summary, "Widget::missing"));
+    }
+
+    #[test]
     fn swift_typing_rejects_public_primitive_aliases() {
         let root = swift_typing_fixture(
             "swift-primitive-alias",
@@ -5133,6 +5743,81 @@ verification:
             finding.status == ComposeStatus::Incompatible
                 && finding.check == "requires.modules.cycle"
         }));
+    }
+
+    #[test]
+    fn package_includes_manifest_references_and_metadata() {
+        let root = unique_test_dir("package");
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::create_dir_all(root.join("verification/laws")).unwrap();
+        fs::write(
+            root.join("contracts/do-work.yaml"),
+            "spec: rms/contract/v0.1\nname: do-work\nkind: command\nmeaning: Do work.\n",
+        )
+        .unwrap();
+        fs::write(root.join("verification/laws/law"), "law evidence\n").unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+
+module:
+  name: package-fixture
+  version: 0.1.0
+  kind: library
+  purpose: Test packaging
+
+profiles:
+  - core
+
+owns:
+  concepts: []
+  data: []
+  decisions: []
+
+provides:
+  commands:
+    - name: do-work
+      contract: contracts/do-work.yaml
+  queries: []
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities: []
+
+invariants:
+  - id: law
+    statement: Law holds.
+    verified_by: verification/laws/law
+
+effects: []
+
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws:
+    - verification/laws
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        let output = root.join("out.rms");
+
+        package_module(&root.join("module.yaml"), Some(&output), false).unwrap();
+
+        assert!(output.join("module.yaml").exists());
+        assert!(output.join("contracts/do-work.yaml").exists());
+        assert!(output.join("verification/laws/law").exists());
+        assert!(output.join("conformance-report.json").exists());
+        let package_manifest = fs::read_to_string(output.join("PACKAGE.json")).unwrap();
+        assert!(package_manifest.contains("\"spec\": \"rms/package/v0.1\""));
+        assert!(package_manifest.contains("\"module\": \"package-fixture\""));
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {
