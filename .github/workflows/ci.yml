@@ -22,5 +22,20 @@ jobs:
           cargo run -p rms -- validate --root examples/minimal
           cargo run -p rms -- validate --root examples/commerce
           cargo run -p rms -- validate --root examples/rust
+      - name: Validate scaffold roundtrip
+        run: |
+          tmpdir="$(mktemp -d)"
+          cargo run -p rms --locked -- init "$tmpdir/app" \
+            --name app \
+            --purpose "Try RMS" \
+            --context core
+          cargo run -p rms --locked -- add-module "$tmpdir/app/modules/widget" \
+            --name widget \
+            --purpose "Own widgets" \
+            --kind library \
+            --binding rust
+          cargo run -p rms --locked -- validate --root "$tmpdir/app"
+          cargo generate-lockfile --manifest-path "$tmpdir/app/modules/widget/Cargo.toml"
+          cargo test --manifest-path "$tmpdir/app/modules/widget/Cargo.toml" --locked
       - name: Test Rust binding example
         run: cargo test --manifest-path examples/rust/Cargo.toml --locked
