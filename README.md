@@ -155,7 +155,7 @@ This repository is RMS 0.1 Canonical Draft. The semantic core is frozen for pilo
 
 The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection, context packets, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
 
-The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, and an explicit external-crate allowlist. Swift is next.
+The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, and Stateful representation declarations. Swift is next.
 
 RMS should not be called 1.0 until it has survived a real reference application, a replacement or migration exercise, and at least one codebase primarily maintained through agents.
 

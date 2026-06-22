@@ -53,5 +53,10 @@ When an implementation binding declares `binding: rust`, the CLI checks:
 - source-level `use` and `extern crate` roots against `dependencies.allowed_external_crates`;
 - public external re-exports against `architecture.allowed_public_reexports`;
 - public local-module re-exports against `architecture.public_modules`.
+- public primitive type aliases unless listed in `architecture.allowed_primitive_type_aliases`;
+- public fields on domain structs unless listed in `architecture.allowed_public_field_structs`;
+- `panic!`, `todo!`, `unimplemented!`, `.unwrap()`, and `.expect()` in non-test domain code unless `architecture.allow_panics: true`;
+- constructor evidence for public structs with private fields, unless listed in `architecture.allowed_missing_constructors`;
+- for Stateful modules, `architecture.state_type` or `architecture.transition_function`, with declared symbols present in source.
 
 See `examples/rust`.

@@ -56,7 +56,7 @@ Scaffolds a new RMS system with `system.yaml`, `context-map.yaml`, `GLOSSARY.md`
 
 Scaffolds a valid module directory with `module.yaml`, `contracts/`, and verification evidence directories. When `--binding rust` is supplied, it also creates a minimal Cargo library and `implementation.yaml` that pass the Rust binding checks. The command refuses to overwrite existing files.
 
-The first language binding is Rust. A Rust implementation binding declares `binding: rust` in `implementation.yaml`; the CLI then checks Cargo manifest shape, package identity, public entrypoint placement, explicit external crate dependencies, source import roots, public external re-exports, and declared public modules. Swift is the next planned binding.
+The first language binding is Rust. A Rust implementation binding declares `binding: rust` in `implementation.yaml`; the CLI then checks Cargo manifest shape, package identity, public entrypoint placement, explicit external crate dependencies, source import roots, public external re-exports, declared public modules, primitive type aliases, public domain fields, failure discipline, constructor evidence, and Stateful representation declarations. Swift is the next planned binding.
 
 ### `inspect`
 

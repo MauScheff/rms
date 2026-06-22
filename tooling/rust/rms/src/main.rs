@@ -7,7 +7,11 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use syn::{Item, UseTree, Visibility};
+use syn::visit::{self, Visit};
+use syn::{
+    Attribute, ExprMacro, ExprMethodCall, Fields, ImplItem, Item, ItemStruct, Meta, Type, UseTree,
+    Visibility,
+};
 use toml::Value as TomlValue;
 use walkdir::WalkDir;
 
@@ -649,6 +653,7 @@ fn validate_rust_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec
     validate_rust_dependency_allowlist(manifest, diagnostics, &cargo);
     validate_rust_public_modules(manifest, diagnostics, &public_entrypoint);
     validate_rust_source_boundaries(manifest, diagnostics, &source_root);
+    validate_rust_typing(manifest, diagnostics, base, &source_root);
 }
 
 fn rust_cargo_manifest_path(manifest: &LoadedManifest, base: &Path, source_root: &Path) -> PathBuf {
@@ -921,6 +926,276 @@ fn validate_rust_source_boundaries(
     }
 }
 
+fn validate_rust_typing(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    base: &Path,
+    source_root: &Path,
+) {
+    if !source_root.exists() {
+        return;
+    }
+
+    let module_manifest = load_rust_binding_module_manifest(implementation, base);
+    let mut summary = RustTypingSummary::default();
+
+    for path in rust_source_files(source_root) {
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(read_error) => {
+                diagnostics.push(error(
+                    "implementation.rust.typing.source.read",
+                    &implementation.path,
+                    format!(
+                        "failed to read Rust source `{}`: {read_error}",
+                        path.display()
+                    ),
+                ));
+                continue;
+            }
+        };
+        let parsed = match syn::parse_file(&source) {
+            Ok(parsed) => parsed,
+            Err(parse_error) => {
+                diagnostics.push(error(
+                    "implementation.rust.typing.source.parse",
+                    &implementation.path,
+                    format!(
+                        "failed to parse Rust source `{}`: {parse_error}",
+                        path.display()
+                    ),
+                ));
+                continue;
+            }
+        };
+
+        inspect_rust_typing_file(implementation, diagnostics, &path, &parsed, &mut summary);
+    }
+
+    validate_rust_constructor_evidence(implementation, diagnostics, &summary);
+    validate_rust_stateful_representation(
+        implementation,
+        diagnostics,
+        module_manifest.as_ref(),
+        &summary,
+    );
+}
+
+fn inspect_rust_typing_file(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    path: &Path,
+    parsed: &syn::File,
+    summary: &mut RustTypingSummary,
+) {
+    let allowed_public_field_structs: BTreeSet<_> = get_string_array(
+        &implementation.value,
+        &["architecture", "allowed_public_field_structs"],
+    )
+    .into_iter()
+    .collect();
+    let allowed_primitive_aliases: BTreeSet<_> = get_string_array(
+        &implementation.value,
+        &["architecture", "allowed_primitive_type_aliases"],
+    )
+    .into_iter()
+    .collect();
+    let allow_panics =
+        get_bool(&implementation.value, &["architecture", "allow_panics"]).unwrap_or(false);
+
+    for item in &parsed.items {
+        if has_cfg_test_attr(item_attrs(item)) {
+            continue;
+        }
+
+        match item {
+            Item::Struct(item_struct) => {
+                inspect_rust_struct_typing(
+                    implementation,
+                    diagnostics,
+                    path,
+                    item_struct,
+                    &allowed_public_field_structs,
+                    summary,
+                );
+            }
+            Item::Enum(item_enum) => {
+                if matches!(item_enum.vis, Visibility::Public(_)) {
+                    summary.public_types.insert(item_enum.ident.to_string());
+                } else {
+                    summary.private_types.insert(item_enum.ident.to_string());
+                }
+            }
+            Item::Type(item_type) => {
+                if matches!(item_type.vis, Visibility::Public(_)) {
+                    summary.public_types.insert(item_type.ident.to_string());
+                    if is_primitive_alias_target(&item_type.ty)
+                        && !allowed_primitive_aliases.contains(&item_type.ident.to_string())
+                    {
+                        diagnostics.push(error(
+                            "implementation.rust.typing.primitive-alias",
+                            &implementation.path,
+                            format!(
+                                "public type alias `{}` in `{}` points at a primitive; prefer a newtype/opaque value or declare it in `architecture.allowed_primitive_type_aliases`",
+                                item_type.ident,
+                                path.display()
+                            ),
+                        ));
+                    }
+                } else {
+                    summary.private_types.insert(item_type.ident.to_string());
+                }
+            }
+            Item::Impl(item_impl) => collect_rust_impl_methods(item_impl, summary),
+            Item::Fn(item_fn) => {
+                summary.functions.insert(item_fn.sig.ident.to_string());
+            }
+            _ => {}
+        }
+
+        if !allow_panics {
+            let mut visitor = RustFailureVisitor::default();
+            visitor.visit_item(item);
+            for failure in visitor.failures {
+                diagnostics.push(error(
+                    "implementation.rust.typing.failure-discipline",
+                    &implementation.path,
+                    format!(
+                        "Rust source `{}` uses `{}` in non-test domain code; prefer explicit result/error types for expected failures",
+                        path.display(),
+                        failure
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn inspect_rust_struct_typing(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    path: &Path,
+    item_struct: &ItemStruct,
+    allowed_public_field_structs: &BTreeSet<String>,
+    summary: &mut RustTypingSummary,
+) {
+    let struct_name = item_struct.ident.to_string();
+    if matches!(item_struct.vis, Visibility::Public(_)) {
+        summary.public_types.insert(struct_name.clone());
+    } else {
+        summary.private_types.insert(struct_name.clone());
+    }
+
+    let public_fields = public_struct_field_count(item_struct);
+    if public_fields > 0 && !allowed_public_field_structs.contains(&struct_name) {
+        diagnostics.push(error(
+            "implementation.rust.typing.public-fields",
+            &implementation.path,
+            format!(
+                "public struct `{struct_name}` in `{}` exposes {public_fields} public field(s); prefer private fields plus validated constructors/accessors or declare it in `architecture.allowed_public_field_structs`",
+                path.display()
+            ),
+        ));
+    }
+
+    if matches!(item_struct.vis, Visibility::Public(_))
+        && private_struct_field_count(item_struct) > 0
+    {
+        summary
+            .public_structs_with_private_fields
+            .insert(struct_name);
+    }
+}
+
+fn validate_rust_constructor_evidence(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    summary: &RustTypingSummary,
+) {
+    let allowed_missing_constructors: BTreeSet<_> = get_string_array(
+        &implementation.value,
+        &["architecture", "allowed_missing_constructors"],
+    )
+    .into_iter()
+    .collect();
+
+    for struct_name in &summary.public_structs_with_private_fields {
+        if allowed_missing_constructors.contains(struct_name) {
+            continue;
+        }
+        let Some(methods) = summary.impl_methods.get(struct_name) else {
+            diagnostics.push(warning(
+                "implementation.rust.typing.constructor",
+                &implementation.path,
+                format!(
+                    "public struct `{struct_name}` has private fields but no public constructor evidence; add `new`/`try_new`/`parse` or declare `architecture.allowed_missing_constructors`"
+                ),
+            ));
+            continue;
+        };
+        if !methods.iter().any(|method| is_constructor_like(method)) {
+            diagnostics.push(warning(
+                "implementation.rust.typing.constructor",
+                &implementation.path,
+                format!(
+                    "public struct `{struct_name}` has private fields but no constructor-like method (`new`, `try_new`, `parse`, `from_*`); add one or declare `architecture.allowed_missing_constructors`"
+                ),
+            ));
+        }
+    }
+}
+
+fn validate_rust_stateful_representation(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    module_manifest: Option<&LoadedManifest>,
+    summary: &RustTypingSummary,
+) {
+    let Some(module_manifest) = module_manifest else {
+        return;
+    };
+    let profiles = get_string_array(&module_manifest.value, &["profiles"]);
+    if !profiles.iter().any(|profile| profile == "stateful") {
+        return;
+    }
+
+    let state_type = get_str(&implementation.value, &["architecture", "state_type"]);
+    let transition_function = get_str(
+        &implementation.value,
+        &["architecture", "transition_function"],
+    );
+
+    if state_type.is_none() && transition_function.is_none() {
+        diagnostics.push(error(
+            "implementation.rust.typing.stateful-representation",
+            &implementation.path,
+            "stateful Rust bindings must declare `architecture.state_type` or `architecture.transition_function`",
+        ));
+        return;
+    }
+
+    if let Some(state_type) = state_type {
+        if !summary.public_types.contains(state_type) && !summary.private_types.contains(state_type)
+        {
+            diagnostics.push(error(
+                "implementation.rust.typing.state-type",
+                &implementation.path,
+                format!("declared `architecture.state_type` `{state_type}` was not found in Rust source"),
+            ));
+        }
+    }
+
+    if let Some(transition_function) = transition_function {
+        if !summary.functions.contains(transition_function) {
+            diagnostics.push(error(
+                "implementation.rust.typing.transition-function",
+                &implementation.path,
+                format!("declared `architecture.transition_function` `{transition_function}` was not found in Rust source"),
+            ));
+        }
+    }
+}
+
 fn collect_rust_dependencies(cargo: &TomlValue) -> BTreeSet<String> {
     let mut dependencies = BTreeSet::new();
     for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
@@ -997,6 +1272,177 @@ fn collect_rust_imports(file: &syn::File) -> Vec<RustImport> {
         }
     }
     imports
+}
+
+#[derive(Default)]
+struct RustTypingSummary {
+    public_types: BTreeSet<String>,
+    private_types: BTreeSet<String>,
+    public_structs_with_private_fields: BTreeSet<String>,
+    impl_methods: std::collections::BTreeMap<String, BTreeSet<String>>,
+    functions: BTreeSet<String>,
+}
+
+#[derive(Default)]
+struct RustFailureVisitor {
+    failures: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for RustFailureVisitor {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if has_cfg_test_attr(item_attrs(item)) {
+            return;
+        }
+        visit::visit_item(self, item);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
+        let method = node.method.to_string();
+        if matches!(method.as_str(), "unwrap" | "expect") {
+            self.failures.push(format!(".{method}()"));
+        }
+        visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_expr_macro(&mut self, node: &'ast ExprMacro) {
+        if let Some(name) = node
+            .mac
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+        {
+            if matches!(name.as_str(), "panic" | "todo" | "unimplemented") {
+                self.failures.push(format!("{name}!"));
+            }
+        }
+        visit::visit_expr_macro(self, node);
+    }
+}
+
+fn collect_rust_impl_methods(item_impl: &syn::ItemImpl, summary: &mut RustTypingSummary) {
+    let Some(type_name) = rust_type_name(&item_impl.self_ty) else {
+        return;
+    };
+
+    let methods = summary.impl_methods.entry(type_name).or_default();
+    for item in &item_impl.items {
+        if let ImplItem::Fn(function) = item {
+            if matches!(function.vis, Visibility::Public(_)) {
+                methods.insert(function.sig.ident.to_string());
+            }
+        }
+    }
+}
+
+fn rust_type_name(ty: &Type) -> Option<String> {
+    let Type::Path(path) = ty else {
+        return None;
+    };
+    path.path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+}
+
+fn is_constructor_like(method: &str) -> bool {
+    method == "new"
+        || method == "try_new"
+        || method == "parse"
+        || method == "from_validated"
+        || method.starts_with("from_")
+}
+
+fn public_struct_field_count(item_struct: &ItemStruct) -> usize {
+    match &item_struct.fields {
+        Fields::Named(fields) => fields
+            .named
+            .iter()
+            .filter(|field| matches!(field.vis, Visibility::Public(_)))
+            .count(),
+        Fields::Unnamed(fields) => fields
+            .unnamed
+            .iter()
+            .filter(|field| matches!(field.vis, Visibility::Public(_)))
+            .count(),
+        Fields::Unit => 0,
+    }
+}
+
+fn private_struct_field_count(item_struct: &ItemStruct) -> usize {
+    match &item_struct.fields {
+        Fields::Named(fields) => fields
+            .named
+            .iter()
+            .filter(|field| !matches!(field.vis, Visibility::Public(_)))
+            .count(),
+        Fields::Unnamed(fields) => fields
+            .unnamed
+            .iter()
+            .filter(|field| !matches!(field.vis, Visibility::Public(_)))
+            .count(),
+        Fields::Unit => 0,
+    }
+}
+
+fn is_primitive_alias_target(ty: &Type) -> bool {
+    let Some(name) = rust_type_name(ty) else {
+        return false;
+    };
+    matches!(
+        name.as_str(),
+        "String"
+            | "str"
+            | "bool"
+            | "char"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+    )
+}
+
+fn item_attrs(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Const(item) => &item.attrs,
+        Item::Enum(item) => &item.attrs,
+        Item::ExternCrate(item) => &item.attrs,
+        Item::Fn(item) => &item.attrs,
+        Item::Impl(item) => &item.attrs,
+        Item::Mod(item) => &item.attrs,
+        Item::Static(item) => &item.attrs,
+        Item::Struct(item) => &item.attrs,
+        Item::Trait(item) => &item.attrs,
+        Item::TraitAlias(item) => &item.attrs,
+        Item::Type(item) => &item.attrs,
+        Item::Union(item) => &item.attrs,
+        Item::Use(item) => &item.attrs,
+        _ => &[],
+    }
+}
+
+fn has_cfg_test_attr(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if attr.path().is_ident("test") {
+            return true;
+        }
+        match &attr.meta {
+            Meta::List(list) if list.path.is_ident("cfg") => {
+                list.tokens.to_string().contains("test")
+            }
+            _ => false,
+        }
+    })
 }
 
 fn collect_use_tree_roots(
@@ -1101,6 +1547,37 @@ fn display_relative(base: &Path, path: &Path) -> String {
         .collect::<PathBuf>()
         .display()
         .to_string()
+}
+
+fn load_rust_binding_module_manifest(
+    implementation: &LoadedManifest,
+    base: &Path,
+) -> Option<LoadedManifest> {
+    let declared_module = get_str(&implementation.value, &["module"])?;
+    let direct = base.join("module.yaml");
+    if let Ok(manifest) = load_manifest(&direct) {
+        if get_str(&manifest.value, &["module", "name"]) == Some(declared_module) {
+            return Some(manifest);
+        }
+    }
+
+    let entries = fs::read_dir(base).ok()?;
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".module.yaml"))
+        {
+            if let Ok(manifest) = load_manifest(&path) {
+                if get_str(&manifest.value, &["module", "name"]) == Some(declared_module) {
+                    return Some(manifest);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn require_verification_categories(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
@@ -1778,6 +2255,10 @@ fn get_str<'a>(value: &'a YamlValue, path: &[&str]) -> Option<&'a str> {
     get_path(value, path)?.as_str()
 }
 
+fn get_bool(value: &YamlValue, path: &[&str]) -> Option<bool> {
+    get_path(value, path)?.as_bool()
+}
+
 fn get_string_array(value: &YamlValue, path: &[&str]) -> Vec<String> {
     get_path(value, path)
         .and_then(YamlValue::as_sequence)
@@ -2239,11 +2720,142 @@ pub use external_crate::Thing;
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
+    #[test]
+    fn rust_typing_rejects_public_primitive_aliases() {
+        let root = rust_typing_fixture(
+            "primitive-alias",
+            &["core"],
+            "",
+            "pub type WidgetId = String;\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "implementation.rust.typing.primitive-alias"));
+    }
+
+    #[test]
+    fn rust_typing_rejects_public_domain_fields() {
+        let root = rust_typing_fixture(
+            "public-fields",
+            &["core"],
+            "",
+            "pub struct Widget {\n    pub name: String,\n}\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "implementation.rust.typing.public-fields"));
+    }
+
+    #[test]
+    fn rust_typing_rejects_panic_and_unwrap_in_domain_code() {
+        let root = rust_typing_fixture(
+            "failure-discipline",
+            &["core"],
+            "",
+            "pub fn parse_widget(value: Option<&str>) -> &str {\n    value.unwrap_or_else(|| panic!(\"missing\"))\n}\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "implementation.rust.typing.failure-discipline"
+        }));
+    }
+
+    #[test]
+    fn rust_typing_requires_stateful_representation_declaration() {
+        let root = rust_typing_fixture(
+            "stateful-representation",
+            &["core", "stateful"],
+            "",
+            "pub enum WidgetState {\n    Draft,\n    Active,\n}\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "implementation.rust.typing.stateful-representation"
+        }));
+    }
+
+    #[test]
+    fn rust_typing_accepts_declared_stateful_representation() {
+        let root = rust_typing_fixture(
+            "stateful-ok",
+            &["core", "stateful"],
+            "  state_type: WidgetState\n  transition_function: transition_widget\n",
+            "pub enum WidgetState {\n    Draft,\n    Active,\n}\n\npub fn transition_widget(state: WidgetState) -> WidgetState {\n    state\n}\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            !diagnostics.iter().any(|diagnostic| diagnostic
+                .check
+                .starts_with("implementation.rust.typing.state")),
+            "{diagnostics:#?}"
+        );
+    }
+
     fn unique_test_dir(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("rms-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    fn rust_typing_fixture(
+        label: &str,
+        profiles: &[&str],
+        architecture_extra: &str,
+        source: &str,
+    ) -> PathBuf {
+        let root = unique_test_dir(label);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"typing-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/lib.rs"), source).unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            format!(
+                "spec: rms/implementation/v0.1\n\nmodule: typing-fixture\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: typing-fixture\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  public_modules: []\n{architecture_extra}"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            format!(
+                "spec: rms/module/v0.1\n\nmodule:\n  name: typing-fixture\n  version: 0.1.0\n  kind: library\n  purpose: Test typing fixture\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\nstate:\n  model: docs/state.md\n  consistency_boundary: fixture\n  concurrency: single-threaded\n  migration_policy: none\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts: []\n  scenarios: []\n  boundaries: []\n",
+                profiles
+                    .iter()
+                    .map(|profile| format!("  - {profile}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        )
+        .unwrap();
+        root
+    }
+
+    fn validate_fixture_implementation(root: &Path) -> Vec<Diagnostic> {
+        let manifest = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_loaded_manifest(&manifest, &mut diagnostics);
+        diagnostics
     }
 }

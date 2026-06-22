@@ -8,6 +8,7 @@
 - Added Rust module scaffolding for `rms add-module --binding rust`.
 - Added the first Rust language binding checks for Cargo manifests, package identity, public entrypoints, crate dependency allowlists, and public modules.
 - Added source-level Rust binding checks for import roots and public re-exports.
+- Added Rust typing checks for primitive aliases, public fields, failure discipline, constructor evidence, and Stateful representation declarations.
 - Added `examples/rust` as a Rust binding fixture.
 - Added embedded JSON Schema validation to the Rust CLI.
 - Added conformance-report discovery and explicit `--conformance` validation.
