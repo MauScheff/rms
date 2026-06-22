@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: checkout-completed
+version: 1
+kind: event
+meaning: Published fact that checkout reached an accepted completed outcome.
+

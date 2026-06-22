@@ -106,6 +106,17 @@ enum Commands {
         json: bool,
     },
 
+    /// Check whether discovered modules can compose through declared public contracts.
+    Compose {
+        /// Root directory containing RMS system, context map, and module manifests.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Run the verification command declared by an implementation binding.
     Verify {
         /// Path to implementation.yaml.
@@ -234,6 +245,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::CheckCompat { old, new, json } => run_check_compat(&old, &new, json),
+        Commands::Compose { root, json } => run_compose(&root, json),
         Commands::Verify {
             implementation,
             dry_run,
@@ -343,20 +355,30 @@ fn discover_targets(
         let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if matches!(
-            file_name,
-            "system.yaml"
-                | "context-map.yaml"
-                | "module.yaml"
-                | "implementation.yaml"
-                | "conformance-report.json"
-        ) || file_name.ends_with(".module.yaml")
-        {
+        if file_name == "conformance-report.json" || is_supported_yaml_manifest(path) {
             found.insert(path.to_path_buf());
         }
     }
 
     Ok(found.into_iter().collect())
+}
+
+fn is_supported_yaml_manifest(path: &Path) -> bool {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("yaml") {
+        return false;
+    }
+    let Ok(source) = fs::read_to_string(path) else {
+        return false;
+    };
+    source.lines().take(5).any(|line| {
+        matches!(
+            line.trim(),
+            "spec: rms/system/v0.1"
+                | "spec: rms/module/v0.1"
+                | "spec: rms/context-map/v0.1"
+                | "spec: rms/implementation/v0.1"
+        )
+    })
 }
 
 fn validate_loaded_manifest(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
@@ -2789,6 +2811,567 @@ fn run_check_compat(old: &Path, new: &Path, json_output: bool) -> Result<()> {
     Ok(())
 }
 
+fn run_compose(root: &Path, json_output: bool) -> Result<()> {
+    let report = compose_system(root)?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_compose_report(&report);
+    }
+
+    if report.result == ComposeResult::Fail {
+        bail!("RMS composition check failed");
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ComposeReport {
+    result: ComposeResult,
+    root: String,
+    modules: Vec<String>,
+    findings: Vec<ComposeFinding>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ComposeResult {
+    Pass,
+    ReviewRequired,
+    Fail,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ComposeStatus {
+    Satisfied,
+    NotApplicable,
+    ReviewRequired,
+    Unresolved,
+    Incompatible,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ComposeFinding {
+    status: ComposeStatus,
+    check: String,
+    consumer: Option<String>,
+    provider: Option<String>,
+    requirement: Option<String>,
+    message: String,
+}
+
+#[derive(Clone, Debug)]
+struct ModuleIndexEntry {
+    name: String,
+    value: YamlValue,
+}
+
+#[derive(Clone, Debug)]
+struct ProvidedRequirement {
+    module: String,
+    group: String,
+    contract: Option<String>,
+}
+
+fn compose_system(root: &Path) -> Result<ComposeReport> {
+    let targets = discover_targets(root, vec![], vec![], vec![], vec![], vec![])?;
+    let mut modules = BTreeMap::new();
+    let mut systems = Vec::new();
+    let mut context_maps = Vec::new();
+    let mut findings = Vec::new();
+
+    for target in targets {
+        let manifest = match load_manifest(&target) {
+            Ok(manifest) => manifest,
+            Err(load_error) => {
+                findings.push(compose_finding(
+                    ComposeStatus::Incompatible,
+                    "manifest.parse",
+                    None,
+                    None,
+                    None,
+                    format!("failed to load `{}`: {load_error}", target.display()),
+                ));
+                continue;
+            }
+        };
+
+        match get_str(&manifest.value, &["spec"]) {
+            Some("rms/module/v0.1") => {
+                let name = get_str(&manifest.value, &["module", "name"])
+                    .unwrap_or("<unknown>")
+                    .to_string();
+                if modules.contains_key(&name) {
+                    findings.push(compose_finding(
+                        ComposeStatus::Incompatible,
+                        "module.name.unique",
+                        Some(name.clone()),
+                        None,
+                        None,
+                        format!("duplicate module name `{name}`"),
+                    ));
+                }
+                modules.insert(
+                    name.clone(),
+                    ModuleIndexEntry {
+                        name,
+                        value: manifest.value,
+                    },
+                );
+            }
+            Some("rms/system/v0.1") => systems.push(manifest),
+            Some("rms/context-map/v0.1") => context_maps.push(manifest),
+            _ => {}
+        }
+    }
+
+    let context_map = context_maps.first();
+    let external_dependencies = systems
+        .first()
+        .map(|system| get_string_array(&system.value, &["external_dependencies"]))
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let provided_requirements = provided_requirement_index(&modules);
+
+    if modules.is_empty() {
+        findings.push(compose_finding(
+            ComposeStatus::Unresolved,
+            "modules.discovered",
+            None,
+            None,
+            None,
+            "no RMS module manifests were discovered",
+        ));
+    }
+
+    for module in modules.values() {
+        compose_required_modules(module, &modules, context_map, &mut findings);
+        compose_required_capabilities(
+            module,
+            &provided_requirements,
+            &external_dependencies,
+            &mut findings,
+        );
+    }
+    compose_module_cycles(&modules, &mut findings);
+
+    let result = compose_result(&findings);
+    Ok(ComposeReport {
+        result,
+        root: root.display().to_string(),
+        modules: modules.keys().cloned().collect(),
+        findings,
+    })
+}
+
+fn provided_requirement_index(
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+) -> BTreeMap<String, Vec<ProvidedRequirement>> {
+    let mut index: BTreeMap<String, Vec<ProvidedRequirement>> = BTreeMap::new();
+    for module in modules.values() {
+        let Some(provides) = get_path(&module.value, &["provides"]).and_then(YamlValue::as_mapping)
+        else {
+            continue;
+        };
+        for (group, entries) in provides {
+            let Some(group) = group.as_str() else {
+                continue;
+            };
+            let Some(entries) = entries.as_sequence() else {
+                continue;
+            };
+            for entry in entries {
+                if let Some((name, contract)) = named_reference(entry) {
+                    index.entry(name).or_default().push(ProvidedRequirement {
+                        module: module.name.clone(),
+                        group: group.to_string(),
+                        contract,
+                    });
+                }
+            }
+        }
+    }
+    index
+}
+
+fn compose_required_modules(
+    module: &ModuleIndexEntry,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+    context_map: Option<&LoadedManifest>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let required_modules = named_contract_map(get_path(&module.value, &["requires", "modules"]));
+    if required_modules.is_empty() {
+        findings.push(compose_finding(
+            ComposeStatus::NotApplicable,
+            "requires.modules",
+            Some(module.name.clone()),
+            None,
+            None,
+            "module declares no required modules",
+        ));
+        return;
+    }
+
+    for (required_name, required_contract) in required_modules {
+        let Some(provider) = modules.get(&required_name) else {
+            findings.push(compose_finding(
+                ComposeStatus::Unresolved,
+                "requires.modules.provider",
+                Some(module.name.clone()),
+                Some(required_name.clone()),
+                Some(required_name.clone()),
+                format!("required module `{required_name}` was not found"),
+            ));
+            continue;
+        };
+
+        if let Some(contract) = required_contract.as_deref() {
+            let provider_contracts = public_contract_refs(&provider.value);
+            if !provider_contracts.contains(contract) {
+                findings.push(compose_finding(
+                    ComposeStatus::Incompatible,
+                    "requires.modules.contract",
+                    Some(module.name.clone()),
+                    Some(required_name.clone()),
+                    Some(contract.to_string()),
+                    format!(
+                        "required module `{required_name}` does not publish contract `{contract}`"
+                    ),
+                ));
+                continue;
+            }
+        }
+
+        check_context_relationship(&module.name, &required_name, context_map, findings);
+        findings.push(compose_finding(
+            ComposeStatus::Satisfied,
+            "requires.modules.provider",
+            Some(module.name.clone()),
+            Some(required_name.clone()),
+            Some(required_name),
+            "required module is present",
+        ));
+    }
+}
+
+fn compose_required_capabilities(
+    module: &ModuleIndexEntry,
+    provided_requirements: &BTreeMap<String, Vec<ProvidedRequirement>>,
+    external_dependencies: &BTreeSet<String>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let required_capabilities =
+        named_contract_map(get_path(&module.value, &["requires", "capabilities"]));
+    if required_capabilities.is_empty() {
+        findings.push(compose_finding(
+            ComposeStatus::NotApplicable,
+            "requires.capabilities",
+            Some(module.name.clone()),
+            None,
+            None,
+            "module declares no required capabilities",
+        ));
+        return;
+    }
+
+    for (required_name, required_contract) in required_capabilities {
+        if let Some(providers) = provided_requirements.get(&required_name) {
+            let compatible = providers.iter().find(|provider| {
+                required_contract.is_none() || provider.contract == required_contract
+            });
+            if let Some(provider) = compatible {
+                findings.push(compose_finding(
+                    ComposeStatus::Satisfied,
+                    "requires.capabilities.provider",
+                    Some(module.name.clone()),
+                    Some(provider.module.clone()),
+                    Some(required_name.clone()),
+                    format!(
+                        "required capability `{required_name}` is satisfied by module `{}` public {}",
+                        provider.module, provider.group
+                    ),
+                ));
+            } else {
+                findings.push(compose_finding(
+                    ComposeStatus::Incompatible,
+                    "requires.capabilities.contract",
+                    Some(module.name.clone()),
+                    None,
+                    Some(required_name.clone()),
+                    format!(
+                        "required capability `{required_name}` exists but no provider publishes the requested contract `{}`",
+                        required_contract.as_deref().unwrap_or("<none>")
+                    ),
+                ));
+            }
+            continue;
+        }
+
+        if external_dependencies.contains(&required_name) {
+            findings.push(compose_finding(
+                ComposeStatus::Satisfied,
+                "requires.capabilities.external",
+                Some(module.name.clone()),
+                Some(required_name.clone()),
+                Some(required_name.clone()),
+                format!("required capability `{required_name}` is listed as a system external dependency"),
+            ));
+            check_external_capability_effect(module, &required_name, findings);
+        } else {
+            findings.push(compose_finding(
+                ComposeStatus::Unresolved,
+                "requires.capabilities.provider",
+                Some(module.name.clone()),
+                None,
+                Some(required_name.clone()),
+                format!(
+                    "required capability `{required_name}` is not provided by a module or listed in system external dependencies"
+                ),
+            ));
+        }
+    }
+}
+
+fn check_external_capability_effect(
+    module: &ModuleIndexEntry,
+    required_name: &str,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let has_effect = get_path(&module.value, &["effects"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .any(|effect| {
+            get_str(effect, &["name"]) == Some(required_name)
+                || get_str(effect, &["capability"]) == Some(required_name)
+        });
+    if !has_effect {
+        findings.push(compose_finding(
+            ComposeStatus::ReviewRequired,
+            "effects.external-capability",
+            Some(module.name.clone()),
+            Some(required_name.to_string()),
+            Some(required_name.to_string()),
+            format!(
+                "external capability `{required_name}` is required but no matching effect is declared"
+            ),
+        ));
+    }
+}
+
+fn check_context_relationship(
+    consumer: &str,
+    provider: &str,
+    context_map: Option<&LoadedManifest>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let Some(context_map) = context_map else {
+        return;
+    };
+    if get_path(&context_map.value, &["contexts", consumer]).is_none()
+        || get_path(&context_map.value, &["contexts", provider]).is_none()
+    {
+        return;
+    }
+    if context_relationship_exists(&context_map.value, consumer, provider) {
+        findings.push(compose_finding(
+            ComposeStatus::Satisfied,
+            "context-map.relationship",
+            Some(consumer.to_string()),
+            Some(provider.to_string()),
+            None,
+            "context map declares a relationship between consumer and provider",
+        ));
+    } else {
+        findings.push(compose_finding(
+            ComposeStatus::ReviewRequired,
+            "context-map.relationship",
+            Some(consumer.to_string()),
+            Some(provider.to_string()),
+            None,
+            "both modules are named contexts, but the context map does not declare their relationship",
+        ));
+    }
+}
+
+fn context_relationship_exists(value: &YamlValue, left: &str, right: &str) -> bool {
+    let Some(relationships) = get_path(value, &["relationships"]).and_then(YamlValue::as_sequence)
+    else {
+        return false;
+    };
+    relationships.iter().any(|relationship| {
+        let upstream = get_str(relationship, &["upstream"]);
+        let downstream = get_str(relationship, &["downstream"]);
+        matches!(
+            (upstream, downstream),
+            (Some(up), Some(down)) if (up == left && down == right) || (up == right && down == left)
+        )
+    })
+}
+
+fn compose_module_cycles(
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let mut edges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for module in modules.values() {
+        let required_modules =
+            named_contract_map(get_path(&module.value, &["requires", "modules"]));
+        edges.insert(
+            module.name.clone(),
+            required_modules
+                .keys()
+                .filter(|name| modules.contains_key(*name))
+                .cloned()
+                .collect(),
+        );
+    }
+
+    for module in modules.keys() {
+        let mut path = Vec::new();
+        let mut visiting = BTreeSet::new();
+        if let Some(cycle) = find_module_cycle(module, module, &edges, &mut visiting, &mut path) {
+            findings.push(compose_finding(
+                ComposeStatus::Incompatible,
+                "requires.modules.cycle",
+                Some(module.clone()),
+                None,
+                None,
+                format!("module dependency cycle detected: {}", cycle.join(" -> ")),
+            ));
+            return;
+        }
+    }
+}
+
+fn find_module_cycle(
+    start: &str,
+    current: &str,
+    edges: &BTreeMap<String, BTreeSet<String>>,
+    visiting: &mut BTreeSet<String>,
+    path: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    if !visiting.insert(current.to_string()) {
+        return None;
+    }
+    path.push(current.to_string());
+
+    for next in edges.get(current).into_iter().flatten() {
+        if next == start {
+            let mut cycle = path.clone();
+            cycle.push(start.to_string());
+            return Some(cycle);
+        }
+        if !path.iter().any(|item| item == next) {
+            if let Some(cycle) = find_module_cycle(start, next, edges, visiting, path) {
+                return Some(cycle);
+            }
+        }
+    }
+
+    path.pop();
+    visiting.remove(current);
+    None
+}
+
+fn public_contract_refs(value: &YamlValue) -> BTreeSet<String> {
+    let mut contracts = BTreeSet::new();
+    let Some(provides) = get_path(value, &["provides"]).and_then(YamlValue::as_mapping) else {
+        return contracts;
+    };
+    for entries in provides.values().filter_map(YamlValue::as_sequence) {
+        for entry in entries {
+            if let Some((_, Some(contract))) = named_reference(entry) {
+                contracts.insert(contract);
+            }
+        }
+    }
+    contracts
+}
+
+fn compose_result(findings: &[ComposeFinding]) -> ComposeResult {
+    if findings.iter().any(|finding| {
+        matches!(
+            finding.status,
+            ComposeStatus::Unresolved | ComposeStatus::Incompatible
+        )
+    }) {
+        ComposeResult::Fail
+    } else if findings
+        .iter()
+        .any(|finding| finding.status == ComposeStatus::ReviewRequired)
+    {
+        ComposeResult::ReviewRequired
+    } else {
+        ComposeResult::Pass
+    }
+}
+
+fn compose_finding(
+    status: ComposeStatus,
+    check: impl Into<String>,
+    consumer: Option<String>,
+    provider: Option<String>,
+    requirement: Option<String>,
+    message: impl Into<String>,
+) -> ComposeFinding {
+    ComposeFinding {
+        status,
+        check: check.into(),
+        consumer,
+        provider,
+        requirement,
+        message: message.into(),
+    }
+}
+
+fn compose_status_label(status: ComposeStatus) -> &'static str {
+    match status {
+        ComposeStatus::Satisfied => "satisfied",
+        ComposeStatus::NotApplicable => "not-applicable",
+        ComposeStatus::ReviewRequired => "review-required",
+        ComposeStatus::Unresolved => "unresolved",
+        ComposeStatus::Incompatible => "incompatible",
+    }
+}
+
+fn compose_result_label(result: ComposeResult) -> &'static str {
+    match result {
+        ComposeResult::Pass => "pass",
+        ComposeResult::ReviewRequired => "review-required",
+        ComposeResult::Fail => "fail",
+    }
+}
+
+fn print_compose_report(report: &ComposeReport) {
+    println!("RMS composition: {}", compose_result_label(report.result));
+    println!("Root: {}", report.root);
+    print_string_list("Modules", &report.modules);
+    if report.findings.is_empty() {
+        println!("No composition findings.");
+        return;
+    }
+    for finding in &report.findings {
+        let consumer = finding.consumer.as_deref().unwrap_or("<none>");
+        let provider = finding.provider.as_deref().unwrap_or("<none>");
+        let requirement = finding.requirement.as_deref().unwrap_or("<none>");
+        println!(
+            "- {} [{}] consumer={} provider={} requirement={}: {}",
+            compose_status_label(finding.status),
+            finding.check,
+            consumer,
+            provider,
+            requirement,
+            finding.message
+        );
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct CompatReport {
     result: CompatResult,
@@ -4472,6 +5055,86 @@ verification:
             .any(|finding| finding.check == "effects.added"));
     }
 
+    #[test]
+    fn compose_satisfies_module_provided_capability() {
+        let root = unique_test_dir("compose-satisfied");
+        fs::create_dir_all(&root).unwrap();
+        write_compose_module(
+            &root.join("provider.module.yaml"),
+            "provider",
+            "  capabilities:\n    - name: send-email\n      contract: contracts/send-email.yaml\n",
+            "  modules: []\n",
+            "  capabilities: []\n",
+        );
+        write_compose_module(
+            &root.join("consumer.module.yaml"),
+            "consumer",
+            "  capabilities: []\n",
+            "  modules: []\n",
+            "  capabilities:\n    - name: send-email\n      contract: contracts/send-email.yaml\n",
+        );
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Pass);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::Satisfied
+                && finding.check == "requires.capabilities.provider"
+        }));
+    }
+
+    #[test]
+    fn compose_reports_unresolved_capability() {
+        let root = unique_test_dir("compose-unresolved");
+        fs::create_dir_all(&root).unwrap();
+        write_compose_module(
+            &root.join("consumer.module.yaml"),
+            "consumer",
+            "  capabilities: []\n",
+            "  modules: []\n",
+            "  capabilities:\n    - name: send-email\n      contract: contracts/send-email.yaml\n",
+        );
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Fail);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::Unresolved
+                && finding.check == "requires.capabilities.provider"
+        }));
+    }
+
+    #[test]
+    fn compose_reports_module_dependency_cycles() {
+        let root = unique_test_dir("compose-cycle");
+        fs::create_dir_all(&root).unwrap();
+        write_compose_module(
+            &root.join("alpha.module.yaml"),
+            "alpha",
+            "  capabilities: []\n",
+            "  modules:\n    - beta\n",
+            "  capabilities: []\n",
+        );
+        write_compose_module(
+            &root.join("beta.module.yaml"),
+            "beta",
+            "  capabilities: []\n",
+            "  modules:\n    - alpha\n",
+            "  capabilities: []\n",
+        );
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Fail);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::Incompatible
+                && finding.check == "requires.modules.cycle"
+        }));
+    }
+
     fn unique_test_dir(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -4514,6 +5177,22 @@ verification:
         )
         .unwrap();
         root
+    }
+
+    fn write_compose_module(
+        path: &Path,
+        name: &str,
+        provides_extra: &str,
+        requires_modules: &str,
+        requires_capabilities: &str,
+    ) {
+        fs::write(
+            path,
+            format!(
+                "spec: rms/module/v0.1\n\nmodule:\n  name: {name}\n  version: 0.1.0\n  kind: library\n  purpose: Test composition\n\nprofiles:\n  - core\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n{provides_extra}\nrequires:\n{requires_modules}{requires_capabilities}\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts: []\n  scenarios: []\n  boundaries: []\n"
+            ),
+        )
+        .unwrap();
     }
 
     fn swift_typing_fixture(

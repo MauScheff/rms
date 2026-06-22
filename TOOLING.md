@@ -42,6 +42,7 @@ rms init <path> --name <system> --purpose <purpose>
 rms add-module <path> --name <module> --purpose <purpose> [--binding rust|swift]
 rms inspect <module.yaml>
 rms context <module.yaml> [--task "..."]
+rms compose --root <path>
 rms check-compat <old-module.yaml> <new-module.yaml>
 rms conformance <module.yaml> [--implementation implementation.yaml]
 rms verify <implementation.yaml>
@@ -62,6 +63,8 @@ The first language binding is Rust. A Rust implementation binding declares `bind
 The second language binding is Swift. A Swift implementation binding declares `binding: swift` in `implementation.yaml`; the CLI then checks Swift package shape, package and target identity, public entrypoint placement, source imports against `dependencies.allowed_external_modules`, public re-exports, primitive type aliases, public stored fields, trap-based failure discipline, constructor evidence, and Stateful representation declarations.
 
 The first compatibility checker is manifest-level. It classifies public surface removals and contract path changes as breaking, additive public surface changes as compatible additive, and profile/effect/capability/policy changes as requiring operational review.
+
+The first composition checker is manifest-level. It checks required module presence, required capability providers, capability contract compatibility, context-map relationships when both sides are named contexts, externally satisfied capability effects, and direct module dependency cycles.
 
 ### `inspect`
 
@@ -273,7 +276,6 @@ Module/context inspector
 Dependency-boundary checker for primary language bindings
 Contract compatibility checker for one schema format
 Context-packet generator
-Composition checker
 Portable package builder
 Conformance report
 ```

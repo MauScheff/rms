@@ -25,6 +25,11 @@ jobs:
           cargo run -p rms -- validate --root examples/swift
       - name: Check compatibility smoke test
         run: cargo run -p rms -- check-compat examples/rust/module.yaml examples/rust/module.yaml
+      - name: Check composition smoke tests
+        run: |
+          cargo run -p rms -- compose --root examples/minimal
+          cargo run -p rms -- compose --root examples/rust
+          cargo run -p rms -- compose --root examples/swift
       - name: Validate scaffold roundtrip
         run: |
           tmpdir="$(mktemp -d)"
@@ -43,6 +48,7 @@ jobs:
             --kind library \
             --binding swift
           cargo run -p rms --locked -- validate --root "$tmpdir/app"
+          cargo run -p rms --locked -- compose --root "$tmpdir/app"
           cargo generate-lockfile --manifest-path "$tmpdir/app/modules/widget/Cargo.toml"
           cargo test --manifest-path "$tmpdir/app/modules/widget/Cargo.toml" --locked
       - name: Test Rust binding example

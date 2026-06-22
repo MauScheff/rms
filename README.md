@@ -80,6 +80,12 @@ rms validate --root examples/rust
 rms validate --root examples/swift
 ```
 
+Check whether discovered modules compose through declared public requirements:
+
+```bash
+rms compose --root examples/minimal
+```
+
 Inspect a module:
 
 ```bash
@@ -159,14 +165,14 @@ For any other coding agent, provide a context packet containing the system summa
 | `skills/` | Canonical agent skills. |
 | `tooling/rust/rms/` | Rust reference CLI. |
 | `integrations/codex/rms/` | Codex plugin wrapper. |
-| `examples/` | Minimal and commerce example artifacts. |
+| `examples/` | Minimal, commerce, Rust, and Swift example artifacts. |
 | `templates/` | Starter docs for modules, contexts, decisions, and glossary entries. |
 
 ## Status
 
 This repository is RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use: modules, ownership, contracts, invariants, effects, profiles, composition, substitutability, and conformance.
 
-The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection, context packets, compatibility classification, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
+The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection, composition checks, context packets, compatibility classification, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
 
 The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, and Stateful representation declarations.
 

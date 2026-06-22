@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: checkout-requires-review
+version: 1
+kind: event
+meaning: Published fact that checkout needs manual review before a terminal customer outcome.
+

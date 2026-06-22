@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: submit-order
+version: 1
+kind: capability
+meaning: Ordering capability used by checkout to submit an accepted order.
+

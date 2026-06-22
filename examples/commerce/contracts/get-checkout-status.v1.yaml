@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: get-checkout-status
+version: 1
+kind: query
+meaning: Return the accepted coordination state of one checkout.
+

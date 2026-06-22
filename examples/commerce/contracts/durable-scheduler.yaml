@@ -1,0 +1,5 @@
+spec: rms/contract/v0.1
+name: durable-scheduler
+kind: capability
+meaning: Durable scheduling capability for retrying and resuming workflow steps.
+

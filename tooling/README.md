@@ -11,6 +11,7 @@ cargo run -p rms -- init /tmp/rms-example --name rms-example --purpose "Try RMS"
 cargo run -p rms -- add-module /tmp/rms-example/modules/widget --name widget --purpose "Own widgets" --binding rust
 cargo run -p rms -- add-module /tmp/rms-example/modules/swift-widget --name swift-widget --purpose "Own Swift widgets" --binding swift
 cargo run -p rms -- validate --root examples/minimal
+cargo run -p rms -- compose --root examples/minimal
 cargo run -p rms -- inspect examples/minimal/module.yaml
 cargo run -p rms -- context examples/minimal/module.yaml --task "add a public command"
 cargo run -p rms -- check-compat examples/rust/module.yaml examples/rust/module.yaml
@@ -23,6 +24,7 @@ The CLI intentionally starts small:
 - checks required semantic fields and RMS version identifiers;
 - checks referenced contracts, verification evidence, and implementation paths;
 - inspects module ownership, profiles, contracts, effects, and verification;
+- checks whether modules compose through declared module and capability requirements;
 - emits bounded context packets for agents;
 - classifies manifest compatibility changes;
 - produces explicit partial/pass/fail conformance reports;
@@ -37,6 +39,7 @@ Other implementations should preserve these command meanings even if flags and o
 | `rms init` | Scaffold a new RMS system. |
 | `rms add-module` | Scaffold a valid RMS module directory. |
 | `rms validate` | Check canonical artifacts and references. |
+| `rms compose` | Check module requirement/provider composition. |
 | `rms inspect` | Print a concise module brief. |
 | `rms context` | Build a bounded packet for a task. |
 | `rms check-compat` | Classify module manifest compatibility impact. |

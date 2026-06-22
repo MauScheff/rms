@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: release-inventory
+version: 1
+kind: capability
+meaning: Inventory capability used by checkout to release a reservation after rejection.
+

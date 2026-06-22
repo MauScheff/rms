@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added `rms compose` manifest-level module composition checks.
 - Added Swift binding scaffolding, validation checks, and `examples/swift`.
 - Added `rms check-compat` manifest-level compatibility classification.
 - Tightened agent guidance for ADTs, validated constructors, explicit result types, boundary schemas, state machines, and negative verification.

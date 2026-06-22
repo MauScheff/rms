@@ -1,0 +1,2 @@
+Payment rejection releases any active inventory reservation before terminal rejection.
+

@@ -1,0 +1,6 @@
+spec: rms/contract/v0.1
+name: start-checkout
+version: 1
+kind: command
+meaning: Begin checkout coordination for an accepted order draft.
+
