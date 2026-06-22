@@ -36,6 +36,7 @@ jobs:
           cargo run -p rms -- package examples/rust/module.yaml --output "$tmpdir/rust-example.rms"
           test -f "$tmpdir/rust-example.rms/PACKAGE.json"
           test -f "$tmpdir/rust-example.rms/conformance-report.json"
+          cargo run -p rms -- verify-package "$tmpdir/rust-example.rms"
       - name: Validate scaffold roundtrip
         run: |
           tmpdir="$(mktemp -d)"

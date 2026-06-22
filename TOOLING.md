@@ -28,6 +28,7 @@ rms verify [module]
 rms check-compat <old> <new>
 rms compose [system]
 rms package <module>
+rms verify-package <package>
 rms graph [system|module]
 rms conformance [module]
 ```
@@ -46,6 +47,7 @@ rms context <module.yaml> [--task "..."]
 rms compose --root <path>
 rms check-compat <old-module.yaml> <new-module.yaml>
 rms package <module.yaml> [--output <directory>]
+rms verify-package <package-directory>
 rms conformance <module.yaml> [--implementation implementation.yaml]
 rms verify <implementation.yaml>
 ```
@@ -136,6 +138,10 @@ Checks whether declared requirements can be satisfied by available providers, in
 ### `package`
 
 Assembles a portable module package directory from the canonical manifest, referenced contracts and evidence, sibling implementation binding when present, generated conformance report, and `PACKAGE.json` metadata with source revision, validator identity, included files, sizes, and SHA-256 checksums. The resulting directory may be archived or used as an input to another registry or artifact system.
+
+### `verify-package`
+
+Verifies a portable package directory before it is trusted by another project, registry, or agent. It checks `PACKAGE.json`, rejects unsafe paths and symlinks, confirms that every declared payload file is present with the expected byte size and SHA-256 digest, rejects undeclared payload files, and validates the included RMS module and conformance artifacts.
 
 ### `conformance`
 

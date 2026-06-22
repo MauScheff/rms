@@ -117,6 +117,7 @@ Package a module for sharing:
 
 ```bash
 rms package examples/rust/module.yaml --output dist/rust-example.rms
+rms verify-package dist/rust-example.rms
 ```
 
 ## Adopt RMS In A Project
@@ -178,7 +179,7 @@ For any other coding agent, provide a context packet containing the system summa
 
 This repository is RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use: modules, ownership, contracts, invariants, effects, profiles, composition, substitutability, and conformance.
 
-The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection, composition checks, context packets, compatibility classification, portable package directories, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
+The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection, composition checks, context packets, compatibility classification, portable package directories, package integrity verification, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
 
 The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, Stateful representation declarations, and semantic function source symbols.
 

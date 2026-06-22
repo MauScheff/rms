@@ -146,6 +146,16 @@ enum Commands {
         force: bool,
     },
 
+    /// Verify a portable RMS module package directory.
+    VerifyPackage {
+        /// Path to a package directory containing PACKAGE.json.
+        package: PathBuf,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Scaffold a new RMS system in a directory.
     Init {
         /// Directory to initialize.
@@ -276,6 +286,7 @@ fn main() -> Result<()> {
             output,
             force,
         } => run_package(&module, output.as_deref(), force),
+        Commands::VerifyPackage { package, json } => run_verify_package(&package, json),
         Commands::Init {
             path,
             name,
@@ -3077,6 +3088,35 @@ struct PackageFile {
     sha256: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct VerifyPackageReport {
+    result: VerifyPackageResult,
+    package: String,
+    findings: Vec<VerifyPackageFinding>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum VerifyPackageResult {
+    Pass,
+    Fail,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum VerifyPackageStatus {
+    Pass,
+    Fail,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct VerifyPackageFinding {
+    status: VerifyPackageStatus,
+    check: String,
+    path: Option<String>,
+    message: String,
+}
+
 fn package_module(
     module_path: &Path,
     output: Option<&Path>,
@@ -3355,6 +3395,744 @@ fn sha256_file(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn run_verify_package(package: &Path, json_output: bool) -> Result<()> {
+    let report = verify_package(package)?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_verify_package_report(&report);
+    }
+
+    if report.result == VerifyPackageResult::Fail {
+        bail!("RMS package verification failed");
+    }
+
+    Ok(())
+}
+
+fn verify_package(package: &Path) -> Result<VerifyPackageReport> {
+    let mut findings = Vec::new();
+
+    if !package.exists() {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Fail,
+            "package.directory",
+            Some(package),
+            "package directory does not exist",
+        ));
+        return Ok(build_verify_package_report(package, findings));
+    }
+
+    if !package.is_dir() {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Fail,
+            "package.directory",
+            Some(package),
+            "package path is not a directory",
+        ));
+        return Ok(build_verify_package_report(package, findings));
+    }
+
+    findings.push(verify_package_finding(
+        VerifyPackageStatus::Pass,
+        "package.directory",
+        Some(package),
+        "package directory exists",
+    ));
+
+    let package_manifest_path = package.join("PACKAGE.json");
+    let package_manifest_source = match fs::read_to_string(&package_manifest_path) {
+        Ok(source) => source,
+        Err(error) => {
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.manifest.read",
+                Some(&package_manifest_path),
+                format!("failed to read PACKAGE.json: {error}"),
+            ));
+            return Ok(build_verify_package_report(package, findings));
+        }
+    };
+    let package_manifest: JsonValue = match serde_json::from_str(&package_manifest_source) {
+        Ok(value) => value,
+        Err(error) => {
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.manifest.parse",
+                Some(&package_manifest_path),
+                format!("failed to parse PACKAGE.json: {error}"),
+            ));
+            return Ok(build_verify_package_report(package, findings));
+        }
+    };
+
+    verify_package_metadata(&package_manifest, &package_manifest_path, &mut findings);
+
+    let declared_files = verify_package_declared_files(
+        package,
+        &package_manifest,
+        &package_manifest_path,
+        &mut findings,
+    )?;
+    verify_package_actual_files(package, &declared_files, &mut findings)?;
+    verify_package_manifests(package, &package_manifest, &declared_files, &mut findings)?;
+
+    Ok(build_verify_package_report(package, findings))
+}
+
+fn verify_package_metadata(
+    manifest: &JsonValue,
+    manifest_path: &Path,
+    findings: &mut Vec<VerifyPackageFinding>,
+) {
+    verify_package_string_field(
+        manifest,
+        manifest_path,
+        findings,
+        "package.spec",
+        "spec",
+        Some("rms/package/v0.1"),
+    );
+    verify_package_string_field(
+        manifest,
+        manifest_path,
+        findings,
+        "package.module",
+        "module",
+        None,
+    );
+    verify_package_string_field(
+        manifest,
+        manifest_path,
+        findings,
+        "package.version",
+        "version",
+        None,
+    );
+    verify_package_string_field(
+        manifest,
+        manifest_path,
+        findings,
+        "package.source.revision",
+        "source.revision",
+        None,
+    );
+    verify_package_string_field(
+        manifest,
+        manifest_path,
+        findings,
+        "package.validator.name",
+        "validator.name",
+        Some(VALIDATOR_NAME),
+    );
+    verify_package_string_field(
+        manifest,
+        manifest_path,
+        findings,
+        "package.validator.version",
+        "validator.version",
+        None,
+    );
+}
+
+fn verify_package_string_field(
+    manifest: &JsonValue,
+    manifest_path: &Path,
+    findings: &mut Vec<VerifyPackageFinding>,
+    check: &str,
+    field: &str,
+    expected: Option<&str>,
+) {
+    let value = package_json_string(manifest, field);
+    match (value, expected) {
+        (Some(actual), Some(expected)) if actual == expected => {
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Pass,
+                check,
+                Some(manifest_path),
+                format!("`{field}` is `{expected}`"),
+            ))
+        }
+        (Some(actual), Some(expected)) => findings.push(verify_package_finding(
+            VerifyPackageStatus::Fail,
+            check,
+            Some(manifest_path),
+            format!("`{field}` must be `{expected}`, got `{actual}`"),
+        )),
+        (Some(_), None) => findings.push(verify_package_finding(
+            VerifyPackageStatus::Pass,
+            check,
+            Some(manifest_path),
+            format!("`{field}` is present"),
+        )),
+        (None, _) => findings.push(verify_package_finding(
+            VerifyPackageStatus::Fail,
+            check,
+            Some(manifest_path),
+            format!("missing required string `{field}`"),
+        )),
+    }
+}
+
+fn verify_package_declared_files(
+    package: &Path,
+    manifest: &JsonValue,
+    manifest_path: &Path,
+    findings: &mut Vec<VerifyPackageFinding>,
+) -> Result<BTreeMap<String, PackageFile>> {
+    let mut declared_files = BTreeMap::new();
+    let Some(files) = manifest.get("files").and_then(JsonValue::as_array) else {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Fail,
+            "package.files",
+            Some(manifest_path),
+            "`files` must be an array",
+        ));
+        return Ok(declared_files);
+    };
+
+    if files.is_empty() {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Fail,
+            "package.files",
+            Some(manifest_path),
+            "`files` must name at least one payload file",
+        ));
+        return Ok(declared_files);
+    }
+
+    let mut integrity_failed = false;
+    for (index, file) in files.iter().enumerate() {
+        let check_path = format!("files[{index}]");
+        let Some(path) = file.get("path").and_then(JsonValue::as_str) else {
+            integrity_failed = true;
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.file.path",
+                Some(manifest_path),
+                format!("`{check_path}.path` must be a relative path string"),
+            ));
+            continue;
+        };
+        let Some(relative_path) = package_relative_path(path) else {
+            integrity_failed = true;
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.file.path",
+                Some(manifest_path),
+                format!("`{path}` must not be absolute, empty, or contain `.`/`..` components"),
+            ));
+            continue;
+        };
+        let normalized_path = package_path_string(&relative_path);
+        if normalized_path != path {
+            integrity_failed = true;
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.file.path",
+                Some(manifest_path),
+                format!("`{path}` must be stored in normalized package-relative form"),
+            ));
+            continue;
+        }
+        if declared_files.contains_key(&normalized_path) {
+            integrity_failed = true;
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.file.duplicate",
+                Some(manifest_path),
+                format!("duplicate package file entry `{normalized_path}`"),
+            ));
+            continue;
+        }
+
+        let Some(bytes) = file.get("bytes").and_then(JsonValue::as_u64) else {
+            integrity_failed = true;
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.file.bytes",
+                Some(manifest_path),
+                format!("`{check_path}.bytes` must be an unsigned integer"),
+            ));
+            continue;
+        };
+        let Some(sha256) = file.get("sha256").and_then(JsonValue::as_str) else {
+            integrity_failed = true;
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.file.sha256",
+                Some(manifest_path),
+                format!("`{check_path}.sha256` must be a string"),
+            ));
+            continue;
+        };
+        if sha256.len() != 64
+            || !sha256
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        {
+            integrity_failed = true;
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.file.sha256",
+                Some(manifest_path),
+                format!("`{check_path}.sha256` must be a 64-character hexadecimal digest"),
+            ));
+            continue;
+        }
+
+        let payload_path = package.join(&relative_path);
+        match fs::symlink_metadata(&payload_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                integrity_failed = true;
+                findings.push(verify_package_finding(
+                    VerifyPackageStatus::Fail,
+                    "package.file.symlink",
+                    Some(&payload_path),
+                    "package payload files must not be symlinks",
+                ));
+            }
+            Ok(metadata) if !metadata.file_type().is_file() => {
+                integrity_failed = true;
+                findings.push(verify_package_finding(
+                    VerifyPackageStatus::Fail,
+                    "package.file.kind",
+                    Some(&payload_path),
+                    "declared package payload path is not a file",
+                ));
+            }
+            Ok(metadata) => {
+                if metadata.len() != bytes {
+                    integrity_failed = true;
+                    findings.push(verify_package_finding(
+                        VerifyPackageStatus::Fail,
+                        "package.file.bytes",
+                        Some(&payload_path),
+                        format!(
+                            "declared size {bytes} does not match actual size {}",
+                            metadata.len()
+                        ),
+                    ));
+                }
+                let actual_sha256 = sha256_file(&payload_path)?;
+                if actual_sha256 != sha256 {
+                    integrity_failed = true;
+                    findings.push(verify_package_finding(
+                        VerifyPackageStatus::Fail,
+                        "package.file.sha256",
+                        Some(&payload_path),
+                        format!("declared SHA-256 {sha256} does not match actual {actual_sha256}"),
+                    ));
+                }
+            }
+            Err(error) => {
+                integrity_failed = true;
+                findings.push(verify_package_finding(
+                    VerifyPackageStatus::Fail,
+                    "package.file.exists",
+                    Some(&payload_path),
+                    format!("declared package payload file is missing or unreadable: {error}"),
+                ));
+            }
+        }
+
+        declared_files.insert(
+            normalized_path.clone(),
+            PackageFile {
+                path: normalized_path,
+                bytes,
+                sha256: sha256.to_string(),
+            },
+        );
+    }
+
+    if !integrity_failed {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Pass,
+            "package.files.integrity",
+            Some(manifest_path),
+            format!(
+                "{} declared payload files match size and SHA-256 metadata",
+                declared_files.len()
+            ),
+        ));
+    }
+
+    Ok(declared_files)
+}
+
+fn verify_package_actual_files(
+    package: &Path,
+    declared_files: &BTreeMap<String, PackageFile>,
+    findings: &mut Vec<VerifyPackageFinding>,
+) -> Result<()> {
+    let mut failed = false;
+    let mut actual_files = BTreeSet::new();
+
+    for entry in WalkDir::new(package).follow_links(false) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                failed = true;
+                findings.push(verify_package_finding(
+                    VerifyPackageStatus::Fail,
+                    "package.files.walk",
+                    Some(package),
+                    format!("failed to inspect package directory: {error}"),
+                ));
+                continue;
+            }
+        };
+        if entry.path() == package {
+            continue;
+        }
+        if entry.file_type().is_symlink() {
+            failed = true;
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.file.symlink",
+                Some(entry.path()),
+                "package contents must not contain symlinks",
+            ));
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry.file_name().to_str() == Some("PACKAGE.json") {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(package)
+            .with_context(|| format!("failed to relativize `{}`", entry.path().display()))?;
+        let path = package_path_string(relative);
+        actual_files.insert(path.clone());
+        if !declared_files.contains_key(&path) {
+            failed = true;
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.file.undeclared",
+                Some(entry.path()),
+                format!("payload file `{path}` is not declared in PACKAGE.json"),
+            ));
+        }
+    }
+
+    for path in declared_files.keys() {
+        if !actual_files.contains(path) {
+            failed = true;
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.file.missing",
+                Some(package.join(path)),
+                format!("declared payload file `{path}` is missing"),
+            ));
+        }
+    }
+
+    if !failed {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Pass,
+            "package.files.closed",
+            Some(package),
+            "all payload files are declared and no undeclared payload files are present",
+        ));
+    }
+
+    Ok(())
+}
+
+fn verify_package_manifests(
+    package: &Path,
+    package_manifest: &JsonValue,
+    declared_files: &BTreeMap<String, PackageFile>,
+    findings: &mut Vec<VerifyPackageFinding>,
+) -> Result<()> {
+    if declared_files.contains_key("PACKAGE.json") {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Fail,
+            "package.manifest.payload",
+            Some(package.join("PACKAGE.json")),
+            "PACKAGE.json must not be listed as a payload file",
+        ));
+    }
+
+    if !declared_files.contains_key("conformance-report.json") {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Fail,
+            "package.conformance.present",
+            Some(package.join("conformance-report.json")),
+            "package must declare conformance-report.json",
+        ));
+    }
+
+    let targets = discover_targets(package, vec![], vec![], vec![], vec![], vec![], vec![])?;
+    let mut diagnostics = Vec::new();
+    let mut module_manifests = Vec::new();
+    let mut conformance_found = false;
+
+    for target in targets {
+        match load_manifest(&target) {
+            Ok(manifest) => {
+                match get_str(&manifest.value, &["spec"]) {
+                    Some("rms/module/v0.1") => module_manifests.push(manifest.path.clone()),
+                    Some("rms/conformance/v0.1") => conformance_found = true,
+                    _ => {}
+                }
+                validate_package_embedded_manifest(&manifest, &mut diagnostics);
+            }
+            Err(error) => diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                check: "manifest.parse".to_string(),
+                path: target.display().to_string(),
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    if module_manifests.is_empty() {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Fail,
+            "package.module-manifest.present",
+            Some(package),
+            "package must contain one RMS module manifest",
+        ));
+    } else if module_manifests.len() > 1 {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Fail,
+            "package.module-manifest.count",
+            Some(package),
+            format!(
+                "package must contain exactly one RMS module manifest, found {}",
+                module_manifests.len()
+            ),
+        ));
+    } else {
+        let module_manifest = load_manifest(&module_manifests[0])?;
+        verify_package_module_identity(&module_manifest, package_manifest, findings);
+    }
+
+    if conformance_found {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Pass,
+            "package.conformance.present",
+            Some(package.join("conformance-report.json")),
+            "package contains a conformance report",
+        ));
+    } else {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Fail,
+            "package.conformance.present",
+            Some(package.join("conformance-report.json")),
+            "package must contain conformance-report.json with spec rms/conformance/v0.1",
+        ));
+    }
+
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        for diagnostic in diagnostics
+            .into_iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        {
+            findings.push(VerifyPackageFinding {
+                status: VerifyPackageStatus::Fail,
+                check: diagnostic.check,
+                path: Some(diagnostic.path),
+                message: diagnostic.message,
+            });
+        }
+    } else {
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Pass,
+            "package.manifests.validate",
+            Some(package),
+            "included RMS manifests validate",
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_package_embedded_manifest(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if get_str(&manifest.value, &["spec"]) == Some("rms/implementation/v0.1") {
+        validate_against_embedded_schema(manifest, diagnostics);
+        scan_for_secret_like_keys(&manifest.value, &manifest.path, diagnostics);
+    } else {
+        validate_loaded_manifest(manifest, diagnostics);
+    }
+}
+
+fn verify_package_module_identity(
+    module_manifest: &LoadedManifest,
+    package_manifest: &JsonValue,
+    findings: &mut Vec<VerifyPackageFinding>,
+) {
+    let package_module = package_json_string(package_manifest, "module");
+    let package_version = package_json_string(package_manifest, "version");
+    let module_name = get_str(&module_manifest.value, &["module", "name"]);
+    let module_version = get_str(&module_manifest.value, &["module", "version"]);
+
+    match (package_module, module_name) {
+        (Some(package_module), Some(module_name)) if package_module == module_name => {
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Pass,
+                "package.module.identity",
+                Some(&module_manifest.path),
+                format!("package module identity matches `{module_name}`"),
+            ));
+        }
+        (Some(package_module), Some(module_name)) => {
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.module.identity",
+                Some(&module_manifest.path),
+                format!("PACKAGE.json declares module `{package_module}` but module manifest declares `{module_name}`"),
+            ));
+        }
+        _ => {}
+    }
+
+    match (package_version, module_version) {
+        (Some(package_version), Some(module_version)) if package_version == module_version => {
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Pass,
+                "package.module.version",
+                Some(&module_manifest.path),
+                format!("package version matches `{module_version}`"),
+            ));
+        }
+        (Some(package_version), Some(module_version)) => {
+            findings.push(verify_package_finding(
+                VerifyPackageStatus::Fail,
+                "package.module.version",
+                Some(&module_manifest.path),
+                format!("PACKAGE.json declares version `{package_version}` but module manifest declares `{module_version}`"),
+            ));
+        }
+        _ => {}
+    }
+}
+
+fn package_json_string<'a>(manifest: &'a JsonValue, field: &str) -> Option<&'a str> {
+    let mut current = manifest;
+    for segment in field.split('.') {
+        current = current.get(segment)?;
+    }
+    current.as_str()
+}
+
+fn package_relative_path(path: &str) -> Option<PathBuf> {
+    if path.is_empty() {
+        return None;
+    }
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return None;
+    }
+    let mut output = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(segment) => output.push(segment),
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
+                return None;
+            }
+        }
+    }
+    if output.as_os_str().is_empty() {
+        None
+    } else {
+        Some(output)
+    }
+}
+
+fn package_path_string(path: impl AsRef<Path>) -> String {
+    path.as_ref()
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(segment) => Some(segment.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn verify_package_finding(
+    status: VerifyPackageStatus,
+    check: impl Into<String>,
+    path: Option<impl AsRef<Path>>,
+    message: impl Into<String>,
+) -> VerifyPackageFinding {
+    VerifyPackageFinding {
+        status,
+        check: check.into(),
+        path: path.map(|path| path.as_ref().display().to_string()),
+        message: message.into(),
+    }
+}
+
+fn build_verify_package_report(
+    package: &Path,
+    findings: Vec<VerifyPackageFinding>,
+) -> VerifyPackageReport {
+    let result = if findings
+        .iter()
+        .any(|finding| finding.status == VerifyPackageStatus::Fail)
+    {
+        VerifyPackageResult::Fail
+    } else {
+        VerifyPackageResult::Pass
+    };
+    VerifyPackageReport {
+        result,
+        package: package.display().to_string(),
+        findings,
+    }
+}
+
+fn print_verify_package_report(report: &VerifyPackageReport) {
+    match report.result {
+        VerifyPackageResult::Pass => println!("pass: RMS package verified {}", report.package),
+        VerifyPackageResult::Fail => {
+            println!("fail: RMS package verification failed {}", report.package)
+        }
+    }
+
+    for finding in &report.findings {
+        if report.result == VerifyPackageResult::Pass
+            && finding.status != VerifyPackageStatus::Fail
+            && !matches!(
+                finding.check.as_str(),
+                "package.files.integrity"
+                    | "package.files.closed"
+                    | "package.module.identity"
+                    | "package.module.version"
+                    | "package.manifests.validate"
+            )
+        {
+            continue;
+        }
+        let label = match finding.status {
+            VerifyPackageStatus::Pass => "pass",
+            VerifyPackageStatus::Fail => "fail",
+        };
+        if let Some(path) = &finding.path {
+            println!("{label} [{}] {path}: {}", finding.check, finding.message);
+        } else {
+            println!("{label} [{}]: {}", finding.check, finding.message);
+        }
+    }
 }
 
 fn run_check_compat(old: &Path, new: &Path, json_output: bool) -> Result<()> {
@@ -5748,6 +6526,43 @@ verification:
     #[test]
     fn package_includes_manifest_references_and_metadata() {
         let root = unique_test_dir("package");
+        write_package_fixture(&root);
+        let output = root.join("out.rms");
+
+        package_module(&root.join("module.yaml"), Some(&output), false).unwrap();
+
+        assert!(output.join("module.yaml").exists());
+        assert!(output.join("contracts/do-work.yaml").exists());
+        assert!(output.join("verification/laws/law").exists());
+        assert!(output.join("conformance-report.json").exists());
+        let package_manifest = fs::read_to_string(output.join("PACKAGE.json")).unwrap();
+        assert!(package_manifest.contains("\"spec\": \"rms/package/v0.1\""));
+        assert!(package_manifest.contains("\"module\": \"package-fixture\""));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn verify_package_accepts_clean_package_and_rejects_tampering() {
+        let root = unique_test_dir("verify-package");
+        write_package_fixture(&root);
+        let output = root.join("out.rms");
+        package_module(&root.join("module.yaml"), Some(&output), false).unwrap();
+
+        let report = verify_package(&output).unwrap();
+        assert_eq!(report.result, VerifyPackageResult::Pass);
+
+        fs::write(output.join("contracts/do-work.yaml"), "tampered\n").unwrap();
+        let report = verify_package(&output).unwrap();
+        assert_eq!(report.result, VerifyPackageResult::Fail);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == VerifyPackageStatus::Fail && finding.check == "package.file.sha256"
+        }));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn write_package_fixture(root: &Path) {
         fs::create_dir_all(root.join("contracts")).unwrap();
         fs::create_dir_all(root.join("verification/laws")).unwrap();
         fs::write(
@@ -5805,19 +6620,6 @@ verification:
 "#,
         )
         .unwrap();
-        let output = root.join("out.rms");
-
-        package_module(&root.join("module.yaml"), Some(&output), false).unwrap();
-
-        assert!(output.join("module.yaml").exists());
-        assert!(output.join("contracts/do-work.yaml").exists());
-        assert!(output.join("verification/laws/law").exists());
-        assert!(output.join("conformance-report.json").exists());
-        let package_manifest = fs::read_to_string(output.join("PACKAGE.json")).unwrap();
-        assert!(package_manifest.contains("\"spec\": \"rms/package/v0.1\""));
-        assert!(package_manifest.contains("\"module\": \"package-fixture\""));
-
-        fs::remove_dir_all(&root).unwrap();
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added `rms verify-package` package metadata, payload integrity, and included artifact validation.
 - Added `rms package` portable module package directories with conformance reports and SHA-256 file checksums.
 - Added contract schema validation with structured preconditions and postconditions.
 - Added implementation `semantic_functions` for mapping source symbols to contracts, invariants, assumptions, and evidence.
