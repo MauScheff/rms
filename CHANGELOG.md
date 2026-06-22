@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added `rms check-compat` manifest-level compatibility classification.
 - Tightened agent guidance for ADTs, validated constructors, explicit result types, boundary schemas, state machines, and negative verification.
 - Added the `refactor-module` skill for behavior-preserving RMS module refactors.
 - Added `rms init` and `rms add-module` scaffolding commands.

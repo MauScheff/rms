@@ -94,6 +94,12 @@ rms conformance examples/minimal/module.yaml \
   --implementation examples/minimal/implementation.yaml
 ```
 
+Classify manifest compatibility:
+
+```bash
+rms check-compat old/module.yaml new/module.yaml
+```
+
 ## Adopt RMS In A Project
 
 Start with one boundary. Do not model every folder.
@@ -153,7 +159,7 @@ For any other coding agent, provide a context packet containing the system summa
 
 This repository is RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use: modules, ownership, contracts, invariants, effects, profiles, composition, substitutability, and conformance.
 
-The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection, context packets, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
+The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection, context packets, compatibility classification, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
 
 The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, and Stateful representation declarations. Swift is next.
 

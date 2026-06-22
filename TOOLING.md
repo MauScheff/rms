@@ -42,6 +42,7 @@ rms init <path> --name <system> --purpose <purpose>
 rms add-module <path> --name <module> --purpose <purpose> [--binding rust]
 rms inspect <module.yaml>
 rms context <module.yaml> [--task "..."]
+rms check-compat <old-module.yaml> <new-module.yaml>
 rms conformance <module.yaml> [--implementation implementation.yaml]
 rms verify <implementation.yaml>
 ```
@@ -57,6 +58,8 @@ Scaffolds a new RMS system with `system.yaml`, `context-map.yaml`, `GLOSSARY.md`
 Scaffolds a valid module directory with `module.yaml`, `contracts/`, and verification evidence directories. When `--binding rust` is supplied, it also creates a minimal Cargo library and `implementation.yaml` that pass the Rust binding checks. The command refuses to overwrite existing files.
 
 The first language binding is Rust. A Rust implementation binding declares `binding: rust` in `implementation.yaml`; the CLI then checks Cargo manifest shape, package identity, public entrypoint placement, explicit external crate dependencies, source import roots, public external re-exports, declared public modules, primitive type aliases, public domain fields, failure discipline, constructor evidence, and Stateful representation declarations. Swift is the next planned binding.
+
+The first compatibility checker is manifest-level. It classifies public surface removals and contract path changes as breaking, additive public surface changes as compatible additive, and profile/effect/capability/policy changes as requiring operational review.
 
 ### `inspect`
 

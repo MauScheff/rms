@@ -22,6 +22,8 @@ jobs:
           cargo run -p rms -- validate --root examples/minimal
           cargo run -p rms -- validate --root examples/commerce
           cargo run -p rms -- validate --root examples/rust
+      - name: Check compatibility smoke test
+        run: cargo run -p rms -- check-compat examples/rust/module.yaml examples/rust/module.yaml
       - name: Validate scaffold roundtrip
         run: |
           tmpdir="$(mktemp -d)"

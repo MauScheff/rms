@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -91,6 +91,19 @@ enum Commands {
         /// Optional output file. Prints to stdout when omitted.
         #[arg(long)]
         output: Option<PathBuf>,
+    },
+
+    /// Compare two module manifests and classify compatibility impact.
+    CheckCompat {
+        /// Previously accepted module manifest.
+        old: PathBuf,
+
+        /// Candidate replacement module manifest.
+        new: PathBuf,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Run the verification command declared by an implementation binding.
@@ -220,6 +233,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Commands::CheckCompat { old, new, json } => run_check_compat(&old, &new, json),
         Commands::Verify {
             implementation,
             dry_run,
@@ -1994,6 +2008,447 @@ fn run_verify(implementation: &Path, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+fn run_check_compat(old: &Path, new: &Path, json_output: bool) -> Result<()> {
+    let old_manifest = load_manifest(old)?;
+    let new_manifest = load_manifest(new)?;
+    let report = check_module_compat(&old_manifest, &new_manifest)?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_compat_report(&report);
+    }
+
+    if report.result == CompatResult::Breaking {
+        bail!("RMS compatibility check failed");
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CompatReport {
+    result: CompatResult,
+    old: String,
+    new: String,
+    findings: Vec<CompatFinding>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum CompatResult {
+    Compatible,
+    CompatibleAdditive,
+    OperationalReviewRequired,
+    Breaking,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CompatFinding {
+    severity: CompatResult,
+    check: String,
+    message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PublicSurfaceEntry {
+    group: String,
+    name: String,
+    contract: Option<String>,
+}
+
+fn check_module_compat(old: &LoadedManifest, new: &LoadedManifest) -> Result<CompatReport> {
+    if get_str(&old.value, &["spec"]) != Some("rms/module/v0.1") {
+        bail!("old manifest is not an RMS module manifest");
+    }
+    if get_str(&new.value, &["spec"]) != Some("rms/module/v0.1") {
+        bail!("new manifest is not an RMS module manifest");
+    }
+
+    let old_label = module_label(old);
+    let new_label = module_label(new);
+    let mut findings = Vec::new();
+
+    compare_module_identity(old, new, &mut findings);
+    compare_module_version(old, new, &mut findings);
+    compare_public_surface(old, new, &mut findings);
+    compare_string_set(
+        old,
+        new,
+        &mut findings,
+        &["profiles"],
+        "profiles",
+        "declared profile",
+        true,
+    );
+    compare_effects(old, new, &mut findings);
+    compare_required_capabilities(old, new, &mut findings);
+    compare_compatibility_policy(old, new, &mut findings);
+
+    let result = findings
+        .iter()
+        .map(|finding| finding.severity)
+        .max()
+        .unwrap_or(CompatResult::Compatible);
+
+    Ok(CompatReport {
+        result,
+        old: old_label,
+        new: new_label,
+        findings,
+    })
+}
+
+fn compare_module_identity(
+    old: &LoadedManifest,
+    new: &LoadedManifest,
+    findings: &mut Vec<CompatFinding>,
+) {
+    let old_name = get_str(&old.value, &["module", "name"]).unwrap_or("<missing>");
+    let new_name = get_str(&new.value, &["module", "name"]).unwrap_or("<missing>");
+    if old_name != new_name {
+        findings.push(compat_finding(
+            CompatResult::Breaking,
+            "module.name",
+            format!("module name changed from `{old_name}` to `{new_name}`"),
+        ));
+    }
+}
+
+fn compare_module_version(
+    old: &LoadedManifest,
+    new: &LoadedManifest,
+    findings: &mut Vec<CompatFinding>,
+) {
+    let old_version = get_str(&old.value, &["module", "version"]);
+    let new_version = get_str(&new.value, &["module", "version"]);
+    if let (Some(old_version), Some(new_version)) = (old_version, new_version) {
+        if version_cmp(new_version, old_version).is_some_and(|ordering| ordering.is_lt()) {
+            findings.push(compat_finding(
+                CompatResult::Breaking,
+                "module.version",
+                format!("module version moved backward from `{old_version}` to `{new_version}`"),
+            ));
+        }
+    }
+}
+
+fn compare_public_surface(
+    old: &LoadedManifest,
+    new: &LoadedManifest,
+    findings: &mut Vec<CompatFinding>,
+) {
+    let old_surface = public_surface_map(&old.value);
+    let new_surface = public_surface_map(&new.value);
+
+    for (key, old_entry) in &old_surface {
+        let Some(new_entry) = new_surface.get(key) else {
+            findings.push(compat_finding(
+                CompatResult::Breaking,
+                "provides.removed",
+                format!("removed public {} `{}`", old_entry.group, old_entry.name),
+            ));
+            continue;
+        };
+
+        if old_entry.contract != new_entry.contract {
+            findings.push(compat_finding(
+                CompatResult::Breaking,
+                "provides.contract",
+                format!(
+                    "changed contract for public {} `{}` from `{}` to `{}`",
+                    old_entry.group,
+                    old_entry.name,
+                    old_entry.contract.as_deref().unwrap_or("<none>"),
+                    new_entry.contract.as_deref().unwrap_or("<none>")
+                ),
+            ));
+        }
+    }
+
+    for (key, new_entry) in &new_surface {
+        if !old_surface.contains_key(key) {
+            findings.push(compat_finding(
+                CompatResult::CompatibleAdditive,
+                "provides.added",
+                format!("added public {} `{}`", new_entry.group, new_entry.name),
+            ));
+        }
+    }
+}
+
+fn compare_string_set(
+    old: &LoadedManifest,
+    new: &LoadedManifest,
+    findings: &mut Vec<CompatFinding>,
+    path: &[&str],
+    check_prefix: &str,
+    label: &str,
+    removal_requires_review: bool,
+) {
+    let old_set: BTreeSet<_> = get_string_array(&old.value, path).into_iter().collect();
+    let new_set: BTreeSet<_> = get_string_array(&new.value, path).into_iter().collect();
+
+    for removed in old_set.difference(&new_set) {
+        findings.push(compat_finding(
+            if removal_requires_review {
+                CompatResult::OperationalReviewRequired
+            } else {
+                CompatResult::CompatibleAdditive
+            },
+            format!("{check_prefix}.removed"),
+            format!("removed {label} `{removed}`"),
+        ));
+    }
+
+    for added in new_set.difference(&old_set) {
+        findings.push(compat_finding(
+            CompatResult::OperationalReviewRequired,
+            format!("{check_prefix}.added"),
+            format!("added {label} `{added}`"),
+        ));
+    }
+}
+
+fn compare_effects(old: &LoadedManifest, new: &LoadedManifest, findings: &mut Vec<CompatFinding>) {
+    let old_effects = named_kind_map(get_path(&old.value, &["effects"]));
+    let new_effects = named_kind_map(get_path(&new.value, &["effects"]));
+
+    for (name, kind) in &old_effects {
+        match new_effects.get(name) {
+            None => findings.push(compat_finding(
+                CompatResult::OperationalReviewRequired,
+                "effects.removed",
+                format!("removed declared effect `{name}`"),
+            )),
+            Some(new_kind) if new_kind != kind => findings.push(compat_finding(
+                CompatResult::OperationalReviewRequired,
+                "effects.kind",
+                format!("changed effect `{name}` kind from `{kind}` to `{new_kind}`"),
+            )),
+            _ => {}
+        }
+    }
+
+    for (name, kind) in &new_effects {
+        if !old_effects.contains_key(name) {
+            findings.push(compat_finding(
+                CompatResult::OperationalReviewRequired,
+                "effects.added",
+                format!("added declared effect `{name}` of kind `{kind}`"),
+            ));
+        }
+    }
+}
+
+fn compare_required_capabilities(
+    old: &LoadedManifest,
+    new: &LoadedManifest,
+    findings: &mut Vec<CompatFinding>,
+) {
+    let old_capabilities = named_contract_map(get_path(&old.value, &["requires", "capabilities"]));
+    let new_capabilities = named_contract_map(get_path(&new.value, &["requires", "capabilities"]));
+
+    for (name, old_contract) in &old_capabilities {
+        match new_capabilities.get(name) {
+            None => findings.push(compat_finding(
+                CompatResult::OperationalReviewRequired,
+                "requires.capabilities.removed",
+                format!("removed required capability `{name}`"),
+            )),
+            Some(new_contract) if new_contract != old_contract => findings.push(compat_finding(
+                CompatResult::OperationalReviewRequired,
+                "requires.capabilities.contract",
+                format!(
+                    "changed required capability `{name}` contract from `{}` to `{}`",
+                    old_contract.as_deref().unwrap_or("<none>"),
+                    new_contract.as_deref().unwrap_or("<none>")
+                ),
+            )),
+            _ => {}
+        }
+    }
+
+    for (name, contract) in &new_capabilities {
+        if !old_capabilities.contains_key(name) {
+            findings.push(compat_finding(
+                CompatResult::OperationalReviewRequired,
+                "requires.capabilities.added",
+                format!(
+                    "added required capability `{name}` with contract `{}`",
+                    contract.as_deref().unwrap_or("<none>")
+                ),
+            ));
+        }
+    }
+}
+
+fn compare_compatibility_policy(
+    old: &LoadedManifest,
+    new: &LoadedManifest,
+    findings: &mut Vec<CompatFinding>,
+) {
+    let old_policy = get_str(&old.value, &["compatibility", "policy"]);
+    let new_policy = get_str(&new.value, &["compatibility", "policy"]);
+    if old_policy != new_policy {
+        findings.push(compat_finding(
+            CompatResult::OperationalReviewRequired,
+            "compatibility.policy",
+            format!(
+                "changed compatibility policy from `{}` to `{}`",
+                old_policy.unwrap_or("<missing>"),
+                new_policy.unwrap_or("<missing>")
+            ),
+        ));
+    }
+}
+
+fn public_surface_map(value: &YamlValue) -> BTreeMap<String, PublicSurfaceEntry> {
+    let mut map = BTreeMap::new();
+    let Some(provides) = get_path(value, &["provides"]).and_then(YamlValue::as_mapping) else {
+        return map;
+    };
+
+    for (group, entries) in provides {
+        let Some(group) = group.as_str() else {
+            continue;
+        };
+        let Some(entries) = entries.as_sequence() else {
+            continue;
+        };
+        for entry in entries {
+            let Some((name, contract)) = named_reference(entry) else {
+                continue;
+            };
+            let key = format!("{group}:{name}");
+            map.insert(
+                key,
+                PublicSurfaceEntry {
+                    group: group.to_string(),
+                    name,
+                    contract,
+                },
+            );
+        }
+    }
+
+    map
+}
+
+fn named_contract_map(value: Option<&YamlValue>) -> BTreeMap<String, Option<String>> {
+    let mut map = BTreeMap::new();
+    let Some(entries) = value.and_then(YamlValue::as_sequence) else {
+        return map;
+    };
+    for entry in entries {
+        if let Some((name, contract)) = named_reference(entry) {
+            map.insert(name, contract);
+        }
+    }
+    map
+}
+
+fn named_kind_map(value: Option<&YamlValue>) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    let Some(entries) = value.and_then(YamlValue::as_sequence) else {
+        return map;
+    };
+    for entry in entries {
+        let Some(mapping) = entry.as_mapping() else {
+            continue;
+        };
+        let Some(name) = mapping
+            .get(YamlValue::String("name".to_string()))
+            .and_then(YamlValue::as_str)
+        else {
+            continue;
+        };
+        let kind = mapping
+            .get(YamlValue::String("kind".to_string()))
+            .and_then(YamlValue::as_str)
+            .unwrap_or("<missing>");
+        map.insert(name.to_string(), kind.to_string());
+    }
+    map
+}
+
+fn named_reference(value: &YamlValue) -> Option<(String, Option<String>)> {
+    match value {
+        YamlValue::String(name) => Some((name.clone(), None)),
+        YamlValue::Mapping(mapping) => {
+            let name = mapping
+                .get(YamlValue::String("name".to_string()))
+                .and_then(YamlValue::as_str)?;
+            let contract = mapping
+                .get(YamlValue::String("contract".to_string()))
+                .and_then(YamlValue::as_str)
+                .map(ToString::to_string);
+            Some((name.to_string(), contract))
+        }
+        _ => None,
+    }
+}
+
+fn version_cmp(left: &str, right: &str) -> Option<std::cmp::Ordering> {
+    let left = parse_version_parts(left)?;
+    let right = parse_version_parts(right)?;
+    Some(left.cmp(&right))
+}
+
+fn parse_version_parts(version: &str) -> Option<Vec<u64>> {
+    let core = version.split(['-', '+']).next()?;
+    core.split('.')
+        .map(|part| part.parse::<u64>().ok())
+        .collect()
+}
+
+fn module_label(manifest: &LoadedManifest) -> String {
+    format!(
+        "{}@{}",
+        get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>"),
+        get_str(&manifest.value, &["module", "version"]).unwrap_or("<unknown>")
+    )
+}
+
+fn compat_finding(
+    severity: CompatResult,
+    check: impl Into<String>,
+    message: impl Into<String>,
+) -> CompatFinding {
+    CompatFinding {
+        severity,
+        check: check.into(),
+        message: message.into(),
+    }
+}
+
+fn compat_result_label(result: CompatResult) -> &'static str {
+    match result {
+        CompatResult::Compatible => "compatible",
+        CompatResult::CompatibleAdditive => "compatible-additive",
+        CompatResult::OperationalReviewRequired => "operational-review-required",
+        CompatResult::Breaking => "breaking",
+    }
+}
+
+fn print_compat_report(report: &CompatReport) {
+    println!("RMS compatibility: {}", compat_result_label(report.result));
+    println!("Old: {}", report.old);
+    println!("New: {}", report.new);
+    if report.findings.is_empty() {
+        println!("No compatibility findings.");
+        return;
+    }
+    for finding in &report.findings {
+        println!(
+            "- {} [{}]: {}",
+            compat_result_label(finding.severity),
+            finding.check,
+            finding.message
+        );
+    }
+}
+
 fn run_init(
     path: &Path,
     name: &str,
@@ -2808,6 +3263,224 @@ pub use external_crate::Thing;
         );
     }
 
+    #[test]
+    fn compat_reports_additive_public_surface() {
+        let old = loaded_module_manifest(
+            "old.yaml",
+            r#"
+spec: rms/module/v0.1
+module:
+  name: example
+  version: 1.0.0
+  kind: library
+  purpose: Example
+profiles: [core]
+owns: {}
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        );
+        let new = loaded_module_manifest(
+            "new.yaml",
+            r#"
+spec: rms/module/v0.1
+module:
+  name: example
+  version: 1.1.0
+  kind: library
+  purpose: Example
+profiles: [core]
+owns: {}
+provides:
+  commands:
+    - name: do-work
+      contract: contracts/do-work.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        );
+
+        let report = check_module_compat(&old, &new).unwrap();
+
+        assert_eq!(report.result, CompatResult::CompatibleAdditive);
+    }
+
+    #[test]
+    fn compat_reports_removed_public_surface_as_breaking() {
+        let old = loaded_module_manifest(
+            "old.yaml",
+            r#"
+spec: rms/module/v0.1
+module:
+  name: example
+  version: 1.0.0
+  kind: library
+  purpose: Example
+profiles: [core]
+owns: {}
+provides:
+  commands:
+    - name: do-work
+      contract: contracts/do-work.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        );
+        let new = loaded_module_manifest(
+            "new.yaml",
+            r#"
+spec: rms/module/v0.1
+module:
+  name: example
+  version: 1.1.0
+  kind: library
+  purpose: Example
+profiles: [core]
+owns: {}
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        );
+
+        let report = check_module_compat(&old, &new).unwrap();
+
+        assert_eq!(report.result, CompatResult::Breaking);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.check == "provides.removed"));
+    }
+
+    #[test]
+    fn compat_reports_effect_changes_for_operational_review() {
+        let old = loaded_module_manifest(
+            "old.yaml",
+            r#"
+spec: rms/module/v0.1
+module:
+  name: example
+  version: 1.0.0
+  kind: library
+  purpose: Example
+profiles: [core]
+owns: {}
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        );
+        let new = loaded_module_manifest(
+            "new.yaml",
+            r#"
+spec: rms/module/v0.1
+module:
+  name: example
+  version: 1.1.0
+  kind: library
+  purpose: Example
+profiles: [core]
+owns: {}
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects:
+  - name: network
+    kind: external-network
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        );
+
+        let report = check_module_compat(&old, &new).unwrap();
+
+        assert_eq!(report.result, CompatResult::OperationalReviewRequired);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.check == "effects.added"));
+    }
+
     fn unique_test_dir(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2857,5 +3530,12 @@ pub use external_crate::Thing;
         let mut diagnostics = Vec::new();
         validate_loaded_manifest(&manifest, &mut diagnostics);
         diagnostics
+    }
+
+    fn loaded_module_manifest(path: &str, source: &str) -> LoadedManifest {
+        LoadedManifest {
+            path: PathBuf::from(path),
+            value: serde_yaml::from_str(source).unwrap(),
+        }
     }
 }

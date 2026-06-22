@@ -12,6 +12,7 @@ cargo run -p rms -- add-module /tmp/rms-example/modules/widget --name widget --p
 cargo run -p rms -- validate --root examples/minimal
 cargo run -p rms -- inspect examples/minimal/module.yaml
 cargo run -p rms -- context examples/minimal/module.yaml --task "add a public command"
+cargo run -p rms -- check-compat examples/rust/module.yaml examples/rust/module.yaml
 cargo run -p rms -- conformance examples/minimal/module.yaml
 ```
 
@@ -22,6 +23,7 @@ The CLI intentionally starts small:
 - checks referenced contracts, verification evidence, and implementation paths;
 - inspects module ownership, profiles, contracts, effects, and verification;
 - emits bounded context packets for agents;
+- classifies manifest compatibility changes;
 - produces explicit partial/pass/fail conformance reports.
 - applies the first language binding when `implementation.yaml` declares `binding: rust`.
 
@@ -36,6 +38,7 @@ Other implementations should preserve these command meanings even if flags and o
 | `rms validate` | Check canonical artifacts and references. |
 | `rms inspect` | Print a concise module brief. |
 | `rms context` | Build a bounded packet for a task. |
+| `rms check-compat` | Classify module manifest compatibility impact. |
 | `rms conformance` | Emit machine-readable evaluation evidence. |
 
 Language bindings belong beside or underneath `tooling/<language>/`. A binding may discover imports, public exports, effects, and native verification commands for a language, but it must not redefine RMS concepts. The first binding is Rust; Swift is next.
