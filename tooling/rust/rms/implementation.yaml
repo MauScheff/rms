@@ -332,7 +332,7 @@ semantic_functions:
         - diagnostics-are-evidence-not-authority
     assumptions:
       ensures:
-        - atlas graph nodes, edges, question answers, source references, and generated HTML are derived from the target module manifest and referenced artifacts
+        - atlas graph nodes, edges, semantic contract clauses, trace projections, gaps, confidence labels, source references, and generated HTML are derived from the target module manifest and referenced artifacts
         - stable semantic identifiers allow future live and diff views to reconcile changes without inventing topology
     evidence:
       contracts:

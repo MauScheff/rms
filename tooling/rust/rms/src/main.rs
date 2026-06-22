@@ -7363,7 +7363,7 @@ struct AtlasDocument {
     layers: Vec<AtlasLayer>,
     nodes: Vec<AtlasNode>,
     edges: Vec<AtlasEdge>,
-    questions: Vec<AtlasQuestion>,
+    traces: Vec<AtlasTraceProjection>,
     tours: Vec<AtlasTour>,
     annotations: Vec<AtlasAnnotation>,
     interaction: AtlasInteraction,
@@ -7405,7 +7405,17 @@ struct AtlasNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<String>,
     source_refs: Vec<AtlasSourceRef>,
+    clauses: Vec<AtlasContractClause>,
     emphasis: u8,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AtlasContractClause {
+    id: String,
+    kind: String,
+    label: String,
+    statement: String,
+    source_refs: Vec<AtlasSourceRef>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -7425,39 +7435,37 @@ struct AtlasSourceRef {
 }
 
 #[derive(Debug, Serialize)]
-struct AtlasQuestion {
+struct AtlasTraceProjection {
     id: String,
-    journey: &'static str,
     label: String,
-    prompt: String,
-    entry_node_ids: Vec<String>,
-    answer: AtlasAnswer,
-}
-
-#[derive(Debug, Serialize)]
-struct AtlasAnswer {
-    headline: String,
-    blocks: Vec<AtlasAnswerBlock>,
-    trace: AtlasTrace,
-    gaps: Vec<String>,
-    next_questions: Vec<String>,
+    intent: &'static str,
+    entry_node_id: String,
+    summary: String,
+    steps: Vec<AtlasTraceStep>,
+    gaps: Vec<AtlasTraceGap>,
     source_refs: Vec<AtlasSourceRef>,
 }
 
 #[derive(Debug, Serialize)]
-struct AtlasAnswerBlock {
-    kind: &'static str,
+struct AtlasTraceStep {
+    id: String,
+    role: &'static str,
     title: String,
     body: String,
     node_ids: Vec<String>,
+    edge_ids: Vec<String>,
+    confidence: &'static str,
     source_refs: Vec<AtlasSourceRef>,
 }
 
 #[derive(Debug, Serialize)]
-struct AtlasTrace {
-    summary: String,
-    node_ids: Vec<String>,
-    edge_ids: Vec<String>,
+struct AtlasTraceGap {
+    id: String,
+    title: String,
+    body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggested_artifact: Option<String>,
+    source_refs: Vec<AtlasSourceRef>,
 }
 
 #[derive(Debug, Serialize)]
@@ -7584,6 +7592,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
                     .to_string(),
             ),
             source_refs: vec![module_ref.clone()],
+            clauses: module_summary_clauses(&manifest.value, std::slice::from_ref(&module_ref)),
             emphasis: 5,
         },
     );
@@ -7601,6 +7610,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
                 summary: format!("Declared RMS profile `{profile}`."),
                 group: Some("profiles".to_string()),
                 source_refs: vec![module_ref.clone()],
+                clauses: Vec::new(),
                 emphasis: 2,
             },
         );
@@ -7633,6 +7643,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
                         summary: format!("Owned {group} in the {module_name} module."),
                         group: Some(group.to_string()),
                         source_refs: vec![module_ref.clone()],
+                        clauses: Vec::new(),
                         emphasis: 3,
                     },
                 );
@@ -7659,6 +7670,11 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
                     "contract",
                 ));
             }
+            let clauses = item
+                .contract
+                .as_deref()
+                .map(|contract| contract_clauses(root, &module_base.join(contract)))
+                .unwrap_or_default();
             let summary = item
                 .contract
                 .as_deref()
@@ -7675,6 +7691,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
                     summary,
                     group: Some(group.to_string()),
                     source_refs: source_refs.clone(),
+                    clauses,
                     emphasis: if group == "commands" { 4 } else { 3 },
                 },
             );
@@ -7695,6 +7712,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
                 summary: format!("Declared module dependency for {module_name}."),
                 group: Some("modules".to_string()),
                 source_refs: vec![module_ref.clone()],
+                clauses: Vec::new(),
                 emphasis: 3,
             },
         );
@@ -7718,6 +7736,11 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
                 "contract",
             ));
         }
+        let clauses = item
+            .contract
+            .as_deref()
+            .map(|contract| contract_clauses(root, &module_base.join(contract)))
+            .unwrap_or_default();
         let summary = item
             .contract
             .as_deref()
@@ -7734,6 +7757,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
                 summary,
                 group: Some("capabilities".to_string()),
                 source_refs: source_refs.clone(),
+                clauses,
                 emphasis: 3,
             },
         );
@@ -7770,6 +7794,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
                         .to_string(),
                     group: get_str(invariant, &["enforced_by"]).map(ToString::to_string),
                     source_refs: source_refs.clone(),
+                    clauses: invariant_clauses(invariant, &source_refs),
                     emphasis: 4,
                 },
             );
@@ -7812,6 +7837,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
             let name = get_str(effect, &["name"]).unwrap_or("effect");
             let id = stable_atlas_id("effect", name);
             let summary = summarize_effect(effect);
+            let source_refs = vec![module_ref.clone()];
             push_atlas_node(
                 &mut nodes,
                 &mut node_ids,
@@ -7822,7 +7848,8 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
                     label: name.to_string(),
                     summary,
                     group: get_str(effect, &["kind"]).map(ToString::to_string),
-                    source_refs: vec![module_ref.clone()],
+                    source_refs: source_refs.clone(),
+                    clauses: effect_clauses(effect, &source_refs),
                     emphasis: 4,
                 },
             );
@@ -7858,6 +7885,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
                 summary: summarize_state(state),
                 group: get_str(state, &["consistency_boundary"]).map(ToString::to_string),
                 source_refs: source_refs.clone(),
+                clauses: state_clauses(state, &source_refs),
                 emphasis: 3,
             },
         );
@@ -7873,6 +7901,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
 
     if let Some(boundary) = get_path(&manifest.value, &["boundary"]) {
         let id = stable_atlas_id("boundary", module_name);
+        let source_refs = vec![module_ref.clone()];
         push_atlas_node(
             &mut nodes,
             &mut node_ids,
@@ -7883,7 +7912,8 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
                 label: "boundary".to_string(),
                 summary: summarize_boundary(boundary),
                 group: Some("boundary".to_string()),
-                source_refs: vec![module_ref.clone()],
+                source_refs: source_refs.clone(),
+                clauses: boundary_clauses(boundary, &source_refs),
                 emphasis: 4,
             },
         );
@@ -7901,6 +7931,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
         .unwrap_or("<missing>")
         .to_string();
     let compatibility_id = stable_atlas_id("compatibility", &compatibility);
+    let compatibility_source_refs = vec![module_ref.clone()];
     push_atlas_node(
         &mut nodes,
         &mut node_ids,
@@ -7912,7 +7943,11 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
             summary: "Declared compatibility policy for replacing or evolving this module."
                 .to_string(),
             group: Some("compatibility".to_string()),
-            source_refs: vec![module_ref.clone()],
+            source_refs: compatibility_source_refs.clone(),
+            clauses: compatibility_clauses(
+                get_path(&manifest.value, &["compatibility"]),
+                &compatibility_source_refs,
+            ),
             emphasis: 3,
         },
     );
@@ -7953,7 +7988,40 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
         }
     }
 
-    let questions = build_atlas_questions(&nodes, &edges, &module_id);
+    if let Some(operations) =
+        get_path(&manifest.value, &["operations"]).and_then(YamlValue::as_mapping)
+    {
+        for (key, value) in operations {
+            let name = key.as_str().unwrap_or("operation");
+            let id = stable_atlas_id("operation", name);
+            let source_refs = atlas_operation_source_refs(root, module_base, &module_ref, value);
+            push_atlas_node(
+                &mut nodes,
+                &mut node_ids,
+                AtlasNode {
+                    id: id.clone(),
+                    kind: "operation".to_string(),
+                    layer: "operations".to_string(),
+                    label: name.to_string(),
+                    summary: summarize_operation(value),
+                    group: Some("operations".to_string()),
+                    source_refs: source_refs.clone(),
+                    clauses: operation_clauses(name, value, &source_refs),
+                    emphasis: 3,
+                },
+            );
+            push_atlas_edge(
+                &mut edges,
+                "operates",
+                &module_id,
+                &id,
+                "operation",
+                source_refs,
+            );
+        }
+    }
+
+    let traces = build_atlas_traces(&nodes, &edges, &module_id);
     let tours = build_atlas_tours(&nodes, &module_id);
 
     Ok(AtlasDocument {
@@ -7983,14 +8051,14 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
         layers: atlas_layers(),
         nodes,
         edges,
-        questions,
+        traces,
         tours,
         annotations: Vec::new(),
         interaction: AtlasInteraction {
             default_focus: module_id,
             supports_live_reconciliation: true,
             agent_generation_policy:
-                "Agents may add annotations and tours only for existing semantic IDs; topology remains derived from RMS artifacts.",
+                "Agents may add annotations and guided trace prose only for existing semantic IDs; topology remains derived from RMS artifacts.",
         },
     })
 }
@@ -8029,6 +8097,10 @@ fn atlas_layers() -> Vec<AtlasLayer> {
             id: "verification",
             label: "Verification",
         },
+        AtlasLayer {
+            id: "operations",
+            label: "Operations",
+        },
     ]
 }
 
@@ -8049,6 +8121,7 @@ fn push_verification_node(
     emphasis: u8,
 ) {
     let absolute_path = module_base.join(path);
+    let source_refs = vec![atlas_source_ref(root, &absolute_path, "verification")];
     push_atlas_node(
         nodes,
         node_ids,
@@ -8059,7 +8132,13 @@ fn push_verification_node(
             label: path_label(path),
             summary: evidence_summary(&absolute_path),
             group: Some(group.to_string()),
-            source_refs: vec![atlas_source_ref(root, &absolute_path, "verification")],
+            source_refs: source_refs.clone(),
+            clauses: vec![atlas_clause(
+                "evidence",
+                group,
+                evidence_summary(&absolute_path),
+                &source_refs,
+            )],
             emphasis,
         },
     );
@@ -8105,6 +8184,339 @@ fn atlas_named_references(value: &YamlValue, path: &[&str]) -> Vec<AtlasNamedRef
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn module_summary_clauses(
+    value: &YamlValue,
+    source_refs: &[AtlasSourceRef],
+) -> Vec<AtlasContractClause> {
+    let mut clauses = Vec::new();
+    if let Some(purpose) = get_str(value, &["module", "purpose"]) {
+        clauses.push(atlas_clause("module", "purpose", purpose, source_refs));
+    }
+    if let Some(kind) = get_str(value, &["module", "kind"]) {
+        clauses.push(atlas_clause("module", "kind", kind, source_refs));
+    }
+    let profiles = get_string_array(value, &["profiles"]);
+    if !profiles.is_empty() {
+        clauses.push(atlas_clause(
+            "module",
+            "profiles",
+            profiles.join(", "),
+            source_refs,
+        ));
+    }
+    clauses
+}
+
+fn contract_clauses(root: &Path, path: &Path) -> Vec<AtlasContractClause> {
+    let Ok(manifest) = load_manifest(path) else {
+        return Vec::new();
+    };
+    let source_refs = vec![atlas_source_ref(root, path, "contract")];
+    let contract_kind = get_str(&manifest.value, &["kind"]).unwrap_or("contract");
+    let mut clauses = Vec::new();
+    if let Some(meaning) = get_str(&manifest.value, &["meaning"]) {
+        clauses.push(atlas_clause("contract", "meaning", meaning, &source_refs));
+    }
+    if let Some(kind) = get_str(&manifest.value, &["kind"]) {
+        clauses.push(atlas_clause("contract", "kind", kind, &source_refs));
+    }
+    push_contract_section_clauses(
+        &mut clauses,
+        &manifest.value,
+        "preconditions",
+        "precondition",
+        "precondition",
+        &source_refs,
+    );
+    push_contract_section_clauses(
+        &mut clauses,
+        &manifest.value,
+        "postconditions",
+        "postcondition",
+        "postcondition",
+        &source_refs,
+    );
+    push_contract_section_clauses(
+        &mut clauses,
+        &manifest.value,
+        "failure_categories",
+        "failure",
+        "failure",
+        &source_refs,
+    );
+    if contract_kind == "command" {
+        for (path, label) in [
+            ("preconditions", "preconditions"),
+            ("postconditions", "postconditions"),
+            ("failure_categories", "failure categories"),
+        ] {
+            if get_path(&manifest.value, &[path])
+                .and_then(YamlValue::as_sequence)
+                .is_none_or(Vec::is_empty)
+            {
+                clauses.push(atlas_clause(
+                    "gap",
+                    label,
+                    "Not declared by this command contract.",
+                    &source_refs,
+                ));
+            }
+        }
+    }
+    if let Some(policy) = get_str(&manifest.value, &["compatibility", "policy"]) {
+        clauses.push(atlas_clause(
+            "compatibility",
+            "policy",
+            policy,
+            &source_refs,
+        ));
+    }
+    clauses
+}
+
+fn push_contract_section_clauses(
+    clauses: &mut Vec<AtlasContractClause>,
+    value: &YamlValue,
+    path: &str,
+    kind: &str,
+    label_prefix: &str,
+    source_refs: &[AtlasSourceRef],
+) {
+    let Some(items) = get_path(value, &[path]).and_then(YamlValue::as_sequence) else {
+        return;
+    };
+    for item in items {
+        let label = get_str(item, &["id"])
+            .map(|id| format!("{label_prefix}: {id}"))
+            .unwrap_or_else(|| label_prefix.to_string());
+        let statement = get_str(item, &["statement"])
+            .map(ToString::to_string)
+            .unwrap_or_else(|| atlas_yaml_inline(item, 6));
+        clauses.push(atlas_clause(kind, label, statement, source_refs));
+    }
+}
+
+fn invariant_clauses(
+    invariant: &YamlValue,
+    source_refs: &[AtlasSourceRef],
+) -> Vec<AtlasContractClause> {
+    let mut clauses = Vec::new();
+    if let Some(statement) = get_str(invariant, &["statement"]) {
+        clauses.push(atlas_clause(
+            "invariant",
+            "statement",
+            statement,
+            source_refs,
+        ));
+    }
+    if let Some(enforced_by) = get_str(invariant, &["enforced_by"]) {
+        clauses.push(atlas_clause(
+            "invariant",
+            "enforced by",
+            enforced_by,
+            source_refs,
+        ));
+    }
+    if let Some(verified_by) = get_str(invariant, &["verified_by"]) {
+        clauses.push(atlas_clause(
+            "invariant",
+            "verified by",
+            verified_by,
+            source_refs,
+        ));
+    }
+    clauses
+}
+
+fn effect_clauses(effect: &YamlValue, source_refs: &[AtlasSourceRef]) -> Vec<AtlasContractClause> {
+    let mut clauses = Vec::new();
+    for key in ["kind", "capability"] {
+        if let Some(value) = get_str(effect, &[key]) {
+            clauses.push(atlas_clause("effect", key, value, source_refs));
+        }
+    }
+    if let Some(semantics) = get_path(effect, &["semantics"]).and_then(YamlValue::as_mapping) {
+        for (key, value) in semantics {
+            let Some(key) = key.as_str() else {
+                continue;
+            };
+            clauses.push(atlas_clause(
+                "effect semantics",
+                key,
+                atlas_yaml_inline(value, 6),
+                source_refs,
+            ));
+        }
+    }
+    clauses
+}
+
+fn state_clauses(state: &YamlValue, source_refs: &[AtlasSourceRef]) -> Vec<AtlasContractClause> {
+    [
+        "model",
+        "consistency_boundary",
+        "concurrency",
+        "persistence",
+        "migration_policy",
+    ]
+    .iter()
+    .filter_map(|key| {
+        get_str(state, &[*key]).map(|value| atlas_clause("state", *key, value, source_refs))
+    })
+    .collect()
+}
+
+fn boundary_clauses(
+    boundary: &YamlValue,
+    source_refs: &[AtlasSourceRef],
+) -> Vec<AtlasContractClause> {
+    let mut clauses = Vec::new();
+    let accepted = get_string_array(boundary, &["accepted_contracts"]);
+    if !accepted.is_empty() {
+        clauses.push(atlas_clause(
+            "boundary",
+            "accepted contracts",
+            accepted.join(", "),
+            source_refs,
+        ));
+    }
+    for key in [
+        "validation",
+        "authorization",
+        "malformed_input",
+        "deprecation",
+    ] {
+        if let Some(value) = get_str(boundary, &[key]) {
+            clauses.push(atlas_clause("boundary", key, value, source_refs));
+        }
+    }
+    clauses
+}
+
+fn compatibility_clauses(
+    compatibility: Option<&YamlValue>,
+    source_refs: &[AtlasSourceRef],
+) -> Vec<AtlasContractClause> {
+    let Some(compatibility) = compatibility else {
+        return vec![atlas_clause(
+            "gap",
+            "compatibility policy",
+            "No compatibility policy is declared.",
+            source_refs,
+        )];
+    };
+    let Some(mapping) = compatibility.as_mapping() else {
+        return Vec::new();
+    };
+    mapping
+        .iter()
+        .filter_map(|(key, value)| {
+            Some(atlas_clause(
+                "compatibility",
+                key.as_str()?,
+                atlas_yaml_inline(value, 6),
+                source_refs,
+            ))
+        })
+        .collect()
+}
+
+fn operation_clauses(
+    name: &str,
+    value: &YamlValue,
+    source_refs: &[AtlasSourceRef],
+) -> Vec<AtlasContractClause> {
+    match value {
+        YamlValue::Mapping(mapping) => mapping
+            .iter()
+            .filter_map(|(key, value)| {
+                Some(atlas_clause(
+                    "operation",
+                    key.as_str()?,
+                    atlas_yaml_inline(value, 6),
+                    source_refs,
+                ))
+            })
+            .collect(),
+        YamlValue::Sequence(items) => vec![atlas_clause(
+            "operation",
+            name,
+            items
+                .iter()
+                .map(|item| atlas_yaml_inline(item, 6))
+                .collect::<Vec<_>>()
+                .join(", "),
+            source_refs,
+        )],
+        YamlValue::String(value) => vec![atlas_clause("operation", name, value, source_refs)],
+        _ => Vec::new(),
+    }
+}
+
+fn atlas_clause(
+    kind: impl Into<String>,
+    label: impl Into<String>,
+    statement: impl Into<String>,
+    source_refs: &[AtlasSourceRef],
+) -> AtlasContractClause {
+    let kind = kind.into();
+    let label = label.into();
+    let statement = statement.into();
+    AtlasContractClause {
+        id: stable_atlas_id("clause", &format!("{kind}:{label}:{statement}")),
+        kind,
+        label,
+        statement,
+        source_refs: source_refs.to_vec(),
+    }
+}
+
+fn atlas_yaml_inline(value: &YamlValue, limit: usize) -> String {
+    match value {
+        YamlValue::Null => "null".to_string(),
+        YamlValue::Bool(value) => value.to_string(),
+        YamlValue::Number(value) => value.to_string(),
+        YamlValue::String(value) => value.to_string(),
+        YamlValue::Sequence(items) => {
+            let mut parts = items
+                .iter()
+                .take(limit)
+                .map(|item| atlas_yaml_inline(item, limit))
+                .collect::<Vec<_>>();
+            if items.len() > limit {
+                parts.push("...".to_string());
+            }
+            parts.join(", ")
+        }
+        YamlValue::Mapping(mapping) => {
+            let mut parts = mapping
+                .iter()
+                .filter_map(|(key, value)| {
+                    Some(format!(
+                        "{}: {}",
+                        key.as_str()?,
+                        atlas_yaml_inline(value, limit)
+                    ))
+                })
+                .take(limit)
+                .collect::<Vec<_>>();
+            if mapping.len() > limit {
+                parts.push("...".to_string());
+            }
+            parts.join("; ")
+        }
+        _ => serde_yaml::to_string(value)
+            .map(|rendered| {
+                rendered
+                    .lines()
+                    .map(str::trim)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_else(|_| "<structured>".to_string()),
+    }
 }
 
 fn contract_meaning(path: &Path) -> Option<String> {
@@ -8176,6 +8588,73 @@ fn summarize_boundary(boundary: &YamlValue) -> String {
     }
 }
 
+fn summarize_operation(value: &YamlValue) -> String {
+    match value {
+        YamlValue::Mapping(_) => {
+            let summary = summarize_yaml_mapping(value, 6);
+            if summary.is_empty() {
+                "Declared operational semantics.".to_string()
+            } else {
+                summary
+            }
+        }
+        YamlValue::Sequence(items) => {
+            let paths = items
+                .iter()
+                .filter_map(YamlValue::as_str)
+                .take(6)
+                .collect::<Vec<_>>();
+            if paths.is_empty() {
+                "Declared operational references.".to_string()
+            } else {
+                paths.join("; ")
+            }
+        }
+        YamlValue::String(value) => value.to_string(),
+        _ => "Declared operational semantics.".to_string(),
+    }
+}
+
+fn atlas_operation_source_refs(
+    root: &Path,
+    module_base: &Path,
+    module_ref: &AtlasSourceRef,
+    value: &YamlValue,
+) -> Vec<AtlasSourceRef> {
+    let mut refs = vec![module_ref.clone()];
+    collect_operation_path_refs(root, module_base, value, &mut refs);
+    refs
+}
+
+fn collect_operation_path_refs(
+    root: &Path,
+    module_base: &Path,
+    value: &YamlValue,
+    refs: &mut Vec<AtlasSourceRef>,
+) {
+    match value {
+        YamlValue::String(path) if path.contains('/') || path.contains('.') => {
+            let source_ref = atlas_source_ref(root, &module_base.join(path), "operation");
+            if !refs.iter().any(|existing| {
+                existing.role == source_ref.role && existing.path == source_ref.path
+            }) {
+                refs.push(source_ref);
+            }
+        }
+        YamlValue::Sequence(items) => {
+            for item in items {
+                collect_operation_path_refs(root, module_base, item, refs);
+            }
+        }
+        YamlValue::Mapping(mapping) => {
+            for value in mapping.values() {
+                collect_operation_path_refs(root, module_base, value, refs);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn summarize_yaml_mapping(value: &YamlValue, limit: usize) -> String {
     let Some(mapping) = value.as_mapping() else {
         return String::new();
@@ -8229,282 +8708,19 @@ fn atlas_source_ref(root: &Path, path: &Path, role: &str) -> AtlasSourceRef {
     }
 }
 
-fn build_atlas_questions(
-    nodes: &[AtlasNode],
-    edges: &[AtlasEdge],
-    module_id: &str,
-) -> Vec<AtlasQuestion> {
-    let Some(module) = nodes.iter().find(|node| node.id == module_id) else {
-        return Vec::new();
-    };
-
-    let ownership = atlas_nodes_for_layer(nodes, "ownership");
-    let public_surface = atlas_nodes_for_layer(nodes, "public-surface");
-    let effects = atlas_nodes_for_layer(nodes, "effects");
-    let lifecycle = atlas_nodes_for_layer(nodes, "lifecycle");
-    let verification = atlas_nodes_for_layer(nodes, "verification");
-    let invariants = atlas_nodes_for_kind(nodes, "invariant");
-    let compatibility = atlas_nodes_for_kind(nodes, "compatibility");
-
-    let mut questions = Vec::new();
-    let overview_nodes = atlas_take_nodes(
-        &[
-            &[module][..],
-            &ownership,
-            &public_surface,
-            &effects,
-            &verification,
-        ],
-        8,
-    );
-    questions.push(atlas_question(
-        "understand-module",
-        "Understand",
-        format!("What is `{}` for?", module.label),
-        "What is this module for, and where should I look first?".to_string(),
-        vec![module.id.clone()],
-        format!(
-            "`{}` exists to {}.",
-            module.label,
-            lowercase_first(&module.summary)
-        ),
-        vec![
-            atlas_answer_block(
-                "summary",
-                "Module thesis",
-                module.summary.clone(),
-                &[module],
-            ),
-            atlas_answer_block(
-                "next",
-                "Best first questions",
-                atlas_available_question_summary(
-                    &ownership,
-                    &public_surface,
-                    &effects,
-                    &verification,
-                ),
-                &overview_nodes,
-            ),
-        ],
-        atlas_gap_summary(&[
-            ("public surface", public_surface.is_empty()),
-            ("verification evidence", verification.is_empty()),
-        ]),
-        vec![
-            "What does it own?".to_string(),
-            "What can other modules use?".to_string(),
-            "What proves it?".to_string(),
-        ],
-        &overview_nodes,
-        edges,
-    ));
-
-    if !ownership.is_empty() {
-        questions.push(atlas_question(
-            "ownership-boundary",
-            "Understand",
-            "What does this module own?".to_string(),
-            "What meaning belongs inside this module, and what must not leak out?".to_string(),
-            atlas_node_ids(&ownership),
-            format!(
-                "`{}` owns {} semantic item(s). Treat these as the module's authority boundary.",
-                module.label,
-                ownership.len()
-            ),
-            vec![atlas_answer_block(
-                "ownership",
-                "Owned meaning",
-                atlas_grouped_node_bullets(&ownership),
-                &ownership,
-            )],
-            Vec::new(),
-            vec![
-                "What can other modules use?".to_string(),
-                "What would break if this changes?".to_string(),
-            ],
-            &atlas_with_module(module, &ownership),
-            edges,
-        ));
-    }
-
-    if !public_surface.is_empty() {
-        let mut surface_nodes = atlas_with_module(module, &public_surface);
-        surface_nodes.extend(invariants.iter().copied());
-        questions.push(atlas_question(
-            "public-surface",
-            "Compose",
-            "What can other modules use?".to_string(),
-            "What can other modules call, query, subscribe to, or rely on?".to_string(),
-            atlas_node_ids(&public_surface),
-            format!(
-                "`{}` exposes {} public surface item(s). Each one is compatibility-sensitive.",
-                module.label,
-                public_surface.len()
-            ),
-            vec![
-                atlas_answer_block(
-                    "public-surface",
-                    "Public contracts and boundary",
-                    atlas_grouped_node_bullets(&public_surface),
-                    &public_surface,
-                ),
-                atlas_answer_block(
-                    "constraints",
-                    "Relevant constraints",
-                    atlas_grouped_node_bullets(&invariants),
-                    &invariants,
-                ),
-            ],
-            atlas_gap_summary(&[("invariants", invariants.is_empty())]),
-            vec![
-                "Can I safely change a public surface?".to_string(),
-                "What proves it?".to_string(),
-            ],
-            &surface_nodes,
-            edges,
-        ));
-    }
-
-    if !effects.is_empty() {
-        let mut effect_nodes = atlas_with_module(module, &effects);
-        effect_nodes.extend(public_surface.iter().copied());
-        questions.push(atlas_question(
-            "effects-and-recovery",
-            "Operate",
-            "Where can external truth diverge?".to_string(),
-            "Which declared effects, dependencies, or recovery paths shape operations?".to_string(),
-            atlas_node_ids(&effects),
-            format!(
-                "`{}` declares {} external effect node(s). These are the places to inspect recovery and drift.",
-                module.label,
-                effects.len()
-            ),
-            vec![atlas_answer_block(
-                "effects",
-                "Declared effects",
-                atlas_grouped_node_bullets(&effects),
-                &effects,
-            )],
-            atlas_gap_summary(&[("public triggers", public_surface.is_empty())]),
-            vec![
-                "What can other modules use?".to_string(),
-                "What proves it?".to_string(),
-            ],
-            &effect_nodes,
-            edges,
-        ));
-    }
-
-    if !lifecycle.is_empty() {
-        questions.push(atlas_question(
-            "lifecycle",
-            "Change",
-            "What lifecycle or state rules matter?".to_string(),
-            "Which state model, migration policy, or transition rules constrain changes?".to_string(),
-            atlas_node_ids(&lifecycle),
-            format!(
-                "`{}` has {} lifecycle node(s). Use them to reject illegal transitions and migration shortcuts.",
-                module.label,
-                lifecycle.len()
-            ),
-            vec![atlas_answer_block(
-                "lifecycle",
-                "Lifecycle constraints",
-                atlas_grouped_node_bullets(&lifecycle),
-                &lifecycle,
-            )],
-            Vec::new(),
-            vec!["What proves it?".to_string()],
-            &atlas_with_module(module, &lifecycle),
-            edges,
-        ));
-    }
-
-    if !compatibility.is_empty() {
-        questions.push(atlas_question(
-            "compatibility",
-            "Change",
-            "What would break if this changes?".to_string(),
-            "Which compatibility policy and public surfaces govern safe evolution?".to_string(),
-            atlas_node_ids(&compatibility),
-            format!(
-                "`{}` declares compatibility as `{}`.",
-                module.label, compatibility[0].label
-            ),
-            vec![
-                atlas_answer_block(
-                    "compatibility",
-                    "Compatibility policy",
-                    atlas_grouped_node_bullets(&compatibility),
-                    &compatibility,
-                ),
-                atlas_answer_block(
-                    "public-surface",
-                    "Compatibility-sensitive surface",
-                    atlas_grouped_node_bullets(&public_surface),
-                    &public_surface,
-                ),
-            ],
-            atlas_gap_summary(&[("public surface", public_surface.is_empty())]),
-            vec![
-                "What can other modules use?".to_string(),
-                "What proves it?".to_string(),
-            ],
-            &atlas_take_nodes(&[&[module][..], &compatibility, &public_surface], 12),
-            edges,
-        ));
-    }
-
-    questions.push(atlas_question(
-        "verification",
-        "Verify",
-        "What proves it?".to_string(),
-        "Which evidence paths support this module's laws, contracts, scenarios, and boundaries?"
-            .to_string(),
-        atlas_node_ids(&verification),
-        if verification.is_empty() {
-            format!(
-                "`{}` does not expose verification nodes in this atlas.",
-                module.label
-            )
-        } else {
-            format!(
-                "`{}` exposes {} verification node(s). Follow these before trusting a change.",
-                module.label,
-                verification.len()
-            )
-        },
-        vec![atlas_answer_block(
-            "verification",
-            "Evidence",
-            atlas_grouped_node_bullets(&verification),
-            &verification,
-        )],
-        atlas_gap_summary(&[("verification evidence", verification.is_empty())]),
-        vec![
-            "What is this module for?".to_string(),
-            "What would break if this changes?".to_string(),
-        ],
-        &atlas_with_module(module, &verification),
-        edges,
-    ));
-
-    questions
-}
-
-fn atlas_nodes_for_layer<'a>(nodes: &'a [AtlasNode], layer: &str) -> Vec<&'a AtlasNode> {
-    nodes.iter().filter(|node| node.layer == layer).collect()
-}
-
 fn atlas_nodes_for_kind<'a>(nodes: &'a [AtlasNode], kind: &str) -> Vec<&'a AtlasNode> {
     nodes.iter().filter(|node| node.kind == kind).collect()
 }
 
-fn atlas_with_module<'a>(module: &'a AtlasNode, nodes: &[&'a AtlasNode]) -> Vec<&'a AtlasNode> {
-    let mut combined = vec![module];
-    combined.extend(nodes.iter().copied());
-    combined
+fn atlas_nodes_for_group<'a>(
+    nodes: &'a [AtlasNode],
+    layer: &str,
+    group: &str,
+) -> Vec<&'a AtlasNode> {
+    nodes
+        .iter()
+        .filter(|node| node.layer == layer && node.group.as_deref() == Some(group))
+        .collect()
 }
 
 fn atlas_take_nodes<'a>(groups: &[&[&'a AtlasNode]], limit: usize) -> Vec<&'a AtlasNode> {
@@ -8529,109 +8745,500 @@ fn atlas_node_ids(nodes: &[&AtlasNode]) -> Vec<String> {
     nodes.iter().map(|node| node.id.clone()).collect()
 }
 
-fn atlas_question(
-    id: &str,
-    journey: &'static str,
-    label: String,
-    prompt: String,
-    entry_node_ids: Vec<String>,
-    headline: String,
-    blocks: Vec<AtlasAnswerBlock>,
-    gaps: Vec<String>,
-    next_questions: Vec<String>,
-    trace_nodes: &[&AtlasNode],
+fn build_atlas_traces(
+    nodes: &[AtlasNode],
     edges: &[AtlasEdge],
-) -> AtlasQuestion {
-    let trace_node_ids = atlas_node_ids(trace_nodes);
-    let trace_edge_ids = atlas_trace_edge_ids(edges, &trace_node_ids);
-    let source_refs = collect_atlas_source_refs(trace_nodes);
-    AtlasQuestion {
-        id: id.to_string(),
-        journey,
-        label,
-        prompt,
-        entry_node_ids,
-        answer: AtlasAnswer {
-            headline,
-            blocks,
-            trace: AtlasTrace {
-                summary: format!(
-                    "{} node(s), {} edge(s)",
-                    trace_node_ids.len(),
-                    trace_edge_ids.len()
-                ),
-                node_ids: trace_node_ids,
-                edge_ids: trace_edge_ids,
-            },
-            gaps,
-            next_questions,
-            source_refs,
+    module_id: &str,
+) -> Vec<AtlasTraceProjection> {
+    let Some(module) = nodes.iter().find(|node| node.id == module_id) else {
+        return Vec::new();
+    };
+
+    let commands = atlas_nodes_for_group(nodes, "public-surface", "commands");
+    let entries = if commands.is_empty() {
+        vec![module]
+    } else {
+        commands
+    };
+    let boundaries = atlas_nodes_for_kind(nodes, "boundary");
+    let invariants = atlas_nodes_for_kind(nodes, "invariant");
+    let states = atlas_nodes_for_kind(nodes, "state");
+    let effects = atlas_nodes_for_kind(nodes, "effect");
+    let events = atlas_nodes_for_group(nodes, "public-surface", "events");
+    let operations = atlas_nodes_for_kind(nodes, "operation");
+    let verification = atlas_nodes_for_kind(nodes, "verification");
+    let compatibility = atlas_nodes_for_kind(nodes, "compatibility");
+
+    entries
+        .into_iter()
+        .map(|entry| {
+            build_atlas_trace_for_entry(
+                module,
+                entry,
+                edges,
+                &boundaries,
+                &invariants,
+                &states,
+                &effects,
+                &events,
+                &operations,
+                &verification,
+                &compatibility,
+            )
+        })
+        .collect()
+}
+
+fn build_atlas_trace_for_entry(
+    module: &AtlasNode,
+    entry: &AtlasNode,
+    edges: &[AtlasEdge],
+    boundaries: &[&AtlasNode],
+    invariants: &[&AtlasNode],
+    states: &[&AtlasNode],
+    effects: &[&AtlasNode],
+    events: &[&AtlasNode],
+    operations: &[&AtlasNode],
+    verification: &[&AtlasNode],
+    compatibility: &[&AtlasNode],
+) -> AtlasTraceProjection {
+    let mut steps = Vec::new();
+    let mut gaps = Vec::new();
+    let entry_nodes = if entry.id == module.id {
+        vec![module]
+    } else {
+        vec![entry, module]
+    };
+    let entry_refs = collect_atlas_source_refs(&entry_nodes);
+
+    steps.push(atlas_trace_step(
+        "stimulus",
+        "Stimulus",
+        &format!("Start at {}", entry.label),
+        if entry.id == module.id {
+            format!(
+                "`{}` is the module being projected from canonical RMS artifacts.",
+                module.label
+            )
+        } else {
+            format!(
+                "`{}` enters through the declared public surface. {}",
+                entry.label, entry.summary
+            )
         },
+        &entry_nodes,
+        "direct",
+        edges,
+    ));
+
+    if boundaries.is_empty() {
+        gaps.push(atlas_trace_gap(
+            "boundary",
+            "No boundary node",
+            "The manifest does not declare boundary behavior for this trace.",
+            Some("module.boundary".to_string()),
+            &entry_refs,
+        ));
+    } else {
+        steps.push(atlas_trace_step(
+            "boundary",
+            "Boundary",
+            "Cross the declared boundary",
+            "Validation, authorization, accepted contracts, and deprecation policy define how external input is allowed to enter.",
+            boundaries,
+            "direct",
+            edges,
+        ));
+    }
+
+    let matched_invariants = atlas_semantic_matches(entry, invariants, 2, true);
+    if matched_invariants.is_empty() {
+        if invariants.is_empty() {
+            gaps.push(atlas_trace_gap(
+                "rule",
+                "No invariant node",
+                "No declared invariant was available to constrain this trace.",
+                Some("module.invariants".to_string()),
+                &entry_refs,
+            ));
+        } else {
+            gaps.push(atlas_trace_gap(
+                "rule",
+                "No explicit rule link",
+                "Invariants exist, but the canonical artifacts do not explicitly connect one to this entry. The atlas will not invent that edge.",
+                Some("contract preconditions or invariant linkage".to_string()),
+                &entry_refs,
+            ));
+        }
+    } else {
+        steps.push(atlas_trace_step(
+            "rule",
+            "Rule",
+            "Apply the governing invariant",
+            format!(
+                "The trace is constrained by {}.",
+                atlas_label_list(&matched_invariants)
+            ),
+            &matched_invariants,
+            "inferred",
+            edges,
+        ));
+    }
+
+    if states.is_empty() {
+        gaps.push(atlas_trace_gap(
+            "state",
+            "No lifecycle state",
+            "No state model was declared for this module.",
+            Some("module.state".to_string()),
+            &entry_refs,
+        ));
+    } else {
+        steps.push(atlas_trace_step(
+            "state",
+            "State",
+            "Update or inspect lifecycle state",
+            "The declared state model is the consistency boundary for lifecycle, persistence, concurrency, and migration semantics.",
+            states,
+            "direct",
+            edges,
+        ));
+    }
+
+    let effect_matches = atlas_semantic_matches(entry, effects, 1, false);
+    let (effect_nodes, effect_confidence) = if !effect_matches.is_empty() {
+        (effect_matches, "inferred")
+    } else if effects.len() == 1 {
+        (effects.to_vec(), "module-level")
+    } else {
+        (Vec::new(), "gap")
+    };
+    if effect_nodes.is_empty() {
+        gaps.push(atlas_trace_gap(
+            "effect",
+            "No effect link",
+            "No declared effect could be tied to this trace from the current artifacts.",
+            Some("effect semantics or command-to-effect linkage".to_string()),
+            &entry_refs,
+        ));
+    } else {
+        steps.push(atlas_trace_step(
+            "effect",
+            "Effect",
+            "Touch external truth",
+            format!(
+                "{} shapes idempotency, ordering, retry, timeout, or other effect semantics.",
+                atlas_label_list(&effect_nodes)
+            ),
+            &effect_nodes,
+            effect_confidence,
+            edges,
+        ));
+    }
+
+    let event_matches = atlas_semantic_matches(entry, events, 1, false);
+    let (event_nodes, event_confidence) = if !event_matches.is_empty() {
+        (event_matches, "inferred")
+    } else if events.len() == 1 {
+        (events.to_vec(), "module-level")
+    } else {
+        (Vec::new(), "gap")
+    };
+    if event_nodes.is_empty() {
+        gaps.push(atlas_trace_gap(
+            "outcome",
+            "No outcome event",
+            "No public event was declared as the observable outcome for this trace.",
+            Some("provided event or contract outcome semantics".to_string()),
+            &entry_refs,
+        ));
+    } else {
+        steps.push(atlas_trace_step(
+            "outcome",
+            "Outcome",
+            "Publish or expose the outcome",
+            format!(
+                "{} is the declared public outcome surface related to this trace.",
+                atlas_label_list(&event_nodes)
+            ),
+            &event_nodes,
+            event_confidence,
+            edges,
+        ));
+    }
+
+    let operation_matches = atlas_semantic_matches(entry, operations, 1, false);
+    let (operation_nodes, operation_confidence) = if !operation_matches.is_empty() {
+        (operation_matches, "inferred")
+    } else if !operations.is_empty() && !effect_nodes.is_empty() {
+        (operations.to_vec(), "module-level")
+    } else {
+        (Vec::new(), "gap")
+    };
+    if !operation_nodes.is_empty() {
+        steps.push(atlas_trace_step(
+            "operate",
+            "Operate",
+            "Recover and observe",
+            "Declared observability, runtime checks, reconciliation, or runbooks tell a human how this behavior is operated.",
+            &operation_nodes,
+            operation_confidence,
+            edges,
+        ));
+    }
+
+    let proof_nodes = atlas_proof_nodes_for(&matched_invariants, verification, edges);
+    if proof_nodes.is_empty() {
+        if verification.is_empty() {
+            gaps.push(atlas_trace_gap(
+                "proof",
+                "No proof lane",
+                "The module does not declare verification evidence for this trace.",
+                Some("module.verification".to_string()),
+                &entry_refs,
+            ));
+        } else {
+            steps.push(atlas_trace_step(
+                "proof",
+                "Proof",
+                "Check module-level evidence",
+                "Verification exists, but the current artifacts do not tie a specific evidence path to this trace.",
+                &atlas_take_nodes(&[verification], 4),
+                "module-level",
+                edges,
+            ));
+        }
+    } else {
+        steps.push(atlas_trace_step(
+            "proof",
+            "Proof",
+            "Verify the protected promise",
+            format!(
+                "{} backs the rule step through declared evidence links.",
+                atlas_label_list(&proof_nodes)
+            ),
+            &proof_nodes,
+            "direct",
+            edges,
+        ));
+    }
+
+    if !compatibility.is_empty() && entry.id != module.id {
+        steps.push(atlas_trace_step(
+            "compatibility",
+            "Compatibility",
+            "Respect public evolution policy",
+            "A public entrypoint is compatibility-sensitive; changing it must preserve or deliberately evolve the declared policy.",
+            compatibility,
+            "direct",
+            edges,
+        ));
+    }
+
+    let source_refs = collect_atlas_trace_source_refs(&steps, &gaps);
+    AtlasTraceProjection {
+        id: stable_atlas_id("trace", &entry.label),
+        label: if entry.id == module.id {
+            format!("{} orientation", module.label)
+        } else {
+            entry.label.clone()
+        },
+        intent: if entry.id == module.id {
+            "orient"
+        } else {
+            "change-risk"
+        },
+        entry_node_id: entry.id.clone(),
+        summary: if entry.id == module.id {
+            format!(
+                "Orient around `{}` and its declared semantic surface.",
+                module.label
+            )
+        } else {
+            format!(
+                "Follow `{}` from boundary through rules, state, effects, outcomes, operations, proof, and compatibility.",
+                entry.label
+            )
+        },
+        steps,
+        gaps,
+        source_refs,
     }
 }
 
-fn atlas_answer_block(
-    kind: &'static str,
+fn atlas_trace_step(
+    id: &str,
+    role: &'static str,
     title: &str,
-    body: String,
+    body: impl Into<String>,
     nodes: &[&AtlasNode],
-) -> AtlasAnswerBlock {
-    AtlasAnswerBlock {
-        kind,
+    confidence: &'static str,
+    edges: &[AtlasEdge],
+) -> AtlasTraceStep {
+    let node_ids = atlas_node_ids(nodes);
+    AtlasTraceStep {
+        id: id.to_string(),
+        role,
         title: title.to_string(),
-        body,
-        node_ids: atlas_node_ids(nodes),
+        body: body.into(),
+        edge_ids: atlas_trace_edge_ids(edges, &node_ids),
+        node_ids,
+        confidence,
         source_refs: collect_atlas_source_refs(nodes),
     }
 }
 
-fn atlas_grouped_node_bullets(nodes: &[&AtlasNode]) -> String {
-    if nodes.is_empty() {
-        return "No derived nodes in this category.".to_string();
+fn atlas_trace_gap(
+    id: &str,
+    title: &str,
+    body: &str,
+    suggested_artifact: Option<String>,
+    source_refs: &[AtlasSourceRef],
+) -> AtlasTraceGap {
+    AtlasTraceGap {
+        id: id.to_string(),
+        title: title.to_string(),
+        body: body.to_string(),
+        suggested_artifact,
+        source_refs: source_refs.to_vec(),
     }
+}
+
+fn atlas_semantic_matches<'a>(
+    entry: &AtlasNode,
+    candidates: &[&'a AtlasNode],
+    min_score: usize,
+    prefer_action: bool,
+) -> Vec<&'a AtlasNode> {
+    let entry_terms = atlas_semantic_terms(&format!("{} {}", entry.label, entry.summary));
+    let action = atlas_action_term(&entry.label);
+    let mut scored = candidates
+        .iter()
+        .filter_map(|node| {
+            let node_terms = atlas_semantic_terms(&format!(
+                "{} {} {}",
+                node.label,
+                node.summary,
+                node.group.as_deref().unwrap_or("")
+            ));
+            let overlap = entry_terms.intersection(&node_terms).count();
+            let action_match = action
+                .as_ref()
+                .is_some_and(|action| node_terms.contains(action));
+            let score = overlap + usize::from(action_match) * 10;
+            if (prefer_action && action_match) || (!prefer_action && overlap >= min_score) {
+                Some((score, *node))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.label.cmp(&right.1.label))
+    });
+    scored.into_iter().map(|(_, node)| node).collect()
+}
+
+fn atlas_proof_nodes_for<'a>(
+    invariants: &[&AtlasNode],
+    verification: &[&'a AtlasNode],
+    edges: &[AtlasEdge],
+) -> Vec<&'a AtlasNode> {
+    let invariant_ids = invariants
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut proof_nodes = Vec::new();
+    for edge in edges {
+        if edge.kind != "verifies" || !invariant_ids.contains(edge.to.as_str()) {
+            continue;
+        }
+        if let Some(node) = verification.iter().find(|node| node.id == edge.from) {
+            if !proof_nodes
+                .iter()
+                .any(|existing: &&AtlasNode| existing.id == node.id)
+            {
+                proof_nodes.push(*node);
+            }
+        }
+    }
+    proof_nodes
+}
+
+fn atlas_label_list(nodes: &[&AtlasNode]) -> String {
     nodes
         .iter()
-        .map(|node| {
-            let group = node.group.as_deref().unwrap_or(&node.kind);
-            format!("- {group}: {} - {}", node.label, node.summary)
-        })
+        .map(|node| format!("`{}`", node.label))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join(", ")
 }
 
-fn atlas_available_question_summary(
-    ownership: &[&AtlasNode],
-    public_surface: &[&AtlasNode],
-    effects: &[&AtlasNode],
-    verification: &[&AtlasNode],
-) -> String {
-    let mut items = Vec::new();
-    if !ownership.is_empty() {
-        items.push("ownership boundary");
+fn atlas_semantic_terms(value: &str) -> BTreeSet<String> {
+    let mut terms = BTreeSet::new();
+    let mut current = String::new();
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            current.push(character.to_ascii_lowercase());
+        } else {
+            push_atlas_semantic_term(&mut terms, &mut current);
+        }
     }
-    if !public_surface.is_empty() {
-        items.push("public surface");
+    push_atlas_semantic_term(&mut terms, &mut current);
+    terms
+}
+
+fn push_atlas_semantic_term(terms: &mut BTreeSet<String>, current: &mut String) {
+    if let Some(term) = normalize_atlas_semantic_token(current) {
+        terms.insert(term);
     }
-    if !effects.is_empty() {
-        items.push("external effects and recovery");
+    current.clear();
+}
+
+fn atlas_action_term(label: &str) -> Option<String> {
+    label
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .find_map(normalize_atlas_semantic_token)
+}
+
+fn normalize_atlas_semantic_token(token: &str) -> Option<String> {
+    let token = token.trim().to_ascii_lowercase();
+    if token.len() < 3 || is_atlas_stopword(&token) {
+        return None;
     }
-    if !verification.is_empty() {
-        items.push("verification evidence");
-    }
-    if items.is_empty() {
-        "Start with the module purpose, then inspect the canonical manifest directly.".to_string()
+    let normalized = if token.len() > 4 && token.ends_with('s') && !token.ends_with("ss") {
+        token.trim_end_matches('s').to_string()
     } else {
-        format!("Available question paths: {}.", items.join(", "))
-    }
+        token
+    };
+    (!is_atlas_stopword(&normalized)).then_some(normalized)
 }
 
-fn atlas_gap_summary(items: &[(&str, bool)]) -> Vec<String> {
-    items
-        .iter()
-        .filter_map(|(label, missing)| {
-            missing.then(|| format!("No {label} nodes were derived for this question."))
-        })
-        .collect()
+fn is_atlas_stopword(token: &str) -> bool {
+    matches!(
+        token,
+        "and"
+            | "the"
+            | "for"
+            | "from"
+            | "with"
+            | "this"
+            | "that"
+            | "into"
+            | "only"
+            | "module"
+            | "public"
+            | "surface"
+            | "declared"
+            | "request"
+            | "valid"
+            | "value"
+            | "kind"
+            | "contract"
+            | "contracts"
+    )
 }
 
 fn atlas_trace_edge_ids(edges: &[AtlasEdge], node_ids: &[String]) -> Vec<String> {
@@ -8646,22 +9253,37 @@ fn collect_atlas_source_refs(nodes: &[&AtlasNode]) -> Vec<AtlasSourceRef> {
     let mut refs = Vec::new();
     for node in nodes {
         for source_ref in &node.source_refs {
-            if !refs.iter().any(|existing: &AtlasSourceRef| {
-                existing.role == source_ref.role && existing.path == source_ref.path
-            }) {
-                refs.push(source_ref.clone());
-            }
+            push_atlas_source_ref(&mut refs, source_ref.clone());
         }
     }
     refs
 }
 
-fn lowercase_first(value: &str) -> String {
-    let mut characters = value.chars();
-    let Some(first) = characters.next() else {
-        return String::new();
-    };
-    first.to_lowercase().chain(characters).collect()
+fn collect_atlas_trace_source_refs(
+    steps: &[AtlasTraceStep],
+    gaps: &[AtlasTraceGap],
+) -> Vec<AtlasSourceRef> {
+    let mut refs = Vec::new();
+    for step in steps {
+        for source_ref in &step.source_refs {
+            push_atlas_source_ref(&mut refs, source_ref.clone());
+        }
+    }
+    for gap in gaps {
+        for source_ref in &gap.source_refs {
+            push_atlas_source_ref(&mut refs, source_ref.clone());
+        }
+    }
+    refs
+}
+
+fn push_atlas_source_ref(refs: &mut Vec<AtlasSourceRef>, source_ref: AtlasSourceRef) {
+    if !refs
+        .iter()
+        .any(|existing| existing.role == source_ref.role && existing.path == source_ref.path)
+    {
+        refs.push(source_ref);
+    }
 }
 
 fn build_atlas_tours(nodes: &[AtlasNode], module_id: &str) -> Vec<AtlasTour> {
@@ -8675,6 +9297,7 @@ fn build_atlas_tours(nodes: &[AtlasNode], module_id: &str) -> Vec<AtlasTour> {
         "constraints",
         "lifecycle",
         "verification",
+        "operations",
     ] {
         if let Some(node) = nodes.iter().find(|node| {
             if layer == "overview" {
@@ -8734,753 +9357,7 @@ fn html_script_json(value: &str) -> String {
     value.replace("</script", "<\\/script")
 }
 
-const ATLAS_HTML_TEMPLATE: &str = r##"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RMS Atlas</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --ink: #202124;
-      --muted: #686f78;
-      --line: #d9dde2;
-      --surface: rgba(255,255,255,.88);
-      --surface-strong: rgba(255,255,255,.96);
-      --accent: #137c72;
-      --attention: #b64f38;
-      --proof: #5b6fb9;
-      --field: #f4f2ed;
-    }
-    * { box-sizing: border-box; }
-    html, body { height: 100%; margin: 0; }
-    body {
-      overflow: hidden;
-      color: var(--ink);
-      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: radial-gradient(circle at 50% 35%, #ffffff 0, #f7f4ee 42%, #e9eef0 100%);
-    }
-    #scene, #labels {
-      position: fixed;
-      inset: 0;
-    }
-    #scene { cursor: grab; touch-action: none; }
-    #scene.dragging { cursor: grabbing; }
-    #labels { pointer-events: none; }
-    .topbar {
-      position: fixed;
-      top: 16px;
-      left: 16px;
-      right: 16px;
-      z-index: 10;
-      display: grid;
-      grid-template-columns: minmax(220px, 1fr) auto;
-      gap: 12px;
-      align-items: start;
-      pointer-events: none;
-    }
-    .identity, .tools, .inspector, .map-key {
-      pointer-events: auto;
-      background: var(--surface);
-      border: 1px solid rgba(32,33,36,.12);
-      backdrop-filter: blur(18px);
-      box-shadow: 0 18px 60px rgba(32,33,36,.10);
-    }
-    .identity {
-      width: min(560px, 100%);
-      padding: 14px 16px;
-      border-radius: 10px;
-    }
-    .eyebrow {
-      margin: 0 0 4px;
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-    }
-    h1 {
-      margin: 0;
-      font-size: clamp(24px, 3.5vw, 44px);
-      line-height: .98;
-      letter-spacing: 0;
-    }
-    .purpose {
-      max-width: 54ch;
-      margin: 8px 0 0;
-      color: var(--muted);
-    }
-    .tools {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-      gap: 8px;
-      max-width: min(720px, calc(100vw - 32px));
-      padding: 10px;
-      border-radius: 10px;
-    }
-    button, input {
-      height: 34px;
-      border: 1px solid rgba(32,33,36,.16);
-      border-radius: 8px;
-      background: rgba(255,255,255,.82);
-      color: var(--ink);
-      font: inherit;
-    }
-    button {
-      padding: 0 11px;
-      cursor: pointer;
-    }
-    button:hover, button.active {
-      border-color: rgba(19,124,114,.45);
-      color: #0b5e56;
-      background: #eef9f6;
-    }
-    input {
-      width: 280px;
-      padding: 0 11px;
-      outline: none;
-    }
-    .map-key {
-      position: fixed;
-      left: 16px;
-      top: 168px;
-      z-index: 8;
-      width: min(320px, calc(100vw - 32px));
-      padding: 12px 14px;
-      border-radius: 10px;
-    }
-    .map-key summary {
-      cursor: pointer;
-      font-weight: 760;
-      list-style: none;
-    }
-    .map-key summary::-webkit-details-marker { display: none; }
-    .map-rule {
-      display: grid;
-      grid-template-columns: 70px 1fr;
-      gap: 8px;
-      margin-top: 8px;
-      color: #30343a;
-    }
-    .map-rule p {
-      margin: 0;
-    }
-    .map-rule span:first-child {
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 720;
-      text-transform: uppercase;
-      letter-spacing: .04em;
-    }
-    .question-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-top: 14px;
-      padding-top: 12px;
-      border-top: 1px solid rgba(32,33,36,.10);
-    }
-    .question-row button {
-      height: 30px;
-      font-size: 12px;
-    }
-    .inspector {
-      position: fixed;
-      right: 16px;
-      bottom: 16px;
-      z-index: 9;
-      width: min(390px, calc(100vw - 32px));
-      max-height: min(520px, calc(100vh - 130px));
-      overflow: auto;
-      padding: 16px;
-      border-radius: 10px;
-    }
-    .inspector h2 {
-      margin: 0 0 6px;
-      font-size: 19px;
-      line-height: 1.1;
-      letter-spacing: 0;
-    }
-    .kind {
-      color: var(--muted);
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: .06em;
-    }
-    .summary {
-      margin: 12px 0;
-      color: #30343a;
-    }
-    .refs {
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px solid rgba(32,33,36,.12);
-    }
-    .relationships {
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px solid rgba(32,33,36,.12);
-    }
-    .relation {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 8px;
-      align-items: center;
-      width: 100%;
-      height: auto;
-      margin-top: 6px;
-      padding: 7px 8px;
-      text-align: left;
-      border-radius: 7px;
-    }
-    .relation small {
-      display: block;
-      color: var(--muted);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: .05em;
-    }
-    .refs code {
-      display: block;
-      margin-top: 6px;
-      color: #46505a;
-      font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
-      white-space: normal;
-      overflow-wrap: anywhere;
-    }
-    .label {
-      padding: 4px 7px;
-      border: 1px solid rgba(32,33,36,.13);
-      border-radius: 7px;
-      background: rgba(255,255,255,.84);
-      box-shadow: 0 8px 24px rgba(32,33,36,.08);
-      color: #23272c;
-      font-size: 12px;
-      font-weight: 650;
-      white-space: nowrap;
-      transform: translateY(-8px);
-      transition: opacity .18s ease, transform .18s ease;
-    }
-    .label.dim {
-      opacity: .22;
-    }
-    .status {
-      position: fixed;
-      left: 16px;
-      bottom: 16px;
-      z-index: 8;
-      color: var(--muted);
-      background: rgba(255,255,255,.72);
-      border: 1px solid rgba(32,33,36,.10);
-      border-radius: 8px;
-      padding: 8px 10px;
-      backdrop-filter: blur(14px);
-    }
-    @media (max-width: 760px) {
-      .topbar {
-        grid-template-columns: 1fr;
-      }
-      .tools {
-        justify-content: flex-start;
-      }
-      input {
-        width: 100%;
-        flex-basis: 100%;
-      }
-      .inspector {
-        left: 16px;
-        width: auto;
-        max-height: 42vh;
-      }
-      .map-key {
-        top: auto;
-        bottom: calc(42vh + 32px);
-        max-height: 150px;
-        overflow: auto;
-      }
-      .status {
-        display: none;
-      }
-    }
-  </style>
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
-      }
-    }
-  </script>
-</head>
-<body>
-  <script id="atlas-data" type="application/json">__ATLAS_JSON__</script>
-  <canvas id="scene"></canvas>
-  <div id="labels"></div>
-  <header class="topbar">
-    <section class="identity">
-      <p class="eyebrow">RMS Atlas</p>
-      <h1 id="moduleName">Module</h1>
-      <p class="purpose" id="modulePurpose"></p>
-    </section>
-    <nav class="tools" aria-label="Atlas controls">
-      <input id="search" type="search" placeholder="Find command, invariant, effect">
-      <button id="overview" type="button">Reset view</button>
-      <button id="tour" type="button">Tour</button>
-      <button id="trace" type="button">Trace selection</button>
-      <span id="layers"></span>
-    </nav>
-  </header>
-  <details class="map-key" open>
-    <summary>Read the map</summary>
-    <div class="map-rule"><span>Center</span><p>the module and its declared profiles.</p></div>
-    <div class="map-rule"><span>Inside</span><p>owned concepts, data, identities, and decisions.</p></div>
-    <div class="map-rule"><span>Edge</span><p>public commands, queries, events, and boundary behavior.</p></div>
-    <div class="map-rule"><span>Outside</span><p>required modules, capabilities, and external effects.</p></div>
-    <div class="map-rule"><span>Proof</span><p>verification paths tied back to promises.</p></div>
-    <div class="question-row" aria-label="Question shortcuts">
-      <button type="button" data-focus-layer="ownership">Owns</button>
-      <button type="button" data-focus-layer="public-surface">Public</button>
-      <button type="button" data-focus-layer="effects">Effects</button>
-      <button type="button" data-focus-layer="verification">Proof</button>
-    </div>
-  </details>
-  <aside class="inspector" id="inspector"></aside>
-  <div class="status" id="status"></div>
-  <script type="module">
-    import * as THREE from 'three';
-    import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-
-    const atlas = JSON.parse(document.getElementById('atlas-data').textContent);
-    const canvas = document.getElementById('scene');
-    const labelsRoot = document.getElementById('labels');
-    const inspector = document.getElementById('inspector');
-    const status = document.getElementById('status');
-    const search = document.getElementById('search');
-    const layerRoot = document.getElementById('layers');
-    const mapKey = document.querySelector('.map-key');
-    document.getElementById('moduleName').textContent = atlas.module.name;
-    document.getElementById('modulePurpose').textContent = atlas.module.purpose;
-    if (window.innerWidth <= 760 && mapKey) {
-      mapKey.open = false;
-    }
-
-    const activeLayers = new Set(atlas.layers.map(layer => layer.id));
-    const nodeById = new Map(atlas.nodes.map(node => [node.id, node]));
-    const connected = new Map();
-    const edgesByNode = new Map();
-    for (const edge of atlas.edges) {
-      if (!connected.has(edge.from)) connected.set(edge.from, new Set());
-      if (!connected.has(edge.to)) connected.set(edge.to, new Set());
-      if (!edgesByNode.has(edge.from)) edgesByNode.set(edge.from, []);
-      if (!edgesByNode.has(edge.to)) edgesByNode.set(edge.to, []);
-      connected.get(edge.from).add(edge.to);
-      connected.get(edge.to).add(edge.from);
-      edgesByNode.get(edge.from).push(edge);
-      edgesByNode.get(edge.to).push(edge);
-    }
-
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf7f4ee);
-    const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
-    camera.position.set(0, 8.8, 10.8);
-    camera.lookAt(0, 0, 0);
-
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(window.innerWidth, window.innerHeight);
-
-    const labelRenderer = new CSS2DRenderer({ element: labelsRoot });
-    labelRenderer.setSize(window.innerWidth, window.innerHeight);
-
-    scene.add(new THREE.HemisphereLight(0xffffff, 0xb8b0a4, 1.8));
-    const key = new THREE.DirectionalLight(0xffffff, 2.2);
-    key.position.set(4, 8, 7);
-    scene.add(key);
-
-    const field = new THREE.Mesh(
-      new THREE.CircleGeometry(7.6, 96),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.74 })
-    );
-    field.rotation.x = -Math.PI / 2;
-    field.position.y = -0.08;
-    scene.add(field);
-
-    const ringMaterial = new THREE.LineBasicMaterial({ color: 0xd2d8dc, transparent: true, opacity: 0.85 });
-    for (const radius of [2.15, 3.75, 5.35, 6.85]) {
-      const ring = new THREE.LineLoop(
-        new THREE.BufferGeometry().setFromPoints(
-          Array.from({ length: 128 }, (_, index) => {
-            const angle = index / 128 * Math.PI * 2;
-            return new THREE.Vector3(Math.cos(angle) * radius, -0.04, Math.sin(angle) * radius);
-          })
-        ),
-        ringMaterial
-      );
-      scene.add(ring);
-    }
-
-    const layerSpec = {
-      overview: { radius: 0.55, y: 0.28, color: 0x202124, size: 0.78 },
-      ownership: { radius: 2.15, y: 0.10, color: 0x137c72, size: 0.44 },
-      'public-surface': { radius: 3.75, y: 0.16, color: 0x2f6f95, size: 0.48 },
-      dependencies: { radius: 5.35, y: 0.05, color: 0x7a6a3a, size: 0.42 },
-      effects: { radius: 6.45, y: 0.18, color: 0xb64f38, size: 0.50 },
-      constraints: { radius: 3.05, y: 0.62, color: 0x5b6fb9, size: 0.45 },
-      lifecycle: { radius: 1.55, y: 0.45, color: 0x8361a8, size: 0.42 },
-      verification: { radius: 5.75, y: -0.30, color: 0x62758b, size: 0.36 }
-    };
-    const angleOffsets = {
-      overview: 0,
-      ownership: -Math.PI * 0.78,
-      'public-surface': -Math.PI * 0.2,
-      dependencies: Math.PI * 0.24,
-      effects: Math.PI * 0.02,
-      constraints: Math.PI * 0.75,
-      lifecycle: Math.PI * 1.35,
-      verification: Math.PI * 1.03
-    };
-
-    const nodesByLayer = new Map();
-    for (const node of atlas.nodes) {
-      if (!nodesByLayer.has(node.layer)) nodesByLayer.set(node.layer, []);
-      nodesByLayer.get(node.layer).push(node);
-    }
-
-    const objects = new Map();
-    const selectable = [];
-    for (const [layer, nodes] of nodesByLayer) {
-      const spec = layerSpec[layer] || layerSpec.overview;
-      nodes.forEach((node, index) => {
-        let x = 0;
-        let z = 0;
-        if (node.kind !== 'module') {
-          const angle = (angleOffsets[layer] || 0) + (index / Math.max(nodes.length, 1)) * Math.PI * 2;
-          x = Math.cos(angle) * spec.radius;
-          z = Math.sin(angle) * spec.radius;
-        }
-        const width = Math.max(spec.size, 0.28 + Math.min(node.label.length, 24) * 0.025);
-        const height = spec.size * (node.kind === 'module' ? 1.15 : 0.62);
-        const depth = 0.08 + node.emphasis * 0.045;
-        const mesh = new THREE.Mesh(
-          new THREE.BoxGeometry(width, depth, height),
-          new THREE.MeshStandardMaterial({
-            color: spec.color,
-            roughness: 0.72,
-            metalness: 0.03,
-            transparent: true,
-            opacity: node.layer === 'verification' ? 0.78 : 0.92
-          })
-        );
-        mesh.position.set(x, spec.y, z);
-        mesh.userData.nodeId = node.id;
-        scene.add(mesh);
-        selectable.push(mesh);
-
-        const label = document.createElement('div');
-        label.className = 'label';
-        label.textContent = node.label;
-        const labelObject = new CSS2DObject(label);
-        labelObject.position.set(0, depth + 0.08, 0);
-        mesh.add(labelObject);
-
-        objects.set(node.id, { mesh, label, node, baseColor: spec.color });
-      });
-    }
-
-    const edgeGroup = new THREE.Group();
-    scene.add(edgeGroup);
-    const edgeObjects = [];
-    for (const edge of atlas.edges) {
-      const from = objects.get(edge.from)?.mesh.position;
-      const to = objects.get(edge.to)?.mesh.position;
-      if (!from || !to) continue;
-      const line = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(from.x, from.y - 0.02, from.z),
-          new THREE.Vector3(to.x, to.y - 0.02, to.z)
-        ]),
-        new THREE.LineBasicMaterial({ color: 0x89929a, transparent: true, opacity: 0.34 })
-      );
-      line.userData.edge = edge;
-      edgeGroup.add(line);
-      edgeObjects.push(line);
-    }
-
-    for (const layer of atlas.layers) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'active';
-      button.textContent = layer.label;
-      button.addEventListener('click', () => {
-        if (activeLayers.has(layer.id)) {
-          activeLayers.delete(layer.id);
-          button.classList.remove('active');
-        } else {
-          activeLayers.add(layer.id);
-          button.classList.add('active');
-        }
-        updateVisibility();
-      });
-      layerRoot.append(button);
-    }
-
-    let selectedId = atlas.interaction.default_focus;
-    let tourIndex = 0;
-    let traceMode = false;
-    let target = new THREE.Vector3(0, 0, 0);
-    let viewYaw = 0;
-    let viewHeight = 8.8;
-    let viewDistance = 10.8;
-    let cameraTarget = new THREE.Vector3(0, viewHeight, viewDistance);
-
-    function updateCameraTarget() {
-      cameraTarget = new THREE.Vector3(
-        target.x + Math.sin(viewYaw) * viewDistance,
-        viewHeight,
-        target.z + Math.cos(viewYaw) * viewDistance
-      );
-    }
-
-    function selectNode(id) {
-      if (!objects.has(id)) return;
-      selectedId = id;
-      const position = objects.get(id).mesh.position;
-      target = new THREE.Vector3(position.x, 0, position.z);
-      viewHeight = 6.3;
-      viewDistance = 7.2;
-      updateCameraTarget();
-      renderInspector(nodeById.get(id));
-      updateVisibility();
-    }
-
-    function renderInspector(node) {
-      const refs = node.source_refs || [];
-      const relations = relationshipRows(node.id);
-      inspector.innerHTML = `
-        <div class="kind">${escapeHtml(node.layer)} / ${escapeHtml(node.kind)}</div>
-        <h2>${escapeHtml(node.label)}</h2>
-        <p class="summary">${escapeHtml(node.summary)}</p>
-        <div class="relationships">
-          <div class="kind">Connected meaning</div>
-          ${relations.length ? relations.map(row => `
-            <button class="relation" type="button" data-node="${escapeHtml(row.id)}">
-              <span>${escapeHtml(row.label)}<small>${escapeHtml(row.kind)}</small></span>
-              <span>Focus</span>
-            </button>
-          `).join('') : '<p class="summary">No direct semantic connections.</p>'}
-        </div>
-        <div class="refs">
-          <div class="kind">Source</div>
-          ${refs.length ? refs.map(ref => `<code>${escapeHtml(ref.role)}: ${escapeHtml(ref.path)}</code>`).join('') : '<code>no source refs</code>'}
-        </div>
-      `;
-      inspector.querySelectorAll('[data-node]').forEach(button => {
-        button.addEventListener('click', () => selectNode(button.dataset.node));
-      });
-      status.textContent = `Drag to pan. Right-drag or Option-drag to rotate. Scroll to zoom. ${atlas.nodes.length} nodes, ${atlas.edges.length} edges.`;
-    }
-
-    function relationshipRows(id) {
-      return (edgesByNode.get(id) || [])
-        .slice(0, 8)
-        .map(edge => {
-          const otherId = edge.from === id ? edge.to : edge.from;
-          const other = nodeById.get(otherId);
-          return {
-            id: otherId,
-            label: other?.label || otherId,
-            kind: edge.from === id ? edge.label : `${edge.label} source`
-          };
-        });
-    }
-
-    function updateVisibility() {
-      const related = connected.get(selectedId) || new Set();
-      const query = search.value.trim().toLowerCase();
-      for (const [id, view] of objects) {
-        const node = view.node;
-        const layerOn = activeLayers.has(node.layer);
-        const matches = !query || `${node.id} ${node.label} ${node.summary}`.toLowerCase().includes(query);
-        const isRelated = id === selectedId || related.has(id);
-        const visible = layerOn && matches && (!traceMode || isRelated);
-        view.mesh.visible = visible;
-        view.label.style.display = visible ? '' : 'none';
-        const dim = visible && query ? id !== selectedId && !matches : visible && !isRelated;
-        view.label.classList.toggle('dim', Boolean(dim));
-        view.mesh.material.opacity = visible ? (isRelated ? 0.96 : 0.26) : 0;
-      }
-      for (const line of edgeObjects) {
-        const edge = line.userData.edge;
-        const on = objects.get(edge.from)?.mesh.visible && objects.get(edge.to)?.mesh.visible;
-        const selected = edge.from === selectedId || edge.to === selectedId;
-        line.visible = Boolean(on && (!traceMode || selected));
-        line.material.opacity = selected ? 0.72 : 0.16;
-      }
-    }
-
-    function overview() {
-      selectedId = atlas.interaction.default_focus;
-      target = new THREE.Vector3(0, 0, 0);
-      viewYaw = 0;
-      viewHeight = 8.8;
-      viewDistance = 10.8;
-      updateCameraTarget();
-      search.value = '';
-      renderInspector(nodeById.get(selectedId));
-      updateVisibility();
-    }
-
-    document.getElementById('overview').addEventListener('click', overview);
-    document.getElementById('trace').addEventListener('click', event => {
-      traceMode = !traceMode;
-      event.currentTarget.classList.toggle('active', traceMode);
-      updateVisibility();
-    });
-    document.getElementById('tour').addEventListener('click', () => {
-      const tour = atlas.tours[0];
-      if (!tour || !tour.steps.length) return;
-      const step = tour.steps[tourIndex % tour.steps.length];
-      tourIndex += 1;
-      selectNode(step.node_id);
-    });
-    document.querySelectorAll('[data-focus-layer]').forEach(button => {
-      button.addEventListener('click', () => {
-        const node = atlas.nodes.find(node => node.layer === button.dataset.focusLayer);
-        if (node) selectNode(node.id);
-      });
-    });
-    search.addEventListener('input', updateVisibility);
-    search.addEventListener('keydown', event => {
-      if (event.key !== 'Enter') return;
-      const query = search.value.trim().toLowerCase();
-      if (!query) return;
-      const match = atlas.nodes.find(node => `${node.id} ${node.label} ${node.summary}`.toLowerCase().includes(query));
-      if (match) selectNode(match.id);
-    });
-
-    const raycaster = new THREE.Raycaster();
-    const pointer = new THREE.Vector2();
-    let dragState = null;
-
-    function hitNode(clientX, clientY) {
-      pointer.x = (clientX / window.innerWidth) * 2 - 1;
-      pointer.y = -(clientY / window.innerHeight) * 2 + 1;
-      raycaster.setFromCamera(pointer, camera);
-      return raycaster.intersectObjects(selectable, false)[0]?.object?.userData?.nodeId;
-    }
-
-    canvas.addEventListener('pointerdown', event => {
-      canvas.setPointerCapture(event.pointerId);
-      canvas.classList.add('dragging');
-      dragState = {
-        x: event.clientX,
-        y: event.clientY,
-        startX: event.clientX,
-        startY: event.clientY,
-        nodeId: hitNode(event.clientX, event.clientY),
-        orbit: event.button === 2 || event.altKey || event.metaKey,
-        moved: false
-      };
-    });
-
-    canvas.addEventListener('pointermove', event => {
-      if (!dragState) return;
-      const dx = event.clientX - dragState.x;
-      const dy = event.clientY - dragState.y;
-      const total = Math.hypot(event.clientX - dragState.startX, event.clientY - dragState.startY);
-      if (total > 3) dragState.moved = true;
-      if (dragState.moved) {
-        if (dragState.orbit) {
-          viewYaw -= dx * 0.006;
-        } else {
-          const panScale = viewHeight * 0.0024;
-          const right = new THREE.Vector3(Math.cos(viewYaw), 0, -Math.sin(viewYaw));
-          const forward = new THREE.Vector3(Math.sin(viewYaw), 0, Math.cos(viewYaw));
-          target.addScaledVector(right, -dx * panScale);
-          target.addScaledVector(forward, -dy * panScale);
-        }
-        updateCameraTarget();
-      }
-      dragState.x = event.clientX;
-      dragState.y = event.clientY;
-    });
-
-    canvas.addEventListener('pointerup', event => {
-      if (!dragState) return;
-      canvas.releasePointerCapture(event.pointerId);
-      canvas.classList.remove('dragging');
-      if (!dragState.moved && dragState.nodeId) {
-        selectNode(dragState.nodeId);
-      }
-      dragState = null;
-    });
-
-    canvas.addEventListener('pointercancel', () => {
-      canvas.classList.remove('dragging');
-      dragState = null;
-    });
-    canvas.addEventListener('contextmenu', event => event.preventDefault());
-
-    canvas.addEventListener('wheel', event => {
-      event.preventDefault();
-      const delta = Math.sign(event.deltaY) * 0.7;
-      viewHeight = THREE.MathUtils.clamp(viewHeight + delta, 4.2, 13);
-      viewDistance = THREE.MathUtils.clamp(viewDistance + delta, 5, 16);
-      updateCameraTarget();
-    }, { passive: false });
-
-    window.addEventListener('keydown', event => {
-      if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
-      const panScale = 0.35;
-      const right = new THREE.Vector3(Math.cos(viewYaw), 0, -Math.sin(viewYaw));
-      const forward = new THREE.Vector3(Math.sin(viewYaw), 0, Math.cos(viewYaw));
-      if (event.key === 'ArrowLeft') target.addScaledVector(right, -panScale);
-      else if (event.key === 'ArrowRight') target.addScaledVector(right, panScale);
-      else if (event.key === 'ArrowUp') target.addScaledVector(forward, -panScale);
-      else if (event.key === 'ArrowDown') target.addScaledVector(forward, panScale);
-      else return;
-      event.preventDefault();
-      updateCameraTarget();
-    });
-
-    window.addEventListener('resize', () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      labelRenderer.setSize(window.innerWidth, window.innerHeight);
-      if (window.innerWidth <= 760 && mapKey) {
-        mapKey.open = false;
-      }
-    });
-
-    function animate() {
-      requestAnimationFrame(animate);
-      camera.position.lerp(cameraTarget, 0.08);
-      camera.lookAt(target);
-      field.rotation.z += 0.0006;
-      renderer.render(scene, camera);
-      labelRenderer.render(scene, camera);
-    }
-
-    function escapeHtml(value) {
-      return String(value).replace(/[&<>"']/g, char => ({
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#39;'
-      }[char]));
-    }
-
-    renderInspector(nodeById.get(selectedId));
-    updateVisibility();
-    animate();
-  </script>
-</body>
-</html>
-"##;
+const ATLAS_HTML_TEMPLATE: &str = include_str!("atlas_template.html");
 
 fn build_conformance_report(module: &Path, implementation: Option<&Path>) -> Result<JsonValue> {
     let manifest = load_manifest(module)?;
@@ -13323,15 +13200,21 @@ verification:
                 && edge.from == "verification:verification-laws-work-is-safe"
                 && edge.to == "invariant:work-is-safe"
         }));
-        assert!(atlas.questions.iter().any(|question| {
-            question.id == "understand-module"
-                && question.answer.headline.contains("exists to")
-                && question
-                    .answer
-                    .trace
-                    .node_ids
-                    .contains(&"module:atlas-fixture".to_string())
-        }));
+        let trace = atlas
+            .traces
+            .iter()
+            .find(|trace| trace.id == "trace:do-work")
+            .expect("do-work trace");
+        assert_eq!(trace.entry_node_id, "provides-commands:do-work");
+        assert!(trace.steps.iter().any(|step| step.role == "Rule"
+            && step.confidence == "inferred"
+            && step
+                .node_ids
+                .contains(&"invariant:work-is-safe".to_string())));
+        assert!(trace
+            .gaps
+            .iter()
+            .any(|gap| gap.id == "effect" && gap.suggested_artifact.is_some()));
         assert!(atlas
             .tours
             .first()
@@ -13350,11 +13233,17 @@ verification:
         fs::remove_dir_all(&root).unwrap();
 
         assert!(atlas_json.contains("\"spec\": \"rms/atlas/v0.1\""));
-        assert!(atlas_json.contains("\"questions\""));
-        assert!(atlas_json.contains("\"understand-module\""));
+        assert!(atlas_json.contains("\"traces\""));
+        assert!(atlas_json.contains("\"trace:do-work\""));
+        assert!(atlas_json.contains("\"confidence\": \"inferred\""));
+        assert!(atlas_json.contains("\"clauses\""));
+        assert!(atlas_json.contains("Not declared by this command contract."));
         assert!(atlas_json.contains("\"supports_live_reconciliation\": true"));
         assert!(html.contains("RMS Atlas"));
-        assert!(html.contains("three@0.164.1"));
+        assert!(html.contains("Reason path"));
+        assert!(html.contains("Semantic contract"));
+        assert!(html.contains("Stage meaning"));
+        assert!(!html.contains("three@0.164.1"));
         assert!(html.contains("atlas-data"));
     }
 
