@@ -9180,13 +9180,13 @@ fn build_atlas_trace_for_entry(
         entry_node_id: entry.id.clone(),
         summary: if entry.id == module.id {
             format!(
-                "Orient around `{}` and its declared semantic surface.",
+                "See what {} owns, promises, depends on, and proves.",
                 module.label
             )
         } else {
             format!(
-                "Follow `{}` from boundary through rules, state, effects, outcomes, operations, proof, and compatibility.",
-                entry.label
+                "A {} request moves through checks, rules, stored truth, outside effects, visible results, recovery, and proof.",
+                human_identifier(&entry.label)
             )
         },
         steps,
@@ -9292,6 +9292,7 @@ fn atlas_trace_promise(
         "outcome" => first_clause(clauses, |clause| {
             clause.kind == "contract" && clause.label == "meaning"
         })
+        .map(human_outcome_meaning)
         .unwrap_or_else(|| body.to_string()),
         "operate" => sentence_join(readable_clauses(
             clauses,
@@ -9299,13 +9300,8 @@ fn atlas_trace_promise(
             4,
         ))
         .unwrap_or_else(|| body.to_string()),
-        "proof" => sentence_join(clause_statements(
-            clauses,
-            |clause| clause.kind == "evidence",
-            3,
-        ))
-        .unwrap_or_else(|| body.to_string()),
-        "compatibility" => sentence_join(clause_statements(
+        "proof" => atlas_evidence_promise(clauses).unwrap_or_else(|| body.to_string()),
+        "compatibility" => sentence_join(readable_clauses(
             clauses,
             |clause| clause.kind == "compatibility",
             3,
@@ -9313,6 +9309,21 @@ fn atlas_trace_promise(
         .unwrap_or_else(|| body.to_string()),
         _ => title.to_string(),
     }
+}
+
+fn atlas_evidence_promise(clauses: &[&AtlasContractClause]) -> Option<String> {
+    let count = clauses
+        .iter()
+        .filter(|clause| clause.kind == "evidence")
+        .count();
+    (count > 0).then(|| {
+        let noun = if count == 1 {
+            "evidence artifact"
+        } else {
+            "evidence artifacts"
+        };
+        format!("{count} declared {noun} back this promise.")
+    })
 }
 
 fn atlas_trace_before(role: &str, clauses: &[&AtlasContractClause]) -> String {
@@ -9366,7 +9377,7 @@ fn atlas_trace_after(role: &str, body: &str, clauses: &[&AtlasContractClause]) -
             .or_else(|| missing_clause(clauses, "postconditions"))
             .unwrap_or_else(|| body.to_string()),
         "boundary" => first_labeled_readable_clause(clauses, "malformed_input")
-            .map(|value| format!("Accepted input continues; malformed input follows `{value}`."))
+            .map(|value| format!("Accepted input continues. {value}"))
             .unwrap_or_else(|| body.to_string()),
         "rule" => sentence_join(clause_statements(
             clauses,
@@ -9396,13 +9407,8 @@ fn atlas_trace_after(role: &str, body: &str, clauses: &[&AtlasContractClause]) -
                 .collect(),
         )
         .unwrap_or_else(|| body.to_string()),
-        "proof" => sentence_join(clause_statements(
-            clauses,
-            |clause| clause.kind == "evidence",
-            3,
-        ))
-        .unwrap_or_else(|| body.to_string()),
-        "compatibility" => sentence_join(clause_statements(
+        "proof" => atlas_evidence_promise(clauses).unwrap_or_else(|| body.to_string()),
+        "compatibility" => sentence_join(readable_clauses(
             clauses,
             |clause| clause.kind == "compatibility",
             3,
@@ -9529,7 +9535,140 @@ fn readable_clauses(
 }
 
 fn readable_clause(clause: &AtlasContractClause) -> String {
-    format!("{}: {}", clause.label.replace('_', " "), clause.statement)
+    let label = clause.label.replace('_', " ");
+    let statement = clause.statement.trim();
+    if label.starts_with("precondition") || label.starts_with("postcondition") {
+        return sentence(statement);
+    }
+    match label.as_str() {
+        "accepted contracts" => sentence(format!(
+            "Only these public contracts can enter here: {}",
+            human_list(statement)
+        )),
+        "validation" if statement == "reject-before-domain-entry" => {
+            "Invalid input is rejected before it reaches domain logic.".to_string()
+        }
+        "validation" => sentence(format!(
+            "Validation follows {}",
+            human_identifier(statement)
+        )),
+        "authorization" => sentence(format!(
+            "Callers need {} authority",
+            human_identifier(statement)
+        )),
+        "malformed input" if statement == "reject-with-stable-error" => {
+            "Malformed input gets a stable error.".to_string()
+        }
+        "malformed input" => sentence(format!(
+            "Malformed input is handled as {}",
+            human_identifier(statement)
+        )),
+        "deprecation" => sentence(format!(
+            "Deprecation follows {}",
+            human_identifier(statement)
+        )),
+        "model" if looks_like_path(statement) => {
+            sentence(format!("The lifecycle is described in {statement}"))
+        }
+        "model" => sentence(format!(
+            "The lifecycle follows {}",
+            human_identifier(statement)
+        )),
+        "consistency boundary" if statement == "one-payment" => {
+            "Each payment is decided inside its own consistency boundary.".to_string()
+        }
+        "consistency boundary" => sentence(format!(
+            "The consistency boundary is {}",
+            human_identifier(statement)
+        )),
+        "concurrency" if statement == "optimistic-version" => {
+            "Concurrent changes are guarded by version checks.".to_string()
+        }
+        "concurrency" => sentence(format!(
+            "Concurrency is handled by {}",
+            human_identifier(statement)
+        )),
+        "persistence" if statement == "durable-ledger" => {
+            "Accepted changes are recorded in the durable ledger.".to_string()
+        }
+        "persistence" => sentence(format!("Persistence uses {}", human_identifier(statement))),
+        "migration policy" => sentence(format!(
+            "Stored state changes through {} migrations",
+            human_identifier(statement)
+        )),
+        "idempotency" => sentence(format!(
+            "Use {} to avoid applying the same operation twice",
+            human_reference(statement)
+        )),
+        "ordering" if statement == "per-payment" => {
+            "Keep provider operations ordered for each payment.".to_string()
+        }
+        "ordering" => sentence(format!(
+            "Ordering is enforced {}",
+            human_identifier(statement)
+        )),
+        "timeout" if statement == "unknown-outcome" => {
+            "A timeout leaves the result unknown until retry or reconciliation settles it."
+                .to_string()
+        }
+        "timeout" => sentence(format!(
+            "Timeouts are treated as {}",
+            human_identifier(statement)
+        )),
+        "retry" if statement == "same-idempotency-key-only" => {
+            "Retries must use the same idempotency key.".to_string()
+        }
+        "retry" => sentence(format!("Retries follow {}", human_identifier(statement))),
+        "consistency" if statement == "per-payment" => {
+            "External consistency is managed per payment.".to_string()
+        }
+        "consistency" => sentence(format!(
+            "External consistency follows {}",
+            human_identifier(statement)
+        )),
+        "compensation" if statement == "refund-payment" => {
+            "If compensation is needed, it is done by refunding the payment.".to_string()
+        }
+        "compensation" => sentence(format!("Compensation uses {}", human_identifier(statement))),
+        "reconciliation" if statement == "required" => {
+            "Reconciliation is required when provider truth is uncertain.".to_string()
+        }
+        "reconciliation" if looks_like_path(statement) => {
+            sentence(format!("Reconciliation is handled through {statement}"))
+        }
+        "reconciliation" => sentence(format!(
+            "Reconciliation follows {}",
+            human_identifier(statement)
+        )),
+        "correlation" => sentence(format!(
+            "Operators can find this flow by {}",
+            human_reference(statement)
+        )),
+        "causation" => sentence(format!(
+            "Follow-up work is tied back to {}",
+            human_reference(statement)
+        )),
+        "runtime checks" => sentence(format!("Runtime checks live at {statement}")),
+        "runbooks" => sentence(format!("The recovery runbook is {statement}")),
+        "policy" => sentence(format!(
+            "Public changes follow the {} policy",
+            human_identifier(statement)
+        )),
+        "events" => sentence(format!(
+            "Integration events are {}",
+            human_identifier(statement)
+        )),
+        "migration" => sentence(format!(
+            "Migration requires {}",
+            human_identifier(statement)
+        )),
+        "stored state" => sentence(format!(
+            "Stored state changes require {}",
+            human_identifier(statement)
+        )),
+        _ if statement.is_empty() => label,
+        _ => sentence(statement),
+    }
 }
 
 fn clause_statements(
@@ -9546,11 +9685,64 @@ fn clause_statements(
 }
 
 fn sentence_join(parts: Vec<String>) -> Option<String> {
+    let parts = parts
+        .into_iter()
+        .filter_map(|part| {
+            let part = part.trim();
+            (!part.is_empty()).then(|| sentence(part))
+        })
+        .collect::<Vec<_>>();
     if parts.is_empty() {
         None
     } else {
-        Some(parts.join("; "))
+        Some(parts.join(" "))
     }
+}
+
+fn sentence(value: impl AsRef<str>) -> String {
+    let value = value.as_ref().trim();
+    if value.ends_with('.') || value.ends_with('!') || value.ends_with('?') {
+        value.to_string()
+    } else {
+        format!("{value}.")
+    }
+}
+
+fn human_identifier(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('`')
+        .replace(['-', '_', '.'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn human_reference(value: &str) -> String {
+    let identifier = human_identifier(value);
+    if identifier.ends_with(" id") || identifier.ends_with(" key") {
+        format!("the {identifier}")
+    } else {
+        identifier
+    }
+}
+
+fn human_outcome_meaning(value: String) -> String {
+    let value = value.trim();
+    if let Some(rest) = value.strip_prefix("Published fact for ") {
+        sentence(format!("It publishes a fact for {rest}"))
+    } else {
+        sentence(value)
+    }
+}
+
+fn human_list(value: &str) -> String {
+    value
+        .split(',')
+        .map(|item| human_identifier(item.trim()))
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn atlas_trace_gap(
@@ -13890,9 +14082,10 @@ verification:
         assert!(atlas_json.contains("Not declared by this command contract."));
         assert!(atlas_json.contains("\"supports_live_reconciliation\": true"));
         assert!(html.contains("RMS Atlas"));
-        assert!(html.contains("Contract flow"));
-        assert!(html.contains("Contract reading"));
-        assert!(html.contains("Justification stack"));
+        assert!(html.contains("Human story"));
+        assert!(html.contains("In plain words"));
+        assert!(html.contains("Meaning"));
+        assert!(html.contains("Show evidence"));
         assert!(!html.contains("three@0.164.1"));
         assert!(html.contains("atlas-data"));
     }

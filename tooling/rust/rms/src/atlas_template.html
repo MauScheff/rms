@@ -18,10 +18,6 @@
       --accent-soft: #e8f4f1;
       --gap: #a84d32;
       --gap-soft: #fff3ee;
-      --rule: #4f63ad;
-      --rule-soft: #eef1fb;
-      --module: #665b2b;
-      --module-soft: #f4efd9;
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -54,10 +50,9 @@
     .eyebrow {
       margin: 0 0 5px;
       color: var(--muted);
-      font-size: 11px;
-      font-weight: 760;
-      letter-spacing: .08em;
-      text-transform: uppercase;
+      font-size: 12px;
+      font-weight: 720;
+      letter-spacing: 0;
     }
     h1, h2, h3 { letter-spacing: 0; }
     h1 {
@@ -66,7 +61,7 @@
       line-height: 1;
     }
     .purpose {
-      max-width: 78ch;
+      max-width: 80ch;
       margin: 8px 0 0;
       color: var(--soft-ink);
     }
@@ -86,7 +81,7 @@
     .workspace {
       min-height: 0;
       display: grid;
-      grid-template-columns: 260px minmax(420px, 1fr) 360px;
+      grid-template-columns: 270px minmax(0, 1fr);
       background: var(--field);
     }
     .entry-panel {
@@ -105,9 +100,7 @@
       justify-content: space-between;
       gap: 12px;
     }
-    .entry-head .eyebrow {
-      margin: 0;
-    }
+    .entry-head .eyebrow { margin: 0; }
     .entry-count {
       color: var(--quiet);
       font-size: 12px;
@@ -174,373 +167,192 @@
       margin-top: 3px;
       color: var(--muted);
       font-size: 12px;
+      overflow-wrap: anywhere;
     }
-    .trace-tab .gap {
-      color: var(--gap);
+    .trace-tab .gap { color: var(--gap); }
+    .story {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 26px 34px 40px;
+    }
+    .story-inner {
+      max-width: 980px;
+    }
+    .story-head h2 {
+      margin: 2px 0 8px;
+      font-size: 34px;
+      line-height: 1.05;
+      overflow-wrap: anywhere;
+    }
+    .story-head p {
+      max-width: 76ch;
+      margin: 0;
+      color: var(--soft-ink);
+      font-size: 15px;
+    }
+    .plain-summary {
+      margin: 22px 0 24px;
+      padding: 18px 0 0;
+      border-top: 1px solid var(--line);
+    }
+    .plain-summary h3 {
+      margin: 0 0 6px;
+      font-size: 20px;
+      line-height: 1.2;
+    }
+    .plain-summary p {
+      max-width: 78ch;
+      margin: 0;
+      color: var(--soft-ink);
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    .moments {
+      display: grid;
+      gap: 10px;
+      padding: 0;
+      margin: 0;
+      list-style: none;
+    }
+    .moment {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 12px;
+    }
+    .moment-number {
+      display: grid;
+      place-items: center;
+      width: 31px;
+      height: 31px;
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+    }
+    .moment.active .moment-number {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    .moment-button {
+      width: 100%;
+      min-height: 74px;
+      padding: 13px 14px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      text-align: left;
+    }
+    .moment-button:hover,
+    .moment.active .moment-button {
+      border-color: rgba(15,118,110,.38);
+      background: #fff;
+    }
+    .moment-kicker {
+      display: block;
+      margin-bottom: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+    .moment-button strong {
+      display: block;
+      font-size: 17px;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+    }
+    .moment-button p {
+      margin: 5px 0 0;
+      color: var(--soft-ink);
+    }
+    .moment-detail {
+      grid-column: 2;
+      margin: -2px 0 8px;
+      padding: 0 14px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .meaning-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 12px;
+    }
+    .meaning {
+      min-width: 0;
+    }
+    .meaning h4 {
+      margin: 0 0 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+    .meaning p {
+      margin: 0;
+      color: var(--soft-ink);
+    }
+    .meaning.warning {
+      padding-left: 10px;
+      border-left: 2px solid rgba(168,77,50,.58);
+    }
+    details {
+      margin-top: 14px;
+    }
+    summary {
+      width: fit-content;
+      color: var(--accent);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 760;
+    }
+    .evidence {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .evidence-item {
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .evidence-item strong {
+      display: block;
+      overflow-wrap: anywhere;
+    }
+    .evidence-item small {
+      display: block;
+      margin: 2px 0 4px;
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .raw {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    code {
+      display: block;
+      margin-top: 7px;
+      color: #42505c;
+      font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow-wrap: anywhere;
+      white-space: normal;
     }
     .empty-state {
       margin: 0;
       color: var(--muted);
       font-size: 13px;
     }
-    .reader {
-      min-width: 0;
-      min-height: 0;
-      overflow: auto;
-      padding: 24px 30px 36px;
-    }
-    .trace-head {
-      max-width: 820px;
-    }
-    .trace-head h2 {
-      margin: 2px 0 7px;
-      font-size: 30px;
-      line-height: 1.05;
-      overflow-wrap: anywhere;
-    }
-    .trace-head p {
-      margin: 0;
-      max-width: 78ch;
-      color: var(--soft-ink);
-    }
-    .trace-meta {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      margin-top: 12px;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-    }
-    .trace-meta .gap {
-      color: var(--gap);
-    }
-    .path {
-      max-width: 860px;
-      margin: 24px 0 0;
-      padding: 0;
-      list-style: none;
-    }
-    .path-item {
-      position: relative;
-      display: grid;
-      grid-template-columns: 36px minmax(0, 1fr);
-      gap: 12px;
-      min-height: 92px;
-    }
-    .path-item::before {
-      content: "";
-      position: absolute;
-      left: 14px;
-      top: 42px;
-      bottom: -14px;
-      width: 1px;
-      background: var(--line);
-    }
-    .path-item:last-child::before {
-      display: none;
-    }
-    .path-index {
-      position: relative;
-      z-index: 1;
-      display: grid;
-      place-items: center;
-      width: 29px;
-      height: 29px;
-      margin-top: 12px;
-      border: 1px solid var(--line);
-      border-radius: 50%;
-      background: var(--surface);
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 760;
-    }
-    .path-item.active .path-index {
-      border-color: var(--accent);
-      background: var(--accent);
-      color: #fff;
-    }
-    .path-item.gap .path-index {
-      border-color: rgba(168,77,50,.35);
-      background: var(--gap-soft);
-      color: var(--gap);
-    }
-    .path-button {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 4px 12px;
-      width: 100%;
-      min-height: 76px;
-      padding: 12px;
-      border: 1px solid transparent;
-      border-radius: 8px;
-      background: transparent;
-      text-align: left;
-      transition: background .16s ease, border-color .16s ease, transform .16s ease;
-    }
-    .path-button:hover,
-    .path-item.active .path-button {
-      border-color: rgba(15,118,110,.38);
-      background: var(--surface);
-      transform: translateX(1px);
-    }
-    .path-item.gap .path-button:hover,
-    .path-item.gap.active .path-button {
-      border-color: rgba(168,77,50,.32);
-      background: var(--gap-soft);
-    }
-    .step-kicker {
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 760;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-    }
-    .path-confidence {
-      align-self: start;
-      color: var(--quiet);
-      font-size: 11px;
-      font-weight: 760;
-      text-transform: uppercase;
-    }
-    .path-confidence[data-level="direct"] { color: var(--accent); }
-    .path-confidence[data-level="inferred"] { color: var(--rule); }
-    .path-confidence[data-level="module-level"] { color: var(--module); }
-    .path-button strong {
-      grid-column: 1 / -1;
-      font-size: 16px;
-      line-height: 1.2;
-      overflow-wrap: anywhere;
-    }
-    .path-button p {
-      grid-column: 1 / -1;
-      margin: 0;
-      color: var(--soft-ink);
-      font-size: 13px;
-    }
-    .lens {
-      min-height: 0;
-      overflow: auto;
-      padding: 24px 18px;
-      background: var(--surface);
-      border-left: 1px solid var(--line);
-    }
-    .lens h2 {
-      margin: 3px 0 0;
-      font-size: 23px;
-      line-height: 1.12;
-      overflow-wrap: anywhere;
-    }
-    .lens p {
-      margin: 0;
-      color: var(--soft-ink);
-    }
-    .promise {
-      margin-top: 16px;
-      padding: 13px 0 0;
-      border-top: 1px solid var(--line);
-    }
-    .promise p {
-      color: var(--ink);
-      font-size: 17px;
-      line-height: 1.35;
-      font-weight: 720;
-    }
-    .reading-grid {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 13px;
-      margin-top: 18px;
-      padding-top: 15px;
-      border-top: 1px solid var(--line);
-    }
-    .reading-item {
-      display: grid;
-      gap: 4px;
-      padding-left: 10px;
-      border-left: 2px solid var(--line);
-    }
-    .reading-item.failure {
-      border-left-color: rgba(168,77,50,.6);
-    }
-    .reading-label {
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 760;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-    }
-    .justification-stack {
-      display: grid;
-      gap: 8px;
-      margin-top: 8px;
-    }
-    .justification-button {
-      display: grid;
-      gap: 3px;
-      width: 100%;
-      padding: 9px 10px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #fff;
-      text-align: left;
-    }
-    .justification-button:hover {
-      border-color: rgba(15,118,110,.55);
-      color: var(--accent);
-    }
-    .justification-button strong {
-      overflow-wrap: anywhere;
-    }
-    .justification-button small {
-      color: var(--muted);
-      font-size: 11px;
-      letter-spacing: .04em;
-      text-transform: uppercase;
-    }
-    .why-row {
-      margin-top: 18px;
-      padding-top: 15px;
-      border-top: 1px solid var(--line);
-    }
-    .why-row h3 {
-      margin: 0 0 7px;
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 760;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-    }
-    .contract-stack {
-      display: grid;
-      gap: 14px;
-    }
-    .contract-block {
-      padding-top: 2px;
-    }
-    .contract-block + .contract-block {
-      padding-top: 14px;
-      border-top: 1px solid var(--line);
-    }
-    .contract-block header {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 6px;
-    }
-    .contract-block strong {
-      overflow-wrap: anywhere;
-    }
-    .contract-block small {
-      color: var(--muted);
-      font-size: 11px;
-      letter-spacing: .04em;
-      text-transform: uppercase;
-      white-space: nowrap;
-    }
-    .inspect-node {
-      flex: 0 0 auto;
-      padding: 0;
-      border: 0;
-      background: transparent;
-      color: var(--accent);
-      font-size: 12px;
-      font-weight: 760;
-    }
-    .inspect-node:hover {
-      text-decoration: underline;
-    }
-    .contract-summary {
-      margin-bottom: 8px;
-      font-size: 13px;
-    }
-    .clause-list {
-      display: grid;
-      gap: 7px;
-    }
-    .clause {
-      display: grid;
-      gap: 3px;
-      padding: 8px 0 8px 10px;
-      border-left: 2px solid var(--line);
-    }
-    .clause.gap {
-      border-left-color: rgba(168,77,50,.55);
-      background: linear-gradient(90deg, var(--gap-soft), transparent 72%);
-    }
-    .clause-label {
-      color: var(--ink);
-      font-size: 12px;
-      font-weight: 760;
-      overflow-wrap: anywhere;
-    }
-    .clause-kind {
-      color: var(--quiet);
-      font-size: 10px;
-      font-weight: 760;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-    }
-    .support-button {
-      display: block;
-      width: 100%;
-      min-height: 42px;
-      margin-top: 7px;
-      padding: 9px 10px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #fff;
-      text-align: left;
-    }
-    .support-button:hover {
-      border-color: rgba(15,118,110,.55);
-      color: var(--accent);
-    }
-    .support-button small {
-      display: block;
-      margin-top: 2px;
-      color: var(--muted);
-      font-size: 11px;
-      letter-spacing: .04em;
-      text-transform: uppercase;
-    }
-    .source-details {
-      margin-top: 18px;
-      padding-top: 15px;
-      border-top: 1px solid var(--line);
-    }
-    .source-details summary {
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 11px;
-      font-weight: 760;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-    }
-    code {
-      display: block;
-      margin-top: 8px;
-      color: #42505c;
-      font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      overflow-wrap: anywhere;
-      white-space: normal;
-    }
-    @media (max-width: 1120px) {
-      .workspace {
-        grid-template-columns: 240px minmax(0, 1fr);
-      }
-      .lens {
-        grid-column: 1 / -1;
-        max-height: 320px;
-        border-left: 0;
-        border-top: 1px solid var(--line);
-      }
-    }
-    @media (max-width: 760px) {
-      body {
-        overflow: auto;
-      }
+    @media (max-width: 900px) {
+      body { overflow: auto; }
       .app {
         display: block;
         height: auto;
@@ -551,9 +363,7 @@
         gap: 10px;
         padding: 16px;
       }
-      h1 {
-        font-size: 32px;
-      }
+      h1 { font-size: 32px; }
       .source-summary {
         justify-content: flex-start;
         white-space: normal;
@@ -571,12 +381,12 @@
         margin-bottom: 12px;
       }
       .trace-tabs {
-        display: flex;
-        overflow-x: auto;
+        display: grid;
+        overflow: visible;
         gap: 8px;
       }
       .trace-tab {
-        flex: 0 0 210px;
+        width: 100%;
         border-left: 0;
         border-bottom: 3px solid transparent;
         background: #fff;
@@ -587,21 +397,14 @@
         border-left-color: transparent;
         border-bottom-color: var(--accent);
       }
-      .reader {
+      .story {
         padding: 20px 16px 28px;
       }
-      .trace-head h2 {
-        font-size: 28px;
+      .story-head h2 {
+        font-size: 30px;
       }
-      .path-button {
-        grid-template-columns: minmax(0, 1fr);
-      }
-      .path-confidence {
-        justify-self: start;
-      }
-      .lens {
-        max-height: none;
-        padding: 20px 16px;
+      .meaning-grid {
+        grid-template-columns: 1fr;
       }
     }
   </style>
@@ -631,33 +434,72 @@
         <nav class="trace-tabs" id="traceTabs" aria-label="Entrypoints"></nav>
       </aside>
 
-      <section class="reader" aria-label="Contract flow">
-        <header class="trace-head">
-          <p class="eyebrow" id="traceIntent">Entrypoint</p>
-          <h2 id="traceTitle">No entrypoint selected</h2>
-          <p id="traceSummary"></p>
-          <div class="trace-meta" id="traceMeta"></div>
-        </header>
-        <ol class="path" id="lanes"></ol>
+      <section class="story" aria-label="Human story">
+        <div class="story-inner">
+          <header class="story-head">
+            <p class="eyebrow" id="traceIntent">Entrypoint</p>
+            <h2 id="traceTitle">No entrypoint selected</h2>
+            <p id="traceSummary"></p>
+          </header>
+          <section class="plain-summary">
+            <h3>In plain words</h3>
+            <p id="plainSummary"></p>
+          </section>
+          <ol class="moments" id="moments"></ol>
+        </div>
       </section>
-
-      <aside class="lens" id="lens" aria-live="polite"></aside>
     </main>
   </div>
 
   <script>
     const atlas = JSON.parse(document.getElementById('atlas-data').textContent);
     const roleOrder = ['Stimulus', 'Boundary', 'Rule', 'State', 'Effect', 'Outcome', 'Operate', 'Proof', 'Compatibility'];
-    const roleLabel = {
-      Stimulus: 'Start',
-      Boundary: 'Boundary',
-      Rule: 'Rule',
-      State: 'State',
-      Effect: 'Effect',
-      Outcome: 'Outcome',
-      Operate: 'Recovery',
-      Proof: 'Proof',
-      Compatibility: 'Compatibility'
+    const roleCopy = {
+      Stimulus: {
+        label: 'Start',
+        title: 'What someone is trying to do',
+        why: 'This is the public reason this behavior exists.'
+      },
+      Boundary: {
+        label: 'Allowed in',
+        title: 'What is allowed to enter',
+        why: 'This protects the module from bad input, wrong callers, or old contracts.'
+      },
+      Rule: {
+        label: 'Rule',
+        title: 'The promise that must stay true',
+        why: 'This is the promise a refactor must not weaken.'
+      },
+      State: {
+        label: 'State',
+        title: 'Where the truth lives',
+        why: 'This is where lifecycle, ordering, concurrency, or migration risk usually appears.'
+      },
+      Effect: {
+        label: 'Outside',
+        title: 'Where outside truth can diverge',
+        why: 'This is where duplicate charges, unknown provider outcomes, and recovery risk usually live.'
+      },
+      Outcome: {
+        label: 'Result',
+        title: 'What the rest of the system learns',
+        why: 'This is what consumers, events, or queries can observe.'
+      },
+      Operate: {
+        label: 'Recovery',
+        title: 'How humans recover',
+        why: 'This is what helps when runtime truth diverges from expected truth.'
+      },
+      Proof: {
+        label: 'Trust',
+        title: 'Why we trust it',
+        why: 'This is what lets a reviewer trust the behavior instead of guessing.'
+      },
+      Compatibility: {
+        label: 'Change',
+        title: 'How change stays safe',
+        why: 'This is where existing consumers or stored state can be broken.'
+      }
     };
     const roleToGap = {
       Boundary: 'boundary',
@@ -667,7 +509,6 @@
       Outcome: 'outcome',
       Proof: 'proof'
     };
-    const nodeById = new Map(atlas.nodes.map(node => [node.id, node]));
 
     const stats = document.getElementById('stats');
     const entryCount = document.getElementById('entryCount');
@@ -676,9 +517,8 @@
     const traceIntent = document.getElementById('traceIntent');
     const traceTitle = document.getElementById('traceTitle');
     const traceSummary = document.getElementById('traceSummary');
-    const traceMeta = document.getElementById('traceMeta');
-    const lanes = document.getElementById('lanes');
-    const lens = document.getElementById('lens');
+    const plainSummary = document.getElementById('plainSummary');
+    const moments = document.getElementById('moments');
 
     let selectedTrace = defaultTrace();
     let selectedFocus = selectedTrace?.steps?.[0] ? { type: 'step', value: selectedTrace.steps[0] } : null;
@@ -705,9 +545,8 @@
 
     function render() {
       renderTraceTabs();
-      renderTraceHeader();
-      renderLanes();
-      renderLens();
+      renderStory();
+      renderMoments();
     }
 
     function queryText() {
@@ -719,12 +558,10 @@
         trace.label,
         trace.intent,
         trace.summary,
-        ...(trace.source_refs || []).map(ref => ref.path),
         ...(trace.steps || []).flatMap(step => [
           step.role,
           step.title,
           step.body,
-          step.confidence,
           step.reading?.promise,
           step.reading?.before,
           step.reading?.after,
@@ -742,8 +579,8 @@
       traceTabs.innerHTML = traces.length ? traces.map(trace => `
         <button class="trace-tab ${selectedTrace?.id === trace.id ? 'active' : ''}" type="button" data-trace="${escapeHtml(trace.id)}">
           <strong>${escapeHtml(trace.label)}</strong>
-          <span>${escapeHtml(trace.intent || 'Entrypoint')}</span>
-          <span class="${trace.gaps.length ? 'gap' : ''}">${trace.gaps.length ? `${trace.gaps.length} gap${trace.gaps.length === 1 ? '' : 's'}` : 'complete'}</span>
+          <span>${trace.gaps.length ? `${trace.gaps.length} missing piece${trace.gaps.length === 1 ? '' : 's'}` : 'complete enough to follow'}</span>
+          <span class="${trace.gaps.length ? 'gap' : ''}">${trace.steps.length} steps</span>
         </button>
       `).join('') : '<p class="empty-state">No matching entrypoints.</p>';
       traceTabs.querySelectorAll('[data-trace]').forEach(button => {
@@ -755,238 +592,202 @@
       });
     }
 
-    function renderTraceHeader() {
+    function renderStory() {
       if (!selectedTrace) {
         traceIntent.textContent = 'Entrypoint';
         traceTitle.textContent = 'No entrypoint selected';
         traceSummary.textContent = '';
-        traceMeta.innerHTML = '';
+        plainSummary.textContent = '';
         return;
       }
-      traceIntent.textContent = selectedTrace.intent || 'Entrypoint';
+      traceIntent.textContent = selectedTrace.gaps.length ? 'Needs a missing piece' : 'Readable flow';
       traceTitle.textContent = selectedTrace.label;
       traceSummary.textContent = selectedTrace.summary;
-      traceMeta.innerHTML = `
-        <span class="${selectedTrace.gaps.length ? 'gap' : ''}">${selectedTrace.gaps.length ? `${selectedTrace.gaps.length} gap${selectedTrace.gaps.length === 1 ? '' : 's'}` : 'complete'}</span>
-        <span>${selectedTrace.steps.length} stages</span>
-        <span>${selectedTrace.source_refs.length} source refs</span>
-      `;
+      plainSummary.textContent = storySummary(selectedTrace);
     }
 
-    function renderLanes() {
+    function storySummary(trace) {
+      const pieces = [];
+      const start = stepFor(trace, 'Stimulus');
+      const rule = stepFor(trace, 'Rule');
+      const effect = stepFor(trace, 'Effect');
+      const outcome = stepFor(trace, 'Outcome');
+      const operate = stepFor(trace, 'Operate');
+      if (start) pieces.push(firstSentence(start.reading?.promise || start.body));
+      if (rule) pieces.push(`It must preserve the rule that ${lowerFirst(firstSentence(rule.reading?.promise || rule.body))}`);
+      if (effect) pieces.push(firstSentence(effect.reading?.promise || effect.body));
+      if (outcome) pieces.push(`When it succeeds, ${lowerFirst(firstSentence(outcome.reading?.promise || outcome.body))}`);
+      if (operate) pieces.push(`If reality is unclear, ${lowerFirst(firstSentence(operate.reading?.promise || operate.body))}`);
+      return pieces.length ? pieces.map(ensureSentence).join(' ') : clean(trace.summary);
+    }
+
+    function stepFor(trace, role) {
+      return trace.steps.find(step => step.role === role);
+    }
+
+    function renderMoments() {
       if (!selectedTrace) {
-        lanes.innerHTML = '';
+        moments.innerHTML = '';
         return;
       }
       const items = [];
       roleOrder.forEach(role => {
-        const lane = renderLane(role, items.length + 1);
-        if (lane) {
-          items.push(lane);
-        }
+        const rendered = renderMoment(role, items.length + 1);
+        if (rendered) items.push(rendered);
       });
-      lanes.innerHTML = items.join('');
-      lanes.querySelectorAll('[data-step]').forEach(button => {
+      moments.innerHTML = items.join('');
+      moments.querySelectorAll('[data-step]').forEach(button => {
         button.addEventListener('click', () => {
           selectedFocus = { type: 'step', value: selectedTrace.steps.find(step => step.id === button.dataset.step) };
-          render();
+          renderMoments();
         });
       });
-      lanes.querySelectorAll('[data-gap]').forEach(button => {
+      moments.querySelectorAll('[data-gap]').forEach(button => {
         button.addEventListener('click', () => {
           selectedFocus = { type: 'gap', value: selectedTrace.gaps.find(gap => gap.id === button.dataset.gap) };
-          render();
+          renderMoments();
         });
       });
     }
 
-    function renderLane(role, index) {
+    function renderMoment(role, index) {
       const step = selectedTrace.steps.find(item => item.role === role);
       const gap = roleToGap[role] ? selectedTrace.gaps.find(item => item.id === roleToGap[role]) : null;
       if (step) {
         const active = selectedFocus?.type === 'step' && selectedFocus.value.id === step.id;
         return `
-          <li class="path-item ${active ? 'active' : ''}">
-            <span class="path-index">${escapeHtml(index)}</span>
-            <button class="path-button" type="button" data-step="${escapeHtml(step.id)}">
-              <span class="step-kicker">${escapeHtml(roleLabel[role] || role)}</span>
-              <span class="path-confidence" data-level="${escapeHtml(step.confidence)}">${escapeHtml(step.confidence)}</span>
-              <strong>${escapeHtml(step.title)}</strong>
-              <p>${escapeHtml(step.reading?.promise || step.body)}</p>
+          <li class="moment ${active ? 'active' : ''}">
+            <span class="moment-number">${escapeHtml(index)}</span>
+            <button class="moment-button" type="button" data-step="${escapeHtml(step.id)}">
+              <span class="moment-kicker">${escapeHtml(roleCopy[role]?.label || role)}</span>
+              <strong>${escapeHtml(roleCopy[role]?.title || step.title)}</strong>
+              <p>${escapeHtml(clean(step.reading?.promise || step.body))}</p>
             </button>
+            ${active ? stepDetail(step) : ''}
           </li>
         `;
       }
       if (gap) {
         const active = selectedFocus?.type === 'gap' && selectedFocus.value.id === gap.id;
         return `
-          <li class="path-item gap ${active ? 'active' : ''}">
-            <span class="path-index">${escapeHtml(index)}</span>
-            <button class="path-button" type="button" data-gap="${escapeHtml(gap.id)}">
-              <span class="step-kicker">${escapeHtml(roleLabel[role] || role)}</span>
-              <span class="path-confidence" data-level="module-level">gap</span>
+          <li class="moment ${active ? 'active' : ''}">
+            <span class="moment-number">${escapeHtml(index)}</span>
+            <button class="moment-button" type="button" data-gap="${escapeHtml(gap.id)}">
+              <span class="moment-kicker">Unclear</span>
               <strong>${escapeHtml(gap.title)}</strong>
               <p>${escapeHtml(gap.body)}</p>
             </button>
+            ${active ? gapDetail(gap) : ''}
           </li>
         `;
       }
       return '';
     }
 
-    function renderLens() {
-      if (!selectedFocus) {
-        lens.innerHTML = '<p class="purpose">Select a stage.</p>';
-        return;
-      }
-      if (selectedFocus.type === 'gap') {
-        renderGapLens(selectedFocus.value);
-      } else if (selectedFocus.type === 'node') {
-        renderNodeLens(selectedFocus.value);
-      } else {
-        renderStepLens(selectedFocus.value);
-      }
-    }
-
-    function renderStepLens(step) {
-      const nodes = step.node_ids.map(id => nodeById.get(id)).filter(Boolean);
+    function stepDetail(step) {
       const reading = step.reading || {};
-      lens.innerHTML = `
-        <p class="eyebrow">${escapeHtml(roleLabel[step.role] || step.role)} / ${escapeHtml(step.confidence)}</p>
-        <h2>${escapeHtml(step.title)}</h2>
-        <section class="promise">
-          <p>${escapeHtml(reading.promise || step.body)}</p>
-        </section>
-        <section class="reading-grid" aria-label="Contract reading">
-          ${readingItem('Before', reading.before)}
-          ${readingItem('After', reading.after)}
-          ${readingItem('Failure', reading.failure, 'failure')}
-          ${readingItem('Evidence', reading.evidence)}
-          ${readingItem('Impact', reading.impact)}
-        </section>
-        <section class="why-row">
-          <h3>Justification stack</h3>
-          ${reading.justification?.length ? `<div class="justification-stack">${reading.justification.map(justificationRow).join('')}</div>` : '<p>No justification nodes.</p>'}
-        </section>
-        <details class="source-details">
-          <summary>Contract clauses</summary>
-          ${nodes.length ? `<div class="contract-stack">${nodes.map(node => contractBlock(node, true)).join('')}</div>` : '<p>No semantic node support.</p>'}
-        </details>
-        ${sourceDetails(step.source_refs)}
-      `;
-      bindNodeButtons();
-    }
-
-    function readingItem(label, value, tone = '') {
+      const copy = roleCopy[step.role] || {};
       return `
-        <div class="reading-item ${escapeHtml(tone)}">
-          <span class="reading-label">${escapeHtml(label)}</span>
-          <p>${escapeHtml(value || 'Not declared.')}</p>
+        <div class="moment-detail">
+          <div class="meaning-grid">
+            <section class="meaning">
+              <h4>Meaning</h4>
+              <p>${escapeHtml(clean(reading.promise || step.body))}</p>
+            </section>
+            <section class="meaning warning">
+              <h4>Risk</h4>
+              <p>${escapeHtml(humanProblem(reading.failure))}</p>
+            </section>
+            <section class="meaning">
+              <h4>Why it matters</h4>
+              <p>${escapeHtml(clean(copy.why || reading.impact || 'This affects how people understand or change the module.'))}</p>
+            </section>
+          </div>
+          <details>
+            <summary>Show evidence</summary>
+            ${evidenceList(reading.justification)}
+            <p class="raw">${escapeHtml(clean(reading.evidence || 'No evidence statement.'))}</p>
+            ${sourceRefs(step.source_refs)}
+          </details>
         </div>
       `;
     }
 
-    function justificationRow(item) {
+    function gapDetail(gap) {
       return `
-        <button class="justification-button" type="button" data-node="${escapeHtml(item.node_id)}">
-          <small>${escapeHtml(item.role)}</small>
-          <strong>${escapeHtml(item.label)}</strong>
-          <p>${escapeHtml(item.detail)}</p>
-        </button>
+        <div class="moment-detail">
+          <div class="meaning-grid">
+            <section class="meaning warning">
+              <h4>Unclear</h4>
+              <p>${escapeHtml(gap.body)}</p>
+            </section>
+            <section class="meaning">
+              <h4>Needed</h4>
+              <p>${escapeHtml(gap.suggested_artifact || 'A more explicit canonical artifact.')}</p>
+            </section>
+            <section class="meaning">
+              <h4>Why it matters</h4>
+              <p>Until this is explicit, the atlas has to show uncertainty instead of pretending the flow is known.</p>
+            </section>
+          </div>
+          <details>
+            <summary>Show evidence</summary>
+            ${sourceRefs(gap.source_refs)}
+          </details>
+        </div>
       `;
     }
 
-    function renderGapLens(gap) {
-      lens.innerHTML = `
-        <p class="eyebrow">Gap</p>
-        <h2>${escapeHtml(gap.title)}</h2>
-        <section class="why-row">
-          <h3>Gap meaning</h3>
-          <p>${escapeHtml(gap.body)}</p>
-        </section>
-        <section class="why-row">
-          <h3>Missing support</h3>
-          <p>${escapeHtml(gap.suggested_artifact || 'Not specified')}</p>
-        </section>
-        ${sourceDetails(gap.source_refs)}
-      `;
-    }
-
-    function renderNodeLens(node) {
-      lens.innerHTML = `
-        <p class="eyebrow">${escapeHtml(node.layer)} / ${escapeHtml(node.kind)}</p>
-        <h2>${escapeHtml(node.label)}</h2>
-        <section class="why-row">
-          <h3>Meaning</h3>
-          <p>${escapeHtml(node.summary)}</p>
-        </section>
-        <section class="why-row">
-          <h3>Semantic contract</h3>
-          ${contractBlock(node, false)}
-        </section>
-        <section class="why-row">
-          <h3>Group</h3>
-          <p>${escapeHtml(node.group || 'none')}</p>
-        </section>
-        ${sourceDetails(node.source_refs)}
-      `;
-    }
-
-    function contractBlock(node, includeInspect = true) {
-      const clauses = node.clauses || [];
-      return `
-        <article class="contract-block">
-          <header>
-            <div>
-              <strong>${escapeHtml(node.label)}</strong>
-              <small>${escapeHtml(node.layer)} / ${escapeHtml(node.kind)}</small>
+    function evidenceList(items = []) {
+      return items.length ? `
+        <div class="evidence">
+          ${items.map(item => `
+            <div class="evidence-item">
+              <small>${escapeHtml(clean(item.role))}</small>
+              <strong>${escapeHtml(clean(item.label))}</strong>
+              <p>${escapeHtml(clean(item.detail))}</p>
             </div>
-            ${includeInspect ? `<button class="inspect-node" type="button" data-node="${escapeHtml(node.id)}">Inspect</button>` : ''}
-          </header>
-          <p class="contract-summary">${escapeHtml(node.summary)}</p>
-          ${clauses.length ? `<div class="clause-list">${clauses.map(clauseRow).join('')}</div>` : '<p class="empty-state">No richer contract clauses are declared for this semantic node.</p>'}
-        </article>
-      `;
-    }
-
-    function clauseRow(clause) {
-      return `
-        <div class="clause ${clause.kind === 'gap' ? 'gap' : ''}">
-          <span class="clause-kind">${escapeHtml(clause.kind)}</span>
-          <span class="clause-label">${escapeHtml(clause.label)}</span>
-          <p>${escapeHtml(clause.statement)}</p>
+          `).join('')}
         </div>
-      `;
-    }
-
-    function nodeButton(node) {
-      return `
-        <button class="support-button" type="button" data-node="${escapeHtml(node.id)}" aria-label="Open ${escapeHtml(node.label)}">
-          <span>${escapeHtml(node.label)}<small>${escapeHtml(node.layer)} / ${escapeHtml(node.kind)}</small></span>
-        </button>
-      `;
-    }
-
-    function bindNodeButtons() {
-      lens.querySelectorAll('[data-node]').forEach(button => {
-        button.addEventListener('click', () => {
-          selectedFocus = { type: 'node', value: nodeById.get(button.dataset.node) };
-          render();
-        });
-      });
-    }
-
-    function sourceDetails(refs) {
-      return `
-        <details class="source-details">
-          <summary>Source refs</summary>
-          ${sourceRefs(refs)}
-        </details>
-      `;
+      ` : '<p class="empty-state">No evidence nodes.</p>';
     }
 
     function sourceRefs(refs) {
-      return refs?.length ? refs.map(ref => `<code>${escapeHtml(ref.role)}: ${escapeHtml(ref.path)}</code>`).join('') : '<p>No source refs.</p>';
+      return refs?.length ? refs.map(ref => `<code>${escapeHtml(ref.role)}: ${escapeHtml(ref.path)}</code>`).join('') : '<p class="empty-state">No source refs.</p>';
+    }
+
+    function humanProblem(value) {
+      const text = clean(value || '');
+      if (!text || text === 'No stage-specific failure category is declared.') {
+        return 'No failure mode is written down for this moment yet.';
+      }
+      if (text.startsWith('Missing ')) {
+        return 'This part of the contract is not written down yet.';
+      }
+      return text;
+    }
+
+    function firstSentence(value) {
+      const text = clean(value);
+      const match = text.match(/^.*?[.!?](?:\s|$)/);
+      return match ? match[0].trim() : text;
+    }
+
+    function ensureSentence(value) {
+      const text = clean(value);
+      return /[.!?]$/.test(text) ? text : `${text}.`;
+    }
+
+    function clean(value) {
+      return String(value ?? '')
+        .replace(/`/g, '')
+        .replace(/_/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function lowerFirst(value) {
+      return value ? value.charAt(0).toLowerCase() + value.slice(1) : value;
     }
 
     function escapeHtml(value) {
