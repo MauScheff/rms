@@ -9117,95 +9117,330 @@ fn atlas_trace_reading(
     nodes: &[&AtlasNode],
     confidence: &str,
 ) -> AtlasTraceReading {
-    let labels = atlas_label_list(nodes);
-    let evidence = if nodes.is_empty() {
-        "No concrete artifact node is attached to this step.".to_string()
-    } else {
-        format!("Derived from {}.", labels)
-    };
-    let confidence_note = match confidence {
-        "direct" => "The join is direct in the manifest or referenced artifact.",
-        "inferred" => "The join is inferred from matching declared semantic language.",
-        "module-level" => "The join is module-level evidence, not a specific trace link.",
-        _ => "The join is derived from available atlas evidence.",
-    };
-
+    let clauses = nodes
+        .iter()
+        .flat_map(|node| node.clauses.iter())
+        .collect::<Vec<_>>();
+    let role_key = role.to_ascii_lowercase();
     AtlasTraceReading {
-        promise: format!("{title}: {body}"),
-        before: atlas_trace_before(role).to_string(),
-        after: atlas_trace_after(role).to_string(),
-        failure: atlas_trace_failure(role).to_string(),
-        evidence: format!("{evidence} {confidence_note}"),
-        impact: atlas_trace_impact(role).to_string(),
-        justification: nodes
-            .iter()
-            .map(|node| AtlasJustificationStep {
-                node_id: node.id.clone(),
-                label: node.label.clone(),
-                role: node.kind.clone(),
-                detail: node.summary.clone(),
-            })
-            .collect(),
+        promise: atlas_trace_promise(&role_key, title, body, &clauses),
+        before: atlas_trace_before(&role_key, &clauses),
+        after: atlas_trace_after(&role_key, body, &clauses),
+        failure: atlas_trace_failure(&role_key, &clauses),
+        evidence: atlas_trace_evidence(nodes, confidence),
+        impact: atlas_trace_impact(&role_key),
+        justification: atlas_trace_justification(nodes),
     }
 }
 
-fn atlas_trace_before(role: &str) -> &'static str {
+fn atlas_trace_promise(
+    role: &str,
+    title: &str,
+    body: &str,
+    clauses: &[&AtlasContractClause],
+) -> String {
     match role {
-        "entry" => "A caller or reader enters through a declared public surface.",
-        "boundary" => "Input is still outside the trusted module boundary.",
-        "rule" => "The module must preserve its declared law or invariant.",
-        "state" => "The behavior may depend on lifecycle, ordering, or stored state.",
-        "effect" => "The module is about to rely on an external capability or side effect.",
-        "outcome" => "The public result or event has not yet been emitted.",
-        "operate" => "Runtime truth may diverge and require operational recovery.",
-        "proof" => "The promise still needs evidence.",
-        "compatibility" => "Consumers may already depend on the public meaning.",
-        _ => "The trace is at an intermediate semantic step.",
+        "stimulus" => first_clause(clauses, |clause| {
+            clause.kind == "contract" && clause.label == "meaning"
+        })
+        .unwrap_or_else(|| body.to_string()),
+        "boundary" => sentence_join(
+            ["accepted contracts", "validation"]
+                .iter()
+                .filter_map(|label| first_labeled_readable_clause(clauses, label))
+                .collect(),
+        )
+        .unwrap_or_else(|| body.to_string()),
+        "rule" => sentence_join(clause_statements(
+            clauses,
+            |clause| clause.kind == "invariant" && clause.label == "statement",
+            3,
+        ))
+        .unwrap_or_else(|| body.to_string()),
+        "state" => sentence_join(readable_clauses(
+            clauses,
+            |clause| {
+                clause.kind == "state"
+                    && matches!(
+                        clause.label.as_str(),
+                        "model" | "consistency_boundary" | "concurrency" | "persistence"
+                    )
+            },
+            3,
+        ))
+        .unwrap_or_else(|| body.to_string()),
+        "effect" => sentence_join(readable_clauses(
+            clauses,
+            |clause| {
+                matches!(
+                    clause.label.as_str(),
+                    "idempotency" | "ordering" | "timeout" | "retry" | "compensation"
+                )
+            },
+            4,
+        ))
+        .unwrap_or_else(|| body.to_string()),
+        "outcome" => first_clause(clauses, |clause| {
+            clause.kind == "contract" && clause.label == "meaning"
+        })
+        .unwrap_or_else(|| body.to_string()),
+        "operate" => sentence_join(readable_clauses(
+            clauses,
+            |clause| clause.kind == "operation",
+            4,
+        ))
+        .unwrap_or_else(|| body.to_string()),
+        "proof" => sentence_join(clause_statements(
+            clauses,
+            |clause| clause.kind == "evidence",
+            3,
+        ))
+        .unwrap_or_else(|| body.to_string()),
+        "compatibility" => sentence_join(clause_statements(
+            clauses,
+            |clause| clause.kind == "compatibility",
+            3,
+        ))
+        .unwrap_or_else(|| body.to_string()),
+        _ => title.to_string(),
     }
 }
 
-fn atlas_trace_after(role: &str) -> &'static str {
+fn atlas_trace_before(role: &str, clauses: &[&AtlasContractClause]) -> String {
     match role {
-        "entry" => "The request follows the module's declared semantic path.",
-        "boundary" => "Only validated, accepted meaning should enter domain behavior.",
-        "rule" => "Accepted behavior remains inside the module's protected promise.",
-        "state" => "The next state must remain legal for the declared lifecycle.",
-        "effect" => "External truth must be reconciled through declared semantics.",
-        "outcome" => "Consumers observe the declared public result.",
-        "operate" => "Operators have declared checks, reconciliation, or runbooks.",
-        "proof" => "Evidence can be used to review or verify the promise.",
-        "compatibility" => "The change is assessed against the declared evolution policy.",
-        _ => "The trace continues through derived module evidence.",
+        "stimulus" => first_clause(clauses, |clause| clause.kind == "precondition")
+            .or_else(|| missing_clause(clauses, "preconditions"))
+            .unwrap_or_else(|| "No entry preconditions are declared for this stage.".to_string()),
+        "boundary" => sentence_join(
+            ["accepted contracts", "authorization", "validation"]
+                .iter()
+                .filter_map(|label| first_labeled_readable_clause(clauses, label))
+                .collect(),
+        )
+        .unwrap_or_else(|| "No boundary entry conditions are declared.".to_string()),
+        "rule" => sentence_join(clause_statements(
+            clauses,
+            |clause| clause.kind == "invariant",
+            2,
+        ))
+        .unwrap_or_else(|| "No governing rule is declared for this stage.".to_string()),
+        "state" => first_labeled_readable_clause(clauses, "consistency_boundary")
+            .unwrap_or_else(|| "No state consistency boundary is declared.".to_string()),
+        "effect" => sentence_join(
+            ["idempotency", "ordering"]
+                .iter()
+                .filter_map(|label| first_labeled_readable_clause(clauses, label))
+                .collect(),
+        )
+        .unwrap_or_else(|| "No effect preconditions are declared.".to_string()),
+        "outcome" => {
+            "The preceding contract stages determine whether an observable outcome exists."
+                .to_string()
+        }
+        "operate" => first_labeled_readable_clause(clauses, "observability").unwrap_or_else(|| {
+            "Operation starts from declared observability or runbook support.".to_string()
+        }),
+        "proof" => {
+            "The selected claim must be backed by declared verification evidence.".to_string()
+        }
+        "compatibility" => {
+            "A public surface or stored behavior is being read as compatibility-sensitive."
+                .to_string()
+        }
+        _ => "No before-state is declared for this stage.".to_string(),
     }
 }
 
-fn atlas_trace_failure(role: &str) -> &'static str {
+fn atlas_trace_after(role: &str, body: &str, clauses: &[&AtlasContractClause]) -> String {
     match role {
-        "entry" => "Changing the entrypoint can change public meaning.",
-        "boundary" => "Missing boundary evidence can let invalid or untrusted input masquerade as domain fact.",
-        "rule" => "Weakening the rule can make illegal behavior representable.",
-        "state" => "Missing state evidence can hide illegal transitions or migration risk.",
-        "effect" => "Undeclared effects make recovery and dependency review unreliable.",
-        "outcome" => "Outcome drift can break consumers even when internals still compile.",
-        "operate" => "Without operations evidence, runtime divergence is harder to debug.",
-        "proof" => "Without proof, the promise is asserted rather than demonstrated.",
-        "compatibility" => "Compatibility drift can break existing consumers or stored state.",
-        _ => "A weak trace link can hide RMS drift.",
+        "stimulus" => first_clause(clauses, |clause| clause.kind == "postcondition")
+            .or_else(|| missing_clause(clauses, "postconditions"))
+            .unwrap_or_else(|| body.to_string()),
+        "boundary" => first_labeled_readable_clause(clauses, "malformed_input")
+            .map(|value| format!("Accepted input continues; malformed input follows `{value}`."))
+            .unwrap_or_else(|| body.to_string()),
+        "rule" => sentence_join(clause_statements(
+            clauses,
+            |clause| clause.kind == "invariant",
+            2,
+        ))
+        .unwrap_or_else(|| body.to_string()),
+        "state" => sentence_join(
+            ["persistence", "migration_policy"]
+                .iter()
+                .filter_map(|label| first_labeled_readable_clause(clauses, label))
+                .collect(),
+        )
+        .unwrap_or_else(|| body.to_string()),
+        "effect" => sentence_join(
+            ["consistency", "compensation", "reconciliation"]
+                .iter()
+                .filter_map(|label| first_labeled_readable_clause(clauses, label))
+                .collect(),
+        )
+        .unwrap_or_else(|| body.to_string()),
+        "outcome" => body.to_string(),
+        "operate" => sentence_join(
+            ["runtime_checks", "reconciliation", "runbooks"]
+                .iter()
+                .filter_map(|label| first_labeled_readable_clause(clauses, label))
+                .collect(),
+        )
+        .unwrap_or_else(|| body.to_string()),
+        "proof" => sentence_join(clause_statements(
+            clauses,
+            |clause| clause.kind == "evidence",
+            3,
+        ))
+        .unwrap_or_else(|| body.to_string()),
+        "compatibility" => sentence_join(clause_statements(
+            clauses,
+            |clause| clause.kind == "compatibility",
+            3,
+        ))
+        .unwrap_or_else(|| body.to_string()),
+        _ => body.to_string(),
     }
 }
 
-fn atlas_trace_impact(role: &str) -> &'static str {
+fn atlas_trace_failure(role: &str, clauses: &[&AtlasContractClause]) -> String {
     match role {
-        "entry" => "Review public contract compatibility.",
-        "boundary" => "Review validation and trust assumptions.",
-        "rule" => "Review invariants and law evidence.",
-        "state" => "Review lifecycle, concurrency, and migration promises.",
-        "effect" => "Review declared dependencies, effects, and recovery paths.",
-        "outcome" => "Review commands, queries, events, and consumer expectations.",
-        "operate" => "Review observability, reconciliation, and runbooks.",
-        "proof" => "Review whether evidence still proves the promise.",
-        "compatibility" => "Classify the change before release.",
-        _ => "Review this derived semantic link.",
+        "stimulus" => first_clause(clauses, |clause| clause.kind == "failure")
+            .or_else(|| missing_clause(clauses, "failure categories"))
+            .unwrap_or_else(|| "No failure categories are declared for this command.".to_string()),
+        "boundary" => first_labeled_readable_clause(clauses, "malformed_input")
+            .unwrap_or_else(|| "No malformed-input behavior is declared.".to_string()),
+        "effect" => sentence_join(
+            ["timeout", "retry", "compensation", "reconciliation"]
+                .iter()
+                .filter_map(|label| first_labeled_readable_clause(clauses, label))
+                .collect(),
+        )
+        .unwrap_or_else(|| "No external-effect failure semantics are declared.".to_string()),
+        "proof" => {
+            "If evidence is absent or stale, trust in this stage becomes a review obligation."
+                .to_string()
+        }
+        _ => first_clause(clauses, |clause| clause.kind == "failure")
+            .unwrap_or_else(|| "No stage-specific failure category is declared.".to_string()),
+    }
+}
+
+fn atlas_trace_evidence(nodes: &[&AtlasNode], confidence: &str) -> String {
+    let sources = collect_atlas_source_refs(nodes);
+    let labels = nodes
+        .iter()
+        .map(|node| format!("`{}`", node.label))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if sources.is_empty() {
+        format!("{confidence} projection from {labels}.")
+    } else {
+        format!(
+            "{confidence} projection from {labels}; {} source reference(s).",
+            sources.len()
+        )
+    }
+}
+
+fn atlas_trace_impact(role: &str) -> String {
+    match role {
+        "stimulus" => "Changing this entrypoint can change the public reason the behavior exists.",
+        "boundary" => "Changing this stage can alter validation, authorization, or accepted input.",
+        "rule" => "Changing this stage can weaken or move domain authority.",
+        "state" => {
+            "Changing this stage can affect lifecycle, persistence, concurrency, or migrations."
+        }
+        "effect" => {
+            "Changing this stage can affect external truth, retries, idempotency, or compensation."
+        }
+        "outcome" => "Changing this stage can affect subscribers, queries, or observable facts.",
+        "operate" => {
+            "Changing this stage can affect recovery, reconciliation, or incident handling."
+        }
+        "proof" => "Changing this stage can leave promises unverified.",
+        "compatibility" => "Changing this stage can break existing consumers or stored state.",
+        _ => "Review this semantic stage before changing it.",
+    }
+    .to_string()
+}
+
+fn atlas_trace_justification(nodes: &[&AtlasNode]) -> Vec<AtlasJustificationStep> {
+    nodes
+        .iter()
+        .map(|node| AtlasJustificationStep {
+            node_id: node.id.clone(),
+            label: node.label.clone(),
+            role: format!("{}/{}", node.layer, node.kind),
+            detail: node
+                .clauses
+                .iter()
+                .find(|clause| clause.kind != "gap")
+                .map(|clause| clause.statement.clone())
+                .unwrap_or_else(|| node.summary.clone()),
+        })
+        .collect()
+}
+
+fn first_clause(
+    clauses: &[&AtlasContractClause],
+    predicate: impl Fn(&AtlasContractClause) -> bool,
+) -> Option<String> {
+    clauses
+        .iter()
+        .find(|clause| predicate(clause))
+        .map(|clause| clause.statement.clone())
+}
+
+fn first_labeled_readable_clause(clauses: &[&AtlasContractClause], label: &str) -> Option<String> {
+    clauses
+        .iter()
+        .find(|clause| clause.label == label)
+        .map(|clause| readable_clause(clause))
+}
+
+fn missing_clause(clauses: &[&AtlasContractClause], label: &str) -> Option<String> {
+    clauses
+        .iter()
+        .find(|clause| clause.kind == "gap" && clause.label == label)
+        .map(|clause| format!("Missing {label}: {}", clause.statement))
+}
+
+fn readable_clauses(
+    clauses: &[&AtlasContractClause],
+    predicate: impl Fn(&AtlasContractClause) -> bool,
+    limit: usize,
+) -> Vec<String> {
+    clauses
+        .iter()
+        .filter(|clause| predicate(clause))
+        .take(limit)
+        .map(|clause| readable_clause(clause))
+        .collect()
+}
+
+fn readable_clause(clause: &AtlasContractClause) -> String {
+    format!("{}: {}", clause.label.replace('_', " "), clause.statement)
+}
+
+fn clause_statements(
+    clauses: &[&AtlasContractClause],
+    predicate: impl Fn(&AtlasContractClause) -> bool,
+    limit: usize,
+) -> Vec<String> {
+    clauses
+        .iter()
+        .filter(|clause| predicate(clause))
+        .take(limit)
+        .map(|clause| clause.statement.clone())
+        .collect()
+}
+
+fn sentence_join(parts: Vec<String>) -> Option<String> {
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
     }
 }
 
@@ -13356,11 +13591,21 @@ verification:
             .find(|trace| trace.id == "trace:do-work")
             .expect("do-work trace");
         assert_eq!(trace.entry_node_id, "provides-commands:do-work");
-        assert!(trace.steps.iter().any(|step| step.role == "Rule"
-            && step.confidence == "inferred"
-            && step
-                .node_ids
-                .contains(&"invariant:work-is-safe".to_string())));
+        let rule_step = trace
+            .steps
+            .iter()
+            .find(|step| {
+                step.role == "Rule"
+                    && step.confidence == "inferred"
+                    && step
+                        .node_ids
+                        .contains(&"invariant:work-is-safe".to_string())
+            })
+            .expect("rule trace step");
+        assert_eq!(
+            rule_step.reading.impact,
+            "Changing this stage can weaken or move domain authority."
+        );
         assert!(trace
             .gaps
             .iter()
@@ -13387,12 +13632,15 @@ verification:
         assert!(atlas_json.contains("\"trace:do-work\""));
         assert!(atlas_json.contains("\"confidence\": \"inferred\""));
         assert!(atlas_json.contains("\"clauses\""));
+        assert!(atlas_json.contains("\"reading\""));
+        assert!(atlas_json.contains("\"promise\""));
+        assert!(atlas_json.contains("\"justification\""));
         assert!(atlas_json.contains("Not declared by this command contract."));
         assert!(atlas_json.contains("\"supports_live_reconciliation\": true"));
         assert!(html.contains("RMS Atlas"));
-        assert!(html.contains("Reason path"));
-        assert!(html.contains("Semantic contract"));
-        assert!(html.contains("Stage meaning"));
+        assert!(html.contains("Contract flow"));
+        assert!(html.contains("Contract reading"));
+        assert!(html.contains("Justification stack"));
         assert!(!html.contains("three@0.164.1"));
         assert!(html.contains("atlas-data"));
     }

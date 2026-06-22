@@ -335,6 +335,69 @@
       margin: 0;
       color: var(--soft-ink);
     }
+    .promise {
+      margin-top: 16px;
+      padding: 13px 0 0;
+      border-top: 1px solid var(--line);
+    }
+    .promise p {
+      color: var(--ink);
+      font-size: 17px;
+      line-height: 1.35;
+      font-weight: 720;
+    }
+    .reading-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 13px;
+      margin-top: 18px;
+      padding-top: 15px;
+      border-top: 1px solid var(--line);
+    }
+    .reading-item {
+      display: grid;
+      gap: 4px;
+      padding-left: 10px;
+      border-left: 2px solid var(--line);
+    }
+    .reading-item.failure {
+      border-left-color: rgba(168,77,50,.6);
+    }
+    .reading-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 760;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .justification-stack {
+      display: grid;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .justification-button {
+      display: grid;
+      gap: 3px;
+      width: 100%;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      text-align: left;
+    }
+    .justification-button:hover {
+      border-color: rgba(15,118,110,.55);
+      color: var(--accent);
+    }
+    .justification-button strong {
+      overflow-wrap: anywhere;
+    }
+    .justification-button small {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
     .why-row {
       margin-top: 18px;
       padding-top: 15px;
@@ -568,7 +631,7 @@
         <nav class="trace-tabs" id="traceTabs" aria-label="Entrypoints"></nav>
       </aside>
 
-      <section class="reader" aria-label="Reason path">
+      <section class="reader" aria-label="Contract flow">
         <header class="trace-head">
           <p class="eyebrow" id="traceIntent">Entrypoint</p>
           <h2 id="traceTitle">No entrypoint selected</h2>
@@ -595,17 +658,6 @@
       Operate: 'Recovery',
       Proof: 'Proof',
       Compatibility: 'Compatibility'
-    };
-    const roleRisk = {
-      Stimulus: 'Changing this entrypoint can change the public reason the behavior exists.',
-      Boundary: 'Changing this lane can alter validation, authorization, or accepted input.',
-      Rule: 'Changing this lane can weaken or move domain authority.',
-      State: 'Changing this lane can affect lifecycle, persistence, concurrency, or migrations.',
-      Effect: 'Changing this lane can affect external truth, retries, idempotency, or compensation.',
-      Outcome: 'Changing this lane can affect subscribers, queries, or observable facts.',
-      Operate: 'Changing this lane can affect recovery, reconciliation, or incident handling.',
-      Proof: 'Changing this lane can leave promises unverified.',
-      Compatibility: 'Changing this lane can break existing consumers or stored state.'
     };
     const roleToGap = {
       Boundary: 'boundary',
@@ -668,7 +720,18 @@
         trace.intent,
         trace.summary,
         ...(trace.source_refs || []).map(ref => ref.path),
-        ...(trace.steps || []).flatMap(step => [step.role, step.title, step.body, step.confidence]),
+        ...(trace.steps || []).flatMap(step => [
+          step.role,
+          step.title,
+          step.body,
+          step.confidence,
+          step.reading?.promise,
+          step.reading?.before,
+          step.reading?.after,
+          step.reading?.failure,
+          step.reading?.evidence,
+          step.reading?.impact
+        ]),
         ...(trace.gaps || []).flatMap(gap => [gap.title, gap.body, gap.suggested_artifact || ''])
       ].join(' ');
     }
@@ -749,7 +812,7 @@
               <span class="step-kicker">${escapeHtml(roleLabel[role] || role)}</span>
               <span class="path-confidence" data-level="${escapeHtml(step.confidence)}">${escapeHtml(step.confidence)}</span>
               <strong>${escapeHtml(step.title)}</strong>
-              <p>${escapeHtml(step.body)}</p>
+              <p>${escapeHtml(step.reading?.promise || step.body)}</p>
             </button>
           </li>
         `;
@@ -787,24 +850,50 @@
 
     function renderStepLens(step) {
       const nodes = step.node_ids.map(id => nodeById.get(id)).filter(Boolean);
+      const reading = step.reading || {};
       lens.innerHTML = `
         <p class="eyebrow">${escapeHtml(roleLabel[step.role] || step.role)} / ${escapeHtml(step.confidence)}</p>
         <h2>${escapeHtml(step.title)}</h2>
-        <section class="why-row">
-          <h3>Stage meaning</h3>
-          <p>${escapeHtml(step.body)}</p>
+        <section class="promise">
+          <p>${escapeHtml(reading.promise || step.body)}</p>
+        </section>
+        <section class="reading-grid" aria-label="Contract reading">
+          ${readingItem('Before', reading.before)}
+          ${readingItem('After', reading.after)}
+          ${readingItem('Failure', reading.failure, 'failure')}
+          ${readingItem('Evidence', reading.evidence)}
+          ${readingItem('Impact', reading.impact)}
         </section>
         <section class="why-row">
-          <h3>Semantic contract</h3>
-          ${nodes.length ? `<div class="contract-stack">${nodes.map(contractBlock).join('')}</div>` : '<p>No semantic node support.</p>'}
+          <h3>Justification stack</h3>
+          ${reading.justification?.length ? `<div class="justification-stack">${reading.justification.map(justificationRow).join('')}</div>` : '<p>No justification nodes.</p>'}
         </section>
-        <section class="why-row">
-          <h3>Change risk</h3>
-          <p>${escapeHtml(roleRisk[step.role] || 'Review this semantic stage before changing it.')}</p>
-        </section>
+        <details class="source-details">
+          <summary>Contract clauses</summary>
+          ${nodes.length ? `<div class="contract-stack">${nodes.map(node => contractBlock(node, true)).join('')}</div>` : '<p>No semantic node support.</p>'}
+        </details>
         ${sourceDetails(step.source_refs)}
       `;
       bindNodeButtons();
+    }
+
+    function readingItem(label, value, tone = '') {
+      return `
+        <div class="reading-item ${escapeHtml(tone)}">
+          <span class="reading-label">${escapeHtml(label)}</span>
+          <p>${escapeHtml(value || 'Not declared.')}</p>
+        </div>
+      `;
+    }
+
+    function justificationRow(item) {
+      return `
+        <button class="justification-button" type="button" data-node="${escapeHtml(item.node_id)}">
+          <small>${escapeHtml(item.role)}</small>
+          <strong>${escapeHtml(item.label)}</strong>
+          <p>${escapeHtml(item.detail)}</p>
+        </button>
+      `;
     }
 
     function renderGapLens(gap) {

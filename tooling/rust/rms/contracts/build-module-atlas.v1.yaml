@@ -8,13 +8,13 @@ preconditions:
     statement: The target module manifest is readable, parseable, and passes RMS validation.
 postconditions:
   - id: atlas-derived-from-artifacts
-    statement: The atlas graph, semantic contract clauses, trace projections, labels, summaries, gaps, confidence labels, and source references contain only meaning derived from the target module manifest and referenced public artifacts.
+    statement: The atlas graph, semantic contract clauses, contract-flow readings, trace projections, labels, summaries, gaps, confidence labels, and source references contain only meaning derived from the target module manifest and referenced public artifacts.
   - id: atlas-identifies-source
     statement: The generated atlas identifies the source module manifest, root, validator, and source revision when available.
   - id: atlas-preserves-stable-ids
     statement: Atlas nodes and edges use stable semantic identifiers so future live or diff renderers can reconcile changes without rebuilding user orientation.
   - id: atlas-projects-guided-traces
-    statement: The generated atlas includes deterministic semantic traces that compose public entrypoints with contract clauses, boundary, rule, state, effect, outcome, operation, proof, and compatibility evidence when those artifacts are declared.
+    statement: The generated atlas includes deterministic semantic traces that compose public entrypoints with contract clauses, contract-flow readings, boundary, rule, state, effect, outcome, operation, proof, and compatibility evidence when those artifacts are declared.
   - id: atlas-labels-uncertain-joins
     statement: The generated atlas labels each trace step as direct, inferred, or module-level, and exposes gaps instead of inventing missing semantic links.
 failure_categories:
