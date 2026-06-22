@@ -3,4 +3,12 @@ name: payment-outcome
 version: 1
 kind: event
 meaning: Published fact for an accepted payment operation outcome.
-
+semantics:
+  guarantees:
+    - The event represents a payment outcome accepted by the payments module.
+    - Consumers may treat payment-id and payment-operation-id as causal identifiers for reconciliation.
+    - Unknown provider outcomes remain subject to the payments reconciliation path.
+  non_guarantees:
+    - Does not instruct fulfillment to ship an order.
+    - Does not prove inventory is reserved.
+    - Does not authorize consumers to mutate payment-ledger state directly.

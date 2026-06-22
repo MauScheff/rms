@@ -122,3 +122,60 @@ operations:
     - ops/reconcile/payment-provider
   runbooks:
     - ops/runbooks/unknown-payment-outcome.md
+
+x-change-protocols:
+  - id: payment-outcome-contract-change
+    applies_when: Adding, removing, renaming, or changing the public meaning of a payment outcome.
+    classification: public-contract-or-domain-policy
+    references:
+      contracts:
+        - contracts/payment-outcome.v1.yaml
+      docs:
+        - docs/payment-lifecycle.md
+      evidence:
+        - verification/laws
+        - verification/scenarios
+      operations:
+        - ops/runbooks/unknown-payment-outcome.md
+    affected_surfaces:
+      invariants:
+        - capture-requires-authorization
+        - refund-within-capture
+      effects:
+        - payment-provider
+      compatibility:
+        - public event meaning
+        - provider reconciliation behavior
+    required_updates:
+      - Update the public event contract before changing implementation behavior.
+      - Update lifecycle documentation when the outcome changes payment state meaning.
+      - Add or update negative evidence for impossible variants and illegal transitions.
+      - Reclassify compatibility impact for active consumers before preserving the same version.
+    verify:
+      - rms validate --root .
+      - rms compose --root .
+  - id: payment-provider-effect-change
+    applies_when: Changing timeout, retry, idempotency, ordering, compensation, or reconciliation behavior for provider calls.
+    classification: dependency-effect-or-recovery-change
+    references:
+      contracts:
+        - contracts/payment-provider.yaml
+      evidence:
+        - verification/scenarios/unknown_outcome_reconciliation
+      operations:
+        - ops/reconcile/payment-provider
+        - ops/runbooks/unknown-payment-outcome.md
+    affected_surfaces:
+      effects:
+        - payment-provider
+      recovery_paths:
+        - unknown-outcome reconciliation
+      compatibility:
+        - distributed operational semantics
+    required_updates:
+      - Update effect semantics and the provider capability contract before relying on new behavior.
+      - Keep retries bound to the same payment-operation-id unless the public contract changes.
+      - Update reconciliation or runbook evidence when external truth can diverge.
+    verify:
+      - rms validate --root .
+      - rms compose --root .

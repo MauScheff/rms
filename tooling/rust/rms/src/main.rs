@@ -3353,6 +3353,7 @@ fn append_prompt_context(out: &mut String, manifest: &LoadedManifest, root: &Pat
         get_str(&manifest.value, &["compatibility", "policy"]).unwrap_or("<missing>")
     )?;
     append_prompt_verification(out, &manifest.value)?;
+    append_prompt_change_protocols(out, &manifest.value)?;
 
     writeln!(out)?;
     writeln!(out, "### Canonical Files")?;
@@ -3505,6 +3506,40 @@ fn append_prompt_verification(out: &mut String, value: &YamlValue) -> Result<()>
                 items.join(", ")
             }
         )?;
+    }
+    Ok(())
+}
+
+fn append_prompt_change_protocols(out: &mut String, value: &YamlValue) -> Result<()> {
+    let Some(protocols) = change_protocol_items(value) else {
+        return Ok(());
+    };
+    if protocols.is_empty() {
+        return Ok(());
+    }
+
+    writeln!(out, "- Change Protocols:")?;
+    for protocol in protocols {
+        let id = get_str(protocol, &["id"]).unwrap_or("<missing-id>");
+        let applies_when = get_str(protocol, &["applies_when"]).unwrap_or("<missing applies_when>");
+        writeln!(out, "  - {id}: {applies_when}")?;
+        if let Some(classification) = get_str(protocol, &["classification"]) {
+            writeln!(out, "    classification: {classification}")?;
+        }
+        let required_updates = get_string_array(protocol, &["required_updates"]);
+        if !required_updates.is_empty() {
+            writeln!(out, "    required updates:")?;
+            for update in required_updates {
+                writeln!(out, "      - {update}")?;
+            }
+        }
+        let verify = get_string_array(protocol, &["verify"]);
+        if !verify.is_empty() {
+            writeln!(out, "    verify:")?;
+            for command in verify {
+                writeln!(out, "      - {command}")?;
+            }
+        }
     }
     Ok(())
 }
@@ -4951,6 +4986,7 @@ fn validate_module(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>)
     check_contract_refs(manifest, diagnostics, &["requires"]);
     check_invariant_evidence(manifest, diagnostics);
     check_verification_paths(manifest, diagnostics);
+    check_change_protocols(manifest, diagnostics);
     check_profile_obligations(manifest, diagnostics, &profiles);
 }
 
@@ -7088,6 +7124,47 @@ fn check_verification_paths(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
     }
 }
 
+fn check_change_protocols(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(protocols) = change_protocol_items(&manifest.value) else {
+        return;
+    };
+
+    let mut ids = BTreeSet::new();
+    for (index, protocol) in protocols.iter().enumerate() {
+        let Some(id) = get_str(protocol, &["id"]) else {
+            diagnostics.push(error(
+                "change-protocol.id",
+                &manifest.path,
+                format!("change protocol at index {index} is missing `id`"),
+            ));
+            continue;
+        };
+        if !ids.insert(id.to_string()) {
+            diagnostics.push(error(
+                "change-protocol.duplicate-id",
+                &manifest.path,
+                format!("duplicate change protocol id `{id}`"),
+            ));
+        }
+        if get_str(protocol, &["applies_when"]).is_none() {
+            diagnostics.push(error(
+                "change-protocol.applies-when",
+                &manifest.path,
+                format!("change protocol `{id}` is missing `applies_when`"),
+            ));
+        }
+        collect_change_protocol_reference_paths(protocol, &mut |reference| {
+            check_relative_ref(
+                manifest,
+                diagnostics,
+                "references.change-protocol",
+                reference,
+                "change protocol references an artifact that does not exist",
+            );
+        });
+    }
+}
+
 fn check_optional_path(
     manifest: &LoadedManifest,
     diagnostics: &mut Vec<Diagnostic>,
@@ -7145,6 +7222,36 @@ fn collect_contract_paths(value: &YamlValue, emit: &mut impl FnMut(&str)) {
         YamlValue::Sequence(items) => {
             for item in items {
                 collect_contract_paths(item, emit);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn change_protocol_items(value: &YamlValue) -> Option<&[YamlValue]> {
+    get_path(value, &["x-change-protocols"])?
+        .as_sequence()
+        .map(Vec::as_slice)
+}
+
+fn collect_change_protocol_reference_paths(value: &YamlValue, emit: &mut impl FnMut(&str)) {
+    let Some(references) = get_path(value, &["references"]) else {
+        return;
+    };
+    collect_string_leaf_values(references, emit);
+}
+
+fn collect_string_leaf_values(value: &YamlValue, emit: &mut impl FnMut(&str)) {
+    match value {
+        YamlValue::String(reference) => emit(reference),
+        YamlValue::Sequence(items) => {
+            for item in items {
+                collect_string_leaf_values(item, emit);
+            }
+        }
+        YamlValue::Mapping(mapping) => {
+            for child in mapping.values() {
+                collect_string_leaf_values(child, emit);
             }
         }
         _ => {}
@@ -7224,6 +7331,7 @@ fn print_module_brief(manifest: &LoadedManifest) {
         get_str(&manifest.value, &["compatibility", "policy"]).unwrap_or("<missing>")
     );
     print_verification(&manifest.value);
+    print_change_protocols(&manifest.value);
 }
 
 fn print_module_explanation(
@@ -7267,6 +7375,7 @@ fn print_module_explanation(
         get_str(&manifest.value, &["compatibility", "policy"]).unwrap_or("<missing>")
     );
     print_verification(&manifest.value);
+    print_change_protocols(&manifest.value);
 
     println!();
     println!("## Before Changing It");
@@ -12234,6 +12343,14 @@ fn referenced_paths(value: &YamlValue) -> BTreeSet<String> {
         }
     }
 
+    if let Some(protocols) = change_protocol_items(value) {
+        for protocol in protocols {
+            collect_change_protocol_reference_paths(protocol, &mut |path| {
+                paths.insert(path.to_string());
+            });
+        }
+    }
+
     paths
 }
 
@@ -12525,6 +12642,42 @@ fn print_verification(value: &YamlValue) {
     }
 }
 
+fn print_change_protocols(value: &YamlValue) {
+    let Some(protocols) = change_protocol_items(value) else {
+        return;
+    };
+    if protocols.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("## Change Protocols");
+    for protocol in protocols {
+        let id = get_str(protocol, &["id"]).unwrap_or("<missing-id>");
+        let applies_when = get_str(protocol, &["applies_when"]).unwrap_or("<missing applies_when>");
+        println!("- {id}: {applies_when}");
+        if let Some(classification) = get_str(protocol, &["classification"]) {
+            println!("  classification: {classification}");
+        }
+
+        let required_updates = get_string_array(protocol, &["required_updates"]);
+        if !required_updates.is_empty() {
+            println!("  required updates:");
+            for update in required_updates {
+                println!("    - {update}");
+            }
+        }
+
+        let verify = get_string_array(protocol, &["verify"]);
+        if !verify.is_empty() {
+            println!("  verify:");
+            for command in verify {
+                println!("    - {command}");
+            }
+        }
+    }
+}
+
 fn print_question_focus(value: &YamlValue, question: &str) {
     let normalized = question.to_ascii_lowercase();
     let mut matched = false;
@@ -12581,6 +12734,16 @@ fn print_question_focus(value: &YamlValue, question: &str) {
     {
         println!("Verification evidence is:");
         print_verification(value);
+        matched = true;
+    }
+
+    if normalized.contains("change")
+        || normalized.contains("patch")
+        || normalized.contains("modify")
+        || normalized.contains("protocol")
+    {
+        println!("Declared change protocols are:");
+        print_change_protocols(value);
         matched = true;
     }
 
@@ -12651,6 +12814,95 @@ verification:
         assert!(references.contains("verification/laws/law"));
         assert!(references.contains("verification/laws"));
         assert!(references.contains("verification/scenarios"));
+    }
+
+    #[test]
+    fn collects_change_protocol_references() {
+        let value: YamlValue = serde_yaml::from_str(
+            r#"
+x-change-protocols:
+  - id: public-status-change
+    applies_when: A public status changes meaning.
+    references:
+      contracts:
+        - contracts/status.yaml
+      docs:
+        - docs/status-lifecycle.md
+      evidence:
+        - verification/laws/status
+"#,
+        )
+        .unwrap();
+
+        let references = referenced_paths(&value);
+
+        assert!(references.contains("contracts/status.yaml"));
+        assert!(references.contains("docs/status-lifecycle.md"));
+        assert!(references.contains("verification/laws/status"));
+    }
+
+    #[test]
+    fn validates_change_protocol_references() {
+        let value: YamlValue = serde_yaml::from_str(
+            r#"
+spec: rms/module/v0.1
+
+module:
+  name: example
+  version: 0.1.0
+  kind: library
+  purpose: Test change protocols
+
+profiles:
+  - core
+
+owns:
+  concepts: []
+  data: []
+  decisions: []
+
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities: []
+
+invariants: []
+effects: []
+
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+
+x-change-protocols:
+  - id: public-status-change
+    applies_when: A public status changes meaning.
+    references:
+      docs:
+        - docs/missing.md
+"#,
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: PathBuf::from("module.yaml"),
+            value,
+        };
+        let mut diagnostics = Vec::new();
+
+        validate_loaded_manifest(&manifest, &mut diagnostics);
+
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "references.change-protocol"));
     }
 
     #[test]

@@ -645,6 +645,22 @@ Verification commands
 
 It usually does not need the entire repository. Small, explicit context improves both reliability and cost.
 
+### Make recurring change protocols explicit
+
+Some changes are risky because the code edit is small but the semantic blast radius is not. Adding a public status, changing retry behavior, modifying a lifecycle transition, or reclassifying an event usually requires collateral updates across contracts, invariants, operations, and evidence.
+
+Capture those recurring paths as change protocols in the canonical module artifacts, not only in agent instructions. A useful protocol answers:
+
+```text
+When does this protocol apply?
+Which contracts, state models, effects, invariants, and recovery paths can be affected?
+Which files or evidence should change together?
+Which verification commands prove the changed promise?
+Which compatibility question must be answered before keeping the same version?
+```
+
+Change protocols are guidance derived from existing RMS truth. They must not create hidden semantics that are absent from manifests, contracts, state models, effects, or verification evidence.
+
 ### Portable skills
 
 Repeated workflows should be packaged as vendor-neutral Agent Skills:
