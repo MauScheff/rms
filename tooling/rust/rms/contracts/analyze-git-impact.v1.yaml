@@ -1,0 +1,26 @@
+spec: rms/contract/v0.1
+name: analyze-git-impact
+version: 1
+kind: command
+meaning: Classify the RMS semantic impact of a current or requested git diff from changed paths, discovered module manifests, contracts, implementation bindings, and verification evidence.
+preconditions:
+  - id: repository-root-readable
+    statement: The requested root is readable.
+  - id: git-diff-readable
+    statement: Git can report changed paths for the requested diff or working tree.
+postconditions:
+  - id: impact-is-derived
+    statement: The report is derived from git path evidence and RMS canonical artifacts; it must not create module semantics outside manifests and contracts.
+  - id: affected-modules-are-identified
+    statement: Changed paths under known module roots are mapped to their owning module manifests when possible.
+  - id: review-obligations-are-conservative
+    statement: Manifest, contract, context, glossary, operation, and implementation-binding changes are reported as requiring review rather than inferred safe.
+  - id: verification-obligations-are-suggested
+    statement: Source and verification-evidence changes name the affected module and deterministic checks to run when the implementation binding is known.
+failure_categories:
+  - id: git-unavailable
+    statement: Git is not available or cannot describe the requested diff.
+  - id: rms-artifact-unreadable
+    statement: A discovered RMS artifact cannot be read or parsed.
+compatibility:
+  policy: backward-compatible-within-major

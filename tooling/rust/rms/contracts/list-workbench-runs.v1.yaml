@@ -1,0 +1,20 @@
+spec: rms/contract/v0.1
+name: list-workbench-runs
+version: 1
+kind: query
+meaning: List saved RMS workbench run records from the configured run directory.
+preconditions:
+  - id: run-root-readable-or-missing
+    statement: The run root is either readable or absent.
+postconditions:
+  - id: run-records-not-mutated
+    statement: Listing run records does not mutate run artifacts or project source files.
+  - id: summary-derived-from-request
+    statement: Each listed run is summarized from its directory name and request metadata when present.
+failure_categories:
+  - id: unreadable-run-root
+    statement: The run root exists but cannot be read.
+  - id: invalid-config
+    statement: The configured run-record directory cannot be resolved from optional workbench config.
+compatibility:
+  policy: backward-compatible-within-major

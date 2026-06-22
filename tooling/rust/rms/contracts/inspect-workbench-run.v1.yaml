@@ -1,0 +1,22 @@
+spec: rms/contract/v0.1
+name: inspect-workbench-run
+version: 1
+kind: query
+meaning: Inspect one saved RMS workbench run record by id or path.
+preconditions:
+  - id: run-record-exists
+    statement: The requested run id resolves to an existing run directory, or the requested path exists.
+postconditions:
+  - id: inspection-derived-from-run-record
+    statement: The inspection output is derived from request metadata, file presence, validation checks, provider logs, and response content when present.
+  - id: run-record-not-mutated
+    statement: Inspecting a run record does not mutate run artifacts or project source files.
+failure_categories:
+  - id: missing-run-record
+    statement: The requested run record does not exist.
+  - id: malformed-run-artifact
+    statement: A run artifact exists but cannot be parsed in its expected format.
+  - id: invalid-config
+    statement: The configured run-record directory cannot be resolved from optional workbench config.
+compatibility:
+  policy: backward-compatible-within-major

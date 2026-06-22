@@ -1,0 +1,170 @@
+spec: rms/module/v0.1
+
+module:
+  name: rms-cli
+  version: 0.1.0-rc.1
+  kind: tool
+  purpose: Provide the canonical command-line workbench for inspecting, validating, packaging, explaining, and verifying RMS modules.
+
+profiles:
+  - core
+  - boundary
+
+owns:
+  concepts:
+    - RMS command surface
+    - RMS diagnostic report
+    - RMS module explanation
+    - RMS context packet
+    - RMS conformance report
+    - RMS module package
+    - RMS workbench prompt
+    - RMS advisory plan
+    - RMS advisory review
+    - RMS git impact report
+    - RMS advisory contract evolution
+    - RMS advisory evidence plan
+    - RMS workbench run record
+    - RMS workbench configuration
+    - RMS release readiness report
+    - RMS module atlas
+  data:
+    - embedded RMS schemas
+    - embedded RMS prompt templates
+    - generated package metadata
+    - generated conformance reports
+    - generated git impact reports
+    - generated workbench run records
+    - generated module atlas artifacts
+    - optional workbench configuration
+  decisions:
+    - manifest-validation-result
+    - module-explanation-shape
+    - diagnostic-readiness-result
+    - prompt-template-selection
+    - advisory-workflow-shape
+    - git-diff-impact-classification
+    - provider-execution-request
+    - workbench-config-resolution
+    - workbench-config-initialization
+    - release-readiness-result
+    - module-atlas-shape
+    - package-inclusion-set
+    - conformance-outcome
+
+provides:
+  commands:
+    - name: validate-rms-artifacts
+      contract: contracts/validate-rms-artifacts.v1.yaml
+    - name: explain-module
+      contract: contracts/explain-module.v1.yaml
+    - name: diagnose-rms-environment
+      contract: contracts/diagnose-rms-environment.v1.yaml
+    - name: render-workbench-prompt
+      contract: contracts/render-workbench-prompt.v1.yaml
+    - name: plan-module-change
+      contract: contracts/plan-module-change.v1.yaml
+    - name: review-module-diff
+      contract: contracts/review-module-diff.v1.yaml
+    - name: analyze-git-impact
+      contract: contracts/analyze-git-impact.v1.yaml
+    - name: refactor-module-workbench
+      contract: contracts/refactor-module-workbench.v1.yaml
+    - name: implement-module-workbench
+      contract: contracts/implement-module-workbench.v1.yaml
+    - name: evolve-contract-workbench
+      contract: contracts/evolve-contract-workbench.v1.yaml
+    - name: evidence-workbench
+      contract: contracts/evidence-workbench.v1.yaml
+    - name: list-workbench-runs
+      contract: contracts/list-workbench-runs.v1.yaml
+    - name: inspect-workbench-run
+      contract: contracts/inspect-workbench-run.v1.yaml
+    - name: inspect-latest-workbench-run
+      contract: contracts/latest-workbench-run.v1.yaml
+    - name: init-workbench-config
+      contract: contracts/init-workbench-config.v1.yaml
+    - name: check-release-readiness
+      contract: contracts/release-check.v1.yaml
+    - name: build-context-packet
+      contract: contracts/build-context-packet.v1.yaml
+    - name: build-module-atlas
+      contract: contracts/build-module-atlas.v1.yaml
+    - name: package-module
+      contract: contracts/package-module.v1.yaml
+    - name: verify-implementation
+      contract: contracts/verify-implementation.v1.yaml
+  queries:
+    - name: inspect-module
+      contract: contracts/inspect-module.v1.yaml
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities:
+    - name: filesystem
+    - name: process-runner
+    - name: git-revision-provider
+
+invariants:
+  - id: canonical-artifacts-remain-authoritative
+    statement: The CLI may inspect, explain, package, and validate RMS artifacts, but it must not create module semantics outside canonical manifests and contracts.
+    enforced_by: manifest-first-command-handlers
+    verified_by: verification/laws/canonical_artifacts_remain_authoritative.md
+  - id: diagnostics-are-evidence-not-authority
+    statement: Diagnostic, context, package, and conformance outputs must identify their source artifacts and remain derived evidence rather than hidden architectural truth.
+    enforced_by: derived-output-renderers
+    verified_by: verification/laws/diagnostics_are_evidence_not_authority.md
+
+effects:
+  - name: read-repository-files
+    kind: filesystem-read
+    capability: filesystem
+  - name: write-generated-artifacts
+    kind: filesystem-write
+    capability: filesystem
+  - name: run-declared-verification
+    kind: process-execution
+    capability: process-runner
+  - name: run-optional-ai-provider
+    kind: process-execution
+    capability: process-runner
+  - name: read-source-revision
+    kind: process-execution
+    capability: git-revision-provider
+
+boundary:
+  inputs:
+    - command-line arguments
+    - git diff output
+    - optional AI-provider command output
+    - YAML manifests
+    - JSON conformance reports
+    - optional RMS workbench config
+    - Codex plugin manifest and packaged skill files
+    - TOML package manifests
+    - Rust and Swift source files
+  validation:
+    - embedded JSON Schema validation for RMS manifests
+    - path existence checks for referenced evidence
+    - implementation binding checks for Rust and Swift source boundaries
+  trust:
+    - Repository files are treated as untrusted input unless they are canonical RMS artifacts.
+    - Generated reports are evidence and must not override manifests or contracts.
+    - Workbench prompts guide humans and agents but do not perform edits or provider calls.
+    - Provider-backed prompt execution is opt-in and records prompts, checks, provider logs, and responses under `.rms/runs`.
+    - Workbench config supplies defaults for opt-in provider execution and run record discovery; it must not create RMS module semantics.
+
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws:
+    - verification/laws
+  contracts:
+    - verification/contracts
+  scenarios:
+    - verification/scenarios
+  boundaries:
+    - verification/boundaries

@@ -1,13 +1,16 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as FmtWrite;
 use std::fs;
+use std::io::Write as IoWrite;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 use syn::visit::{self, Visit};
 use syn::{
     Attribute, ExprMacro, ExprMethodCall, Fields, ImplItem, Item, ItemStruct, Meta, Type, UseTree,
@@ -18,6 +21,19 @@ use walkdir::WalkDir;
 
 const VALIDATOR_NAME: &str = "rms";
 const VALIDATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
+const DEFAULT_RUN_ROOT: &str = ".rms/runs";
+const WORKBENCH_CONFIG_PATH: &str = ".rms/config.yaml";
+const CODEX_PLUGIN_PATH: &str = "integrations/codex/rms";
+const CANONICAL_SKILLS: &[&str] = &[
+    "inspect-module",
+    "implement-change",
+    "refactor-module",
+    "prune-module",
+    "add-module",
+    "evolve-contract",
+    "compose-modules",
+    "verify-module",
+];
 
 #[derive(Parser)]
 #[command(name = "rms")]
@@ -70,6 +86,365 @@ enum Commands {
         module: PathBuf,
     },
 
+    /// Explain a module in a human-readable form, optionally focused by a question.
+    Explain {
+        /// Optional module path followed by an optional question. If omitted, the module is inferred from --root when unambiguous.
+        subject: Vec<String>,
+
+        /// Explicit path to module.yaml or *.module.yaml.
+        #[arg(long)]
+        module: Option<PathBuf>,
+
+        /// Repository or system root used to locate system/context/glossary files.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Use the default AI provider from .rms/config.yaml.
+        #[arg(long)]
+        ai: bool,
+
+        /// Optional AI provider to answer using a bounded RMS prompt.
+        #[arg(long)]
+        provider: Option<Provider>,
+
+        /// Save a run record under .rms/runs.
+        #[arg(long)]
+        record: bool,
+
+        /// Directory where run records are written.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+
+        /// Optional model name passed to the provider.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Sandbox mode passed to Codex provider execution.
+        #[arg(long)]
+        sandbox: Option<CodexSandbox>,
+    },
+
+    /// Check local RMS and optional AI-provider readiness.
+    Diagnose {
+        /// Repository or system root to inspect.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Emit a machine-readable readiness report.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Render a versioned RMS workbench prompt for a module task.
+    Prompt {
+        /// Prompt workflow to render.
+        kind: PromptKind,
+
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Optional task description to include in the prompt.
+        #[arg(long)]
+        task: Option<String>,
+
+        /// Repository or system root used to locate system/context/glossary files.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Git diff spec to include. For review prompts, omitted means current working diff.
+        #[arg(long)]
+        diff: Option<String>,
+
+        /// Use the default AI provider from .rms/config.yaml.
+        #[arg(long)]
+        ai: bool,
+
+        /// Optional AI provider to execute the rendered prompt.
+        #[arg(long)]
+        provider: Option<Provider>,
+
+        /// Save a run record under .rms/runs even without provider execution.
+        #[arg(long)]
+        record: bool,
+
+        /// Directory where run records are written.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+
+        /// Optional model name passed to the provider.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Sandbox mode passed to Codex provider execution.
+        #[arg(long)]
+        sandbox: Option<CodexSandbox>,
+    },
+
+    /// Render an advisory RMS implementation plan prompt for a module task.
+    Plan {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Task description to plan.
+        #[arg(long)]
+        task: String,
+
+        /// Repository or system root used to locate system/context/glossary files.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Use the default AI provider from .rms/config.yaml.
+        #[arg(long)]
+        ai: bool,
+
+        /// Optional AI provider to execute the rendered prompt.
+        #[arg(long)]
+        provider: Option<Provider>,
+
+        /// Save a run record under .rms/runs even without provider execution.
+        #[arg(long)]
+        record: bool,
+
+        /// Directory where run records are written.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+
+        /// Optional model name passed to the provider.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Sandbox mode passed to Codex provider execution.
+        #[arg(long)]
+        sandbox: Option<CodexSandbox>,
+    },
+
+    /// Render an advisory RMS review prompt for the current or requested diff.
+    Review {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Optional task or review focus.
+        #[arg(long)]
+        task: Option<String>,
+
+        /// Repository or system root used to locate system/context/glossary files.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Git diff spec to include. Omitted means current working diff.
+        #[arg(long)]
+        diff: Option<String>,
+
+        /// Use the default AI provider from .rms/config.yaml.
+        #[arg(long)]
+        ai: bool,
+
+        /// Optional AI provider to execute the rendered prompt.
+        #[arg(long)]
+        provider: Option<Provider>,
+
+        /// Save a run record under .rms/runs even without provider execution.
+        #[arg(long)]
+        record: bool,
+
+        /// Directory where run records are written.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+
+        /// Optional model name passed to the provider.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Sandbox mode passed to Codex provider execution.
+        #[arg(long)]
+        sandbox: Option<CodexSandbox>,
+    },
+
+    /// Classify RMS semantic impact for the current or requested git diff.
+    Impact {
+        /// Optional git diff spec. Omitted means staged, unstaged, and untracked working-tree paths.
+        diff: Option<String>,
+
+        /// Repository or system root used to discover RMS artifacts and read git state.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Render an advisory RMS refactor prompt for behavior-preserving module changes.
+    Refactor {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Refactor task description.
+        #[arg(long)]
+        task: String,
+
+        /// Repository or system root used to locate system/context/glossary files.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Use the default AI provider from .rms/config.yaml.
+        #[arg(long)]
+        ai: bool,
+
+        /// Optional AI provider to execute the rendered prompt.
+        #[arg(long)]
+        provider: Option<Provider>,
+
+        /// Save a run record under .rms/runs even without provider execution.
+        #[arg(long)]
+        record: bool,
+
+        /// Directory where run records are written.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+
+        /// Optional model name passed to the provider.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Sandbox mode passed to Codex provider execution.
+        #[arg(long)]
+        sandbox: Option<CodexSandbox>,
+    },
+
+    /// Render an advisory RMS implementation prompt for a module change.
+    Implement {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Implementation task description.
+        #[arg(long)]
+        task: String,
+
+        /// Repository or system root used to locate system/context/glossary files.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Use the default AI provider from .rms/config.yaml.
+        #[arg(long)]
+        ai: bool,
+
+        /// Optional AI provider to execute the rendered prompt.
+        #[arg(long)]
+        provider: Option<Provider>,
+
+        /// Save a run record under .rms/runs even without provider execution.
+        #[arg(long)]
+        record: bool,
+
+        /// Directory where run records are written.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+
+        /// Optional model name passed to the provider.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Sandbox mode passed to Codex provider execution.
+        #[arg(long)]
+        sandbox: Option<CodexSandbox>,
+    },
+
+    /// Render an advisory RMS contract-evolution prompt for public surface changes.
+    #[command(name = "evolve-contract", alias = "evolve")]
+    EvolveContract {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Contract evolution task description.
+        #[arg(long)]
+        task: String,
+
+        /// Repository or system root used to locate system/context/glossary files.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Use the default AI provider from .rms/config.yaml.
+        #[arg(long)]
+        ai: bool,
+
+        /// Optional AI provider to execute the rendered prompt.
+        #[arg(long)]
+        provider: Option<Provider>,
+
+        /// Save a run record under .rms/runs even without provider execution.
+        #[arg(long)]
+        record: bool,
+
+        /// Directory where run records are written.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+
+        /// Optional model name passed to the provider.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Sandbox mode passed to Codex provider execution.
+        #[arg(long)]
+        sandbox: Option<CodexSandbox>,
+    },
+
+    /// Render an advisory RMS evidence prompt for proving a changed promise.
+    Evidence {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Evidence task description.
+        #[arg(long)]
+        task: String,
+
+        /// Repository or system root used to locate system/context/glossary files.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Use the default AI provider from .rms/config.yaml.
+        #[arg(long)]
+        ai: bool,
+
+        /// Optional AI provider to execute the rendered prompt.
+        #[arg(long)]
+        provider: Option<Provider>,
+
+        /// Save a run record under .rms/runs even without provider execution.
+        #[arg(long)]
+        record: bool,
+
+        /// Directory where run records are written.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+
+        /// Optional model name passed to the provider.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Sandbox mode passed to Codex provider execution.
+        #[arg(long)]
+        sandbox: Option<CodexSandbox>,
+    },
+
+    /// Inspect saved RMS workbench run records.
+    Run {
+        #[command(subcommand)]
+        command: RunCommands,
+    },
+
+    /// Manage RMS workbench configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
+
+    /// Run release-readiness checks for the RMS workbench and adapter package.
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommands,
+    },
+
     /// Build a bounded agent context packet for a module.
     Context {
         /// Path to module.yaml or *.module.yaml.
@@ -82,6 +457,24 @@ enum Commands {
         /// Repository or system root used to locate system/context/glossary files.
         #[arg(long, default_value = ".")]
         root: PathBuf,
+    },
+
+    /// Generate an interactive module atlas from canonical RMS artifacts.
+    Atlas {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Repository or system root used to resolve canonical context files.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Output directory. Defaults to <root>/dist/rms-atlas/<module-name>.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Replace an existing output directory.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Emit a conformance report for a module.
@@ -222,6 +615,1102 @@ enum Severity {
     Info,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PromptKind {
+    Explain,
+    Plan,
+    Review,
+    Refactor,
+    Implement,
+    #[value(name = "evolve-contract", alias = "evolve")]
+    EvolveContract,
+    Prune,
+    Evidence,
+    Drift,
+}
+
+#[derive(Subcommand)]
+enum RunCommands {
+    /// List saved workbench run records.
+    List {
+        /// Repository or system root used to locate the run directory.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Directory where run records are stored.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+    },
+
+    /// Inspect one saved workbench run record.
+    Inspect {
+        /// Run id or path to a run directory.
+        run: PathBuf,
+
+        /// Repository or system root used when resolving a run id.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Directory where run records are stored.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+    },
+
+    /// Inspect the newest saved workbench run record.
+    Latest {
+        /// Repository or system root used when resolving the run directory.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Directory where run records are stored.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Create a default .rms/config.yaml.
+    Init {
+        /// Repository or system root where .rms/config.yaml is written.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Default provider to write.
+        #[arg(long, default_value = "codex")]
+        provider: Provider,
+
+        /// Optional Codex model to write.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Run-record directory to write.
+        #[arg(long, default_value = ".rms/runs")]
+        run_root: PathBuf,
+
+        /// Overwrite an existing config file.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReleaseCommands {
+    /// Run the canonical release-readiness gate.
+    Check {
+        /// Repository root to check.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Skip `cargo package`; useful when checking offline.
+        #[arg(long)]
+        skip_cargo_package: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Provider {
+    None,
+    Codex,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CodexSandbox {
+    #[value(name = "read-only")]
+    ReadOnly,
+}
+
+#[derive(Clone, Debug)]
+struct PromptRunOptions {
+    provider: Provider,
+    record: bool,
+    run_root: PathBuf,
+    model: Option<String>,
+    sandbox: CodexSandbox,
+}
+
+#[derive(Clone, Debug)]
+struct RawPromptRunOptions {
+    ai: bool,
+    provider: Option<Provider>,
+    record: bool,
+    run_root: Option<PathBuf>,
+    model: Option<String>,
+    sandbox: Option<CodexSandbox>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct WorkbenchConfig {
+    ai: AiConfig,
+    runs: RunsConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AiConfig {
+    default_provider: Option<String>,
+    codex: CodexConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct CodexConfig {
+    model: Option<String>,
+    sandbox: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RunsConfig {
+    directory: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+struct LoadedWorkbenchConfig {
+    path: PathBuf,
+    value: WorkbenchConfig,
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnoseReport {
+    validator: &'static str,
+    version: &'static str,
+    root: String,
+    repository: Vec<ReadinessItem>,
+    config: ConfigReadiness,
+    manifest_counts: BTreeMap<String, usize>,
+    validation: ValidationReadiness,
+    native_tools: Vec<CommandReadiness>,
+    ai_providers: Vec<CommandReadiness>,
+    run_records: RunRecordReadiness,
+    guidance: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReadinessItem {
+    name: String,
+    path: String,
+    status: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigReadiness {
+    path: String,
+    status: String,
+    default_provider: Option<String>,
+    codex_model: Option<String>,
+    codex_sandbox: Option<String>,
+    run_directory: String,
+    message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidationReadiness {
+    status: String,
+    errors: usize,
+    warnings: usize,
+    diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Serialize)]
+struct CommandReadiness {
+    command: String,
+    status: String,
+    detail: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RunRecordReadiness {
+    directory: String,
+    status: String,
+    message: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ImpactReport {
+    result: ImpactResult,
+    root: String,
+    diff: Option<String>,
+    source_revision: Option<String>,
+    changed_paths: Vec<ImpactPath>,
+    affected_modules: Vec<ImpactModuleImpact>,
+    findings: Vec<ImpactFinding>,
+    recommended_checks: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ImpactModuleImpact {
+    name: String,
+    manifest: String,
+    implementation: Option<String>,
+    changed_paths: Vec<String>,
+    categories: Vec<ImpactCategory>,
+}
+
+impl PromptKind {
+    fn label(self) -> &'static str {
+        match self {
+            PromptKind::Plan => "plan",
+            PromptKind::Explain => "explain",
+            PromptKind::Review => "review",
+            PromptKind::Refactor => "refactor",
+            PromptKind::Implement => "implement",
+            PromptKind::EvolveContract => "evolve-contract",
+            PromptKind::Prune => "prune",
+            PromptKind::Evidence => "evidence",
+            PromptKind::Drift => "drift",
+        }
+    }
+
+    fn prompt_id(self) -> &'static str {
+        match self {
+            PromptKind::Plan => "rms.plan@v1",
+            PromptKind::Explain => "rms.explain@v1",
+            PromptKind::Review => "rms.review@v1",
+            PromptKind::Refactor => "rms.refactor@v1",
+            PromptKind::Implement => "rms.implement@v1",
+            PromptKind::EvolveContract => "rms.evolve-contract@v1",
+            PromptKind::Prune => "rms.prune@v1",
+            PromptKind::Evidence => "rms.evidence@v1",
+            PromptKind::Drift => "rms.drift@v1",
+        }
+    }
+
+    fn default_task(self) -> Option<&'static str> {
+        match self {
+            PromptKind::Review => Some("review the diff for RMS conformance"),
+            PromptKind::Explain => Some("explain how this module works"),
+            PromptKind::Drift => {
+                Some("identify drift between canonical RMS artifacts and implementation reality")
+            }
+            _ => None,
+        }
+    }
+
+    fn includes_diff_by_default(self) -> bool {
+        matches!(self, PromptKind::Review)
+    }
+
+    fn workflow(self) -> &'static [&'static str] {
+        match self {
+            PromptKind::Plan => &[
+                "Restate the requested outcome in the owning context's domain language.",
+                "Identify the owning module and smallest affected public surface.",
+                "Classify the change as private implementation, invariant/domain policy, public contract, dependency/effect, state/migration, or workflow.",
+                "Name affected invariants, effects, compatibility promises, and recovery paths.",
+                "Choose representation obligations: closed variants, validated constructors, explicit results, boundary schemas, or lifecycle state only where needed.",
+                "Propose the smallest implementation and verification path.",
+            ],
+            PromptKind::Explain => &[
+                "Answer from the bounded RMS context first: purpose, ownership, public contracts, invariants, effects, profiles, and verification.",
+                "Keep the explanation intelligible, simple, and direct without dumbing down the module semantics.",
+                "Use the user's question as the focus when supplied.",
+                "Do not invent architecture that is absent from the manifest or contracts.",
+                "Name uncertainty or missing artifacts instead of guessing.",
+            ],
+            PromptKind::Review => &[
+                "Review the diff against the module manifest, public contracts, direct dependencies, declared effects, profiles, and verification evidence.",
+                "Find behavioral regressions, boundary violations, undeclared effects or dependencies, compatibility drift, missing evidence, and stale canonical artifacts.",
+                "Prioritize findings by severity and include file or artifact references when possible.",
+                "Do not treat generated prose, issue text, or incidental implementation shape as architectural authority.",
+            ],
+            PromptKind::Refactor => &[
+                "Preserve public contracts, invariants, declared effects, compatibility, and verification meaning.",
+                "Identify weak representation, duplicated concepts, decision/effect coupling, ownership confusion, boundary leakage, lifecycle clutter, or semantic residue.",
+                "Prefer deletion, inlining, renaming, or representation strengthening before new abstractions.",
+                "Escalate to implement-change or evolve-contract if public meaning must change.",
+            ],
+            PromptKind::Implement => &[
+                "Restate the requested outcome in the owning context's domain language.",
+                "Classify the change as private implementation, invariant or domain policy, public contract, dependency or effect, state or migration, or workflow.",
+                "Keep the change inside the owning module boundary.",
+                "Update public contracts or manifests first when public meaning changes.",
+                "Name affected invariants, contracts, effects, compatibility promises, and recovery paths.",
+                "Separate domain decisions from external effects where practical.",
+                "Use the strongest available representation for invalid states, expected failures, boundary input, and lifecycle transitions.",
+                "Add the smallest evidence that demonstrates the changed promise.",
+                "Return concrete implementation instructions; do not claim edits were made unless the executing agent actually made them.",
+            ],
+            PromptKind::EvolveContract => &[
+                "Identify all published contract versions and known consumers.",
+                "Classify compatibility impact across shape, meaning, failures, authorization, idempotency, ordering, consistency, timeout, retry, stored state, and operations.",
+                "Preserve the existing version when compatibility can be maintained cleanly.",
+                "Introduce a new version for breaking changes and define migration, coexistence, translation, and deprecation behavior.",
+            ],
+            PromptKind::Prune => &[
+                "Build a semantic root set from manifests, contracts, invariants, effects, profiles, compatibility policy, operational recovery, implementation binding, and verification evidence.",
+                "Classify candidate artifacts by current semantic role.",
+                "Delete, merge, inline, rename, or document residue before introducing replacements.",
+                "Do not hide a semantic change as pruning.",
+            ],
+            PromptKind::Evidence => &[
+                "Identify the changed promise and the evidence category it belongs to: law, contract, scenario, boundary, runtime, reconciliation, or migration.",
+                "Prefer the smallest evidence that strongly demonstrates the promise.",
+                "Include negative evidence for impossible variants, invalid constructors, malformed boundary input, and illegal transitions when applicable.",
+                "Name the manifest paths or implementation binding entries that should reference the evidence.",
+            ],
+            PromptKind::Drift => &[
+                "Compare manifest purpose, ownership, contracts, effects, profiles, compatibility policy, verification evidence, and glossary language against implementation reality.",
+                "Identify contradictions among canonical artifacts as architectural drift, not a prompt-precedence problem.",
+                "Separate deterministic validation failures from semantic suspicions requiring human review.",
+                "Propose the smallest artifact or implementation correction for each drift item.",
+            ],
+        }
+    }
+
+    fn expected_output(self) -> &'static [&'static str] {
+        match self {
+            PromptKind::Plan => &[
+                "Owning module and affected contract surface.",
+                "Change classification and compatibility impact.",
+                "Affected invariants, effects, dependencies, profiles, and recovery paths.",
+                "Implementation outline inside the owning boundary.",
+                "Focused verification plan and commands.",
+            ],
+            PromptKind::Explain => &[
+                "Intelligible plain-language explanation of how the module works.",
+                "Important public contracts and owned decisions.",
+                "Effects, invariants, and verification evidence that shape behavior.",
+                "Any missing or ambiguous canonical artifacts relevant to the question.",
+            ],
+            PromptKind::Review => &[
+                "Findings first, ordered by severity.",
+                "Each finding names the violated RMS artifact or missing evidence.",
+                "Open questions or assumptions.",
+                "Brief change summary only after findings.",
+            ],
+            PromptKind::Refactor => &[
+                "Public semantics preserved.",
+                "Internal shape changes proposed.",
+                "Boundary, dependency, and effect impact.",
+                "Verification needed to prove compatibility.",
+            ],
+            PromptKind::Implement => &[
+                "Requested outcome in owning-context language.",
+                "Change classification and compatibility impact.",
+                "Concrete implementation steps.",
+                "Contract/manifest updates required before code changes.",
+                "Representation choices for invalid states, failures, boundary schemas, or lifecycle transitions.",
+                "Verification and conformance evidence.",
+            ],
+            PromptKind::EvolveContract => &[
+                "Compatibility classification.",
+                "Versioning decision.",
+                "Migration, coexistence, translation, and deprecation plan.",
+                "Provider and consumer evidence updates.",
+            ],
+            PromptKind::Prune => &[
+                "Semantic root set.",
+                "Artifacts to delete, merge, inline, rename, retain, or defer.",
+                "Compatibility and evidence impact.",
+                "Removal conditions for retained residue.",
+            ],
+            PromptKind::Evidence => &[
+                "Evidence category and rationale.",
+                "Positive and negative cases.",
+                "Manifest or implementation binding references to update.",
+                "Native command expected to run the evidence.",
+            ],
+            PromptKind::Drift => &[
+                "Confirmed drift.",
+                "Suspected drift requiring review.",
+                "Canonical artifact or implementation source of each mismatch.",
+                "Smallest correction path.",
+            ],
+        }
+    }
+
+    fn deterministic_checks(self) -> &'static [&'static str] {
+        match self {
+            PromptKind::Explain | PromptKind::Plan | PromptKind::Evidence | PromptKind::Drift => {
+                &["rms validate --root <root>", "rms compose --root <root>"]
+            }
+            PromptKind::Review
+            | PromptKind::Refactor
+            | PromptKind::Implement
+            | PromptKind::Prune => &[
+                "rms validate --root <root>",
+                "rms verify <implementation.yaml>",
+                "rms compose --root <root>",
+            ],
+            PromptKind::EvolveContract => &[
+                "rms check-compat <old-module.yaml> <new-module.yaml>",
+                "rms validate --root <root>",
+                "rms compose --root <root>",
+            ],
+        }
+    }
+}
+
+impl Provider {
+    fn label(self) -> &'static str {
+        match self {
+            Provider::None => "none",
+            Provider::Codex => "codex",
+        }
+    }
+}
+
+impl CodexSandbox {
+    fn as_str(self) -> &'static str {
+        match self {
+            CodexSandbox::ReadOnly => "read-only",
+        }
+    }
+}
+
+fn resolve_prompt_run_options(root: &Path, raw: RawPromptRunOptions) -> Result<PromptRunOptions> {
+    if raw.ai && raw.provider.is_some() {
+        bail!("use either `--ai` or `--provider`, not both");
+    }
+
+    let config = load_workbench_config(root)?;
+    let config_value = config.as_ref().map(|loaded| &loaded.value);
+
+    let provider = if raw.ai {
+        let configured = config_value
+            .and_then(|config| config.ai.default_provider.as_deref())
+            .ok_or_else(|| {
+                anyhow!(
+                    "`--ai` requires `{}` with `ai.default_provider`",
+                    root.join(WORKBENCH_CONFIG_PATH).display()
+                )
+            })?;
+        let provider = parse_config_provider(configured, "ai.default_provider")?;
+        if provider == Provider::None {
+            bail!("`--ai` requires a non-`none` `ai.default_provider`");
+        }
+        provider
+    } else {
+        raw.provider.unwrap_or(Provider::None)
+    };
+
+    let run_root = raw
+        .run_root
+        .or_else(|| config_value.and_then(|config| config.runs.directory.clone()))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_RUN_ROOT));
+
+    let model = raw.model.or_else(|| {
+        if provider == Provider::Codex {
+            config_value.and_then(|config| config.ai.codex.model.clone())
+        } else {
+            None
+        }
+    });
+
+    let sandbox = if let Some(sandbox) = raw.sandbox {
+        sandbox
+    } else if provider == Provider::Codex {
+        config_value
+            .and_then(|config| config.ai.codex.sandbox.as_deref())
+            .map(|value| parse_config_sandbox(value, "ai.codex.sandbox"))
+            .transpose()?
+            .unwrap_or(CodexSandbox::ReadOnly)
+    } else {
+        CodexSandbox::ReadOnly
+    };
+
+    Ok(PromptRunOptions {
+        provider,
+        record: raw.record,
+        run_root,
+        model,
+        sandbox,
+    })
+}
+
+fn resolve_run_root(root: &Path, explicit: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    Ok(load_workbench_config(root)?
+        .and_then(|loaded| loaded.value.runs.directory)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_RUN_ROOT)))
+}
+
+fn load_workbench_config(root: &Path) -> Result<Option<LoadedWorkbenchConfig>> {
+    let path = root.join(WORKBENCH_CONFIG_PATH);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let source = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read `{}`", path.display()))?;
+    let value: WorkbenchConfig = serde_yaml::from_str(&source)
+        .with_context(|| format!("failed to parse `{}`", path.display()))?;
+    Ok(Some(LoadedWorkbenchConfig { path, value }))
+}
+
+fn run_config_init(
+    root: &Path,
+    provider: Provider,
+    model: Option<&str>,
+    run_root: &Path,
+    force: bool,
+) -> Result<()> {
+    let path = root.join(WORKBENCH_CONFIG_PATH);
+    if path.exists() && !force {
+        bail!(
+            "workbench config already exists at `{}`; pass `--force` to overwrite",
+            path.display()
+        );
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create `{}`", parent.display()))?;
+    }
+    let rendered = render_workbench_config(provider, model, run_root);
+    fs::write(&path, rendered).with_context(|| format!("failed to write `{}`", path.display()))?;
+    println!("created {}", path.display());
+    Ok(())
+}
+
+fn run_release_check(root: &Path, skip_cargo_package: bool) -> Result<()> {
+    println!("# RMS Release Check");
+    println!();
+    println!("Root: {}", root.display());
+    println!();
+
+    let rms_exe = std::env::current_exe().with_context(|| "failed to locate current rms binary")?;
+
+    run_release_metadata_check(root)?;
+    run_release_step(
+        "cargo fmt",
+        command_with_args("cargo", &["fmt", "--all", "--check"], root),
+    )?;
+    run_release_step(
+        "cargo test",
+        command_with_args("cargo", &["test", "--workspace", "--locked"], root),
+    )?;
+    run_release_step(
+        "rms validate",
+        command_with_args(
+            &rms_exe,
+            &["validate", "--root", root.to_string_lossy().as_ref()],
+            root,
+        ),
+    )?;
+    run_release_step(
+        "rms verify rms-cli",
+        command_with_args(
+            &rms_exe,
+            &["verify", "tooling/rust/rms/implementation.yaml"],
+            root,
+        ),
+    )?;
+    run_release_step(
+        "rms compose examples/minimal",
+        command_with_args(&rms_exe, &["compose", "--root", "examples/minimal"], root),
+    )?;
+    run_release_step(
+        "rms compose examples/rust",
+        command_with_args(&rms_exe, &["compose", "--root", "examples/rust"], root),
+    )?;
+    run_release_step(
+        "rms compose examples/swift",
+        command_with_args(&rms_exe, &["compose", "--root", "examples/swift"], root),
+    )?;
+    run_release_step(
+        "rms check-compat smoke",
+        command_with_args(
+            &rms_exe,
+            &[
+                "check-compat",
+                "examples/rust/module.yaml",
+                "examples/rust/module.yaml",
+            ],
+            root,
+        ),
+    )?;
+    run_release_package_smoke(root, &rms_exe)?;
+    run_release_scaffold_roundtrip(root, &rms_exe)?;
+    run_release_step(
+        "example Rust binding tests",
+        command_with_args(
+            "cargo",
+            &[
+                "test",
+                "--manifest-path",
+                "examples/rust/Cargo.toml",
+                "--locked",
+            ],
+            root,
+        ),
+    )?;
+    run_release_binary_smoke(root)?;
+    if !skip_cargo_package {
+        run_release_step(
+            "cargo package",
+            command_with_args(
+                "cargo",
+                &[
+                    "package",
+                    "--manifest-path",
+                    "tooling/rust/rms/Cargo.toml",
+                    "--allow-dirty",
+                    "--no-verify",
+                ],
+                root,
+            ),
+        )?;
+    }
+    run_release_plugin_check(root)?;
+
+    println!();
+    println!("pass: release check");
+    Ok(())
+}
+
+fn run_release_metadata_check(root: &Path) -> Result<()> {
+    println!("## release metadata");
+    validate_release_metadata(root)?;
+    println!("pass");
+    println!();
+    Ok(())
+}
+
+fn run_release_scaffold_roundtrip(root: &Path, rms_exe: &Path) -> Result<()> {
+    let temp = std::env::temp_dir().join(format!(
+        "rms-release-scaffold-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    ));
+    fs::create_dir_all(&temp).with_context(|| format!("failed to create `{}`", temp.display()))?;
+    let app = temp.join("app");
+    let app_arg = app.to_string_lossy().to_string();
+    let widget = app.join("modules/widget");
+    let widget_arg = widget.to_string_lossy().to_string();
+    let swift_widget = app.join("modules/swift-widget");
+    let swift_widget_arg = swift_widget.to_string_lossy().to_string();
+    let widget_manifest = widget.join("Cargo.toml");
+    let widget_manifest_arg = widget_manifest.to_string_lossy().to_string();
+
+    let result = (|| -> Result<()> {
+        run_release_step(
+            "rms init scaffold",
+            command_with_args(
+                rms_exe,
+                &[
+                    "init",
+                    app_arg.as_str(),
+                    "--name",
+                    "app",
+                    "--purpose",
+                    "Try RMS",
+                    "--context",
+                    "core",
+                ],
+                root,
+            ),
+        )?;
+        run_release_step(
+            "rms add-module rust scaffold",
+            command_with_args(
+                rms_exe,
+                &[
+                    "add-module",
+                    widget_arg.as_str(),
+                    "--name",
+                    "widget",
+                    "--purpose",
+                    "Own widgets",
+                    "--kind",
+                    "library",
+                    "--binding",
+                    "rust",
+                ],
+                root,
+            ),
+        )?;
+        run_release_step(
+            "rms add-module swift scaffold",
+            command_with_args(
+                rms_exe,
+                &[
+                    "add-module",
+                    swift_widget_arg.as_str(),
+                    "--name",
+                    "swift-widget",
+                    "--purpose",
+                    "Own Swift widgets",
+                    "--kind",
+                    "library",
+                    "--binding",
+                    "swift",
+                ],
+                root,
+            ),
+        )?;
+        run_release_step(
+            "rms validate scaffold",
+            command_with_args(rms_exe, &["validate", "--root", app_arg.as_str()], root),
+        )?;
+        run_release_step(
+            "rms compose scaffold",
+            command_with_args(rms_exe, &["compose", "--root", app_arg.as_str()], root),
+        )?;
+        run_release_step(
+            "cargo generate-lockfile scaffold",
+            command_with_args(
+                "cargo",
+                &[
+                    "generate-lockfile",
+                    "--manifest-path",
+                    widget_manifest_arg.as_str(),
+                ],
+                root,
+            ),
+        )?;
+        run_release_step(
+            "cargo test scaffold rust binding",
+            command_with_args(
+                "cargo",
+                &[
+                    "test",
+                    "--manifest-path",
+                    widget_manifest_arg.as_str(),
+                    "--locked",
+                ],
+                root,
+            ),
+        )?;
+        Ok(())
+    })();
+
+    let _ = fs::remove_dir_all(&temp);
+    result
+}
+
+fn run_release_package_smoke(root: &Path, rms_exe: &Path) -> Result<()> {
+    let temp = std::env::temp_dir().join(format!(
+        "rms-release-package-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    ));
+    fs::create_dir_all(&temp).with_context(|| format!("failed to create `{}`", temp.display()))?;
+    let output = temp.join("rust-example.rms");
+    let output_arg = output.to_string_lossy().to_string();
+    let result = run_release_step(
+        "rms package smoke",
+        command_with_args(
+            rms_exe,
+            &[
+                "package",
+                "examples/rust/module.yaml",
+                "--output",
+                output_arg.as_str(),
+            ],
+            root,
+        ),
+    )
+    .and_then(|()| {
+        for required in ["PACKAGE.json", "conformance-report.json"] {
+            let path = output.join(required);
+            if !path.exists() {
+                bail!("package smoke missing `{}`", path.display());
+            }
+        }
+        Ok(())
+    })
+    .and_then(|()| {
+        run_release_step(
+            "rms verify-package smoke",
+            command_with_args(rms_exe, &["verify-package", output_arg.as_str()], root),
+        )
+    });
+    let _ = fs::remove_dir_all(&temp);
+    result
+}
+
+fn run_release_plugin_check(root: &Path) -> Result<()> {
+    println!("## codex plugin wrapper");
+    validate_codex_plugin_sync(root)?;
+    println!("pass");
+    println!();
+    Ok(())
+}
+
+fn run_release_binary_smoke(root: &Path) -> Result<()> {
+    run_release_step(
+        "release binary build",
+        command_with_args(
+            "cargo",
+            &["build", "--release", "-p", "rms", "--locked"],
+            root,
+        ),
+    )?;
+
+    let binary = release_binary_path(root);
+    if !binary.exists() {
+        bail!("release binary smoke missing `{}`", binary.display());
+    }
+
+    run_release_step(
+        "release binary diagnose",
+        command_with_args(&binary, &["diagnose", "--root", ".", "--json"], root),
+    )?;
+    run_release_step(
+        "release binary validate minimal",
+        command_with_args(&binary, &["validate", "--root", "examples/minimal"], root),
+    )?;
+    run_release_install_smoke(root, &binary)?;
+    Ok(())
+}
+
+fn release_binary_path(root: &Path) -> PathBuf {
+    root.join("target")
+        .join("release")
+        .join(format!("rms{}", std::env::consts::EXE_SUFFIX))
+}
+
+fn run_release_install_smoke(root: &Path, binary: &Path) -> Result<()> {
+    let temp = std::env::temp_dir().join(format!(
+        "rms-release-install-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    ));
+    let bin_dir = temp.join("bin");
+    fs::create_dir_all(&bin_dir)
+        .with_context(|| format!("failed to create `{}`", bin_dir.display()))?;
+    let installed_binary = bin_dir.join(format!("rms{}", std::env::consts::EXE_SUFFIX));
+    fs::copy(binary, &installed_binary).with_context(|| {
+        format!(
+            "failed to copy `{}` to `{}`",
+            binary.display(),
+            installed_binary.display()
+        )
+    })?;
+    make_executable(&installed_binary)?;
+
+    let result = (|| -> Result<()> {
+        run_release_step(
+            "clean-room installed binary diagnose",
+            command_with_path(
+                "rms",
+                &["diagnose", "--root", ".", "--json"],
+                root,
+                &bin_dir,
+            )?,
+        )?;
+        run_release_step(
+            "clean-room installed binary validate minimal",
+            command_with_path(
+                "rms",
+                &["validate", "--root", "examples/minimal"],
+                root,
+                &bin_dir,
+            )?,
+        )?;
+        Ok(())
+    })();
+
+    let _ = fs::remove_dir_all(&temp);
+    result
+}
+
+fn command_with_path(
+    program: &str,
+    args: &[&str],
+    root: &Path,
+    first_path: &Path,
+) -> Result<Command> {
+    let mut paths = vec![first_path.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    let path_value = std::env::join_paths(paths).with_context(|| "failed to build PATH")?;
+    let mut command = command_with_args(program, args, root);
+    command.env("PATH", path_value);
+    Ok(command)
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)
+        .with_context(|| format!("failed to read metadata for `{}`", path.display()))?
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).with_context(|| {
+        format!(
+            "failed to set executable permissions on `{}`",
+            path.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn validate_release_metadata(root: &Path) -> Result<()> {
+    let cargo_path = root.join("tooling/rust/rms/Cargo.toml");
+    let cargo = load_toml(&cargo_path)?;
+    let cargo_package = cargo
+        .get("package")
+        .and_then(TomlValue::as_table)
+        .ok_or_else(|| anyhow!("`{}` missing [package]", cargo_path.display()))?;
+    let cargo_name = cargo_package
+        .get("name")
+        .and_then(TomlValue::as_str)
+        .ok_or_else(|| anyhow!("`{}` missing package.name", cargo_path.display()))?;
+    let cargo_version = cargo_package
+        .get("version")
+        .and_then(TomlValue::as_str)
+        .ok_or_else(|| anyhow!("`{}` missing package.version", cargo_path.display()))?;
+    if cargo_name != "rms" {
+        bail!("release metadata expected Cargo package name `rms`, found `{cargo_name}`");
+    }
+
+    let module_path = root.join("tooling/rust/rms/module.yaml");
+    let module = load_manifest(&module_path)?;
+    let module_version = get_str(&module.value, &["module", "version"])
+        .ok_or_else(|| anyhow!("`{}` missing module.version", module_path.display()))?;
+    if module_version != cargo_version {
+        bail!(
+            "release metadata version drift: Cargo package is `{cargo_version}` but rms-cli module is `{module_version}`"
+        );
+    }
+
+    let plugin_path = root
+        .join(CODEX_PLUGIN_PATH)
+        .join(".codex-plugin/plugin.json");
+    let plugin_source = fs::read_to_string(&plugin_path)
+        .with_context(|| format!("failed to read `{}`", plugin_path.display()))?;
+    let plugin: JsonValue = serde_json::from_str(&plugin_source)
+        .with_context(|| format!("failed to parse `{}`", plugin_path.display()))?;
+    let plugin_version = plugin
+        .get("version")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| anyhow!("`{}` missing version", plugin_path.display()))?;
+    if plugin_version != cargo_version {
+        bail!(
+            "release metadata version drift: Cargo package is `{cargo_version}` but Codex plugin is `{plugin_version}`"
+        );
+    }
+
+    Ok(())
+}
+
+fn command_with_args(program: impl AsRef<Path>, args: &[&str], root: &Path) -> Command {
+    let mut command = Command::new(program.as_ref());
+    command.args(args).current_dir(root);
+    command
+}
+
+fn run_release_step(label: &str, mut command: Command) -> Result<()> {
+    println!("## {label}");
+    let status = command
+        .status()
+        .with_context(|| format!("failed to start release check step `{label}`"))?;
+    if !status.success() {
+        bail!(
+            "release check step `{label}` failed with status {}",
+            status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string())
+        );
+    }
+    println!("pass");
+    println!();
+    Ok(())
+}
+
+fn validate_codex_plugin_sync(root: &Path) -> Result<()> {
+    let plugin_root = root.join(CODEX_PLUGIN_PATH);
+    let manifest_path = plugin_root.join(".codex-plugin/plugin.json");
+    let manifest_source = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed to read `{}`", manifest_path.display()))?;
+    let manifest: JsonValue = serde_json::from_str(&manifest_source)
+        .with_context(|| format!("failed to parse `{}`", manifest_path.display()))?;
+    for field in ["name", "version", "description", "skills"] {
+        if manifest.get(field).is_none() {
+            bail!("Codex plugin manifest missing `{field}`");
+        }
+    }
+    if manifest.get("skills").and_then(JsonValue::as_str) != Some("./skills/") {
+        bail!("Codex plugin manifest `skills` must be `./skills/`");
+    }
+
+    for skill in CANONICAL_SKILLS {
+        let canonical = root.join("skills").join(skill).join("SKILL.md");
+        let packaged = plugin_root.join("skills").join(skill).join("SKILL.md");
+        let canonical_source = fs::read_to_string(&canonical)
+            .with_context(|| format!("failed to read `{}`", canonical.display()))?;
+        let packaged_source = fs::read_to_string(&packaged)
+            .with_context(|| format!("failed to read `{}`", packaged.display()))?;
+        if canonical_source != packaged_source {
+            bail!("Codex plugin skill `{skill}` is out of sync with canonical `skills/{skill}`");
+        }
+    }
+
+    let mut packaged_skills = BTreeSet::new();
+    let plugin_skills_dir = plugin_root.join("skills");
+    for entry in fs::read_dir(&plugin_skills_dir)
+        .with_context(|| format!("failed to read `{}`", plugin_skills_dir.display()))?
+        .filter_map(Result::ok)
+    {
+        if entry.path().is_dir() {
+            if let Some(name) = entry.file_name().to_str() {
+                packaged_skills.insert(name.to_string());
+            }
+        }
+    }
+    let expected = CANONICAL_SKILLS
+        .iter()
+        .map(|skill| (*skill).to_string())
+        .collect::<BTreeSet<_>>();
+    if packaged_skills != expected {
+        bail!("Codex plugin skill set does not match canonical skill set");
+    }
+    Ok(())
+}
+
+fn render_workbench_config(provider: Provider, model: Option<&str>, run_root: &Path) -> String {
+    let mut out = String::new();
+    out.push_str("ai:\n");
+    let _ = writeln!(out, "  default_provider: {}", provider.label());
+    out.push_str("  codex:\n");
+    if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+        let _ = writeln!(out, "    model: {}", yaml_quote(model));
+    }
+    out.push_str("    sandbox: read-only\n");
+    out.push_str("runs:\n");
+    let _ = writeln!(
+        out,
+        "  directory: {}",
+        yaml_quote(&run_root.display().to_string())
+    );
+    out
+}
+
+fn parse_config_provider(value: &str, field: &str) -> Result<Provider> {
+    match value {
+        "none" => Ok(Provider::None),
+        "codex" => Ok(Provider::Codex),
+        other => bail!("unsupported `{field}` value `{other}`; expected `none` or `codex`"),
+    }
+}
+
+fn parse_config_sandbox(value: &str, field: &str) -> Result<CodexSandbox> {
+    match value {
+        "read-only" => Ok(CodexSandbox::ReadOnly),
+        other => bail!("unsupported `{field}` value `{other}`; expected `read-only`"),
+    }
+}
+
 #[derive(Debug)]
 struct LoadedManifest {
     path: PathBuf,
@@ -256,11 +1745,296 @@ fn main() -> Result<()> {
             print_module_brief(&manifest);
             Ok(())
         }
+        Commands::Explain {
+            subject,
+            module,
+            root,
+            ai,
+            provider,
+            record,
+            run_root,
+            model,
+            sandbox,
+        } => {
+            let options = resolve_prompt_run_options(
+                &root,
+                RawPromptRunOptions {
+                    ai,
+                    provider,
+                    record,
+                    run_root,
+                    model,
+                    sandbox,
+                },
+            )?;
+            run_explain(&subject, module.as_deref(), &root, &options)
+        }
+        Commands::Diagnose { root, json } => run_diagnose(&root, json),
+        Commands::Prompt {
+            kind,
+            module,
+            task,
+            root,
+            diff,
+            ai,
+            provider,
+            record,
+            run_root,
+            model,
+            sandbox,
+        } => {
+            let options = resolve_prompt_run_options(
+                &root,
+                RawPromptRunOptions {
+                    ai,
+                    provider,
+                    record,
+                    run_root,
+                    model,
+                    sandbox,
+                },
+            )?;
+            run_prompt(
+                kind,
+                &module,
+                &root,
+                task.as_deref(),
+                diff.as_deref(),
+                &options,
+            )
+        }
+        Commands::Plan {
+            module,
+            task,
+            root,
+            ai,
+            provider,
+            record,
+            run_root,
+            model,
+            sandbox,
+        } => {
+            let options = resolve_prompt_run_options(
+                &root,
+                RawPromptRunOptions {
+                    ai,
+                    provider,
+                    record,
+                    run_root,
+                    model,
+                    sandbox,
+                },
+            )?;
+            run_prompt(
+                PromptKind::Plan,
+                &module,
+                &root,
+                Some(&task),
+                None,
+                &options,
+            )
+        }
+        Commands::Review {
+            module,
+            task,
+            root,
+            diff,
+            ai,
+            provider,
+            record,
+            run_root,
+            model,
+            sandbox,
+        } => {
+            let options = resolve_prompt_run_options(
+                &root,
+                RawPromptRunOptions {
+                    ai,
+                    provider,
+                    record,
+                    run_root,
+                    model,
+                    sandbox,
+                },
+            )?;
+            run_prompt(
+                PromptKind::Review,
+                &module,
+                &root,
+                task.as_deref(),
+                diff.as_deref(),
+                &options,
+            )
+        }
+        Commands::Impact { diff, root, json } => run_impact(&root, diff.as_deref(), json),
+        Commands::Refactor {
+            module,
+            task,
+            root,
+            ai,
+            provider,
+            record,
+            run_root,
+            model,
+            sandbox,
+        } => {
+            let options = resolve_prompt_run_options(
+                &root,
+                RawPromptRunOptions {
+                    ai,
+                    provider,
+                    record,
+                    run_root,
+                    model,
+                    sandbox,
+                },
+            )?;
+            run_prompt(
+                PromptKind::Refactor,
+                &module,
+                &root,
+                Some(&task),
+                None,
+                &options,
+            )
+        }
+        Commands::Implement {
+            module,
+            task,
+            root,
+            ai,
+            provider,
+            record,
+            run_root,
+            model,
+            sandbox,
+        } => {
+            let options = resolve_prompt_run_options(
+                &root,
+                RawPromptRunOptions {
+                    ai,
+                    provider,
+                    record,
+                    run_root,
+                    model,
+                    sandbox,
+                },
+            )?;
+            run_prompt(
+                PromptKind::Implement,
+                &module,
+                &root,
+                Some(&task),
+                None,
+                &options,
+            )
+        }
+        Commands::EvolveContract {
+            module,
+            task,
+            root,
+            ai,
+            provider,
+            record,
+            run_root,
+            model,
+            sandbox,
+        } => {
+            let options = resolve_prompt_run_options(
+                &root,
+                RawPromptRunOptions {
+                    ai,
+                    provider,
+                    record,
+                    run_root,
+                    model,
+                    sandbox,
+                },
+            )?;
+            run_prompt(
+                PromptKind::EvolveContract,
+                &module,
+                &root,
+                Some(&task),
+                None,
+                &options,
+            )
+        }
+        Commands::Evidence {
+            module,
+            task,
+            root,
+            ai,
+            provider,
+            record,
+            run_root,
+            model,
+            sandbox,
+        } => {
+            let options = resolve_prompt_run_options(
+                &root,
+                RawPromptRunOptions {
+                    ai,
+                    provider,
+                    record,
+                    run_root,
+                    model,
+                    sandbox,
+                },
+            )?;
+            run_prompt(
+                PromptKind::Evidence,
+                &module,
+                &root,
+                Some(&task),
+                None,
+                &options,
+            )
+        }
+        Commands::Run { command } => match command {
+            RunCommands::List { root, run_root } => {
+                let run_root = resolve_run_root(&root, run_root)?;
+                run_list_runs(&root, &run_root)
+            }
+            RunCommands::Inspect {
+                run,
+                root,
+                run_root,
+            } => {
+                let run_root = resolve_run_root(&root, run_root)?;
+                run_inspect_run(&run, &root, &run_root)
+            }
+            RunCommands::Latest { root, run_root } => {
+                let run_root = resolve_run_root(&root, run_root)?;
+                run_latest_run(&root, &run_root)
+            }
+        },
+        Commands::Config { command } => match command {
+            ConfigCommands::Init {
+                root,
+                provider,
+                model,
+                run_root,
+                force,
+            } => run_config_init(&root, provider, model.as_deref(), &run_root, force),
+        },
+        Commands::Release { command } => match command {
+            ReleaseCommands::Check {
+                root,
+                skip_cargo_package,
+            } => run_release_check(&root, skip_cargo_package),
+        },
         Commands::Context { module, task, root } => {
             let manifest = load_manifest(&module)?;
             print_context_packet(&manifest, &root, task.as_deref())?;
             Ok(())
         }
+        Commands::Atlas {
+            module,
+            root,
+            output,
+            force,
+        } => run_atlas(&module, &root, output.as_deref(), force),
         Commands::Conformance {
             module,
             implementation,
@@ -317,7 +2091,7 @@ struct ValidateRequest {
 }
 
 fn run_validate(request: ValidateRequest) -> Result<()> {
-    let targets = discover_targets(
+    let diagnostics = collect_validation_diagnostics(
         &request.root,
         request.module,
         request.system,
@@ -326,19 +2100,6 @@ fn run_validate(request: ValidateRequest) -> Result<()> {
         request.implementation,
         request.conformance,
     )?;
-    let mut diagnostics = Vec::new();
-
-    for path in targets {
-        match load_manifest(&path) {
-            Ok(manifest) => validate_loaded_manifest(&manifest, &mut diagnostics),
-            Err(error) => diagnostics.push(Diagnostic {
-                severity: Severity::Error,
-                check: "manifest.parse".to_string(),
-                path: path.display().to_string(),
-                message: error.to_string(),
-            }),
-        }
-    }
 
     if request.json {
         println!("{}", serde_json::to_string_pretty(&diagnostics)?);
@@ -364,6 +2125,2007 @@ fn run_validate(request: ValidateRequest) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn collect_validation_diagnostics(
+    root: &Path,
+    modules: Vec<PathBuf>,
+    systems: Vec<PathBuf>,
+    context_maps: Vec<PathBuf>,
+    contracts: Vec<PathBuf>,
+    implementations: Vec<PathBuf>,
+    conformance_reports: Vec<PathBuf>,
+) -> Result<Vec<Diagnostic>> {
+    let targets = discover_targets(
+        root,
+        modules,
+        systems,
+        context_maps,
+        contracts,
+        implementations,
+        conformance_reports,
+    )?;
+    let mut diagnostics = Vec::new();
+
+    for path in targets {
+        match load_manifest(&path) {
+            Ok(manifest) => validate_loaded_manifest(&manifest, &mut diagnostics),
+            Err(error) => diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                check: "manifest.parse".to_string(),
+                path: path.display().to_string(),
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    Ok(diagnostics)
+}
+
+fn run_diagnose(root: &Path, json_output: bool) -> Result<()> {
+    let report = build_diagnose_report(root)?;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    print_diagnose_report(&report);
+    Ok(())
+}
+
+fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
+    let targets = discover_targets(
+        root,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )?;
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for target in &targets {
+        let spec = load_manifest(target)
+            .ok()
+            .and_then(|manifest| get_str(&manifest.value, &["spec"]).map(str::to_string))
+            .unwrap_or_else(|| "<unreadable>".to_string());
+        *counts.entry(spec).or_default() += 1;
+    }
+
+    let diagnostics = collect_validation_diagnostics(
+        root,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )?;
+    let errors = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .count();
+    let warnings = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+        .count();
+
+    let config = diagnose_config(root);
+    let run_records = diagnose_run_records(root, &config.run_directory);
+
+    Ok(DiagnoseReport {
+        validator: VALIDATOR_NAME,
+        version: VALIDATOR_VERSION,
+        root: root.display().to_string(),
+        repository: vec![
+            file_readiness("system.yaml", &root.join("system.yaml")),
+            file_readiness("context-map.yaml", &root.join("context-map.yaml")),
+            file_readiness("AGENTS.md", &root.join("AGENTS.md")),
+            file_readiness(WORKBENCH_CONFIG_PATH, &root.join(WORKBENCH_CONFIG_PATH)),
+        ],
+        config,
+        manifest_counts: counts,
+        validation: ValidationReadiness {
+            status: if diagnostics.is_empty() {
+                "pass".to_string()
+            } else {
+                "review-required".to_string()
+            },
+            errors,
+            warnings,
+            diagnostics,
+        },
+        native_tools: vec![
+            command_readiness("git", &["--version"]),
+            command_readiness("cargo", &["--version"]),
+            command_readiness("swift", &["--version"]),
+        ],
+        ai_providers: vec![
+            command_readiness("codex", &["--version"]),
+            command_readiness("claude", &["--version"]),
+        ],
+        run_records,
+        guidance: vec![
+            "Use `rms explain <module>` before asking broad questions about a module.".to_string(),
+            "Use `rms config init` when you want checked-in or local workbench provider defaults.".to_string(),
+            "Use `rms explain --ai` or `--provider codex` only when provider execution is intended.".to_string(),
+            "Use `rms implement`, `rms evolve-contract`, and `rms evidence` for bounded agent guidance.".to_string(),
+            "Use `rms context <module> --task ...` before implementation work.".to_string(),
+            format!("Use `rms validate --root {}` before completion.", root.display()),
+            "Use `rms verify <implementation.yaml>` when an implementation binding declares verification.".to_string(),
+        ],
+    })
+}
+
+fn print_diagnose_report(report: &DiagnoseReport) {
+    println!("# RMS Diagnose");
+    println!();
+    println!("RMS CLI: {} {}", report.validator, report.version);
+    println!("Root: {}", report.root);
+    println!();
+
+    println!("## Repository");
+    for item in &report.repository {
+        println!("{}: {}", item.name, item.status);
+    }
+    let total_manifests: usize = report.manifest_counts.values().sum();
+    println!(
+        "RMS manifests: {}",
+        if total_manifests == 0 {
+            "<none>".to_string()
+        } else {
+            total_manifests.to_string()
+        }
+    );
+    for (spec, count) in &report.manifest_counts {
+        println!("- {spec}: {count}");
+    }
+    println!();
+
+    println!("## Config");
+    println!("{}: {}", report.config.path, report.config.status);
+    if let Some(message) = &report.config.message {
+        println!("Message: {message}");
+    }
+    println!(
+        "Default provider: {}",
+        report
+            .config
+            .default_provider
+            .as_deref()
+            .unwrap_or("<none>")
+    );
+    println!(
+        "Codex model: {}",
+        report
+            .config
+            .codex_model
+            .as_deref()
+            .unwrap_or("<provider-default>")
+    );
+    println!(
+        "Codex sandbox: {}",
+        report
+            .config
+            .codex_sandbox
+            .as_deref()
+            .unwrap_or("read-only")
+    );
+    println!("Run directory: {}", report.config.run_directory);
+    println!();
+
+    println!("## Validation");
+    println!("Status: {}", report.validation.status);
+    if !report.validation.diagnostics.is_empty() {
+        println!("Errors: {}", report.validation.errors);
+        println!("Warnings: {}", report.validation.warnings);
+        for diagnostic in report.validation.diagnostics.iter().take(12) {
+            println!(
+                "- {} [{}] {}: {}",
+                severity_label(diagnostic.severity),
+                diagnostic.check,
+                diagnostic.path,
+                diagnostic.message
+            );
+        }
+        if report.validation.diagnostics.len() > 12 {
+            println!(
+                "- ... {} more diagnostics",
+                report.validation.diagnostics.len() - 12
+            );
+        }
+    }
+    println!();
+
+    println!("## Native Tools");
+    for command in &report.native_tools {
+        print_command_readiness(command);
+    }
+    println!();
+
+    println!("## AI Providers");
+    for command in &report.ai_providers {
+        print_command_readiness(command);
+    }
+    println!();
+
+    println!("## Run Records");
+    println!(
+        "{}: {}",
+        report.run_records.directory, report.run_records.status
+    );
+    if let Some(message) = &report.run_records.message {
+        println!("Message: {message}");
+    }
+    println!();
+
+    println!("## Agent Guidance");
+    for item in &report.guidance {
+        println!("- {item}");
+    }
+}
+
+fn file_readiness(label: &str, path: &Path) -> ReadinessItem {
+    ReadinessItem {
+        name: label.to_string(),
+        path: path.display().to_string(),
+        status: if path.exists() {
+            "present".to_string()
+        } else {
+            "missing".to_string()
+        },
+    }
+}
+
+fn diagnose_config(root: &Path) -> ConfigReadiness {
+    let path = root.join(WORKBENCH_CONFIG_PATH);
+    match load_workbench_config(root) {
+        Ok(Some(loaded)) => {
+            let default_provider = match loaded.value.ai.default_provider.as_deref() {
+                Some(value) => match parse_config_provider(value, "ai.default_provider") {
+                    Ok(provider) => Some(provider.label().to_string()),
+                    Err(error) => {
+                        return ConfigReadiness {
+                            path: loaded.path.display().to_string(),
+                            status: "invalid".to_string(),
+                            default_provider: Some(value.to_string()),
+                            codex_model: loaded.value.ai.codex.model,
+                            codex_sandbox: loaded.value.ai.codex.sandbox,
+                            run_directory: loaded
+                                .value
+                                .runs
+                                .directory
+                                .unwrap_or_else(|| PathBuf::from(DEFAULT_RUN_ROOT))
+                                .display()
+                                .to_string(),
+                            message: Some(error.to_string()),
+                        };
+                    }
+                },
+                None => None,
+            };
+            if let Some(value) = loaded.value.ai.codex.sandbox.as_deref() {
+                if let Err(error) = parse_config_sandbox(value, "ai.codex.sandbox") {
+                    return ConfigReadiness {
+                        path: loaded.path.display().to_string(),
+                        status: "invalid".to_string(),
+                        default_provider,
+                        codex_model: loaded.value.ai.codex.model,
+                        codex_sandbox: Some(value.to_string()),
+                        run_directory: loaded
+                            .value
+                            .runs
+                            .directory
+                            .unwrap_or_else(|| PathBuf::from(DEFAULT_RUN_ROOT))
+                            .display()
+                            .to_string(),
+                        message: Some(error.to_string()),
+                    };
+                }
+            }
+            ConfigReadiness {
+                path: loaded.path.display().to_string(),
+                status: "present".to_string(),
+                default_provider,
+                codex_model: loaded.value.ai.codex.model,
+                codex_sandbox: loaded.value.ai.codex.sandbox,
+                run_directory: loaded
+                    .value
+                    .runs
+                    .directory
+                    .unwrap_or_else(|| PathBuf::from(DEFAULT_RUN_ROOT))
+                    .display()
+                    .to_string(),
+                message: None,
+            }
+        }
+        Ok(None) => ConfigReadiness {
+            path: path.display().to_string(),
+            status: "missing".to_string(),
+            default_provider: None,
+            codex_model: None,
+            codex_sandbox: None,
+            run_directory: DEFAULT_RUN_ROOT.to_string(),
+            message: Some("optional config is not present".to_string()),
+        },
+        Err(error) => ConfigReadiness {
+            path: path.display().to_string(),
+            status: "invalid".to_string(),
+            default_provider: None,
+            codex_model: None,
+            codex_sandbox: None,
+            run_directory: DEFAULT_RUN_ROOT.to_string(),
+            message: Some(error.to_string()),
+        },
+    }
+}
+
+fn diagnose_run_records(root: &Path, configured_run_directory: &str) -> RunRecordReadiness {
+    let directory = root.join(configured_run_directory);
+    if directory.is_dir() {
+        return RunRecordReadiness {
+            directory: directory.display().to_string(),
+            status: "present".to_string(),
+            message: None,
+        };
+    }
+    if directory.exists() {
+        return RunRecordReadiness {
+            directory: directory.display().to_string(),
+            status: "not-directory".to_string(),
+            message: Some("configured run record path exists but is not a directory".to_string()),
+        };
+    }
+    let parent = directory.parent().unwrap_or(root);
+    RunRecordReadiness {
+        directory: directory.display().to_string(),
+        status: if parent.exists() {
+            "missing-will-be-created".to_string()
+        } else {
+            "parent-missing".to_string()
+        },
+        message: Some("run records are created when `--record` or a provider is used".to_string()),
+    }
+}
+
+fn run_explain(
+    subject: &[String],
+    explicit_module: Option<&Path>,
+    root: &Path,
+    options: &PromptRunOptions,
+) -> Result<()> {
+    let (module, question) = resolve_explain_subject(subject, explicit_module, root)?;
+    if options.provider == Provider::None && !options.record {
+        let manifest = load_manifest(&module)?;
+        return print_module_explanation(&manifest, root, question.as_deref());
+    }
+
+    run_prompt(
+        PromptKind::Explain,
+        &module,
+        root,
+        question.as_deref(),
+        None,
+        options,
+    )
+}
+
+fn resolve_explain_subject(
+    subject: &[String],
+    explicit_module: Option<&Path>,
+    root: &Path,
+) -> Result<(PathBuf, Option<String>)> {
+    if let Some(module) = explicit_module {
+        return Ok((module.to_path_buf(), join_question(subject)));
+    }
+
+    if let Some(first) = subject.first() {
+        let candidate = Path::new(first);
+        if candidate.exists() && is_module_yaml_manifest(candidate) {
+            return Ok((candidate.to_path_buf(), join_question(&subject[1..])));
+        }
+    }
+
+    let module = infer_single_module(root)?;
+    Ok((module, join_question(subject)))
+}
+
+fn join_question(parts: &[String]) -> Option<String> {
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+fn infer_single_module(root: &Path) -> Result<PathBuf> {
+    let direct = root.join("module.yaml");
+    if direct.exists() && is_module_yaml_manifest(&direct) {
+        return Ok(direct);
+    }
+
+    let mut modules = Vec::new();
+    for entry in WalkDir::new(root)
+        .max_depth(3)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if (file_name == "module.yaml" || file_name.ends_with(".module.yaml"))
+            && is_module_yaml_manifest(path)
+        {
+            modules.push(path.to_path_buf());
+        }
+    }
+
+    match modules.len() {
+        0 => bail!(
+            "could not infer module from `{}`; pass `--module <module.yaml>` or run from a module directory",
+            root.display()
+        ),
+        1 => Ok(modules.remove(0)),
+        _ => bail!(
+            "found multiple modules under `{}`; pass `--module <module.yaml>`",
+            root.display()
+        ),
+    }
+}
+
+fn is_module_yaml_manifest(path: &Path) -> bool {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("yaml") {
+        return false;
+    }
+    let Ok(source) = fs::read_to_string(path) else {
+        return false;
+    };
+    source
+        .lines()
+        .take(5)
+        .any(|line| line.trim() == "spec: rms/module/v0.1")
+}
+
+fn run_prompt(
+    kind: PromptKind,
+    module: &Path,
+    root: &Path,
+    task: Option<&str>,
+    diff: Option<&str>,
+    options: &PromptRunOptions,
+) -> Result<()> {
+    let manifest = load_manifest(module)?;
+    let rendered = render_workbench_prompt(&manifest, root, kind, task, diff)?;
+
+    let run_dir = if options.record || options.provider != Provider::None {
+        Some(write_prompt_run_record(
+            &manifest, root, kind, task, diff, &rendered, options,
+        )?)
+    } else {
+        None
+    };
+
+    match options.provider {
+        Provider::None => {
+            println!("{rendered}");
+            if let Some(run_dir) = run_dir {
+                eprintln!("run record: {}", run_dir.display());
+            }
+        }
+        Provider::Codex => {
+            let run_dir =
+                run_dir.ok_or_else(|| anyhow!("provider execution requires run record"))?;
+            execute_codex_provider(root, &rendered, &run_dir, options)?;
+            println!("run record: {}", run_dir.display());
+            println!("response: {}", run_dir.join("response.md").display());
+        }
+    }
+
+    Ok(())
+}
+
+fn write_prompt_run_record(
+    manifest: &LoadedManifest,
+    root: &Path,
+    kind: PromptKind,
+    task: Option<&str>,
+    diff: Option<&str>,
+    prompt: &str,
+    options: &PromptRunOptions,
+) -> Result<PathBuf> {
+    let run_id = run_id(kind, manifest);
+    let run_dir = root.join(&options.run_root).join(&run_id);
+    fs::create_dir_all(&run_dir)
+        .with_context(|| format!("failed to create run record `{}`", run_dir.display()))?;
+
+    fs::write(run_dir.join("prompt.md"), prompt)
+        .with_context(|| format!("failed to write `{}`", run_dir.join("prompt.md").display()))?;
+
+    let request = render_run_request_yaml(manifest, root, kind, task, diff, options, &run_id);
+    fs::write(run_dir.join("request.yaml"), request).with_context(|| {
+        format!(
+            "failed to write `{}`",
+            run_dir.join("request.yaml").display()
+        )
+    })?;
+
+    let diagnostics = collect_validation_diagnostics(
+        root,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )?;
+    let checks = json!({
+        "validator": VALIDATOR_NAME,
+        "validator_version": VALIDATOR_VERSION,
+        "validation": diagnostics,
+    });
+    fs::write(
+        run_dir.join("checks.json"),
+        serde_json::to_string_pretty(&checks)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write `{}`",
+            run_dir.join("checks.json").display()
+        )
+    })?;
+
+    Ok(run_dir)
+}
+
+fn execute_codex_provider(
+    root: &Path,
+    prompt: &str,
+    run_dir: &Path,
+    options: &PromptRunOptions,
+) -> Result<()> {
+    let response_path = run_dir.join("response.md");
+    let stdout_path = run_dir.join("provider.stdout.log");
+    let stderr_path = run_dir.join("provider.stderr.log");
+
+    let mut command = Command::new("codex");
+    command
+        .arg("exec")
+        .arg("--cd")
+        .arg(root)
+        .arg("--sandbox")
+        .arg(options.sandbox.as_str())
+        .arg("--output-last-message")
+        .arg(&response_path);
+
+    if let Some(model) = &options.model {
+        command.arg("--model").arg(model);
+    }
+    command.arg("-");
+
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| "failed to start `codex exec` provider")?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(prompt.as_bytes())
+            .with_context(|| "failed to write prompt to `codex exec` stdin")?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .with_context(|| "failed to wait for `codex exec` provider")?;
+    fs::write(&stdout_path, &output.stdout)
+        .with_context(|| format!("failed to write `{}`", stdout_path.display()))?;
+    fs::write(&stderr_path, &output.stderr)
+        .with_context(|| format!("failed to write `{}`", stderr_path.display()))?;
+
+    if !output.status.success() {
+        bail!(
+            "`codex exec` failed with status {}; see `{}` and `{}`",
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string()),
+            stdout_path.display(),
+            stderr_path.display()
+        );
+    }
+
+    if !response_path.exists() {
+        fs::write(
+            &response_path,
+            String::from_utf8_lossy(&output.stdout).as_ref(),
+        )
+        .with_context(|| format!("failed to write `{}`", response_path.display()))?;
+    }
+
+    Ok(())
+}
+
+fn run_list_runs(root: &Path, run_root: &Path) -> Result<()> {
+    let directory = root.join(run_root);
+    println!("# RMS Run Records");
+    println!();
+    println!("Path: {}", directory.display());
+    println!();
+
+    if !directory.exists() {
+        println!("<no run records>");
+        return Ok(());
+    }
+
+    let runs = collect_run_dirs(&directory)?;
+
+    if runs.is_empty() {
+        println!("<no run records>");
+        return Ok(());
+    }
+
+    for run in runs {
+        print_run_list_item(&run)?;
+    }
+
+    Ok(())
+}
+
+fn run_inspect_run(run: &Path, root: &Path, run_root: &Path) -> Result<()> {
+    let run_dir = resolve_run_dir(run, root, run_root);
+    if !run_dir.exists() {
+        bail!("run record does not exist: `{}`", run_dir.display());
+    }
+
+    print_run_record(&run_dir)
+}
+
+fn run_latest_run(root: &Path, run_root: &Path) -> Result<()> {
+    let directory = root.join(run_root);
+    let Some(run_dir) = latest_run_dir(&directory)? else {
+        bail!("no run records found in `{}`", directory.display());
+    };
+    print_run_record(&run_dir)
+}
+
+fn latest_run_dir(directory: &Path) -> Result<Option<PathBuf>> {
+    let runs = collect_run_dirs(directory)?;
+    Ok(runs.into_iter().next())
+}
+
+fn collect_run_dirs(directory: &Path) -> Result<Vec<PathBuf>> {
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    let mut runs = Vec::new();
+    for entry in fs::read_dir(directory)
+        .with_context(|| format!("failed to read run directory `{}`", directory.display()))?
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        if path.is_dir() {
+            runs.push(path);
+        }
+    }
+    runs.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+    Ok(runs)
+}
+
+fn print_run_record(run_dir: &Path) -> Result<()> {
+    println!("# RMS Run Record");
+    println!();
+    println!("Path: {}", run_dir.display());
+    println!();
+
+    print_run_request(&run_dir)?;
+    print_run_files(&run_dir)?;
+    print_run_checks(&run_dir)?;
+    print_run_response(&run_dir)?;
+
+    Ok(())
+}
+
+fn print_run_list_item(run_dir: &Path) -> Result<()> {
+    let request = load_optional_yaml(&run_dir.join("request.yaml"))?;
+    let run_id = request
+        .as_ref()
+        .and_then(|value| get_str(value, &["run_id"]))
+        .or_else(|| run_dir.file_name().and_then(|name| name.to_str()))
+        .unwrap_or("<unknown>");
+    let prompt = request
+        .as_ref()
+        .and_then(|value| get_str(value, &["prompt"]))
+        .unwrap_or("<unknown>");
+    let provider = request
+        .as_ref()
+        .and_then(|value| get_str(value, &["provider"]))
+        .unwrap_or("<unknown>");
+    let task = request
+        .as_ref()
+        .and_then(|value| get_str(value, &["task"]))
+        .unwrap_or("<none>");
+    let response = if run_dir.join("response.md").exists() {
+        "response"
+    } else {
+        "no-response"
+    };
+    println!("- {run_id}: {prompt} provider={provider} {response}");
+    println!("  task: {task}");
+    println!("  path: {}", run_dir.display());
+    Ok(())
+}
+
+fn print_run_request(run_dir: &Path) -> Result<()> {
+    println!("## Request");
+    let Some(request) = load_optional_yaml(&run_dir.join("request.yaml"))? else {
+        println!("- <missing request.yaml>");
+        println!();
+        return Ok(());
+    };
+    for field in [
+        "run_id",
+        "prompt",
+        "provider",
+        "module",
+        "root",
+        "task",
+        "diff",
+        "model",
+        "sandbox",
+        "source_revision",
+    ] {
+        if let Some(value) = get_str(&request, &[field]) {
+            println!("- {field}: {value}");
+        }
+    }
+    println!();
+    Ok(())
+}
+
+fn print_run_files(run_dir: &Path) -> Result<()> {
+    println!("## Files");
+    for name in [
+        "request.yaml",
+        "prompt.md",
+        "checks.json",
+        "response.md",
+        "provider.stdout.log",
+        "provider.stderr.log",
+    ] {
+        let path = run_dir.join(name);
+        if path.exists() {
+            let size = fs::metadata(&path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            println!("- {name}: {} bytes ({})", size, path.display());
+        }
+    }
+    println!();
+    Ok(())
+}
+
+fn print_run_checks(run_dir: &Path) -> Result<()> {
+    println!("## Checks");
+    let path = run_dir.join("checks.json");
+    if !path.exists() {
+        println!("- <missing checks.json>");
+        println!();
+        return Ok(());
+    }
+    let source = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read `{}`", path.display()))?;
+    let value: JsonValue = serde_json::from_str(&source)
+        .with_context(|| format!("failed to parse `{}`", path.display()))?;
+    let diagnostics = value
+        .get("validation")
+        .and_then(JsonValue::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    println!(
+        "- validator: {} {}",
+        value
+            .get("validator")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("<unknown>"),
+        value
+            .get("validator_version")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
+    );
+    println!("- validation diagnostics: {diagnostics}");
+    println!();
+    Ok(())
+}
+
+fn print_run_response(run_dir: &Path) -> Result<()> {
+    let path = run_dir.join("response.md");
+    if !path.exists() {
+        return Ok(());
+    }
+    println!("## Response");
+    let response = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read `{}`", path.display()))?;
+    print!("{}", truncate_for_prompt(&response, 12_000));
+    if !response.ends_with('\n') {
+        println!();
+    }
+    Ok(())
+}
+
+fn resolve_run_dir(run: &Path, root: &Path, run_root: &Path) -> PathBuf {
+    if run.exists() || run.components().count() > 1 {
+        run.to_path_buf()
+    } else {
+        root.join(run_root).join(run)
+    }
+}
+
+fn load_optional_yaml(path: &Path) -> Result<Option<YamlValue>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let source =
+        fs::read_to_string(path).with_context(|| format!("failed to read `{}`", path.display()))?;
+    let value = serde_yaml::from_str(&source)
+        .with_context(|| format!("failed to parse YAML `{}`", path.display()))?;
+    Ok(Some(value))
+}
+
+fn run_id(kind: PromptKind, manifest: &LoadedManifest) -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let module = get_str(&manifest.value, &["module", "name"]).unwrap_or("module");
+    format!(
+        "{}-{}-{}",
+        timestamp,
+        kind.label(),
+        sanitize_run_segment(module)
+    )
+}
+
+fn sanitize_run_segment(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim_matches('-');
+    if trimmed.is_empty() {
+        "run".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn render_run_request_yaml(
+    manifest: &LoadedManifest,
+    root: &Path,
+    kind: PromptKind,
+    task: Option<&str>,
+    diff: Option<&str>,
+    options: &PromptRunOptions,
+    run_id: &str,
+) -> String {
+    let mut out = String::new();
+    let task = task.or_else(|| kind.default_task()).unwrap_or("");
+    let _ = writeln!(out, "run_id: {}", yaml_quote(run_id));
+    let _ = writeln!(out, "prompt: {}", yaml_quote(kind.prompt_id()));
+    let _ = writeln!(out, "provider: {}", yaml_quote(options.provider.label()));
+    let _ = writeln!(
+        out,
+        "module: {}",
+        yaml_quote(&manifest.path.display().to_string())
+    );
+    let _ = writeln!(out, "root: {}", yaml_quote(&root.display().to_string()));
+    let _ = writeln!(out, "task: {}", yaml_quote(task));
+    if let Some(diff) = diff {
+        let _ = writeln!(out, "diff: {}", yaml_quote(diff));
+    }
+    if let Some(model) = &options.model {
+        let _ = writeln!(out, "model: {}", yaml_quote(model));
+    }
+    let _ = writeln!(out, "sandbox: {}", yaml_quote(options.sandbox.as_str()));
+    if let Some(revision) = source_revision(root) {
+        let _ = writeln!(out, "source_revision: {}", yaml_quote(&revision));
+    }
+    out
+}
+
+fn render_workbench_prompt(
+    manifest: &LoadedManifest,
+    root: &Path,
+    kind: PromptKind,
+    task: Option<&str>,
+    diff: Option<&str>,
+) -> Result<String> {
+    let effective_task = task
+        .or_else(|| kind.default_task())
+        .ok_or_else(|| anyhow!("{} prompts require `--task`", kind.label()))?;
+    let include_diff = kind.includes_diff_by_default() || diff.is_some();
+    let diff_text = if include_diff {
+        Some(read_git_diff(root, diff)?)
+    } else {
+        None
+    };
+
+    let mut out = String::new();
+    writeln!(out, "# RMS Workbench Prompt")?;
+    writeln!(out)?;
+    writeln!(out, "Prompt: {}", kind.prompt_id())?;
+    writeln!(
+        out,
+        "Mode: advisory; no edits are performed by this command"
+    )?;
+    writeln!(out, "Module: {}", manifest.path.display())?;
+    writeln!(out, "Task: {effective_task}")?;
+    writeln!(out)?;
+
+    writeln!(out, "## Operating Rule")?;
+    writeln!(out, "Use RMS canonical artifacts as the source of architectural truth. Do not infer ownership, effects, contracts, compatibility, or verification obligations from incidental code shape when the manifest or contracts say otherwise.")?;
+    writeln!(out)?;
+
+    append_prompt_context(&mut out, manifest, root)?;
+    writeln!(out)?;
+
+    writeln!(out, "## Workflow")?;
+    for item in kind.workflow() {
+        writeln!(out, "- {item}")?;
+    }
+    writeln!(out)?;
+
+    writeln!(out, "## Expected Output")?;
+    for item in kind.expected_output() {
+        writeln!(out, "- {item}")?;
+    }
+    writeln!(out)?;
+
+    writeln!(out, "## Deterministic Checks")?;
+    for item in kind.deterministic_checks() {
+        writeln!(out, "- {item}")?;
+    }
+
+    if let Some(diff_text) = diff_text {
+        writeln!(out)?;
+        writeln!(out, "## Diff")?;
+        if diff_text.trim().is_empty() {
+            writeln!(out, "<no diff content detected>")?;
+        } else {
+            writeln!(out, "```diff")?;
+            writeln!(out, "{diff_text}")?;
+            writeln!(out, "```")?;
+        }
+    }
+
+    Ok(out)
+}
+
+fn append_prompt_context(out: &mut String, manifest: &LoadedManifest, root: &Path) -> Result<()> {
+    writeln!(out, "## Bounded RMS Context")?;
+    writeln!(
+        out,
+        "- Name: {} {}",
+        get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>"),
+        get_str(&manifest.value, &["module", "version"]).unwrap_or("")
+    )?;
+    writeln!(
+        out,
+        "- Kind: {}",
+        get_str(&manifest.value, &["module", "kind"]).unwrap_or("<missing>")
+    )?;
+    writeln!(
+        out,
+        "- Purpose: {}",
+        get_str(&manifest.value, &["module", "purpose"]).unwrap_or("<missing>")
+    )?;
+    append_prompt_string_list(
+        out,
+        "Profiles",
+        &get_string_array(&manifest.value, &["profiles"]),
+    )?;
+    append_prompt_owned_terms(out, &manifest.value)?;
+    append_prompt_contract_groups(out, "Provides", get_path(&manifest.value, &["provides"]))?;
+    append_prompt_contract_groups(out, "Requires", get_path(&manifest.value, &["requires"]))?;
+    append_prompt_invariants(out, &manifest.value)?;
+    append_prompt_effects(out, &manifest.value)?;
+    writeln!(
+        out,
+        "- Compatibility: {}",
+        get_str(&manifest.value, &["compatibility", "policy"]).unwrap_or("<missing>")
+    )?;
+    append_prompt_verification(out, &manifest.value)?;
+
+    writeln!(out)?;
+    writeln!(out, "### Canonical Files")?;
+    for file_name in ["system.yaml", "context-map.yaml", "GLOSSARY.md"] {
+        let path = root.join(file_name);
+        if path.exists() {
+            writeln!(out, "- {}", path.display())?;
+        }
+    }
+    for reference in referenced_paths(&manifest.value) {
+        let path = manifest
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(&reference);
+        writeln!(out, "- {}", path.display())?;
+    }
+
+    Ok(())
+}
+
+fn append_prompt_string_list(out: &mut String, label: &str, items: &[String]) -> Result<()> {
+    writeln!(
+        out,
+        "- {label}: {}",
+        if items.is_empty() {
+            "<none>".to_string()
+        } else {
+            items.join(", ")
+        }
+    )?;
+    Ok(())
+}
+
+fn append_prompt_owned_terms(out: &mut String, value: &YamlValue) -> Result<()> {
+    writeln!(out, "- Ownership:")?;
+    if let Some(owns) = get_path(value, &["owns"]).and_then(YamlValue::as_mapping) {
+        for (key, values) in owns {
+            let label = key.as_str().unwrap_or("<unknown>");
+            let items = values
+                .as_sequence()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(YamlValue::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            writeln!(
+                out,
+                "  - {label}: {}",
+                if items.is_empty() { "<none>" } else { &items }
+            )?;
+        }
+    } else {
+        writeln!(out, "  - <missing>")?;
+    }
+    Ok(())
+}
+
+fn append_prompt_contract_groups(
+    out: &mut String,
+    label: &str,
+    value: Option<&YamlValue>,
+) -> Result<()> {
+    writeln!(out, "- {label}:")?;
+    let Some(groups) = value.and_then(YamlValue::as_mapping) else {
+        writeln!(out, "  - <missing>")?;
+        return Ok(());
+    };
+    for (group, items) in groups {
+        let group = group.as_str().unwrap_or("<unknown>");
+        writeln!(out, "  - {group}:")?;
+        if let Some(items) = items.as_sequence() {
+            for item in items {
+                match item {
+                    YamlValue::String(name) => writeln!(out, "    - {name}")?,
+                    YamlValue::Mapping(mapping) => {
+                        let name = mapping
+                            .get(YamlValue::String("name".to_string()))
+                            .and_then(YamlValue::as_str)
+                            .unwrap_or("<unnamed>");
+                        let contract = mapping
+                            .get(YamlValue::String("contract".to_string()))
+                            .and_then(YamlValue::as_str)
+                            .unwrap_or("<no contract>");
+                        writeln!(out, "    - {name} ({contract})")?;
+                    }
+                    _ => writeln!(out, "    - <unsupported reference>")?,
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn append_prompt_invariants(out: &mut String, value: &YamlValue) -> Result<()> {
+    writeln!(out, "- Invariants:")?;
+    let Some(invariants) = get_path(value, &["invariants"]).and_then(YamlValue::as_sequence) else {
+        writeln!(out, "  - <missing>")?;
+        return Ok(());
+    };
+    if invariants.is_empty() {
+        writeln!(out, "  - <none declared>")?;
+        return Ok(());
+    }
+    for invariant in invariants {
+        writeln!(
+            out,
+            "  - {}: {}",
+            get_str(invariant, &["id"]).unwrap_or("<missing-id>"),
+            get_str(invariant, &["statement"]).unwrap_or("<missing statement>")
+        )?;
+    }
+    Ok(())
+}
+
+fn append_prompt_effects(out: &mut String, value: &YamlValue) -> Result<()> {
+    writeln!(out, "- Effects:")?;
+    let Some(effects) = get_path(value, &["effects"]).and_then(YamlValue::as_sequence) else {
+        writeln!(out, "  - <missing>")?;
+        return Ok(());
+    };
+    if effects.is_empty() {
+        writeln!(out, "  - <none declared>")?;
+        return Ok(());
+    }
+    for effect in effects {
+        writeln!(
+            out,
+            "  - {} ({})",
+            get_str(effect, &["name"]).unwrap_or("<unnamed>"),
+            get_str(effect, &["kind"]).unwrap_or("<unknown-kind>")
+        )?;
+    }
+    Ok(())
+}
+
+fn append_prompt_verification(out: &mut String, value: &YamlValue) -> Result<()> {
+    writeln!(out, "- Verification:")?;
+    for category in ["laws", "contracts", "scenarios", "boundaries"] {
+        let items = get_string_array(value, &["verification", category]);
+        writeln!(
+            out,
+            "  - {category}: {}",
+            if items.is_empty() {
+                "<none>".to_string()
+            } else {
+                items.join(", ")
+            }
+        )?;
+    }
+    Ok(())
+}
+
+fn read_git_diff(root: &Path, diff: Option<&str>) -> Result<String> {
+    let mut command = Command::new("git");
+    command.current_dir(root).arg("diff");
+    if let Some(diff) = diff {
+        command.arg(diff);
+    }
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => return Ok(format!("diff unavailable: {error}")),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Ok(format!(
+            "diff unavailable: git exited with status {}{}",
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string()),
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", stderr.trim())
+            }
+        ));
+    }
+    Ok(truncate_for_prompt(
+        String::from_utf8_lossy(&output.stdout).as_ref(),
+        16_000,
+    ))
+}
+
+fn truncate_for_prompt(value: &str, limit: usize) -> String {
+    if value.len() <= limit {
+        return value.to_string();
+    }
+    let mut end = 0;
+    for (index, character) in value.char_indices() {
+        let next = index + character.len_utf8();
+        if next > limit {
+            break;
+        }
+        end = next;
+    }
+    let mut truncated = value[..end].to_string();
+    truncated.push_str("\n[truncated for prompt]\n");
+    truncated
+}
+
+fn run_impact(root: &Path, diff: Option<&str>, json_output: bool) -> Result<()> {
+    let changed_paths = read_git_changed_paths(root, diff)?;
+    let report = build_impact_report(root, diff, &changed_paths)?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_impact_report(&report);
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct ChangedPath {
+    status: String,
+    path: String,
+}
+
+#[derive(Clone, Debug)]
+struct ImpactModuleMetadata {
+    name: String,
+    manifest: PathBuf,
+    implementation: Option<PathBuf>,
+    base: PathBuf,
+    source_root: Option<PathBuf>,
+    contract_refs: BTreeSet<PathBuf>,
+    evidence_refs: BTreeSet<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ImpactResult {
+    NoRmsImpact,
+    ImplementationOnly,
+    EvidenceReview,
+    ReviewRequired,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ImpactPath {
+    path: String,
+    status: String,
+    category: ImpactCategory,
+    module: Option<String>,
+    module_manifest: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ImpactCategory {
+    SystemManifest,
+    ContextMap,
+    ModuleManifest,
+    Contract,
+    ImplementationBinding,
+    Source,
+    VerificationEvidence,
+    Operations,
+    Glossary,
+    ConformanceReport,
+    WorkbenchConfig,
+    Other,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ImpactFinding {
+    severity: ImpactResult,
+    check: String,
+    path: Option<String>,
+    module: Option<String>,
+    message: String,
+}
+
+fn read_git_changed_paths(root: &Path, diff: Option<&str>) -> Result<Vec<ChangedPath>> {
+    let mut paths = BTreeMap::<String, ChangedPath>::new();
+
+    if let Some(diff) = diff {
+        collect_git_name_status(
+            root,
+            &["diff", "--relative", "--name-status", diff],
+            &mut paths,
+        )?;
+    } else {
+        collect_git_name_status(root, &["diff", "--relative", "--name-status"], &mut paths)?;
+        collect_git_name_status(
+            root,
+            &["diff", "--relative", "--cached", "--name-status"],
+            &mut paths,
+        )?;
+        collect_git_untracked_paths(root, &mut paths)?;
+    }
+
+    Ok(paths.into_values().collect())
+}
+
+fn collect_git_name_status(
+    root: &Path,
+    args: &[&str],
+    paths: &mut BTreeMap<String, ChangedPath>,
+) -> Result<()> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .with_context(|| "failed to start git while reading changed paths")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "git changed-path query failed with status {}{}",
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string()),
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", stderr.trim())
+            }
+        );
+    }
+
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() < 2 {
+            continue;
+        }
+        let status = fields[0];
+        let path = if status.starts_with('R') || status.starts_with('C') {
+            fields.last().copied().unwrap_or(fields[1])
+        } else {
+            fields[1]
+        };
+        insert_changed_path(root, paths, status, path);
+    }
+
+    Ok(())
+}
+
+fn collect_git_untracked_paths(
+    root: &Path,
+    paths: &mut BTreeMap<String, ChangedPath>,
+) -> Result<()> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args([
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            ".",
+        ])
+        .output()
+        .with_context(|| "failed to start git while reading untracked paths")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "git untracked-path query failed with status {}{}",
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string()),
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", stderr.trim())
+            }
+        );
+    }
+
+    for path in String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|path| !path.is_empty())
+    {
+        insert_changed_path(root, paths, "??", path);
+    }
+
+    Ok(())
+}
+
+fn insert_changed_path(
+    root: &Path,
+    paths: &mut BTreeMap<String, ChangedPath>,
+    status: &str,
+    path: &str,
+) {
+    let path = display_path(&root_relative_path(root, Path::new(path)));
+    paths
+        .entry(path.clone())
+        .and_modify(|existing| {
+            if !existing.status.split('/').any(|item| item == status) {
+                existing.status.push('/');
+                existing.status.push_str(status);
+            }
+        })
+        .or_insert_with(|| ChangedPath {
+            status: status.to_string(),
+            path,
+        });
+}
+
+fn build_impact_report(
+    root: &Path,
+    diff: Option<&str>,
+    changed_paths: &[ChangedPath],
+) -> Result<ImpactReport> {
+    let modules = discover_impact_modules(root)?;
+    Ok(build_impact_report_from_modules(
+        root,
+        diff,
+        changed_paths,
+        &modules,
+    ))
+}
+
+fn build_impact_report_from_modules(
+    root: &Path,
+    diff: Option<&str>,
+    changed_paths: &[ChangedPath],
+    modules: &[ImpactModuleMetadata],
+) -> ImpactReport {
+    let mut report_paths = Vec::new();
+    let mut findings = Vec::new();
+    let mut module_paths = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut module_categories = BTreeMap::<String, BTreeSet<ImpactCategory>>::new();
+    let mut overall = ImpactResult::NoRmsImpact;
+
+    for changed_path in changed_paths {
+        let normalized_path = normalize_relative_path(Path::new(&changed_path.path));
+        let (category, module) = classify_impact_path(&normalized_path, modules);
+        let module_name = module.map(|module| module.name.clone());
+        let module_manifest = module.map(|module| display_path(&module.manifest));
+        let severity = impact_for_category(category, module.is_some());
+        overall = overall.max(severity);
+
+        let path_display = display_path(&normalized_path);
+        if let Some(module_name) = &module_name {
+            module_paths
+                .entry(module_name.clone())
+                .or_default()
+                .insert(path_display.clone());
+            module_categories
+                .entry(module_name.clone())
+                .or_default()
+                .insert(category);
+        }
+
+        if severity != ImpactResult::NoRmsImpact {
+            findings.push(impact_finding(
+                severity,
+                impact_check_for_category(category),
+                Some(path_display.clone()),
+                module_name.clone(),
+                impact_message_for_category(category),
+            ));
+        }
+
+        report_paths.push(ImpactPath {
+            path: path_display,
+            status: changed_path.status.clone(),
+            category,
+            module: module_name,
+            module_manifest,
+        });
+    }
+
+    let affected_modules = modules
+        .iter()
+        .filter_map(|module| {
+            let changed_paths = module_paths.remove(&module.name)?;
+            let categories = module_categories
+                .remove(&module.name)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            Some(ImpactModuleImpact {
+                name: module.name.clone(),
+                manifest: display_path(&module.manifest),
+                implementation: module
+                    .implementation
+                    .as_ref()
+                    .map(|path| display_path(path)),
+                changed_paths: changed_paths.into_iter().collect(),
+                categories,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let recommended_checks =
+        impact_recommended_checks(root, diff, &report_paths, &affected_modules);
+
+    ImpactReport {
+        result: overall,
+        root: root.display().to_string(),
+        diff: diff.map(ToString::to_string),
+        source_revision: source_revision(root),
+        changed_paths: report_paths,
+        affected_modules,
+        findings,
+        recommended_checks,
+    }
+}
+
+fn discover_impact_modules(root: &Path) -> Result<Vec<ImpactModuleMetadata>> {
+    let targets = discover_targets(root, vec![], vec![], vec![], vec![], vec![], vec![])?;
+    let mut module_manifests = Vec::new();
+    let mut implementation_manifests = Vec::new();
+
+    for target in targets {
+        let manifest = load_manifest(&target)?;
+        match get_str(&manifest.value, &["spec"]) {
+            Some("rms/module/v0.1") => module_manifests.push(manifest),
+            Some("rms/implementation/v0.1") => implementation_manifests.push(manifest),
+            _ => {}
+        }
+    }
+
+    let mut modules = Vec::new();
+    for manifest in module_manifests {
+        let name = get_str(&manifest.value, &["module", "name"])
+            .unwrap_or("<unknown>")
+            .to_string();
+        let manifest_path = root_relative_path(root, &manifest.path);
+        let base = manifest_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let implementation = implementation_manifests.iter().find(|implementation| {
+            get_str(&implementation.value, &["module"]) == Some(name.as_str())
+                && root_relative_path(root, &implementation.path)
+                    .parent()
+                    .is_some_and(|implementation_base| implementation_base == base)
+        });
+        let implementation_path =
+            implementation.map(|implementation| root_relative_path(root, &implementation.path));
+        let source_root = implementation.and_then(|implementation| {
+            get_str(&implementation.value, &["source", "root"])
+                .map(|source_root| normalize_relative_path(base.join(source_root)))
+        });
+
+        let mut contract_refs = BTreeSet::new();
+        let mut evidence_refs = BTreeSet::new();
+        for reference in referenced_paths(&manifest.value) {
+            let path = normalize_relative_path(base.join(&reference));
+            if path_has_component(&path, "verification") {
+                evidence_refs.insert(path);
+            } else if path_has_component(&path, "contracts") {
+                contract_refs.insert(path);
+            }
+        }
+
+        modules.push(ImpactModuleMetadata {
+            name,
+            manifest: manifest_path,
+            implementation: implementation_path,
+            base,
+            source_root,
+            contract_refs,
+            evidence_refs,
+        });
+    }
+
+    modules.sort_by(|left, right| {
+        component_count(&right.base)
+            .cmp(&component_count(&left.base))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(modules)
+}
+
+fn classify_impact_path<'a>(
+    path: &Path,
+    modules: &'a [ImpactModuleMetadata],
+) -> (ImpactCategory, Option<&'a ImpactModuleMetadata>) {
+    for module in modules {
+        if path == module.manifest {
+            return (ImpactCategory::ModuleManifest, Some(module));
+        }
+        if module
+            .implementation
+            .as_ref()
+            .is_some_and(|implementation| path == implementation)
+        {
+            return (ImpactCategory::ImplementationBinding, Some(module));
+        }
+        let Some(remainder) = path_under_base(path, &module.base) else {
+            continue;
+        };
+        if first_component_is(remainder, "verification") {
+            return (ImpactCategory::VerificationEvidence, Some(module));
+        }
+        if path_matches_any_reference(path, &module.evidence_refs) {
+            return (ImpactCategory::VerificationEvidence, Some(module));
+        }
+        if path_matches_any_reference(path, &module.contract_refs) {
+            return (ImpactCategory::Contract, Some(module));
+        }
+        if first_component_is(remainder, "contracts") {
+            return (ImpactCategory::Contract, Some(module));
+        }
+        if first_component_is(remainder, "ops") {
+            return (ImpactCategory::Operations, Some(module));
+        }
+        if is_system_manifest_path(remainder) {
+            return (ImpactCategory::SystemManifest, Some(module));
+        }
+        if is_context_map_path(remainder) {
+            return (ImpactCategory::ContextMap, Some(module));
+        }
+        if is_glossary_path(remainder) {
+            return (ImpactCategory::Glossary, Some(module));
+        }
+        if is_conformance_report_path(remainder) {
+            return (ImpactCategory::ConformanceReport, Some(module));
+        }
+        if is_workbench_config_path(remainder) {
+            return (ImpactCategory::WorkbenchConfig, Some(module));
+        }
+        if module
+            .source_root
+            .as_ref()
+            .is_some_and(|source_root| path_under_base(path, source_root).is_some())
+        {
+            return (ImpactCategory::Source, Some(module));
+        }
+        if !remainder.as_os_str().is_empty() {
+            return (ImpactCategory::Other, Some(module));
+        }
+    }
+
+    if is_system_manifest_path(path) {
+        (ImpactCategory::SystemManifest, None)
+    } else if is_context_map_path(path) {
+        (ImpactCategory::ContextMap, None)
+    } else if is_glossary_path(path) {
+        (ImpactCategory::Glossary, None)
+    } else if is_conformance_report_path(path) {
+        (ImpactCategory::ConformanceReport, None)
+    } else if is_workbench_config_path(path) {
+        (ImpactCategory::WorkbenchConfig, None)
+    } else {
+        (ImpactCategory::Other, None)
+    }
+}
+
+fn path_under_base<'a>(path: &'a Path, base: &Path) -> Option<&'a Path> {
+    if base.as_os_str().is_empty() {
+        Some(path)
+    } else {
+        path.strip_prefix(base).ok()
+    }
+}
+
+fn path_matches_any_reference(path: &Path, references: &BTreeSet<PathBuf>) -> bool {
+    references
+        .iter()
+        .any(|reference| path == reference || path_under_base(path, reference).is_some())
+}
+
+fn impact_for_category(category: ImpactCategory, has_module: bool) -> ImpactResult {
+    match category {
+        ImpactCategory::SystemManifest
+        | ImpactCategory::ContextMap
+        | ImpactCategory::ModuleManifest
+        | ImpactCategory::Contract
+        | ImpactCategory::ImplementationBinding
+        | ImpactCategory::Operations
+        | ImpactCategory::Glossary => ImpactResult::ReviewRequired,
+        ImpactCategory::VerificationEvidence | ImpactCategory::ConformanceReport => {
+            ImpactResult::EvidenceReview
+        }
+        ImpactCategory::Source => ImpactResult::ImplementationOnly,
+        ImpactCategory::Other if has_module => ImpactResult::ImplementationOnly,
+        ImpactCategory::WorkbenchConfig | ImpactCategory::Other => ImpactResult::NoRmsImpact,
+    }
+}
+
+fn impact_check_for_category(category: ImpactCategory) -> &'static str {
+    match category {
+        ImpactCategory::SystemManifest => "system.changed",
+        ImpactCategory::ContextMap => "context-map.changed",
+        ImpactCategory::ModuleManifest => "module-manifest.changed",
+        ImpactCategory::Contract => "contract.changed",
+        ImpactCategory::ImplementationBinding => "implementation-binding.changed",
+        ImpactCategory::Source => "source.changed",
+        ImpactCategory::VerificationEvidence => "verification-evidence.changed",
+        ImpactCategory::Operations => "operations.changed",
+        ImpactCategory::Glossary => "glossary.changed",
+        ImpactCategory::ConformanceReport => "conformance-report.changed",
+        ImpactCategory::WorkbenchConfig => "workbench-config.changed",
+        ImpactCategory::Other => "path.changed",
+    }
+}
+
+fn impact_message_for_category(category: ImpactCategory) -> &'static str {
+    match category {
+        ImpactCategory::SystemManifest => {
+            "system-level artifact changed; validate composition and compatibility assumptions"
+        }
+        ImpactCategory::ContextMap => {
+            "context relationship artifact changed; review module composition boundaries"
+        }
+        ImpactCategory::ModuleManifest => {
+            "module manifest changed; review public surface, effects, dependencies, and compatibility"
+        }
+        ImpactCategory::Contract => {
+            "public contract path changed; classify compatibility before accepting the diff"
+        }
+        ImpactCategory::ImplementationBinding => {
+            "implementation binding changed; review build, verification, dependencies, and source boundary declarations"
+        }
+        ImpactCategory::Source => {
+            "implementation source changed; run declared verification for the affected module"
+        }
+        ImpactCategory::VerificationEvidence => {
+            "verification evidence changed; confirm it still proves the declared promise"
+        }
+        ImpactCategory::Operations => {
+            "operational artifact changed; review recovery, reconciliation, observability, and runtime checks"
+        }
+        ImpactCategory::Glossary => {
+            "domain language changed; review affected contracts and module terminology"
+        }
+        ImpactCategory::ConformanceReport => {
+            "conformance evidence changed; confirm it is tied to the intended source revision"
+        }
+        ImpactCategory::WorkbenchConfig => {
+            "workbench configuration changed; treat as operational input, not module semantics"
+        }
+        ImpactCategory::Other => "path changed near an RMS module but has no specialized category",
+    }
+}
+
+fn impact_finding(
+    severity: ImpactResult,
+    check: impl Into<String>,
+    path: Option<String>,
+    module: Option<String>,
+    message: impl Into<String>,
+) -> ImpactFinding {
+    ImpactFinding {
+        severity,
+        check: check.into(),
+        path,
+        module,
+        message: message.into(),
+    }
+}
+
+fn impact_recommended_checks(
+    root: &Path,
+    diff: Option<&str>,
+    paths: &[ImpactPath],
+    modules: &[ImpactModuleImpact],
+) -> Vec<String> {
+    let mut checks = BTreeSet::new();
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    checks.insert(format!("rms validate --root {}", root.display()));
+
+    if paths.iter().any(|path| {
+        matches!(
+            path.category,
+            ImpactCategory::SystemManifest
+                | ImpactCategory::ContextMap
+                | ImpactCategory::ModuleManifest
+                | ImpactCategory::Contract
+                | ImpactCategory::Operations
+                | ImpactCategory::Glossary
+        )
+    }) {
+        checks.insert(format!("rms compose --root {}", root.display()));
+    }
+
+    for module in modules {
+        let diff_arg = diff
+            .map(|diff| format!(" --diff {diff}"))
+            .unwrap_or_default();
+        checks.insert(format!("rms review {}{}", module.manifest, diff_arg));
+
+        if module.categories.iter().any(|category| {
+            matches!(
+                category,
+                ImpactCategory::Source
+                    | ImpactCategory::ImplementationBinding
+                    | ImpactCategory::VerificationEvidence
+            )
+        }) {
+            if let Some(implementation) = &module.implementation {
+                checks.insert(format!("rms verify {implementation}"));
+            }
+        }
+
+        if module.categories.iter().any(|category| {
+            matches!(
+                category,
+                ImpactCategory::ModuleManifest | ImpactCategory::Contract
+            )
+        }) {
+            checks.insert(format!(
+                "rms check-compat <previous {}> {}",
+                module.manifest, module.manifest
+            ));
+        }
+    }
+
+    checks.into_iter().collect()
+}
+
+fn print_impact_report(report: &ImpactReport) {
+    println!("RMS impact: {}", impact_result_label(report.result));
+    println!("Root: {}", report.root);
+    if let Some(diff) = &report.diff {
+        println!("Diff: {diff}");
+    } else {
+        println!("Diff: working tree");
+    }
+    if let Some(revision) = &report.source_revision {
+        println!("Source revision: {revision}");
+    }
+    print_string_list(
+        "Affected modules",
+        &report
+            .affected_modules
+            .iter()
+            .map(|module| module.name.clone())
+            .collect::<Vec<_>>(),
+    );
+
+    if report.changed_paths.is_empty() {
+        println!("No changed paths detected.");
+        return;
+    }
+
+    println!();
+    println!("## Changed Paths");
+    for path in &report.changed_paths {
+        println!(
+            "- {} [{}] {}{}",
+            path.status,
+            impact_category_label(path.category),
+            path.path,
+            path.module
+                .as_ref()
+                .map(|module| format!(" ({module})"))
+                .unwrap_or_default()
+        );
+    }
+
+    if !report.findings.is_empty() {
+        println!();
+        println!("## Findings");
+        for finding in &report.findings {
+            let path = finding.path.as_deref().unwrap_or("<none>");
+            let module = finding.module.as_deref().unwrap_or("<none>");
+            println!(
+                "- {} [{}] path={} module={}: {}",
+                impact_result_label(finding.severity),
+                finding.check,
+                path,
+                module,
+                finding.message
+            );
+        }
+    }
+
+    if !report.recommended_checks.is_empty() {
+        println!();
+        print_string_list("Recommended checks", &report.recommended_checks);
+    }
+}
+
+fn impact_result_label(result: ImpactResult) -> &'static str {
+    match result {
+        ImpactResult::NoRmsImpact => "no-rms-impact",
+        ImpactResult::ImplementationOnly => "implementation-only",
+        ImpactResult::EvidenceReview => "evidence-review",
+        ImpactResult::ReviewRequired => "review-required",
+    }
+}
+
+fn impact_category_label(category: ImpactCategory) -> &'static str {
+    match category {
+        ImpactCategory::SystemManifest => "system-manifest",
+        ImpactCategory::ContextMap => "context-map",
+        ImpactCategory::ModuleManifest => "module-manifest",
+        ImpactCategory::Contract => "contract",
+        ImpactCategory::ImplementationBinding => "implementation-binding",
+        ImpactCategory::Source => "source",
+        ImpactCategory::VerificationEvidence => "verification-evidence",
+        ImpactCategory::Operations => "operations",
+        ImpactCategory::Glossary => "glossary",
+        ImpactCategory::ConformanceReport => "conformance-report",
+        ImpactCategory::WorkbenchConfig => "workbench-config",
+        ImpactCategory::Other => "other",
+    }
+}
+
+fn root_relative_path(root: &Path, path: &Path) -> PathBuf {
+    let path = normalize_relative_path(path);
+    let root = normalize_relative_path(root);
+    if !root.as_os_str().is_empty() {
+        if let Ok(stripped) = path.strip_prefix(&root) {
+            return normalize_relative_path(stripped);
+        }
+    }
+    path
+}
+
+fn normalize_relative_path(path: impl AsRef<Path>) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.as_ref().components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => normalized.push(part),
+            Component::ParentDir => normalized.push(".."),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn display_path(path: &Path) -> String {
+    if path.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        path.display().to_string()
+    }
+}
+
+fn component_count(path: &Path) -> usize {
+    path.components().count()
+}
+
+fn first_component_is(path: &Path, expected: &str) -> bool {
+    path.components()
+        .next()
+        .is_some_and(|component| matches!(component, Component::Normal(part) if part == expected))
+}
+
+fn file_name_is(path: &Path, expected: &str) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == expected)
+}
+
+fn is_system_manifest_path(path: &Path) -> bool {
+    file_name_is(path, "system.yaml")
+}
+
+fn is_context_map_path(path: &Path) -> bool {
+    file_name_is(path, "context-map.yaml")
+}
+
+fn is_glossary_path(path: &Path) -> bool {
+    file_name_is(path, "GLOSSARY.md")
+}
+
+fn is_conformance_report_path(path: &Path) -> bool {
+    file_name_is(path, "conformance-report.json")
+}
+
+fn is_workbench_config_path(path: &Path) -> bool {
+    path.components()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|window| {
+            matches!(
+                window,
+                [Component::Normal(parent), Component::Normal(file)]
+                    if *parent == ".rms" && *file == "config.yaml"
+            )
+        })
 }
 
 fn discover_targets(
@@ -2291,14 +6053,16 @@ fn inspect_swift_typing_file(
             }
             scan.depth += swift_brace_delta(trimmed);
             if scan.depth <= 0 {
-                finish_swift_struct_scan(
-                    implementation,
-                    diagnostics,
-                    path,
-                    &allowed_public_field_structs,
-                    summary,
-                    current_struct.take().unwrap(),
-                );
+                if let Some(finished_scan) = current_struct.take() {
+                    finish_swift_struct_scan(
+                        implementation,
+                        diagnostics,
+                        path,
+                        &allowed_public_field_structs,
+                        summary,
+                        finished_scan,
+                    );
+                }
             }
             continue;
         }
@@ -2896,6 +6660,96 @@ fn print_module_brief(manifest: &LoadedManifest) {
     print_verification(&manifest.value);
 }
 
+fn print_module_explanation(
+    manifest: &LoadedManifest,
+    root: &Path,
+    question: Option<&str>,
+) -> Result<()> {
+    println!("# RMS Module Explanation");
+    println!();
+    println!("Path: {}", manifest.path.display());
+    if let Some(question) = question {
+        println!("Question: {question}");
+    }
+    println!();
+
+    println!("## What This Module Is");
+    println!(
+        "{} {} is a {}.",
+        get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>"),
+        get_str(&manifest.value, &["module", "version"]).unwrap_or(""),
+        get_str(&manifest.value, &["module", "kind"]).unwrap_or("<missing-kind>")
+    );
+    println!(
+        "Purpose: {}",
+        get_str(&manifest.value, &["module", "purpose"]).unwrap_or("<missing>")
+    );
+    print_string_list(
+        "Profiles",
+        &get_string_array(&manifest.value, &["profiles"]),
+    );
+
+    print_owned_terms(&manifest.value);
+
+    print_contract_groups("Provides", get_path(&manifest.value, &["provides"]));
+    print_contract_groups("Requires", get_path(&manifest.value, &["requires"]));
+
+    print_invariants(&manifest.value);
+    print_effects(&manifest.value);
+    println!(
+        "Compatibility: {}",
+        get_str(&manifest.value, &["compatibility", "policy"]).unwrap_or("<missing>")
+    );
+    print_verification(&manifest.value);
+
+    println!();
+    println!("## Before Changing It");
+    println!("- Keep changes inside this module's ownership boundary.");
+    println!("- Change public contracts first when public meaning changes.");
+    println!(
+        "- Declare new dependencies, effects, profiles, and recovery paths before relying on them."
+    );
+    println!("- Add only the smallest evidence that strongly demonstrates the changed promise.");
+
+    let module_base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let module_name = get_str(&manifest.value, &["module", "name"]).unwrap_or("");
+    if !module_name.is_empty() {
+        if let Some(implementation) = sibling_implementation_manifest(module_base, module_name)? {
+            println!(
+                "- Implementation binding: {}",
+                implementation.path.display()
+            );
+            if let Some(command) = get_str(&implementation.value, &["commands", "verify"]) {
+                println!("- Verification command: {command}");
+            }
+        }
+    }
+
+    println!();
+    println!("## Useful Commands");
+    println!("- rms inspect {}", manifest.path.display());
+    println!(
+        "- rms context {} --root {} --task \"<task>\"",
+        manifest.path.display(),
+        root.display()
+    );
+    println!("- rms validate --root {}", root.display());
+    if !module_name.is_empty() && module_base.join("implementation.yaml").exists() {
+        println!(
+            "- rms verify {}",
+            module_base.join("implementation.yaml").display()
+        );
+    }
+
+    if let Some(question) = question {
+        println!();
+        println!("## Question Focus");
+        print_question_focus(&manifest.value, question);
+    }
+
+    Ok(())
+}
+
 fn print_context_packet(manifest: &LoadedManifest, root: &Path, task: Option<&str>) -> Result<()> {
     println!("# RMS Context Packet");
     println!();
@@ -2934,6 +6788,2133 @@ fn print_context_packet(manifest: &LoadedManifest, root: &Path, task: Option<&st
     println!("- Verify declared laws, contracts, scenarios, and boundaries that the task affects.");
     Ok(())
 }
+
+#[derive(Debug, Serialize)]
+struct AtlasDocument {
+    spec: &'static str,
+    source: AtlasSource,
+    module: AtlasModuleSummary,
+    layers: Vec<AtlasLayer>,
+    nodes: Vec<AtlasNode>,
+    edges: Vec<AtlasEdge>,
+    questions: Vec<AtlasQuestion>,
+    tours: Vec<AtlasTour>,
+    annotations: Vec<AtlasAnnotation>,
+    interaction: AtlasInteraction,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasSource {
+    root: String,
+    module_manifest: String,
+    generated_by: &'static str,
+    generated_version: &'static str,
+    source_revision: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasModuleSummary {
+    id: String,
+    name: String,
+    version: String,
+    kind: String,
+    purpose: String,
+    profiles: Vec<String>,
+    compatibility: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasLayer {
+    id: &'static str,
+    label: &'static str,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AtlasNode {
+    id: String,
+    kind: String,
+    layer: String,
+    label: String,
+    summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<String>,
+    source_refs: Vec<AtlasSourceRef>,
+    emphasis: u8,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AtlasEdge {
+    id: String,
+    kind: String,
+    from: String,
+    to: String,
+    label: String,
+    source_refs: Vec<AtlasSourceRef>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AtlasSourceRef {
+    role: String,
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasQuestion {
+    id: String,
+    journey: &'static str,
+    label: String,
+    prompt: String,
+    entry_node_ids: Vec<String>,
+    answer: AtlasAnswer,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasAnswer {
+    headline: String,
+    blocks: Vec<AtlasAnswerBlock>,
+    trace: AtlasTrace,
+    gaps: Vec<String>,
+    next_questions: Vec<String>,
+    source_refs: Vec<AtlasSourceRef>,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasAnswerBlock {
+    kind: &'static str,
+    title: String,
+    body: String,
+    node_ids: Vec<String>,
+    source_refs: Vec<AtlasSourceRef>,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasTrace {
+    summary: String,
+    node_ids: Vec<String>,
+    edge_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasTour {
+    id: &'static str,
+    title: &'static str,
+    steps: Vec<AtlasTourStep>,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasTourStep {
+    node_id: String,
+    title: String,
+    body: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasAnnotation {
+    node_id: String,
+    text: String,
+    source_refs: Vec<AtlasSourceRef>,
+}
+
+#[derive(Debug, Serialize)]
+struct AtlasInteraction {
+    default_focus: String,
+    supports_live_reconciliation: bool,
+    agent_generation_policy: &'static str,
+}
+
+#[derive(Debug)]
+struct AtlasNamedReference {
+    name: String,
+    contract: Option<String>,
+}
+
+fn run_atlas(module: &Path, root: &Path, output: Option<&Path>, force: bool) -> Result<()> {
+    let manifest = load_manifest(module)?;
+    let mut diagnostics = Vec::new();
+    validate_loaded_manifest(&manifest, &mut diagnostics);
+    if let Some(diagnostic) = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        bail!(
+            "target module failed validation: {} [{}] {}",
+            diagnostic.path,
+            diagnostic.check,
+            diagnostic.message
+        );
+    }
+
+    let atlas = build_module_atlas(&manifest, root)?;
+    let atlas_json = serde_json::to_string_pretty(&atlas)?;
+    let module_name = get_str(&manifest.value, &["module", "name"]).unwrap_or("module");
+    let output_dir = output.map(Path::to_path_buf).unwrap_or_else(|| {
+        root.join("dist/rms-atlas")
+            .join(semantic_id_segment(module_name))
+    });
+
+    if output_dir.exists() {
+        if !force {
+            bail!(
+                "atlas output already exists at `{}`; pass `--force` to replace it",
+                output_dir.display()
+            );
+        }
+        if output_dir.is_dir() {
+            fs::remove_dir_all(&output_dir)
+                .with_context(|| format!("failed to remove `{}`", output_dir.display()))?;
+        } else {
+            fs::remove_file(&output_dir)
+                .with_context(|| format!("failed to remove `{}`", output_dir.display()))?;
+        }
+    }
+
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("failed to create `{}`", output_dir.display()))?;
+    fs::write(output_dir.join("atlas.json"), &atlas_json).with_context(|| {
+        format!(
+            "failed to write `{}`",
+            output_dir.join("atlas.json").display()
+        )
+    })?;
+    fs::write(
+        output_dir.join("index.html"),
+        render_atlas_html(&atlas_json),
+    )
+    .with_context(|| {
+        format!(
+            "failed to write `{}`",
+            output_dir.join("index.html").display()
+        )
+    })?;
+
+    println!("atlas: {}", output_dir.join("index.html").display());
+    println!("data: {}", output_dir.join("atlas.json").display());
+    Ok(())
+}
+
+fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDocument> {
+    let module_name = get_str(&manifest.value, &["module", "name"]).unwrap_or("module");
+    let module_id = stable_atlas_id("module", module_name);
+    let module_base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let module_ref = atlas_source_ref(root, &manifest.path, "module-manifest");
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    let mut node_ids = BTreeSet::new();
+
+    push_atlas_node(
+        &mut nodes,
+        &mut node_ids,
+        AtlasNode {
+            id: module_id.clone(),
+            kind: "module".to_string(),
+            layer: "overview".to_string(),
+            label: module_name.to_string(),
+            summary: get_str(&manifest.value, &["module", "purpose"])
+                .unwrap_or("RMS module")
+                .to_string(),
+            group: Some(
+                get_str(&manifest.value, &["module", "kind"])
+                    .unwrap_or("module")
+                    .to_string(),
+            ),
+            source_refs: vec![module_ref.clone()],
+            emphasis: 5,
+        },
+    );
+
+    for profile in get_string_array(&manifest.value, &["profiles"]) {
+        let id = stable_atlas_id("profile", &profile);
+        push_atlas_node(
+            &mut nodes,
+            &mut node_ids,
+            AtlasNode {
+                id: id.clone(),
+                kind: "profile".to_string(),
+                layer: "overview".to_string(),
+                label: profile.clone(),
+                summary: format!("Declared RMS profile `{profile}`."),
+                group: Some("profiles".to_string()),
+                source_refs: vec![module_ref.clone()],
+                emphasis: 2,
+            },
+        );
+        push_atlas_edge(
+            &mut edges,
+            "declares-profile",
+            &module_id,
+            &id,
+            "declares",
+            vec![module_ref.clone()],
+        );
+    }
+
+    if let Some(owns) = get_path(&manifest.value, &["owns"]).and_then(YamlValue::as_mapping) {
+        for (group, values) in owns {
+            let group = group.as_str().unwrap_or("ownership");
+            let Some(values) = values.as_sequence() else {
+                continue;
+            };
+            for value in values.iter().filter_map(YamlValue::as_str) {
+                let id = stable_atlas_id(&format!("owns-{group}"), value);
+                push_atlas_node(
+                    &mut nodes,
+                    &mut node_ids,
+                    AtlasNode {
+                        id: id.clone(),
+                        kind: "owned".to_string(),
+                        layer: "ownership".to_string(),
+                        label: value.to_string(),
+                        summary: format!("Owned {group} in the {module_name} module."),
+                        group: Some(group.to_string()),
+                        source_refs: vec![module_ref.clone()],
+                        emphasis: 3,
+                    },
+                );
+                push_atlas_edge(
+                    &mut edges,
+                    "owns",
+                    &module_id,
+                    &id,
+                    group,
+                    vec![module_ref.clone()],
+                );
+            }
+        }
+    }
+
+    for group in ["commands", "queries", "events", "capabilities"] {
+        for item in atlas_named_references(&manifest.value, &["provides", group]) {
+            let id = stable_atlas_id(&format!("provides-{group}"), &item.name);
+            let mut source_refs = vec![module_ref.clone()];
+            if let Some(contract) = &item.contract {
+                source_refs.push(atlas_source_ref(
+                    root,
+                    &module_base.join(contract),
+                    "contract",
+                ));
+            }
+            let summary = item
+                .contract
+                .as_deref()
+                .and_then(|contract| contract_meaning(&module_base.join(contract)))
+                .unwrap_or_else(|| format!("Public {group} surface provided by {module_name}."));
+            push_atlas_node(
+                &mut nodes,
+                &mut node_ids,
+                AtlasNode {
+                    id: id.clone(),
+                    kind: "public-surface".to_string(),
+                    layer: "public-surface".to_string(),
+                    label: item.name,
+                    summary,
+                    group: Some(group.to_string()),
+                    source_refs: source_refs.clone(),
+                    emphasis: if group == "commands" { 4 } else { 3 },
+                },
+            );
+            push_atlas_edge(&mut edges, "provides", &module_id, &id, group, source_refs);
+        }
+    }
+
+    for item in atlas_named_references(&manifest.value, &["requires", "modules"]) {
+        let id = stable_atlas_id("requires-module", &item.name);
+        push_atlas_node(
+            &mut nodes,
+            &mut node_ids,
+            AtlasNode {
+                id: id.clone(),
+                kind: "required-module".to_string(),
+                layer: "dependencies".to_string(),
+                label: item.name,
+                summary: format!("Declared module dependency for {module_name}."),
+                group: Some("modules".to_string()),
+                source_refs: vec![module_ref.clone()],
+                emphasis: 3,
+            },
+        );
+        push_atlas_edge(
+            &mut edges,
+            "requires",
+            &module_id,
+            &id,
+            "requires module",
+            vec![module_ref.clone()],
+        );
+    }
+
+    for item in atlas_named_references(&manifest.value, &["requires", "capabilities"]) {
+        let id = stable_atlas_id("requires-capability", &item.name);
+        let mut source_refs = vec![module_ref.clone()];
+        if let Some(contract) = &item.contract {
+            source_refs.push(atlas_source_ref(
+                root,
+                &module_base.join(contract),
+                "contract",
+            ));
+        }
+        let summary = item
+            .contract
+            .as_deref()
+            .and_then(|contract| contract_meaning(&module_base.join(contract)))
+            .unwrap_or_else(|| format!("Required capability for {module_name}."));
+        push_atlas_node(
+            &mut nodes,
+            &mut node_ids,
+            AtlasNode {
+                id: id.clone(),
+                kind: "required-capability".to_string(),
+                layer: "dependencies".to_string(),
+                label: item.name,
+                summary,
+                group: Some("capabilities".to_string()),
+                source_refs: source_refs.clone(),
+                emphasis: 3,
+            },
+        );
+        push_atlas_edge(
+            &mut edges,
+            "requires",
+            &module_id,
+            &id,
+            "requires capability",
+            source_refs,
+        );
+    }
+
+    if let Some(invariants) =
+        get_path(&manifest.value, &["invariants"]).and_then(YamlValue::as_sequence)
+    {
+        for invariant in invariants {
+            let invariant_id = get_str(invariant, &["id"]).unwrap_or("invariant");
+            let id = stable_atlas_id("invariant", invariant_id);
+            let mut source_refs = vec![module_ref.clone()];
+            if let Some(path) = get_str(invariant, &["verified_by"]) {
+                source_refs.push(atlas_source_ref(root, &module_base.join(path), "evidence"));
+            }
+            push_atlas_node(
+                &mut nodes,
+                &mut node_ids,
+                AtlasNode {
+                    id: id.clone(),
+                    kind: "invariant".to_string(),
+                    layer: "constraints".to_string(),
+                    label: invariant_id.to_string(),
+                    summary: get_str(invariant, &["statement"])
+                        .unwrap_or("Declared module invariant.")
+                        .to_string(),
+                    group: get_str(invariant, &["enforced_by"]).map(ToString::to_string),
+                    source_refs: source_refs.clone(),
+                    emphasis: 4,
+                },
+            );
+            push_atlas_edge(
+                &mut edges,
+                "constrains",
+                &id,
+                &module_id,
+                "constrains",
+                source_refs.clone(),
+            );
+
+            if let Some(path) = get_str(invariant, &["verified_by"]) {
+                let evidence_id = stable_atlas_id("verification", path);
+                push_verification_node(
+                    &mut nodes,
+                    &mut node_ids,
+                    root,
+                    module_base,
+                    &evidence_id,
+                    path,
+                    "invariant evidence",
+                    3,
+                );
+                push_atlas_edge(
+                    &mut edges,
+                    "verifies",
+                    &evidence_id,
+                    &id,
+                    "verifies",
+                    vec![atlas_source_ref(root, &module_base.join(path), "evidence")],
+                );
+            }
+        }
+    }
+
+    if let Some(effects) = get_path(&manifest.value, &["effects"]).and_then(YamlValue::as_sequence)
+    {
+        for effect in effects {
+            let name = get_str(effect, &["name"]).unwrap_or("effect");
+            let id = stable_atlas_id("effect", name);
+            let summary = summarize_effect(effect);
+            push_atlas_node(
+                &mut nodes,
+                &mut node_ids,
+                AtlasNode {
+                    id: id.clone(),
+                    kind: "effect".to_string(),
+                    layer: "effects".to_string(),
+                    label: name.to_string(),
+                    summary,
+                    group: get_str(effect, &["kind"]).map(ToString::to_string),
+                    source_refs: vec![module_ref.clone()],
+                    emphasis: 4,
+                },
+            );
+            push_atlas_edge(
+                &mut edges,
+                "has-effect",
+                &module_id,
+                &id,
+                "effect",
+                vec![module_ref.clone()],
+            );
+        }
+    }
+
+    if let Some(state) = get_path(&manifest.value, &["state"]) {
+        let id = stable_atlas_id("state", module_name);
+        let mut source_refs = vec![module_ref.clone()];
+        if let Some(model) = get_str(state, &["model"]) {
+            source_refs.push(atlas_source_ref(
+                root,
+                &module_base.join(model),
+                "state-model",
+            ));
+        }
+        push_atlas_node(
+            &mut nodes,
+            &mut node_ids,
+            AtlasNode {
+                id: id.clone(),
+                kind: "state".to_string(),
+                layer: "lifecycle".to_string(),
+                label: "state model".to_string(),
+                summary: summarize_state(state),
+                group: get_str(state, &["consistency_boundary"]).map(ToString::to_string),
+                source_refs: source_refs.clone(),
+                emphasis: 3,
+            },
+        );
+        push_atlas_edge(
+            &mut edges,
+            "describes-lifecycle",
+            &id,
+            &module_id,
+            "lifecycle",
+            source_refs,
+        );
+    }
+
+    if let Some(boundary) = get_path(&manifest.value, &["boundary"]) {
+        let id = stable_atlas_id("boundary", module_name);
+        push_atlas_node(
+            &mut nodes,
+            &mut node_ids,
+            AtlasNode {
+                id: id.clone(),
+                kind: "boundary".to_string(),
+                layer: "public-surface".to_string(),
+                label: "boundary".to_string(),
+                summary: summarize_boundary(boundary),
+                group: Some("boundary".to_string()),
+                source_refs: vec![module_ref.clone()],
+                emphasis: 4,
+            },
+        );
+        push_atlas_edge(
+            &mut edges,
+            "defines-boundary",
+            &module_id,
+            &id,
+            "boundary",
+            vec![module_ref.clone()],
+        );
+    }
+
+    let compatibility = get_str(&manifest.value, &["compatibility", "policy"])
+        .unwrap_or("<missing>")
+        .to_string();
+    let compatibility_id = stable_atlas_id("compatibility", &compatibility);
+    push_atlas_node(
+        &mut nodes,
+        &mut node_ids,
+        AtlasNode {
+            id: compatibility_id.clone(),
+            kind: "compatibility".to_string(),
+            layer: "overview".to_string(),
+            label: compatibility.clone(),
+            summary: "Declared compatibility policy for replacing or evolving this module."
+                .to_string(),
+            group: Some("compatibility".to_string()),
+            source_refs: vec![module_ref.clone()],
+            emphasis: 3,
+        },
+    );
+    push_atlas_edge(
+        &mut edges,
+        "declares-compatibility",
+        &module_id,
+        &compatibility_id,
+        "compatibility",
+        vec![module_ref.clone()],
+    );
+
+    for category in ["laws", "contracts", "scenarios", "boundaries"] {
+        for path in get_string_array(&manifest.value, &["verification", category]) {
+            let id = stable_atlas_id("verification", &format!("{category}:{path}"));
+            push_verification_node(
+                &mut nodes,
+                &mut node_ids,
+                root,
+                module_base,
+                &id,
+                &path,
+                category,
+                3,
+            );
+            push_atlas_edge(
+                &mut edges,
+                "verifies",
+                &id,
+                &module_id,
+                category,
+                vec![atlas_source_ref(
+                    root,
+                    &module_base.join(&path),
+                    "verification",
+                )],
+            );
+        }
+    }
+
+    let questions = build_atlas_questions(&nodes, &edges, &module_id);
+    let tours = build_atlas_tours(&nodes, &module_id);
+
+    Ok(AtlasDocument {
+        spec: "rms/atlas/v0.1",
+        source: AtlasSource {
+            root: root.display().to_string(),
+            module_manifest: atlas_source_ref(root, &manifest.path, "module-manifest").path,
+            generated_by: VALIDATOR_NAME,
+            generated_version: VALIDATOR_VERSION,
+            source_revision: source_revision(root),
+        },
+        module: AtlasModuleSummary {
+            id: module_id.clone(),
+            name: module_name.to_string(),
+            version: get_str(&manifest.value, &["module", "version"])
+                .unwrap_or("")
+                .to_string(),
+            kind: get_str(&manifest.value, &["module", "kind"])
+                .unwrap_or("")
+                .to_string(),
+            purpose: get_str(&manifest.value, &["module", "purpose"])
+                .unwrap_or("")
+                .to_string(),
+            profiles: get_string_array(&manifest.value, &["profiles"]),
+            compatibility,
+        },
+        layers: atlas_layers(),
+        nodes,
+        edges,
+        questions,
+        tours,
+        annotations: Vec::new(),
+        interaction: AtlasInteraction {
+            default_focus: module_id,
+            supports_live_reconciliation: true,
+            agent_generation_policy:
+                "Agents may add annotations and tours only for existing semantic IDs; topology remains derived from RMS artifacts.",
+        },
+    })
+}
+
+fn atlas_layers() -> Vec<AtlasLayer> {
+    vec![
+        AtlasLayer {
+            id: "overview",
+            label: "Overview",
+        },
+        AtlasLayer {
+            id: "ownership",
+            label: "Ownership",
+        },
+        AtlasLayer {
+            id: "public-surface",
+            label: "Public Surface",
+        },
+        AtlasLayer {
+            id: "dependencies",
+            label: "Dependencies",
+        },
+        AtlasLayer {
+            id: "effects",
+            label: "Effects",
+        },
+        AtlasLayer {
+            id: "constraints",
+            label: "Constraints",
+        },
+        AtlasLayer {
+            id: "lifecycle",
+            label: "Lifecycle",
+        },
+        AtlasLayer {
+            id: "verification",
+            label: "Verification",
+        },
+    ]
+}
+
+fn push_atlas_node(nodes: &mut Vec<AtlasNode>, node_ids: &mut BTreeSet<String>, node: AtlasNode) {
+    if node_ids.insert(node.id.clone()) {
+        nodes.push(node);
+    }
+}
+
+fn push_verification_node(
+    nodes: &mut Vec<AtlasNode>,
+    node_ids: &mut BTreeSet<String>,
+    root: &Path,
+    module_base: &Path,
+    id: &str,
+    path: &str,
+    group: &str,
+    emphasis: u8,
+) {
+    let absolute_path = module_base.join(path);
+    push_atlas_node(
+        nodes,
+        node_ids,
+        AtlasNode {
+            id: id.to_string(),
+            kind: "verification".to_string(),
+            layer: "verification".to_string(),
+            label: path_label(path),
+            summary: evidence_summary(&absolute_path),
+            group: Some(group.to_string()),
+            source_refs: vec![atlas_source_ref(root, &absolute_path, "verification")],
+            emphasis,
+        },
+    );
+}
+
+fn push_atlas_edge(
+    edges: &mut Vec<AtlasEdge>,
+    kind: &str,
+    from: &str,
+    to: &str,
+    label: &str,
+    source_refs: Vec<AtlasSourceRef>,
+) {
+    edges.push(AtlasEdge {
+        id: stable_atlas_id("edge", &format!("{kind}:{from}:{to}")),
+        kind: kind.to_string(),
+        from: from.to_string(),
+        to: to.to_string(),
+        label: label.to_string(),
+        source_refs,
+    });
+}
+
+fn atlas_named_references(value: &YamlValue, path: &[&str]) -> Vec<AtlasNamedReference> {
+    get_path(value, path)
+        .and_then(YamlValue::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| match item {
+                    YamlValue::String(name) => Some(AtlasNamedReference {
+                        name: name.to_string(),
+                        contract: None,
+                    }),
+                    YamlValue::Mapping(_) => {
+                        get_str(item, &["name"]).map(|name| AtlasNamedReference {
+                            name: name.to_string(),
+                            contract: get_str(item, &["contract"]).map(ToString::to_string),
+                        })
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn contract_meaning(path: &Path) -> Option<String> {
+    let manifest = load_manifest(path).ok()?;
+    get_str(&manifest.value, &["meaning"]).map(ToString::to_string)
+}
+
+fn summarize_effect(effect: &YamlValue) -> String {
+    let mut parts = Vec::new();
+    if let Some(kind) = get_str(effect, &["kind"]) {
+        parts.push(format!("kind: {kind}"));
+    }
+    if let Some(capability) = get_str(effect, &["capability"]) {
+        parts.push(format!("capability: {capability}"));
+    }
+    if let Some(semantics) = get_path(effect, &["semantics"]) {
+        let summary = summarize_yaml_mapping(semantics, 4);
+        if !summary.is_empty() {
+            parts.push(summary);
+        }
+    }
+    if parts.is_empty() {
+        "Declared external effect.".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
+fn summarize_state(state: &YamlValue) -> String {
+    let mut parts = Vec::new();
+    for key in [
+        "model",
+        "consistency_boundary",
+        "concurrency",
+        "persistence",
+        "migration_policy",
+    ] {
+        if let Some(value) = get_str(state, &[key]) {
+            parts.push(format!("{key}: {value}"));
+        }
+    }
+    if parts.is_empty() {
+        "Declared lifecycle or state model.".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
+fn summarize_boundary(boundary: &YamlValue) -> String {
+    let mut parts = Vec::new();
+    for key in [
+        "validation",
+        "authorization",
+        "malformed_input",
+        "deprecation",
+    ] {
+        if let Some(value) = get_str(boundary, &[key]) {
+            parts.push(format!("{key}: {value}"));
+        }
+    }
+    let accepted = get_string_array(boundary, &["accepted_contracts"]);
+    if !accepted.is_empty() {
+        parts.push(format!("accepted contracts: {}", accepted.join(", ")));
+    }
+    if parts.is_empty() {
+        "Declared boundary behavior.".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
+fn summarize_yaml_mapping(value: &YamlValue, limit: usize) -> String {
+    let Some(mapping) = value.as_mapping() else {
+        return String::new();
+    };
+    mapping
+        .iter()
+        .filter_map(|(key, value)| {
+            Some(format!(
+                "{}: {}",
+                key.as_str()?,
+                value
+                    .as_str()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "<structured>".to_string())
+            ))
+        })
+        .take(limit)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn evidence_summary(path: &Path) -> String {
+    if path.is_dir() {
+        let count = WalkDir::new(path)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .count();
+        return format!("{count} evidence artifact(s) under this path.");
+    }
+    if path.exists() {
+        "Evidence artifact referenced by the module.".to_string()
+    } else {
+        "Evidence path referenced by the module.".to_string()
+    }
+}
+
+fn path_label(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn atlas_source_ref(root: &Path, path: &Path, role: &str) -> AtlasSourceRef {
+    AtlasSourceRef {
+        role: role.to_string(),
+        path: display_path(&root_relative_path(root, path)),
+    }
+}
+
+fn build_atlas_questions(
+    nodes: &[AtlasNode],
+    edges: &[AtlasEdge],
+    module_id: &str,
+) -> Vec<AtlasQuestion> {
+    let Some(module) = nodes.iter().find(|node| node.id == module_id) else {
+        return Vec::new();
+    };
+
+    let ownership = atlas_nodes_for_layer(nodes, "ownership");
+    let public_surface = atlas_nodes_for_layer(nodes, "public-surface");
+    let effects = atlas_nodes_for_layer(nodes, "effects");
+    let lifecycle = atlas_nodes_for_layer(nodes, "lifecycle");
+    let verification = atlas_nodes_for_layer(nodes, "verification");
+    let invariants = atlas_nodes_for_kind(nodes, "invariant");
+    let compatibility = atlas_nodes_for_kind(nodes, "compatibility");
+
+    let mut questions = Vec::new();
+    let overview_nodes = atlas_take_nodes(
+        &[
+            &[module][..],
+            &ownership,
+            &public_surface,
+            &effects,
+            &verification,
+        ],
+        8,
+    );
+    questions.push(atlas_question(
+        "understand-module",
+        "Understand",
+        format!("What is `{}` for?", module.label),
+        "What is this module for, and where should I look first?".to_string(),
+        vec![module.id.clone()],
+        format!(
+            "`{}` exists to {}.",
+            module.label,
+            lowercase_first(&module.summary)
+        ),
+        vec![
+            atlas_answer_block(
+                "summary",
+                "Module thesis",
+                module.summary.clone(),
+                &[module],
+            ),
+            atlas_answer_block(
+                "next",
+                "Best first questions",
+                atlas_available_question_summary(
+                    &ownership,
+                    &public_surface,
+                    &effects,
+                    &verification,
+                ),
+                &overview_nodes,
+            ),
+        ],
+        atlas_gap_summary(&[
+            ("public surface", public_surface.is_empty()),
+            ("verification evidence", verification.is_empty()),
+        ]),
+        vec![
+            "What does it own?".to_string(),
+            "What can other modules use?".to_string(),
+            "What proves it?".to_string(),
+        ],
+        &overview_nodes,
+        edges,
+    ));
+
+    if !ownership.is_empty() {
+        questions.push(atlas_question(
+            "ownership-boundary",
+            "Understand",
+            "What does this module own?".to_string(),
+            "What meaning belongs inside this module, and what must not leak out?".to_string(),
+            atlas_node_ids(&ownership),
+            format!(
+                "`{}` owns {} semantic item(s). Treat these as the module's authority boundary.",
+                module.label,
+                ownership.len()
+            ),
+            vec![atlas_answer_block(
+                "ownership",
+                "Owned meaning",
+                atlas_grouped_node_bullets(&ownership),
+                &ownership,
+            )],
+            Vec::new(),
+            vec![
+                "What can other modules use?".to_string(),
+                "What would break if this changes?".to_string(),
+            ],
+            &atlas_with_module(module, &ownership),
+            edges,
+        ));
+    }
+
+    if !public_surface.is_empty() {
+        let mut surface_nodes = atlas_with_module(module, &public_surface);
+        surface_nodes.extend(invariants.iter().copied());
+        questions.push(atlas_question(
+            "public-surface",
+            "Compose",
+            "What can other modules use?".to_string(),
+            "What can other modules call, query, subscribe to, or rely on?".to_string(),
+            atlas_node_ids(&public_surface),
+            format!(
+                "`{}` exposes {} public surface item(s). Each one is compatibility-sensitive.",
+                module.label,
+                public_surface.len()
+            ),
+            vec![
+                atlas_answer_block(
+                    "public-surface",
+                    "Public contracts and boundary",
+                    atlas_grouped_node_bullets(&public_surface),
+                    &public_surface,
+                ),
+                atlas_answer_block(
+                    "constraints",
+                    "Relevant constraints",
+                    atlas_grouped_node_bullets(&invariants),
+                    &invariants,
+                ),
+            ],
+            atlas_gap_summary(&[("invariants", invariants.is_empty())]),
+            vec![
+                "Can I safely change a public surface?".to_string(),
+                "What proves it?".to_string(),
+            ],
+            &surface_nodes,
+            edges,
+        ));
+    }
+
+    if !effects.is_empty() {
+        let mut effect_nodes = atlas_with_module(module, &effects);
+        effect_nodes.extend(public_surface.iter().copied());
+        questions.push(atlas_question(
+            "effects-and-recovery",
+            "Operate",
+            "Where can external truth diverge?".to_string(),
+            "Which declared effects, dependencies, or recovery paths shape operations?".to_string(),
+            atlas_node_ids(&effects),
+            format!(
+                "`{}` declares {} external effect node(s). These are the places to inspect recovery and drift.",
+                module.label,
+                effects.len()
+            ),
+            vec![atlas_answer_block(
+                "effects",
+                "Declared effects",
+                atlas_grouped_node_bullets(&effects),
+                &effects,
+            )],
+            atlas_gap_summary(&[("public triggers", public_surface.is_empty())]),
+            vec![
+                "What can other modules use?".to_string(),
+                "What proves it?".to_string(),
+            ],
+            &effect_nodes,
+            edges,
+        ));
+    }
+
+    if !lifecycle.is_empty() {
+        questions.push(atlas_question(
+            "lifecycle",
+            "Change",
+            "What lifecycle or state rules matter?".to_string(),
+            "Which state model, migration policy, or transition rules constrain changes?".to_string(),
+            atlas_node_ids(&lifecycle),
+            format!(
+                "`{}` has {} lifecycle node(s). Use them to reject illegal transitions and migration shortcuts.",
+                module.label,
+                lifecycle.len()
+            ),
+            vec![atlas_answer_block(
+                "lifecycle",
+                "Lifecycle constraints",
+                atlas_grouped_node_bullets(&lifecycle),
+                &lifecycle,
+            )],
+            Vec::new(),
+            vec!["What proves it?".to_string()],
+            &atlas_with_module(module, &lifecycle),
+            edges,
+        ));
+    }
+
+    if !compatibility.is_empty() {
+        questions.push(atlas_question(
+            "compatibility",
+            "Change",
+            "What would break if this changes?".to_string(),
+            "Which compatibility policy and public surfaces govern safe evolution?".to_string(),
+            atlas_node_ids(&compatibility),
+            format!(
+                "`{}` declares compatibility as `{}`.",
+                module.label, compatibility[0].label
+            ),
+            vec![
+                atlas_answer_block(
+                    "compatibility",
+                    "Compatibility policy",
+                    atlas_grouped_node_bullets(&compatibility),
+                    &compatibility,
+                ),
+                atlas_answer_block(
+                    "public-surface",
+                    "Compatibility-sensitive surface",
+                    atlas_grouped_node_bullets(&public_surface),
+                    &public_surface,
+                ),
+            ],
+            atlas_gap_summary(&[("public surface", public_surface.is_empty())]),
+            vec![
+                "What can other modules use?".to_string(),
+                "What proves it?".to_string(),
+            ],
+            &atlas_take_nodes(&[&[module][..], &compatibility, &public_surface], 12),
+            edges,
+        ));
+    }
+
+    questions.push(atlas_question(
+        "verification",
+        "Verify",
+        "What proves it?".to_string(),
+        "Which evidence paths support this module's laws, contracts, scenarios, and boundaries?"
+            .to_string(),
+        atlas_node_ids(&verification),
+        if verification.is_empty() {
+            format!(
+                "`{}` does not expose verification nodes in this atlas.",
+                module.label
+            )
+        } else {
+            format!(
+                "`{}` exposes {} verification node(s). Follow these before trusting a change.",
+                module.label,
+                verification.len()
+            )
+        },
+        vec![atlas_answer_block(
+            "verification",
+            "Evidence",
+            atlas_grouped_node_bullets(&verification),
+            &verification,
+        )],
+        atlas_gap_summary(&[("verification evidence", verification.is_empty())]),
+        vec![
+            "What is this module for?".to_string(),
+            "What would break if this changes?".to_string(),
+        ],
+        &atlas_with_module(module, &verification),
+        edges,
+    ));
+
+    questions
+}
+
+fn atlas_nodes_for_layer<'a>(nodes: &'a [AtlasNode], layer: &str) -> Vec<&'a AtlasNode> {
+    nodes.iter().filter(|node| node.layer == layer).collect()
+}
+
+fn atlas_nodes_for_kind<'a>(nodes: &'a [AtlasNode], kind: &str) -> Vec<&'a AtlasNode> {
+    nodes.iter().filter(|node| node.kind == kind).collect()
+}
+
+fn atlas_with_module<'a>(module: &'a AtlasNode, nodes: &[&'a AtlasNode]) -> Vec<&'a AtlasNode> {
+    let mut combined = vec![module];
+    combined.extend(nodes.iter().copied());
+    combined
+}
+
+fn atlas_take_nodes<'a>(groups: &[&[&'a AtlasNode]], limit: usize) -> Vec<&'a AtlasNode> {
+    let mut result = Vec::new();
+    for group in groups {
+        for node in *group {
+            if !result
+                .iter()
+                .any(|existing: &&AtlasNode| existing.id == node.id)
+            {
+                result.push(*node);
+            }
+            if result.len() >= limit {
+                return result;
+            }
+        }
+    }
+    result
+}
+
+fn atlas_node_ids(nodes: &[&AtlasNode]) -> Vec<String> {
+    nodes.iter().map(|node| node.id.clone()).collect()
+}
+
+fn atlas_question(
+    id: &str,
+    journey: &'static str,
+    label: String,
+    prompt: String,
+    entry_node_ids: Vec<String>,
+    headline: String,
+    blocks: Vec<AtlasAnswerBlock>,
+    gaps: Vec<String>,
+    next_questions: Vec<String>,
+    trace_nodes: &[&AtlasNode],
+    edges: &[AtlasEdge],
+) -> AtlasQuestion {
+    let trace_node_ids = atlas_node_ids(trace_nodes);
+    let trace_edge_ids = atlas_trace_edge_ids(edges, &trace_node_ids);
+    let source_refs = collect_atlas_source_refs(trace_nodes);
+    AtlasQuestion {
+        id: id.to_string(),
+        journey,
+        label,
+        prompt,
+        entry_node_ids,
+        answer: AtlasAnswer {
+            headline,
+            blocks,
+            trace: AtlasTrace {
+                summary: format!(
+                    "{} node(s), {} edge(s)",
+                    trace_node_ids.len(),
+                    trace_edge_ids.len()
+                ),
+                node_ids: trace_node_ids,
+                edge_ids: trace_edge_ids,
+            },
+            gaps,
+            next_questions,
+            source_refs,
+        },
+    }
+}
+
+fn atlas_answer_block(
+    kind: &'static str,
+    title: &str,
+    body: String,
+    nodes: &[&AtlasNode],
+) -> AtlasAnswerBlock {
+    AtlasAnswerBlock {
+        kind,
+        title: title.to_string(),
+        body,
+        node_ids: atlas_node_ids(nodes),
+        source_refs: collect_atlas_source_refs(nodes),
+    }
+}
+
+fn atlas_grouped_node_bullets(nodes: &[&AtlasNode]) -> String {
+    if nodes.is_empty() {
+        return "No derived nodes in this category.".to_string();
+    }
+    nodes
+        .iter()
+        .map(|node| {
+            let group = node.group.as_deref().unwrap_or(&node.kind);
+            format!("- {group}: {} - {}", node.label, node.summary)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn atlas_available_question_summary(
+    ownership: &[&AtlasNode],
+    public_surface: &[&AtlasNode],
+    effects: &[&AtlasNode],
+    verification: &[&AtlasNode],
+) -> String {
+    let mut items = Vec::new();
+    if !ownership.is_empty() {
+        items.push("ownership boundary");
+    }
+    if !public_surface.is_empty() {
+        items.push("public surface");
+    }
+    if !effects.is_empty() {
+        items.push("external effects and recovery");
+    }
+    if !verification.is_empty() {
+        items.push("verification evidence");
+    }
+    if items.is_empty() {
+        "Start with the module purpose, then inspect the canonical manifest directly.".to_string()
+    } else {
+        format!("Available question paths: {}.", items.join(", "))
+    }
+}
+
+fn atlas_gap_summary(items: &[(&str, bool)]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|(label, missing)| {
+            missing.then(|| format!("No {label} nodes were derived for this question."))
+        })
+        .collect()
+}
+
+fn atlas_trace_edge_ids(edges: &[AtlasEdge], node_ids: &[String]) -> Vec<String> {
+    edges
+        .iter()
+        .filter(|edge| node_ids.contains(&edge.from) && node_ids.contains(&edge.to))
+        .map(|edge| edge.id.clone())
+        .collect()
+}
+
+fn collect_atlas_source_refs(nodes: &[&AtlasNode]) -> Vec<AtlasSourceRef> {
+    let mut refs = Vec::new();
+    for node in nodes {
+        for source_ref in &node.source_refs {
+            if !refs.iter().any(|existing: &AtlasSourceRef| {
+                existing.role == source_ref.role && existing.path == source_ref.path
+            }) {
+                refs.push(source_ref.clone());
+            }
+        }
+    }
+    refs
+}
+
+fn lowercase_first(value: &str) -> String {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return String::new();
+    };
+    first.to_lowercase().chain(characters).collect()
+}
+
+fn build_atlas_tours(nodes: &[AtlasNode], module_id: &str) -> Vec<AtlasTour> {
+    let mut steps = Vec::new();
+    for layer in [
+        "overview",
+        "ownership",
+        "public-surface",
+        "dependencies",
+        "effects",
+        "constraints",
+        "lifecycle",
+        "verification",
+    ] {
+        if let Some(node) = nodes.iter().find(|node| {
+            if layer == "overview" {
+                node.id == module_id
+            } else {
+                node.layer == layer
+            }
+        }) {
+            steps.push(AtlasTourStep {
+                node_id: node.id.clone(),
+                title: node.label.clone(),
+                body: node.summary.clone(),
+            });
+        }
+    }
+
+    vec![AtlasTour {
+        id: "human-overview",
+        title: "Human Overview",
+        steps,
+    }]
+}
+
+fn stable_atlas_id(kind: &str, value: &str) -> String {
+    format!(
+        "{}:{}",
+        semantic_id_segment(kind),
+        semantic_id_segment(value)
+    )
+}
+
+fn semantic_id_segment(value: &str) -> String {
+    let mut output = String::new();
+    let mut previous_dash = false;
+    for character in value.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            output.push(character);
+            previous_dash = false;
+        } else if !previous_dash {
+            output.push('-');
+            previous_dash = true;
+        }
+    }
+    let trimmed = output.trim_matches('-');
+    if trimmed.is_empty() {
+        "item".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn render_atlas_html(atlas_json: &str) -> String {
+    ATLAS_HTML_TEMPLATE.replace("__ATLAS_JSON__", &html_script_json(atlas_json))
+}
+
+fn html_script_json(value: &str) -> String {
+    value.replace("</script", "<\\/script")
+}
+
+const ATLAS_HTML_TEMPLATE: &str = r##"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RMS Atlas</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #202124;
+      --muted: #686f78;
+      --line: #d9dde2;
+      --surface: rgba(255,255,255,.88);
+      --surface-strong: rgba(255,255,255,.96);
+      --accent: #137c72;
+      --attention: #b64f38;
+      --proof: #5b6fb9;
+      --field: #f4f2ed;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      overflow: hidden;
+      color: var(--ink);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at 50% 35%, #ffffff 0, #f7f4ee 42%, #e9eef0 100%);
+    }
+    #scene, #labels {
+      position: fixed;
+      inset: 0;
+    }
+    #scene { cursor: grab; touch-action: none; }
+    #scene.dragging { cursor: grabbing; }
+    #labels { pointer-events: none; }
+    .topbar {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      right: 16px;
+      z-index: 10;
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+      pointer-events: none;
+    }
+    .identity, .tools, .inspector, .map-key {
+      pointer-events: auto;
+      background: var(--surface);
+      border: 1px solid rgba(32,33,36,.12);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 18px 60px rgba(32,33,36,.10);
+    }
+    .identity {
+      width: min(560px, 100%);
+      padding: 14px 16px;
+      border-radius: 10px;
+    }
+    .eyebrow {
+      margin: 0 0 4px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(24px, 3.5vw, 44px);
+      line-height: .98;
+      letter-spacing: 0;
+    }
+    .purpose {
+      max-width: 54ch;
+      margin: 8px 0 0;
+      color: var(--muted);
+    }
+    .tools {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+      max-width: min(720px, calc(100vw - 32px));
+      padding: 10px;
+      border-radius: 10px;
+    }
+    button, input {
+      height: 34px;
+      border: 1px solid rgba(32,33,36,.16);
+      border-radius: 8px;
+      background: rgba(255,255,255,.82);
+      color: var(--ink);
+      font: inherit;
+    }
+    button {
+      padding: 0 11px;
+      cursor: pointer;
+    }
+    button:hover, button.active {
+      border-color: rgba(19,124,114,.45);
+      color: #0b5e56;
+      background: #eef9f6;
+    }
+    input {
+      width: 280px;
+      padding: 0 11px;
+      outline: none;
+    }
+    .map-key {
+      position: fixed;
+      left: 16px;
+      top: 168px;
+      z-index: 8;
+      width: min(320px, calc(100vw - 32px));
+      padding: 12px 14px;
+      border-radius: 10px;
+    }
+    .map-key summary {
+      cursor: pointer;
+      font-weight: 760;
+      list-style: none;
+    }
+    .map-key summary::-webkit-details-marker { display: none; }
+    .map-rule {
+      display: grid;
+      grid-template-columns: 70px 1fr;
+      gap: 8px;
+      margin-top: 8px;
+      color: #30343a;
+    }
+    .map-rule p {
+      margin: 0;
+    }
+    .map-rule span:first-child {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 720;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .question-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(32,33,36,.10);
+    }
+    .question-row button {
+      height: 30px;
+      font-size: 12px;
+    }
+    .inspector {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 9;
+      width: min(390px, calc(100vw - 32px));
+      max-height: min(520px, calc(100vh - 130px));
+      overflow: auto;
+      padding: 16px;
+      border-radius: 10px;
+    }
+    .inspector h2 {
+      margin: 0 0 6px;
+      font-size: 19px;
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+    .kind {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .summary {
+      margin: 12px 0;
+      color: #30343a;
+    }
+    .refs {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(32,33,36,.12);
+    }
+    .relationships {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(32,33,36,.12);
+    }
+    .relation {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+      width: 100%;
+      height: auto;
+      margin-top: 6px;
+      padding: 7px 8px;
+      text-align: left;
+      border-radius: 7px;
+    }
+    .relation small {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .refs code {
+      display: block;
+      margin-top: 6px;
+      color: #46505a;
+      font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .label {
+      padding: 4px 7px;
+      border: 1px solid rgba(32,33,36,.13);
+      border-radius: 7px;
+      background: rgba(255,255,255,.84);
+      box-shadow: 0 8px 24px rgba(32,33,36,.08);
+      color: #23272c;
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+      transform: translateY(-8px);
+      transition: opacity .18s ease, transform .18s ease;
+    }
+    .label.dim {
+      opacity: .22;
+    }
+    .status {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      z-index: 8;
+      color: var(--muted);
+      background: rgba(255,255,255,.72);
+      border: 1px solid rgba(32,33,36,.10);
+      border-radius: 8px;
+      padding: 8px 10px;
+      backdrop-filter: blur(14px);
+    }
+    @media (max-width: 760px) {
+      .topbar {
+        grid-template-columns: 1fr;
+      }
+      .tools {
+        justify-content: flex-start;
+      }
+      input {
+        width: 100%;
+        flex-basis: 100%;
+      }
+      .inspector {
+        left: 16px;
+        width: auto;
+        max-height: 42vh;
+      }
+      .map-key {
+        top: auto;
+        bottom: calc(42vh + 32px);
+        max-height: 150px;
+        overflow: auto;
+      }
+      .status {
+        display: none;
+      }
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <script id="atlas-data" type="application/json">__ATLAS_JSON__</script>
+  <canvas id="scene"></canvas>
+  <div id="labels"></div>
+  <header class="topbar">
+    <section class="identity">
+      <p class="eyebrow">RMS Atlas</p>
+      <h1 id="moduleName">Module</h1>
+      <p class="purpose" id="modulePurpose"></p>
+    </section>
+    <nav class="tools" aria-label="Atlas controls">
+      <input id="search" type="search" placeholder="Find command, invariant, effect">
+      <button id="overview" type="button">Reset view</button>
+      <button id="tour" type="button">Tour</button>
+      <button id="trace" type="button">Trace selection</button>
+      <span id="layers"></span>
+    </nav>
+  </header>
+  <details class="map-key" open>
+    <summary>Read the map</summary>
+    <div class="map-rule"><span>Center</span><p>the module and its declared profiles.</p></div>
+    <div class="map-rule"><span>Inside</span><p>owned concepts, data, identities, and decisions.</p></div>
+    <div class="map-rule"><span>Edge</span><p>public commands, queries, events, and boundary behavior.</p></div>
+    <div class="map-rule"><span>Outside</span><p>required modules, capabilities, and external effects.</p></div>
+    <div class="map-rule"><span>Proof</span><p>verification paths tied back to promises.</p></div>
+    <div class="question-row" aria-label="Question shortcuts">
+      <button type="button" data-focus-layer="ownership">Owns</button>
+      <button type="button" data-focus-layer="public-surface">Public</button>
+      <button type="button" data-focus-layer="effects">Effects</button>
+      <button type="button" data-focus-layer="verification">Proof</button>
+    </div>
+  </details>
+  <aside class="inspector" id="inspector"></aside>
+  <div class="status" id="status"></div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+    const atlas = JSON.parse(document.getElementById('atlas-data').textContent);
+    const canvas = document.getElementById('scene');
+    const labelsRoot = document.getElementById('labels');
+    const inspector = document.getElementById('inspector');
+    const status = document.getElementById('status');
+    const search = document.getElementById('search');
+    const layerRoot = document.getElementById('layers');
+    const mapKey = document.querySelector('.map-key');
+    document.getElementById('moduleName').textContent = atlas.module.name;
+    document.getElementById('modulePurpose').textContent = atlas.module.purpose;
+    if (window.innerWidth <= 760 && mapKey) {
+      mapKey.open = false;
+    }
+
+    const activeLayers = new Set(atlas.layers.map(layer => layer.id));
+    const nodeById = new Map(atlas.nodes.map(node => [node.id, node]));
+    const connected = new Map();
+    const edgesByNode = new Map();
+    for (const edge of atlas.edges) {
+      if (!connected.has(edge.from)) connected.set(edge.from, new Set());
+      if (!connected.has(edge.to)) connected.set(edge.to, new Set());
+      if (!edgesByNode.has(edge.from)) edgesByNode.set(edge.from, []);
+      if (!edgesByNode.has(edge.to)) edgesByNode.set(edge.to, []);
+      connected.get(edge.from).add(edge.to);
+      connected.get(edge.to).add(edge.from);
+      edgesByNode.get(edge.from).push(edge);
+      edgesByNode.get(edge.to).push(edge);
+    }
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xf7f4ee);
+    const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 8.8, 10.8);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    const labelRenderer = new CSS2DRenderer({ element: labelsRoot });
+    labelRenderer.setSize(window.innerWidth, window.innerHeight);
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0xb8b0a4, 1.8));
+    const key = new THREE.DirectionalLight(0xffffff, 2.2);
+    key.position.set(4, 8, 7);
+    scene.add(key);
+
+    const field = new THREE.Mesh(
+      new THREE.CircleGeometry(7.6, 96),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.74 })
+    );
+    field.rotation.x = -Math.PI / 2;
+    field.position.y = -0.08;
+    scene.add(field);
+
+    const ringMaterial = new THREE.LineBasicMaterial({ color: 0xd2d8dc, transparent: true, opacity: 0.85 });
+    for (const radius of [2.15, 3.75, 5.35, 6.85]) {
+      const ring = new THREE.LineLoop(
+        new THREE.BufferGeometry().setFromPoints(
+          Array.from({ length: 128 }, (_, index) => {
+            const angle = index / 128 * Math.PI * 2;
+            return new THREE.Vector3(Math.cos(angle) * radius, -0.04, Math.sin(angle) * radius);
+          })
+        ),
+        ringMaterial
+      );
+      scene.add(ring);
+    }
+
+    const layerSpec = {
+      overview: { radius: 0.55, y: 0.28, color: 0x202124, size: 0.78 },
+      ownership: { radius: 2.15, y: 0.10, color: 0x137c72, size: 0.44 },
+      'public-surface': { radius: 3.75, y: 0.16, color: 0x2f6f95, size: 0.48 },
+      dependencies: { radius: 5.35, y: 0.05, color: 0x7a6a3a, size: 0.42 },
+      effects: { radius: 6.45, y: 0.18, color: 0xb64f38, size: 0.50 },
+      constraints: { radius: 3.05, y: 0.62, color: 0x5b6fb9, size: 0.45 },
+      lifecycle: { radius: 1.55, y: 0.45, color: 0x8361a8, size: 0.42 },
+      verification: { radius: 5.75, y: -0.30, color: 0x62758b, size: 0.36 }
+    };
+    const angleOffsets = {
+      overview: 0,
+      ownership: -Math.PI * 0.78,
+      'public-surface': -Math.PI * 0.2,
+      dependencies: Math.PI * 0.24,
+      effects: Math.PI * 0.02,
+      constraints: Math.PI * 0.75,
+      lifecycle: Math.PI * 1.35,
+      verification: Math.PI * 1.03
+    };
+
+    const nodesByLayer = new Map();
+    for (const node of atlas.nodes) {
+      if (!nodesByLayer.has(node.layer)) nodesByLayer.set(node.layer, []);
+      nodesByLayer.get(node.layer).push(node);
+    }
+
+    const objects = new Map();
+    const selectable = [];
+    for (const [layer, nodes] of nodesByLayer) {
+      const spec = layerSpec[layer] || layerSpec.overview;
+      nodes.forEach((node, index) => {
+        let x = 0;
+        let z = 0;
+        if (node.kind !== 'module') {
+          const angle = (angleOffsets[layer] || 0) + (index / Math.max(nodes.length, 1)) * Math.PI * 2;
+          x = Math.cos(angle) * spec.radius;
+          z = Math.sin(angle) * spec.radius;
+        }
+        const width = Math.max(spec.size, 0.28 + Math.min(node.label.length, 24) * 0.025);
+        const height = spec.size * (node.kind === 'module' ? 1.15 : 0.62);
+        const depth = 0.08 + node.emphasis * 0.045;
+        const mesh = new THREE.Mesh(
+          new THREE.BoxGeometry(width, depth, height),
+          new THREE.MeshStandardMaterial({
+            color: spec.color,
+            roughness: 0.72,
+            metalness: 0.03,
+            transparent: true,
+            opacity: node.layer === 'verification' ? 0.78 : 0.92
+          })
+        );
+        mesh.position.set(x, spec.y, z);
+        mesh.userData.nodeId = node.id;
+        scene.add(mesh);
+        selectable.push(mesh);
+
+        const label = document.createElement('div');
+        label.className = 'label';
+        label.textContent = node.label;
+        const labelObject = new CSS2DObject(label);
+        labelObject.position.set(0, depth + 0.08, 0);
+        mesh.add(labelObject);
+
+        objects.set(node.id, { mesh, label, node, baseColor: spec.color });
+      });
+    }
+
+    const edgeGroup = new THREE.Group();
+    scene.add(edgeGroup);
+    const edgeObjects = [];
+    for (const edge of atlas.edges) {
+      const from = objects.get(edge.from)?.mesh.position;
+      const to = objects.get(edge.to)?.mesh.position;
+      if (!from || !to) continue;
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(from.x, from.y - 0.02, from.z),
+          new THREE.Vector3(to.x, to.y - 0.02, to.z)
+        ]),
+        new THREE.LineBasicMaterial({ color: 0x89929a, transparent: true, opacity: 0.34 })
+      );
+      line.userData.edge = edge;
+      edgeGroup.add(line);
+      edgeObjects.push(line);
+    }
+
+    for (const layer of atlas.layers) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'active';
+      button.textContent = layer.label;
+      button.addEventListener('click', () => {
+        if (activeLayers.has(layer.id)) {
+          activeLayers.delete(layer.id);
+          button.classList.remove('active');
+        } else {
+          activeLayers.add(layer.id);
+          button.classList.add('active');
+        }
+        updateVisibility();
+      });
+      layerRoot.append(button);
+    }
+
+    let selectedId = atlas.interaction.default_focus;
+    let tourIndex = 0;
+    let traceMode = false;
+    let target = new THREE.Vector3(0, 0, 0);
+    let viewYaw = 0;
+    let viewHeight = 8.8;
+    let viewDistance = 10.8;
+    let cameraTarget = new THREE.Vector3(0, viewHeight, viewDistance);
+
+    function updateCameraTarget() {
+      cameraTarget = new THREE.Vector3(
+        target.x + Math.sin(viewYaw) * viewDistance,
+        viewHeight,
+        target.z + Math.cos(viewYaw) * viewDistance
+      );
+    }
+
+    function selectNode(id) {
+      if (!objects.has(id)) return;
+      selectedId = id;
+      const position = objects.get(id).mesh.position;
+      target = new THREE.Vector3(position.x, 0, position.z);
+      viewHeight = 6.3;
+      viewDistance = 7.2;
+      updateCameraTarget();
+      renderInspector(nodeById.get(id));
+      updateVisibility();
+    }
+
+    function renderInspector(node) {
+      const refs = node.source_refs || [];
+      const relations = relationshipRows(node.id);
+      inspector.innerHTML = `
+        <div class="kind">${escapeHtml(node.layer)} / ${escapeHtml(node.kind)}</div>
+        <h2>${escapeHtml(node.label)}</h2>
+        <p class="summary">${escapeHtml(node.summary)}</p>
+        <div class="relationships">
+          <div class="kind">Connected meaning</div>
+          ${relations.length ? relations.map(row => `
+            <button class="relation" type="button" data-node="${escapeHtml(row.id)}">
+              <span>${escapeHtml(row.label)}<small>${escapeHtml(row.kind)}</small></span>
+              <span>Focus</span>
+            </button>
+          `).join('') : '<p class="summary">No direct semantic connections.</p>'}
+        </div>
+        <div class="refs">
+          <div class="kind">Source</div>
+          ${refs.length ? refs.map(ref => `<code>${escapeHtml(ref.role)}: ${escapeHtml(ref.path)}</code>`).join('') : '<code>no source refs</code>'}
+        </div>
+      `;
+      inspector.querySelectorAll('[data-node]').forEach(button => {
+        button.addEventListener('click', () => selectNode(button.dataset.node));
+      });
+      status.textContent = `Drag to pan. Right-drag or Option-drag to rotate. Scroll to zoom. ${atlas.nodes.length} nodes, ${atlas.edges.length} edges.`;
+    }
+
+    function relationshipRows(id) {
+      return (edgesByNode.get(id) || [])
+        .slice(0, 8)
+        .map(edge => {
+          const otherId = edge.from === id ? edge.to : edge.from;
+          const other = nodeById.get(otherId);
+          return {
+            id: otherId,
+            label: other?.label || otherId,
+            kind: edge.from === id ? edge.label : `${edge.label} source`
+          };
+        });
+    }
+
+    function updateVisibility() {
+      const related = connected.get(selectedId) || new Set();
+      const query = search.value.trim().toLowerCase();
+      for (const [id, view] of objects) {
+        const node = view.node;
+        const layerOn = activeLayers.has(node.layer);
+        const matches = !query || `${node.id} ${node.label} ${node.summary}`.toLowerCase().includes(query);
+        const isRelated = id === selectedId || related.has(id);
+        const visible = layerOn && matches && (!traceMode || isRelated);
+        view.mesh.visible = visible;
+        view.label.style.display = visible ? '' : 'none';
+        const dim = visible && query ? id !== selectedId && !matches : visible && !isRelated;
+        view.label.classList.toggle('dim', Boolean(dim));
+        view.mesh.material.opacity = visible ? (isRelated ? 0.96 : 0.26) : 0;
+      }
+      for (const line of edgeObjects) {
+        const edge = line.userData.edge;
+        const on = objects.get(edge.from)?.mesh.visible && objects.get(edge.to)?.mesh.visible;
+        const selected = edge.from === selectedId || edge.to === selectedId;
+        line.visible = Boolean(on && (!traceMode || selected));
+        line.material.opacity = selected ? 0.72 : 0.16;
+      }
+    }
+
+    function overview() {
+      selectedId = atlas.interaction.default_focus;
+      target = new THREE.Vector3(0, 0, 0);
+      viewYaw = 0;
+      viewHeight = 8.8;
+      viewDistance = 10.8;
+      updateCameraTarget();
+      search.value = '';
+      renderInspector(nodeById.get(selectedId));
+      updateVisibility();
+    }
+
+    document.getElementById('overview').addEventListener('click', overview);
+    document.getElementById('trace').addEventListener('click', event => {
+      traceMode = !traceMode;
+      event.currentTarget.classList.toggle('active', traceMode);
+      updateVisibility();
+    });
+    document.getElementById('tour').addEventListener('click', () => {
+      const tour = atlas.tours[0];
+      if (!tour || !tour.steps.length) return;
+      const step = tour.steps[tourIndex % tour.steps.length];
+      tourIndex += 1;
+      selectNode(step.node_id);
+    });
+    document.querySelectorAll('[data-focus-layer]').forEach(button => {
+      button.addEventListener('click', () => {
+        const node = atlas.nodes.find(node => node.layer === button.dataset.focusLayer);
+        if (node) selectNode(node.id);
+      });
+    });
+    search.addEventListener('input', updateVisibility);
+    search.addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      const query = search.value.trim().toLowerCase();
+      if (!query) return;
+      const match = atlas.nodes.find(node => `${node.id} ${node.label} ${node.summary}`.toLowerCase().includes(query));
+      if (match) selectNode(match.id);
+    });
+
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    let dragState = null;
+
+    function hitNode(clientX, clientY) {
+      pointer.x = (clientX / window.innerWidth) * 2 - 1;
+      pointer.y = -(clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      return raycaster.intersectObjects(selectable, false)[0]?.object?.userData?.nodeId;
+    }
+
+    canvas.addEventListener('pointerdown', event => {
+      canvas.setPointerCapture(event.pointerId);
+      canvas.classList.add('dragging');
+      dragState = {
+        x: event.clientX,
+        y: event.clientY,
+        startX: event.clientX,
+        startY: event.clientY,
+        nodeId: hitNode(event.clientX, event.clientY),
+        orbit: event.button === 2 || event.altKey || event.metaKey,
+        moved: false
+      };
+    });
+
+    canvas.addEventListener('pointermove', event => {
+      if (!dragState) return;
+      const dx = event.clientX - dragState.x;
+      const dy = event.clientY - dragState.y;
+      const total = Math.hypot(event.clientX - dragState.startX, event.clientY - dragState.startY);
+      if (total > 3) dragState.moved = true;
+      if (dragState.moved) {
+        if (dragState.orbit) {
+          viewYaw -= dx * 0.006;
+        } else {
+          const panScale = viewHeight * 0.0024;
+          const right = new THREE.Vector3(Math.cos(viewYaw), 0, -Math.sin(viewYaw));
+          const forward = new THREE.Vector3(Math.sin(viewYaw), 0, Math.cos(viewYaw));
+          target.addScaledVector(right, -dx * panScale);
+          target.addScaledVector(forward, -dy * panScale);
+        }
+        updateCameraTarget();
+      }
+      dragState.x = event.clientX;
+      dragState.y = event.clientY;
+    });
+
+    canvas.addEventListener('pointerup', event => {
+      if (!dragState) return;
+      canvas.releasePointerCapture(event.pointerId);
+      canvas.classList.remove('dragging');
+      if (!dragState.moved && dragState.nodeId) {
+        selectNode(dragState.nodeId);
+      }
+      dragState = null;
+    });
+
+    canvas.addEventListener('pointercancel', () => {
+      canvas.classList.remove('dragging');
+      dragState = null;
+    });
+    canvas.addEventListener('contextmenu', event => event.preventDefault());
+
+    canvas.addEventListener('wheel', event => {
+      event.preventDefault();
+      const delta = Math.sign(event.deltaY) * 0.7;
+      viewHeight = THREE.MathUtils.clamp(viewHeight + delta, 4.2, 13);
+      viewDistance = THREE.MathUtils.clamp(viewDistance + delta, 5, 16);
+      updateCameraTarget();
+    }, { passive: false });
+
+    window.addEventListener('keydown', event => {
+      if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+      const panScale = 0.35;
+      const right = new THREE.Vector3(Math.cos(viewYaw), 0, -Math.sin(viewYaw));
+      const forward = new THREE.Vector3(Math.sin(viewYaw), 0, Math.cos(viewYaw));
+      if (event.key === 'ArrowLeft') target.addScaledVector(right, -panScale);
+      else if (event.key === 'ArrowRight') target.addScaledVector(right, panScale);
+      else if (event.key === 'ArrowUp') target.addScaledVector(forward, -panScale);
+      else if (event.key === 'ArrowDown') target.addScaledVector(forward, panScale);
+      else return;
+      event.preventDefault();
+      updateCameraTarget();
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      labelRenderer.setSize(window.innerWidth, window.innerHeight);
+      if (window.innerWidth <= 760 && mapKey) {
+        mapKey.open = false;
+      }
+    });
+
+    function animate() {
+      requestAnimationFrame(animate);
+      camera.position.lerp(cameraTarget, 0.08);
+      camera.lookAt(target);
+      field.rotation.z += 0.0006;
+      renderer.render(scene, camera);
+      labelRenderer.render(scene, camera);
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[char]));
+    }
+
+    renderInspector(nodeById.get(selectedId));
+    updateVisibility();
+    animate();
+  </script>
+</body>
+</html>
+"##;
 
 fn build_conformance_report(module: &Path, implementation: Option<&Path>) -> Result<JsonValue> {
     let manifest = load_manifest(module)?;
@@ -2979,7 +8960,8 @@ fn build_conformance_report(module: &Path, implementation: Option<&Path>) -> Res
             "implementation": implementation_name,
         },
         "source": {
-            "revision": source_revision().unwrap_or_else(|| "unknown".to_string()),
+            "revision": source_revision(module.parent().unwrap_or_else(|| Path::new(".")))
+                .unwrap_or_else(|| "unknown".to_string()),
         },
         "profiles": get_string_array(&manifest.value, &["profiles"]),
         "validator": {
@@ -3192,7 +9174,7 @@ fn package_module(
         module: module_name.to_string(),
         version: module_version.to_string(),
         source: PackageSource {
-            revision: source_revision().unwrap_or_else(|| "unknown".to_string()),
+            revision: source_revision(module_base).unwrap_or_else(|| "unknown".to_string()),
         },
         validator: PackageValidator {
             name: VALIDATOR_NAME,
@@ -5420,7 +11402,7 @@ fn write_new_file(path: &Path, contents: &str) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("failed to write `{}`", path.display()))
 }
 
-const INIT_AGENTS_MD: &str = "# Agent Instructions\n\nThis repository follows Reliable Modular Systems.\n\nBefore changing behavior, identify the owning module, read its `module.yaml`, public contracts, declared effects, invariants, compatibility policy, and verification evidence. Keep implementation changes inside the owning boundary and run `rms validate --root .` before completion.\n";
+const INIT_AGENTS_MD: &str = "# Agent Instructions\n\nThis repository follows Reliable Modular Systems.\n\nBefore changing behavior, run `rms diagnose` when starting from an unfamiliar checkout and use `rms diagnose --json` when structured readiness is useful. Use `rms explain <module>` to understand the target module, `rms plan <module> --task \"<task>\"` when planning would help, `rms implement <module> --task \"<task>\"` when implementation guidance would help, `rms evolve-contract <module> --task \"<task>\"` when public meaning changes, `rms evidence <module> --task \"<task>\"` when proof design would help, and build a bounded packet with `rms context <module> --task \"<task>\"`. Identify the owning module, read its `module.yaml`, public contracts, declared effects, invariants, compatibility policy, and verification evidence. Keep implementation changes inside the owning boundary and run `rms review <module>` and `rms validate --root .` before completion.\n";
 
 fn referenced_paths(value: &YamlValue) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
@@ -5577,6 +11559,50 @@ fn severity_label(severity: Severity) -> &'static str {
     }
 }
 
+fn command_readiness(command: &str, args: &[&str]) -> CommandReadiness {
+    match Command::new(command).args(args).output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let version = stdout
+                .lines()
+                .next()
+                .filter(|line| !line.trim().is_empty())
+                .or_else(|| stderr.lines().next())
+                .unwrap_or("available");
+            CommandReadiness {
+                command: command.to_string(),
+                status: "available".to_string(),
+                detail: Some(version.to_string()),
+            }
+        }
+        Ok(output) => CommandReadiness {
+            command: command.to_string(),
+            status: "found-not-ready".to_string(),
+            detail: Some(format!(
+                "exit {}",
+                output
+                    .status
+                    .code()
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "signal".to_string())
+            )),
+        },
+        Err(_) => CommandReadiness {
+            command: command.to_string(),
+            status: "not-configured".to_string(),
+            detail: None,
+        },
+    }
+}
+
+fn print_command_readiness(readiness: &CommandReadiness) {
+    match readiness.detail.as_deref() {
+        Some(detail) => println!("{}: {} ({detail})", readiness.command, readiness.status),
+        None => println!("{}: {}", readiness.command, readiness.status),
+    }
+}
+
 fn print_string_list(label: &str, items: &[String]) {
     println!(
         "{label}: {}",
@@ -5702,8 +11728,86 @@ fn print_verification(value: &YamlValue) {
     }
 }
 
-fn source_revision() -> Option<String> {
+fn print_question_focus(value: &YamlValue, question: &str) {
+    let normalized = question.to_ascii_lowercase();
+    let mut matched = false;
+
+    if normalized.contains("own")
+        || normalized.contains("state")
+        || normalized.contains("data")
+        || normalized.contains("decision")
+        || normalized.contains("how")
+        || normalized.contains("work")
+    {
+        println!("Ownership is the first place to look:");
+        print_owned_terms(value);
+        matched = true;
+    }
+
+    if normalized.contains("how") || normalized.contains("work") {
+        println!("The public shape and reliability rules show how callers can use it and what it must preserve:");
+        print_contract_groups("Provides", get_path(value, &["provides"]));
+        print_invariants(value);
+        print_effects(value);
+        matched = true;
+    }
+
+    if normalized.contains("contract")
+        || normalized.contains("public")
+        || normalized.contains("api")
+        || normalized.contains("command")
+        || normalized.contains("query")
+        || normalized.contains("event")
+    {
+        println!("Public surface is declared here:");
+        print_contract_groups("Provides", get_path(value, &["provides"]));
+        print_contract_groups("Requires", get_path(value, &["requires"]));
+        matched = true;
+    }
+
+    if normalized.contains("effect")
+        || normalized.contains("io")
+        || normalized.contains("network")
+        || normalized.contains("storage")
+        || normalized.contains("time")
+        || normalized.contains("external")
+    {
+        println!("Declared effects are:");
+        print_effects(value);
+        matched = true;
+    }
+
+    if normalized.contains("verify")
+        || normalized.contains("test")
+        || normalized.contains("evidence")
+        || normalized.contains("prove")
+    {
+        println!("Verification evidence is:");
+        print_verification(value);
+        matched = true;
+    }
+
+    if normalized.contains("break")
+        || normalized.contains("compat")
+        || normalized.contains("version")
+        || normalized.contains("migration")
+    {
+        println!(
+            "Compatibility policy: {}",
+            get_str(value, &["compatibility", "policy"]).unwrap_or("<missing>")
+        );
+        println!("Check public contract shape, operational semantics, stored state, and active consumers before changing this area.");
+        matched = true;
+    }
+
+    if !matched {
+        println!("No specialized deterministic answer matched this question. Use the sections above as the bounded module explanation, or run `rms context <module> --task \"{question}\"` to prepare an agent packet.");
+    }
+}
+
+fn source_revision(root: &Path) -> Option<String> {
     let output = Command::new("git")
+        .current_dir(root)
         .args(["rev-parse", "--short=12", "HEAD"])
         .output()
         .ok()?;
@@ -6608,6 +12712,9 @@ invariants:
 
 effects: []
 
+boundary:
+  validation: reject-before-domain-entry
+
 compatibility:
   policy: backward-compatible-within-major
 
@@ -6622,12 +12729,751 @@ verification:
         .unwrap();
     }
 
+    #[test]
+    fn module_atlas_derives_stable_nodes_from_manifest() {
+        let root = atlas_fixture("atlas-graph");
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+
+        let atlas = build_module_atlas(&manifest, &root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(atlas.spec, "rms/atlas/v0.1");
+        assert_eq!(atlas.module.id, "module:atlas-fixture");
+        assert!(atlas.interaction.supports_live_reconciliation);
+        assert!(atlas.nodes.iter().any(|node| {
+            node.id == "provides-commands:do-work"
+                && node.layer == "public-surface"
+                && node
+                    .source_refs
+                    .iter()
+                    .any(|reference| reference.path == "contracts/do-work.v1.yaml")
+        }));
+        assert!(atlas
+            .nodes
+            .iter()
+            .any(|node| node.id == "invariant:work-is-safe"));
+        assert!(atlas.edges.iter().any(|edge| {
+            edge.kind == "verifies"
+                && edge.from == "verification:verification-laws-work-is-safe"
+                && edge.to == "invariant:work-is-safe"
+        }));
+        assert!(atlas.questions.iter().any(|question| {
+            question.id == "understand-module"
+                && question.answer.headline.contains("exists to")
+                && question
+                    .answer
+                    .trace
+                    .node_ids
+                    .contains(&"module:atlas-fixture".to_string())
+        }));
+        assert!(atlas
+            .tours
+            .first()
+            .is_some_and(|tour| !tour.steps.is_empty()));
+    }
+
+    #[test]
+    fn atlas_command_writes_json_and_html_artifacts() {
+        let root = atlas_fixture("atlas-write");
+        let output = root.join("atlas-out");
+
+        run_atlas(&root.join("module.yaml"), &root, Some(&output), false).unwrap();
+
+        let atlas_json = fs::read_to_string(output.join("atlas.json")).unwrap();
+        let html = fs::read_to_string(output.join("index.html")).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert!(atlas_json.contains("\"spec\": \"rms/atlas/v0.1\""));
+        assert!(atlas_json.contains("\"questions\""));
+        assert!(atlas_json.contains("\"understand-module\""));
+        assert!(atlas_json.contains("\"supports_live_reconciliation\": true"));
+        assert!(html.contains("RMS Atlas"));
+        assert!(html.contains("three@0.164.1"));
+        assert!(html.contains("atlas-data"));
+    }
+
+    #[test]
+    fn workbench_prompt_renders_bounded_context() {
+        let root = prompt_fixture("prompt-render");
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Plan,
+            Some("add a command"),
+            None,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("Prompt: rms.plan@v1"));
+        assert!(rendered.contains("Mode: advisory"));
+        assert!(rendered.contains("## Bounded RMS Context"));
+        assert!(rendered.contains("rms validate --root <root>"));
+    }
+
+    #[test]
+    fn refactor_prompt_preserves_public_meaning() {
+        let root = prompt_fixture("refactor-render");
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Refactor,
+            Some("separate decisions from effects"),
+            None,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("Prompt: rms.refactor@v1"));
+        assert!(rendered.contains("Preserve public contracts"));
+        assert!(rendered.contains("Escalate to implement-change or evolve-contract"));
+    }
+
+    #[test]
+    fn implement_prompt_classifies_change_before_steps() {
+        let root = prompt_fixture("implement-render");
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Implement,
+            Some("add a public command"),
+            None,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("Prompt: rms.implement@v1"));
+        assert!(rendered.contains("Classify the change as private implementation"));
+        assert!(rendered.contains("Contract/manifest updates required before code changes"));
+        assert!(rendered.contains("do not claim edits were made"));
+    }
+
+    #[test]
+    fn evolve_contract_prompt_classifies_compatibility() {
+        let root = prompt_fixture("evolve-render");
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::EvolveContract,
+            Some("change command failure semantics"),
+            None,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("Prompt: rms.evolve-contract@v1"));
+        assert!(rendered.contains("Classify compatibility impact"));
+        assert!(rendered.contains("Migration, coexistence, translation, and deprecation plan"));
+        assert!(rendered.contains("rms check-compat <old-module.yaml> <new-module.yaml>"));
+    }
+
+    #[test]
+    fn evidence_prompt_names_smallest_proof() {
+        let root = prompt_fixture("evidence-render");
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Evidence,
+            Some("prove malformed input is rejected"),
+            None,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("Prompt: rms.evidence@v1"));
+        assert!(rendered.contains("Prefer the smallest evidence"));
+        assert!(rendered.contains("Manifest or implementation binding references to update"));
+    }
+
+    #[test]
+    fn explain_subject_infers_module_and_question() {
+        let root = prompt_fixture("explain-infer");
+        let subject = vec!["how does this module work?".to_string()];
+
+        let (module, question) = resolve_explain_subject(&subject, None, &root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            module.file_name().and_then(|name| name.to_str()),
+            Some("module.yaml")
+        );
+        assert_eq!(question.as_deref(), Some("how does this module work?"));
+    }
+
+    #[test]
+    fn explain_prompt_answers_from_bounded_context() {
+        let root = prompt_fixture("explain-prompt");
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Explain,
+            Some("how does this module work?"),
+            None,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("Prompt: rms.explain@v1"));
+        assert!(rendered.contains("Intelligible plain-language explanation"));
+        assert!(rendered.contains("Do not invent architecture"));
+    }
+
+    #[test]
+    fn workbench_run_record_writes_prompt_request_and_checks() {
+        let root = prompt_fixture("run-record");
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+        let options = PromptRunOptions {
+            provider: Provider::None,
+            record: true,
+            run_root: PathBuf::from("runs"),
+            model: None,
+            sandbox: CodexSandbox::ReadOnly,
+        };
+
+        let prompt = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Evidence,
+            Some("prove prompt rendering"),
+            None,
+        )
+        .unwrap();
+        let run_dir = write_prompt_run_record(
+            &manifest,
+            &root,
+            PromptKind::Evidence,
+            Some("prove prompt rendering"),
+            None,
+            &prompt,
+            &options,
+        )
+        .unwrap();
+
+        assert!(run_dir.join("request.yaml").exists());
+        assert!(run_dir.join("prompt.md").exists());
+        assert!(run_dir.join("checks.json").exists());
+        let request = fs::read_to_string(run_dir.join("request.yaml")).unwrap();
+        let checks = fs::read_to_string(run_dir.join("checks.json")).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert!(request.contains("prompt: \"rms.evidence@v1\""));
+        assert!(request.contains("provider: \"none\""));
+        assert!(checks.contains("\"validation\""));
+    }
+
+    #[test]
+    fn source_revision_uses_requested_root() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+
+        let root = unique_test_dir("git-root");
+        fs::create_dir_all(&root).unwrap();
+        let init = Command::new("git")
+            .arg("init")
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        if !init.status.success() {
+            fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+        Command::new("git")
+            .args(["config", "user.email", "rms@example.test"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "RMS Test"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        fs::write(root.join("marker.txt"), "marker\n").unwrap();
+        Command::new("git")
+            .args(["add", "marker.txt"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        let commit = Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        if !commit.status.success() {
+            fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+        let expected = Command::new("git")
+            .args(["rev-parse", "--short=12", "HEAD"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        let expected = format!("git:{}", String::from_utf8_lossy(&expected.stdout).trim());
+
+        let actual = source_revision(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(actual.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn impact_classifies_contract_and_source_paths() {
+        let root = prompt_fixture("impact-owned");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn example() {}\n").unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            "spec: rms/implementation/v0.1\n\nmodule: prompt-fixture\nbinding: rust\n\nsource:\n  root: src\n  public_entrypoint: src/lib.rs\n\ncommands:\n  verify: cargo test --manifest-path Cargo.toml\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: prompt-fixture\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  public_modules: []\n",
+        )
+        .unwrap();
+        let changed = vec![
+            ChangedPath {
+                status: "M".to_string(),
+                path: "contracts/do-work.v1.yaml".to_string(),
+            },
+            ChangedPath {
+                status: "M".to_string(),
+                path: "src/lib.rs".to_string(),
+            },
+            ChangedPath {
+                status: "M".to_string(),
+                path: "verification/contracts/do_work.md".to_string(),
+            },
+        ];
+
+        let report = build_impact_report(&root, None, &changed).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ImpactResult::ReviewRequired);
+        assert_eq!(report.affected_modules.len(), 1);
+        assert_eq!(report.affected_modules[0].name, "prompt-fixture");
+        assert!(report.changed_paths.iter().any(|path| {
+            path.path == "contracts/do-work.v1.yaml"
+                && path.category == ImpactCategory::Contract
+                && path.module.as_deref() == Some("prompt-fixture")
+        }));
+        assert!(report.changed_paths.iter().any(|path| {
+            path.path == "src/lib.rs"
+                && path.category == ImpactCategory::Source
+                && path.module.as_deref() == Some("prompt-fixture")
+        }));
+        assert!(report.changed_paths.iter().any(|path| {
+            path.path == "verification/contracts/do_work.md"
+                && path.category == ImpactCategory::VerificationEvidence
+                && path.module.as_deref() == Some("prompt-fixture")
+        }));
+        assert!(report
+            .recommended_checks
+            .iter()
+            .any(|check| check == "rms verify implementation.yaml"));
+    }
+
+    #[test]
+    fn impact_reports_unowned_paths_without_semantic_authority() {
+        let root = unique_test_dir("impact-unowned");
+        fs::create_dir_all(&root).unwrap();
+        let changed = vec![ChangedPath {
+            status: "M".to_string(),
+            path: "notes/idea.md".to_string(),
+        }];
+
+        let report = build_impact_report(&root, None, &changed).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ImpactResult::NoRmsImpact);
+        assert!(report.affected_modules.is_empty());
+        assert!(report.findings.is_empty());
+        assert_eq!(report.changed_paths[0].category, ImpactCategory::Other);
+        assert_eq!(report.changed_paths[0].module, None);
+    }
+
+    #[test]
+    fn impact_git_paths_are_normalized_against_requested_root() {
+        let mut paths = BTreeMap::new();
+
+        insert_changed_path(
+            Path::new("modules/widget"),
+            &mut paths,
+            "M",
+            "modules/widget/src/lib.rs",
+        );
+
+        assert_eq!(
+            paths.get("src/lib.rs").map(|path| path.status.as_str()),
+            Some("M")
+        );
+    }
+
+    #[test]
+    fn run_list_and_inspect_read_generated_records() {
+        let root = prompt_fixture("run-read");
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+        let options = PromptRunOptions {
+            provider: Provider::None,
+            record: true,
+            run_root: PathBuf::from("runs"),
+            model: None,
+            sandbox: CodexSandbox::ReadOnly,
+        };
+        let prompt = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Plan,
+            Some("inspect saved run"),
+            None,
+        )
+        .unwrap();
+        let run_dir = write_prompt_run_record(
+            &manifest,
+            &root,
+            PromptKind::Plan,
+            Some("inspect saved run"),
+            None,
+            &prompt,
+            &options,
+        )
+        .unwrap();
+        fs::write(run_dir.join("response.md"), "response body\n").unwrap();
+        let run_id = run_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap()
+            .to_string();
+
+        run_list_runs(&root, Path::new("runs")).unwrap();
+        run_inspect_run(Path::new(&run_id), &root, Path::new("runs")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn prompt_options_use_configured_ai_defaults() {
+        let root = prompt_fixture("configured-ai");
+        fs::create_dir_all(root.join(".rms")).unwrap();
+        fs::write(
+            root.join(".rms/config.yaml"),
+            r#"ai:
+  default_provider: codex
+  codex:
+    model: gpt-test
+    sandbox: read-only
+runs:
+  directory: .rms/test-runs
+"#,
+        )
+        .unwrap();
+
+        let options = resolve_prompt_run_options(
+            &root,
+            RawPromptRunOptions {
+                ai: true,
+                provider: None,
+                record: false,
+                run_root: None,
+                model: None,
+                sandbox: None,
+            },
+        )
+        .unwrap();
+        let run_root = resolve_run_root(&root, None).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(options.provider, Provider::Codex);
+        assert_eq!(options.model.as_deref(), Some("gpt-test"));
+        assert!(matches!(options.sandbox, CodexSandbox::ReadOnly));
+        assert_eq!(options.run_root, PathBuf::from(".rms/test-runs"));
+        assert_eq!(run_root, PathBuf::from(".rms/test-runs"));
+    }
+
+    #[test]
+    fn prompt_options_require_configured_ai_provider() {
+        let root = prompt_fixture("missing-ai-config");
+
+        let error = resolve_prompt_run_options(
+            &root,
+            RawPromptRunOptions {
+                ai: true,
+                provider: None,
+                record: false,
+                run_root: None,
+                model: None,
+                sandbox: None,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(error.contains("ai.default_provider"));
+    }
+
+    #[test]
+    fn diagnose_report_includes_config_and_serializes_to_json() {
+        let root = prompt_fixture("diagnose-config");
+        fs::create_dir_all(root.join(".rms")).unwrap();
+        fs::write(
+            root.join(".rms/config.yaml"),
+            r#"ai:
+  default_provider: codex
+  codex:
+    model: gpt-test
+runs:
+  directory: .rms/test-runs
+"#,
+        )
+        .unwrap();
+
+        let report = build_diagnose_report(&root).unwrap();
+        let rendered = serde_json::to_string(&report).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.config.status, "present");
+        assert_eq!(report.config.default_provider.as_deref(), Some("codex"));
+        assert_eq!(report.config.run_directory, ".rms/test-runs");
+        assert!(rendered.contains("\"ai_providers\""));
+        assert!(rendered.contains("\"run_records\""));
+    }
+
+    #[test]
+    fn latest_run_dir_uses_newest_run_id() {
+        let root = unique_test_dir("latest-run");
+        let runs = root.join("runs");
+        fs::create_dir_all(runs.join("100-plan-example")).unwrap();
+        fs::create_dir_all(runs.join("200-review-example")).unwrap();
+        fs::create_dir_all(runs.join("150-evidence-example")).unwrap();
+
+        let latest = latest_run_dir(&runs).unwrap().unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            latest.file_name().and_then(|name| name.to_str()),
+            Some("200-review-example")
+        );
+    }
+
+    #[test]
+    fn config_init_writes_defaults_and_refuses_overwrite() {
+        let root = unique_test_dir("config-init");
+        fs::create_dir_all(&root).unwrap();
+
+        run_config_init(
+            &root,
+            Provider::Codex,
+            Some("gpt-test"),
+            Path::new(".rms/test-runs"),
+            false,
+        )
+        .unwrap();
+        let loaded = load_workbench_config(&root).unwrap().unwrap();
+        let overwrite_error =
+            run_config_init(&root, Provider::Codex, None, Path::new(".rms/runs"), false)
+                .unwrap_err()
+                .to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(loaded.value.ai.default_provider.as_deref(), Some("codex"));
+        assert_eq!(loaded.value.ai.codex.model.as_deref(), Some("gpt-test"));
+        assert_eq!(
+            loaded.value.runs.directory.as_deref(),
+            Some(Path::new(".rms/test-runs"))
+        );
+        assert!(overwrite_error.contains("already exists"));
+    }
+
+    #[test]
+    fn codex_plugin_sync_detects_packaged_skill_drift() {
+        let root = unique_test_dir("plugin-sync");
+        fs::create_dir_all(root.join("integrations/codex/rms/.codex-plugin")).unwrap();
+        fs::write(
+            root.join("integrations/codex/rms/.codex-plugin/plugin.json"),
+            r#"{
+  "name": "rms",
+  "version": "0.1.0",
+  "description": "test",
+  "skills": "./skills/"
+}
+"#,
+        )
+        .unwrap();
+
+        for skill in CANONICAL_SKILLS {
+            let canonical = root.join("skills").join(skill);
+            let packaged = root.join("integrations/codex/rms/skills").join(skill);
+            fs::create_dir_all(&canonical).unwrap();
+            fs::create_dir_all(&packaged).unwrap();
+            let contents = format!("---\nname: {skill}\n---\n\n# {skill}\n");
+            fs::write(canonical.join("SKILL.md"), &contents).unwrap();
+            fs::write(packaged.join("SKILL.md"), contents).unwrap();
+        }
+
+        validate_codex_plugin_sync(&root).unwrap();
+        fs::write(
+            root.join("integrations/codex/rms/skills/implement-change/SKILL.md"),
+            "drift\n",
+        )
+        .unwrap();
+        let error = validate_codex_plugin_sync(&root).unwrap_err().to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(error.contains("out of sync"));
+    }
+
+    #[test]
+    fn release_metadata_detects_version_drift() {
+        let root = unique_test_dir("release-metadata");
+        fs::create_dir_all(root.join("tooling/rust/rms")).unwrap();
+        fs::create_dir_all(root.join("integrations/codex/rms/.codex-plugin")).unwrap();
+        fs::write(
+            root.join("tooling/rust/rms/Cargo.toml"),
+            "[package]\nname = \"rms\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("tooling/rust/rms/module.yaml"),
+            "spec: rms/module/v0.1\nmodule:\n  name: rms-cli\n  version: 0.1.0\n  kind: tool\n  purpose: Test release metadata\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("integrations/codex/rms/.codex-plugin/plugin.json"),
+            r#"{
+  "name": "rms",
+  "version": "0.1.0",
+  "description": "test",
+  "skills": "./skills/"
+}
+"#,
+        )
+        .unwrap();
+
+        validate_release_metadata(&root).unwrap();
+        fs::write(
+            root.join("integrations/codex/rms/.codex-plugin/plugin.json"),
+            r#"{
+  "name": "rms",
+  "version": "0.2.0",
+  "description": "test",
+  "skills": "./skills/"
+}
+"#,
+        )
+        .unwrap();
+        let error = validate_release_metadata(&root).unwrap_err().to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(error.contains("version drift"));
+    }
+
     fn unique_test_dir(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("rms-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    fn prompt_fixture(label: &str) -> PathBuf {
+        let root = unique_test_dir(label);
+        fs::create_dir_all(root.join("verification/laws")).unwrap();
+        fs::create_dir_all(root.join("verification/contracts")).unwrap();
+        fs::create_dir_all(root.join("verification/scenarios")).unwrap();
+        fs::create_dir_all(root.join("verification/boundaries")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            render_module_yaml(
+                "prompt-fixture",
+                "Exercise workbench prompt rendering",
+                "tool",
+                &[String::from("core")],
+            ),
+        )
+        .unwrap();
+        root
+    }
+
+    fn atlas_fixture(label: &str) -> PathBuf {
+        let root = unique_test_dir(label);
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::create_dir_all(root.join("verification/laws")).unwrap();
+        fs::write(
+            root.join("contracts/do-work.v1.yaml"),
+            "spec: rms/contract/v0.1\nname: do-work\nversion: 1\nkind: command\nmeaning: Accept valid work and reject malformed work.\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("verification/laws/work_is_safe"),
+            "law evidence\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+
+module:
+  name: atlas-fixture
+  version: 0.1.0
+  kind: bounded-context
+  purpose: Exercise atlas generation
+
+profiles:
+  - core
+  - boundary
+
+owns:
+  concepts:
+    - Work
+  data:
+    - work-log
+  decisions:
+    - work-acceptance
+
+provides:
+  commands:
+    - name: do-work
+      contract: contracts/do-work.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities: []
+
+invariants:
+  - id: work-is-safe
+    statement: Accepted work satisfies the module rules.
+    verified_by: verification/laws/work_is_safe
+
+effects: []
+
+boundary:
+  validation: reject-before-domain-entry
+
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws:
+    - verification/laws
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        root
     }
 
     fn rust_typing_fixture(

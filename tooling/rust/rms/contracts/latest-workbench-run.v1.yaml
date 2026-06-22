@@ -1,0 +1,24 @@
+spec: rms/contract/v0.1
+name: latest-workbench-run
+version: 1
+kind: query
+meaning: Inspect the newest saved RMS workbench run record from the configured run directory.
+preconditions:
+  - id: run-root-readable
+    statement: The run root is readable when present.
+postconditions:
+  - id: latest-run-derived-from-run-records
+    statement: The inspected run is selected from saved run directories by newest run id ordering.
+  - id: inspection-derived-from-run-record
+    statement: The inspection output is derived from request metadata, file presence, validation checks, provider logs, and response content when present.
+  - id: run-record-not-mutated
+    statement: Inspecting the latest run record does not mutate run artifacts or project source files.
+failure_categories:
+  - id: no-run-records
+    statement: No saved run records exist in the resolved run directory.
+  - id: unreadable-run-root
+    statement: The run root exists but cannot be read.
+  - id: invalid-config
+    statement: The configured run-record directory cannot be resolved from optional workbench config.
+compatibility:
+  policy: backward-compatible-within-major

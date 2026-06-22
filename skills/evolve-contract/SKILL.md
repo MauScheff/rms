@@ -5,8 +5,10 @@ description: Change an RMS public contract safely; use for commands, queries, ev
 
 # Evolve a Public Contract
 
-1. Identify all published contract versions and known consumers.
-2. Classify the proposed change:
+1. Run the `inspect-module` workflow for the owning module.
+2. Build a bounded packet with `rms context <module> --task "<task>"` when the CLI is available. Use `rms evolve-contract <module> --task "<task>"` when a compatibility prompt would help.
+3. Identify all published contract versions and known consumers.
+4. Classify the proposed change:
    - implementation-only;
    - backward-compatible additive;
    - behavioral but compatible;
@@ -14,7 +16,7 @@ description: Change an RMS public contract safely; use for commands, queries, ev
    - breaking shape change;
    - breaking semantic or operational change;
    - stored-state or migration change.
-3. Compare not only schema but also:
+5. Compare not only schema but also:
    - meaning;
    - preconditions and postconditions;
    - failures;
@@ -23,9 +25,9 @@ description: Change an RMS public contract safely; use for commands, queries, ev
    - ordering;
    - consistency;
    - timeout and retry behavior.
-4. Preserve the existing version when compatibility can be maintained cleanly.
-5. Introduce a new version for breaking changes.
-6. Define migration, coexistence, translation, and deprecation behavior.
-7. Update provider and consumer contract evidence.
-8. Run compatibility tooling and relevant scenarios.
-9. Record the decision and consumer impact in a concise change note.
+6. Preserve the existing version when compatibility can be maintained cleanly.
+7. Introduce a new version for breaking changes.
+8. Define migration, coexistence, translation, and deprecation behavior.
+9. Update provider and consumer contract evidence.
+10. Run `rms check-compat <old-module> <new-module>`, `rms validate --root <root>`, and relevant scenarios.
+11. Record the decision and consumer impact in a concise change note.

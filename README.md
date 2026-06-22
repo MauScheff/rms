@@ -22,9 +22,9 @@ RMS makes those promises explicit without requiring a framework, language, deplo
 
 - A canonical specification for modules, bounded contexts, contracts, effects, profiles, compatibility, and conformance.
 - YAML manifests for systems, context maps, modules, contracts, implementations, and conformance reports.
-- Agent skills for inspecting modules, implementing changes, pruning semantic residue, adding modules, evolving contracts, composing modules, and verifying conformance.
-- A Rust reference CLI for validation, inspection, context packets, and conformance evidence.
-- Thin Codex and Claude integration guidance that adapts the same semantic model instead of creating agent-specific architecture.
+- A Rust reference CLI that acts as the human and agent workbench for validation, explanation, context packets, packaging, and conformance evidence.
+- Agent skills for inspecting modules, implementing changes, pruning semantic residue, adding modules, evolving contracts, composing modules, and verifying conformance through the shared CLI surface.
+- Thin Codex and Claude integration guidance that points agents at the same semantic model instead of creating agent-specific architecture.
 
 ## Install The CLI
 
@@ -32,19 +32,43 @@ Requirements:
 
 - Rust 1.89 or newer
 
-From the repository root:
+For normal use, install a release archive from the GitHub releases page:
+
+```text
+https://github.com/reliable-modular-systems/reliable-modular-systems/releases
+```
+
+Extract the archive for your platform and put `rms` on `PATH`.
+
+For source installs from a checkout:
 
 ```bash
 cargo install --path tooling/rust/rms
 ```
 
-Or run without installing:
+After installation:
+
+```bash
+rms config init
+rms diagnose
+```
+
+Inside a source checkout:
+
+```bash
+rms explain "How does this module work?" --root examples/minimal
+```
+
+For contributor workflows, run without installing:
 
 ```bash
 cargo run -p rms -- validate --root examples/minimal
+cargo run -p rms -- release check --root .
 ```
 
 ## First Commands
+
+For a guided first pass, use `QUICKSTART.md`. For a self-hosted RMS walkthrough, use `DOGFOOD.md`.
 
 Create a new RMS system:
 
@@ -86,10 +110,105 @@ Check whether discovered modules compose through declared public requirements:
 rms compose --root examples/minimal
 ```
 
+Classify the RMS impact of git changes:
+
+```bash
+rms impact
+rms impact HEAD~1..HEAD --json
+```
+
 Inspect a module:
 
 ```bash
 rms inspect examples/commerce/payments.module.yaml
+```
+
+Explain a module for a human or agent:
+
+```bash
+rms explain examples/commerce/payments.module.yaml
+rms explain examples/commerce/payments.module.yaml "What state does this module own?"
+rms explain "How does this module work?" --root examples/rust
+rms explain --module examples/commerce/payments.module.yaml \
+  "How does payment recovery work?" \
+  --provider codex
+```
+
+Check local RMS and optional AI-provider readiness:
+
+```bash
+rms diagnose
+rms diagnose --json
+rms config init
+```
+
+Optional provider and run-record defaults can live in `.rms/config.yaml`:
+
+```yaml
+ai:
+  default_provider: codex
+  codex:
+    model: gpt-5-codex
+    sandbox: read-only
+runs:
+  directory: .rms/runs
+```
+
+Provider-backed commands remain explicit. Use `--provider codex` directly, or use `--ai` to select the configured `ai.default_provider`.
+
+Render advisory workbench prompts:
+
+```bash
+rms plan examples/commerce/payments.module.yaml \
+  --root examples/commerce \
+  --task "add payment capture telemetry"
+
+rms implement examples/commerce/payments.module.yaml \
+  --root examples/commerce \
+  --task "add payment capture telemetry"
+
+rms evolve-contract examples/commerce/payments.module.yaml \
+  --root examples/commerce \
+  --task "change payment capture failure semantics"
+
+rms evidence examples/commerce/payments.module.yaml \
+  --root examples/commerce \
+  --task "prove malformed provider responses are rejected"
+
+rms review examples/commerce/payments.module.yaml \
+  --root examples/commerce
+
+rms prompt refactor examples/commerce/payments.module.yaml \
+  --root examples/commerce \
+  --task "separate provider mapping from lifecycle decisions"
+
+rms refactor examples/commerce/payments.module.yaml \
+  --root examples/commerce \
+  --task "separate provider mapping from lifecycle decisions" \
+  --record
+
+rms plan examples/commerce/payments.module.yaml \
+  --root examples/commerce \
+  --task "add payment capture telemetry" \
+  --record
+
+rms implement examples/commerce/payments.module.yaml \
+  --root examples/commerce \
+  --task "add payment capture telemetry" \
+  --ai
+
+rms review examples/commerce/payments.module.yaml \
+  --root examples/commerce \
+  --provider codex
+
+rms explain --module examples/commerce/payments.module.yaml \
+  "How does this module work?" \
+  --root examples/commerce \
+  --ai
+
+rms run list --root examples/commerce
+rms run latest --root examples/commerce
+rms run inspect <run-id> --root examples/commerce
 ```
 
 Build a bounded context packet for an agent or reviewer:
@@ -98,6 +217,14 @@ Build a bounded context packet for an agent or reviewer:
 rms context examples/commerce/payments.module.yaml \
   --root examples/commerce \
   --task "add payment capture telemetry"
+```
+
+Generate a local module atlas:
+
+```bash
+rms atlas examples/commerce/payments.module.yaml \
+  --root examples/commerce \
+  --output dist/rms-atlas/payments
 ```
 
 Emit a conformance report:
@@ -150,6 +277,7 @@ For Codex:
 - Keep portable repository guidance in `AGENTS.md`.
 - Use the plugin wrapper in `integrations/codex/rms`.
 - Package skills from canonical `skills/`.
+- Make the agent use the shared `rms` CLI: `diagnose`, `explain`, `plan`, `implement`, `evolve-contract`, `evidence`, `refactor`, `review`, `prompt`, `run`, `config`, `context`, `validate`, `compose`, `check-compat`, `verify`, and `conformance`.
 - Use hooks only to call the shared `rms` CLI.
 
 For Claude Code:
@@ -167,6 +295,9 @@ For any other coding agent, provide a context packet containing the system summa
 | `SPEC.md` | Normative RMS 0.1 pilot specification. |
 | `MANIFEST.md` | Manifest model and field reference. |
 | `TOOLING.md` | Tooling, packaging, composition, and conformance model. |
+| `QUICKSTART.md` | First 10 minutes with the CLI. |
+| `DOGFOOD.md` | Walkthrough using the RMS CLI module itself. |
+| `RELEASE.md` | Release process, artifact rules, and done criteria. |
 | `GLOSSARY.md` | Canonical terminology. |
 | `schemas/` | Draft exchange schemas. |
 | `skills/` | Canonical agent skills. |
@@ -175,11 +306,25 @@ For any other coding agent, provide a context packet containing the system summa
 | `examples/` | Minimal, commerce, Rust, and Swift example artifacts. |
 | `templates/` | Starter docs for modules, contexts, decisions, and glossary entries. |
 
+## Release Readiness
+
+Use the same release gate locally, in CI, and before publishing release artifacts:
+
+```bash
+rms release check --root .
+```
+
+It runs release metadata checks, RMS CLI tests, canonical artifact validation, `rms-cli` implementation verification, example checks, package creation and verification smokes, release-binary smoke, clean-room PATH install smoke, Cargo packaging, and Codex plugin skill sync. It does not invoke optional AI providers.
+
+The release process, tag rules, expected artifacts, and done criteria live in `RELEASE.md`.
+
 ## Status
 
 This repository is RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use: modules, ownership, contracts, invariants, effects, profiles, composition, substitutability, and conformance.
 
-The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection, composition checks, context packets, compatibility classification, portable package directories, package integrity verification, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
+The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection and explanation, advisory workbench prompts, optional provider-backed prompt execution, composition checks, context packets, compatibility classification, portable package directories, package integrity verification, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
+
+The CLI is itself an RMS module bundle under `tooling/rust/rms/`: it has a `module.yaml`, published command contracts, an `implementation.yaml`, and evidence paths. This keeps the workbench subject to the same manifest, contract, effect, and verification discipline it asks projects to adopt.
 
 The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, Stateful representation declarations, and semantic function source symbols.
 

@@ -1,0 +1,19 @@
+spec: rms/contract/v0.1
+name: diagnose-rms-environment
+version: 1
+kind: command
+meaning: Report local RMS readiness, manifest validation status, optional workbench config status, run-record readiness, native tool availability, and optional AI-provider command availability.
+postconditions:
+  - id: readiness-is-diagnostic
+    statement: The report describes observed local readiness and does not change RMS artifacts.
+  - id: config-is-readiness-evidence
+    statement: Optional `.rms/config.yaml` values are reported as provider and run-record defaults, not as module semantics.
+  - id: json-shares-text-facts
+    statement: Machine-readable diagnose output is derived from the same readiness observations as text output.
+failure_categories:
+  - id: unreadable-root
+    statement: The requested root cannot be traversed for RMS artifacts.
+  - id: invalid-config
+    statement: Invalid workbench config is reported as diagnostic readiness evidence.
+compatibility:
+  policy: backward-compatible-within-major

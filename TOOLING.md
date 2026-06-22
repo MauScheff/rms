@@ -20,10 +20,26 @@ The command names below are recommended, not normative:
 
 ```text
 rms inspect <module>
-rms context <module> [task]
+rms context <module> [--task <task>]
 rms init <path>
 rms add-module <path>
 rms validate [module|contract|implementation]
+rms diagnose [system]
+rms explain [module] [question]
+rms prompt <kind> <module> [--task <task>]
+rms plan <module> --task <task>
+rms implement <module> --task <task>
+rms evolve-contract <module> --task <task>
+rms evidence <module> --task <task>
+rms refactor <module> --task <task>
+rms review <module> [--diff <git-spec>]
+rms impact [<git-spec>]
+rms atlas <module>
+rms run list
+rms run latest
+rms run inspect <run-id-or-path>
+rms config init
+rms release check
 rms verify [module]
 rms check-compat <old> <new>
 rms compose [system]
@@ -43,6 +59,22 @@ rms validate --contract <contract.yaml>
 rms init <path> --name <system> --purpose <purpose>
 rms add-module <path> --name <module> --purpose <purpose> [--binding rust|swift]
 rms inspect <module.yaml>
+rms explain [<module.yaml>] ["question"] [--module <module.yaml>]
+rms diagnose [--root <path>] [--json]
+rms prompt <kind> <module.yaml> [--task "..."] [--diff <git-spec>] [--ai|--provider codex]
+rms plan <module.yaml> --task "..." [--ai|--provider codex]
+rms implement <module.yaml> --task "..." [--ai|--provider codex]
+rms evolve-contract <module.yaml> --task "..." [--ai|--provider codex]
+rms evidence <module.yaml> --task "..." [--ai|--provider codex]
+rms refactor <module.yaml> --task "..." [--ai|--provider codex]
+rms review <module.yaml> [--diff <git-spec>] [--ai|--provider codex]
+rms impact [<git-spec>] [--root <path>] [--json]
+rms atlas <module.yaml> [--root <path>] [--output <directory>] [--force]
+rms run list [--root <path>] [--run-root <directory>]
+rms run latest [--root <path>] [--run-root <directory>]
+rms run inspect <run-id-or-path> [--root <path>] [--run-root <directory>]
+rms config init [--root <path>] [--provider codex|none] [--model <model>] [--force]
+rms release check [--root <path>] [--skip-cargo-package]
 rms context <module.yaml> [--task "..."]
 rms compose --root <path>
 rms check-compat <old-module.yaml> <new-module.yaml>
@@ -85,6 +117,125 @@ Verification evidence
 Compatibility policy
 ```
 
+### `explain`
+
+Renders an intelligible explanation of a module from canonical artifacts. With an optional question, the command focuses the deterministic answer on ownership, contracts, effects, verification, or compatibility when it can do so without an AI provider. If no module path is supplied, the command infers `module.yaml` from `--root` when exactly one module is available. With `--provider codex`, it renders the bounded `rms.explain@v1` prompt, executes it through Codex, and records the run.
+
+### `diagnose`
+
+Checks local RMS readiness:
+
+```text
+CLI version
+Expected repository files
+Optional `.rms/config.yaml`
+Discovered RMS artifact counts
+Validation diagnostics
+Native tool availability
+Optional AI-provider command availability
+Run-record directory readiness
+Agent workflow guidance
+```
+
+Provider availability is diagnostic only. A missing Codex, Claude, or local-model command must not make deterministic RMS validation fail. Use `--json` for a machine-readable readiness report.
+
+### Workbench config
+
+Optional workbench config lives at `.rms/config.yaml`:
+
+```bash
+rms config init
+```
+
+```yaml
+ai:
+  default_provider: codex
+  codex:
+    model: gpt-5-codex
+    sandbox: read-only
+runs:
+  directory: .rms/runs
+```
+
+Config is operational input only. It can supply provider, model, sandbox, and run-record defaults, but it cannot define RMS module semantics. Provider execution remains explicit: use `--provider codex` directly, or use `--ai` to select `ai.default_provider`.
+
+### `prompt`
+
+Renders a versioned RMS workbench prompt for a selected workflow:
+
+```text
+plan
+review
+refactor
+implement
+evolve-contract
+prune
+evidence
+drift
+```
+
+The command includes bounded module context, workflow instructions, expected output, deterministic checks, and optional diff context. By default it prints the prompt and does not edit files or call an AI provider.
+
+With `--record`, it writes a run record under `.rms/runs`:
+
+```text
+request.yaml
+prompt.md
+checks.json
+```
+
+With `--provider codex`, or with `--ai` when `ai.default_provider: codex` is configured, it invokes `codex exec` with the rendered prompt and additionally records:
+
+```text
+response.md
+provider.stdout.log
+provider.stderr.log
+```
+
+Provider execution is opt-in. It is an adapter over the rendered prompt, not a new source of RMS semantics.
+
+### `run`
+
+Inspects saved workbench run records.
+
+```text
+rms run list
+rms run latest
+rms run inspect <run-id-or-path>
+```
+
+`list` summarizes saved runs from `.rms/runs` by default. `latest` inspects the newest generated run id. `inspect` renders request metadata, file presence, validation checks, and response content when present. These commands are read-only over run artifacts.
+
+### `plan`
+
+Shortcut for `rms prompt plan`. Requires `--task` and produces an advisory implementation-planning prompt. Supports `--record`, `--ai`, and `--provider codex`.
+
+### `implement`
+
+Shortcut for `rms prompt implement`. Requires `--task` and produces an advisory implementation prompt. The prompt asks the agent to restate the outcome in owning-context language, classify the change, update public contracts or manifests before code when public meaning changes, preserve module boundaries, choose strong representations, and name focused verification evidence. Supports `--record`, `--ai`, and `--provider codex`. It does not itself edit source files.
+
+### `evolve-contract`
+
+Shortcut for `rms prompt evolve-contract`. Requires `--task` and produces an advisory contract-evolution prompt. The prompt asks for compatibility classification across shape, meaning, failures, authorization, idempotency, ordering, consistency, timeout, retry, stored state, and operations; it also asks for versioning, migration, coexistence, translation, deprecation, and provider or consumer evidence updates. Supports `--record`, `--ai`, and `--provider codex`. It does not itself edit source files.
+
+### `evidence`
+
+Shortcut for `rms prompt evidence`. Requires `--task` and produces an advisory evidence prompt. The prompt asks for the changed promise, the smallest strong evidence, positive and negative cases, and manifest or implementation binding references to update. Supports `--record`, `--ai`, and `--provider codex`. It does not itself edit source files.
+
+### `review`
+
+Shortcut for `rms prompt review`. Includes `git diff` from the requested root by default, or a supplied `--diff <git-spec>`. Supports `--record`, `--ai`, and `--provider codex`. The diff is untrusted implementation context, not architecture.
+
+### `impact`
+
+Classifies the RMS semantic impact of the current working tree or a supplied git diff spec. The report maps changed paths to discovered module manifests, contracts, implementation bindings, source roots, verification evidence, operations, glossary files, conformance reports, and workbench config. It recommends deterministic checks such as `rms validate`, `rms compose`, `rms review`, `rms verify`, and `rms check-compat`.
+
+Git paths are evidence about changed files, not semantic authority. Manifest, contract, context, glossary, operation, and implementation-binding changes are therefore reported conservatively as review-required.
+
+### `refactor`
+
+Shortcut for `rms prompt refactor`. Requires `--task` and produces an advisory behavior-preserving refactor prompt. Supports `--record`, `--ai`, and `--provider codex`. Provider execution remains read-only in this advisory lane.
+
 ### `context`
 
 Builds a bounded task packet containing only:
@@ -98,6 +249,10 @@ Direct dependency contracts
 Relevant decisions
 Verification commands
 ```
+
+### `atlas`
+
+Generates a local module atlas under `dist/rms-atlas/<module-name>` by default. The atlas writes `atlas.json` and `index.html` from canonical RMS artifacts, stable node IDs, declared source references, owned concepts, public surface, invariants, effects, state, boundary, compatibility, verification evidence, and deterministic question answers. It is derived evidence, not a new source of architecture. Existing output is preserved unless `--force` is supplied.
 
 ### `validate`
 
@@ -202,12 +357,12 @@ Agent integrations should use the same neutral tooling.
 
 ```text
 Agent Skill
-    -> RMS context/validation command
+    -> RMS diagnose/explain/context/validation command
     -> Language binding
     -> Native build and verification tools
 ```
 
-A skill should not hard-code `npm`, `cargo`, `go test`, `pytest`, or another tool unless it is explicitly a language-binding skill.
+The CLI is the stable workbench for humans and agents. Skills should make agents invoke the CLI instead of carrying RMS behavior in model-specific prompt text. A skill should not hard-code `npm`, `cargo`, `go test`, `pytest`, or another tool unless it is explicitly a language-binding skill.
 
 Core skills should remain semantic:
 
@@ -222,6 +377,8 @@ verify-module
 ```
 
 `prune-module` is the semantic-debt lane. It asks whether retained artifacts are reachable from current manifests, contracts, invariants, effects, profiles, compatibility policy, implementation bindings, operational recovery paths, or verification evidence. It should delete, merge, inline, rename, or document residue before new abstractions are added.
+
+Future provider-backed workbench commands should remain orchestration over canonical artifacts, prompt templates, provider adapters, deterministic checks, and run records. They must not redefine RMS semantics.
 
 ## 6. CI pipeline
 
@@ -240,6 +397,16 @@ A practical pipeline is:
 ```
 
 Distributed or critical modules may add replay, reconciliation simulation, migration verification, or fault injection.
+
+The RMS repository uses one canonical release gate:
+
+```bash
+rms release check --root .
+```
+
+The gate runs release metadata checks, formatting, Rust tests, RMS validation, RMS implementation verification, composition and compatibility smokes, package creation and verification smoke, scaffold roundtrip, example binding tests, release-binary smoke, clean-room PATH install smoke, Cargo packaging, and Codex plugin sync validation. It does not invoke optional AI providers. Use `--skip-cargo-package` only for offline local checks.
+
+Release metadata is part of the gate. The Cargo package version, `rms-cli` module version, and packaged Codex plugin version must match. Tag releases are published by `.github/workflows/release.yml`, which builds runner-native CLI archives, packages the Rust source crate, emits SHA-256 checksums, and attaches artifacts to the GitHub release. The operational release runbook lives in `RELEASE.md`.
 
 ## 7. Generated artifacts
 
@@ -293,3 +460,5 @@ Conformance report
 ```
 
 A single high-quality reference binding and worked example are more valuable than shallow support for many languages.
+
+The Rust CLI is also an RMS bundle in `tooling/rust/rms/`. Its manifest declares the CLI command surface, filesystem and process effects, published command contracts, Rust implementation binding, and evidence paths. This makes the workbench an example of RMS rather than an exception to it.

@@ -1,0 +1,22 @@
+spec: rms/contract/v0.1
+name: init-workbench-config
+version: 1
+kind: command
+meaning: Create an optional RMS workbench config file with provider and run-record defaults.
+preconditions:
+  - id: root-writable
+    statement: The requested root can contain `.rms/config.yaml`.
+postconditions:
+  - id: config-is-operational
+    statement: The created config supplies provider, model, sandbox, and run-record defaults only; it does not define module semantics.
+  - id: existing-config-preserved-by-default
+    statement: Existing config is not overwritten unless force is requested.
+  - id: generated-config-is-parseable
+    statement: The generated YAML can be parsed by RMS workbench config loading.
+failure_categories:
+  - id: config-exists
+    statement: A workbench config already exists and overwrite was not requested.
+  - id: unwritable-config
+    statement: The config directory or file cannot be created.
+compatibility:
+  policy: backward-compatible-within-major

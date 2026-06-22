@@ -1,11 +1,15 @@
 [package]
 name = "rms"
-version = "0.1.0"
-edition.workspace = true
+version = "0.1.0-rc.1"
+edition = "2021"
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Reference CLI for Reliable Modular Systems manifests"
 readme = "README.md"
+keywords = ["architecture", "modularity", "agents", "validation", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "rms"

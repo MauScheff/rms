@@ -3,13 +3,13 @@
 **Status:** Non-normative adapter guidance  
 **Checked against official OpenAI documentation:** 2026-06-20
 
-RMS remains agent-neutral. This adapter makes the neutral manifests and skills convenient in Codex.
+RMS remains agent-neutral. This adapter makes the neutral CLI, manifests, and skills convenient in Codex.
 
 ## Repository instructions
 
 Keep the portable working agreement in the repository root as `AGENTS.md`. Codex discovers `AGENTS.md` from the project root down toward the working directory, allowing more local instructions for nested modules.
 
-Keep `AGENTS.md` concise. Detailed, task-specific procedures belong in Agent Skills rather than permanent startup context.
+Keep `AGENTS.md` concise. It should tell Codex to use the `rms` CLI before inferring module boundaries from prompt context. Detailed, task-specific procedures belong in Agent Skills rather than permanent startup context.
 
 ## Skills
 
@@ -21,7 +21,7 @@ Codex skills build on the open Agent Skills standard. RMS skills use a `SKILL.md
 
 Codex can discover repository skills from `.agents/skills` directories between the working directory and repository root.
 
-The canonical source should remain the project-level `skills/` directory. Review and pin executable skill content before installation. A release tool should copy or generate the Codex installation directory to avoid hand-maintained duplication.
+The canonical source should remain the project-level `skills/` directory. Skills should call `rms diagnose`, `rms explain`, `rms plan`, `rms implement`, `rms evolve-contract`, `rms evidence`, `rms review`, `rms prompt`, `rms context`, `rms validate`, and `rms verify` rather than embedding a second RMS workflow. Use `rms config init` to create local provider defaults when appropriate. Use `rms diagnose --json` when an agent needs structured readiness. Use `rms ... --provider codex` for explicit Codex execution, or `rms ... --ai` when `.rms/config.yaml` declares Codex as the intended default provider. Review and pin executable skill content before installation. Run `rms release check --root .` before sharing the Codex plugin wrapper.
 
 ## Plugins
 
@@ -39,7 +39,7 @@ The wrapper packages the canonical RMS skills for Codex. Refresh the packaged co
 ./integrations/codex/rms/scripts/sync-skills.sh
 ```
 
-Install the neutral CLI separately:
+Install the neutral CLI:
 
 ```bash
 cargo install --path tooling/rust/rms

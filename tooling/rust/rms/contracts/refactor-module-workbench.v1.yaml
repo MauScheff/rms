@@ -1,0 +1,20 @@
+spec: rms/contract/v0.1
+name: refactor-module-workbench
+version: 1
+kind: command
+meaning: Render an advisory RMS refactor prompt for behavior-preserving internal module changes.
+preconditions:
+  - id: task-supplied
+    statement: The requested refactor is supplied as task text.
+  - id: target-module-readable
+    statement: The target module manifest is readable and parseable.
+postconditions:
+  - id: refactor-prompt-preserves-public-meaning
+    statement: The prompt asks the reviewer or agent to preserve public contracts, invariants, declared effects, compatibility, and verification meaning.
+  - id: refactor-provider-execution-is-optional
+    statement: Provider-backed refactor guidance is opt-in and must preserve the rendered prompt and provider response as a run record.
+failure_categories:
+  - id: missing-task
+    statement: No refactor task was supplied.
+compatibility:
+  policy: backward-compatible-within-major

@@ -1,0 +1,26 @@
+spec: rms/contract/v0.1
+name: evolve-contract-workbench
+version: 1
+kind: command
+meaning: Render an advisory RMS contract-evolution prompt for a requested public contract or operational semantics change.
+preconditions:
+  - id: task-supplied
+    statement: The requested contract evolution is supplied as task text.
+  - id: target-module-readable
+    statement: The target module manifest is readable and parseable.
+postconditions:
+  - id: compatibility-is-classified
+    statement: The prompt asks the reviewer or agent to classify compatibility across shape, meaning, failures, authorization, idempotency, ordering, consistency, timeout, retry, stored state, and operations.
+  - id: versioning-decision-is-explicit
+    statement: The prompt asks whether the existing contract version can be preserved or a new version is required.
+  - id: migration-is-addressed
+    statement: The prompt asks for migration, coexistence, translation, deprecation, and provider or consumer evidence updates.
+  - id: evolution-is-advisory
+    statement: The command renders or executes guidance and does not itself edit source files.
+failure_categories:
+  - id: missing-task
+    statement: No contract evolution task was supplied.
+  - id: provider-unavailable
+    statement: The requested provider command cannot be started or exits unsuccessfully.
+compatibility:
+  policy: backward-compatible-within-major

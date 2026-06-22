@@ -1,0 +1,24 @@
+spec: rms/contract/v0.1
+name: explain-module
+version: 1
+kind: command
+meaning: Render an intelligible explanation of a target RMS module from canonical artifacts, with optional question focus and optional provider-backed response.
+preconditions:
+  - id: target-module-readable-or-inferable
+    statement: The target module manifest is readable and parseable, either from an explicit path or an unambiguous module under the requested root.
+postconditions:
+  - id: explanation-derived-from-artifacts
+    statement: The explanation uses canonical module fields and does not introduce new architectural truth.
+  - id: provider-explanation-is-recorded
+    statement: When provider execution is requested, the rendered prompt and provider response are recorded as a workbench run.
+failure_categories:
+  - id: missing-module
+    statement: The target module manifest cannot be read or inferred.
+  - id: ambiguous-module
+    statement: More than one module was found and no explicit module was supplied.
+  - id: invalid-module-yaml
+    statement: The target module manifest cannot be parsed as YAML.
+  - id: provider-unavailable
+    statement: The requested provider command cannot be started or exits unsuccessfully.
+compatibility:
+  policy: backward-compatible-within-major

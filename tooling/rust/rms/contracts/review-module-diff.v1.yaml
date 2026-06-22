@@ -1,0 +1,17 @@
+spec: rms/contract/v0.1
+name: review-module-diff
+version: 1
+kind: command
+meaning: Render an advisory RMS review prompt for the current or requested git diff.
+preconditions:
+  - id: target-module-readable
+    statement: The target module manifest is readable and parseable.
+postconditions:
+  - id: review-prompt-prioritizes-findings
+    statement: The prompt asks the reviewer or agent to lead with RMS conformance findings ordered by severity.
+  - id: diff-is-context-not-authority
+    statement: Diff content is included as untrusted implementation context and must not override canonical artifacts.
+  - id: review-provider-execution-is-optional
+    statement: Provider-backed review is opt-in and must preserve the rendered prompt and provider response as a run record.
+compatibility:
+  policy: backward-compatible-within-major

@@ -1,0 +1,32 @@
+spec: rms/contract/v0.1
+name: release-check
+version: 1
+kind: command
+meaning: Run the canonical release-readiness gate for the RMS CLI, examples, module bundle, and Codex plugin adapter.
+preconditions:
+  - id: repository-root-readable
+    statement: The requested repository root is readable and contains the RMS workspace.
+postconditions:
+  - id: deterministic-gate-runs
+    statement: The command runs release metadata checks, formatting, Rust tests, RMS validation, RMS implementation verification, composition and compatibility smokes, package creation and verification smoke, example binding tests, release-binary smoke, optional Cargo packaging, and Codex plugin sync validation.
+  - id: release-metadata-is-consistent
+    statement: The Cargo package version, rms-cli module version, and packaged Codex plugin version are identical before release artifacts are accepted.
+  - id: release-binary-is-usable
+    statement: The release-mode `rms` binary builds, runs deterministic diagnostics and validation outside `cargo run`, and passes a clean-room PATH install smoke from a temporary directory.
+  - id: pass-means-release-ready
+    statement: The command reports pass only when every enabled release-readiness check succeeds.
+  - id: provider-independent
+    statement: The release gate does not call optional AI providers.
+failure_categories:
+  - id: native-command-failed
+    statement: A release-readiness command such as cargo, RMS validation, RMS verification, or package smoke failed.
+  - id: plugin-drift
+    statement: The packaged Codex plugin skills or manifest drift from the canonical skill source.
+  - id: package-check-failed
+    statement: Cargo package, RMS package creation, or RMS package verification smoke failed.
+  - id: release-binary-smoke-failed
+    statement: The release-mode binary could not be built, installed into the temporary smoke path, or run deterministic smoke commands.
+  - id: release-metadata-drift
+    statement: Release package metadata disagrees across Cargo, RMS module, or packaged integration manifests.
+compatibility:
+  policy: backward-compatible-within-major

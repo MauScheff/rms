@@ -1,0 +1,17 @@
+spec: rms/contract/v0.1
+name: plan-module-change
+version: 1
+kind: command
+meaning: Render an advisory RMS implementation plan prompt for a requested module change.
+preconditions:
+  - id: task-supplied
+    statement: The requested change is supplied as task text.
+  - id: target-module-readable
+    statement: The target module manifest is readable and parseable.
+postconditions:
+  - id: plan-prompt-classifies-change
+    statement: The prompt asks the reviewer or agent to classify the change, identify affected RMS surfaces, and propose focused verification.
+  - id: plan-provider-execution-is-optional
+    statement: Provider-backed planning is opt-in and must preserve the rendered prompt and provider response as a run record.
+compatibility:
+  policy: backward-compatible-within-major

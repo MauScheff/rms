@@ -1,0 +1,26 @@
+spec: rms/contract/v0.1
+name: build-module-atlas
+version: 1
+kind: command
+meaning: Generate a local, interactive RMS module atlas from canonical module artifacts and derived source references.
+preconditions:
+  - id: target-module-valid
+    statement: The target module manifest is readable, parseable, and passes RMS validation.
+postconditions:
+  - id: atlas-derived-from-artifacts
+    statement: The atlas graph and question answers contain only nodes, edges, labels, summaries, traces, gaps, and source references derived from the target module manifest and referenced public artifacts.
+  - id: atlas-identifies-source
+    statement: The generated atlas identifies the source module manifest, root, validator, and source revision when available.
+  - id: atlas-preserves-stable-ids
+    statement: Atlas nodes and edges use stable semantic identifiers so future live or diff renderers can reconcile changes without rebuilding user orientation.
+  - id: atlas-answers-common-questions
+    statement: The generated atlas includes deterministic question shortcuts that compose the derived graph into intelligible answers for ownership, public surface, effects, lifecycle, compatibility, and verification.
+failure_categories:
+  - id: invalid-module
+    statement: The target module manifest cannot be read, parsed, or validated.
+  - id: unsafe-overwrite
+    statement: The output directory already exists and force was not requested.
+  - id: output-write-failed
+    statement: The atlas JSON or HTML artifact could not be written.
+compatibility:
+  policy: backward-compatible-within-major

@@ -1,0 +1,18 @@
+spec: rms/contract/v0.1
+name: validate-rms-artifacts
+version: 1
+kind: command
+meaning: Validate RMS manifests and referenced artifacts against embedded schemas and semantic reference checks.
+preconditions:
+  - id: readable-root-or-explicit-manifests
+    statement: The requested root or explicit manifest paths are readable by the process.
+postconditions:
+  - id: diagnostics-reflect-artifacts
+    statement: Reported diagnostics are derived from parsed RMS artifacts and embedded validation rules.
+failure_categories:
+  - id: parse-failure
+    statement: An input artifact cannot be parsed as the expected format.
+  - id: validation-failure
+    statement: One or more RMS artifacts violate schema, reference, binding, or semantic checks.
+compatibility:
+  policy: backward-compatible-within-major

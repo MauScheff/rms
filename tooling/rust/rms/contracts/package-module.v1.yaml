@@ -1,0 +1,18 @@
+spec: rms/contract/v0.1
+name: package-module
+version: 1
+kind: command
+meaning: Assemble a portable RMS module package from a module manifest, referenced artifacts, implementation binding, and generated metadata.
+preconditions:
+  - id: target-module-valid
+    statement: The target module manifest is readable and passes validation.
+postconditions:
+  - id: package-identifies-sources
+    statement: The package contains metadata identifying included files, sizes, checksums, validator identity, and source revision when available.
+failure_categories:
+  - id: unsafe-overwrite
+    statement: The output directory already exists and force was not requested.
+  - id: invalid-source-artifact
+    statement: A required source artifact is missing or invalid.
+compatibility:
+  policy: backward-compatible-within-major

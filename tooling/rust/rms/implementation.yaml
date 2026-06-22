@@ -1,0 +1,349 @@
+spec: rms/implementation/v0.1
+
+module: rms-cli
+binding: rust
+
+source:
+  root: .
+  public_entrypoint: src/main.rs
+
+commands:
+  build: cargo build --manifest-path Cargo.toml
+  verify: cargo test --manifest-path Cargo.toml
+  format: cargo fmt --manifest-path Cargo.toml --check
+
+toolchain:
+  cargo_manifest: Cargo.toml
+  package: rms
+
+dependencies:
+  allowed_external_crates:
+    - anyhow
+    - clap
+    - jsonschema
+    - serde
+    - serde_json
+    - serde_yaml
+    - sha2
+    - syn
+    - toml
+    - walkdir
+
+architecture:
+  public_modules: []
+
+semantic_functions:
+  - id: validate-rms-artifacts-command
+    symbol: run_validate
+    kind: parser
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/validate-rms-artifacts.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+    assumptions:
+      ensures:
+        - validation diagnostics are derived from manifest schemas and semantic reference checks
+    evidence:
+      contracts:
+        - verification/contracts/validate_rms_artifacts.md
+  - id: explain-module-command
+    symbol: run_explain
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/explain-module.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+    assumptions:
+      ensures:
+        - deterministic explanation content is derived from the target manifest and sibling implementation binding
+        - provider-backed explanation is opt-in and uses a bounded RMS prompt with a run record
+    evidence:
+      contracts:
+        - verification/contracts/explain_module.md
+  - id: diagnose-rms-environment-command
+    symbol: run_diagnose
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/diagnose-rms-environment.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - diagnostic output reports repository, config, provider, run-record, and validation readiness without redefining RMS semantics
+    evidence:
+      contracts:
+        - verification/contracts/diagnose_rms_environment.md
+  - id: workbench-config-resolver
+    symbol: resolve_prompt_run_options
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/render-workbench-prompt.v1.yaml
+        - contracts/list-workbench-runs.v1.yaml
+        - contracts/inspect-workbench-run.v1.yaml
+        - contracts/latest-workbench-run.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - optional workbench config only supplies provider, model, sandbox, and run-record defaults
+        - provider execution remains opt-in through explicit provider selection or configured `--ai`
+    evidence:
+      contracts:
+        - verification/contracts/render_workbench_prompt.md
+        - verification/contracts/list_workbench_runs.md
+        - verification/contracts/inspect_workbench_run.md
+        - verification/contracts/latest_workbench_run.md
+  - id: workbench-config-init-command
+    symbol: run_config_init
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/init-workbench-config.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - generated workbench config contains only provider, model, sandbox, and run-record defaults
+        - existing config is preserved unless overwrite is explicit
+    evidence:
+      contracts:
+        - verification/contracts/init_workbench_config.md
+  - id: release-check-command
+    symbol: run_release_check
+    kind: interpreter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/release-check.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - release readiness is derived from deterministic repository checks and does not invoke optional AI providers
+        - release package, module, and plugin versions are checked for consistency before artifacts are accepted
+        - release-mode binary artifacts are built, smoke-tested outside `cargo run`, and checked through a temporary PATH install
+        - Codex plugin packaging is checked against canonical skill source
+    evidence:
+      contracts:
+        - verification/contracts/release_check.md
+  - id: codex-plugin-sync-validator
+    symbol: validate_codex_plugin_sync
+    kind: parser
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/release-check.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - packaged Codex skills match canonical skills exactly before release
+    evidence:
+      contracts:
+        - verification/contracts/release_check.md
+  - id: render-workbench-prompt-command
+    symbol: run_prompt
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/render-workbench-prompt.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - rendered prompts are advisory and derived from canonical module context plus selected workflow template
+        - provider execution is opt-in and requires a run record
+    evidence:
+      contracts:
+        - verification/contracts/render_workbench_prompt.md
+  - id: workbench-run-record-writer
+    symbol: write_prompt_run_record
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/render-workbench-prompt.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - run records include request metadata, prompt, and validation checks
+    evidence:
+      contracts:
+        - verification/contracts/render_workbench_prompt.md
+  - id: codex-provider-executor
+    symbol: execute_codex_provider
+    kind: interpreter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/render-workbench-prompt.v1.yaml
+    assumptions:
+      requires:
+        - provider is explicitly set to codex
+      ensures:
+        - provider stdout, stderr, and final response are written into the run record
+    evidence:
+      scenarios:
+        - verification/scenarios/provider_execution.md
+  - id: list-workbench-runs-command
+    symbol: run_list_runs
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/list-workbench-runs.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - saved run records are summarized without mutating run artifacts
+    evidence:
+      contracts:
+        - verification/contracts/list_workbench_runs.md
+  - id: inspect-workbench-run-command
+    symbol: run_inspect_run
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/inspect-workbench-run.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - one run record is rendered from request, prompt, checks, response, and provider logs when present
+    evidence:
+      contracts:
+        - verification/contracts/inspect_workbench_run.md
+  - id: latest-workbench-run-command
+    symbol: run_latest_run
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/latest-workbench-run.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - the newest saved run record is selected from generated run directories and rendered without mutation
+    evidence:
+      contracts:
+        - verification/contracts/latest_workbench_run.md
+  - id: workbench-prompt-renderer
+    symbol: render_workbench_prompt
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/explain-module.v1.yaml
+        - contracts/plan-module-change.v1.yaml
+        - contracts/review-module-diff.v1.yaml
+        - contracts/refactor-module-workbench.v1.yaml
+        - contracts/implement-module-workbench.v1.yaml
+        - contracts/evolve-contract-workbench.v1.yaml
+        - contracts/evidence-workbench.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+    assumptions:
+      ensures:
+        - plan, review, refactor, implement, contract evolution, and evidence prompts preserve the RMS bounded context and name deterministic checks
+    evidence:
+      contracts:
+        - verification/contracts/plan_module_change.md
+        - verification/contracts/review_module_diff.md
+        - verification/contracts/refactor_module_workbench.md
+        - verification/contracts/implement_module_workbench.md
+        - verification/contracts/evolve_contract_workbench.md
+        - verification/contracts/evidence_workbench.md
+  - id: analyze-git-impact-command
+    symbol: run_impact
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/analyze-git-impact.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - impact reports are derived from git path evidence, discovered RMS manifests, implementation bindings, and declared verification references
+        - conservative review and verification obligations are suggested without treating git metadata as semantic authority
+    evidence:
+      contracts:
+        - verification/contracts/analyze_git_impact.md
+  - id: build-context-packet-command
+    symbol: print_context_packet
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/build-context-packet.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+    assumptions:
+      ensures:
+        - context packets are bounded to canonical module references and working rules
+    evidence:
+      scenarios:
+        - verification/scenarios/context_packet.md
+  - id: build-module-atlas-command
+    symbol: run_atlas
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/build-module-atlas.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - atlas graph nodes, edges, question answers, source references, and generated HTML are derived from the target module manifest and referenced artifacts
+        - stable semantic identifiers allow future live and diff views to reconcile changes without inventing topology
+    evidence:
+      contracts:
+        - verification/contracts/build_module_atlas.md
+  - id: package-module-command
+    symbol: run_package
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/package-module.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - package contents are derived from referenced module artifacts and package metadata
+    evidence:
+      scenarios:
+        - verification/scenarios/package_module.md
+  - id: verify-implementation-command
+    symbol: run_verify
+    kind: interpreter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/verify-implementation.v1.yaml
+    assumptions:
+      requires:
+        - implementation binding declares commands.verify
+      ensures:
+        - the declared verification command is run from the implementation binding directory
+    evidence:
+      scenarios:
+        - verification/scenarios/verify_implementation.md

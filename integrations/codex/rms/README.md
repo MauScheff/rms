@@ -1,10 +1,16 @@
 # Codex Plugin Wrapper
 
-This directory packages the canonical RMS skills for Codex. It is an adapter: the semantic source remains the repository manifests, contracts, and `skills/` directory.
+This directory packages the canonical RMS skills for Codex. It is an adapter: the semantic source remains the repository manifests, contracts, `skills/` directory, and shared `rms` CLI.
 
 ## Use Locally
 
 Install the neutral CLI first:
+
+```text
+https://github.com/reliable-modular-systems/reliable-modular-systems/releases
+```
+
+Or install from a source checkout:
 
 ```bash
 cargo install --path tooling/rust/rms
@@ -27,8 +33,7 @@ Do not edit `integrations/codex/rms/skills/` directly unless the same change is 
 From the repository root:
 
 ```bash
-python3 /Users/mau/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py integrations/codex/rms
+rms release check --root .
 ```
 
-The plugin should remain thin. Hooks and MCP servers may be added later, but they should call the shared `rms` CLI rather than implementing private architectural rules.
-
+The release check validates that packaged plugin skills match canonical `skills/`. The plugin should remain thin. Skills, hooks, and MCP servers should call the shared `rms` CLI rather than implementing private architectural rules.

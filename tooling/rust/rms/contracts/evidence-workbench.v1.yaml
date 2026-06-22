@@ -1,0 +1,26 @@
+spec: rms/contract/v0.1
+name: evidence-workbench
+version: 1
+kind: command
+meaning: Render an advisory RMS evidence prompt for proving a changed module promise with the smallest strong evidence.
+preconditions:
+  - id: task-supplied
+    statement: The evidence need is supplied as task text.
+  - id: target-module-readable
+    statement: The target module manifest is readable and parseable.
+postconditions:
+  - id: evidence-category-is-identified
+    statement: The prompt asks the reviewer or agent to classify the evidence as law, contract, scenario, boundary, runtime, reconciliation, or migration evidence.
+  - id: positive-and-negative-cases-are-named
+    statement: The prompt asks for positive evidence and negative cases for impossible variants, invalid constructors, malformed boundary input, and illegal transitions when applicable.
+  - id: artifact-references-are-named
+    statement: The prompt asks which manifest or implementation binding references should point to the evidence.
+  - id: evidence-guidance-is-advisory
+    statement: The command renders or executes guidance and does not itself edit source files.
+failure_categories:
+  - id: missing-task
+    statement: No evidence task was supplied.
+  - id: provider-unavailable
+    statement: The requested provider command cannot be started or exits unsuccessfully.
+compatibility:
+  policy: backward-compatible-within-major
