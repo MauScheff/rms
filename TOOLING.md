@@ -206,11 +206,14 @@ Core skills should remain semantic:
 ```text
 inspect-module
 implement-change
+prune-module
 add-module
 evolve-contract
 compose-modules
 verify-module
 ```
+
+`prune-module` is the semantic-debt lane. It asks whether retained artifacts are reachable from current manifests, contracts, invariants, effects, profiles, compatibility policy, implementation bindings, operational recovery paths, or verification evidence. It should delete, merge, inline, rename, or document residue before new abstractions are added.
 
 ## 6. CI pipeline
 
@@ -222,9 +225,10 @@ A practical pipeline is:
 3. Check public-contract and composition compatibility.
 4. Build through the implementation binding with pinned toolchain inputs.
 5. Run declared verification evidence.
-6. Produce a conformance report tied to the source revision or artifact digest.
-7. Generate documentation and graphs; fail if generated artifacts drift.
-8. For release artifacts, emit provenance and a dependency inventory when appropriate.
+6. Check semantic residue for unowned helpers, stale fixtures, obsolete generated files, and compatibility shims without consumers or removal conditions.
+7. Produce a conformance report tied to the source revision or artifact digest.
+8. Generate documentation and graphs; fail if generated artifacts drift.
+9. For release artifacts, emit provenance and a dependency inventory when appropriate.
 ```
 
 Distributed or critical modules may add replay, reconciliation simulation, migration verification, or fault injection.

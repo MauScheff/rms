@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added the `prune-module` skill and semantic-residue guidance for continuously removing unneeded artifacts.
 - Added `rms compose` manifest-level module composition checks.
 - Added Swift binding scaffolding, validation checks, and `examples/swift`.
 - Added `rms check-compat` manifest-level compatibility classification.

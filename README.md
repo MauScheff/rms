@@ -22,7 +22,7 @@ RMS makes those promises explicit without requiring a framework, language, deplo
 
 - A canonical specification for modules, bounded contexts, contracts, effects, profiles, compatibility, and conformance.
 - YAML manifests for systems, context maps, modules, implementations, and conformance reports.
-- Agent skills for inspecting modules, implementing changes, adding modules, evolving contracts, composing modules, and verifying conformance.
+- Agent skills for inspecting modules, implementing changes, pruning semantic residue, adding modules, evolving contracts, composing modules, and verifying conformance.
 - A Rust reference CLI for validation, inspection, context packets, and conformance evidence.
 - Thin Codex and Claude integration guidance that adapts the same semantic model instead of creating agent-specific architecture.
 

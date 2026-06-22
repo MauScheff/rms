@@ -7,6 +7,7 @@ Canonical skills:
 - `inspect-module`
 - `implement-change`
 - `refactor-module`
+- `prune-module`
 - `add-module`
 - `evolve-contract`
 - `compose-modules`

@@ -18,10 +18,13 @@ A material change should include:
 Problem and intended outcome
 Affected normative sections
 Compatibility impact
+New artifacts and their semantic necessity
 Updated schemas and examples when applicable
 Validation and link-check results
 Migration guidance for breaking changes
 ```
+
+For new files, helpers, abstractions, fixtures, generated artifacts, compatibility shims, or dependencies, state the owner and the manifest promise, contract, invariant, effect, profile obligation, recovery path, implementation binding, or verification evidence they serve. Temporary artifacts should include a removal condition.
 
 ## Scope test
 
