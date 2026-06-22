@@ -37,6 +37,7 @@ rms inspect examples/minimal/module.yaml
 rms explain examples/minimal/module.yaml
 rms explain examples/minimal/module.yaml "What does this module own?"
 rms explain "How does this module work?" --root examples/minimal
+rms --version
 rms diagnose
 rms diagnose --json
 rms init ./my-system --name my-system --purpose "Build reliable modular software" --context core

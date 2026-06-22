@@ -102,6 +102,7 @@ This creates `module.yaml`, a module `README.md`, `contracts/README.md`, and gui
 Validate the included examples:
 
 ```bash
+rms --version
 rms validate --root examples/minimal
 rms validate --root examples/commerce
 rms validate --root examples/rust

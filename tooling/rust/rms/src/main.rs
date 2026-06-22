@@ -72,6 +72,7 @@ const INIT_AGENT_SKILLS: &[(&str, &str)] = &[
 
 #[derive(Parser)]
 #[command(name = "rms")]
+#[command(version)]
 #[command(about = "Reliable Modular Systems reference CLI")]
 struct Cli {
     #[command(subcommand)]
@@ -13125,6 +13126,15 @@ fn source_revision(root: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_version_flag_uses_package_version() {
+        let version = Cli::command().render_version().to_string();
+
+        assert!(version.contains(VALIDATOR_NAME));
+        assert!(version.contains(VALIDATOR_VERSION));
+    }
 
     #[test]
     fn collects_contract_and_verification_references() {

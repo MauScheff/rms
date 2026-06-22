@@ -149,6 +149,8 @@ Run-record directory readiness
 Agent workflow guidance
 ```
 
+Use `rms --version` when only the installed CLI version is needed.
+
 Provider availability is diagnostic only. A missing Codex, Claude, or local-model command must not make deterministic RMS validation fail. Use `--json` for a machine-readable readiness report.
 
 ### Workbench config

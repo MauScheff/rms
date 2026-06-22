@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added `rms --version` for quick installed CLI version checks.
+
 ## 0.1.0-rc.3 - 2026-06-22
 
 Compatibility impact: additive within RMS 0.1. Existing manifests, packages, examples, `rms init` invocations, and `rms add-module` invocations remain compatible. The `rms-cli` module now publishes the `add-rms-module` command contract to make module scaffolding semantics explicit.
