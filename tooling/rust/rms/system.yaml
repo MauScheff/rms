@@ -2,7 +2,7 @@ spec: rms/system/v0.1
 
 system:
   name: rms-workbench
-  version: 0.1.0-rc.1
+  version: 0.1.0-rc.2
   purpose: Provide the RMS command-line workbench as a host-integrated tool.
 
 contexts:

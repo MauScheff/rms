@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.1.0-rc.2 - 2026-06-22
+
+Compatibility impact: additive within RMS 0.1. Existing manifests, packages, examples, and `rms init` invocations remain compatible. The `rms-cli` module now publishes the `init-rms-system` command contract to make initialization semantics explicit.
+
+Known limitations:
+
+- RMS 0.1 remains a pilot draft, not a 1.0 compatibility promise.
+- The generated agent and workbench files are operational adapters; canonical manifests and contracts remain the source of module semantics.
+- The atlas remains derived evidence and is still being tested through maintainer journeys.
+
+- Added `rms init` agent/workbench bootstrap output: `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore` are now generated with the canonical system files.
+- Embedded RMS workflow skills in the CLI so release-installed binaries can scaffold Codex-ready projects without requiring a source checkout.
+- Added the `init-rms-system` public contract, implementation binding entry, and verification evidence.
+- Documented the new `rms init` output in `README.md`, `QUICKSTART.md`, `TOOLING.md`, the CLI README, and Codex integration guidance.
+- Added atlas journey probe evidence and linked it from the `build-module-atlas` implementation evidence.
+- Improved the atlas toward a human-centered maintainer workflow, including guided traces and explicit gaps.
+- Added git impact/gate workflow support for selecting validation, composition, verification, review, and compatibility obligations from changed RMS artifacts.
+
 ## 0.1.0-rc.1 - 2026-06-22
 
 Compatibility impact: additive within RMS 0.1. Existing manifests and examples remain compatible. New CLI commands and release checks expand the workbench surface without changing the RMS semantic core.
