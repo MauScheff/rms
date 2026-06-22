@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Tightened agent guidance for ADTs, validated constructors, explicit result types, boundary schemas, state machines, and negative verification.
+- Added the `refactor-module` skill for behavior-preserving RMS module refactors.
 - Added `rms init` and `rms add-module` scaffolding commands.
 - Added Rust module scaffolding for `rms add-module --binding rust`.
 - Added the first Rust language binding checks for Cargo manifests, package identity, public entrypoints, crate dependency allowlists, and public modules.

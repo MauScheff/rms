@@ -283,6 +283,18 @@ Use the strongest representation available in the implementation language:
 
 Dynamic languages can achieve the same semantic goal with constructors, validators, schemas, and disciplined module boundaries. RMS requires the property, not a particular type-system feature.
 
+Use this decision rule:
+
+| Domain shape | Preferred representation |
+|---|---|
+| Closed alternatives | Algebraic data type, sealed variant, or enum |
+| Raw value with validity rules | Opaque value plus validated constructor |
+| Expected domain failure | Explicit result type |
+| Untrusted or versioned input | Runtime schema and boundary validator |
+| Lifecycle/order-dependent behavior | State model, transition table, or state machine |
+
+Each representation should have negative evidence: impossible variants, invalid constructors, malformed input, and illegal transitions should be rejected or made unrepresentable.
+
 ### Use state machines where time matters
 
 Not every record needs a state machine. Use one when legal behavior depends on lifecycle or order.
@@ -624,6 +636,7 @@ Repeated workflows should be packaged as vendor-neutral Agent Skills:
 ```text
 inspect-module
 implement-change
+refactor-module
 add-module
 evolve-contract
 compose-modules

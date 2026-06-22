@@ -23,6 +23,12 @@ description: Inspect an RMS module before planning or changing it; use when owne
    - effects and operational semantics;
    - compatibility policy;
    - verification evidence;
+   - representation obligations for closed variants, validated values, boundary schemas, and lifecycle state;
    - suspected gaps or drift.
 5. For a proposed task, identify the owning module and the smallest affected contract surface.
-6. Flag any need to cross a private boundary rather than silently doing so.
+6. Identify whether the task should use:
+   - an ADT, sealed variant, or enum for closed alternatives;
+   - a validated constructor or opaque type for invalid raw values;
+   - a schema or validator for boundary input;
+   - a state model only when legal behavior depends on lifecycle or order.
+7. Flag any need to cross a private boundary rather than silently doing so.

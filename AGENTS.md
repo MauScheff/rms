@@ -31,7 +31,8 @@ Use the `inspect-module` skill when the ownership or boundary is unclear.
 - Keep domain decisions separate from external effects where practical.
 - Do not introduce an undeclared dependency or effect.
 - Do not put context-specific business concepts into the technical kernel.
-- Use a state model only when behavior depends on lifecycle or order.
+- Use algebraic data types, sealed variants, enums, opaque values, validated constructors, explicit result types, and boundary schemas to make invalid states hard to represent.
+- Use a state model only when behavior depends on lifecycle or order. Illegal transitions must be rejected or made unrepresentable.
 - Use events, queues, outbox/inbox patterns, or reconciliation only when the declared profiles require them.
 - Change public contracts deliberately and follow the compatibility policy.
 - Prefer the smallest design that fully satisfies the declared semantics.

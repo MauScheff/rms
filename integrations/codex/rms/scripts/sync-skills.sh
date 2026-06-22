@@ -10,6 +10,7 @@ mkdir -p "$plugin_root/skills"
 for skill in \
   inspect-module \
   implement-change \
+  refactor-module \
   add-module \
   evolve-contract \
   compose-modules \
@@ -19,4 +20,3 @@ do
 done
 
 echo "Synced RMS skills into $plugin_root/skills"
-
