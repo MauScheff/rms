@@ -96,6 +96,23 @@ rms init ./my-system \
   --name my-system \
   --purpose "Build reliable modular software" \
   --context core
+```
+
+`rms init` creates the canonical system files plus the local agent/workbench surface a fresh project needs:
+
+```text
+system.yaml
+context-map.yaml
+GLOSSARY.md
+AGENTS.md
+.rms/config.yaml
+.agents/skills/
+.gitignore
+```
+
+Add the first module:
+
+```bash
 
 rms add-module ./my-system/modules/widget \
   --name widget \

@@ -1,0 +1,30 @@
+spec: rms/contract/v0.1
+name: init-rms-system
+version: 1
+kind: command
+meaning: Scaffold a new RMS system directory with canonical manifests and agent/workbench bootstrap artifacts.
+preconditions:
+  - id: target-writable
+    statement: The requested target directory can be created or written.
+  - id: generated-files-absent
+    statement: Files that `rms init` would generate do not already exist.
+postconditions:
+  - id: canonical-system-artifacts-created
+    statement: The generated system manifest, context map, and glossary establish the initial RMS system semantics.
+  - id: agent-instructions-created
+    statement: The generated `AGENTS.md` instructs agents to use RMS manifests and CLI commands before inferring architecture from code shape.
+  - id: workbench-config-created
+    statement: The generated `.rms/config.yaml` supplies provider, sandbox, and run-record defaults only; it does not define module semantics.
+  - id: local-agent-skills-created
+    statement: The generated `.agents/skills` directory contains pinned RMS workflow skills that call the shared RMS CLI.
+  - id: ignore-file-created
+    statement: The generated `.gitignore` excludes local build artifacts, distribution artifacts, and RMS run records.
+failure_categories:
+  - id: generated-file-exists
+    statement: A generated file already exists and would be overwritten.
+  - id: unwritable-target
+    statement: The target directory or one of its generated child paths cannot be created or written.
+  - id: invalid-input
+    statement: Required system name, purpose, version, or context input is invalid for scaffold generation.
+compatibility:
+  policy: backward-compatible-within-major

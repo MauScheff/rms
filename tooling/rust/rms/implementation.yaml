@@ -117,6 +117,24 @@ semantic_functions:
     evidence:
       contracts:
         - verification/contracts/init_workbench_config.md
+  - id: init-rms-system-command
+    symbol: run_init
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/init-rms-system.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - generated system, context map, glossary, agent instructions, workbench config, local agent skills, and ignore files are deterministic scaffold artifacts
+        - generated agent and workbench artifacts route future work through RMS canonical manifests and the shared CLI
+        - generated workbench config supplies operational provider and run-record defaults only
+    evidence:
+      contracts:
+        - verification/contracts/init_rms_system.md
   - id: release-check-command
     symbol: run_release_check
     kind: interpreter

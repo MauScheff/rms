@@ -34,6 +34,41 @@ const CANONICAL_SKILLS: &[&str] = &[
     "compose-modules",
     "verify-module",
 ];
+const INIT_AGENT_SKILLS: &[(&str, &str)] = &[
+    ("README.md", include_str!("../assets/skills/README.md")),
+    (
+        "add-module/SKILL.md",
+        include_str!("../assets/skills/add-module/SKILL.md"),
+    ),
+    (
+        "compose-modules/SKILL.md",
+        include_str!("../assets/skills/compose-modules/SKILL.md"),
+    ),
+    (
+        "evolve-contract/SKILL.md",
+        include_str!("../assets/skills/evolve-contract/SKILL.md"),
+    ),
+    (
+        "implement-change/SKILL.md",
+        include_str!("../assets/skills/implement-change/SKILL.md"),
+    ),
+    (
+        "inspect-module/SKILL.md",
+        include_str!("../assets/skills/inspect-module/SKILL.md"),
+    ),
+    (
+        "prune-module/SKILL.md",
+        include_str!("../assets/skills/prune-module/SKILL.md"),
+    ),
+    (
+        "refactor-module/SKILL.md",
+        include_str!("../assets/skills/refactor-module/SKILL.md"),
+    ),
+    (
+        "verify-module/SKILL.md",
+        include_str!("../assets/skills/verify-module/SKILL.md"),
+    ),
+];
 
 #[derive(Parser)]
 #[command(name = "rms")]
@@ -12242,8 +12277,24 @@ fn run_init(
     )?;
     write_new_file(&path.join("GLOSSARY.md"), &render_glossary_md(name))?;
     write_new_file(&path.join("AGENTS.md"), INIT_AGENTS_MD)?;
+    write_new_file(&path.join(".gitignore"), INIT_GITIGNORE)?;
+    write_new_file(
+        &path.join(WORKBENCH_CONFIG_PATH),
+        &render_workbench_config(Provider::Codex, None, Path::new(DEFAULT_RUN_ROOT)),
+    )?;
+    scaffold_agent_skills(path)?;
 
     println!("initialized RMS system at {}", path.display());
+    Ok(())
+}
+
+fn scaffold_agent_skills(path: &Path) -> Result<()> {
+    for (relative_path, contents) in INIT_AGENT_SKILLS {
+        write_new_file(
+            &path.join(".agents").join("skills").join(relative_path),
+            contents,
+        )?;
+    }
     Ok(())
 }
 
@@ -12500,7 +12551,53 @@ fn write_new_file(path: &Path, contents: &str) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("failed to write `{}`", path.display()))
 }
 
-const INIT_AGENTS_MD: &str = "# Agent Instructions\n\nThis repository follows Reliable Modular Systems.\n\nBefore changing behavior, run `rms diagnose` when starting from an unfamiliar checkout and use `rms diagnose --json` when structured readiness is useful. Use `rms explain <module>` to understand the target module, `rms plan <module> --task \"<task>\"` when planning would help, `rms implement <module> --task \"<task>\"` when implementation guidance would help, `rms evolve-contract <module> --task \"<task>\"` when public meaning changes, `rms evidence <module> --task \"<task>\"` when proof design would help, and build a bounded packet with `rms context <module> --task \"<task>\"`. Identify the owning module, read its `module.yaml`, public contracts, declared effects, invariants, compatibility policy, and verification evidence. Keep implementation changes inside the owning boundary and run `rms review <module>` and `rms validate --root .` before completion.\n";
+const INIT_GITIGNORE: &str = ".DS_Store\ntarget/\ndist/\n.rms/runs/\n";
+
+const INIT_AGENTS_MD: &str = r#"# Agent Instructions
+
+This repository follows Reliable Modular Systems.
+
+RMS artifacts are the architectural source of truth. Do not infer ownership, effects, dependencies, compatibility, or recovery behavior from incidental code shape when manifests or contracts say otherwise.
+
+## Before Changing Behavior
+
+1. Run `rms diagnose`.
+2. Identify the owning module for the requested behavior.
+3. Run `rms explain <module.yaml>` to understand ownership, public surface, effects, invariants, compatibility, and verification evidence.
+4. Run `rms context <module.yaml> --task "<task>"` before implementation work.
+5. Read the target `module.yaml`, public contracts, direct dependency contracts, applicable glossary entries, and implementation binding.
+
+Use these advisory workbench commands when they match the task:
+
+- `rms plan <module.yaml> --task "<task>"`
+- `rms implement <module.yaml> --task "<task>"`
+- `rms evolve-contract <module.yaml> --task "<task>"`
+- `rms evidence <module.yaml> --task "<task>"`
+- `rms refactor <module.yaml> --task "<task>"`
+- `rms review <module.yaml> --impact`
+
+Provider-backed prompts are opt-in. Use `--provider codex` or `--ai` only when an external Codex run is intended.
+
+## While Implementing
+
+- Keep changes inside the owning module boundary.
+- Change public contracts or manifests before code when public meaning changes.
+- Declare new effects, dependencies, profiles, state, migration, compatibility impact, and recovery paths before relying on them.
+- Prefer explicit domain types, validated constructors, explicit result types, schemas at untrusted boundaries, and focused tests.
+- Do not edit another module's private implementation to bypass its public contract.
+- Treat generated reports, diffs, and provider output as evidence, not architecture.
+
+## Before Completion
+
+Run the smallest checks that prove the changed promise:
+
+- `rms validate --root .`
+- `rms compose --root .`
+- `rms verify <implementation.yaml>` when the module has an implementation binding.
+- `rms gate --root .` when reviewing a working-tree change.
+
+Report remaining manual obligations explicitly, especially compatibility review, missing evidence, undeclared effects, or partial conformance.
+"#;
 
 fn referenced_paths(value: &YamlValue) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
@@ -13296,8 +13393,43 @@ import struct ExternalKit.Widget
             validate_loaded_manifest(&manifest, &mut diagnostics);
         }
 
+        let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        let gitignore = fs::read_to_string(root.join(".gitignore")).unwrap();
+        let config = load_workbench_config(&root).unwrap().unwrap();
+        for (relative_path, contents) in INIT_AGENT_SKILLS {
+            let generated =
+                fs::read_to_string(root.join(".agents").join("skills").join(relative_path))
+                    .unwrap();
+            assert_eq!(generated, *contents);
+        }
+
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert!(agents.contains("RMS artifacts are the architectural source of truth"));
+        assert!(agents.contains("rms context <module.yaml> --task"));
+        assert!(gitignore.contains(".rms/runs/"));
+        assert_eq!(config.value.ai.default_provider.as_deref(), Some("codex"));
+        assert_eq!(config.value.ai.codex.sandbox.as_deref(), Some("read-only"));
+        assert_eq!(
+            config.value.runs.directory.as_deref(),
+            Some(Path::new(".rms/runs"))
+        );
+    }
+
+    #[test]
+    fn embedded_init_agent_skills_match_canonical_source_when_available() {
+        let canonical_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../skills");
+        if !canonical_root.exists() {
+            return;
+        }
+
+        for (relative_path, contents) in INIT_AGENT_SKILLS {
+            let canonical = fs::read_to_string(canonical_root.join(relative_path)).unwrap();
+            assert_eq!(
+                canonical, *contents,
+                "embedded skill drift: {relative_path}"
+            );
+        }
     }
 
     #[test]

@@ -90,7 +90,15 @@ Other tooling implementations should preserve the same semantic meaning even whe
 
 ### `init`
 
-Scaffolds a new RMS system with `system.yaml`, `context-map.yaml`, `GLOSSARY.md`, and `AGENTS.md`. The command refuses to overwrite existing files.
+Scaffolds a new RMS system with:
+
+- canonical artifacts: `system.yaml`, `context-map.yaml`, and `GLOSSARY.md`;
+- portable agent instructions: `AGENTS.md`;
+- local RMS workbench defaults: `.rms/config.yaml`;
+- local agent skills: `.agents/skills`;
+- repository hygiene defaults: `.gitignore`.
+
+Generated agent and workbench files are operational guidance. They must route future work through RMS manifests, contracts, and the shared CLI; they do not create module semantics. The command refuses to overwrite existing files.
 
 ### `add-module`
 

@@ -89,6 +89,8 @@ provides:
       contract: contracts/latest-workbench-run.v1.yaml
     - name: init-workbench-config
       contract: contracts/init-workbench-config.v1.yaml
+    - name: init-rms-system
+      contract: contracts/init-rms-system.v1.yaml
     - name: check-release-readiness
       contract: contracts/release-check.v1.yaml
     - name: build-context-packet

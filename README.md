@@ -79,6 +79,8 @@ rms init ./my-system \
   --context core
 ```
 
+This creates `system.yaml`, `context-map.yaml`, `GLOSSARY.md`, `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore`. The generated agent and workbench files are adapters over the RMS manifests and CLI; they are not a second source of architecture.
+
 Add a module with a language binding:
 
 ```bash
@@ -281,9 +283,9 @@ RMS is agent-neutral. Agent instructions are adapters; manifests and contracts r
 
 For Codex:
 
-- Keep portable repository guidance in `AGENTS.md`.
-- Use the plugin wrapper in `integrations/codex/rms`.
-- Package skills from canonical `skills/`.
+- Use `rms init` for new projects; it writes portable `AGENTS.md` guidance, `.rms/config.yaml`, and local `.agents/skills/` from the canonical RMS skills.
+- Use the plugin wrapper in `integrations/codex/rms` only when installable distribution is useful.
+- Package skills from canonical `skills/` for plugin releases.
 - Make the agent use the shared `rms` CLI: `diagnose`, `explain`, `plan`, `implement`, `evolve-contract`, `evidence`, `refactor`, `review`, `prompt`, `run`, `config`, `context`, `validate`, `compose`, `check-compat`, `verify`, and `conformance`.
 - Use hooks only to call the shared `rms` CLI.
 

@@ -9,7 +9,7 @@ RMS remains agent-neutral. This adapter makes the neutral CLI, manifests, and sk
 
 Keep the portable working agreement in the repository root as `AGENTS.md`. Codex discovers `AGENTS.md` from the project root down toward the working directory, allowing more local instructions for nested modules.
 
-Keep `AGENTS.md` concise. It should tell Codex to use the `rms` CLI before inferring module boundaries from prompt context. Detailed, task-specific procedures belong in Agent Skills rather than permanent startup context.
+For new projects, prefer `rms init`; it writes `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore` with the standard RMS/Codex operating surface. Keep `AGENTS.md` concise. It should tell Codex to use the `rms` CLI before inferring module boundaries from prompt context. Detailed, task-specific procedures belong in Agent Skills rather than permanent startup context.
 
 ## Skills
 
@@ -19,7 +19,7 @@ Codex skills build on the open Agent Skills standard. RMS skills use a `SKILL.md
 .agents/skills/<skill-name>/SKILL.md
 ```
 
-Codex can discover repository skills from `.agents/skills` directories between the working directory and repository root.
+Codex can discover repository skills from `.agents/skills` directories between the working directory and repository root. `rms init` installs the canonical RMS skills there for fresh projects.
 
 The canonical source should remain the project-level `skills/` directory. Skills should call `rms diagnose`, `rms explain`, `rms plan`, `rms implement`, `rms evolve-contract`, `rms evidence`, `rms review`, `rms prompt`, `rms context`, `rms validate`, and `rms verify` rather than embedding a second RMS workflow. Use `rms config init` to create local provider defaults when appropriate. Use `rms diagnose --json` when an agent needs structured readiness. Use `rms ... --provider codex` for explicit Codex execution, or `rms ... --ai` when `.rms/config.yaml` declares Codex as the intended default provider. Review and pin executable skill content before installation. Run `rms release check --root .` before sharing the Codex plugin wrapper.
 

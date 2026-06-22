@@ -39,6 +39,7 @@ rms explain examples/minimal/module.yaml "What does this module own?"
 rms explain "How does this module work?" --root examples/minimal
 rms diagnose
 rms diagnose --json
+rms init ./my-system --name my-system --purpose "Build reliable modular software" --context core
 rms config init
 rms plan examples/minimal/module.yaml --task "add a public command"
 rms implement examples/minimal/module.yaml --task "add a public command"
@@ -73,6 +74,8 @@ rms release check --root .
 ```
 
 The quickstart is in `../../../QUICKSTART.md`, the self-hosted walkthrough is in `../../../DOGFOOD.md`, and the release process is in `../../../RELEASE.md` from the repository root.
+
+`rms init` writes the canonical system artifacts plus `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore` so a fresh project is ready for RMS-guided human or Codex work without hand-authored bootstrap files.
 
 The workbench prompt commands are advisory by default. They render bounded, versioned prompts for humans or agents. Use `--record` to write `.rms/runs/<run-id>/request.yaml`, `prompt.md`, and `checks.json`. Use `--provider codex` to execute the prompt through `codex exec`, or `--ai` to use `ai.default_provider` from `.rms/config.yaml`, and record `response.md` plus provider logs. The CLI remains intentionally conservative and reports missing evidence explicitly instead of claiming more conformance than the artifacts prove.
 
