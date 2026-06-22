@@ -1,6 +1,6 @@
 [package]
 name = "rms"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 edition = "2021"
 license.workspace = true
 homepage.workspace = true

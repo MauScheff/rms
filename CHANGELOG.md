@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.1.0-rc.3 - 2026-06-22
+
+Compatibility impact: additive within RMS 0.1. Existing manifests, packages, examples, `rms init` invocations, and `rms add-module` invocations remain compatible. The `rms-cli` module now publishes the `add-rms-module` command contract to make module scaffolding semantics explicit.
+
+Known limitations:
+
+- RMS 0.1 remains a pilot draft, not a 1.0 compatibility promise.
+- Generated module guidance is an operational adapter; canonical manifests and contracts remain the source of module semantics.
+- The atlas remains derived evidence and is still being tested through maintainer journeys.
+
 - Added the `add-rms-module` public contract, implementation binding entry, and verification evidence.
 - Improved `rms add-module` scaffolding with a module README, public contract guidance, and stronger verification evidence guidance for Codex-ready first modules.
 
