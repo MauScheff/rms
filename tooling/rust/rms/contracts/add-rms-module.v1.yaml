@@ -1,0 +1,34 @@
+spec: rms/contract/v0.1
+name: add-rms-module
+version: 1
+kind: command
+meaning: Scaffold a new RMS module directory with canonical module artifacts, guidance files, evidence directories, and an optional native implementation binding.
+preconditions:
+  - id: target-writable
+    statement: The requested target directory can be created or written.
+  - id: generated-files-absent
+    statement: Files that `rms add-module` would generate do not already exist.
+  - id: scaffold-input-valid
+    statement: The requested module name, purpose, kind, profiles, and optional binding are valid for scaffold generation.
+postconditions:
+  - id: module-manifest-created
+    statement: The generated `module.yaml` records the requested name, purpose, kind, normalized profiles, compatibility policy, and verification directories without inventing ownership, public surface, invariants, effects, or dependencies.
+  - id: module-guidance-created
+    statement: The generated module `README.md` routes future work through `module.yaml`, public contracts, implementation bindings, and verification evidence.
+  - id: contract-guidance-created
+    statement: The generated `contracts/README.md` distinguishes public RMS contracts from private implementation details and names the required contract evidence loop.
+  - id: evidence-directories-created
+    statement: The generated `verification/laws`, `verification/contracts`, `verification/scenarios`, and `verification/boundaries` directories each contain guidance for recording proof tied to declared module promises.
+  - id: optional-binding-created
+    statement: When a supported binding is requested, the generated implementation binding and native source skeleton validate under RMS checks.
+failure_categories:
+  - id: generated-file-exists
+    statement: A generated file already exists and would be overwritten.
+  - id: unsupported-binding
+    statement: The requested implementation binding is not supported by the scaffold command.
+  - id: unwritable-target
+    statement: The target directory or one of its generated child paths cannot be created or written.
+  - id: invalid-input
+    statement: Required module name, purpose, kind, profile, or binding input is invalid for scaffold generation.
+compatibility:
+  policy: backward-compatible-within-major

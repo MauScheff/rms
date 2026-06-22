@@ -97,6 +97,8 @@ rms add-module ./my-system/modules/swift-widget \
   --binding swift
 ```
 
+This creates `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification directories. The optional Rust or Swift binding adds a minimal native library plus `implementation.yaml`.
+
 Validate the included examples:
 
 ```bash

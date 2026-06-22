@@ -102,7 +102,9 @@ Generated agent and workbench files are operational guidance. They must route fu
 
 ### `add-module`
 
-Scaffolds a valid module directory with `module.yaml`, `contracts/`, and verification evidence directories. When `--binding rust` or `--binding swift` is supplied, it also creates a minimal native library and `implementation.yaml` that pass that binding's checks. The command refuses to overwrite existing files.
+Scaffolds a valid module directory with `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification evidence directories. When `--binding rust` or `--binding swift` is supplied, it also creates a minimal native library and `implementation.yaml` that pass that binding's checks. The command refuses to overwrite existing files.
+
+Generated module guidance is an adapter over canonical artifacts. It tells humans and agents how to fill ownership, public contracts, effects, invariants, compatibility, and evidence into `module.yaml`, `contracts/`, `implementation.yaml`, and `verification/`; it does not invent module-specific semantics.
 
 The first language binding is Rust. A Rust implementation binding declares `binding: rust` in `implementation.yaml`; the CLI then checks Cargo manifest shape, package identity, public entrypoint placement, explicit external crate dependencies, source import roots, public external re-exports, declared public modules, primitive type aliases, public domain fields, failure discipline, constructor evidence, Stateful representation declarations, and semantic function source symbols.
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added the `add-rms-module` public contract, implementation binding entry, and verification evidence.
+- Improved `rms add-module` scaffolding with a module README, public contract guidance, and stronger verification evidence guidance for Codex-ready first modules.
+
 ## 0.1.0-rc.2 - 2026-06-22
 
 Compatibility impact: additive within RMS 0.1. Existing manifests, packages, examples, and `rms init` invocations remain compatible. The `rms-cli` module now publishes the `init-rms-system` command contract to make initialization semantics explicit.

@@ -77,6 +77,8 @@ The quickstart is in `../../../QUICKSTART.md`, the self-hosted walkthrough is in
 
 `rms init` writes the canonical system artifacts plus `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore` so a fresh project is ready for RMS-guided human or Codex work without hand-authored bootstrap files.
 
+`rms add-module` writes `module.yaml`, a module `README.md`, `contracts/README.md`, guided verification directories, and an optional Rust or Swift binding. The generated guidance routes future work through canonical artifacts without defining module-specific semantics.
+
 The workbench prompt commands are advisory by default. They render bounded, versioned prompts for humans or agents. Use `--record` to write `.rms/runs/<run-id>/request.yaml`, `prompt.md`, and `checks.json`. Use `--provider codex` to execute the prompt through `codex exec`, or `--ai` to use `ai.default_provider` from `.rms/config.yaml`, and record `response.md` plus provider logs. The CLI remains intentionally conservative and reports missing evidence explicitly instead of claiming more conformance than the artifacts prove.
 
 Optional `.rms/config.yaml`:

@@ -12309,23 +12309,27 @@ fn run_add_module(
     fs::create_dir_all(path)
         .with_context(|| format!("failed to create module directory `{}`", path.display()))?;
     fs::create_dir_all(path.join("contracts"))?;
+    let profiles = normalized_profiles(profiles);
     for category in ["laws", "contracts", "scenarios", "boundaries"] {
         let verification_dir = path.join("verification").join(category);
         fs::create_dir_all(&verification_dir)?;
         write_new_file(
             &verification_dir.join("README.md"),
-            &format!("# {category}\n\nAdd RMS {category} evidence here.\n"),
+            &render_verification_readme(category),
         )?;
     }
 
-    let profiles = normalized_profiles(profiles);
     write_new_file(
         &path.join("module.yaml"),
         &render_module_yaml(name, purpose, kind, &profiles),
     )?;
     write_new_file(
+        &path.join("README.md"),
+        &render_module_readme(name, purpose, kind, &profiles, binding),
+    )?;
+    write_new_file(
         &path.join("contracts").join("README.md"),
-        "# Contracts\n\nAdd public RMS contracts here.\n",
+        &render_contracts_readme(),
     )?;
 
     if let Some(binding) = binding {
@@ -12430,6 +12434,50 @@ fn render_module_yaml(name: &str, purpose: &str, kind: &str, profiles: &[String]
     )
 }
 
+fn render_module_readme(
+    name: &str,
+    purpose: &str,
+    kind: &str,
+    profiles: &[String],
+    binding: Option<&str>,
+) -> String {
+    let profile_lines = profiles
+        .iter()
+        .map(|profile| format!("- `{}`", markdown_inline(profile)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let binding_line = match binding {
+        Some(binding) => format!(
+            "Implementation binding: `{}` via `implementation.yaml`.",
+            markdown_inline(binding)
+        ),
+        None => "Implementation binding: none generated yet.".to_string(),
+    };
+
+    format!(
+        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs or illegal transitions when applicable.\n5. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms verify implementation.yaml` when an implementation binding exists.\n\n## Agent Workflow\n\nUse `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms evolve-contract module.yaml --task \"<task>\"` when public meaning changes, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
+        markdown_inline(name),
+        markdown_inline(purpose),
+        markdown_inline(kind),
+        binding_line,
+        profile_lines
+    )
+}
+
+fn render_contracts_readme() -> String {
+    "# Contracts\n\nPlace public RMS contract files here.\n\nA contract belongs here when consumers outside this module can call, observe, depend on, or substitute against the behavior. Private helpers stay in implementation docs and tests.\n\nWhen adding or changing a contract:\n\n1. Declare it from `module.yaml`.\n2. Specify preconditions, postconditions, failure categories, and compatibility policy.\n3. Bind implemented symbols from `implementation.yaml` when code provides the behavior.\n4. Add matching evidence under `verification/contracts/`.\n".to_string()
+}
+
+fn render_verification_readme(category: &str) -> String {
+    match category {
+        "laws" => "# Law Evidence\n\nRecord evidence for invariants and algebraic or domain laws declared in `module.yaml`.\n\nEach evidence file should identify:\n\n- the invariant, law, or manifest promise under test;\n- positive and negative cases;\n- the command or tool used;\n- the source revision when applicable.\n\nDo not add law evidence for behavior that is not declared by the module.\n".to_string(),
+        "contracts" => "# Contract Evidence\n\nRecord evidence that public contracts in `contracts/` are satisfied.\n\nEach evidence file should identify:\n\n- the contract path and version;\n- success behavior and expected failures;\n- boundary validation for untrusted or versioned input;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
+        "scenarios" => "# Scenario Evidence\n\nRecord end-to-end behavior that matters to this module's declared purpose.\n\nEach evidence file should identify:\n\n- the manifest promise or public contract exercised;\n- setup, action, expected result, and failure path;\n- recovery or reconciliation behavior when declared;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
+        "boundaries" => "# Boundary Evidence\n\nRecord evidence for trust boundaries, external effects, dependency contracts, schemas, limits, and compatibility promises.\n\nEach evidence file should identify:\n\n- the boundary input, dependency, or effect under test;\n- validation, rejection, timeout, retry, or compatibility behavior;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
+        other => format!("# {other}\n\nAdd RMS {other} evidence here.\n"),
+    }
+}
+
 fn render_rust_implementation_yaml(module_name: &str, package_name: &str) -> String {
     format!(
         "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  public_modules: []\n",
@@ -12490,6 +12538,10 @@ fn yaml_string_list(values: &[String], indent: usize) -> String {
 
 fn yaml_quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn markdown_inline(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn sanitize_rust_package_name(name: &str) -> String {
@@ -13451,6 +13503,12 @@ import struct ExternalKit.Widget
             let manifest = load_manifest(&root.join(file)).unwrap();
             validate_loaded_manifest(&manifest, &mut diagnostics);
         }
+        assert_module_scaffold_guidance(
+            &root,
+            "example-rust",
+            "Demonstrate Rust module scaffolding.",
+            "rust",
+        );
 
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
@@ -13475,9 +13533,38 @@ import struct ExternalKit.Widget
             let manifest = load_manifest(&root.join(file)).unwrap();
             validate_loaded_manifest(&manifest, &mut diagnostics);
         }
+        assert_module_scaffold_guidance(
+            &root,
+            "example-swift",
+            "Demonstrate Swift module scaffolding.",
+            "swift",
+        );
 
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    fn assert_module_scaffold_guidance(root: &Path, name: &str, purpose: &str, binding: &str) {
+        let readme = fs::read_to_string(root.join("README.md")).unwrap();
+        let contracts = fs::read_to_string(root.join("contracts/README.md")).unwrap();
+        let laws = fs::read_to_string(root.join("verification/laws/README.md")).unwrap();
+        let contract_evidence =
+            fs::read_to_string(root.join("verification/contracts/README.md")).unwrap();
+        let scenarios = fs::read_to_string(root.join("verification/scenarios/README.md")).unwrap();
+        let boundaries =
+            fs::read_to_string(root.join("verification/boundaries/README.md")).unwrap();
+
+        assert!(readme.contains(&format!("# {name}")));
+        assert!(readme.contains(purpose));
+        assert!(readme.contains(&format!("Implementation binding: `{binding}`")));
+        assert!(readme.contains("`module.yaml` is the source of module ownership"));
+        assert!(readme.contains("Use `rms explain module.yaml`"));
+        assert!(contracts.contains("Place public RMS contract files here"));
+        assert!(contracts.contains("Private helpers stay in implementation docs and tests"));
+        assert!(laws.contains("Record evidence for invariants"));
+        assert!(contract_evidence.contains("success behavior and expected failures"));
+        assert!(scenarios.contains("end-to-end behavior"));
+        assert!(boundaries.contains("trust boundaries"));
     }
 
     #[test]

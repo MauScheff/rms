@@ -135,6 +135,23 @@ semantic_functions:
     evidence:
       contracts:
         - verification/contracts/init_rms_system.md
+  - id: add-rms-module-command
+    symbol: run_add_module
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/add-rms-module.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - generated module manifest, module README, contract guidance, evidence directories, and optional native binding are deterministic scaffold artifacts
+        - generated guidance routes future work through canonical artifacts and does not define module-specific semantics
+    evidence:
+      contracts:
+        - verification/contracts/add_rms_module.md
   - id: release-check-command
     symbol: run_release_check
     kind: interpreter

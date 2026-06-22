@@ -119,7 +119,11 @@ rms add-module ./my-system/modules/widget \
   --purpose "Own validated widgets" \
   --kind library \
   --binding rust
+```
 
+The generated module includes `module.yaml`, `README.md`, `contracts/README.md`, verification guidance directories, and the requested native binding.
+
+```bash
 rms validate --root ./my-system
 rms compose --root ./my-system
 ```
