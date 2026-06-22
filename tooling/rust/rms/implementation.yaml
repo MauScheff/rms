@@ -337,6 +337,7 @@ semantic_functions:
     evidence:
       contracts:
         - verification/contracts/build_module_atlas.md
+        - verification/contracts/build_module_atlas_question_audit.md
   - id: package-module-command
     symbol: run_package
     kind: adapter
