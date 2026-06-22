@@ -115,6 +115,8 @@ Classify the RMS impact of git changes:
 ```bash
 rms impact
 rms impact HEAD~1..HEAD --json
+rms gate --dry-run
+rms gate HEAD~1..HEAD --json
 ```
 
 Inspect a module:
@@ -177,6 +179,10 @@ rms evidence examples/commerce/payments.module.yaml \
 
 rms review examples/commerce/payments.module.yaml \
   --root examples/commerce
+
+rms review examples/commerce/payments.module.yaml \
+  --root examples/commerce \
+  --impact
 
 rms prompt refactor examples/commerce/payments.module.yaml \
   --root examples/commerce \

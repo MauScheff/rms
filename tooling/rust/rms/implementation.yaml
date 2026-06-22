@@ -179,6 +179,7 @@ semantic_functions:
     assumptions:
       ensures:
         - run records include request metadata, prompt, and validation checks
+        - run records preserve the requested review impact flag when present
     evidence:
       contracts:
         - verification/contracts/render_workbench_prompt.md
@@ -260,6 +261,7 @@ semantic_functions:
     assumptions:
       ensures:
         - plan, review, refactor, implement, contract evolution, and evidence prompts preserve the RMS bounded context and name deterministic checks
+        - review prompts can include derived git impact evidence before diff context without treating it as semantic authority
     evidence:
       contracts:
         - verification/contracts/plan_module_change.md
@@ -285,6 +287,24 @@ semantic_functions:
     evidence:
       contracts:
         - verification/contracts/analyze_git_impact.md
+  - id: gate-rms-change-command
+    symbol: run_gate
+    kind: interpreter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/gate-rms-change.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - gate plans are derived from git impact analysis and declared implementation bindings
+        - executable validation, composition, and verification checks are reported with pass or fail status
+        - manual review and compatibility obligations are explicit rather than silently treated as passed
+    evidence:
+      contracts:
+        - verification/contracts/gate_rms_change.md
   - id: build-context-packet-command
     symbol: print_context_packet
     kind: projector

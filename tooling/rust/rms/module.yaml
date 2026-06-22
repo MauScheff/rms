@@ -22,6 +22,7 @@ owns:
     - RMS advisory plan
     - RMS advisory review
     - RMS git impact report
+    - RMS gate report
     - RMS advisory contract evolution
     - RMS advisory evidence plan
     - RMS workbench run record
@@ -34,6 +35,7 @@ owns:
     - generated package metadata
     - generated conformance reports
     - generated git impact reports
+    - generated gate reports
     - generated workbench run records
     - generated module atlas artifacts
     - optional workbench configuration
@@ -44,6 +46,7 @@ owns:
     - prompt-template-selection
     - advisory-workflow-shape
     - git-diff-impact-classification
+    - gate-check-selection
     - provider-execution-request
     - workbench-config-resolution
     - workbench-config-initialization
@@ -68,6 +71,8 @@ provides:
       contract: contracts/review-module-diff.v1.yaml
     - name: analyze-git-impact
       contract: contracts/analyze-git-impact.v1.yaml
+    - name: gate-rms-change
+      contract: contracts/gate-rms-change.v1.yaml
     - name: refactor-module-workbench
       contract: contracts/refactor-module-workbench.v1.yaml
     - name: implement-module-workbench

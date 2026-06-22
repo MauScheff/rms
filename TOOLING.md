@@ -32,8 +32,9 @@ rms implement <module> --task <task>
 rms evolve-contract <module> --task <task>
 rms evidence <module> --task <task>
 rms refactor <module> --task <task>
-rms review <module> [--diff <git-spec>]
+rms review <module> [--diff <git-spec>] [--impact]
 rms impact [<git-spec>]
+rms gate [<git-spec>]
 rms atlas <module>
 rms run list
 rms run latest
@@ -61,14 +62,15 @@ rms add-module <path> --name <module> --purpose <purpose> [--binding rust|swift]
 rms inspect <module.yaml>
 rms explain [<module.yaml>] ["question"] [--module <module.yaml>]
 rms diagnose [--root <path>] [--json]
-rms prompt <kind> <module.yaml> [--task "..."] [--diff <git-spec>] [--ai|--provider codex]
+rms prompt <kind> <module.yaml> [--task "..."] [--diff <git-spec>] [--impact] [--ai|--provider codex]
 rms plan <module.yaml> --task "..." [--ai|--provider codex]
 rms implement <module.yaml> --task "..." [--ai|--provider codex]
 rms evolve-contract <module.yaml> --task "..." [--ai|--provider codex]
 rms evidence <module.yaml> --task "..." [--ai|--provider codex]
 rms refactor <module.yaml> --task "..." [--ai|--provider codex]
-rms review <module.yaml> [--diff <git-spec>] [--ai|--provider codex]
+rms review <module.yaml> [--diff <git-spec>] [--impact] [--ai|--provider codex]
 rms impact [<git-spec>] [--root <path>] [--json]
+rms gate [<git-spec>] [--root <path>] [--dry-run] [--json]
 rms atlas <module.yaml> [--root <path>] [--output <directory>] [--force]
 rms run list [--root <path>] [--run-root <directory>]
 rms run latest [--root <path>] [--run-root <directory>]
@@ -174,7 +176,7 @@ evidence
 drift
 ```
 
-The command includes bounded module context, workflow instructions, expected output, deterministic checks, and optional diff context. By default it prints the prompt and does not edit files or call an AI provider.
+The command includes bounded module context, workflow instructions, expected output, deterministic checks, and optional diff context. `--impact` is supported for review prompts and adds a derived RMS impact prelude before the diff. By default it prints the prompt and does not edit files or call an AI provider.
 
 With `--record`, it writes a run record under `.rms/runs`:
 
@@ -224,13 +226,25 @@ Shortcut for `rms prompt evidence`. Requires `--task` and produces an advisory e
 
 ### `review`
 
-Shortcut for `rms prompt review`. Includes `git diff` from the requested root by default, or a supplied `--diff <git-spec>`. Supports `--record`, `--ai`, and `--provider codex`. The diff is untrusted implementation context, not architecture.
+Shortcut for `rms prompt review`. Includes `git diff` from the requested root by default, or a supplied `--diff <git-spec>`. With `--impact`, the prompt includes a derived RMS impact prelude before the diff. Supports `--record`, `--ai`, and `--provider codex`. The diff and impact prelude are untrusted implementation context, not architecture.
 
 ### `impact`
 
 Classifies the RMS semantic impact of the current working tree or a supplied git diff spec. The report maps changed paths to discovered module manifests, contracts, implementation bindings, source roots, verification evidence, operations, glossary files, conformance reports, and workbench config. It recommends deterministic checks such as `rms validate`, `rms compose`, `rms review`, `rms verify`, and `rms check-compat`.
 
 Git paths are evidence about changed files, not semantic authority. Manifest, contract, context, glossary, operation, and implementation-binding changes are therefore reported conservatively as review-required.
+
+### `gate`
+
+Runs the executable RMS checks selected from the same impact analysis:
+
+```bash
+rms gate
+rms gate HEAD~1..HEAD
+rms gate --dry-run --json
+```
+
+The gate runs validation for impacted RMS changes, composition for architecture-level changes, and implementation verification for affected modules with implementation bindings. Review prompts, compatibility classification, and missing implementation bindings are reported as manual obligations instead of being silently treated as passed.
 
 ### `refactor`
 

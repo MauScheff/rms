@@ -155,6 +155,10 @@ enum Commands {
         #[arg(long)]
         diff: Option<String>,
 
+        /// Include a derived RMS impact prelude. Only supported for review prompts.
+        #[arg(long)]
+        impact: bool,
+
         /// Use the default AI provider from .rms/config.yaml.
         #[arg(long)]
         ai: bool,
@@ -235,6 +239,10 @@ enum Commands {
         #[arg(long)]
         diff: Option<String>,
 
+        /// Include a derived RMS impact prelude before the diff.
+        #[arg(long)]
+        impact: bool,
+
         /// Use the default AI provider from .rms/config.yaml.
         #[arg(long)]
         ai: bool,
@@ -268,6 +276,24 @@ enum Commands {
         /// Repository or system root used to discover RMS artifacts and read git state.
         #[arg(long, default_value = ".")]
         root: PathBuf,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Run executable RMS checks selected from git impact analysis.
+    Gate {
+        /// Optional git diff spec. Omitted means staged, unstaged, and untracked working-tree paths.
+        diff: Option<String>,
+
+        /// Repository or system root used to discover RMS artifacts and read git state.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Print the selected checks without running them.
+        #[arg(long)]
+        dry_run: bool,
 
         /// Emit machine-readable JSON.
         #[arg(long)]
@@ -615,7 +641,7 @@ enum Severity {
     Info,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum PromptKind {
     Explain,
     Plan,
@@ -846,6 +872,54 @@ struct ImpactModuleImpact {
     implementation: Option<String>,
     changed_paths: Vec<String>,
     categories: Vec<ImpactCategory>,
+}
+
+#[derive(Clone, Debug)]
+struct GatePlan {
+    report: GateReport,
+    actions: Vec<GateCheckAction>,
+}
+
+#[derive(Clone, Debug)]
+enum GateCheckAction {
+    ValidateRoot,
+    ComposeRoot,
+    VerifyImplementation(PathBuf),
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GateReport {
+    result: GateResult,
+    root: String,
+    diff: Option<String>,
+    source_revision: Option<String>,
+    impact_result: ImpactResult,
+    affected_modules: Vec<String>,
+    executable_checks: Vec<GateCheck>,
+    manual_checks: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum GateResult {
+    Pending,
+    Pass,
+    Fail,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GateCheck {
+    command: String,
+    status: GateCheckStatus,
+    message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum GateCheckStatus {
+    Pending,
+    Pass,
+    Fail,
 }
 
 impl PromptKind {
@@ -1776,6 +1850,7 @@ fn main() -> Result<()> {
             task,
             root,
             diff,
+            impact,
             ai,
             provider,
             record,
@@ -1800,6 +1875,7 @@ fn main() -> Result<()> {
                 &root,
                 task.as_deref(),
                 diff.as_deref(),
+                impact,
                 &options,
             )
         }
@@ -1831,6 +1907,7 @@ fn main() -> Result<()> {
                 &root,
                 Some(&task),
                 None,
+                false,
                 &options,
             )
         }
@@ -1839,6 +1916,7 @@ fn main() -> Result<()> {
             task,
             root,
             diff,
+            impact,
             ai,
             provider,
             record,
@@ -1863,10 +1941,17 @@ fn main() -> Result<()> {
                 &root,
                 task.as_deref(),
                 diff.as_deref(),
+                impact,
                 &options,
             )
         }
         Commands::Impact { diff, root, json } => run_impact(&root, diff.as_deref(), json),
+        Commands::Gate {
+            diff,
+            root,
+            dry_run,
+            json,
+        } => run_gate(&root, diff.as_deref(), dry_run, json),
         Commands::Refactor {
             module,
             task,
@@ -1895,6 +1980,7 @@ fn main() -> Result<()> {
                 &root,
                 Some(&task),
                 None,
+                false,
                 &options,
             )
         }
@@ -1926,6 +2012,7 @@ fn main() -> Result<()> {
                 &root,
                 Some(&task),
                 None,
+                false,
                 &options,
             )
         }
@@ -1957,6 +2044,7 @@ fn main() -> Result<()> {
                 &root,
                 Some(&task),
                 None,
+                false,
                 &options,
             )
         }
@@ -1988,6 +2076,7 @@ fn main() -> Result<()> {
                 &root,
                 Some(&task),
                 None,
+                false,
                 &options,
             )
         }
@@ -2251,6 +2340,10 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
             "Use `rms implement`, `rms evolve-contract`, and `rms evidence` for bounded agent guidance.".to_string(),
             "Use `rms context <module> --task ...` before implementation work.".to_string(),
             format!("Use `rms validate --root {}` before completion.", root.display()),
+            format!(
+                "Use `rms gate --root {}` to run git-impact-selected RMS checks.",
+                root.display()
+            ),
             "Use `rms verify <implementation.yaml>` when an implementation binding declares verification.".to_string(),
         ],
     })
@@ -2505,6 +2598,7 @@ fn run_explain(
         root,
         question.as_deref(),
         None,
+        false,
         options,
     )
 }
@@ -2594,14 +2688,15 @@ fn run_prompt(
     root: &Path,
     task: Option<&str>,
     diff: Option<&str>,
+    impact: bool,
     options: &PromptRunOptions,
 ) -> Result<()> {
     let manifest = load_manifest(module)?;
-    let rendered = render_workbench_prompt(&manifest, root, kind, task, diff)?;
+    let rendered = render_workbench_prompt(&manifest, root, kind, task, diff, impact)?;
 
     let run_dir = if options.record || options.provider != Provider::None {
         Some(write_prompt_run_record(
-            &manifest, root, kind, task, diff, &rendered, options,
+            &manifest, root, kind, task, diff, impact, &rendered, options,
         )?)
     } else {
         None
@@ -2632,6 +2727,7 @@ fn write_prompt_run_record(
     kind: PromptKind,
     task: Option<&str>,
     diff: Option<&str>,
+    impact: bool,
     prompt: &str,
     options: &PromptRunOptions,
 ) -> Result<PathBuf> {
@@ -2643,7 +2739,8 @@ fn write_prompt_run_record(
     fs::write(run_dir.join("prompt.md"), prompt)
         .with_context(|| format!("failed to write `{}`", run_dir.join("prompt.md").display()))?;
 
-    let request = render_run_request_yaml(manifest, root, kind, task, diff, options, &run_id);
+    let request =
+        render_run_request_yaml(manifest, root, kind, task, diff, impact, options, &run_id);
     fs::write(run_dir.join("request.yaml"), request).with_context(|| {
         format!(
             "failed to write `{}`",
@@ -3014,6 +3111,7 @@ fn render_run_request_yaml(
     kind: PromptKind,
     task: Option<&str>,
     diff: Option<&str>,
+    impact: bool,
     options: &PromptRunOptions,
     run_id: &str,
 ) -> String {
@@ -3032,6 +3130,9 @@ fn render_run_request_yaml(
     if let Some(diff) = diff {
         let _ = writeln!(out, "diff: {}", yaml_quote(diff));
     }
+    if impact {
+        let _ = writeln!(out, "impact: true");
+    }
     if let Some(model) = &options.model {
         let _ = writeln!(out, "model: {}", yaml_quote(model));
     }
@@ -3048,11 +3149,21 @@ fn render_workbench_prompt(
     kind: PromptKind,
     task: Option<&str>,
     diff: Option<&str>,
+    impact: bool,
 ) -> Result<String> {
+    if impact && kind != PromptKind::Review {
+        bail!("`--impact` is only supported for review prompts");
+    }
     let effective_task = task
         .or_else(|| kind.default_task())
         .ok_or_else(|| anyhow!("{} prompts require `--task`", kind.label()))?;
     let include_diff = kind.includes_diff_by_default() || diff.is_some();
+    let impact_report = if impact {
+        let changed_paths = read_git_changed_paths(root, diff)?;
+        Some(build_impact_report(root, diff, &changed_paths)?)
+    } else {
+        None
+    };
     let diff_text = if include_diff {
         Some(read_git_diff(root, diff)?)
     } else {
@@ -3095,6 +3206,10 @@ fn render_workbench_prompt(
         writeln!(out, "- {item}")?;
     }
 
+    if let Some(report) = &impact_report {
+        append_impact_prompt(&mut out, report)?;
+    }
+
     if let Some(diff_text) = diff_text {
         writeln!(out)?;
         writeln!(out, "## Diff")?;
@@ -3108,6 +3223,100 @@ fn render_workbench_prompt(
     }
 
     Ok(out)
+}
+
+fn append_impact_prompt(out: &mut String, report: &ImpactReport) -> Result<()> {
+    const MAX_IMPACT_ITEMS: usize = 40;
+
+    writeln!(out)?;
+    writeln!(out, "## Impact")?;
+    writeln!(out, "Derived from git changed paths and RMS artifacts. Treat this as review evidence, not architectural authority.")?;
+    writeln!(out, "- Result: {}", impact_result_label(report.result))?;
+    if let Some(revision) = &report.source_revision {
+        writeln!(out, "- Source revision: {revision}")?;
+    }
+    if let Some(diff) = &report.diff {
+        writeln!(out, "- Diff: {diff}")?;
+    } else {
+        writeln!(out, "- Diff: working tree")?;
+    }
+    writeln!(
+        out,
+        "- Affected modules: {}",
+        if report.affected_modules.is_empty() {
+            "<none>".to_string()
+        } else {
+            report
+                .affected_modules
+                .iter()
+                .map(|module| module.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    )?;
+
+    writeln!(out)?;
+    writeln!(out, "### Impact Paths")?;
+    if report.changed_paths.is_empty() {
+        writeln!(out, "- <none>")?;
+    } else {
+        for path in report.changed_paths.iter().take(MAX_IMPACT_ITEMS) {
+            writeln!(
+                out,
+                "- {} [{}] {}{}",
+                path.status,
+                impact_category_label(path.category),
+                path.path,
+                path.module
+                    .as_ref()
+                    .map(|module| format!(" ({module})"))
+                    .unwrap_or_default()
+            )?;
+        }
+        append_impact_truncation_note(out, report.changed_paths.len(), MAX_IMPACT_ITEMS)?;
+    }
+
+    writeln!(out)?;
+    writeln!(out, "### Impact Findings")?;
+    if report.findings.is_empty() {
+        writeln!(out, "- <none>")?;
+    } else {
+        for finding in report.findings.iter().take(MAX_IMPACT_ITEMS) {
+            writeln!(
+                out,
+                "- {} [{}] {}{}: {}",
+                impact_result_label(finding.severity),
+                finding.check,
+                finding.path.as_deref().unwrap_or("<none>"),
+                finding
+                    .module
+                    .as_ref()
+                    .map(|module| format!(" ({module})"))
+                    .unwrap_or_default(),
+                finding.message
+            )?;
+        }
+        append_impact_truncation_note(out, report.findings.len(), MAX_IMPACT_ITEMS)?;
+    }
+
+    writeln!(out)?;
+    writeln!(out, "### Impact Checks")?;
+    if report.recommended_checks.is_empty() {
+        writeln!(out, "- <none>")?;
+    } else {
+        for check in &report.recommended_checks {
+            writeln!(out, "- {check}")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn append_impact_truncation_note(out: &mut String, total: usize, limit: usize) -> Result<()> {
+    if total > limit {
+        writeln!(out, "- [{} additional items omitted]", total - limit)?;
+    }
+    Ok(())
 }
 
 fn append_prompt_context(out: &mut String, manifest: &LoadedManifest, root: &Path) -> Result<()> {
@@ -3360,6 +3569,363 @@ fn run_impact(root: &Path, diff: Option<&str>, json_output: bool) -> Result<()> 
     }
 
     Ok(())
+}
+
+fn run_gate(root: &Path, diff: Option<&str>, dry_run: bool, json_output: bool) -> Result<()> {
+    let changed_paths = read_git_changed_paths(root, diff)?;
+    let impact = build_impact_report(root, diff, &changed_paths)?;
+    let mut plan = build_gate_plan(root, diff, &impact);
+
+    if !dry_run {
+        for index in 0..plan.actions.len() {
+            match run_gate_action(root, &plan.actions[index]) {
+                Ok(message) => {
+                    plan.report.executable_checks[index].status = GateCheckStatus::Pass;
+                    plan.report.executable_checks[index].message = Some(message);
+                }
+                Err(error) => {
+                    plan.report.executable_checks[index].status = GateCheckStatus::Fail;
+                    plan.report.executable_checks[index].message = Some(error.to_string());
+                }
+            }
+        }
+        plan.report.result = if plan
+            .report
+            .executable_checks
+            .iter()
+            .any(|check| check.status == GateCheckStatus::Fail)
+        {
+            GateResult::Fail
+        } else {
+            GateResult::Pass
+        };
+    }
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&plan.report)?);
+    } else {
+        print_gate_report(&plan.report);
+    }
+
+    if plan.report.result == GateResult::Fail {
+        bail!("RMS gate failed");
+    }
+
+    Ok(())
+}
+
+fn build_gate_plan(root: &Path, diff: Option<&str>, impact: &ImpactReport) -> GatePlan {
+    let mut executable_checks = Vec::new();
+    let mut actions = Vec::new();
+    let mut seen_executable = BTreeSet::new();
+    let mut manual_checks = BTreeSet::new();
+
+    if impact.result != ImpactResult::NoRmsImpact && !impact.changed_paths.is_empty() {
+        push_gate_check(
+            &mut executable_checks,
+            &mut actions,
+            &mut seen_executable,
+            format!("rms validate --root {}", root.display()),
+            GateCheckAction::ValidateRoot,
+        );
+
+        if impact.changed_paths.iter().any(|path| {
+            matches!(
+                path.category,
+                ImpactCategory::SystemManifest
+                    | ImpactCategory::ContextMap
+                    | ImpactCategory::ModuleManifest
+                    | ImpactCategory::Contract
+                    | ImpactCategory::Operations
+                    | ImpactCategory::Glossary
+            )
+        }) {
+            push_gate_check(
+                &mut executable_checks,
+                &mut actions,
+                &mut seen_executable,
+                format!("rms compose --root {}", root.display()),
+                GateCheckAction::ComposeRoot,
+            );
+        }
+
+        let diff_arg = diff
+            .map(|diff| format!(" --diff {diff}"))
+            .unwrap_or_default();
+        for module in &impact.affected_modules {
+            if module
+                .categories
+                .iter()
+                .any(|category| gate_category_requires_verification(*category))
+            {
+                if let Some(implementation) = &module.implementation {
+                    push_gate_check(
+                        &mut executable_checks,
+                        &mut actions,
+                        &mut seen_executable,
+                        format!("rms verify {implementation}"),
+                        GateCheckAction::VerifyImplementation(PathBuf::from(implementation)),
+                    );
+                } else {
+                    manual_checks.insert(format!(
+                        "Add or identify an implementation binding before verifying {}",
+                        module.name
+                    ));
+                }
+            }
+
+            if module
+                .categories
+                .iter()
+                .any(|category| gate_category_requires_review(*category))
+            {
+                manual_checks.insert(format!(
+                    "rms review {} --impact{}",
+                    module.manifest, diff_arg
+                ));
+            }
+
+            if module.categories.iter().any(|category| {
+                matches!(
+                    category,
+                    ImpactCategory::ModuleManifest | ImpactCategory::Contract
+                )
+            }) {
+                manual_checks.insert(format!(
+                    "rms check-compat <previous {}> {}",
+                    module.manifest, module.manifest
+                ));
+            }
+        }
+
+        for path in &impact.changed_paths {
+            if path.module.is_none() && gate_category_requires_review(path.category) {
+                manual_checks.insert(format!(
+                    "Review {} [{}] for RMS conformance",
+                    path.path,
+                    impact_category_label(path.category)
+                ));
+            }
+        }
+    }
+
+    let result = if executable_checks.is_empty() {
+        GateResult::Pass
+    } else {
+        GateResult::Pending
+    };
+
+    GatePlan {
+        report: GateReport {
+            result,
+            root: root.display().to_string(),
+            diff: diff.map(ToString::to_string),
+            source_revision: impact.source_revision.clone(),
+            impact_result: impact.result,
+            affected_modules: impact
+                .affected_modules
+                .iter()
+                .map(|module| module.name.clone())
+                .collect(),
+            executable_checks,
+            manual_checks: manual_checks.into_iter().collect(),
+        },
+        actions,
+    }
+}
+
+fn push_gate_check(
+    checks: &mut Vec<GateCheck>,
+    actions: &mut Vec<GateCheckAction>,
+    seen: &mut BTreeSet<String>,
+    command: String,
+    action: GateCheckAction,
+) {
+    if seen.insert(command.clone()) {
+        checks.push(GateCheck {
+            command,
+            status: GateCheckStatus::Pending,
+            message: None,
+        });
+        actions.push(action);
+    }
+}
+
+fn gate_category_requires_verification(category: ImpactCategory) -> bool {
+    matches!(
+        category,
+        ImpactCategory::Source
+            | ImpactCategory::ImplementationBinding
+            | ImpactCategory::VerificationEvidence
+    )
+}
+
+fn gate_category_requires_review(category: ImpactCategory) -> bool {
+    matches!(
+        category,
+        ImpactCategory::SystemManifest
+            | ImpactCategory::ContextMap
+            | ImpactCategory::ModuleManifest
+            | ImpactCategory::Contract
+            | ImpactCategory::ImplementationBinding
+            | ImpactCategory::Operations
+            | ImpactCategory::Glossary
+    )
+}
+
+fn run_gate_action(root: &Path, action: &GateCheckAction) -> Result<String> {
+    match action {
+        GateCheckAction::ValidateRoot => {
+            let diagnostics = collect_validation_diagnostics(
+                root,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+            )?;
+            let errors = diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.severity == Severity::Error)
+                .count();
+            let warnings = diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+                .count();
+            if errors > 0 {
+                bail!("{errors} RMS validation error(s)");
+            }
+            Ok(format!("{warnings} warning(s), no validation errors"))
+        }
+        GateCheckAction::ComposeRoot => {
+            let report = compose_system(root)?;
+            if report.result == ComposeResult::Fail {
+                bail!(
+                    "composition failed with {} finding(s)",
+                    report.findings.len()
+                );
+            }
+            Ok(format!(
+                "composition {}",
+                compose_result_label(report.result)
+            ))
+        }
+        GateCheckAction::VerifyImplementation(implementation) => {
+            run_verify_captured(&root.join(implementation))
+        }
+    }
+}
+
+fn run_verify_captured(implementation: &Path) -> Result<String> {
+    let manifest = load_manifest(implementation)?;
+    let command = get_str(&manifest.value, &["commands", "verify"])
+        .ok_or_else(|| anyhow!("implementation binding does not declare `commands.verify`"))?;
+    let root = implementation.parent().unwrap_or_else(|| Path::new("."));
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("failed to run verify command `{command}`"))?;
+
+    if !output.status.success() {
+        bail!(
+            "verify command failed with status {}{}",
+            exit_status_label(output.status),
+            command_output_excerpt(&output)
+        );
+    }
+
+    Ok(format!("verify command passed: {command}"))
+}
+
+fn exit_status_label(status: std::process::ExitStatus) -> String {
+    status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "signal".to_string())
+}
+
+fn command_output_excerpt(output: &std::process::Output) -> String {
+    let mut details = Vec::new();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.trim().is_empty() {
+        details.push(format!(
+            "stdout: {}",
+            truncate_for_prompt(stdout.trim(), 1_000).trim()
+        ));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        details.push(format!(
+            "stderr: {}",
+            truncate_for_prompt(stderr.trim(), 1_000).trim()
+        ));
+    }
+    if details.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", details.join("; "))
+    }
+}
+
+fn print_gate_report(report: &GateReport) {
+    println!("RMS gate: {}", gate_result_label(report.result));
+    println!("RMS impact: {}", impact_result_label(report.impact_result));
+    println!("Root: {}", report.root);
+    if let Some(diff) = &report.diff {
+        println!("Diff: {diff}");
+    } else {
+        println!("Diff: working tree");
+    }
+    if let Some(revision) = &report.source_revision {
+        println!("Source revision: {revision}");
+    }
+    print_string_list("Affected modules", &report.affected_modules);
+
+    if report.executable_checks.is_empty() && report.manual_checks.is_empty() {
+        println!("No RMS gate checks required.");
+        return;
+    }
+
+    if !report.executable_checks.is_empty() {
+        println!();
+        println!("## Executable Checks");
+        for check in &report.executable_checks {
+            println!(
+                "- {}: {}{}",
+                gate_check_status_label(check.status),
+                check.command,
+                check
+                    .message
+                    .as_ref()
+                    .map(|message| format!(" ({message})"))
+                    .unwrap_or_default()
+            );
+        }
+    }
+
+    if !report.manual_checks.is_empty() {
+        println!();
+        print_string_list("Manual obligations", &report.manual_checks);
+    }
+}
+
+fn gate_result_label(result: GateResult) -> &'static str {
+    match result {
+        GateResult::Pending => "pending",
+        GateResult::Pass => "pass",
+        GateResult::Fail => "fail",
+    }
+}
+
+fn gate_check_status_label(status: GateCheckStatus) -> &'static str {
+    match status {
+        GateCheckStatus::Pending => "pending",
+        GateCheckStatus::Pass => "pass",
+        GateCheckStatus::Fail => "fail",
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -12803,6 +13369,7 @@ verification:
             PromptKind::Plan,
             Some("add a command"),
             None,
+            false,
         )
         .unwrap();
 
@@ -12824,6 +13391,7 @@ verification:
             PromptKind::Refactor,
             Some("separate decisions from effects"),
             None,
+            false,
         )
         .unwrap();
 
@@ -12844,6 +13412,7 @@ verification:
             PromptKind::Implement,
             Some("add a public command"),
             None,
+            false,
         )
         .unwrap();
 
@@ -12865,6 +13434,7 @@ verification:
             PromptKind::EvolveContract,
             Some("change command failure semantics"),
             None,
+            false,
         )
         .unwrap();
 
@@ -12886,6 +13456,7 @@ verification:
             PromptKind::Evidence,
             Some("prove malformed input is rejected"),
             None,
+            false,
         )
         .unwrap();
 
@@ -12921,6 +13492,7 @@ verification:
             PromptKind::Explain,
             Some("how does this module work?"),
             None,
+            false,
         )
         .unwrap();
 
@@ -12928,6 +13500,118 @@ verification:
         assert!(rendered.contains("Prompt: rms.explain@v1"));
         assert!(rendered.contains("Intelligible plain-language explanation"));
         assert!(rendered.contains("Do not invent architecture"));
+    }
+
+    #[test]
+    fn review_prompt_can_include_impact_report() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+
+        let root = prompt_fixture("review-impact");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn example() {}\n").unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            "spec: rms/implementation/v0.1\n\nmodule: prompt-fixture\nbinding: rust\n\nsource:\n  root: src\n  public_entrypoint: src/lib.rs\n\ncommands:\n  verify: cargo test --manifest-path Cargo.toml\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: prompt-fixture\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  public_modules: []\n",
+        )
+        .unwrap();
+
+        let init = Command::new("git")
+            .arg("init")
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        if !init.status.success() {
+            fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+        Command::new("git")
+            .args(["config", "user.email", "rms@example.test"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "RMS Test"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        let add = Command::new("git")
+            .args(["add", "."])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        if !add.success() {
+            fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+        let commit = Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        if !commit.status.success() {
+            fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub fn example() -> bool { true }\n",
+        )
+        .unwrap();
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+        let rendered =
+            render_workbench_prompt(&manifest, &root, PromptKind::Review, None, None, true)
+                .unwrap();
+        let options = PromptRunOptions {
+            provider: Provider::None,
+            record: true,
+            run_root: PathBuf::from("runs"),
+            model: None,
+            sandbox: CodexSandbox::ReadOnly,
+        };
+        let run_dir = write_prompt_run_record(
+            &manifest,
+            &root,
+            PromptKind::Review,
+            None,
+            None,
+            true,
+            &rendered,
+            &options,
+        )
+        .unwrap();
+        let request = fs::read_to_string(run_dir.join("request.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("Prompt: rms.review@v1"));
+        assert!(rendered.contains("## Impact"));
+        assert!(rendered.contains("Derived from git changed paths"));
+        assert!(rendered.contains("- Result: implementation-only"));
+        assert!(rendered.contains("src/lib.rs"));
+        assert!(rendered.contains("## Diff"));
+        assert!(request.contains("impact: true"));
+    }
+
+    #[test]
+    fn impact_prelude_is_review_only() {
+        let root = prompt_fixture("review-impact-only");
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+
+        let error = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Plan,
+            Some("inspect impact"),
+            None,
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(error.contains("`--impact` is only supported for review prompts"));
     }
 
     #[test]
@@ -12948,6 +13632,7 @@ verification:
             PromptKind::Evidence,
             Some("prove prompt rendering"),
             None,
+            false,
         )
         .unwrap();
         let run_dir = write_prompt_run_record(
@@ -12956,6 +13641,7 @@ verification:
             PromptKind::Evidence,
             Some("prove prompt rendering"),
             None,
+            false,
             &prompt,
             &options,
         )
@@ -13118,6 +13804,102 @@ verification:
     }
 
     #[test]
+    fn gate_plan_skips_unrelated_paths() {
+        let root = unique_test_dir("gate-unrelated");
+        fs::create_dir_all(&root).unwrap();
+        let changed = vec![ChangedPath {
+            status: "M".to_string(),
+            path: "notes/idea.md".to_string(),
+        }];
+        let report = build_impact_report(&root, None, &changed).unwrap();
+
+        let plan = build_gate_plan(&root, None, &report);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(plan.report.impact_result, ImpactResult::NoRmsImpact);
+        assert_eq!(plan.report.result, GateResult::Pass);
+        assert!(plan.report.executable_checks.is_empty());
+        assert!(plan.report.manual_checks.is_empty());
+    }
+
+    #[test]
+    fn gate_plan_runs_verify_for_source_changes() {
+        let root = prompt_fixture("gate-source");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn example() {}\n").unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            "spec: rms/implementation/v0.1\n\nmodule: prompt-fixture\nbinding: rust\n\nsource:\n  root: src\n  public_entrypoint: src/lib.rs\n\ncommands:\n  verify: cargo test --manifest-path Cargo.toml\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: prompt-fixture\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  public_modules: []\n",
+        )
+        .unwrap();
+        let changed = vec![ChangedPath {
+            status: "M".to_string(),
+            path: "src/lib.rs".to_string(),
+        }];
+        let report = build_impact_report(&root, None, &changed).unwrap();
+
+        let plan = build_gate_plan(&root, None, &report);
+        let commands = plan
+            .report
+            .executable_checks
+            .iter()
+            .map(|check| check.command.as_str())
+            .collect::<Vec<_>>();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(plan.report.impact_result, ImpactResult::ImplementationOnly);
+        assert_eq!(plan.report.result, GateResult::Pending);
+        assert!(commands
+            .iter()
+            .any(|command| command.starts_with("rms validate --root ")));
+        assert!(commands.contains(&"rms verify implementation.yaml"));
+        assert!(plan.report.manual_checks.is_empty());
+    }
+
+    #[test]
+    fn gate_plan_marks_contract_changes_for_review_and_compatibility() {
+        let root = prompt_fixture("gate-contract");
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(
+            root.join("contracts/do-work.v1.yaml"),
+            "spec: rms/contract/v0.1\nname: do-work\nversion: 1\nkind: command\nmeaning: Do work.\n",
+        )
+        .unwrap();
+        let changed = vec![ChangedPath {
+            status: "M".to_string(),
+            path: "contracts/do-work.v1.yaml".to_string(),
+        }];
+        let report = build_impact_report(&root, Some("HEAD~1..HEAD"), &changed).unwrap();
+
+        let plan = build_gate_plan(&root, Some("HEAD~1..HEAD"), &report);
+        let commands = plan
+            .report
+            .executable_checks
+            .iter()
+            .map(|check| check.command.as_str())
+            .collect::<Vec<_>>();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(plan.report.impact_result, ImpactResult::ReviewRequired);
+        assert!(commands
+            .iter()
+            .any(|command| command.starts_with("rms validate --root ")));
+        assert!(commands
+            .iter()
+            .any(|command| command.starts_with("rms compose --root ")));
+        assert!(plan
+            .report
+            .manual_checks
+            .iter()
+            .any(|check| check == "rms review module.yaml --impact --diff HEAD~1..HEAD"));
+        assert!(plan
+            .report
+            .manual_checks
+            .iter()
+            .any(|check| { check == "rms check-compat <previous module.yaml> module.yaml" }));
+    }
+
+    #[test]
     fn run_list_and_inspect_read_generated_records() {
         let root = prompt_fixture("run-read");
         let manifest = load_manifest(&root.join("module.yaml")).unwrap();
@@ -13134,6 +13916,7 @@ verification:
             PromptKind::Plan,
             Some("inspect saved run"),
             None,
+            false,
         )
         .unwrap();
         let run_dir = write_prompt_run_record(
@@ -13142,6 +13925,7 @@ verification:
             PromptKind::Plan,
             Some("inspect saved run"),
             None,
+            false,
             &prompt,
             &options,
         )

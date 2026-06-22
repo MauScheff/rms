@@ -1,0 +1,28 @@
+spec: rms/contract/v0.1
+name: gate-rms-change
+version: 1
+kind: command
+meaning: Run the executable RMS verification checks required by a current or requested git diff, using derived impact analysis to choose the smallest deterministic check set.
+preconditions:
+  - id: repository-root-readable
+    statement: The requested root is readable.
+  - id: git-diff-readable
+    statement: Git can report changed paths for the requested diff or working tree.
+postconditions:
+  - id: checks-are-derived
+    statement: Gate checks are derived from git path evidence, discovered module manifests, implementation bindings, and declared verification references; the gate must not create module semantics outside canonical artifacts.
+  - id: no-impact-skips-work
+    statement: Changes with no RMS impact are reported without running RMS verification commands.
+  - id: executable-obligations-run
+    statement: RMS validation runs for impacted RMS changes, composition runs for system, context, manifest, contract, operation, and glossary changes, and implementation verification runs for affected modules with implementation bindings.
+  - id: manual-obligations-are-explicit
+    statement: Review prompts, compatibility classification, and missing implementation bindings are reported as manual obligations instead of being silently treated as passed.
+failure_categories:
+  - id: git-unavailable
+    statement: Git is not available or cannot describe the requested diff.
+  - id: rms-artifact-unreadable
+    statement: A discovered RMS artifact cannot be read or parsed.
+  - id: executable-check-failed
+    statement: An executable validation, composition, or implementation verification check failed.
+compatibility:
+  policy: backward-compatible-within-major

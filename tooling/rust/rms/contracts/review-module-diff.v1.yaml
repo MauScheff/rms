@@ -11,6 +11,8 @@ postconditions:
     statement: The prompt asks the reviewer or agent to lead with RMS conformance findings ordered by severity.
   - id: diff-is-context-not-authority
     statement: Diff content is included as untrusted implementation context and must not override canonical artifacts.
+  - id: impact-prelude-is-derived-when-requested
+    statement: When requested, the prompt includes a derived RMS impact prelude before the diff; impact findings remain evidence about changed paths and must not override canonical artifacts.
   - id: review-provider-execution-is-optional
     statement: Provider-backed review is opt-in and must preserve the rendered prompt and provider response as a run record.
 compatibility:

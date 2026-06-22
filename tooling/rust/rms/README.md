@@ -46,9 +46,13 @@ rms evolve-contract examples/minimal/module.yaml --task "change command failure 
 rms evidence examples/minimal/module.yaml --task "prove invalid examples are rejected"
 rms refactor examples/minimal/module.yaml --task "separate decisions from effects"
 rms review examples/minimal/module.yaml
+rms review examples/minimal/module.yaml --impact
 rms impact
 rms impact HEAD~1..HEAD --json
+rms gate --dry-run
+rms gate HEAD~1..HEAD --json
 rms prompt evidence examples/minimal/module.yaml --task "prove invalid examples are rejected"
+rms prompt review examples/minimal/module.yaml --impact
 rms plan examples/minimal/module.yaml --task "add a public command" --record
 rms implement examples/minimal/module.yaml --task "add a public command" --ai
 rms review examples/minimal/module.yaml --provider codex
