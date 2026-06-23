@@ -52,7 +52,7 @@ rms conformance <module> --implementation <implementation.yaml>
 rms release check --root <root>
 ```
 
-Skills should use `rms explain`, `rms implement`, `rms evolve-contract`, `rms evidence`, `rms refactor`, `rms prompt <kind>`, and the advisory `rms plan` / `rms review` commands to render bounded prompts for humans or agents. Use `--ai` only when `.rms/config.yaml` declares the intended default provider; use `--provider codex` for an explicit Codex run.
+Skills should use `rms explain`, `rms implement`, `rms evolve-contract`, `rms evidence`, `rms refactor`, `rms prompt <kind>`, and the advisory `rms plan` / `rms review` commands to render bounded prompts for humans or agents. Use `--ai` only when `.rms/config.yaml` declares the intended default provider; use `--provider codex` for an explicit Codex run. Provider runs are bounded by `ai.codex.timeout_seconds` or `--provider-timeout-seconds`.
 
 ## Safety
 

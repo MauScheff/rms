@@ -165,6 +165,7 @@ ai:
   codex:
     model: gpt-5-codex
     sandbox: read-only
+    # timeout_seconds: 900
     # Use `workspace-write` with `write_scope: module` for module-scoped provider edits.
     # sandbox: workspace-write
     # write_scope: module
@@ -172,7 +173,7 @@ runs:
   directory: .rms/runs
 ```
 
-Provider-backed commands remain explicit. Use `--provider codex` directly, or use `--ai` to select the configured `ai.default_provider`. Codex provider execution supports `--sandbox read-only` and `--sandbox workspace-write`; workspace-write defaults to `--write-scope module`, which runs Codex from the target module directory. Use `--write-scope root` only when the task intentionally changes system, context, glossary, or cross-module artifacts.
+Provider-backed commands remain explicit. Use `--provider codex` directly, or use `--ai` to select the configured `ai.default_provider`. Codex provider execution supports `--sandbox read-only` and `--sandbox workspace-write`; workspace-write defaults to `--write-scope module`, which runs Codex from the target module directory. Provider execution defaults to a 900 second timeout; set `ai.codex.timeout_seconds` or pass `--provider-timeout-seconds <seconds>` for longer bounded runs. Use `--write-scope root` only when the task intentionally changes system, context, glossary, or cross-module artifacts.
 
 Render advisory workbench prompts:
 

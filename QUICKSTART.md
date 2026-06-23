@@ -87,7 +87,7 @@ rms explain "How does this module work?" \
   --provider codex
 ```
 
-Do not use `--provider` or `--ai` unless the user intentionally wants an external model run.
+Do not use `--provider` or `--ai` unless the user intentionally wants an external model run. Provider execution defaults to a 900 second timeout; use `--provider-timeout-seconds <seconds>` only when a longer bounded run is intentional.
 
 ## Create A New RMS System
 

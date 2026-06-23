@@ -2,13 +2,13 @@ spec: rms/contract/v0.1
 name: init-workbench-config
 version: 1
 kind: command
-meaning: Create an optional RMS workbench config file with provider and run-record defaults.
+meaning: Create an optional RMS workbench config file with provider and run-record defaults plus provider-timeout guidance.
 preconditions:
   - id: root-writable
     statement: The requested root can contain `.rms/config.yaml`.
 postconditions:
   - id: config-is-operational
-    statement: The created config supplies provider, model, sandbox, optional write-scope, and run-record defaults only; it does not define module semantics.
+    statement: The created config supplies provider, model, sandbox, optional write-scope, optional provider-timeout, and run-record defaults only; it does not define module semantics.
   - id: existing-config-preserved-by-default
     statement: Existing config is not overwritten unless force is requested.
   - id: generated-config-is-parseable

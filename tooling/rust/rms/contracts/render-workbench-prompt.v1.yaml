@@ -12,18 +12,22 @@ postconditions:
   - id: prompt-derived-from-context
     statement: The prompt includes bounded module context derived from canonical artifacts.
   - id: provider-run-is-recorded
-    statement: When provider execution is requested, the command writes a run record containing request metadata, sandbox, write scope, execution root, prompt, validation checks, provider logs, and response.
+    statement: When provider execution is requested, the command writes a run record containing request metadata, sandbox, write scope, provider timeout, execution root, prompt, validation checks, provider logs, and response.
   - id: config-defaults-are-operational
-    statement: 'Workbench config may supply provider, model, sandbox, write-scope, and run-record defaults, but provider execution still requires explicit `--provider` or configured `--ai` selection.'
+    statement: 'Workbench config may supply provider, model, sandbox, write-scope, provider-timeout, and run-record defaults, but provider execution still requires explicit `--provider` or configured `--ai` selection.'
   - id: module-write-scope-constrains-provider
     statement: When Codex provider execution uses workspace-write with module write scope, the provider is run from the target module directory and the prompt states that edits must remain under that owning module unless the run is expanded.
+  - id: provider-execution-is-bounded
+    statement: Provider execution waits only for the selected provider timeout, terminates a timed-out provider process, and preserves run-record logs and any provider response already written.
 failure_categories:
   - id: missing-task
     statement: The selected workflow requires a task but none was supplied.
   - id: provider-unavailable
     statement: The requested provider command cannot be started or exits unsuccessfully.
+  - id: provider-timeout
+    statement: The requested provider process exceeded the configured timeout and was terminated.
   - id: invalid-config
-    statement: The configured provider, sandbox, write-scope, or run-record settings are unsupported.
+    statement: The configured provider, sandbox, write-scope, provider-timeout, or run-record settings are unsupported.
   - id: missing-configured-provider
     statement: '`--ai` was requested but no non-none default provider is configured.'
 compatibility:

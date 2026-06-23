@@ -7,10 +7,11 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as FmtWrite;
 use std::fs;
-use std::io::Write as IoWrite;
+use std::io::{Read as IoRead, Write as IoWrite};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use syn::visit::{self, Visit};
 use syn::{
     Attribute, ExprMacro, ExprMethodCall, Fields, ImplItem, Item, ItemStruct, Meta, Type, UseTree,
@@ -22,6 +23,7 @@ use walkdir::WalkDir;
 const VALIDATOR_NAME: &str = "rms";
 const VALIDATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_RUN_ROOT: &str = ".rms/runs";
+const DEFAULT_PROVIDER_TIMEOUT_SECONDS: u64 = 900;
 const WORKBENCH_CONFIG_PATH: &str = ".rms/config.yaml";
 const CODEX_PLUGIN_PATH: &str = "integrations/codex/rms";
 const CANONICAL_SKILLS: &[&str] = &[
@@ -162,6 +164,10 @@ enum Commands {
         /// Writable scope passed to Codex provider execution.
         #[arg(long = "write-scope")]
         write_scope: Option<ProviderWriteScope>,
+
+        /// Maximum seconds to wait for provider execution before terminating it.
+        #[arg(long = "provider-timeout-seconds", value_parser = clap::value_parser!(u64).range(1..))]
+        provider_timeout_seconds: Option<u64>,
     },
 
     /// Check local RMS and optional AI-provider readiness.
@@ -226,6 +232,10 @@ enum Commands {
         /// Writable scope passed to Codex provider execution.
         #[arg(long = "write-scope")]
         write_scope: Option<ProviderWriteScope>,
+
+        /// Maximum seconds to wait for provider execution before terminating it.
+        #[arg(long = "provider-timeout-seconds", value_parser = clap::value_parser!(u64).range(1..))]
+        provider_timeout_seconds: Option<u64>,
     },
 
     /// Render an advisory RMS implementation plan prompt for a module task.
@@ -268,6 +278,10 @@ enum Commands {
         /// Writable scope passed to Codex provider execution.
         #[arg(long = "write-scope")]
         write_scope: Option<ProviderWriteScope>,
+
+        /// Maximum seconds to wait for provider execution before terminating it.
+        #[arg(long = "provider-timeout-seconds", value_parser = clap::value_parser!(u64).range(1..))]
+        provider_timeout_seconds: Option<u64>,
     },
 
     /// Render an advisory RMS review prompt for the current or requested diff.
@@ -318,6 +332,10 @@ enum Commands {
         /// Writable scope passed to Codex provider execution.
         #[arg(long = "write-scope")]
         write_scope: Option<ProviderWriteScope>,
+
+        /// Maximum seconds to wait for provider execution before terminating it.
+        #[arg(long = "provider-timeout-seconds", value_parser = clap::value_parser!(u64).range(1..))]
+        provider_timeout_seconds: Option<u64>,
     },
 
     /// Classify RMS semantic impact for the current or requested git diff.
@@ -392,6 +410,10 @@ enum Commands {
         /// Writable scope passed to Codex provider execution.
         #[arg(long = "write-scope")]
         write_scope: Option<ProviderWriteScope>,
+
+        /// Maximum seconds to wait for provider execution before terminating it.
+        #[arg(long = "provider-timeout-seconds", value_parser = clap::value_parser!(u64).range(1..))]
+        provider_timeout_seconds: Option<u64>,
     },
 
     /// Render an advisory RMS implementation prompt for a module change.
@@ -434,6 +456,10 @@ enum Commands {
         /// Writable scope passed to Codex provider execution.
         #[arg(long = "write-scope")]
         write_scope: Option<ProviderWriteScope>,
+
+        /// Maximum seconds to wait for provider execution before terminating it.
+        #[arg(long = "provider-timeout-seconds", value_parser = clap::value_parser!(u64).range(1..))]
+        provider_timeout_seconds: Option<u64>,
     },
 
     /// Render an advisory RMS contract-evolution prompt for public surface changes.
@@ -477,6 +503,10 @@ enum Commands {
         /// Writable scope passed to Codex provider execution.
         #[arg(long = "write-scope")]
         write_scope: Option<ProviderWriteScope>,
+
+        /// Maximum seconds to wait for provider execution before terminating it.
+        #[arg(long = "provider-timeout-seconds", value_parser = clap::value_parser!(u64).range(1..))]
+        provider_timeout_seconds: Option<u64>,
     },
 
     /// Render an advisory RMS evidence prompt for proving a changed promise.
@@ -519,6 +549,10 @@ enum Commands {
         /// Writable scope passed to Codex provider execution.
         #[arg(long = "write-scope")]
         write_scope: Option<ProviderWriteScope>,
+
+        /// Maximum seconds to wait for provider execution before terminating it.
+        #[arg(long = "provider-timeout-seconds", value_parser = clap::value_parser!(u64).range(1..))]
+        provider_timeout_seconds: Option<u64>,
     },
 
     /// Inspect saved RMS workbench run records.
@@ -830,6 +864,7 @@ struct PromptRunOptions {
     model: Option<String>,
     sandbox: CodexSandbox,
     write_scope: ProviderWriteScope,
+    provider_timeout_seconds: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -841,6 +876,7 @@ struct RawPromptRunOptions {
     model: Option<String>,
     sandbox: Option<CodexSandbox>,
     write_scope: Option<ProviderWriteScope>,
+    provider_timeout_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -863,6 +899,7 @@ struct CodexConfig {
     model: Option<String>,
     sandbox: Option<String>,
     write_scope: Option<String>,
+    timeout_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -907,6 +944,7 @@ struct ConfigReadiness {
     codex_model: Option<String>,
     codex_sandbox: Option<String>,
     codex_write_scope: Option<String>,
+    codex_timeout_seconds: Option<u64>,
     run_directory: String,
     message: Option<String>,
 }
@@ -1293,6 +1331,18 @@ fn resolve_prompt_run_options(root: &Path, raw: RawPromptRunOptions) -> Result<P
         ProviderWriteScope::Root
     };
 
+    let provider_timeout_seconds = if let Some(timeout_seconds) = raw.provider_timeout_seconds {
+        timeout_seconds
+    } else if provider == Provider::Codex {
+        config_value
+            .and_then(|config| config.ai.codex.timeout_seconds)
+            .map(|value| parse_config_timeout_seconds(value, "ai.codex.timeout_seconds"))
+            .transpose()?
+            .unwrap_or(DEFAULT_PROVIDER_TIMEOUT_SECONDS)
+    } else {
+        DEFAULT_PROVIDER_TIMEOUT_SECONDS
+    };
+
     Ok(PromptRunOptions {
         provider,
         record: raw.record,
@@ -1300,6 +1350,7 @@ fn resolve_prompt_run_options(root: &Path, raw: RawPromptRunOptions) -> Result<P
         model,
         sandbox,
         write_scope,
+        provider_timeout_seconds,
     })
 }
 
@@ -1903,6 +1954,11 @@ fn render_workbench_config(provider: Provider, model: Option<&str>, run_root: &P
         let _ = writeln!(out, "    model: {}", yaml_quote(model));
     }
     out.push_str("    sandbox: read-only\n");
+    let _ = writeln!(
+        out,
+        "    # timeout_seconds: {}",
+        DEFAULT_PROVIDER_TIMEOUT_SECONDS
+    );
     out.push_str("runs:\n");
     let _ = writeln!(
         out,
@@ -1936,6 +1992,13 @@ fn parse_config_write_scope(value: &str, field: &str) -> Result<ProviderWriteSco
         "root" => Ok(ProviderWriteScope::Root),
         other => bail!("unsupported `{field}` value `{other}`; expected `module` or `root`"),
     }
+}
+
+fn parse_config_timeout_seconds(value: u64, field: &str) -> Result<u64> {
+    if value == 0 {
+        bail!("unsupported `{field}` value `0`; expected a positive integer")
+    }
+    Ok(value)
 }
 
 #[derive(Debug)]
@@ -1983,6 +2046,7 @@ fn main() -> Result<()> {
             model,
             sandbox,
             write_scope,
+            provider_timeout_seconds,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -1994,6 +2058,7 @@ fn main() -> Result<()> {
                     model,
                     sandbox,
                     write_scope,
+                    provider_timeout_seconds,
                 },
             )?;
             run_explain(&subject, module.as_deref(), &root, &options)
@@ -2013,6 +2078,7 @@ fn main() -> Result<()> {
             model,
             sandbox,
             write_scope,
+            provider_timeout_seconds,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -2024,6 +2090,7 @@ fn main() -> Result<()> {
                     model,
                     sandbox,
                     write_scope,
+                    provider_timeout_seconds,
                 },
             )?;
             run_prompt(
@@ -2047,6 +2114,7 @@ fn main() -> Result<()> {
             model,
             sandbox,
             write_scope,
+            provider_timeout_seconds,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -2058,6 +2126,7 @@ fn main() -> Result<()> {
                     model,
                     sandbox,
                     write_scope,
+                    provider_timeout_seconds,
                 },
             )?;
             run_prompt(
@@ -2083,6 +2152,7 @@ fn main() -> Result<()> {
             model,
             sandbox,
             write_scope,
+            provider_timeout_seconds,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -2094,6 +2164,7 @@ fn main() -> Result<()> {
                     model,
                     sandbox,
                     write_scope,
+                    provider_timeout_seconds,
                 },
             )?;
             run_prompt(
@@ -2124,6 +2195,7 @@ fn main() -> Result<()> {
             model,
             sandbox,
             write_scope,
+            provider_timeout_seconds,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -2135,6 +2207,7 @@ fn main() -> Result<()> {
                     model,
                     sandbox,
                     write_scope,
+                    provider_timeout_seconds,
                 },
             )?;
             run_prompt(
@@ -2158,6 +2231,7 @@ fn main() -> Result<()> {
             model,
             sandbox,
             write_scope,
+            provider_timeout_seconds,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -2169,6 +2243,7 @@ fn main() -> Result<()> {
                     model,
                     sandbox,
                     write_scope,
+                    provider_timeout_seconds,
                 },
             )?;
             run_prompt(
@@ -2192,6 +2267,7 @@ fn main() -> Result<()> {
             model,
             sandbox,
             write_scope,
+            provider_timeout_seconds,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -2203,6 +2279,7 @@ fn main() -> Result<()> {
                     model,
                     sandbox,
                     write_scope,
+                    provider_timeout_seconds,
                 },
             )?;
             run_prompt(
@@ -2226,6 +2303,7 @@ fn main() -> Result<()> {
             model,
             sandbox,
             write_scope,
+            provider_timeout_seconds,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -2237,6 +2315,7 @@ fn main() -> Result<()> {
                     model,
                     sandbox,
                     write_scope,
+                    provider_timeout_seconds,
                 },
             )?;
             run_prompt(
@@ -2580,6 +2659,14 @@ fn print_diagnose_report(report: &DiagnoseReport) {
             .as_deref()
             .unwrap_or("<default>")
     );
+    println!(
+        "Codex timeout seconds: {}",
+        report
+            .config
+            .codex_timeout_seconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| DEFAULT_PROVIDER_TIMEOUT_SECONDS.to_string())
+    );
     println!("Run directory: {}", report.config.run_directory);
     println!();
 
@@ -2661,6 +2748,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
                             codex_model: loaded.value.ai.codex.model,
                             codex_sandbox: loaded.value.ai.codex.sandbox,
                             codex_write_scope: loaded.value.ai.codex.write_scope,
+                            codex_timeout_seconds: loaded.value.ai.codex.timeout_seconds,
                             run_directory: loaded
                                 .value
                                 .runs
@@ -2683,6 +2771,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
                         codex_model: loaded.value.ai.codex.model,
                         codex_sandbox: Some(value.to_string()),
                         codex_write_scope: loaded.value.ai.codex.write_scope,
+                        codex_timeout_seconds: loaded.value.ai.codex.timeout_seconds,
                         run_directory: loaded
                             .value
                             .runs
@@ -2703,6 +2792,29 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
                         codex_model: loaded.value.ai.codex.model,
                         codex_sandbox: loaded.value.ai.codex.sandbox,
                         codex_write_scope: Some(value.to_string()),
+                        codex_timeout_seconds: loaded.value.ai.codex.timeout_seconds,
+                        run_directory: loaded
+                            .value
+                            .runs
+                            .directory
+                            .unwrap_or_else(|| PathBuf::from(DEFAULT_RUN_ROOT))
+                            .display()
+                            .to_string(),
+                        message: Some(error.to_string()),
+                    };
+                }
+            }
+            if let Some(value) = loaded.value.ai.codex.timeout_seconds {
+                if let Err(error) = parse_config_timeout_seconds(value, "ai.codex.timeout_seconds")
+                {
+                    return ConfigReadiness {
+                        path: loaded.path.display().to_string(),
+                        status: "invalid".to_string(),
+                        default_provider,
+                        codex_model: loaded.value.ai.codex.model,
+                        codex_sandbox: loaded.value.ai.codex.sandbox,
+                        codex_write_scope: loaded.value.ai.codex.write_scope,
+                        codex_timeout_seconds: Some(value),
                         run_directory: loaded
                             .value
                             .runs
@@ -2721,6 +2833,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
                 codex_model: loaded.value.ai.codex.model,
                 codex_sandbox: loaded.value.ai.codex.sandbox,
                 codex_write_scope: loaded.value.ai.codex.write_scope,
+                codex_timeout_seconds: loaded.value.ai.codex.timeout_seconds,
                 run_directory: loaded
                     .value
                     .runs
@@ -2738,6 +2851,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
             codex_model: None,
             codex_sandbox: None,
             codex_write_scope: None,
+            codex_timeout_seconds: None,
             run_directory: DEFAULT_RUN_ROOT.to_string(),
             message: Some("optional config is not present".to_string()),
         },
@@ -2748,6 +2862,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
             codex_model: None,
             codex_sandbox: None,
             codex_write_scope: None,
+            codex_timeout_seconds: None,
             run_directory: DEFAULT_RUN_ROOT.to_string(),
             message: Some(error.to_string()),
         },
@@ -2993,6 +3108,7 @@ fn execute_codex_provider(
     let stdout_path = run_dir.join("provider.stdout.log");
     let stderr_path = run_dir.join("provider.stderr.log");
     let execution_root = provider_execution_root(root, manifest, options);
+    let timeout = Duration::from_secs(options.provider_timeout_seconds);
 
     let mut command = Command::new("codex");
     command
@@ -3016,42 +3132,110 @@ fn execute_codex_provider(
         .spawn()
         .with_context(|| "failed to start `codex exec` provider")?;
 
-    if let Some(stdin) = child.stdin.as_mut() {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture `codex exec` stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture `codex exec` stderr"))?;
+    let stdout_reader = spawn_pipe_reader(stdout);
+    let stderr_reader = spawn_pipe_reader(stderr);
+
+    if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(prompt.as_bytes())
             .with_context(|| "failed to write prompt to `codex exec` stdin")?;
     }
 
-    let output = child
-        .wait_with_output()
+    let outcome = wait_child_with_timeout(&mut child, timeout)
         .with_context(|| "failed to wait for `codex exec` provider")?;
-    fs::write(&stdout_path, &output.stdout)
+    let stdout = join_pipe_reader(stdout_reader, "stdout")?;
+    let stderr = join_pipe_reader(stderr_reader, "stderr")?;
+
+    fs::write(&stdout_path, &stdout)
         .with_context(|| format!("failed to write `{}`", stdout_path.display()))?;
-    fs::write(&stderr_path, &output.stderr)
+    fs::write(&stderr_path, &stderr)
         .with_context(|| format!("failed to write `{}`", stderr_path.display()))?;
 
-    if !output.status.success() {
-        bail!(
-            "`codex exec` failed with status {}; see `{}` and `{}`",
-            output
-                .status
-                .code()
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "signal".to_string()),
-            stdout_path.display(),
-            stderr_path.display()
-        );
+    match outcome {
+        ProviderProcessOutcome::Exited(status) if !status.success() => {
+            bail!(
+                "`codex exec` failed with status {}; see `{}` and `{}`",
+                exit_status_label(status),
+                stdout_path.display(),
+                stderr_path.display()
+            );
+        }
+        ProviderProcessOutcome::TimedOut { status } => {
+            bail!(
+                "`codex exec` timed out after {} second(s) and was terminated with status {}; see `{}` and `{}`{}",
+                options.provider_timeout_seconds,
+                exit_status_label(status),
+                stdout_path.display(),
+                stderr_path.display(),
+                if response_path.exists() {
+                    "; partial response was preserved"
+                } else {
+                    ""
+                }
+            );
+        }
+        ProviderProcessOutcome::Exited(_) => {}
     }
 
     if !response_path.exists() {
-        fs::write(
-            &response_path,
-            String::from_utf8_lossy(&output.stdout).as_ref(),
-        )
-        .with_context(|| format!("failed to write `{}`", response_path.display()))?;
+        fs::write(&response_path, String::from_utf8_lossy(&stdout).as_ref())
+            .with_context(|| format!("failed to write `{}`", response_path.display()))?;
     }
 
     Ok(())
+}
+
+enum ProviderProcessOutcome {
+    Exited(ExitStatus),
+    TimedOut { status: ExitStatus },
+}
+
+fn wait_child_with_timeout(child: &mut Child, timeout: Duration) -> Result<ProviderProcessOutcome> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(ProviderProcessOutcome::Exited(status));
+        }
+        if started.elapsed() >= timeout {
+            if let Err(error) = child.kill() {
+                if let Some(status) = child.try_wait()? {
+                    return Ok(ProviderProcessOutcome::Exited(status));
+                }
+                return Err(error)
+                    .with_context(|| "failed to terminate timed-out provider process");
+            }
+            let status = child
+                .wait()
+                .with_context(|| "failed to collect timed-out provider process")?;
+            return Ok(ProviderProcessOutcome::TimedOut { status });
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn spawn_pipe_reader<R>(mut reader: R) -> thread::JoinHandle<Result<Vec<u8>>>
+where
+    R: IoRead + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+
+fn join_pipe_reader(handle: thread::JoinHandle<Result<Vec<u8>>>, label: &str) -> Result<Vec<u8>> {
+    handle
+        .join()
+        .map_err(|_| anyhow!("provider {label} reader panicked"))?
 }
 
 fn render_provider_execution_scope(
@@ -3066,6 +3250,11 @@ fn render_provider_execution_scope(
     let _ = writeln!(out, "- Provider: {}", options.provider.label());
     let _ = writeln!(out, "- Sandbox: {}", options.sandbox.as_str());
     let _ = writeln!(out, "- Write scope: {}", options.write_scope.as_str());
+    let _ = writeln!(
+        out,
+        "- Timeout: {} second(s)",
+        options.provider_timeout_seconds
+    );
     let _ = writeln!(out, "- Execution root: {}", execution_root.display());
     match (options.sandbox, options.write_scope) {
         (CodexSandbox::ReadOnly, _) => {
@@ -3418,6 +3607,11 @@ fn render_run_request_yaml(
         out,
         "write_scope: {}",
         yaml_quote(options.write_scope.as_str())
+    );
+    let _ = writeln!(
+        out,
+        "provider_timeout_seconds: {}",
+        options.provider_timeout_seconds
     );
     let _ = writeln!(
         out,
@@ -13809,6 +14003,7 @@ import struct ExternalKit.Widget
 
         let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
         let gitignore = fs::read_to_string(root.join(".gitignore")).unwrap();
+        let config_text = fs::read_to_string(root.join(".rms/config.yaml")).unwrap();
         let config = load_workbench_config(&root).unwrap().unwrap();
         for (relative_path, contents) in INIT_AGENT_SKILLS {
             let generated =
@@ -13822,6 +14017,7 @@ import struct ExternalKit.Widget
         assert!(agents.contains("RMS artifacts are the architectural source of truth"));
         assert!(agents.contains("rms context <module.yaml> --task"));
         assert!(gitignore.contains(".rms/runs/"));
+        assert!(config_text.contains("# timeout_seconds: 900"));
         assert_eq!(config.value.ai.default_provider.as_deref(), Some("codex"));
         assert_eq!(config.value.ai.codex.sandbox.as_deref(), Some("read-only"));
         assert_eq!(
@@ -14965,6 +15161,7 @@ verification:
             model: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
+            provider_timeout_seconds: DEFAULT_PROVIDER_TIMEOUT_SECONDS,
         };
         let run_dir = write_prompt_run_record(
             &manifest,
@@ -15021,6 +15218,7 @@ verification:
             model: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
+            provider_timeout_seconds: DEFAULT_PROVIDER_TIMEOUT_SECONDS,
         };
 
         let prompt = render_workbench_prompt(
@@ -15054,6 +15252,7 @@ verification:
         assert!(request.contains("prompt: \"rms.evidence@v1\""));
         assert!(request.contains("provider: \"none\""));
         assert!(request.contains("write_scope: \"root\""));
+        assert!(request.contains("provider_timeout_seconds: 900"));
         assert!(request.contains("execution_root:"));
         assert!(checks.contains("\"validation\""));
     }
@@ -15081,6 +15280,7 @@ verification:
             model: None,
             sandbox: CodexSandbox::WorkspaceWrite,
             write_scope: ProviderWriteScope::Module,
+            provider_timeout_seconds: DEFAULT_PROVIDER_TIMEOUT_SECONDS,
         };
 
         let execution_root = provider_execution_root(&root, &manifest, &options);
@@ -15090,6 +15290,7 @@ verification:
         assert_eq!(execution_root, module_dir);
         assert!(scope.contains("- Sandbox: workspace-write"));
         assert!(scope.contains("- Write scope: module"));
+        assert!(scope.contains("- Timeout: 900 second(s)"));
         assert!(scope.contains("Edit only files under the owning module directory"));
     }
 
@@ -15099,6 +15300,25 @@ verification:
 
         assert!(response.is_absolute());
         assert!(response.ends_with(".rms/runs/test-run/response.md"));
+    }
+
+    #[test]
+    fn provider_wait_times_out_and_terminates_child() {
+        if Command::new("sh").arg("-c").arg("exit 0").status().is_err() {
+            return;
+        }
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 5")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let outcome = wait_child_with_timeout(&mut child, Duration::from_millis(25)).unwrap();
+
+        assert!(matches!(outcome, ProviderProcessOutcome::TimedOut { .. }));
     }
 
     #[test]
@@ -15352,6 +15572,7 @@ verification:
             model: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
+            provider_timeout_seconds: DEFAULT_PROVIDER_TIMEOUT_SECONDS,
         };
         let prompt = render_workbench_prompt(
             &manifest,
@@ -15397,6 +15618,7 @@ verification:
   codex:
     model: gpt-test
     sandbox: read-only
+    timeout_seconds: 45
 runs:
   directory: .rms/test-runs
 "#,
@@ -15413,6 +15635,8 @@ runs:
                 model: None,
                 sandbox: None,
                 write_scope: None,
+
+                provider_timeout_seconds: None,
             },
         )
         .unwrap();
@@ -15423,8 +15647,43 @@ runs:
         assert_eq!(options.model.as_deref(), Some("gpt-test"));
         assert!(matches!(options.sandbox, CodexSandbox::ReadOnly));
         assert_eq!(options.write_scope, ProviderWriteScope::Root);
+        assert_eq!(options.provider_timeout_seconds, 45);
         assert_eq!(options.run_root, PathBuf::from(".rms/test-runs"));
         assert_eq!(run_root, PathBuf::from(".rms/test-runs"));
+    }
+
+    #[test]
+    fn prompt_options_reject_zero_provider_timeout() {
+        let root = prompt_fixture("zero-timeout");
+        fs::create_dir_all(root.join(".rms")).unwrap();
+        fs::write(
+            root.join(".rms/config.yaml"),
+            r#"ai:
+  default_provider: codex
+  codex:
+    timeout_seconds: 0
+"#,
+        )
+        .unwrap();
+
+        let error = resolve_prompt_run_options(
+            &root,
+            RawPromptRunOptions {
+                ai: true,
+                provider: None,
+                record: false,
+                run_root: None,
+                model: None,
+                sandbox: None,
+                write_scope: None,
+                provider_timeout_seconds: None,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(error.contains("ai.codex.timeout_seconds"));
     }
 
     #[test]
@@ -15453,6 +15712,8 @@ runs:
                 model: None,
                 sandbox: None,
                 write_scope: None,
+
+                provider_timeout_seconds: None,
             },
         )
         .unwrap();
@@ -15487,6 +15748,8 @@ runs:
                 model: None,
                 sandbox: None,
                 write_scope: None,
+
+                provider_timeout_seconds: None,
             },
         )
         .unwrap();
@@ -15510,6 +15773,8 @@ runs:
                 model: None,
                 sandbox: None,
                 write_scope: None,
+
+                provider_timeout_seconds: None,
             },
         )
         .unwrap_err()
@@ -15541,6 +15806,7 @@ runs:
   default_provider: codex
   codex:
     model: gpt-test
+    timeout_seconds: 45
 runs:
   directory: .rms/test-runs
 "#,
@@ -15553,6 +15819,7 @@ runs:
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(report.config.status, "present");
         assert_eq!(report.config.default_provider.as_deref(), Some("codex"));
+        assert_eq!(report.config.codex_timeout_seconds, Some(45));
         assert_eq!(report.config.run_directory, ".rms/test-runs");
         assert!(rendered.contains("\"ai_providers\""));
         assert!(rendered.contains("\"run_records\""));
@@ -15589,6 +15856,7 @@ runs:
         )
         .unwrap();
         let loaded = load_workbench_config(&root).unwrap().unwrap();
+        let generated = fs::read_to_string(root.join(".rms/config.yaml")).unwrap();
         let overwrite_error =
             run_config_init(&root, Provider::Codex, None, Path::new(".rms/runs"), false)
                 .unwrap_err()
@@ -15601,6 +15869,7 @@ runs:
             loaded.value.runs.directory.as_deref(),
             Some(Path::new(".rms/test-runs"))
         );
+        assert!(generated.contains("# timeout_seconds: 900"));
         assert!(overwrite_error.contains("already exists"));
     }
 

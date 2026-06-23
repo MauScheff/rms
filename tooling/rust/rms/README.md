@@ -80,7 +80,7 @@ The quickstart is in `../../../QUICKSTART.md`, the self-hosted walkthrough is in
 
 `rms add-module` writes `module.yaml`, a module `README.md`, `contracts/README.md`, guided verification directories, and an optional Rust, Swift, or executable binding. The generated guidance routes future work through canonical artifacts without defining module-specific semantics.
 
-The workbench prompt commands are advisory by default. They render bounded, versioned prompts for humans or agents. Use `--record` to write `.rms/runs/<run-id>/request.yaml`, `prompt.md`, and `checks.json`. Use `--provider codex` to execute the prompt through `codex exec`, or `--ai` to use `ai.default_provider` from `.rms/config.yaml`, and record `response.md` plus provider logs. The CLI remains intentionally conservative and reports missing evidence explicitly instead of claiming more conformance than the artifacts prove.
+The workbench prompt commands are advisory by default. They render bounded, versioned prompts for humans or agents. Use `--record` to write `.rms/runs/<run-id>/request.yaml`, `prompt.md`, and `checks.json`. Use `--provider codex` to execute the prompt through `codex exec`, or `--ai` to use `ai.default_provider` from `.rms/config.yaml`, and record `response.md` plus provider logs. Provider execution is bounded by `ai.codex.timeout_seconds` or `--provider-timeout-seconds`, defaulting to 900 seconds. The CLI remains intentionally conservative and reports missing evidence explicitly instead of claiming more conformance than the artifacts prove.
 
 Optional `.rms/config.yaml`:
 
@@ -90,6 +90,7 @@ ai:
   codex:
     model: gpt-5-codex
     sandbox: read-only
+    # timeout_seconds: 900
 runs:
   directory: .rms/runs
 ```

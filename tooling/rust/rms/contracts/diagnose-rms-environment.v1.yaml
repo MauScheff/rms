@@ -7,7 +7,7 @@ postconditions:
   - id: readiness-is-diagnostic
     statement: The report describes observed local readiness and does not change RMS artifacts.
   - id: config-is-readiness-evidence
-    statement: Optional `.rms/config.yaml` values are reported as provider and run-record defaults, not as module semantics.
+    statement: Optional `.rms/config.yaml` values are reported as provider, provider-timeout, and run-record defaults, not as module semantics.
   - id: json-shares-text-facts
     statement: Machine-readable diagnose output is derived from the same readiness observations as text output.
 failure_categories:

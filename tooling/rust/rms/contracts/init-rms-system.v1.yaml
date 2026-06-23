@@ -14,7 +14,7 @@ postconditions:
   - id: agent-instructions-created
     statement: The generated `AGENTS.md` instructs agents to use RMS manifests and CLI commands before inferring architecture from code shape.
   - id: workbench-config-created
-    statement: The generated `.rms/config.yaml` supplies provider, sandbox, and run-record defaults only; it does not define module semantics.
+    statement: The generated `.rms/config.yaml` supplies provider, sandbox, and run-record defaults, and documents the provider-timeout default; it does not define module semantics.
   - id: local-agent-skills-created
     statement: The generated `.agents/skills` directory contains pinned RMS workflow skills that call the shared RMS CLI.
   - id: ignore-file-created
