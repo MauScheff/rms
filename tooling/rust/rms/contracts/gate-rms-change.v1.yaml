@@ -19,7 +19,7 @@ postconditions:
     statement: Review prompts, compatibility classification, and missing implementation bindings are reported as manual obligations instead of being silently treated as passed.
 failure_categories:
   - id: git-unavailable
-    statement: Git is not available or cannot describe the requested diff.
+    statement: Git is not available, the requested root is not a git repository, or git cannot describe the requested diff; the failure explains how to initialize git or run deterministic checks directly.
   - id: rms-artifact-unreadable
     statement: A discovered RMS artifact cannot be read or parsed.
   - id: executable-check-failed

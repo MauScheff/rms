@@ -8,7 +8,7 @@ preconditions:
     statement: The requested root can contain `.rms/config.yaml`.
 postconditions:
   - id: config-is-operational
-    statement: The created config supplies provider, model, sandbox, and run-record defaults only; it does not define module semantics.
+    statement: The created config supplies provider, model, sandbox, optional write-scope, and run-record defaults only; it does not define module semantics.
   - id: existing-config-preserved-by-default
     statement: Existing config is not overwritten unless force is requested.
   - id: generated-config-is-parseable

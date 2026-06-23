@@ -158,6 +158,10 @@ enum Commands {
         /// Sandbox mode passed to Codex provider execution.
         #[arg(long)]
         sandbox: Option<CodexSandbox>,
+
+        /// Writable scope passed to Codex provider execution.
+        #[arg(long = "write-scope")]
+        write_scope: Option<ProviderWriteScope>,
     },
 
     /// Check local RMS and optional AI-provider readiness.
@@ -218,6 +222,10 @@ enum Commands {
         /// Sandbox mode passed to Codex provider execution.
         #[arg(long)]
         sandbox: Option<CodexSandbox>,
+
+        /// Writable scope passed to Codex provider execution.
+        #[arg(long = "write-scope")]
+        write_scope: Option<ProviderWriteScope>,
     },
 
     /// Render an advisory RMS implementation plan prompt for a module task.
@@ -256,6 +264,10 @@ enum Commands {
         /// Sandbox mode passed to Codex provider execution.
         #[arg(long)]
         sandbox: Option<CodexSandbox>,
+
+        /// Writable scope passed to Codex provider execution.
+        #[arg(long = "write-scope")]
+        write_scope: Option<ProviderWriteScope>,
     },
 
     /// Render an advisory RMS review prompt for the current or requested diff.
@@ -302,6 +314,10 @@ enum Commands {
         /// Sandbox mode passed to Codex provider execution.
         #[arg(long)]
         sandbox: Option<CodexSandbox>,
+
+        /// Writable scope passed to Codex provider execution.
+        #[arg(long = "write-scope")]
+        write_scope: Option<ProviderWriteScope>,
     },
 
     /// Classify RMS semantic impact for the current or requested git diff.
@@ -372,6 +388,10 @@ enum Commands {
         /// Sandbox mode passed to Codex provider execution.
         #[arg(long)]
         sandbox: Option<CodexSandbox>,
+
+        /// Writable scope passed to Codex provider execution.
+        #[arg(long = "write-scope")]
+        write_scope: Option<ProviderWriteScope>,
     },
 
     /// Render an advisory RMS implementation prompt for a module change.
@@ -410,6 +430,10 @@ enum Commands {
         /// Sandbox mode passed to Codex provider execution.
         #[arg(long)]
         sandbox: Option<CodexSandbox>,
+
+        /// Writable scope passed to Codex provider execution.
+        #[arg(long = "write-scope")]
+        write_scope: Option<ProviderWriteScope>,
     },
 
     /// Render an advisory RMS contract-evolution prompt for public surface changes.
@@ -449,6 +473,10 @@ enum Commands {
         /// Sandbox mode passed to Codex provider execution.
         #[arg(long)]
         sandbox: Option<CodexSandbox>,
+
+        /// Writable scope passed to Codex provider execution.
+        #[arg(long = "write-scope")]
+        write_scope: Option<ProviderWriteScope>,
     },
 
     /// Render an advisory RMS evidence prompt for proving a changed promise.
@@ -487,6 +515,10 @@ enum Commands {
         /// Sandbox mode passed to Codex provider execution.
         #[arg(long)]
         sandbox: Option<CodexSandbox>,
+
+        /// Writable scope passed to Codex provider execution.
+        #[arg(long = "write-scope")]
+        write_scope: Option<ProviderWriteScope>,
     },
 
     /// Inspect saved RMS workbench run records.
@@ -780,6 +812,14 @@ enum Provider {
 enum CodexSandbox {
     #[value(name = "read-only")]
     ReadOnly,
+    #[value(name = "workspace-write")]
+    WorkspaceWrite,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum ProviderWriteScope {
+    Module,
+    Root,
 }
 
 #[derive(Clone, Debug)]
@@ -789,6 +829,7 @@ struct PromptRunOptions {
     run_root: PathBuf,
     model: Option<String>,
     sandbox: CodexSandbox,
+    write_scope: ProviderWriteScope,
 }
 
 #[derive(Clone, Debug)]
@@ -799,6 +840,7 @@ struct RawPromptRunOptions {
     run_root: Option<PathBuf>,
     model: Option<String>,
     sandbox: Option<CodexSandbox>,
+    write_scope: Option<ProviderWriteScope>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -820,6 +862,7 @@ struct AiConfig {
 struct CodexConfig {
     model: Option<String>,
     sandbox: Option<String>,
+    write_scope: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -863,6 +906,7 @@ struct ConfigReadiness {
     default_provider: Option<String>,
     codex_model: Option<String>,
     codex_sandbox: Option<String>,
+    codex_write_scope: Option<String>,
     run_directory: String,
     message: Option<String>,
 }
@@ -1166,6 +1210,16 @@ impl CodexSandbox {
     fn as_str(self) -> &'static str {
         match self {
             CodexSandbox::ReadOnly => "read-only",
+            CodexSandbox::WorkspaceWrite => "workspace-write",
+        }
+    }
+}
+
+impl ProviderWriteScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            ProviderWriteScope::Module => "module",
+            ProviderWriteScope::Root => "root",
         }
     }
 }
@@ -1221,12 +1275,31 @@ fn resolve_prompt_run_options(root: &Path, raw: RawPromptRunOptions) -> Result<P
         CodexSandbox::ReadOnly
     };
 
+    let write_scope = if let Some(write_scope) = raw.write_scope {
+        write_scope
+    } else if provider == Provider::Codex {
+        config_value
+            .and_then(|config| config.ai.codex.write_scope.as_deref())
+            .map(|value| parse_config_write_scope(value, "ai.codex.write_scope"))
+            .transpose()?
+            .unwrap_or_else(|| {
+                if matches!(sandbox, CodexSandbox::WorkspaceWrite) {
+                    ProviderWriteScope::Module
+                } else {
+                    ProviderWriteScope::Root
+                }
+            })
+    } else {
+        ProviderWriteScope::Root
+    };
+
     Ok(PromptRunOptions {
         provider,
         record: raw.record,
         run_root,
         model,
         sandbox,
+        write_scope,
     })
 }
 
@@ -1850,7 +1923,18 @@ fn parse_config_provider(value: &str, field: &str) -> Result<Provider> {
 fn parse_config_sandbox(value: &str, field: &str) -> Result<CodexSandbox> {
     match value {
         "read-only" => Ok(CodexSandbox::ReadOnly),
-        other => bail!("unsupported `{field}` value `{other}`; expected `read-only`"),
+        "workspace-write" => Ok(CodexSandbox::WorkspaceWrite),
+        other => bail!(
+            "unsupported `{field}` value `{other}`; expected `read-only` or `workspace-write`"
+        ),
+    }
+}
+
+fn parse_config_write_scope(value: &str, field: &str) -> Result<ProviderWriteScope> {
+    match value {
+        "module" => Ok(ProviderWriteScope::Module),
+        "root" => Ok(ProviderWriteScope::Root),
+        other => bail!("unsupported `{field}` value `{other}`; expected `module` or `root`"),
     }
 }
 
@@ -1898,6 +1982,7 @@ fn main() -> Result<()> {
             run_root,
             model,
             sandbox,
+            write_scope,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -1908,6 +1993,7 @@ fn main() -> Result<()> {
                     run_root,
                     model,
                     sandbox,
+                    write_scope,
                 },
             )?;
             run_explain(&subject, module.as_deref(), &root, &options)
@@ -1926,6 +2012,7 @@ fn main() -> Result<()> {
             run_root,
             model,
             sandbox,
+            write_scope,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -1936,6 +2023,7 @@ fn main() -> Result<()> {
                     run_root,
                     model,
                     sandbox,
+                    write_scope,
                 },
             )?;
             run_prompt(
@@ -1958,6 +2046,7 @@ fn main() -> Result<()> {
             run_root,
             model,
             sandbox,
+            write_scope,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -1968,6 +2057,7 @@ fn main() -> Result<()> {
                     run_root,
                     model,
                     sandbox,
+                    write_scope,
                 },
             )?;
             run_prompt(
@@ -1992,6 +2082,7 @@ fn main() -> Result<()> {
             run_root,
             model,
             sandbox,
+            write_scope,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -2002,6 +2093,7 @@ fn main() -> Result<()> {
                     run_root,
                     model,
                     sandbox,
+                    write_scope,
                 },
             )?;
             run_prompt(
@@ -2031,6 +2123,7 @@ fn main() -> Result<()> {
             run_root,
             model,
             sandbox,
+            write_scope,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -2041,6 +2134,7 @@ fn main() -> Result<()> {
                     run_root,
                     model,
                     sandbox,
+                    write_scope,
                 },
             )?;
             run_prompt(
@@ -2063,6 +2157,7 @@ fn main() -> Result<()> {
             run_root,
             model,
             sandbox,
+            write_scope,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -2073,6 +2168,7 @@ fn main() -> Result<()> {
                     run_root,
                     model,
                     sandbox,
+                    write_scope,
                 },
             )?;
             run_prompt(
@@ -2095,6 +2191,7 @@ fn main() -> Result<()> {
             run_root,
             model,
             sandbox,
+            write_scope,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -2105,6 +2202,7 @@ fn main() -> Result<()> {
                     run_root,
                     model,
                     sandbox,
+                    write_scope,
                 },
             )?;
             run_prompt(
@@ -2127,6 +2225,7 @@ fn main() -> Result<()> {
             run_root,
             model,
             sandbox,
+            write_scope,
         } => {
             let options = resolve_prompt_run_options(
                 &root,
@@ -2137,6 +2236,7 @@ fn main() -> Result<()> {
                     run_root,
                     model,
                     sandbox,
+                    write_scope,
                 },
             )?;
             run_prompt(
@@ -2472,6 +2572,14 @@ fn print_diagnose_report(report: &DiagnoseReport) {
             .as_deref()
             .unwrap_or("read-only")
     );
+    println!(
+        "Codex write scope: {}",
+        report
+            .config
+            .codex_write_scope
+            .as_deref()
+            .unwrap_or("<default>")
+    );
     println!("Run directory: {}", report.config.run_directory);
     println!();
 
@@ -2552,6 +2660,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
                             default_provider: Some(value.to_string()),
                             codex_model: loaded.value.ai.codex.model,
                             codex_sandbox: loaded.value.ai.codex.sandbox,
+                            codex_write_scope: loaded.value.ai.codex.write_scope,
                             run_directory: loaded
                                 .value
                                 .runs
@@ -2573,6 +2682,27 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
                         default_provider,
                         codex_model: loaded.value.ai.codex.model,
                         codex_sandbox: Some(value.to_string()),
+                        codex_write_scope: loaded.value.ai.codex.write_scope,
+                        run_directory: loaded
+                            .value
+                            .runs
+                            .directory
+                            .unwrap_or_else(|| PathBuf::from(DEFAULT_RUN_ROOT))
+                            .display()
+                            .to_string(),
+                        message: Some(error.to_string()),
+                    };
+                }
+            }
+            if let Some(value) = loaded.value.ai.codex.write_scope.as_deref() {
+                if let Err(error) = parse_config_write_scope(value, "ai.codex.write_scope") {
+                    return ConfigReadiness {
+                        path: loaded.path.display().to_string(),
+                        status: "invalid".to_string(),
+                        default_provider,
+                        codex_model: loaded.value.ai.codex.model,
+                        codex_sandbox: loaded.value.ai.codex.sandbox,
+                        codex_write_scope: Some(value.to_string()),
                         run_directory: loaded
                             .value
                             .runs
@@ -2590,6 +2720,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
                 default_provider,
                 codex_model: loaded.value.ai.codex.model,
                 codex_sandbox: loaded.value.ai.codex.sandbox,
+                codex_write_scope: loaded.value.ai.codex.write_scope,
                 run_directory: loaded
                     .value
                     .runs
@@ -2606,6 +2737,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
             default_provider: None,
             codex_model: None,
             codex_sandbox: None,
+            codex_write_scope: None,
             run_directory: DEFAULT_RUN_ROOT.to_string(),
             message: Some("optional config is not present".to_string()),
         },
@@ -2615,6 +2747,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
             default_provider: None,
             codex_model: None,
             codex_sandbox: None,
+            codex_write_scope: None,
             run_directory: DEFAULT_RUN_ROOT.to_string(),
             message: Some(error.to_string()),
         },
@@ -2761,7 +2894,10 @@ fn run_prompt(
     options: &PromptRunOptions,
 ) -> Result<()> {
     let manifest = load_manifest(module)?;
-    let rendered = render_workbench_prompt(&manifest, root, kind, task, diff, impact)?;
+    let mut rendered = render_workbench_prompt(&manifest, root, kind, task, diff, impact)?;
+    if options.provider != Provider::None {
+        rendered.push_str(&render_provider_execution_scope(&manifest, root, options));
+    }
 
     let run_dir = if options.record || options.provider != Provider::None {
         Some(write_prompt_run_record(
@@ -2781,7 +2917,7 @@ fn run_prompt(
         Provider::Codex => {
             let run_dir =
                 run_dir.ok_or_else(|| anyhow!("provider execution requires run record"))?;
-            execute_codex_provider(root, &rendered, &run_dir, options)?;
+            execute_codex_provider(root, &manifest, &rendered, &run_dir, options)?;
             println!("run record: {}", run_dir.display());
             println!("response: {}", run_dir.join("response.md").display());
         }
@@ -2847,23 +2983,26 @@ fn write_prompt_run_record(
 
 fn execute_codex_provider(
     root: &Path,
+    manifest: &LoadedManifest,
     prompt: &str,
     run_dir: &Path,
     options: &PromptRunOptions,
 ) -> Result<()> {
     let response_path = run_dir.join("response.md");
+    let provider_response_path = provider_response_path(run_dir)?;
     let stdout_path = run_dir.join("provider.stdout.log");
     let stderr_path = run_dir.join("provider.stderr.log");
+    let execution_root = provider_execution_root(root, manifest, options);
 
     let mut command = Command::new("codex");
     command
         .arg("exec")
         .arg("--cd")
-        .arg(root)
+        .arg(&execution_root)
         .arg("--sandbox")
         .arg(options.sandbox.as_str())
         .arg("--output-last-message")
-        .arg(&response_path);
+        .arg(&provider_response_path);
 
     if let Some(model) = &options.model {
         command.arg("--model").arg(model);
@@ -2913,6 +3052,75 @@ fn execute_codex_provider(
     }
 
     Ok(())
+}
+
+fn render_provider_execution_scope(
+    manifest: &LoadedManifest,
+    root: &Path,
+    options: &PromptRunOptions,
+) -> String {
+    let execution_root = provider_execution_root(root, manifest, options);
+    let module_root = module_execution_root(root, manifest);
+    let mut out = String::new();
+    out.push_str("\n## Provider Execution Scope\n");
+    let _ = writeln!(out, "- Provider: {}", options.provider.label());
+    let _ = writeln!(out, "- Sandbox: {}", options.sandbox.as_str());
+    let _ = writeln!(out, "- Write scope: {}", options.write_scope.as_str());
+    let _ = writeln!(out, "- Execution root: {}", execution_root.display());
+    match (options.sandbox, options.write_scope) {
+        (CodexSandbox::ReadOnly, _) => {
+            out.push_str("- Filesystem writes are not permitted in this provider run.\n");
+        }
+        (CodexSandbox::WorkspaceWrite, ProviderWriteScope::Module) => {
+            let _ = writeln!(
+                out,
+                "- Edit only files under the owning module directory `{}`. If the task requires changing system, context, glossary, or another module, stop and report the required scope expansion.",
+                module_root.display()
+            );
+        }
+        (CodexSandbox::WorkspaceWrite, ProviderWriteScope::Root) => {
+            out.push_str("- Repository-root writes are permitted. Still preserve RMS module ownership and update canonical artifacts before implementation when public meaning changes.\n");
+        }
+    }
+    out
+}
+
+fn provider_execution_root(
+    root: &Path,
+    manifest: &LoadedManifest,
+    options: &PromptRunOptions,
+) -> PathBuf {
+    if matches!(
+        (options.sandbox, options.write_scope),
+        (CodexSandbox::WorkspaceWrite, ProviderWriteScope::Module)
+    ) {
+        module_execution_root(root, manifest)
+    } else {
+        root.to_path_buf()
+    }
+}
+
+fn module_execution_root(root: &Path, manifest: &LoadedManifest) -> PathBuf {
+    let module_dir = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    if module_dir.is_absolute() {
+        module_dir.to_path_buf()
+    } else {
+        root.join(module_dir)
+    }
+}
+
+fn provider_response_path(run_dir: &Path) -> Result<PathBuf> {
+    absolute_path(&run_dir.join("response.md"))
+}
+
+fn absolute_path(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()
+            .with_context(|| "failed to resolve current directory")?
+            .join(path))
+    }
 }
 
 fn run_list_runs(root: &Path, run_root: &Path) -> Result<()> {
@@ -3206,6 +3414,20 @@ fn render_run_request_yaml(
         let _ = writeln!(out, "model: {}", yaml_quote(model));
     }
     let _ = writeln!(out, "sandbox: {}", yaml_quote(options.sandbox.as_str()));
+    let _ = writeln!(
+        out,
+        "write_scope: {}",
+        yaml_quote(options.write_scope.as_str())
+    );
+    let _ = writeln!(
+        out,
+        "execution_root: {}",
+        yaml_quote(
+            &provider_execution_root(root, manifest, options)
+                .display()
+                .to_string()
+        )
+    );
     if let Some(revision) = source_revision(root) {
         let _ = writeln!(out, "source_revision: {}", yaml_quote(&revision));
     }
@@ -4127,6 +4349,13 @@ fn collect_git_name_status(
         .with_context(|| "failed to start git while reading changed paths")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("Not a git repository") || stderr.contains("not a git repository") {
+            bail!(
+                "git repository required to read changed paths; run `git init` or run deterministic checks directly (`rms validate --root {}`, `rms compose --root {}`, and `rms verify <implementation.yaml>`)",
+                root.display(),
+                root.display()
+            );
+        }
         bail!(
             "git changed-path query failed with status {}{}",
             output
@@ -14735,6 +14964,7 @@ verification:
             run_root: PathBuf::from("runs"),
             model: None,
             sandbox: CodexSandbox::ReadOnly,
+            write_scope: ProviderWriteScope::Root,
         };
         let run_dir = write_prompt_run_record(
             &manifest,
@@ -14757,6 +14987,7 @@ verification:
         assert!(rendered.contains("src/lib.rs"));
         assert!(rendered.contains("## Diff"));
         assert!(request.contains("impact: true"));
+        assert!(request.contains("write_scope: \"root\""));
     }
 
     #[test]
@@ -14789,6 +15020,7 @@ verification:
             run_root: PathBuf::from("runs"),
             model: None,
             sandbox: CodexSandbox::ReadOnly,
+            write_scope: ProviderWriteScope::Root,
         };
 
         let prompt = render_workbench_prompt(
@@ -14821,7 +15053,52 @@ verification:
 
         assert!(request.contains("prompt: \"rms.evidence@v1\""));
         assert!(request.contains("provider: \"none\""));
+        assert!(request.contains("write_scope: \"root\""));
+        assert!(request.contains("execution_root:"));
         assert!(checks.contains("\"validation\""));
+    }
+
+    #[test]
+    fn provider_module_write_scope_uses_module_execution_root() {
+        let root = unique_test_dir("provider-module-scope");
+        let module_dir = root.join("modules/widget");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::write(
+            module_dir.join("module.yaml"),
+            render_module_yaml(
+                "widget",
+                "Own widget behavior",
+                "module",
+                &["core".to_string()],
+            ),
+        )
+        .unwrap();
+        let manifest = load_manifest(&module_dir.join("module.yaml")).unwrap();
+        let options = PromptRunOptions {
+            provider: Provider::Codex,
+            record: true,
+            run_root: PathBuf::from("runs"),
+            model: None,
+            sandbox: CodexSandbox::WorkspaceWrite,
+            write_scope: ProviderWriteScope::Module,
+        };
+
+        let execution_root = provider_execution_root(&root, &manifest, &options);
+        let scope = render_provider_execution_scope(&manifest, &root, &options);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(execution_root, module_dir);
+        assert!(scope.contains("- Sandbox: workspace-write"));
+        assert!(scope.contains("- Write scope: module"));
+        assert!(scope.contains("Edit only files under the owning module directory"));
+    }
+
+    #[test]
+    fn provider_response_path_is_absolute_for_module_cd() {
+        let response = provider_response_path(Path::new(".rms/runs/test-run")).unwrap();
+
+        assert!(response.is_absolute());
+        assert!(response.ends_with(".rms/runs/test-run/response.md"));
     }
 
     #[test]
@@ -15074,6 +15351,7 @@ verification:
             run_root: PathBuf::from("runs"),
             model: None,
             sandbox: CodexSandbox::ReadOnly,
+            write_scope: ProviderWriteScope::Root,
         };
         let prompt = render_workbench_prompt(
             &manifest,
@@ -15134,6 +15412,7 @@ runs:
                 run_root: None,
                 model: None,
                 sandbox: None,
+                write_scope: None,
             },
         )
         .unwrap();
@@ -15143,8 +15422,78 @@ runs:
         assert_eq!(options.provider, Provider::Codex);
         assert_eq!(options.model.as_deref(), Some("gpt-test"));
         assert!(matches!(options.sandbox, CodexSandbox::ReadOnly));
+        assert_eq!(options.write_scope, ProviderWriteScope::Root);
         assert_eq!(options.run_root, PathBuf::from(".rms/test-runs"));
         assert_eq!(run_root, PathBuf::from(".rms/test-runs"));
+    }
+
+    #[test]
+    fn prompt_options_default_workspace_write_to_module_scope() {
+        let root = prompt_fixture("workspace-write-default");
+        fs::create_dir_all(root.join(".rms")).unwrap();
+        fs::write(
+            root.join(".rms/config.yaml"),
+            r#"ai:
+  default_provider: codex
+  codex:
+    sandbox: workspace-write
+runs:
+  directory: .rms/test-runs
+"#,
+        )
+        .unwrap();
+
+        let options = resolve_prompt_run_options(
+            &root,
+            RawPromptRunOptions {
+                ai: true,
+                provider: None,
+                record: false,
+                run_root: None,
+                model: None,
+                sandbox: None,
+                write_scope: None,
+            },
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(matches!(options.sandbox, CodexSandbox::WorkspaceWrite));
+        assert_eq!(options.write_scope, ProviderWriteScope::Module);
+    }
+
+    #[test]
+    fn prompt_options_allow_configured_root_write_scope() {
+        let root = prompt_fixture("workspace-write-root");
+        fs::create_dir_all(root.join(".rms")).unwrap();
+        fs::write(
+            root.join(".rms/config.yaml"),
+            r#"ai:
+  default_provider: codex
+  codex:
+    sandbox: workspace-write
+    write_scope: root
+"#,
+        )
+        .unwrap();
+
+        let options = resolve_prompt_run_options(
+            &root,
+            RawPromptRunOptions {
+                ai: true,
+                provider: None,
+                record: false,
+                run_root: None,
+                model: None,
+                sandbox: None,
+                write_scope: None,
+            },
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(matches!(options.sandbox, CodexSandbox::WorkspaceWrite));
+        assert_eq!(options.write_scope, ProviderWriteScope::Root);
     }
 
     #[test]
@@ -15160,6 +15509,7 @@ runs:
                 run_root: None,
                 model: None,
                 sandbox: None,
+                write_scope: None,
             },
         )
         .unwrap_err()
@@ -15167,6 +15517,18 @@ runs:
 
         fs::remove_dir_all(&root).unwrap();
         assert!(error.contains("ai.default_provider"));
+    }
+
+    #[test]
+    fn gate_reports_friendly_message_outside_git_repository() {
+        let root = prompt_fixture("gate-no-git");
+
+        let error = run_gate(&root, None, false, false).unwrap_err().to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(error.contains("git repository required to read changed paths"));
+        assert!(error.contains("git init"));
+        assert!(!error.contains("usage: git diff"));
     }
 
     #[test]

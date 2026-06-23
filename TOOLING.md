@@ -62,7 +62,7 @@ rms add-module <path> --name <module> --purpose <purpose> [--binding rust|swift|
 rms inspect <module.yaml>
 rms explain [<module.yaml>] ["question"] [--module <module.yaml>]
 rms diagnose [--root <path>] [--json]
-rms prompt <kind> <module.yaml> [--task "..."] [--diff <git-spec>] [--impact] [--ai|--provider codex]
+rms prompt <kind> <module.yaml> [--task "..."] [--diff <git-spec>] [--impact] [--ai|--provider codex] [--sandbox read-only|workspace-write] [--write-scope module|root]
 rms plan <module.yaml> --task "..." [--ai|--provider codex]
 rms implement <module.yaml> --task "..." [--ai|--provider codex]
 rms evolve-contract <module.yaml> --task "..." [--ai|--provider codex]
@@ -171,11 +171,16 @@ ai:
   codex:
     model: gpt-5-codex
     sandbox: read-only
+    # Use workspace-write for provider edits, normally constrained to the target module.
+    # sandbox: workspace-write
+    # write_scope: module
 runs:
   directory: .rms/runs
 ```
 
-Config is operational input only. It can supply provider, model, sandbox, and run-record defaults, but it cannot define RMS module semantics. Provider execution remains explicit: use `--provider codex` directly, or use `--ai` to select `ai.default_provider`.
+Config is operational input only. It can supply provider, model, sandbox, write-scope, and run-record defaults, but it cannot define RMS module semantics. Provider execution remains explicit: use `--provider codex` directly, or use `--ai` to select `ai.default_provider`.
+
+Codex provider execution supports `--sandbox read-only` and `--sandbox workspace-write`. When workspace-write is selected, RMS defaults `--write-scope module`, runs Codex from the target module directory, and appends provider-scope instructions to the prompt. Use `--write-scope root` only when the task intentionally changes system, context, glossary, or cross-module artifacts.
 
 ### `prompt`
 
@@ -211,6 +216,8 @@ provider.stderr.log
 ```
 
 Provider execution is opt-in. It is an adapter over the rendered prompt, not a new source of RMS semantics.
+
+When provider execution is writable, `request.yaml` records the selected sandbox, write scope, and execution root. Module write scope is a filesystem constraint for the provider run; the prompt still includes canonical context gathered from the requested project root.
 
 ### `run`
 
@@ -261,6 +268,8 @@ rms gate --dry-run --json
 ```
 
 The gate runs validation for impacted RMS changes, composition for architecture-level changes, and implementation verification for affected modules with implementation bindings. Review prompts, compatibility classification, and missing implementation bindings are reported as manual obligations instead of being silently treated as passed.
+
+`rms gate` depends on git changed-path evidence. In a fresh project that is not a git repository, initialize git first or run the deterministic checks directly: `rms validate --root .`, `rms compose --root .`, and `rms verify <implementation.yaml>`.
 
 ### `refactor`
 

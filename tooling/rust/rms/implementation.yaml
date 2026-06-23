@@ -93,7 +93,7 @@ semantic_functions:
         - diagnostics-are-evidence-not-authority
     assumptions:
       ensures:
-        - optional workbench config only supplies provider, model, sandbox, and run-record defaults
+        - optional workbench config only supplies provider, model, sandbox, write-scope, and run-record defaults
         - provider execution remains opt-in through explicit provider selection or configured `--ai`
     evidence:
       contracts:
@@ -112,7 +112,7 @@ semantic_functions:
         - diagnostics-are-evidence-not-authority
     assumptions:
       ensures:
-        - generated workbench config contains only provider, model, sandbox, and run-record defaults
+        - generated workbench config contains only provider, model, sandbox, optional write-scope, and run-record defaults
         - existing config is preserved unless overwrite is explicit
     evidence:
       contracts:
@@ -198,7 +198,7 @@ semantic_functions:
     assumptions:
       ensures:
         - rendered prompts are advisory and derived from canonical module context plus selected workflow template
-        - provider execution is opt-in and requires a run record
+        - provider execution is opt-in, appends execution scope, and requires a run record
     evidence:
       contracts:
         - verification/contracts/render_workbench_prompt.md
@@ -213,7 +213,7 @@ semantic_functions:
         - diagnostics-are-evidence-not-authority
     assumptions:
       ensures:
-        - run records include request metadata, prompt, and validation checks
+        - run records include request metadata, sandbox, write scope, execution root, prompt, and validation checks
         - run records preserve the requested review impact flag when present
     evidence:
       contracts:
@@ -229,6 +229,7 @@ semantic_functions:
       requires:
         - provider is explicitly set to codex
       ensures:
+        - writable module-scoped provider execution runs Codex from the target module directory
         - provider stdout, stderr, and final response are written into the run record
     evidence:
       scenarios:
