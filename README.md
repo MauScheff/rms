@@ -81,7 +81,7 @@ rms init ./my-system \
 
 This creates `system.yaml`, `context-map.yaml`, `GLOSSARY.md`, `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore`. The generated agent and workbench files are adapters over the RMS manifests and CLI; they are not a second source of architecture.
 
-Add a module with a language binding:
+Add a module with an implementation binding:
 
 ```bash
 rms add-module ./my-system/modules/widget \
@@ -95,9 +95,16 @@ rms add-module ./my-system/modules/swift-widget \
   --purpose "Own validated Swift widgets" \
   --kind library \
   --binding swift
+
+rms add-module ./my-system/modules/snake-web \
+  --name snake-web \
+  --purpose "Expose the Snake game as an executable surface" \
+  --kind adapter \
+  --profile boundary \
+  --binding executable
 ```
 
-This creates `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification directories. The optional Rust or Swift binding adds a minimal native library plus `implementation.yaml`.
+This creates `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification directories. The optional Rust or Swift binding adds a minimal library scaffold plus `implementation.yaml`. The optional executable binding adds `implementation.yaml`, build/smoke scripts, and boundary evidence for opaque command-backed modules such as web, mobile, CLI, native UI, or integration surfaces.
 
 Validate the included examples:
 
@@ -341,6 +348,8 @@ The CLI is itself an RMS module bundle under `tooling/rust/rms/`: it has a `modu
 The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, query-produced read-model exceptions, Stateful representation declarations, and semantic function source symbols.
 
 Swift is the second binding. It validates Swift package shape, target identity, source entrypoints, import allowlists, public re-exports, primitive type aliases, public stored fields, trap-based failure discipline, constructor evidence, query-produced read-model exceptions, and Stateful representation declarations.
+
+The executable binding is the generic opaque lane. It validates the manifest and declared entrypoint paths, then relies on `commands.build` and `commands.verify` for evidence. RMS does not infer internal domain semantics from executable assets; use it when the implementation surface is web, mobile, CLI, native UI, generated assets, or another project shape without a dedicated static binding.
 
 RMS should not be called 1.0 until it has survived a real reference application, a replacement or migration exercise, and at least one codebase primarily maintained through agents.
 

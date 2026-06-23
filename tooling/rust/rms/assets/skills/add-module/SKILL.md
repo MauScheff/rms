@@ -7,7 +7,7 @@ description: Design and add a new RMS module or bounded context with a coherent 
 
 1. Run `rms diagnose` when starting from an unfamiliar checkout.
 2. Confirm that a new boundary is justified by distinct language, ownership, invariants, change cadence, or replaceability. Do not create a module for every noun.
-3. Use `rms add-module <path> --name <name> --purpose "<purpose>"` when the CLI can scaffold the requested shape. Refine the generated artifacts rather than maintaining parallel agent-only scaffolding.
+3. Use `rms add-module <path> --name <name> --purpose "<purpose>"` when the CLI can scaffold the requested shape. Add `--binding rust` or `--binding swift` for static language bindings, and `--binding executable` for opaque command-backed surfaces such as web, mobile, CLI, native UI, generated assets, or integration scripts. Refine the generated artifacts rather than maintaining parallel agent-only scaffolding.
 4. Choose whether the new unit is a bounded context, internal module, workflow, adapter, or library.
 5. Define:
    - one-sentence purpose;

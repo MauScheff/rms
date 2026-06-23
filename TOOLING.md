@@ -58,7 +58,7 @@ The current reference implementation lives at `tooling/rust/rms` and implements 
 rms validate --root <path>
 rms validate --contract <contract.yaml>
 rms init <path> --name <system> --purpose <purpose>
-rms add-module <path> --name <module> --purpose <purpose> [--binding rust|swift]
+rms add-module <path> --name <module> --purpose <purpose> [--binding rust|swift|executable]
 rms inspect <module.yaml>
 rms explain [<module.yaml>] ["question"] [--module <module.yaml>]
 rms diagnose [--root <path>] [--json]
@@ -102,13 +102,17 @@ Generated agent and workbench files are operational guidance. They must route fu
 
 ### `add-module`
 
-Scaffolds a valid module directory with `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification evidence directories. When `--binding rust` or `--binding swift` is supplied, it also creates a minimal native library and `implementation.yaml` that pass that binding's checks. The command refuses to overwrite existing files.
+Scaffolds a valid module directory with `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification evidence directories. When `--binding rust`, `--binding swift`, or `--binding executable` is supplied, it also creates a minimal `implementation.yaml` and scaffold artifacts that pass that binding's checks. The command refuses to overwrite existing files.
 
 Generated module guidance is an adapter over canonical artifacts. It tells humans and agents how to fill ownership, public contracts, effects, invariants, compatibility, and evidence into `module.yaml`, `contracts/`, `implementation.yaml`, and `verification/`; it does not invent module-specific semantics.
+
+When Stateful, Distributed, Workflow, or Boundary profiles are requested, the scaffold includes the required empty profile section so the manifest validates. Fill those sections with real lifecycle, reconciliation, workflow, or boundary semantics before relying on the profile.
 
 The first language binding is Rust. A Rust implementation binding declares `binding: rust` in `implementation.yaml`; the CLI then checks Cargo manifest shape, package identity, public entrypoint placement, explicit external crate dependencies, source import roots, public external re-exports, declared public modules, primitive type aliases, public domain fields, failure discipline, constructor evidence, query-produced read-model exceptions, Stateful representation declarations, and semantic function source symbols.
 
 The second language binding is Swift. A Swift implementation binding declares `binding: swift` in `implementation.yaml`; the CLI then checks Swift package shape, package and target identity, public entrypoint placement, source imports against `dependencies.allowed_external_modules`, public re-exports, primitive type aliases, public stored fields, trap-based failure discipline, constructor evidence, query-produced read-model exceptions, and Stateful representation declarations.
+
+The generic executable binding declares `binding: executable` in `implementation.yaml`. It is an opaque command-backed binding for implementation surfaces RMS cannot inspect statically yet, including web apps, mobile apps, CLIs, native UI, generated assets, and integration scripts. The CLI validates the implementation manifest and entrypoint paths, records `toolchain.runner`, and relies on `commands.build` and `commands.verify` for proof. It does not infer internal domain semantics from the executable surface.
 
 The first compatibility checker is manifest-level. It classifies public surface removals and contract path changes as breaking, additive public surface changes as compatible additive, and profile/effect/capability/policy changes as requiring operational review.
 
@@ -346,6 +350,8 @@ Locate generated and private files
 ```
 
 The binding must not change semantic module meaning.
+
+The executable binding is the fallback when no static language binding applies. It should still declare its public entrypoint, runner, build command, verification command, boundary inputs, observable outputs, and evidence, but its semantic assurance comes from those commands and evidence rather than symbol inspection.
 
 A conceptual binding interface is:
 

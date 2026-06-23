@@ -2,7 +2,7 @@ spec: rms/contract/v0.1
 name: add-rms-module
 version: 1
 kind: command
-meaning: Scaffold a new RMS module directory with canonical module artifacts, guidance files, evidence directories, and an optional native implementation binding.
+meaning: Scaffold a new RMS module directory with canonical module artifacts, guidance files, evidence directories, and an optional implementation binding.
 preconditions:
   - id: target-writable
     statement: The requested target directory can be created or written.
@@ -12,7 +12,7 @@ preconditions:
     statement: The requested module name, purpose, kind, profiles, and optional binding are valid for scaffold generation.
 postconditions:
   - id: module-manifest-created
-    statement: The generated `module.yaml` records the requested name, purpose, kind, normalized profiles, compatibility policy, and verification directories without inventing ownership, public surface, invariants, effects, or dependencies.
+    statement: The generated `module.yaml` records the requested name, purpose, kind, normalized profiles, required profile sections, compatibility policy, and verification directories without inventing ownership, public surface, invariants, effects, or dependencies.
   - id: module-guidance-created
     statement: The generated module `README.md` routes future work through `module.yaml`, public contracts, implementation bindings, and verification evidence.
   - id: contract-guidance-created
@@ -20,7 +20,7 @@ postconditions:
   - id: evidence-directories-created
     statement: The generated `verification/laws`, `verification/contracts`, `verification/scenarios`, and `verification/boundaries` directories each contain guidance for recording proof tied to declared module promises.
   - id: optional-binding-created
-    statement: When a supported binding is requested, the generated implementation binding and native source skeleton validate under RMS checks.
+    statement: When a supported binding is requested, the generated implementation binding skeleton validates under RMS checks and supplies its declared verification command.
 failure_categories:
   - id: generated-file-exists
     statement: A generated file already exists and would be overwritten.

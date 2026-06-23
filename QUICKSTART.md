@@ -121,7 +121,7 @@ rms add-module ./my-system/modules/widget \
   --binding rust
 ```
 
-The generated module includes `module.yaml`, `README.md`, `contracts/README.md`, verification guidance directories, and the requested native binding.
+The generated module includes `module.yaml`, `README.md`, `contracts/README.md`, verification guidance directories, and the requested implementation binding. Use `--binding executable` for opaque command-backed surfaces when Rust or Swift static checks are not the right fit.
 
 ```bash
 rms validate --root ./my-system

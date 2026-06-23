@@ -147,7 +147,7 @@ semantic_functions:
         - diagnostics-are-evidence-not-authority
     assumptions:
       ensures:
-        - generated module manifest, module README, contract guidance, evidence directories, and optional native binding are deterministic scaffold artifacts
+        - generated module manifest, module README, contract guidance, evidence directories, and optional implementation binding are deterministic scaffold artifacts
         - generated guidance routes future work through canonical artifacts and does not define module-specific semantics
     evidence:
       contracts:

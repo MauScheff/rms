@@ -9,7 +9,7 @@ RMS remains agent-neutral. This adapter makes the neutral CLI, manifests, and sk
 
 Keep the portable working agreement in the repository root as `AGENTS.md`. Codex discovers `AGENTS.md` from the project root down toward the working directory, allowing more local instructions for nested modules.
 
-For new projects, prefer `rms init`; it writes `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore` with the standard RMS/Codex operating surface. Use `rms add-module` for the first module; it writes the module README, contract guidance, verification guidance, and optional native binding that keep the next Codex run anchored to canonical artifacts. Keep `AGENTS.md` concise. It should tell Codex to use the `rms` CLI before inferring module boundaries from prompt context. Detailed, task-specific procedures belong in Agent Skills rather than permanent startup context.
+For new projects, prefer `rms init`; it writes `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore` with the standard RMS/Codex operating surface. Use `rms add-module` for the first module; it writes the module README, contract guidance, verification guidance, and optional implementation binding that keep the next Codex run anchored to canonical artifacts. Use `--binding executable` for opaque command-backed surfaces such as web, mobile, CLI, native UI, generated assets, or integration scripts. Keep `AGENTS.md` concise. It should tell Codex to use the `rms` CLI before inferring module boundaries from prompt context. Detailed, task-specific procedures belong in Agent Skills rather than permanent startup context.
 
 ## Skills
 

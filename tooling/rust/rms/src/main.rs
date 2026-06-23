@@ -655,7 +655,7 @@ enum Commands {
         #[arg(long = "profile")]
         profile: Vec<String>,
 
-        /// Optional implementation binding to scaffold. Currently supports `rust` and `swift`.
+        /// Optional implementation binding to scaffold. Currently supports `rust`, `swift`, and `executable`.
         #[arg(long)]
         binding: Option<String>,
     },
@@ -1397,6 +1397,10 @@ fn run_release_scaffold_roundtrip(root: &Path, rms_exe: &Path) -> Result<()> {
     let swift_widget_arg = swift_widget.to_string_lossy().to_string();
     let widget_manifest = widget.join("Cargo.toml");
     let widget_manifest_arg = widget_manifest.to_string_lossy().to_string();
+    let executable_widget = app.join("modules/executable-widget");
+    let executable_widget_arg = executable_widget.to_string_lossy().to_string();
+    let executable_implementation = executable_widget.join("implementation.yaml");
+    let executable_implementation_arg = executable_implementation.to_string_lossy().to_string();
 
     let result = (|| -> Result<()> {
         run_release_step(
@@ -1455,6 +1459,27 @@ fn run_release_scaffold_roundtrip(root: &Path, rms_exe: &Path) -> Result<()> {
             ),
         )?;
         run_release_step(
+            "rms add-module executable scaffold",
+            command_with_args(
+                rms_exe,
+                &[
+                    "add-module",
+                    executable_widget_arg.as_str(),
+                    "--name",
+                    "executable-widget",
+                    "--purpose",
+                    "Own executable widgets",
+                    "--kind",
+                    "adapter",
+                    "--profile",
+                    "boundary",
+                    "--binding",
+                    "executable",
+                ],
+                root,
+            ),
+        )?;
+        run_release_step(
             "rms validate scaffold",
             command_with_args(rms_exe, &["validate", "--root", app_arg.as_str()], root),
         )?;
@@ -1484,6 +1509,14 @@ fn run_release_scaffold_roundtrip(root: &Path, rms_exe: &Path) -> Result<()> {
                     widget_manifest_arg.as_str(),
                     "--locked",
                 ],
+                root,
+            ),
+        )?;
+        run_release_step(
+            "rms verify scaffold executable binding",
+            command_with_args(
+                rms_exe,
+                &["verify", executable_implementation_arg.as_str()],
                 root,
             ),
         )?;
@@ -5137,6 +5170,7 @@ fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diag
     match get_str(&manifest.value, &["binding"]) {
         Some("rust") => validate_rust_implementation(manifest, diagnostics),
         Some("swift") => validate_swift_implementation(manifest, diagnostics),
+        Some("executable") => validate_executable_implementation(manifest, diagnostics),
         _ => {}
     }
 }
@@ -5359,6 +5393,42 @@ fn validate_swift_implementation(manifest: &LoadedManifest, diagnostics: &mut Ve
     validate_declared_swift_target(manifest, diagnostics, &source_root);
     validate_swift_source_boundaries(manifest, diagnostics, &source_root);
     validate_swift_typing(manifest, diagnostics, base, &source_root);
+}
+
+fn validate_executable_implementation(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let Some(source_root_ref) = get_str(&manifest.value, &["source", "root"]) else {
+        return;
+    };
+    let Some(public_entrypoint_ref) = get_str(&manifest.value, &["source", "public_entrypoint"])
+    else {
+        return;
+    };
+
+    let source_root = base.join(source_root_ref);
+    let public_entrypoint = base.join(public_entrypoint_ref);
+
+    if public_entrypoint.exists()
+        && source_root.exists()
+        && !public_entrypoint.starts_with(&source_root)
+    {
+        diagnostics.push(error(
+            "implementation.executable.public-entrypoint",
+            &manifest.path,
+            "`source.public_entrypoint` must be inside `source.root` for executable bindings",
+        ));
+    }
+
+    if get_str(&manifest.value, &["toolchain", "runner"]).is_none() {
+        diagnostics.push(warning(
+            "implementation.executable.runner.declared",
+            &manifest.path,
+            "executable bindings should declare `toolchain.runner` to name the command environment",
+        ));
+    }
 }
 
 fn swift_package_manifest_path(manifest: &LoadedManifest, base: &Path) -> PathBuf {
@@ -12337,6 +12407,7 @@ fn run_add_module(
         match binding {
             "rust" => scaffold_rust_module(path, name)?,
             "swift" => scaffold_swift_module(path, name)?,
+            "executable" => scaffold_executable_module(path, name)?,
             other => bail!("unsupported scaffold binding `{other}`"),
         }
     }
@@ -12393,6 +12464,24 @@ fn scaffold_swift_module(path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
+fn scaffold_executable_module(path: &Path, name: &str) -> Result<()> {
+    fs::create_dir_all(path.join("scripts"))?;
+    write_new_file(
+        &path.join("implementation.yaml"),
+        &render_executable_implementation_yaml(name),
+    )?;
+    write_new_file(&path.join("scripts").join("build.sh"), EXECUTABLE_BUILD_SH)?;
+    write_new_file(&path.join("scripts").join("smoke.sh"), EXECUTABLE_SMOKE_SH)?;
+    write_new_file(
+        &path
+            .join("verification")
+            .join("boundaries")
+            .join("executable_smoke.md"),
+        &render_executable_smoke_evidence(),
+    )?;
+    Ok(())
+}
+
 fn normalized_profiles(profiles: &[String]) -> Vec<String> {
     let mut normalized = BTreeSet::from(["core".to_string()]);
     normalized.extend(profiles.iter().cloned());
@@ -12427,12 +12516,30 @@ fn render_glossary_md(name: &str) -> String {
 
 fn render_module_yaml(name: &str, purpose: &str, kind: &str, profiles: &[String]) -> String {
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n",
         yaml_quote(name),
         yaml_quote(kind),
         yaml_quote(purpose),
-        yaml_string_list(profiles, 2)
+        yaml_string_list(profiles, 2),
+        render_profile_sections(profiles)
     )
+}
+
+fn render_profile_sections(profiles: &[String]) -> String {
+    let mut sections = String::new();
+    if profiles.iter().any(|profile| profile == "stateful") {
+        sections.push_str("\nstate: {}\n");
+    }
+    if profiles.iter().any(|profile| profile == "distributed") {
+        sections.push_str("\noperations:\n  reconciliation: []\n");
+    }
+    if profiles.iter().any(|profile| profile == "workflow") {
+        sections.push_str("\nworkflow: {}\n");
+    }
+    if profiles.iter().any(|profile| profile == "boundary") {
+        sections.push_str("\nboundary: {}\n");
+    }
+    sections
 }
 
 fn render_module_readme(
@@ -12527,6 +12634,22 @@ fn render_swift_tests(target_name: &str) -> String {
         "import XCTest\n@testable import {target_name}\n\nfinal class {target_name}Tests: XCTestCase {{\n    func testRejectsEmptyValue() {{\n        XCTAssertNil({target_name}Value(\"\"))\n    }}\n\n    func testAcceptsNonEmptyValue() {{\n        XCTAssertEqual({target_name}Value(\"example\")?.value, \"example\")\n    }}\n}}\n"
     )
 }
+
+fn render_executable_implementation_yaml(module_name: &str) -> String {
+    format!(
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: shell\n\ndependencies:\n  allowed_processes:\n    - sh\n\narchitecture:\n  verification_mode: executable-command\n  static_inspection: opaque\n  public_entrypoints:\n    - scripts/smoke.sh\n  boundary_inputs: []\n  observable_outputs: []\n  declared_assets: []\n\nsemantic_functions:\n  - id: executable-smoke\n    symbol: scripts/smoke.sh\n    kind: adapter\n    purity: boundary\n    assumptions:\n      ensures:\n        - command-backed implementation can be invoked through the declared verify command\n        - RMS does not infer internal domain semantics from opaque executable assets\n    evidence:\n      boundaries:\n        - verification/boundaries/executable_smoke.md\n",
+        yaml_quote(module_name),
+    )
+}
+
+fn render_executable_smoke_evidence() -> String {
+    "# Boundary Evidence: executable smoke\n\nPromise:\n\n- `implementation.yaml` declares `binding: executable`.\n- RMS treats the implementation as opaque and verifies it through declared commands rather than static source inspection.\n\nCommand:\n\n- `rms verify implementation.yaml` runs `sh scripts/smoke.sh` from the module directory.\n\nCurrent scaffold:\n\n- `scripts/smoke.sh` verifies that `module.yaml` and `implementation.yaml` exist.\n- Replace or extend this script with module-specific checks before using the binding as release evidence.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+}
+
+const EXECUTABLE_BUILD_SH: &str =
+    "#!/usr/bin/env sh\nset -eu\nprintf '%s\\n' 'executable binding build placeholder'\n";
+
+const EXECUTABLE_SMOKE_SH: &str = "#!/usr/bin/env sh\nset -eu\ntest -f module.yaml\ntest -f implementation.yaml\nprintf '%s\\n' 'executable binding smoke passed'\n";
 
 fn yaml_string_list(values: &[String], indent: usize) -> String {
     let prefix = " ".repeat(indent);
@@ -13549,6 +13672,84 @@ import struct ExternalKit.Widget
             "Demonstrate Swift module scaffolding.",
             "swift",
         );
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn executable_module_scaffold_generates_valid_binding_artifacts() {
+        let root = unique_test_dir("executable-module");
+
+        run_add_module(
+            &root,
+            "example-executable",
+            "Demonstrate executable module scaffolding.",
+            "adapter",
+            &["boundary".to_string()],
+            Some("executable"),
+        )
+        .unwrap();
+
+        let mut diagnostics = Vec::new();
+        for file in ["module.yaml", "implementation.yaml"] {
+            let manifest = load_manifest(&root.join(file)).unwrap();
+            validate_loaded_manifest(&manifest, &mut diagnostics);
+        }
+        assert_module_scaffold_guidance(
+            &root,
+            "example-executable",
+            "Demonstrate executable module scaffolding.",
+            "executable",
+        );
+
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        let build_script = fs::read_to_string(root.join("scripts/build.sh")).unwrap();
+        let smoke_script = fs::read_to_string(root.join("scripts/smoke.sh")).unwrap();
+        let smoke_evidence =
+            fs::read_to_string(root.join("verification/boundaries/executable_smoke.md")).unwrap();
+
+        assert!(implementation.contains("binding: executable"));
+        assert!(implementation.contains("verification_mode: executable-command"));
+        assert!(implementation.contains("static_inspection: opaque"));
+        assert!(implementation.contains("RMS does not infer internal domain semantics"));
+        assert!(build_script.contains("executable binding build placeholder"));
+        assert!(smoke_script.contains("test -f module.yaml"));
+        assert!(smoke_evidence.contains("RMS treats the implementation as opaque"));
+        run_verify(&root.join("implementation.yaml"), false).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn module_scaffold_generates_required_profile_sections() {
+        let root = unique_test_dir("profile-module");
+
+        run_add_module(
+            &root,
+            "profiled-module",
+            "Demonstrate profile section scaffolding.",
+            "module",
+            &[
+                "stateful".to_string(),
+                "distributed".to_string(),
+                "workflow".to_string(),
+                "boundary".to_string(),
+            ],
+            None,
+        )
+        .unwrap();
+
+        let mut diagnostics = Vec::new();
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+        validate_loaded_manifest(&manifest, &mut diagnostics);
+        let module_yaml = fs::read_to_string(root.join("module.yaml")).unwrap();
+
+        assert!(module_yaml.contains("state: {}"));
+        assert!(module_yaml.contains("operations:\n  reconciliation: []"));
+        assert!(module_yaml.contains("workflow: {}"));
+        assert!(module_yaml.contains("boundary: {}"));
 
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");

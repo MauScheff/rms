@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Added `rms --version` for quick installed CLI version checks.
+- Added `rms add-module --binding executable` for opaque command-backed modules, with generated build/smoke scripts, boundary evidence, validation, and release scaffold coverage.
+- Added empty profile sections to `rms add-module` output when Stateful, Distributed, Workflow, or Boundary profiles are requested, so generated manifests validate without inventing module-specific semantics.
 - Clarified generated module and skill guidance for query-produced read models that intentionally use `architecture.allowed_missing_constructors`.
 
 ## 0.1.0-rc.3 - 2026-06-22
