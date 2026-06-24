@@ -9,5 +9,7 @@ preconditions:
 postconditions:
   - id: packet-is-bounded
     statement: The packet names canonical files, public references, and working rules without reading unrelated implementation by default.
+  - id: packet-includes-route-evidence
+    statement: When task text is supplied for a composite parent or recursive module tree, the packet includes a route recommendation or ambiguity notice before implementation work.
 compatibility:
   policy: backward-compatible-within-major

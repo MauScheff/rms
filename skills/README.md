@@ -47,7 +47,7 @@ rms context <module> --task "<task>"
 rms validate --root <root>
 rms compose --root <root>
 rms check-compat <old-module> <new-module>
-rms verify <implementation.yaml>
+rms verify <implementation.yaml|composite-module.yaml>
 rms conformance <module> --implementation <implementation.yaml>
 rms release check --root <root>
 ```

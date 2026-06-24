@@ -1,0 +1,10 @@
+[package]
+name = "tic-tac-toe-cli-rules-bridge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+tic-tac-toe-rules = { path = "../../tic-tac-toe-rules" }

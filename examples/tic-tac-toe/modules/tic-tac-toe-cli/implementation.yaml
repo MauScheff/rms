@@ -1,0 +1,89 @@
+spec: rms/implementation/v0.1
+
+module: "tic-tac-toe-cli"
+binding: js
+
+source:
+  root: .
+  public_entrypoint: src/representation.mjs
+
+commands:
+  build: sh scripts/build.sh
+  verify: sh scripts/smoke.sh
+
+toolchain:
+  runner: node
+
+dependencies:
+  allowed_processes:
+    - sh
+    - node
+    - cargo
+
+architecture:
+  shape: "boundary-adapter"
+  public_modules:
+    - src/representation.mjs
+    - src/parser.mjs
+    - src/ports.mjs
+    - src/adapter.mjs
+  representation:
+    closed_variants:
+      - ParsedMove
+      - BoundaryResult
+    validated_values:
+      - makeCell
+    transition_functions:
+      - handleBoundaryInput
+  effect_roles:
+    - "representation"
+    - "parsers"
+    - "ports"
+    - "adapters"
+    - "rules-bridge"
+    - "boundary-evidence"
+
+semantic_functions:
+  - id: cell-parser
+    symbol: src/representation.mjs#makeCell
+    kind: constructor
+    purity: pure
+    evidence:
+      laws:
+        - verification/laws/semantic_shape.md
+      boundaries:
+        - verification/boundaries/cli_input.md
+  - id: move-parser
+    symbol: src/parser.mjs#parseMoveText
+    kind: parser
+    purity: pure
+    discharges:
+      contracts:
+        - contracts/play-tic-tac-toe.v1.yaml
+    evidence:
+      contracts:
+        - verification/contracts/play_tic_tac_toe.md
+      boundaries:
+        - verification/boundaries/cli_input.md
+  - id: rules-port-adapter
+    symbol: src/adapter.mjs#handleBoundaryInput
+    kind: adapter
+    purity: boundary
+    discharges:
+      contracts:
+        - contracts/play-tic-tac-toe.v1.yaml
+    evidence:
+      contracts:
+        - verification/contracts/play_tic_tac_toe.md
+      boundaries:
+        - verification/boundaries/cli_input.md
+  - id: rust-rules-port
+    symbol: src/ports.mjs#createRustRulesPort
+    kind: adapter
+    purity: boundary
+    discharges:
+      contracts:
+        - contracts/play-tic-tac-toe.v1.yaml
+    evidence:
+      contracts:
+        - verification/contracts/play_tic_tac_toe.md

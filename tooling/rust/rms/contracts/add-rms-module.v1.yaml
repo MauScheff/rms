@@ -2,30 +2,36 @@ spec: rms/contract/v0.1
 name: add-rms-module
 version: 1
 kind: command
-meaning: Scaffold a new RMS module directory with canonical module artifacts, guidance files, evidence directories, and an optional implementation binding.
+meaning: Scaffold a new RMS module directory with canonical module artifacts, semantic shape guidance, evidence directories, optional advisory scaffold planning, and an optional implementation binding.
 preconditions:
   - id: target-writable
     statement: The requested target directory can be created or written.
   - id: generated-files-absent
     statement: Files that `rms add-module` would generate do not already exist.
   - id: scaffold-input-valid
-    statement: The requested module name, purpose, kind, profiles, and optional binding are valid for scaffold generation.
+    statement: The requested module name, purpose, kind, profiles, optional semantic shape, optional binding, and optional provider settings are valid for scaffold generation.
 postconditions:
   - id: module-manifest-created
-    statement: The generated `module.yaml` records the requested name, purpose, kind, normalized profiles, required profile sections, compatibility policy, and verification directories without inventing ownership, public surface, invariants, effects, or dependencies.
+    statement: The generated `module.yaml` records the requested name, purpose, kind, normalized profiles, optional semantic scaffold shape, required profile sections, compatibility policy, and verification directories without inventing ownership, public surface, invariants, effects, or dependencies.
   - id: module-guidance-created
-    statement: The generated module `README.md` routes future work through `module.yaml`, public contracts, implementation bindings, and verification evidence.
+    statement: The generated module `README.md` routes future work through `module.yaml`, public contracts, implementation bindings, semantic representation roles, transition guidance, and verification evidence.
   - id: contract-guidance-created
     statement: The generated `contracts/README.md` distinguishes public RMS contracts from private implementation details and names the required contract evidence loop.
   - id: evidence-directories-created
-    statement: The generated `verification/laws`, `verification/contracts`, `verification/scenarios`, and `verification/boundaries` directories each contain guidance for recording proof tied to declared module promises.
+    statement: The generated `verification/laws`, `verification/contracts`, `verification/scenarios`, and `verification/boundaries` directories each contain guidance and semantic-shape placeholders for recording proof tied to declared module promises.
   - id: optional-binding-created
-    statement: When a supported binding is requested, the generated implementation binding skeleton validates under RMS checks and supplies its declared verification command.
+    statement: When a supported binding is requested, the generated implementation binding skeleton validates under RMS checks, supplies its declared verification command, and uses language-idiomatic representation and transition placeholders where the binding can express them.
+  - id: optional-scaffold-plan-recorded
+    statement: When advisory scaffold planning is requested, the rendered scaffold plan and optional provider response are recorded as evidence without becoming canonical architecture by themselves.
 failure_categories:
   - id: generated-file-exists
     statement: A generated file already exists and would be overwritten.
   - id: unsupported-binding
     statement: The requested implementation binding is not supported by the scaffold command.
+  - id: unsupported-shape
+    statement: The requested semantic scaffold shape is not supported by the scaffold command.
+  - id: provider-unavailable
+    statement: The requested provider command cannot be started or exits unsuccessfully.
   - id: unwritable-target
     statement: The target directory or one of its generated child paths cannot be created or written.
   - id: invalid-input

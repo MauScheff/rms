@@ -117,6 +117,42 @@ semantic_functions:
     evidence:
       contracts:
         - verification/contracts/init_workbench_config.md
+  - id: agent-integration-command
+    symbol: run_agent_init
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/configure-agent-integration.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - project-local agent guidance is generated from embedded RMS assets
+        - Codex plugins and global skills remain optional adapters rather than semantic dependencies
+        - synchronization refreshes generated guidance without overwriting existing workbench config
+    evidence:
+      contracts:
+        - verification/contracts/configure_agent_integration.md
+  - id: agent-plugin-command
+    symbol: run_agent_plugin_install
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/configure-agent-integration.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - optional Codex plugin package is generated from embedded RMS assets
+        - personal marketplace entries point at the generated local plugin package
+        - Codex plugin installation remains explicit and optional
+    evidence:
+      contracts:
+        - verification/contracts/configure_agent_integration.md
   - id: init-rms-system-command
     symbol: run_init
     kind: adapter
@@ -147,11 +183,30 @@ semantic_functions:
         - diagnostics-are-evidence-not-authority
     assumptions:
       ensures:
-        - generated module manifest, module README, contract guidance, evidence directories, and optional implementation binding are deterministic scaffold artifacts
+        - generated module manifest, module README, contract guidance, semantic shape evidence, evidence directories, and optional implementation binding are deterministic scaffold artifacts
+        - optional advisory scaffold planning records provider output as evidence without making it canonical architecture by itself
         - generated guidance routes future work through canonical artifacts and does not define module-specific semantics
     evidence:
       contracts:
         - verification/contracts/add_rms_module.md
+  - id: add-rms-capability-command
+    symbol: run_add_capability
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/add-rms-capability.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - generated composite parent, domain child, boundary child, contracts, evidence, and optional child implementation bindings are deterministic scaffold artifacts
+        - parent composition exports and child dependencies are wired through canonical manifests rather than agent-only guidance
+        - generated parent verification can roll up composition and child implementation verification
+    evidence:
+      contracts:
+        - verification/contracts/add_rms_capability.md
   - id: release-check-command
     symbol: run_release_check
     kind: interpreter
@@ -192,6 +247,7 @@ semantic_functions:
     discharges:
       contracts:
         - contracts/render-workbench-prompt.v1.yaml
+        - contracts/capture-intent-workbench.v1.yaml
       invariants:
         - canonical-artifacts-remain-authoritative
         - diagnostics-are-evidence-not-authority
@@ -218,6 +274,58 @@ semantic_functions:
     evidence:
       contracts:
         - verification/contracts/render_workbench_prompt.md
+  - id: design-rms-system-command
+    symbol: run_design
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/design-rms-system.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - design prompts are advisory and can run before a target module exists
+        - module split and semantic shape recommendations remain evidence until reflected in canonical artifacts
+    evidence:
+      contracts:
+        - verification/contracts/design_rms_system.md
+  - id: compose-rms-system-command
+    symbol: run_compose
+    kind: interpreter
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/compose-rms-system.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+    assumptions:
+      ensures:
+        - composition findings are derived from discovered system, context-map, module, requirement, capability, containment, visibility, and export declarations
+        - recursive parent exports remain invalid unless the parent publishes the surface and the child provides the backing surface
+        - semantic shape direction smells are reported as review-required findings without failing composition
+    evidence:
+      contracts:
+        - verification/contracts/compose_rms_system.md
+  - id: route-rms-work-command
+    symbol: run_route
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/route-rms-work.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - route reports are derived from target manifests, composition children, public exports, semantic shapes, and task language
+        - route recommendations remain advisory until the agent follows the recommended module's canonical context and contracts
+        - composite parents are not treated as implementation dumping grounds when a child owns the relevant semantic role
+    evidence:
+      contracts:
+        - verification/contracts/route_rms_work.md
   - id: codex-provider-executor
     symbol: execute_codex_provider
     kind: interpreter
@@ -287,17 +395,22 @@ semantic_functions:
     discharges:
       contracts:
         - contracts/explain-module.v1.yaml
+        - contracts/design-rms-system.v1.yaml
         - contracts/plan-module-change.v1.yaml
         - contracts/review-module-diff.v1.yaml
         - contracts/refactor-module-workbench.v1.yaml
         - contracts/implement-module-workbench.v1.yaml
+        - contracts/capture-intent-workbench.v1.yaml
         - contracts/evolve-contract-workbench.v1.yaml
         - contracts/evidence-workbench.v1.yaml
       invariants:
         - canonical-artifacts-remain-authoritative
     assumptions:
       ensures:
-        - plan, review, refactor, implement, contract evolution, and evidence prompts preserve the RMS bounded context and name deterministic checks
+        - intent, plan, review, refactor, implement, contract evolution, and evidence prompts preserve the RMS bounded context and name deterministic checks
+        - intent and implement prompts preserve the think-before-code gate by asking for accepted context and canonical artifact updates before implementation
+        - prompts include route evidence when the target is a composite parent or recursive module tree
+        - evidence prompts include proof guidance derived from the routed owner semantic shape
         - review prompts can include derived git impact evidence before diff context without treating it as semantic authority
     evidence:
       contracts:
@@ -305,6 +418,7 @@ semantic_functions:
         - verification/contracts/review_module_diff.md
         - verification/contracts/refactor_module_workbench.md
         - verification/contracts/implement_module_workbench.md
+        - verification/contracts/capture_intent_workbench.md
         - verification/contracts/evolve_contract_workbench.md
         - verification/contracts/evidence_workbench.md
   - id: analyze-git-impact-command
@@ -354,6 +468,7 @@ semantic_functions:
     assumptions:
       ensures:
         - context packets are bounded to canonical module references and working rules
+        - context packets include route evidence when task text targets a composite parent or recursive module tree
     evidence:
       scenarios:
         - verification/scenarios/context_packet.md
@@ -399,9 +514,10 @@ semantic_functions:
         - contracts/verify-implementation.v1.yaml
     assumptions:
       requires:
-        - implementation binding declares commands.verify
+        - target is an implementation binding with commands.verify or a composite module manifest
       ensures:
         - the declared verification command is run from the implementation binding directory
+        - composite module verification rolls up manifest validation, composition, parent scenario evidence, and contained child implementation verification
     evidence:
       scenarios:
         - verification/scenarios/verify_implementation.md

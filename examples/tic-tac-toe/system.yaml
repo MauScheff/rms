@@ -1,0 +1,23 @@
+spec: rms/system/v0.1
+
+system:
+  name: tic-tac-toe-example
+  version: 0.1.0
+  purpose: Demonstrate RMS semantic scaffolding with a small turn-based game
+
+contexts:
+  - games
+
+public_interfaces:
+  - name: play-tic-tac-toe
+    contract: modules/tic-tac-toe/contracts/play-tic-tac-toe.v1.yaml
+
+external_dependencies: []
+workflows: []
+invariants: []
+
+compatibility:
+  policy: backward-compatible-within-major
+
+glossary: GLOSSARY.md
+context_map: context-map.yaml

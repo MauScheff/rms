@@ -10,7 +10,11 @@ preconditions:
     statement: The target module manifest is readable and parseable.
 postconditions:
   - id: plan-prompt-classifies-change
-    statement: The prompt asks the reviewer or agent to classify the change, identify affected RMS surfaces, and propose focused verification.
+    statement: The prompt asks the reviewer or agent to classify the change, identify affected RMS surfaces, decide whether scope expansion or a new module boundary is needed, and propose focused verification.
+  - id: plan-prompt-names-semantic-shape
+    statement: The prompt asks for semantic shape and representation obligations before file-level implementation details.
+  - id: plan-prompt-includes-route-evidence
+    statement: When the target is a composite parent or recursive module tree, the prompt includes route evidence and candidate owning modules before planning implementation steps.
   - id: plan-provider-execution-is-optional
     statement: Provider-backed planning is opt-in and must preserve the rendered prompt and provider response as a run record.
 compatibility:

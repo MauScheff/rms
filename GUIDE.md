@@ -59,6 +59,8 @@ The structure is recursive, but the terms are not interchangeable.
 
 A repository may contain one module, one bounded context, or many contexts. Do not introduce more levels than the domain requires.
 
+Use a composite module when several submodules form one public capability. The parent names the public surface and exports the child behavior it stands behind; internal children remain private to the parent boundary.
+
 ---
 
 ## 3. Start with language and ownership
@@ -410,6 +412,8 @@ The common forms are:
 
 Direct in-process calls are fine when they use the public contract and preserve ownership. Asynchronous events are useful when decoupling, auditability, replay, or independent timing matters. Neither style is universally superior.
 
+For nested modules, external consumers should depend on the parent export unless the child is deliberately public. Internal children can still have manifests and contracts, but those contracts are public only inside the parent boundary.
+
 ### Domain events and integration events
 
 A domain event may be internal to a context and use its private language. An integration event is a stable, versioned message published to other contexts.
@@ -592,11 +596,14 @@ contracts/
 invariants/
 context maps
 glossaries
+intent records
 verification declarations
 decision records where needed
 ```
 
 These artifacts form one coherent set. If they contradict one another, that is architectural drift and should fail validation; an agent should not silently choose whichever file appears first.
+
+Before implementation, humans and agents should capture intent when the request changes public meaning, ownership, source of truth, lifecycle rules, compatibility, effects, recovery, or proof obligations. The intent record should preserve the human need, accepted answers, rejected interpretations, candidate contracts, laws, and proof lanes. Once accepted, the context must be encoded into the manifest, contracts, glossary, laws, decisions, and evidence that govern the module.
 
 Agent-specific files adapt that truth:
 

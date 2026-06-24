@@ -1,0 +1,30 @@
+spec: rms/contract/v0.1
+name: configure-agent-integration
+version: 1
+kind: command
+meaning: Diagnose, initialize, or synchronize project-local agent guidance so coding agents can use RMS through generated instructions and the shared CLI without requiring a preinstalled plugin.
+preconditions:
+  - id: root-readable-or-writable
+    statement: The requested root can be inspected for diagnosis or written for init and sync operations.
+postconditions:
+  - id: cli-remains-sufficient
+    statement: The command reports or creates project-local guidance without making Codex plugins, global skills, or provider execution required for RMS semantics.
+  - id: project-local-guidance-created
+    statement: Agent initialization creates portable `AGENTS.md`, target-local skills, target adapter files such as `CLAUDE.md` when needed, and missing `.rms/config.yaml` from the current RMS binary.
+  - id: project-local-guidance-synchronized
+    statement: Agent synchronization refreshes generated `AGENTS.md`, target-local skills, and target adapter files from the current RMS binary while preserving existing workbench configuration.
+  - id: diagnosis-reports-readiness
+    statement: Agent diagnosis reports project-local instruction, skill, config, target-tool, and plugin-required readiness.
+  - id: optional-plugin-packaged
+    statement: Agent plugin installation and synchronization can package the optional Codex plugin into a personal marketplace and invoke Codex installation without making the plugin authoritative for RMS semantics.
+failure_categories:
+  - id: generated-file-exists
+    statement: Agent initialization refuses to overwrite existing generated guidance unless force is explicit.
+  - id: unwritable-root
+    statement: The target root or generated child paths cannot be created or written.
+  - id: invalid-target
+    statement: The requested agent target is not supported.
+  - id: plugin-install-unavailable
+    statement: Optional plugin installation is unavailable for the requested target or Codex installation command fails.
+compatibility:
+  policy: backward-compatible-within-major

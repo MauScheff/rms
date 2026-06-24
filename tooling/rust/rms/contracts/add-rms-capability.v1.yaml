@@ -1,0 +1,24 @@
+spec: rms/contract/v0.1
+name: add-rms-capability
+version: 1
+kind: command
+meaning: Scaffold a recursive RMS capability tree with a composite parent, pure domain child, and boundary adapter child wired through canonical composition metadata.
+preconditions:
+  - id: fresh-targets
+    statement: Files that `rms add-capability` would generate do not already exist.
+  - id: supported-bindings
+    statement: Requested child implementation bindings are one of the supported scaffold bindings or omitted.
+postconditions:
+  - id: composite-parent-created
+    statement: A composite parent module is created with public command, composition contains entries, export metadata, contract, and scenario evidence.
+  - id: children-created
+    statement: Domain and boundary child modules are created with semantic shapes, contracts, evidence, and optional implementation bindings.
+  - id: recursive-checks-ready
+    statement: The generated tree is intended to pass validation, composition, and composite parent verification before module-specific behavior is filled in.
+failure_categories:
+  - id: target-exists
+    statement: A generated file already exists and is not overwritten.
+  - id: unsupported-binding
+    statement: A requested child implementation binding is unsupported.
+compatibility:
+  policy: backward-compatible-within-major

@@ -1,0 +1,84 @@
+spec: rms/module/v0.1
+
+module:
+  name: "tic-tac-toe-rules"
+  version: 0.1.0
+  kind: "library"
+  purpose: "Own Tic-Tac-Toe board rules, legal moves, turn order, and terminal outcomes"
+
+profiles:
+  - "core"
+  - "stateful"
+
+owns:
+  concepts:
+    - Board
+    - Cell
+    - Mark
+    - Move command
+    - Game status
+    - Transition outcome
+  data:
+    - Game state
+  decisions:
+    - move acceptance
+    - turn advancement
+    - win detection
+    - draw detection
+    - illegal move rejection
+
+provides:
+  commands:
+    - name: apply-move
+      contract: contracts/apply-move.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities: []
+
+invariants:
+  - id: marks-never-overwrite
+    statement: An accepted move never replaces an occupied cell.
+    enforced_by: transition
+    verified_by: verification/laws/transition_trace.md
+  - id: turns-alternate
+    statement: Accepted moves alternate between X and O until a terminal status is reached.
+    enforced_by: transition
+    verified_by: verification/laws/transition_trace.md
+  - id: terminal-games-reject-moves
+    statement: A won or drawn game rejects further moves.
+    enforced_by: transition
+    verified_by: verification/laws/transition_trace.md
+
+effects: []
+
+state:
+  model: verification/scenarios/game_lifecycle.md
+  consistency_boundary: one-game
+  concurrency: single-logical-writer
+  persistence: none
+  migration_policy: none
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws:
+    - verification/laws
+  contracts:
+    - verification/contracts
+  scenarios:
+    - verification/scenarios
+  boundaries:
+    - verification/boundaries
+
+x-scaffold:
+  shape: "domain-engine"
+  roles:
+    - "representation"
+    - "commands"
+    - "transitions"
+    - "trace-replay"
+    - "law-evidence"

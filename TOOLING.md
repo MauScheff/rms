@@ -21,6 +21,7 @@ The command names below are recommended, not normative:
 ```text
 rms inspect <module>
 rms context <module> [--task <task>]
+rms route <module> --task <task>
 rms init <path>
 rms add-module <path>
 rms validate [module|contract|implementation]
@@ -58,8 +59,10 @@ The current reference implementation lives at `tooling/rust/rms` and implements 
 rms validate --root <path>
 rms validate --contract <contract.yaml>
 rms init <path> --name <system> --purpose <purpose>
-rms add-module <path> --name <module> --purpose <purpose> [--binding rust|swift|executable]
+rms add-module <path> --name <module> --purpose <purpose> [--shape domain-engine|boundary-adapter|workflow|storage-adapter|integration-adapter|composite] [--binding rust|swift|js|executable]
+rms add-capability <path> --name <capability> --purpose <purpose> [--domain-binding rust|swift|js|executable] [--boundary-binding rust|swift|js|executable]
 rms inspect <module.yaml>
+rms route <module.yaml> --task "..." [--root <path>] [--json]
 rms explain [<module.yaml>] ["question"] [--module <module.yaml>]
 rms diagnose [--root <path>] [--json]
 rms prompt <kind> <module.yaml> [--task "..."] [--diff <git-spec>] [--impact] [--ai|--provider codex] [--sandbox read-only|workspace-write] [--write-scope module|root] [--provider-timeout-seconds <seconds>]
@@ -83,7 +86,7 @@ rms check-compat <old-module.yaml> <new-module.yaml>
 rms package <module.yaml> [--output <directory>]
 rms verify-package <package-directory>
 rms conformance <module.yaml> [--implementation implementation.yaml]
-rms verify <implementation.yaml>
+rms verify <implementation.yaml|composite-module.yaml>
 ```
 
 Other tooling implementations should preserve the same semantic meaning even when implemented in another language.
@@ -107,6 +110,12 @@ Scaffolds a valid module directory with `module.yaml`, a module `README.md`, `co
 Generated module guidance is an adapter over canonical artifacts. It tells humans and agents how to fill ownership, public contracts, effects, invariants, compatibility, and evidence into `module.yaml`, `contracts/`, `implementation.yaml`, and `verification/`; it does not invent module-specific semantics.
 
 When Stateful, Distributed, Workflow, or Boundary profiles are requested, the scaffold includes the required empty profile section so the manifest validates. Fill those sections with real lifecycle, reconciliation, workflow, or boundary semantics before relying on the profile.
+
+### `add-capability`
+
+Scaffolds a recursive capability tree: a composite parent module at the requested path, a sibling `domain-engine` child, and a sibling `boundary-adapter` child. The parent declares `composition.contains`, exports the boundary child public command, and includes parent scenario evidence so `rms verify <parent/module.yaml>` can roll up composition and child implementation checks.
+
+Use this when `rms design` recommends a composite tree for one public capability. Use `rms add-module` for single modules or when the hierarchy is already in place.
 
 The first language binding is Rust. A Rust implementation binding declares `binding: rust` in `implementation.yaml`; the CLI then checks Cargo manifest shape, package identity, public entrypoint placement, explicit external crate dependencies, source import roots, public external re-exports, declared public modules, primitive type aliases, public domain fields, failure discipline, constructor evidence, query-produced read-model exceptions, Stateful representation declarations, and semantic function source symbols.
 
@@ -189,6 +198,7 @@ Renders a versioned RMS workbench prompt for a selected workflow:
 
 ```text
 plan
+intent
 review
 refactor
 implement
@@ -199,6 +209,8 @@ drift
 ```
 
 The command includes bounded module context, workflow instructions, expected output, deterministic checks, and optional diff context. `--impact` is supported for review prompts and adds a derived RMS impact prelude before the diff. By default it prints the prompt and does not edit files or call an AI provider.
+
+Use `intent` before `plan` or `implement` when the task needs human meaning, accepted rationale, candidate contracts, laws, compatibility, or proof lanes clarified before code changes.
 
 With `--record`, it writes a run record under `.rms/runs`:
 
@@ -270,7 +282,7 @@ rms gate --dry-run --json
 
 The gate runs validation for impacted RMS changes, composition for architecture-level changes, and implementation verification for affected modules with implementation bindings. Review prompts, compatibility classification, and missing implementation bindings are reported as manual obligations instead of being silently treated as passed.
 
-`rms gate` depends on git changed-path evidence. In a fresh project that is not a git repository, initialize git first or run the deterministic checks directly: `rms validate --root .`, `rms compose --root .`, and `rms verify <implementation.yaml>`.
+`rms gate` depends on git changed-path evidence. In a fresh project that is not a git repository, initialize git first or run the deterministic checks directly: `rms validate --root .`, `rms compose --root .`, and `rms verify <implementation.yaml|composite-module.yaml>`.
 
 ### `refactor`
 
@@ -330,7 +342,21 @@ Operationally incompatible change
 
 Checks whether declared requirements can be satisfied by available providers, including contract versions, operational semantics, service constraints, allowed effects, and forbidden dependency cycles.
 
+For recursive module trees, compose also checks declared containment, child visibility, parent exports, and export backing. A parent export must be published in the parent `provides` section and backed by the named child module's public `provides` entry. Consumers outside a parent boundary cannot depend directly on a child marked `internal`.
+
+Compose also reports advisory semantic shape direction findings. A `domain-engine` depending on boundary, storage, or integration adapters; a `domain-engine` declaring effects or the boundary profile; or a composite parent declaring implementation effects is reported as `review-required`, not as a hard failure in v0.1.
+
 When a repository root contains multiple RMS systems, compose treats the discovered system manifests as one review universe and unions their declared `external_dependencies` before checking required capabilities. A module still needs a matching effect declaration for each external capability it requires.
+
+### `route`
+
+Recommends the owning module for a task when the selected target may be a composite parent or recursive module tree. The report derives candidates from `composition.contains`, `composition.exports`, child semantic shapes, public surfaces, and task language. It is advisory evidence; agents should follow the recommended `rms context` command before editing.
+
+For example, a task about invalid game rules routes toward a `domain-engine` child, while a task about CLI parsing or display routes toward a `boundary-adapter` child.
+
+`rms context`, `rms plan`, `rms implement`, and `rms review` render route evidence automatically when task text targets a composite parent. `rms implement` additionally warns not to add private implementation behavior to the composite parent unless the task changes parent composition, exports, parent contracts, or parent evidence.
+
+`rms evidence` also uses the route recommendation. Domain-engine work receives transition, constructor, property, and accepted/rejected evidence guidance. Boundary-adapter work receives malformed-input, parser-to-domain-command, adapter failure, and contract smoke guidance. Public behavior changes name parent/export contract evidence.
 
 ### `package`
 
@@ -343,6 +369,8 @@ Verifies a portable package directory before it is trusted by another project, r
 ### `conformance`
 
 Produces a machine-readable result naming the RMS version, profiles, binding, source revision or artifact digest, validator version, checks, outcomes, and evidence.
+
+Conformance reports include semantic shape direction checks for the evaluated module. Review-required shape findings are emitted as non-failing advisory checks.
 
 ## 3. Language-binding interface
 

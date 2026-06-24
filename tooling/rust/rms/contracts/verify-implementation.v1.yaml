@@ -2,17 +2,21 @@ spec: rms/contract/v0.1
 name: verify-implementation
 version: 1
 kind: command
-meaning: Run the native verification command declared by an RMS implementation binding.
+meaning: Verify an RMS implementation binding or a composite module rollup.
 preconditions:
-  - id: implementation-declares-verify
-    statement: The implementation binding declares commands.verify.
+  - id: verifiable-target
+    statement: The target is either an implementation binding with commands.verify or a composite module manifest.
 postconditions:
   - id: native-command-result-preserved
     statement: The CLI exits with an error when the declared verification command fails.
+  - id: composite-rollup-checked
+    statement: For composite modules, the CLI checks manifest validity, repository composition, parent scenario evidence, and contained child implementation verification when child bindings are present.
 failure_categories:
   - id: missing-verify-command
     statement: The implementation binding does not declare commands.verify.
   - id: verification-failed
     statement: The declared verification command exits unsuccessfully.
+  - id: composite-rollup-failed
+    statement: Composite module validation, composition, parent scenario evidence, or a contained child implementation verification fails.
 compatibility:
   policy: backward-compatible-within-major

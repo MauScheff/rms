@@ -13,6 +13,8 @@ postconditions:
     statement: The prompt asks the reviewer or agent to classify the evidence as law, contract, scenario, boundary, runtime, reconciliation, or migration evidence.
   - id: positive-and-negative-cases-are-named
     statement: The prompt asks for positive evidence and negative cases for impossible variants, invalid constructors, malformed boundary input, and illegal transitions when applicable.
+  - id: routed-owner-evidence-guidance
+    statement: When the target may be a composite parent or recursive module tree, evidence guidance is derived from the routed owner shape and names the smallest relevant law, contract, scenario, or boundary proof lanes.
   - id: artifact-references-are-named
     statement: The prompt asks which manifest or implementation binding references should point to the evidence.
   - id: evidence-guidance-is-advisory

@@ -1,0 +1,24 @@
+spec: rms/contract/v0.1
+name: apply-move
+version: 1
+kind: command
+meaning: Apply one Tic-Tac-Toe move to a game state using the rules for turn order, occupied cells, wins, draws, and terminal states.
+preconditions:
+  - id: cell-is-valid
+    statement: The requested cell is one of the nine board cells.
+  - id: state-created-by-rules
+    statement: The input game state was created by the rules module constructors or by replaying accepted transitions.
+postconditions:
+  - id: accepted-move-places-current-mark
+    statement: When the move is accepted, the current mark is placed in the requested empty cell.
+  - id: accepted-move-advances-status
+    statement: Accepted moves either advance the next mark, produce a won status, or produce a draw status.
+  - id: rejected-move-preserves-state
+    statement: Rejected moves return the previous game state with an explicit rejection reason.
+failure_categories:
+  - id: occupied-cell
+    statement: The requested cell already contains a mark.
+  - id: game-already-terminal
+    statement: The game has already been won or drawn.
+compatibility:
+  policy: backward-compatible-within-major

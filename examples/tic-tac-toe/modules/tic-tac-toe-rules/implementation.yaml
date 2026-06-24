@@ -1,0 +1,75 @@
+spec: rms/implementation/v0.1
+
+module: "tic-tac-toe-rules"
+binding: rust
+
+source:
+  root: .
+  public_entrypoint: src/lib.rs
+
+commands:
+  build: cargo build --manifest-path Cargo.toml
+  verify: cargo test --manifest-path Cargo.toml
+  format: cargo fmt --manifest-path Cargo.toml --check
+
+toolchain:
+  cargo_manifest: Cargo.toml
+  package: "tic-tac-toe-rules"
+
+dependencies:
+  allowed_external_crates: []
+
+architecture:
+  shape: "domain-engine"
+  public_modules:
+    - representation
+    - transition
+  state_type: Game
+  transition_function: transition
+  representation:
+    closed_variants:
+      - Command
+      - GameStatus
+      - Mark
+      - MoveRejection
+      - TransitionOutcome
+    validated_values:
+      - Cell
+    transition_functions:
+      - transition
+
+semantic_functions:
+  - id: cell-constructor
+    symbol: Cell::new
+    kind: constructor
+    purity: pure
+    evidence:
+      laws:
+        - verification/laws/semantic_shape.md
+        - verification/laws/transition_trace.md
+  - id: transition-model
+    symbol: transition
+    kind: transition
+    purity: pure
+    discharges:
+      contracts:
+        - contracts/apply-move.v1.yaml
+      invariants:
+        - marks-never-overwrite
+        - turns-alternate
+        - terminal-games-reject-moves
+    evidence:
+      laws:
+        - verification/laws/semantic_shape.md
+        - verification/laws/transition_trace.md
+      contracts:
+        - verification/contracts/apply_move.md
+      scenarios:
+        - verification/scenarios/game_lifecycle.md
+  - id: trace-replay
+    symbol: replay
+    kind: interpreter
+    purity: pure
+    evidence:
+      laws:
+        - verification/laws/transition_trace.md

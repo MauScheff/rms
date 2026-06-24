@@ -20,7 +20,11 @@ owns:
     - RMS module package
     - RMS workbench prompt
     - RMS advisory plan
+    - RMS advisory system design
+    - RMS composition report
+    - RMS route report
     - RMS advisory review
+    - RMS advisory intent capture
     - RMS git impact report
     - RMS gate report
     - RMS advisory contract evolution
@@ -29,6 +33,7 @@ owns:
     - RMS workbench configuration
     - RMS release readiness report
     - RMS module atlas
+    - RMS capability tree scaffold
   data:
     - embedded RMS schemas
     - embedded RMS prompt templates
@@ -37,6 +42,10 @@ owns:
     - generated git impact reports
     - generated gate reports
     - generated workbench run records
+    - generated advisory scaffold plans
+    - generated advisory intent-capture prompts
+    - generated route reports
+    - generated capability tree scaffold artifacts
     - generated module atlas artifacts
     - optional workbench configuration
   decisions:
@@ -44,7 +53,13 @@ owns:
     - module-explanation-shape
     - diagnostic-readiness-result
     - prompt-template-selection
+    - semantic-scaffold-shape-selection
+    - capability-tree-scaffold-selection
+    - design-boundary-recommendation
+    - composition-result
+    - recursive-work-route-recommendation
     - advisory-workflow-shape
+    - intent-capture-gate-result
     - git-diff-impact-classification
     - gate-check-selection
     - provider-execution-request
@@ -67,6 +82,12 @@ provides:
       contract: contracts/render-workbench-prompt.v1.yaml
     - name: plan-module-change
       contract: contracts/plan-module-change.v1.yaml
+    - name: design-rms-system
+      contract: contracts/design-rms-system.v1.yaml
+    - name: compose-rms-system
+      contract: contracts/compose-rms-system.v1.yaml
+    - name: route-rms-work
+      contract: contracts/route-rms-work.v1.yaml
     - name: review-module-diff
       contract: contracts/review-module-diff.v1.yaml
     - name: analyze-git-impact
@@ -77,6 +98,8 @@ provides:
       contract: contracts/refactor-module-workbench.v1.yaml
     - name: implement-module-workbench
       contract: contracts/implement-module-workbench.v1.yaml
+    - name: capture-intent-workbench
+      contract: contracts/capture-intent-workbench.v1.yaml
     - name: evolve-contract-workbench
       contract: contracts/evolve-contract-workbench.v1.yaml
     - name: evidence-workbench
@@ -89,10 +112,14 @@ provides:
       contract: contracts/latest-workbench-run.v1.yaml
     - name: init-workbench-config
       contract: contracts/init-workbench-config.v1.yaml
+    - name: configure-agent-integration
+      contract: contracts/configure-agent-integration.v1.yaml
     - name: init-rms-system
       contract: contracts/init-rms-system.v1.yaml
     - name: add-rms-module
       contract: contracts/add-rms-module.v1.yaml
+    - name: add-rms-capability
+      contract: contracts/add-rms-capability.v1.yaml
     - name: check-release-readiness
       contract: contracts/release-check.v1.yaml
     - name: build-context-packet

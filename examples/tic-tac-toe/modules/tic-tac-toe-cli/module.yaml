@@ -1,0 +1,89 @@
+spec: rms/module/v0.1
+
+module:
+  name: "tic-tac-toe-cli"
+  version: 0.1.0
+  kind: "adapter"
+  purpose: "Parse local command-line Tic-Tac-Toe input and adapt it to the rules engine"
+
+profiles:
+  - "boundary"
+  - "core"
+
+owns:
+  concepts:
+    - CLI move input
+    - Parsed move command
+    - Rules engine port
+  data: []
+  decisions:
+    - move input parsing
+    - malformed input rejection
+    - rules command delegation
+
+provides:
+  commands:
+    - name: play-tic-tac-toe
+      contract: contracts/play-tic-tac-toe.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+
+requires:
+  modules:
+    - name: tic-tac-toe-rules
+  capabilities:
+    - name: apply-move
+
+invariants: []
+
+effects:
+  - name: local-cli-io
+    kind: local-ui
+    semantics:
+      scope: current process stdin/stdout
+      persistence: none
+      network: none
+  - name: rules-engine-bridge
+    kind: local-process
+    semantics:
+      scope: invokes the local Rust rules bridge for the declared tic-tac-toe-rules module dependency
+      persistence: none
+      network: none
+
+boundary:
+  trust_boundary: local-command-line-input
+  inputs:
+    - move text such as `A1`, `b2`, or `3,3`
+  validation:
+    - Unknown coordinate syntax is rejected before rules delegation.
+    - Out-of-board coordinates are rejected before rules delegation.
+  outputs:
+    - accepted parsed move command
+    - malformed-input rejection
+    - delegated rules result
+  limits:
+    - No network calls.
+    - No persistent storage.
+    - The only local subprocess is the rules bridge declared by the implementation binding.
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws:
+    - verification/laws
+  contracts:
+    - verification/contracts
+  scenarios:
+    - verification/scenarios
+  boundaries:
+    - verification/boundaries
+
+x-scaffold:
+  shape: "boundary-adapter"
+  roles:
+    - "representation"
+    - "parsers"
+    - "ports"
+    - "adapters"
+    - "boundary-evidence"

@@ -12,9 +12,9 @@ postconditions:
   - id: canonical-system-artifacts-created
     statement: The generated system manifest, context map, and glossary establish the initial RMS system semantics.
   - id: agent-instructions-created
-    statement: The generated `AGENTS.md` instructs agents to use RMS manifests and CLI commands before inferring architecture from code shape.
+    statement: The generated `AGENTS.md` instructs agents to use RMS manifests and CLI commands before inferring architecture from code shape, including semantic design, scaffold shape selection, representation roles, transitions, and boundary separation.
   - id: workbench-config-created
-    statement: The generated `.rms/config.yaml` supplies provider, sandbox, and run-record defaults, and documents the provider-timeout default; it does not define module semantics.
+    statement: The generated `.rms/config.yaml` supplies provider, sandbox, and run-record defaults, documents module-scoped provider edit settings, and documents the provider-timeout default; it does not define module semantics.
   - id: local-agent-skills-created
     statement: The generated `.agents/skills` directory contains pinned RMS workflow skills that call the shared RMS CLI.
   - id: ignore-file-created

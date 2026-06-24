@@ -99,6 +99,10 @@ A stable, versioned fact published across a bounded-context or system boundary.
 
 A property that must remain true for a defined state or consistency boundary.
 
+## Intent record
+
+A natural-language artifact that captures the human need, motivating examples, counterexamples, questions, accepted answers, and rejected interpretations before implementation. It is evidence for understanding until accepted semantics are encoded in RMS artifacts.
+
 ## Kernel
 
 A small set of stable technical primitives shared by modules. It is not a global business model or communication bus.
@@ -136,6 +140,10 @@ Evidence connecting a generated or released artifact to its source revision, too
 ## Query
 
 A request for information that does not perform hidden domain mutation.
+
+## Rationale
+
+The accepted explanation for why a contract, law, invariant, boundary, compatibility choice, or proof lane has its current shape. Rationale explains public meaning but does not override manifests, contracts, invariants, glossary language, or evidence.
 
 ## Reconciliation
 

@@ -1,0 +1,74 @@
+spec: rms/module/v0.1
+
+module:
+  name: "tic-tac-toe"
+  version: 0.1.0
+  kind: "composite"
+  purpose: "Expose playable Tic-Tac-Toe as one public capability composed from rules and CLI adapter modules"
+
+profiles:
+  - "core"
+
+owns:
+  concepts:
+    - Playable Tic-Tac-Toe capability
+    - Rules module export
+    - CLI adapter export
+  data: []
+  decisions:
+    - public game capability composition
+    - child module visibility
+
+provides:
+  commands:
+    - name: play-tic-tac-toe
+      contract: contracts/play-tic-tac-toe.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities: []
+
+composition:
+  contains:
+    - name: tic-tac-toe-rules
+      visibility: internal
+      path: ../tic-tac-toe-rules/module.yaml
+    - name: tic-tac-toe-cli
+      visibility: internal
+      path: ../tic-tac-toe-cli/module.yaml
+  exports:
+    - group: commands
+      name: play-tic-tac-toe
+      from: tic-tac-toe-cli
+
+invariants:
+  - id: playable-command-uses-rules-engine
+    statement: The public play command is backed by the CLI adapter and the internal rules engine dependency.
+    enforced_by: composition
+    verified_by: verification/scenarios/composed_play.md
+
+effects: []
+
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws:
+    - verification/laws
+  contracts:
+    - verification/contracts
+  scenarios:
+    - verification/scenarios/composed_play.md
+  boundaries:
+    - verification/boundaries
+
+x-scaffold:
+  shape: "composite"
+  roles:
+    - "submodule-containment"
+    - "public-exports"
+    - "visibility-boundaries"
+    - "composition-evidence"

@@ -84,16 +84,21 @@ This creates `system.yaml`, `context-map.yaml`, `GLOSSARY.md`, `AGENTS.md`, `.rm
 Add a module with an implementation binding:
 
 ```bash
+rms design --root ./my-system \
+  --task "browser-playable Snake game"
+
 rms add-module ./my-system/modules/widget \
   --name widget \
   --purpose "Own validated widgets" \
   --kind library \
+  --shape domain-engine \
   --binding rust
 
 rms add-module ./my-system/modules/swift-widget \
   --name swift-widget \
   --purpose "Own validated Swift widgets" \
   --kind library \
+  --shape domain-engine \
   --binding swift
 
 rms add-module ./my-system/modules/snake-web \
@@ -101,10 +106,23 @@ rms add-module ./my-system/modules/snake-web \
   --purpose "Expose the Snake game as an executable surface" \
   --kind adapter \
   --profile boundary \
-  --binding executable
+  --shape boundary-adapter \
+  --binding js
 ```
 
-This creates `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification directories. The optional Rust or Swift binding adds a minimal library scaffold plus `implementation.yaml`. The optional executable binding adds `implementation.yaml`, build/smoke scripts, and boundary evidence for opaque command-backed modules such as web, mobile, CLI, native UI, or integration surfaces.
+Add a recursive capability tree when one public capability needs a composite parent plus domain and boundary children:
+
+```bash
+rms add-capability ./my-system/modules/tic-tac-toe \
+  --name tic-tac-toe \
+  --purpose "Expose playable Tic-Tac-Toe" \
+  --domain-child tic-tac-toe-rules \
+  --boundary-child tic-tac-toe-cli \
+  --domain-binding rust \
+  --boundary-binding js
+```
+
+This creates `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification directories. Semantic shapes such as `domain-engine`, `boundary-adapter`, `workflow`, `storage-adapter`, `integration-adapter`, and `composite` define role obligations before file layout. Bindings such as `rust`, `swift`, `js`, and `executable` realize those roles idiomatically. The executable binding remains the opaque command-backed lane for web, mobile, CLI, native UI, generated assets, or integration surfaces when RMS cannot statically inspect internals.
 
 Validate the included examples:
 
@@ -114,6 +132,7 @@ rms validate --root examples/minimal
 rms validate --root examples/commerce
 rms validate --root examples/rust
 rms validate --root examples/swift
+rms validate --root examples/tic-tac-toe
 ```
 
 Check whether discovered modules compose through declared public requirements:
@@ -121,7 +140,18 @@ Check whether discovered modules compose through declared public requirements:
 ```bash
 rms compose --root .
 rms compose --root examples/minimal
+rms compose --root examples/tic-tac-toe
 ```
+
+Route work from a composite parent to the likely owning child module:
+
+```bash
+rms route examples/tic-tac-toe/modules/tic-tac-toe/module.yaml \
+  --root examples/tic-tac-toe \
+  --task "change invalid move rules"
+```
+
+`rms context`, `rms plan`, `rms implement`, and `rms review` include the same route evidence automatically when task text targets a composite parent. `rms evidence` uses it to recommend proof lanes such as transition traces for domain engines, malformed-input tests for boundary adapters, and parent-export evidence for public behavior changes.
 
 Classify the RMS impact of git changes:
 
@@ -155,6 +185,9 @@ Check local RMS and optional AI-provider readiness:
 rms diagnose
 rms diagnose --json
 rms config init
+rms agent diagnose --target codex
+rms agent diagnose --target claude
+rms agent plugin diagnose --target codex
 ```
 
 Optional provider and run-record defaults can live in `.rms/config.yaml`:
@@ -175,9 +208,13 @@ runs:
 
 Provider-backed commands remain explicit. Use `--provider codex` directly, or use `--ai` to select the configured `ai.default_provider`. Codex provider execution supports `--sandbox read-only` and `--sandbox workspace-write`; workspace-write defaults to `--write-scope module`, which runs Codex from the target module directory. Provider execution defaults to a 900 second timeout; set `ai.codex.timeout_seconds` or pass `--provider-timeout-seconds <seconds>` for longer bounded runs. Use `--write-scope root` only when the task intentionally changes system, context, glossary, or cross-module artifacts.
 
-Render advisory workbench prompts:
+Render advisory workbench prompts. Use `rms intent` as the think-before-code gate when a change needs human intent, accepted rationale, candidate contracts, laws, or proof lanes captured before implementation:
 
 ```bash
+rms intent examples/commerce/payments.module.yaml \
+  --root examples/commerce \
+  --task "understand the desired payment capture behavior before coding"
+
 rms plan examples/commerce/payments.module.yaml \
   --root examples/commerce \
   --task "add payment capture telemetry"
@@ -272,15 +309,18 @@ rms verify-package dist/rust-example.rms
 
 ## Adopt RMS In A Project
 
-Start with one boundary. Do not model every folder.
+Start with one boundary. Do not model every folder. Split when pure invariants, external effects, ownership, replaceability, or evidence needs point to different honest boundaries.
 
 1. Treat the repository as a system module.
-2. Identify one domain boundary with real ownership, invariants, or replaceability pressure.
-3. Add `system.yaml`, `context-map.yaml`, and a `module.yaml`.
-4. Publish only the contracts other modules may depend on.
-5. Declare effects, compatibility, assumptions, and the smallest meaningful verification evidence.
-6. Add an `implementation.yaml` that points to native build and verification commands. Use `semantic_functions` for implementation symbols that discharge important contracts, invariants, and assumptions.
-7. Run `rms validate`, then use `rms context` before implementation work.
+2. Use `rms design --root . --task "<task>"` when module boundaries or semantic shapes are unclear.
+3. Identify one domain boundary with real ownership, invariants, or replaceability pressure.
+4. Add `system.yaml`, `context-map.yaml`, and a `module.yaml`.
+5. Publish only the contracts other modules may depend on.
+6. Declare effects, compatibility, assumptions, and the smallest meaningful verification evidence.
+7. Add an `implementation.yaml` that points to native build and verification commands. Use `semantic_functions` for representation constructors, parsers, transitions, adapters, and other symbols that discharge important contracts, invariants, and assumptions.
+8. Run `rms validate`, then use `rms context` before implementation work.
+
+Semantic scaffolds are language-agnostic. RMS names roles such as representation, commands, transitions, ports, adapters, traces, composition exports, visibility boundaries, and evidence; each binding chooses idiomatic files or modules. Closed alternatives should use ADTs, sealed variants, enums, or tagged constructors. Values with validity rules should use validated constructors. Lifecycle/order-dependent behavior should expose accepted and rejected transitions that can be replayed from traces.
 
 The core profile is always required. Add optional profiles only when they are true:
 
@@ -298,14 +338,20 @@ RMS is agent-neutral. Agent instructions are adapters; manifests and contracts r
 For Codex:
 
 - Use `rms init` for new projects; it writes portable `AGENTS.md` guidance, `.rms/config.yaml`, and local `.agents/skills/` from the canonical RMS skills.
-- Use the plugin wrapper in `integrations/codex/rms` only when installable distribution is useful.
+- Use `rms agent init --target codex --root .` when adding RMS agent guidance to an existing project without initializing system semantics.
+- Use `rms agent sync --target codex --root .` after upgrading the RMS binary; it refreshes generated `AGENTS.md` and `.agents/skills` while preserving existing workbench config.
+- Use `rms agent diagnose --target codex --root .` to confirm the project is self-contained for an agent.
+- Use `rms agent plugin install --target codex` when you also want the optional user-level Codex plugin installed from the current RMS binary.
+- Use `rms agent plugin sync --target codex` after upgrading RMS so Codex reloads the packaged plugin skills.
+- Use the plugin wrapper in `integrations/codex/rms` only when installable distribution is useful; it is optional convenience packaging, not a semantic dependency.
 - Package skills from canonical `skills/` for plugin releases.
-- Make the agent use the shared `rms` CLI: `diagnose`, `explain`, `plan`, `implement`, `evolve-contract`, `evidence`, `refactor`, `review`, `prompt`, `run`, `config`, `context`, `validate`, `compose`, `check-compat`, `verify`, and `conformance`.
+- Make the agent use the shared `rms` CLI: `diagnose`, `design`, `explain`, `route`, `plan`, `implement`, `evolve-contract`, `evidence`, `refactor`, `review`, `prompt`, `run`, `config`, `context`, `validate`, `compose`, `check-compat`, `verify`, and `conformance`.
 - Use hooks only to call the shared `rms` CLI.
 
 For Claude Code:
 
-- Keep the minimal adapter in `CLAUDE.md`.
+- Use `rms agent init --target claude --root .` to generate `AGENTS.md`, `CLAUDE.md`, `.claude/skills`, and safe workbench defaults.
+- Use `rms agent sync --target claude --root .` after upgrading the RMS binary; it refreshes generated `AGENTS.md`, `CLAUDE.md`, and `.claude/skills` while preserving existing workbench config.
 - Use the same canonical skills and manifests.
 - Treat any Claude-specific plugin as packaging, not semantics.
 

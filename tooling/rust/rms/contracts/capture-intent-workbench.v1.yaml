@@ -1,0 +1,30 @@
+spec: rms/contract/v0.1
+name: capture-intent-workbench
+version: 1
+kind: command
+meaning: Render an advisory RMS intent-capture prompt that helps humans and agents understand, synthesize, and accept semantic context before implementation.
+preconditions:
+  - id: task-supplied
+    statement: The human need, feature idea, semantic change, or uncertainty is supplied as task text.
+  - id: target-module-readable
+    statement: The target module manifest is readable and parseable.
+postconditions:
+  - id: prompt-elicits-intent-before-code
+    statement: The prompt asks the reviewer or agent to normalize human intent into stories, actors, state, actions, success results, failure results, stale behavior, and conflicting-state behavior before proposing implementation.
+  - id: prompt-asks-only-semantic-questions
+    statement: The prompt asks only questions needed to resolve product, domain, ownership, source-of-truth, lifecycle, compatibility, or operational ambiguity.
+  - id: prompt-synthesizes-rms-artifacts
+    statement: The prompt asks for candidate contracts, laws, invariants, glossary terms, ownership, effects, compatibility impact, proof lanes, and canonical artifacts to update before implementation.
+  - id: prompt-keeps-rationale-advisory
+    statement: The prompt separates raw conversation notes from accepted rationale and states that prompt output is evidence rather than semantic authority until encoded in canonical artifacts.
+  - id: prompt-produces-gate-result
+    statement: The prompt asks for an implementation gate result of ready, blocked on questions, or drift detected.
+  - id: provider-execution-is-optional
+    statement: Provider-backed intent capture is opt-in and must preserve the rendered prompt and provider response as a run record.
+failure_categories:
+  - id: missing-task
+    statement: No intent-capture task was supplied.
+  - id: provider-unavailable
+    statement: The requested provider command cannot be started or exits unsuccessfully.
+compatibility:
+  policy: backward-compatible-within-major

@@ -113,19 +113,37 @@ AGENTS.md
 Add the first module:
 
 ```bash
-
 rms add-module ./my-system/modules/widget \
   --name widget \
   --purpose "Own validated widgets" \
   --kind library \
+  --shape domain-engine \
   --binding rust
 ```
 
-The generated module includes `module.yaml`, `README.md`, `contracts/README.md`, verification guidance directories, and the requested implementation binding. Use `--binding executable` for opaque command-backed surfaces when Rust or Swift static checks are not the right fit.
+For a capability that naturally splits pure rules from a UI, CLI, service, or other boundary surface, scaffold the recursive tree directly:
+
+```bash
+rms design --root ./my-system \
+  --task "playable Tic-Tac-Toe CLI"
+
+rms add-capability ./my-system/modules/tic-tac-toe \
+  --name tic-tac-toe \
+  --purpose "Expose playable Tic-Tac-Toe" \
+  --domain-child tic-tac-toe-rules \
+  --boundary-child tic-tac-toe-cli \
+  --domain-binding rust \
+  --boundary-binding js
+```
+
+The generated module includes `module.yaml`, `README.md`, `contracts/README.md`, verification guidance directories, and the requested implementation binding. Use `--binding executable` for opaque command-backed surfaces when Rust, Swift, or JS static checks are not the right fit.
 
 ```bash
 rms validate --root ./my-system
 rms compose --root ./my-system
+rms route ./my-system/modules/tic-tac-toe/module.yaml \
+  --root ./my-system \
+  --task "change invalid move rules"
 ```
 
 ## Release Proof

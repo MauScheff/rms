@@ -75,6 +75,26 @@
     "requires": {
       "$ref": "#/$defs/contractGroups"
     },
+    "composition": {
+      "type": "object",
+      "properties": {
+        "contains": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/containedModule"
+          },
+          "uniqueItems": true
+        },
+        "exports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/compositionExport"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": true
+    },
     "invariants": {
       "type": "array",
       "items": {
@@ -128,6 +148,31 @@
       },
       "additionalProperties": true
     },
+    "rationale": {
+      "type": "object",
+      "properties": {
+        "intent": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/namedReference"
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/namedReference"
+          }
+        },
+        "traces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
     "operations": {
       "type": "object",
       "additionalProperties": true
@@ -176,6 +221,61 @@
           "$ref": "#/$defs/namedReference"
         }
       }
+    },
+    "containedModule": {
+      "type": "object",
+      "required": [
+        "name",
+        "visibility"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "visibility": {
+          "enum": [
+            "internal",
+            "public"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "compositionExport": {
+      "type": "object",
+      "required": [
+        "group",
+        "name",
+        "from"
+      ],
+      "properties": {
+        "group": {
+          "enum": [
+            "commands",
+            "queries",
+            "events",
+            "capabilities"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "from": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
     },
     "invariant": {
       "type": "object",

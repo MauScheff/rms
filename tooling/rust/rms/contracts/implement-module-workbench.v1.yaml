@@ -10,9 +10,19 @@ preconditions:
     statement: The target module manifest is readable and parseable.
 postconditions:
   - id: implement-prompt-classifies-change
-    statement: The prompt asks the reviewer or agent to restate the outcome, classify the change, identify affected RMS surfaces, and preserve the owning module boundary.
+    statement: The prompt asks the reviewer or agent to restate the outcome, classify the change, identify affected RMS surfaces, and decide whether the owning boundary must expand or split before preserving it.
   - id: public-meaning-updates-first
     statement: The prompt requires public contracts or manifests to be updated before implementation when public meaning changes.
+  - id: accepted-intent-precedes-code
+    statement: The prompt requires accepted intent and rationale to exist or be captured before coding when a semantic change affects public meaning, ownership, source of truth, lifecycle, compatibility, effects, recovery, or proof obligations.
+  - id: semantic-trace-evolves-together
+    statement: The prompt asks for linked intent, decision, contract, law, and evidence records to evolve together when accepted semantics change.
+  - id: semantic-roles-before-files
+    statement: The prompt asks for representation, commands, transitions, ports, adapters, traces, and evidence before incidental file layout.
+  - id: implement-prompt-includes-route-evidence
+    statement: When the target is a composite parent or recursive module tree, the prompt identifies the recommended child owner or declares routing ambiguity before implementation guidance.
+  - id: composite-parent-not-implementation-dump
+    statement: When routing is clear, the prompt warns not to add private implementation behavior to the composite parent unless the task changes parent composition, exports, parent contracts, or parent evidence.
   - id: implementation-is-advisory
     statement: The command renders or executes guidance and does not itself edit source files.
   - id: implement-provider-execution-is-optional

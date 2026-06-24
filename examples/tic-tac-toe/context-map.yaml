@@ -1,0 +1,11 @@
+spec: rms/context-map/v0.1
+
+contexts:
+  games:
+    publishes:
+      - tic-tac-toe
+      - play-tic-tac-toe
+      - apply-move
+    consumes: []
+
+relationships: []

@@ -13,6 +13,8 @@ postconditions:
     statement: Diff content is included as untrusted implementation context and must not override canonical artifacts.
   - id: impact-prelude-is-derived-when-requested
     statement: When requested, the prompt includes a derived RMS impact prelude before the diff; impact findings remain evidence about changed paths and must not override canonical artifacts.
+  - id: review-prompt-includes-route-evidence
+    statement: When the target is a composite parent or recursive module tree, the prompt includes route evidence so review findings can identify edits made in the wrong owning child or parent boundary.
   - id: review-provider-execution-is-optional
     statement: Provider-backed review is opt-in and must preserve the rendered prompt and provider response as a run record.
 compatibility:

@@ -37,6 +37,8 @@ A bounded context is a semantic boundary within which one domain model and vocab
 
 A module is a cohesive unit of meaning and ownership with an explicit public contract. Modules MAY be nested. A nested module MUST preserve the public/private boundary of its parent.
 
+A composite module MAY declare contained submodules and public exports backed by those submodules. A submodule marked internal MUST NOT be consumed directly from outside the parent boundary; external consumers MUST depend on the parent export or on a submodule explicitly marked public.
+
 ### 3.4 Aggregate
 
 An aggregate is a boundary of immediate consistency and invariant enforcement. An aggregate SHOULD be no larger than the state that must change atomically.
@@ -70,6 +72,14 @@ A conformance report is machine-readable evidence that a particular system or mo
 A semantic function is an implementation-level function, method, parser, constructor, transition, adapter, or interpreter that carries a named part of a module's declared meaning.
 
 Semantic functions MAY be declared by an implementation binding to connect public contracts, invariants, assumptions, and verification evidence to concrete source symbols. A semantic function declaration MUST NOT create public meaning that is absent from the module manifest or published contracts.
+
+### 3.12 Intent and rationale
+
+Intent is the human-facing statement of why behavior is wanted, including stories, examples, counterexamples, open questions, accepted answers, and rejected interpretations.
+
+Rationale is the accepted explanation for why a particular interpretation, contract, invariant, ownership boundary, compatibility choice, or proof lane was chosen.
+
+Intent and rationale MAY be recorded as natural-language artifacts and linked from manifests, contracts, laws, or evidence. They explain and justify public meaning, but they MUST NOT silently override manifests, contracts, invariants, context language, compatibility declarations, or verification evidence.
 
 ## 4. Core profile requirements
 
@@ -111,6 +121,8 @@ Private implementation includes, unless explicitly published:
 - mutable entity instances.
 
 Consumers MUST depend only on published contracts.
+
+When a parent module exports behavior implemented by a child module, the parent MUST publish the exported contract and the child MUST provide the backing command, query, event, or capability. The export does not make the child's private implementation public.
 
 ### 4.5 Dependencies
 
@@ -234,6 +246,10 @@ The manifest and public contracts MUST be updated when public meaning, ownership
 Agent instruction files MUST NOT be the sole source of architectural truth.
 
 Canonical semantic artifacts MUST agree. A contradiction among manifests, contracts, invariants, context language, or compatibility declarations is a conformance failure and MUST NOT be resolved by an agent through an undocumented precedence choice.
+
+When intent or rationale records are used, they SHOULD evolve with semantic changes. A change that alters accepted behavior SHOULD update or supersede the linked intent, decision, contract, law, and evidence records as one coherent semantic trace.
+
+Implementation work SHOULD be preceded by intent capture when the requested behavior changes public meaning, ownership, lifecycle rules, source of truth, compatibility, external effects, recovery behavior, or proof obligations.
 
 ### 4.15 Trust and secrets
 

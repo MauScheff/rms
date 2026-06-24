@@ -43,6 +43,16 @@ Describe only the effects and semantics that matter to callers and operators.
 
 State the public compatibility, deprecation, and migration policy.
 
+## Intent and rationale
+
+Link only to durable records that explain current semantics.
+
+```text
+Intent:
+Decisions:
+Semantic traces:
+```
+
 ## Verification
 
 ```text

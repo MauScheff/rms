@@ -1,0 +1,24 @@
+spec: rms/contract/v0.1
+name: route-rms-work
+version: 1
+kind: command
+meaning: Recommend the RMS module that should own a task when the requested target may be a composite parent or recursive module tree.
+preconditions:
+  - id: readable-target
+    statement: The target module manifest is readable by the process.
+  - id: readable-root
+    statement: The requested root is readable when module discovery is needed.
+postconditions:
+  - id: route-derived-from-canonical-artifacts
+    statement: The report derives candidates from module manifests, composition children, parent exports, semantic shapes, public surfaces, and task language.
+  - id: recommendation-is-advisory
+    statement: The report recommends an owning module or declares ambiguity without changing canonical semantics.
+  - id: next-context-command-rendered
+    statement: The report includes follow-up commands for inspecting the recommended module context before implementation.
+failure_categories:
+  - id: unreadable-target
+    statement: The target module manifest cannot be read or parsed.
+  - id: unreadable-root
+    statement: The requested root cannot be scanned for discovered module manifests.
+compatibility:
+  policy: backward-compatible-within-major

@@ -1,0 +1,24 @@
+spec: rms/contract/v0.1
+name: compose-rms-system
+version: 1
+kind: command
+meaning: Check whether discovered RMS modules compose through declared public requirements, recursive containment, child visibility, parent exports, and advisory semantic shape direction.
+preconditions:
+  - id: readable-root
+    statement: The requested root is readable by the process.
+postconditions:
+  - id: requirements-checked
+    statement: Required modules and capabilities are checked against discovered module providers and system external dependencies.
+  - id: recursive-composition-checked
+    statement: Declared containment, child visibility, parent exports, and export backing are checked when composition metadata is present.
+  - id: semantic-shape-direction-reviewed
+    statement: Semantic shape direction is reviewed and reported as advisory findings, including domain engines depending on effect adapters, domain engines declaring effects or boundary profile, and composite parents declaring implementation effects.
+failure_categories:
+  - id: unresolved-provider
+    statement: A required module, required capability, contained child, or export provider cannot be found.
+  - id: incompatible-composition
+    statement: A module dependency cycle, containment cycle, private visibility violation, duplicate parent, path mismatch, or unbacked parent export is detected.
+  - id: shape-direction-review-required
+    statement: A semantic shape direction smell is detected and reported for review without failing composition.
+compatibility:
+  policy: backward-compatible-within-major

@@ -314,6 +314,25 @@ platform_services
 
 Dependencies should be the smallest public surfaces needed. Requiring an entire module when one capability is sufficient weakens substitutability.
 
+### `composition`
+
+A composite module may declare contained submodules and explicit exports:
+
+```yaml
+composition:
+  contains:
+    - name: rules-engine
+      visibility: internal
+      path: modules/rules-engine/module.yaml
+  exports:
+    - group: capabilities
+      name: resolve-move
+      from: rules-engine
+      contract: contracts/resolve-move.yaml
+```
+
+`visibility: internal` means consumers outside the parent boundary must depend on the parent export rather than the child directly. `visibility: public` permits direct external dependency on the child while still allowing the parent to export a product-level surface.
+
 ### `invariants`
 
 Recommended invariant fields:

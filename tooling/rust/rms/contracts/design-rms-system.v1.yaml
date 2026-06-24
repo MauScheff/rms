@@ -1,0 +1,26 @@
+spec: rms/contract/v0.1
+name: design-rms-system
+version: 1
+kind: command
+meaning: Render an advisory RMS system design prompt that proposes module boundaries, semantic scaffold shapes, representation obligations, effects, dependencies, and verification evidence before implementation scope is fixed.
+preconditions:
+  - id: task-supplied
+    statement: The requested system or repository design task is supplied as task text.
+  - id: root-readable
+    statement: The requested root can be inspected for existing RMS artifacts.
+postconditions:
+  - id: design-prompt-created
+    statement: The prompt summarizes discovered RMS context and asks for the smallest honest module set rather than a module per noun.
+  - id: semantic-shapes-named
+    statement: The prompt asks for language-agnostic semantic shapes such as domain-engine, boundary-adapter, workflow, storage-adapter, and integration-adapter.
+  - id: representation-obligations-named
+    statement: The prompt asks for explicit representation obligations including closed variants, validated values, commands, states, events, accepted or rejected outcomes, and boundary schemas.
+  - id: design-provider-execution-is-optional
+    statement: Provider-backed design is opt-in and must preserve the rendered prompt and provider response as a run record.
+failure_categories:
+  - id: missing-task
+    statement: No design task was supplied.
+  - id: provider-unavailable
+    statement: The requested provider command cannot be started or exits unsuccessfully.
+compatibility:
+  policy: backward-compatible-within-major

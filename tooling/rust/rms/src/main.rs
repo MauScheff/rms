@@ -284,6 +284,49 @@ enum Commands {
         provider_timeout_seconds: Option<u64>,
     },
 
+    /// Render an advisory RMS semantic design prompt before module boundaries are fixed.
+    Design {
+        /// System or repository design task.
+        #[arg(long)]
+        task: String,
+
+        /// Repository or system root used to discover RMS artifacts.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Use the default AI provider from .rms/config.yaml.
+        #[arg(long)]
+        ai: bool,
+
+        /// Optional AI provider to execute the rendered prompt.
+        #[arg(long)]
+        provider: Option<Provider>,
+
+        /// Save a run record under .rms/runs even without provider execution.
+        #[arg(long)]
+        record: bool,
+
+        /// Directory where run records are written.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+
+        /// Optional model name passed to the provider.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Sandbox mode passed to Codex provider execution.
+        #[arg(long)]
+        sandbox: Option<CodexSandbox>,
+
+        /// Writable scope passed to Codex provider execution.
+        #[arg(long = "write-scope")]
+        write_scope: Option<ProviderWriteScope>,
+
+        /// Maximum seconds to wait for provider execution before terminating it.
+        #[arg(long = "provider-timeout-seconds", value_parser = clap::value_parser!(u64).range(1..))]
+        provider_timeout_seconds: Option<u64>,
+    },
+
     /// Render an advisory RMS review prompt for the current or requested diff.
     Review {
         /// Path to module.yaml or *.module.yaml.
@@ -462,6 +505,52 @@ enum Commands {
         provider_timeout_seconds: Option<u64>,
     },
 
+    /// Render an advisory RMS intent-capture prompt before implementation.
+    Intent {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Human need, feature idea, semantic change, or uncertainty to understand.
+        #[arg(long)]
+        task: String,
+
+        /// Repository or system root used to locate system/context/glossary files.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Use the default AI provider from .rms/config.yaml.
+        #[arg(long)]
+        ai: bool,
+
+        /// Optional AI provider to execute the rendered prompt.
+        #[arg(long)]
+        provider: Option<Provider>,
+
+        /// Save a run record under .rms/runs even without provider execution.
+        #[arg(long)]
+        record: bool,
+
+        /// Directory where run records are written.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+
+        /// Optional model name passed to the provider.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Sandbox mode passed to Codex provider execution.
+        #[arg(long)]
+        sandbox: Option<CodexSandbox>,
+
+        /// Writable scope passed to Codex provider execution.
+        #[arg(long = "write-scope")]
+        write_scope: Option<ProviderWriteScope>,
+
+        /// Maximum seconds to wait for provider execution before terminating it.
+        #[arg(long = "provider-timeout-seconds", value_parser = clap::value_parser!(u64).range(1..))]
+        provider_timeout_seconds: Option<u64>,
+    },
+
     /// Render an advisory RMS contract-evolution prompt for public surface changes.
     #[command(name = "evolve-contract", alias = "evolve")]
     EvolveContract {
@@ -567,6 +656,12 @@ enum Commands {
         command: ConfigCommands,
     },
 
+    /// Manage project-local agent integration guidance.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommands,
+    },
+
     /// Run release-readiness checks for the RMS workbench and adapter package.
     Release {
         #[command(subcommand)]
@@ -585,6 +680,24 @@ enum Commands {
         /// Repository or system root used to locate system/context/glossary files.
         #[arg(long, default_value = ".")]
         root: PathBuf,
+    },
+
+    /// Route a task from a module or composite parent to the likely owning module.
+    Route {
+        /// Path to module.yaml or *.module.yaml.
+        module: PathBuf,
+
+        /// Task description to route.
+        #[arg(long)]
+        task: String,
+
+        /// Repository or system root used to discover contained modules.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Emit machine-readable route evidence.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Generate an interactive module atlas from canonical RMS artifacts.
@@ -643,10 +756,10 @@ enum Commands {
         json: bool,
     },
 
-    /// Run the verification command declared by an implementation binding.
+    /// Verify an implementation binding or composite module rollup.
     Verify {
-        /// Path to implementation.yaml.
-        implementation: PathBuf,
+        /// Path to implementation.yaml or a composite module.yaml.
+        target: PathBuf,
 
         /// Print the command without executing it.
         #[arg(long)]
@@ -721,9 +834,87 @@ enum Commands {
         #[arg(long = "profile")]
         profile: Vec<String>,
 
-        /// Optional implementation binding to scaffold. Currently supports `rust`, `swift`, and `executable`.
+        /// Semantic scaffold shape. When omitted, RMS infers a shape from kind and profiles.
+        #[arg(long)]
+        shape: Option<ScaffoldShape>,
+
+        /// Optional implementation binding to scaffold. Currently supports `rust`, `swift`, `js`, and `executable`.
         #[arg(long)]
         binding: Option<String>,
+
+        /// Repository or system root used for optional scaffold planning records.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Use the default AI provider to produce an advisory scaffold plan before deterministic scaffolding.
+        #[arg(long)]
+        ai: bool,
+
+        /// Optional AI provider to produce an advisory scaffold plan before deterministic scaffolding.
+        #[arg(long)]
+        provider: Option<Provider>,
+
+        /// Save an advisory scaffold-plan run record even without provider execution.
+        #[arg(long)]
+        record: bool,
+
+        /// Directory where scaffold-plan run records are written.
+        #[arg(long)]
+        run_root: Option<PathBuf>,
+
+        /// Optional model name passed to the provider.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Sandbox mode passed to Codex provider execution.
+        #[arg(long)]
+        sandbox: Option<CodexSandbox>,
+
+        /// Writable scope passed to Codex provider execution.
+        #[arg(long = "write-scope")]
+        write_scope: Option<ProviderWriteScope>,
+
+        /// Maximum seconds to wait for provider execution before terminating it.
+        #[arg(long = "provider-timeout-seconds", value_parser = clap::value_parser!(u64).range(1..))]
+        provider_timeout_seconds: Option<u64>,
+    },
+
+    /// Scaffold a recursive RMS capability tree: composite parent, domain child, and boundary child.
+    AddCapability {
+        /// Directory where the composite parent module artifacts should be created.
+        path: PathBuf,
+
+        /// Stable parent capability/module name.
+        #[arg(long)]
+        name: String,
+
+        /// One-sentence parent capability purpose.
+        #[arg(long)]
+        purpose: String,
+
+        /// Public command exported by the composite parent. Defaults to --name.
+        #[arg(long)]
+        public_command: Option<String>,
+
+        /// Domain child module name. Defaults to <name>-rules.
+        #[arg(long)]
+        domain_child: Option<String>,
+
+        /// Boundary child module name. Defaults to <name>-adapter.
+        #[arg(long)]
+        boundary_child: Option<String>,
+
+        /// Domain child command/capability name. Defaults to resolve-<name>.
+        #[arg(long)]
+        domain_command: Option<String>,
+
+        /// Optional implementation binding for the domain child.
+        #[arg(long)]
+        domain_binding: Option<String>,
+
+        /// Optional implementation binding for the boundary child.
+        #[arg(long)]
+        boundary_binding: Option<String>,
     },
 }
 
@@ -746,10 +937,12 @@ enum Severity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum PromptKind {
     Explain,
+    Design,
     Plan,
     Review,
     Refactor,
     Implement,
+    Intent,
     #[value(name = "evolve-contract", alias = "evolve")]
     EvolveContract,
     Prune,
@@ -823,6 +1016,96 @@ enum ConfigCommands {
 }
 
 #[derive(Subcommand)]
+enum AgentCommands {
+    /// Check whether project-local agent guidance is present and current.
+    Diagnose {
+        /// Repository or system root to inspect.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Agent integration target.
+        #[arg(long, default_value = "codex")]
+        target: AgentTarget,
+    },
+
+    /// Create project-local agent guidance without initializing RMS system semantics.
+    Init {
+        /// Repository or system root where guidance is written.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Agent integration target.
+        #[arg(long, default_value = "codex")]
+        target: AgentTarget,
+
+        /// Overwrite existing generated guidance files.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Refresh project-local agent guidance from this RMS binary.
+    Sync {
+        /// Repository or system root where guidance is refreshed.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Agent integration target.
+        #[arg(long, default_value = "codex")]
+        target: AgentTarget,
+    },
+
+    /// Manage optional user-level agent plugin packaging.
+    Plugin {
+        #[command(subcommand)]
+        command: AgentPluginCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentPluginCommands {
+    /// Check whether the optional plugin is packaged and installed.
+    Diagnose {
+        /// Agent integration target.
+        #[arg(long, default_value = "codex")]
+        target: AgentTarget,
+
+        /// Marketplace file to inspect. Defaults to the personal marketplace.
+        #[arg(long)]
+        marketplace_path: Option<PathBuf>,
+    },
+
+    /// Package and install the optional plugin.
+    Install {
+        /// Agent integration target.
+        #[arg(long, default_value = "codex")]
+        target: AgentTarget,
+
+        /// Marketplace file to write. Defaults to the personal marketplace.
+        #[arg(long)]
+        marketplace_path: Option<PathBuf>,
+
+        /// Do not run `codex plugin add`; useful for CI and tests.
+        #[arg(long)]
+        skip_codex_add: bool,
+    },
+
+    /// Refresh the optional plugin package from this RMS binary.
+    Sync {
+        /// Agent integration target.
+        #[arg(long, default_value = "codex")]
+        target: AgentTarget,
+
+        /// Marketplace file to write. Defaults to the personal marketplace.
+        #[arg(long)]
+        marketplace_path: Option<PathBuf>,
+
+        /// Do not run `codex plugin add`; useful for CI and tests.
+        #[arg(long)]
+        skip_codex_add: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ReleaseCommands {
     /// Run the canonical release-readiness gate.
     Check {
@@ -840,6 +1123,155 @@ enum ReleaseCommands {
 enum Provider {
     None,
     Codex,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum AgentTarget {
+    Codex,
+    Claude,
+}
+
+impl AgentTarget {
+    fn label(self) -> &'static str {
+        match self {
+            AgentTarget::Codex => "codex",
+            AgentTarget::Claude => "claude",
+        }
+    }
+
+    fn skill_root(self, root: &Path) -> PathBuf {
+        match self {
+            AgentTarget::Codex => root.join(".agents").join("skills"),
+            AgentTarget::Claude => root.join(".claude").join("skills"),
+        }
+    }
+
+    fn target_tool(self) -> CommandReadiness {
+        match self {
+            AgentTarget::Codex => command_readiness("codex", &["--version"]),
+            AgentTarget::Claude => command_readiness("claude", &["--version"]),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum ScaffoldShape {
+    #[value(name = "domain-engine")]
+    DomainEngine,
+    #[value(name = "boundary-adapter")]
+    BoundaryAdapter,
+    Workflow,
+    #[value(name = "storage-adapter")]
+    StorageAdapter,
+    #[value(name = "integration-adapter")]
+    IntegrationAdapter,
+    Composite,
+}
+
+impl ScaffoldShape {
+    fn as_str(self) -> &'static str {
+        match self {
+            ScaffoldShape::DomainEngine => "domain-engine",
+            ScaffoldShape::BoundaryAdapter => "boundary-adapter",
+            ScaffoldShape::Workflow => "workflow",
+            ScaffoldShape::StorageAdapter => "storage-adapter",
+            ScaffoldShape::IntegrationAdapter => "integration-adapter",
+            ScaffoldShape::Composite => "composite",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            ScaffoldShape::DomainEngine => "Domain Engine",
+            ScaffoldShape::BoundaryAdapter => "Boundary Adapter",
+            ScaffoldShape::Workflow => "Workflow",
+            ScaffoldShape::StorageAdapter => "Storage Adapter",
+            ScaffoldShape::IntegrationAdapter => "Integration Adapter",
+            ScaffoldShape::Composite => "Composite",
+        }
+    }
+
+    fn purpose(self) -> &'static str {
+        match self {
+            ScaffoldShape::DomainEngine => {
+                "pure decisions, closed variants, validated values, transitions, laws, and trace replay"
+            }
+            ScaffoldShape::BoundaryAdapter => {
+                "parsers, boundary validation, ports, effect adapters, and contract or boundary tests"
+            }
+            ScaffoldShape::Workflow => {
+                "commands, states, events, deadlines, compensation, and recovery evidence"
+            }
+            ScaffoldShape::StorageAdapter => {
+                "persistence ports, failure categories, migration, and recovery evidence"
+            }
+            ScaffoldShape::IntegrationAdapter => {
+                "external service boundaries, retries, idempotency, and reconciliation evidence"
+            }
+            ScaffoldShape::Composite => {
+                "contained submodules, public exports, visibility boundaries, and composition evidence"
+            }
+        }
+    }
+
+    fn roles(self) -> &'static [&'static str] {
+        match self {
+            ScaffoldShape::DomainEngine => &[
+                "representation",
+                "commands",
+                "transitions",
+                "trace-replay",
+                "law-evidence",
+            ],
+            ScaffoldShape::BoundaryAdapter => &[
+                "representation",
+                "parsers",
+                "ports",
+                "adapters",
+                "boundary-evidence",
+            ],
+            ScaffoldShape::Workflow => &[
+                "representation",
+                "commands",
+                "states",
+                "transitions",
+                "compensation",
+                "recovery-evidence",
+            ],
+            ScaffoldShape::StorageAdapter => &[
+                "representation",
+                "persistence-port",
+                "adapter",
+                "migration",
+                "recovery-evidence",
+            ],
+            ScaffoldShape::IntegrationAdapter => &[
+                "representation",
+                "external-port",
+                "adapter",
+                "retry-idempotency",
+                "reconciliation-evidence",
+            ],
+            ScaffoldShape::Composite => &[
+                "submodule-containment",
+                "public-exports",
+                "visibility-boundaries",
+                "composition-evidence",
+            ],
+        }
+    }
+
+    fn inferred(kind: &str, profiles: &[String]) -> Self {
+        if profiles.iter().any(|profile| profile == "workflow") {
+            ScaffoldShape::Workflow
+        } else if kind.contains("adapter") || profiles.iter().any(|profile| profile == "boundary") {
+            ScaffoldShape::BoundaryAdapter
+        } else if kind.contains("composite") {
+            ScaffoldShape::Composite
+        } else {
+            ScaffoldShape::DomainEngine
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -934,6 +1366,42 @@ struct ReadinessItem {
     name: String,
     path: String,
     status: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentIntegrationReport {
+    target: String,
+    root: String,
+    agent_instructions: ReadinessItem,
+    target_instructions: Option<ReadinessItem>,
+    local_skills: AgentSkillsReadiness,
+    config: ConfigReadiness,
+    target_tool: Option<CommandReadiness>,
+    plugin_required: bool,
+    guidance: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentSkillsReadiness {
+    directory: String,
+    status: String,
+    expected: usize,
+    missing: Vec<String>,
+    drifted: Vec<String>,
+    extra: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentPluginReport {
+    target: String,
+    plugin_required: bool,
+    marketplace_path: String,
+    marketplace_status: String,
+    plugin_root: String,
+    plugin_status: String,
+    installed_status: String,
+    target_tool: CommandReadiness,
+    guidance: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1044,10 +1512,12 @@ impl PromptKind {
     fn label(self) -> &'static str {
         match self {
             PromptKind::Plan => "plan",
+            PromptKind::Design => "design",
             PromptKind::Explain => "explain",
             PromptKind::Review => "review",
             PromptKind::Refactor => "refactor",
             PromptKind::Implement => "implement",
+            PromptKind::Intent => "intent",
             PromptKind::EvolveContract => "evolve-contract",
             PromptKind::Prune => "prune",
             PromptKind::Evidence => "evidence",
@@ -1058,10 +1528,12 @@ impl PromptKind {
     fn prompt_id(self) -> &'static str {
         match self {
             PromptKind::Plan => "rms.plan@v1",
+            PromptKind::Design => "rms.design@v1",
             PromptKind::Explain => "rms.explain@v1",
             PromptKind::Review => "rms.review@v1",
             PromptKind::Refactor => "rms.refactor@v1",
             PromptKind::Implement => "rms.implement@v1",
+            PromptKind::Intent => "rms.intent@v1",
             PromptKind::EvolveContract => "rms.evolve-contract@v1",
             PromptKind::Prune => "rms.prune@v1",
             PromptKind::Evidence => "rms.evidence@v1",
@@ -1073,6 +1545,7 @@ impl PromptKind {
         match self {
             PromptKind::Review => Some("review the diff for RMS conformance"),
             PromptKind::Explain => Some("explain how this module works"),
+            PromptKind::Design => Some("design RMS module boundaries and semantic scaffold shapes"),
             PromptKind::Drift => {
                 Some("identify drift between canonical RMS artifacts and implementation reality")
             }
@@ -1088,11 +1561,22 @@ impl PromptKind {
         match self {
             PromptKind::Plan => &[
                 "Restate the requested outcome in the owning context's domain language.",
+                "Check whether the task reveals a new honest module boundary before assuming the current module is sufficient.",
                 "Identify the owning module and smallest affected public surface.",
                 "Classify the change as private implementation, invariant/domain policy, public contract, dependency/effect, state/migration, or workflow.",
                 "Name affected invariants, effects, compatibility promises, and recovery paths.",
-                "Choose representation obligations: closed variants, validated constructors, explicit results, boundary schemas, or lifecycle state only where needed.",
+                "Choose semantic shape before file layout: representation, commands, transitions, ports, adapters, traces, and evidence.",
+                "Choose representation obligations: closed variants, validated constructors, explicit results, boundary schemas, or lifecycle state when behavior depends on order.",
                 "Propose the smallest implementation and verification path.",
+            ],
+            PromptKind::Design => &[
+                "Start from system purpose, contexts, existing modules, glossary language, and the requested task.",
+                "Propose the smallest honest module set; do not create a module for every noun.",
+                "Assign each module a semantic shape: domain-engine, boundary-adapter, workflow, storage-adapter, integration-adapter, or composite.",
+                "Separate pure decisions from external effects, and name required module dependencies.",
+                "Define representation obligations: closed variants, validated values, commands, states, events, accepted/rejected outcomes, and boundary schemas.",
+                "Define focused evidence: laws, contract scenarios, boundary parser tests, trace replay, fuzz/property checks, recovery, or reconciliation.",
+                "Treat provider output and generated plans as advisory evidence until reflected in canonical artifacts.",
             ],
             PromptKind::Explain => &[
                 "Answer from the bounded RMS context first: purpose, ownership, public contracts, invariants, effects, profiles, and verification.",
@@ -1110,19 +1594,33 @@ impl PromptKind {
             PromptKind::Refactor => &[
                 "Preserve public contracts, invariants, declared effects, compatibility, and verification meaning.",
                 "Identify weak representation, duplicated concepts, decision/effect coupling, ownership confusion, boundary leakage, lifecycle clutter, or semantic residue.",
+                "Prefer semantic roles over conventional helper names: representation, transitions, ports, adapters, traces, and evidence.",
                 "Prefer deletion, inlining, renaming, or representation strengthening before new abstractions.",
                 "Escalate to implement-change or evolve-contract if public meaning must change.",
             ],
             PromptKind::Implement => &[
                 "Restate the requested outcome in the owning context's domain language.",
+                "Check whether accepted intent and rationale already exist for this semantic change; if not, stop and run intent capture before coding.",
                 "Classify the change as private implementation, invariant or domain policy, public contract, dependency or effect, state or migration, or workflow.",
+                "Check whether the task requires scope expansion or a module split before deepening the current module.",
                 "Keep the change inside the owning module boundary.",
                 "Update public contracts or manifests first when public meaning changes.",
+                "Update linked intent, decision, contract, law, and evidence records together when accepted semantics evolve.",
                 "Name affected invariants, contracts, effects, compatibility promises, and recovery paths.",
                 "Separate domain decisions from external effects where practical.",
+                "Use semantic implementation roles before file-level code: representation, commands, transitions, ports, adapters, traces, and evidence.",
                 "Use the strongest available representation for invalid states, expected failures, boundary input, and lifecycle transitions.",
                 "Add the smallest evidence that demonstrates the changed promise.",
                 "Return concrete implementation instructions; do not claim edits were made unless the executing agent actually made them.",
+            ],
+            PromptKind::Intent => &[
+                "Think before code: do not propose implementation steps until intent, rationale, contracts, and evidence obligations are understood.",
+                "Normalize the human request into atomic stories with actors, state, actions, success results, failure results, and stale or conflicting-state behavior.",
+                "Ask only the questions needed to resolve product, domain, ownership, source-of-truth, lifecycle, compatibility, or operational ambiguity.",
+                "Synthesize accepted intent into candidate contracts, laws, invariants, glossary terms, ownership, effects, compatibility impact, and proof lanes.",
+                "Separate raw conversation notes from accepted rationale; raw prompt output is evidence, not semantic authority.",
+                "Name the canonical artifacts that must change before implementation: intent notes, decision records, glossary, module manifest, contracts, laws, and verification evidence.",
+                "Stop at an implementation gate when accepted intent is missing or contradictions exist among canonical artifacts.",
             ],
             PromptKind::EvolveContract => &[
                 "Identify all published contract versions and known consumers.",
@@ -1155,10 +1653,19 @@ impl PromptKind {
         match self {
             PromptKind::Plan => &[
                 "Owning module and affected contract surface.",
+                "Whether a new module boundary or semantic shape is required.",
                 "Change classification and compatibility impact.",
                 "Affected invariants, effects, dependencies, profiles, and recovery paths.",
                 "Implementation outline inside the owning boundary.",
                 "Focused verification plan and commands.",
+            ],
+            PromptKind::Design => &[
+                "Recommended module set and semantic shape for each module.",
+                "Recommended module tree, including a composite parent when several semantic modules form one public capability.",
+                "Owned concepts, data, decisions, public contracts, dependencies, effects, and profiles.",
+                "Representation obligations for ADTs, validated values, commands, states, events, and result/rejection types.",
+                "Trace, law, fuzz/property, contract, boundary, recovery, or reconciliation evidence.",
+                "Scope boundaries and assumptions.",
             ],
             PromptKind::Explain => &[
                 "Intelligible plain-language explanation of how the module works.",
@@ -1180,11 +1687,20 @@ impl PromptKind {
             ],
             PromptKind::Implement => &[
                 "Requested outcome in owning-context language.",
+                "Scope expansion or module split decision.",
                 "Change classification and compatibility impact.",
                 "Concrete implementation steps.",
                 "Contract/manifest updates required before code changes.",
                 "Representation choices for invalid states, failures, boundary schemas, or lifecycle transitions.",
                 "Verification and conformance evidence.",
+            ],
+            PromptKind::Intent => &[
+                "Normalized stories and accepted interpretation.",
+                "Questions asked, answers accepted, and unresolved product decisions.",
+                "Candidate contracts, laws, invariants, ownership, source of truth, effects, compatibility, and proof lanes.",
+                "Rationale and rejected alternatives to preserve in decision records.",
+                "Canonical artifacts to update before implementation.",
+                "Implementation gate result: ready, blocked on questions, or drift detected.",
             ],
             PromptKind::EvolveContract => &[
                 "Compatibility classification.",
@@ -1215,15 +1731,18 @@ impl PromptKind {
 
     fn deterministic_checks(self) -> &'static [&'static str] {
         match self {
-            PromptKind::Explain | PromptKind::Plan | PromptKind::Evidence | PromptKind::Drift => {
-                &["rms validate --root <root>", "rms compose --root <root>"]
-            }
+            PromptKind::Explain
+            | PromptKind::Design
+            | PromptKind::Plan
+            | PromptKind::Intent
+            | PromptKind::Evidence
+            | PromptKind::Drift => &["rms validate --root <root>", "rms compose --root <root>"],
             PromptKind::Review
             | PromptKind::Refactor
             | PromptKind::Implement
             | PromptKind::Prune => &[
                 "rms validate --root <root>",
-                "rms verify <implementation.yaml>",
+                "rms verify <implementation.yaml|composite-module.yaml>",
                 "rms compose --root <root>",
             ],
             PromptKind::EvolveContract => &[
@@ -1397,6 +1916,666 @@ fn run_config_init(
     fs::write(&path, rendered).with_context(|| format!("failed to write `{}`", path.display()))?;
     println!("created {}", path.display());
     Ok(())
+}
+
+fn run_agent_diagnose(root: &Path, target: AgentTarget) -> Result<()> {
+    let report = build_agent_integration_report(root, target);
+    print_agent_integration_report(&report);
+    Ok(())
+}
+
+fn run_agent_init(root: &Path, target: AgentTarget, force: bool) -> Result<()> {
+    fs::create_dir_all(root)
+        .with_context(|| format!("failed to create agent root `{}`", root.display()))?;
+    write_agent_guidance(root, target, force, true)?;
+    println!(
+        "initialized {} agent guidance at {}",
+        target.label(),
+        root.display()
+    );
+    Ok(())
+}
+
+fn run_agent_sync(root: &Path, target: AgentTarget) -> Result<()> {
+    fs::create_dir_all(root)
+        .with_context(|| format!("failed to create agent root `{}`", root.display()))?;
+    write_agent_guidance(root, target, true, false)?;
+    println!(
+        "synced {} agent guidance at {}",
+        target.label(),
+        root.display()
+    );
+    Ok(())
+}
+
+fn write_agent_guidance(
+    root: &Path,
+    target: AgentTarget,
+    overwrite_guidance: bool,
+    write_config: bool,
+) -> Result<()> {
+    write_agent_file(&root.join("AGENTS.md"), INIT_AGENTS_MD, overwrite_guidance)?;
+    if target == AgentTarget::Claude {
+        write_agent_file(&root.join("CLAUDE.md"), INIT_CLAUDE_MD, overwrite_guidance)?;
+    }
+    sync_agent_skills(root, target, overwrite_guidance)?;
+    let config_path = root.join(WORKBENCH_CONFIG_PATH);
+    if write_config || !config_path.exists() {
+        write_agent_file(
+            &config_path,
+            &render_workbench_config(Provider::Codex, None, Path::new(DEFAULT_RUN_ROOT)),
+            overwrite_guidance,
+        )?;
+    }
+    Ok(())
+}
+
+fn write_agent_file(path: &Path, contents: &str, overwrite: bool) -> Result<()> {
+    if overwrite {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, contents)
+            .with_context(|| format!("failed to write `{}`", path.display()))?;
+        Ok(())
+    } else {
+        write_new_file(path, contents)
+    }
+}
+
+fn sync_agent_skills(root: &Path, target: AgentTarget, overwrite: bool) -> Result<()> {
+    let skills_root = target.skill_root(root);
+    for (relative_path, contents) in INIT_AGENT_SKILLS {
+        write_agent_file(&skills_root.join(relative_path), contents, overwrite)?;
+    }
+    Ok(())
+}
+
+fn build_agent_integration_report(root: &Path, target: AgentTarget) -> AgentIntegrationReport {
+    let local_skills = agent_skills_readiness(root, target);
+    let config = diagnose_config(root);
+    let target_tool = Some(target.target_tool());
+    let mut guidance = vec![
+        "The RMS CLI is sufficient; plugins and global skills are optional adapters.".to_string(),
+        format!(
+            "Use `rms agent init --target {} --root .` to create missing project-local guidance.",
+            target.label()
+        ),
+        format!(
+            "Use `rms agent sync --target {} --root .` after upgrading RMS to refresh generated guidance.",
+            target.label()
+        ),
+    ];
+    if config.status == "missing" {
+        guidance.push("Project-local `.rms/config.yaml` is missing; agent init will create safe read-only Codex defaults.".to_string());
+    }
+    if !local_skills.missing.is_empty() || !local_skills.drifted.is_empty() {
+        guidance.push(format!(
+            "Local RMS skills are missing or stale; run `rms agent sync --target {} --root .`.",
+            target.label()
+        ));
+    }
+    if target == AgentTarget::Claude && !root.join("CLAUDE.md").exists() {
+        guidance.push(
+            "Claude target expects project-local `CLAUDE.md` that imports `AGENTS.md`.".to_string(),
+        );
+    }
+
+    AgentIntegrationReport {
+        target: target.label().to_string(),
+        root: root.display().to_string(),
+        agent_instructions: file_readiness("AGENTS.md", &root.join("AGENTS.md")),
+        target_instructions: match target {
+            AgentTarget::Codex => None,
+            AgentTarget::Claude => Some(file_readiness("CLAUDE.md", &root.join("CLAUDE.md"))),
+        },
+        local_skills,
+        config,
+        target_tool,
+        plugin_required: false,
+        guidance,
+    }
+}
+
+fn agent_skills_readiness(root: &Path, target: AgentTarget) -> AgentSkillsReadiness {
+    let skills_root = target.skill_root(root);
+    let mut missing = Vec::new();
+    let mut drifted = Vec::new();
+    let mut expected = BTreeSet::new();
+
+    for (relative_path, contents) in INIT_AGENT_SKILLS {
+        expected.insert((*relative_path).to_string());
+        let path = skills_root.join(relative_path);
+        match fs::read_to_string(&path) {
+            Ok(actual) if actual == *contents => {}
+            Ok(_) => drifted.push((*relative_path).to_string()),
+            Err(_) => missing.push((*relative_path).to_string()),
+        }
+    }
+
+    let mut extra = Vec::new();
+    collect_agent_skill_files(&skills_root, &skills_root, &mut extra).ok();
+    extra.retain(|path| !expected.contains(path));
+
+    let status = if !skills_root.exists() {
+        "missing"
+    } else if missing.is_empty() && drifted.is_empty() {
+        "present"
+    } else {
+        "stale"
+    };
+
+    AgentSkillsReadiness {
+        directory: skills_root.display().to_string(),
+        status: status.to_string(),
+        expected: INIT_AGENT_SKILLS.len(),
+        missing,
+        drifted,
+        extra,
+    }
+}
+
+fn collect_agent_skill_files(root: &Path, path: &Path, output: &mut Vec<String>) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    for entry in
+        fs::read_dir(path).with_context(|| format!("failed to read `{}`", path.display()))?
+    {
+        let entry = entry?;
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            collect_agent_skill_files(root, &entry_path, output)?;
+        } else if entry_path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md") {
+            if let Ok(relative) = entry_path.strip_prefix(root) {
+                output.push(relative.display().to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_agent_integration_report(report: &AgentIntegrationReport) {
+    println!("# RMS Agent Integration");
+    println!();
+    println!("Target: {}", report.target);
+    println!("Root: {}", report.root);
+    println!("Plugin required: {}", report.plugin_required);
+    println!();
+
+    println!("## Project Guidance");
+    println!(
+        "{}: {} ({})",
+        report.agent_instructions.name,
+        report.agent_instructions.status,
+        report.agent_instructions.path
+    );
+    if let Some(target_instructions) = &report.target_instructions {
+        println!(
+            "{}: {} ({})",
+            target_instructions.name, target_instructions.status, target_instructions.path
+        );
+    }
+    println!(
+        "local skills: {} ({}, expected {})",
+        report.local_skills.status, report.local_skills.directory, report.local_skills.expected
+    );
+    print_string_list("missing skills", &report.local_skills.missing);
+    print_string_list("drifted skills", &report.local_skills.drifted);
+    print_string_list("extra skills", &report.local_skills.extra);
+    println!();
+
+    println!("## Workbench Config");
+    println!("{}: {}", report.config.path, report.config.status);
+    if let Some(message) = &report.config.message {
+        println!("Message: {message}");
+    }
+    println!(
+        "Default provider: {}",
+        report
+            .config
+            .default_provider
+            .as_deref()
+            .unwrap_or("<none>")
+    );
+    println!(
+        "Codex sandbox: {}",
+        report
+            .config
+            .codex_sandbox
+            .as_deref()
+            .unwrap_or("read-only")
+    );
+    println!(
+        "Codex write scope: {}",
+        report
+            .config
+            .codex_write_scope
+            .as_deref()
+            .unwrap_or("<default>")
+    );
+    println!("Run directory: {}", report.config.run_directory);
+    println!();
+
+    println!("## Target Tool");
+    if let Some(readiness) = &report.target_tool {
+        print_command_readiness(readiness);
+    }
+    println!();
+
+    println!("## Guidance");
+    for item in &report.guidance {
+        println!("- {item}");
+    }
+}
+
+fn run_agent_plugin_diagnose(target: AgentTarget, marketplace_path: Option<&Path>) -> Result<()> {
+    let report = build_agent_plugin_report(target, marketplace_path)?;
+    print_agent_plugin_report(&report);
+    Ok(())
+}
+
+fn run_agent_plugin_install(
+    target: AgentTarget,
+    marketplace_path: Option<&Path>,
+    skip_codex_add: bool,
+) -> Result<()> {
+    ensure_agent_plugin_supported(target)?;
+    let paths = agent_plugin_paths(marketplace_path)?;
+    write_codex_plugin_package(&paths, true)?;
+    ensure_personal_marketplace_entry(&paths)?;
+    if !skip_codex_add {
+        run_codex_plugin_add("rms", "personal")?;
+    }
+    let report = build_agent_plugin_report(target, Some(&paths.marketplace_path))?;
+    print_agent_plugin_report(&report);
+    Ok(())
+}
+
+fn run_agent_plugin_sync(
+    target: AgentTarget,
+    marketplace_path: Option<&Path>,
+    skip_codex_add: bool,
+) -> Result<()> {
+    ensure_agent_plugin_supported(target)?;
+    let paths = agent_plugin_paths(marketplace_path)?;
+    write_codex_plugin_package(&paths, true)?;
+    ensure_personal_marketplace_entry(&paths)?;
+    if !skip_codex_add {
+        run_codex_plugin_add("rms", "personal")?;
+    }
+    let report = build_agent_plugin_report(target, Some(&paths.marketplace_path))?;
+    print_agent_plugin_report(&report);
+    Ok(())
+}
+
+fn ensure_agent_plugin_supported(target: AgentTarget) -> Result<()> {
+    match target {
+        AgentTarget::Codex => Ok(()),
+        AgentTarget::Claude => bail!(
+            "Claude plugin installation is not implemented; use `rms agent init --target claude --root .` for project-local scaffolding"
+        ),
+    }
+}
+
+struct AgentPluginPaths {
+    marketplace_path: PathBuf,
+    plugin_root: PathBuf,
+}
+
+fn agent_plugin_paths(marketplace_path: Option<&Path>) -> Result<AgentPluginPaths> {
+    let marketplace_path = match marketplace_path {
+        Some(path) => expand_tilde(path),
+        None => home_dir()?.join(".agents/plugins/marketplace.json"),
+    };
+    let marketplace_root = marketplace_source_root(&marketplace_path);
+    Ok(AgentPluginPaths {
+        plugin_root: marketplace_root.join("plugins/rms"),
+        marketplace_path,
+    })
+}
+
+fn marketplace_source_root(marketplace_path: &Path) -> PathBuf {
+    let components = marketplace_path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    if components.len() >= 3
+        && components[components.len() - 1] == "marketplace.json"
+        && components[components.len() - 2] == "plugins"
+        && components[components.len() - 3] == ".agents"
+    {
+        return marketplace_path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+    }
+    marketplace_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn expand_tilde(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        home_dir().unwrap_or_else(|_| PathBuf::from(raw.as_ref()))
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        home_dir()
+            .map(|home| home.join(rest))
+            .unwrap_or_else(|_| PathBuf::from(raw.as_ref()))
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn home_dir() -> Result<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("HOME is not set; pass --marketplace-path explicitly"))
+}
+
+fn write_codex_plugin_package(paths: &AgentPluginPaths, overwrite: bool) -> Result<()> {
+    if paths.plugin_root.exists() && overwrite {
+        fs::remove_dir_all(&paths.plugin_root)
+            .with_context(|| format!("failed to remove `{}`", paths.plugin_root.display()))?;
+    }
+    fs::create_dir_all(paths.plugin_root.join(".codex-plugin"))?;
+    fs::create_dir_all(paths.plugin_root.join("skills"))?;
+    fs::write(
+        paths.plugin_root.join(".codex-plugin/plugin.json"),
+        render_codex_plugin_manifest(),
+    )
+    .with_context(|| {
+        format!(
+            "failed to write `{}`",
+            paths
+                .plugin_root
+                .join(".codex-plugin/plugin.json")
+                .display()
+        )
+    })?;
+    fs::write(paths.plugin_root.join("README.md"), CODEX_PLUGIN_README).with_context(|| {
+        format!(
+            "failed to write `{}`",
+            paths.plugin_root.join("README.md").display()
+        )
+    })?;
+    for (relative_path, contents) in INIT_AGENT_SKILLS {
+        write_agent_file(
+            &paths.plugin_root.join("skills").join(relative_path),
+            contents,
+            true,
+        )?;
+    }
+    validate_generated_codex_plugin(&paths.plugin_root)?;
+    Ok(())
+}
+
+fn render_codex_plugin_manifest() -> String {
+    let version = format!(
+        "{}+codex.{}",
+        env!("CARGO_PKG_VERSION")
+            .split('+')
+            .next()
+            .unwrap_or(env!("CARGO_PKG_VERSION")),
+        plugin_cachebuster()
+    );
+    serde_json::to_string_pretty(&json!({
+        "name": "rms",
+        "version": version,
+        "description": "Codex adapter for Reliable Modular Systems skills and workflows.",
+        "author": {
+            "name": "Reliable Modular Systems",
+            "url": "https://github.com/reliable-modular-systems/reliable-modular-systems"
+        },
+        "homepage": "https://github.com/reliable-modular-systems/reliable-modular-systems",
+        "repository": "https://github.com/reliable-modular-systems/reliable-modular-systems",
+        "license": "Apache-2.0",
+        "keywords": ["architecture", "modularity", "agents", "validation", "reliability"],
+        "skills": "./skills/",
+        "interface": {
+            "displayName": "Reliable Modular Systems",
+            "shortDescription": "Build software through explicit module contracts.",
+            "longDescription": "RMS gives Codex bounded workflows for inspecting modules, implementing changes, pruning semantic residue, evolving contracts, composing modules, and verifying conformance against canonical manifests.",
+            "developerName": "Reliable Modular Systems",
+            "category": "Developer Tools",
+            "capabilities": ["Code", "Review", "Workflow"],
+            "defaultPrompt": [
+                "Inspect this RMS module before changing it.",
+                "Implement this change within the owning module.",
+                "Verify this module against its RMS contracts."
+            ],
+            "brandColor": "#2563EB"
+        }
+    }))
+    .unwrap_or_else(|_| "{}".to_string())
+        + "\n"
+}
+
+fn plugin_cachebuster() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
+fn validate_generated_codex_plugin(plugin_root: &Path) -> Result<()> {
+    let manifest_path = plugin_root.join(".codex-plugin/plugin.json");
+    let manifest_source = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed to read `{}`", manifest_path.display()))?;
+    let manifest: JsonValue = serde_json::from_str(&manifest_source)
+        .with_context(|| format!("failed to parse `{}`", manifest_path.display()))?;
+    for field in ["name", "version", "description", "skills", "interface"] {
+        if manifest.get(field).is_none() {
+            bail!("generated Codex plugin manifest missing `{field}`");
+        }
+    }
+    if manifest.get("skills").and_then(JsonValue::as_str) != Some("./skills/") {
+        bail!("generated Codex plugin manifest must use skills path `./skills/`");
+    }
+    for (relative_path, contents) in INIT_AGENT_SKILLS {
+        let actual = fs::read_to_string(plugin_root.join("skills").join(relative_path))
+            .with_context(|| format!("failed to read generated plugin skill `{relative_path}`"))?;
+        if actual != *contents {
+            bail!("generated plugin skill `{relative_path}` drifted from embedded RMS skill");
+        }
+    }
+    Ok(())
+}
+
+fn ensure_personal_marketplace_entry(paths: &AgentPluginPaths) -> Result<()> {
+    if let Some(parent) = paths.marketplace_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut marketplace = if paths.marketplace_path.exists() {
+        let source = fs::read_to_string(&paths.marketplace_path)
+            .with_context(|| format!("failed to read `{}`", paths.marketplace_path.display()))?;
+        serde_json::from_str::<JsonValue>(&source)
+            .with_context(|| format!("failed to parse `{}`", paths.marketplace_path.display()))?
+    } else {
+        json!({
+            "name": "personal",
+            "interface": { "displayName": "Personal" },
+            "plugins": []
+        })
+    };
+
+    if marketplace
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .is_none()
+    {
+        marketplace["name"] = JsonValue::String("personal".to_string());
+    }
+    if marketplace
+        .get("interface")
+        .and_then(JsonValue::as_object)
+        .is_none()
+    {
+        marketplace["interface"] = json!({ "displayName": "Personal" });
+    }
+    if marketplace
+        .get("plugins")
+        .and_then(JsonValue::as_array)
+        .is_none()
+    {
+        marketplace["plugins"] = JsonValue::Array(Vec::new());
+    }
+    let plugins = marketplace
+        .get_mut("plugins")
+        .and_then(JsonValue::as_array_mut)
+        .ok_or_else(|| anyhow!("marketplace plugins must be an array"))?;
+    let entry = json!({
+        "name": "rms",
+        "source": {
+            "source": "local",
+            "path": "./plugins/rms"
+        },
+        "policy": {
+            "installation": "AVAILABLE",
+            "authentication": "ON_INSTALL"
+        },
+        "category": "Developer Tools"
+    });
+    if let Some(existing) = plugins
+        .iter_mut()
+        .find(|plugin| plugin.get("name").and_then(JsonValue::as_str) == Some("rms"))
+    {
+        *existing = entry;
+    } else {
+        plugins.push(entry);
+    }
+    fs::write(
+        &paths.marketplace_path,
+        serde_json::to_string_pretty(&marketplace)? + "\n",
+    )
+    .with_context(|| format!("failed to write `{}`", paths.marketplace_path.display()))?;
+    Ok(())
+}
+
+fn run_codex_plugin_add(plugin_name: &str, marketplace_name: &str) -> Result<()> {
+    let status = Command::new("codex")
+        .args([
+            "plugin",
+            "add",
+            &format!("{plugin_name}@{marketplace_name}"),
+        ])
+        .status()
+        .with_context(|| "failed to start `codex plugin add`")?;
+    if !status.success() {
+        bail!("`codex plugin add {plugin_name}@{marketplace_name}` failed");
+    }
+    Ok(())
+}
+
+fn build_agent_plugin_report(
+    target: AgentTarget,
+    marketplace_path: Option<&Path>,
+) -> Result<AgentPluginReport> {
+    let paths = agent_plugin_paths(marketplace_path)?;
+    let marketplace_status = if marketplace_has_plugin(&paths.marketplace_path, "rms") {
+        "present"
+    } else if paths.marketplace_path.exists() {
+        "missing-entry"
+    } else {
+        "missing"
+    };
+    let plugin_status = if validate_generated_codex_plugin(&paths.plugin_root).is_ok() {
+        "present"
+    } else if paths.plugin_root.exists() {
+        "invalid"
+    } else {
+        "missing"
+    };
+    let installed_status = codex_plugin_installed_status("rms", "personal");
+    let mut guidance = vec![
+        "Project-local RMS guidance remains sufficient; plugin installation is optional.".to_string(),
+        "Use `rms agent plugin install --target codex` to write the personal plugin and run `codex plugin add rms@personal`.".to_string(),
+        "Use `rms agent plugin sync --target codex` after upgrading RMS so Codex sees refreshed skills.".to_string(),
+        "Start a new Codex thread after plugin install or sync to load updated skills.".to_string(),
+    ];
+    if target != AgentTarget::Codex {
+        guidance.push("Only Codex plugin packaging is currently implemented.".to_string());
+    }
+    Ok(AgentPluginReport {
+        target: target.label().to_string(),
+        plugin_required: false,
+        marketplace_path: paths.marketplace_path.display().to_string(),
+        marketplace_status: marketplace_status.to_string(),
+        plugin_root: paths.plugin_root.display().to_string(),
+        plugin_status: plugin_status.to_string(),
+        installed_status,
+        target_tool: target.target_tool(),
+        guidance,
+    })
+}
+
+fn marketplace_has_plugin(marketplace_path: &Path, name: &str) -> bool {
+    let Ok(source) = fs::read_to_string(marketplace_path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<JsonValue>(&source) else {
+        return false;
+    };
+    value
+        .get("plugins")
+        .and_then(JsonValue::as_array)
+        .map(|plugins| {
+            plugins
+                .iter()
+                .any(|plugin| plugin.get("name").and_then(JsonValue::as_str) == Some(name))
+        })
+        .unwrap_or(false)
+}
+
+fn codex_plugin_installed_status(plugin_name: &str, marketplace_name: &str) -> String {
+    let Ok(home) = home_dir() else {
+        return "unknown".to_string();
+    };
+    let config_path = home.join(".codex/config.toml");
+    let Ok(config) = load_toml(&config_path) else {
+        return "unknown".to_string();
+    };
+    let key = format!("{plugin_name}@{marketplace_name}");
+    let enabled = config
+        .get("plugins")
+        .and_then(TomlValue::as_table)
+        .and_then(|plugins| plugins.get(&key))
+        .and_then(TomlValue::as_table)
+        .and_then(|plugin| plugin.get("enabled"))
+        .and_then(TomlValue::as_bool);
+    match enabled {
+        Some(true) => "installed-enabled".to_string(),
+        Some(false) => "installed-disabled".to_string(),
+        None => "not-installed".to_string(),
+    }
+}
+
+fn print_agent_plugin_report(report: &AgentPluginReport) {
+    println!("# RMS Agent Plugin");
+    println!();
+    println!("Target: {}", report.target);
+    println!("Plugin required: {}", report.plugin_required);
+    println!();
+    println!("## Codex Plugin");
+    println!(
+        "marketplace: {} ({})",
+        report.marketplace_status, report.marketplace_path
+    );
+    println!(
+        "plugin package: {} ({})",
+        report.plugin_status, report.plugin_root
+    );
+    println!("installed: {}", report.installed_status);
+    print_command_readiness(&report.target_tool);
+    println!();
+    println!("## Guidance");
+    for item in &report.guidance {
+        println!("- {item}");
+    }
 }
 
 fn run_release_check(root: &Path, skip_cargo_package: bool) -> Result<()> {
@@ -1954,6 +3133,9 @@ fn render_workbench_config(provider: Provider, model: Option<&str>, run_root: &P
         let _ = writeln!(out, "    model: {}", yaml_quote(model));
     }
     out.push_str("    sandbox: read-only\n");
+    out.push_str("    # Provider edits are opt-in; when needed, uncomment both lines below.\n");
+    out.push_str("    # sandbox: workspace-write\n");
+    out.push_str("    # write_scope: module\n");
     let _ = writeln!(
         out,
         "    # timeout_seconds: {}",
@@ -2139,6 +3321,33 @@ fn main() -> Result<()> {
                 &options,
             )
         }
+        Commands::Design {
+            task,
+            root,
+            ai,
+            provider,
+            record,
+            run_root,
+            model,
+            sandbox,
+            write_scope,
+            provider_timeout_seconds,
+        } => {
+            let options = resolve_prompt_run_options(
+                &root,
+                RawPromptRunOptions {
+                    ai,
+                    provider,
+                    record,
+                    run_root,
+                    model,
+                    sandbox,
+                    write_scope,
+                    provider_timeout_seconds,
+                },
+            )?;
+            run_design(&root, &task, &options)
+        }
         Commands::Review {
             module,
             task,
@@ -2256,6 +3465,42 @@ fn main() -> Result<()> {
                 &options,
             )
         }
+        Commands::Intent {
+            module,
+            task,
+            root,
+            ai,
+            provider,
+            record,
+            run_root,
+            model,
+            sandbox,
+            write_scope,
+            provider_timeout_seconds,
+        } => {
+            let options = resolve_prompt_run_options(
+                &root,
+                RawPromptRunOptions {
+                    ai,
+                    provider,
+                    record,
+                    run_root,
+                    model,
+                    sandbox,
+                    write_scope,
+                    provider_timeout_seconds,
+                },
+            )?;
+            run_prompt(
+                PromptKind::Intent,
+                &module,
+                &root,
+                Some(&task),
+                None,
+                false,
+                &options,
+            )
+        }
         Commands::EvolveContract {
             module,
             task,
@@ -2355,6 +3600,31 @@ fn main() -> Result<()> {
                 force,
             } => run_config_init(&root, provider, model.as_deref(), &run_root, force),
         },
+        Commands::Agent { command } => match command {
+            AgentCommands::Diagnose { root, target } => run_agent_diagnose(&root, target),
+            AgentCommands::Init {
+                root,
+                target,
+                force,
+            } => run_agent_init(&root, target, force),
+            AgentCommands::Sync { root, target } => run_agent_sync(&root, target),
+            AgentCommands::Plugin { command } => match command {
+                AgentPluginCommands::Diagnose {
+                    target,
+                    marketplace_path,
+                } => run_agent_plugin_diagnose(target, marketplace_path.as_deref()),
+                AgentPluginCommands::Install {
+                    target,
+                    marketplace_path,
+                    skip_codex_add,
+                } => run_agent_plugin_install(target, marketplace_path.as_deref(), skip_codex_add),
+                AgentPluginCommands::Sync {
+                    target,
+                    marketplace_path,
+                    skip_codex_add,
+                } => run_agent_plugin_sync(target, marketplace_path.as_deref(), skip_codex_add),
+            },
+        },
         Commands::Release { command } => match command {
             ReleaseCommands::Check {
                 root,
@@ -2366,6 +3636,12 @@ fn main() -> Result<()> {
             print_context_packet(&manifest, &root, task.as_deref())?;
             Ok(())
         }
+        Commands::Route {
+            module,
+            task,
+            root,
+            json,
+        } => run_route(&module, &root, &task, json),
         Commands::Atlas {
             module,
             root,
@@ -2388,10 +3664,7 @@ fn main() -> Result<()> {
         }
         Commands::CheckCompat { old, new, json } => run_check_compat(&old, &new, json),
         Commands::Compose { root, json } => run_compose(&root, json),
-        Commands::Verify {
-            implementation,
-            dry_run,
-        } => run_verify(&implementation, dry_run),
+        Commands::Verify { target, dry_run } => run_verify(&target, dry_run),
         Commands::Package {
             module,
             output,
@@ -2411,8 +3684,64 @@ fn main() -> Result<()> {
             purpose,
             kind,
             profile,
+            shape,
             binding,
-        } => run_add_module(&path, &name, &purpose, &kind, &profile, binding.as_deref()),
+            root,
+            ai,
+            provider,
+            record,
+            run_root,
+            model,
+            sandbox,
+            write_scope,
+            provider_timeout_seconds,
+        } => {
+            let options = resolve_prompt_run_options(
+                &root,
+                RawPromptRunOptions {
+                    ai,
+                    provider,
+                    record,
+                    run_root,
+                    model,
+                    sandbox,
+                    write_scope,
+                    provider_timeout_seconds,
+                },
+            )?;
+            let request = AddModuleRequest {
+                path,
+                name,
+                purpose,
+                kind,
+                profiles: profile,
+                shape,
+                binding,
+                root,
+            };
+            run_add_module(request, &options)
+        }
+        Commands::AddCapability {
+            path,
+            name,
+            purpose,
+            public_command,
+            domain_child,
+            boundary_child,
+            domain_command,
+            domain_binding,
+            boundary_binding,
+        } => run_add_capability(AddCapabilityRequest {
+            path,
+            name,
+            purpose,
+            public_command,
+            domain_child,
+            boundary_child,
+            domain_command,
+            domain_binding,
+            boundary_binding,
+        }),
     }
 }
 
@@ -2592,7 +3921,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
                 "Use `rms gate --root {}` to run git-impact-selected RMS checks.",
                 root.display()
             ),
-            "Use `rms verify <implementation.yaml>` when an implementation binding declares verification.".to_string(),
+            "Use `rms verify <implementation.yaml>` when an implementation binding declares verification, or `rms verify <composite-module.yaml>` for composite rollups.".to_string(),
         ],
     })
 }
@@ -3039,6 +4368,361 @@ fn run_prompt(
     }
 
     Ok(())
+}
+
+fn run_design(root: &Path, task: &str, options: &PromptRunOptions) -> Result<()> {
+    let manifest = synthetic_workbench_manifest(root, "rms-design", "system design advisory");
+    let mut rendered = render_design_prompt(root, task)?;
+    if options.provider != Provider::None {
+        rendered.push_str(&render_provider_execution_scope(&manifest, root, options));
+    }
+
+    let run_dir = if options.record || options.provider != Provider::None {
+        Some(write_prompt_run_record(
+            &manifest,
+            root,
+            PromptKind::Design,
+            Some(task),
+            None,
+            false,
+            &rendered,
+            options,
+        )?)
+    } else {
+        None
+    };
+
+    match options.provider {
+        Provider::None => {
+            println!("{rendered}");
+            if let Some(run_dir) = run_dir {
+                eprintln!("run record: {}", run_dir.display());
+            }
+        }
+        Provider::Codex => {
+            let run_dir =
+                run_dir.ok_or_else(|| anyhow!("provider execution requires run record"))?;
+            execute_codex_provider(root, &manifest, &rendered, &run_dir, options)?;
+            println!("run record: {}", run_dir.display());
+            println!("response: {}", run_dir.join("response.md").display());
+        }
+    }
+
+    Ok(())
+}
+
+fn render_design_prompt(root: &Path, task: &str) -> Result<String> {
+    let modules = discover_module_manifests(root)?;
+    let mut out = String::new();
+    writeln!(out, "# RMS Workbench Prompt")?;
+    writeln!(out)?;
+    writeln!(out, "Prompt: {}", PromptKind::Design.prompt_id())?;
+    writeln!(
+        out,
+        "Mode: advisory; no edits are performed by this command"
+    )?;
+    writeln!(out, "Root: {}", root.display())?;
+    writeln!(out, "Task: {task}")?;
+    writeln!(out)?;
+    writeln!(out, "## Operating Rule")?;
+    writeln!(out, "Use RMS canonical artifacts as the source of architectural truth. Use design output as advisory evidence until reflected in system, context, module, contract, implementation, and verification artifacts.")?;
+    writeln!(out)?;
+    append_design_context(&mut out, root, &modules)?;
+    append_design_recommendations(&mut out, task, &modules)?;
+    writeln!(out)?;
+    writeln!(out, "## Workflow")?;
+    for item in PromptKind::Design.workflow() {
+        writeln!(out, "- {item}")?;
+    }
+    writeln!(out)?;
+    writeln!(out, "## Expected Output")?;
+    for item in PromptKind::Design.expected_output() {
+        writeln!(out, "- {item}")?;
+    }
+    writeln!(out)?;
+    writeln!(out, "## Deterministic Checks")?;
+    for item in PromptKind::Design.deterministic_checks() {
+        writeln!(out, "- {item}")?;
+    }
+    Ok(out)
+}
+
+fn append_design_context(out: &mut String, root: &Path, modules: &[LoadedManifest]) -> Result<()> {
+    writeln!(out, "## Repository Context")?;
+    for file_name in ["system.yaml", "context-map.yaml", "GLOSSARY.md"] {
+        let path = root.join(file_name);
+        if path.exists() {
+            writeln!(out, "- {}", path.display())?;
+        }
+    }
+    if modules.is_empty() {
+        writeln!(out, "- Modules: <none discovered>")?;
+    } else {
+        writeln!(out, "- Modules:")?;
+        for module in modules {
+            let name = get_str(&module.value, &["module", "name"]).unwrap_or("<unknown>");
+            let kind = get_str(&module.value, &["module", "kind"]).unwrap_or("<missing>");
+            let purpose = get_str(&module.value, &["module", "purpose"]).unwrap_or("<missing>");
+            let profiles = get_string_array(&module.value, &["profiles"]).join(", ");
+            writeln!(
+                out,
+                "  - {} [{}] profiles={} path={} purpose={}",
+                name,
+                kind,
+                if profiles.is_empty() {
+                    "<none>"
+                } else {
+                    &profiles
+                },
+                module.path.display(),
+                purpose
+            )?;
+            for advisory in shape_advisories(module) {
+                writeln!(out, "    - advisory: {advisory}")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn append_design_recommendations(
+    out: &mut String,
+    task: &str,
+    modules: &[LoadedManifest],
+) -> Result<()> {
+    writeln!(out)?;
+    writeln!(out, "## Deterministic Design Hints")?;
+    let lower = task.to_lowercase();
+    let boundary_terms = [
+        "browser",
+        "web",
+        "ui",
+        "cli",
+        "command-line",
+        "input",
+        "output",
+        "network",
+        "storage",
+        "external",
+        "integration",
+        "file",
+        "time",
+        "random",
+    ];
+    let decision_terms = [
+        "rule",
+        "rules",
+        "engine",
+        "decision",
+        "transition",
+        "state",
+        "invariant",
+        "workflow",
+        "game",
+        "resolver",
+        "validation",
+    ];
+    let mentions_boundary = boundary_terms.iter().any(|term| lower.contains(term));
+    let mentions_decision = decision_terms.iter().any(|term| lower.contains(term));
+    if mentions_boundary && mentions_decision {
+        writeln!(out, "- Candidate split: invariant-bearing decisions in a `domain-engine` plus untrusted input/output and effects in a `boundary-adapter`.")?;
+        writeln!(out)?;
+        writeln!(out, "### Recommended Module Tree")?;
+        writeln!(
+            out,
+            "- `<capability>` [composite]: public product/capability surface; exports child-backed commands, queries, events, or capabilities."
+        )?;
+        writeln!(
+            out,
+            "  - `<capability>-rules` [domain-engine, internal]: pure invariant-bearing decisions, closed variants, validated values, accepted/rejected transitions, laws, and trace replay."
+        )?;
+        writeln!(
+            out,
+            "  - `<capability>-adapter` [boundary-adapter, internal]: untrusted input/output, UI/CLI/web/process/network/storage/time/randomness effects, parsers, ports, and boundary evidence."
+        )?;
+        writeln!(
+            out,
+            "- Add more adapter children only when there are distinct external surfaces; keep the parent export explicit rather than inferred from children."
+        )?;
+        writeln!(out)?;
+        writeln!(out, "- Keep rendering, input, storage, timers, time, randomness, process, network, and external-service effects outside the pure transition module.")?;
+    }
+    writeln!(out, "- Choose `domain-engine` when the module owns pure decisions, invariants, transitions, or traceable rules.")?;
+    writeln!(out, "- Choose `boundary-adapter` when untrusted input, UI, CLI, network, storage, time, randomness, or external effects enter or leave.")?;
+    if modules
+        .iter()
+        .any(|module| !shape_advisories(module).is_empty())
+    {
+        writeln!(out, "- Existing modules show shape or boundary pressure; align scaffold shape, module kind, profiles, and pure/effectful responsibilities before implementation.")?;
+    }
+    writeln!(out, "- Representation belongs in an explicit role/unit: closed variants, validated values, commands, states, events, and accepted/rejected result types.")?;
+    writeln!(out, "- Transition behavior should be replayable from command traces and suitable for law/property/fuzz evidence where risk justifies it.")?;
+    Ok(())
+}
+
+fn discover_module_manifests(root: &Path) -> Result<Vec<LoadedManifest>> {
+    let mut modules = Vec::new();
+    for path in discover_targets(
+        root,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )? {
+        let manifest = load_manifest(&path)?;
+        if get_str(&manifest.value, &["spec"]) == Some("rms/module/v0.1") {
+            modules.push(manifest);
+        }
+    }
+    Ok(modules)
+}
+
+fn shape_advisories(manifest: &LoadedManifest) -> Vec<String> {
+    let profiles = get_string_array(&manifest.value, &["profiles"]);
+    let decisions = get_string_array(&manifest.value, &["owns", "decisions"]);
+    let concepts = get_string_array(&manifest.value, &["owns", "concepts"]);
+    let effects = get_path(&manifest.value, &["effects"])
+        .and_then(YamlValue::as_sequence)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let kind = get_str(&manifest.value, &["module", "kind"]).unwrap_or("");
+    let has_boundary = profiles.iter().any(|profile| profile == "boundary") || kind == "adapter";
+    let has_domain_decisions = decisions.iter().any(|decision| {
+        is_domain_rule_decision(decision) || !is_boundary_adapter_decision(decision)
+    });
+    let has_effects = effects > 0;
+    let mut advisories = shape_consistency_advisories(manifest);
+    if has_boundary && has_domain_decisions && has_effects {
+        advisories.push("module mixes boundary effects with owned domain decisions; consider a domain-engine plus boundary-adapter split".to_string());
+    }
+    let lifecycle_words = [
+        "state",
+        "status",
+        "transition",
+        "lifecycle",
+        "step",
+        "phase",
+    ];
+    let owns_lifecycle = concepts.iter().chain(decisions.iter()).any(|term| {
+        lifecycle_words
+            .iter()
+            .any(|word| term.to_lowercase().contains(word))
+    });
+    if owns_lifecycle && get_path(&manifest.value, &["state"]).is_none() {
+        advisories.push("owned lifecycle/order terms are present without a state or transition model; consider explicit accepted/rejected transitions".to_string());
+    }
+    advisories
+}
+
+fn shape_consistency_advisories(manifest: &LoadedManifest) -> Vec<String> {
+    let profiles = get_string_array(&manifest.value, &["profiles"]);
+    let effects = get_path(&manifest.value, &["effects"])
+        .and_then(YamlValue::as_sequence)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let kind = get_str(&manifest.value, &["module", "kind"]).unwrap_or("");
+    let scaffold_shape = get_str(&manifest.value, &["x-scaffold", "shape"]).unwrap_or("");
+    let has_boundary_profile = profiles.iter().any(|profile| profile == "boundary");
+    let mut advisories = Vec::new();
+    if scaffold_shape == "boundary-adapter" && kind != "adapter" {
+        advisories.push(
+            "boundary-adapter scaffold is not declared as module.kind `adapter`; align kind with semantic responsibility or explain the exception".to_string(),
+        );
+    }
+    if scaffold_shape == "boundary-adapter" && !has_boundary_profile {
+        advisories.push(
+            "boundary-adapter scaffold lacks the `boundary` profile; declare boundary obligations for untrusted input/output and effects".to_string(),
+        );
+    }
+    if scaffold_shape == "domain-engine" && effects > 0 {
+        advisories.push(
+            "domain-engine scaffold declares effects; keep pure decisions separate from adapters unless the manifest intentionally owns an effectful boundary".to_string(),
+        );
+    }
+    advisories
+}
+
+fn is_boundary_adapter_decision(decision: &str) -> bool {
+    let lower = decision.to_lowercase();
+    let adapter_terms = [
+        "adapt",
+        "adapter",
+        "authentication",
+        "authorization",
+        "boundary",
+        "cli",
+        "decode",
+        "delegate",
+        "delegation",
+        "deserialize",
+        "dom",
+        "effect",
+        "encode",
+        "http",
+        "input",
+        "io",
+        "map",
+        "malformed",
+        "normalize",
+        "parse",
+        "parser",
+        "port",
+        "render",
+        "request",
+        "response",
+        "route",
+        "routing",
+        "schema",
+        "serialize",
+        "transport",
+        "ui",
+        "validate",
+        "validation",
+    ];
+    adapter_terms.iter().any(|term| lower.contains(term))
+}
+
+fn is_domain_rule_decision(decision: &str) -> bool {
+    let lower = decision.to_lowercase();
+    if lower.contains("delegate") || lower.contains("delegation") {
+        return false;
+    }
+    let domain_terms = [
+        "collision",
+        "draw",
+        "game over",
+        "invariant",
+        "law",
+        "legal move",
+        "lifecycle",
+        "order",
+        "outcome",
+        "rule",
+        "score",
+        "state",
+        "status",
+        "terminal",
+        "transition",
+        "turn",
+        "win",
+    ];
+    domain_terms.iter().any(|term| lower.contains(term))
+}
+
+fn synthetic_workbench_manifest(root: &Path, name: &str, purpose: &str) -> LoadedManifest {
+    LoadedManifest {
+        path: root.join(format!("{}.workbench.yaml", sanitize_run_segment(name))),
+        value: serde_yaml::from_str(&render_module_yaml(
+            name,
+            purpose,
+            "workbench",
+            &[String::from("core")],
+            None,
+        ))
+        .unwrap_or(YamlValue::Null),
+    }
 }
 
 fn write_prompt_run_record(
@@ -3671,6 +5355,11 @@ fn render_workbench_prompt(
     writeln!(out, "Use RMS canonical artifacts as the source of architectural truth. Do not infer ownership, effects, contracts, compatibility, or verification obligations from incidental code shape when the manifest or contracts say otherwise.")?;
     writeln!(out)?;
 
+    append_route_recommendation_prompt(&mut out, manifest, root, effective_task, kind)?;
+    if kind == PromptKind::Evidence {
+        append_evidence_guidance_prompt(&mut out, manifest, root, effective_task)?;
+    }
+
     append_prompt_context(&mut out, manifest, root)?;
     writeln!(out)?;
 
@@ -3804,6 +5493,192 @@ fn append_impact_truncation_note(out: &mut String, total: usize, limit: usize) -
     Ok(())
 }
 
+fn append_route_recommendation_prompt(
+    out: &mut String,
+    manifest: &LoadedManifest,
+    root: &Path,
+    task: &str,
+    kind: PromptKind,
+) -> Result<()> {
+    let report = build_route_report(&manifest.path, root, task)?;
+    if report.result == RouteResult::TargetOnly {
+        return Ok(());
+    }
+
+    append_route_recommendation_section(out, &report)?;
+    if kind == PromptKind::Implement {
+        writeln!(out)?;
+        writeln!(out, "### Implementation Routing Rule")?;
+        match report.result {
+            RouteResult::Routed => {
+                let recommendation = report
+                    .recommendation
+                    .as_ref()
+                    .map(|module| module.name.as_str())
+                    .unwrap_or("<unknown>");
+                writeln!(
+                    out,
+                    "- Implement in `{recommendation}` unless the task explicitly changes parent composition, exports, parent contracts, or parent evidence."
+                )?;
+                writeln!(
+                    out,
+                    "- Do not add private implementation behavior to composite parent `{}` as a convenience.",
+                    report.target.name
+                )?;
+            }
+            RouteResult::Ambiguous => {
+                writeln!(
+                    out,
+                    "- Do not edit yet. Inspect the route candidates and choose the owning module before implementation."
+                )?;
+            }
+            RouteResult::TargetOnly => {}
+        }
+    }
+    writeln!(out)?;
+    Ok(())
+}
+
+fn append_route_recommendation_section(out: &mut String, report: &RouteReport) -> Result<()> {
+    writeln!(out, "## Route Recommendation")?;
+    writeln!(
+        out,
+        "Derived from canonical composition, exports, semantic shapes, public surfaces, and task language. Treat this as routing evidence, not architectural authority."
+    )?;
+    writeln!(out, "- Result: {}", route_result_label(report.result))?;
+    writeln!(
+        out,
+        "- Target: {} ({}, shape: {})",
+        report.target.name, report.target.kind, report.target.shape
+    )?;
+    if let Some(recommendation) = &report.recommendation {
+        writeln!(
+            out,
+            "- Recommended owner: {} ({}, shape: {})",
+            recommendation.name, recommendation.kind, recommendation.shape
+        )?;
+        writeln!(out, "- Recommended path: {}", recommendation.path)?;
+    } else {
+        writeln!(out, "- Recommended owner: <ambiguous>")?;
+    }
+
+    writeln!(out)?;
+    writeln!(out, "### Route Candidates")?;
+    for candidate in &report.candidates {
+        let visibility = candidate.module.visibility.as_deref().unwrap_or("<target>");
+        writeln!(
+            out,
+            "- {} score={} visibility={} shape={} path={}",
+            candidate.module.name,
+            candidate.score,
+            visibility,
+            candidate.module.shape,
+            candidate.module.path
+        )?;
+        for reason in &candidate.reasons {
+            writeln!(out, "  - {reason}")?;
+        }
+    }
+
+    if !report.warnings.is_empty() {
+        writeln!(out)?;
+        writeln!(out, "### Route Warnings")?;
+        for warning in &report.warnings {
+            writeln!(out, "- {warning}")?;
+        }
+    }
+
+    writeln!(out)?;
+    writeln!(out, "### Route Follow-up")?;
+    for command in &report.next_commands {
+        writeln!(out, "- {command}")?;
+    }
+    Ok(())
+}
+
+fn append_evidence_guidance_prompt(
+    out: &mut String,
+    manifest: &LoadedManifest,
+    root: &Path,
+    task: &str,
+) -> Result<()> {
+    let report = build_route_report(&manifest.path, root, task)?;
+    let owner = report.recommendation.as_ref().unwrap_or(&report.target);
+
+    writeln!(out, "## Evidence Guidance")?;
+    writeln!(
+        out,
+        "Derived from the routed owner shape. Use the smallest evidence that proves the changed promise; do not add proof for behavior absent from canonical artifacts."
+    )?;
+    writeln!(
+        out,
+        "- Evidence owner: {} ({}, shape: {})",
+        owner.name, owner.kind, owner.shape
+    )?;
+    writeln!(out, "- Evidence owner path: {}", owner.path)?;
+    if report.result == RouteResult::Ambiguous {
+        writeln!(
+            out,
+            "- Routing is ambiguous; choose the owning module before writing evidence."
+        )?;
+    }
+    writeln!(out)?;
+    writeln!(out, "### Recommended Evidence")?;
+    for item in evidence_guidance_items(&owner.shape) {
+        writeln!(out, "- {item}")?;
+    }
+    if task_mentions_public_surface_change(task) || report.target.shape == "composite" {
+        writeln!(
+            out,
+            "- If public behavior changes, add parent/export contract evidence such as `verification/contracts/parent_export.md` and keep exported child contract evidence aligned."
+        )?;
+    }
+    writeln!(out)?;
+    Ok(())
+}
+
+fn evidence_guidance_items(shape: &str) -> &'static [&'static str] {
+    match shape {
+        "domain-engine" => &[
+            "law/property evidence for invariant-bearing decisions",
+            "invalid constructor or impossible variant rejection cases",
+            "accepted and rejected transition traces in `verification/scenarios/accepted_rejected.md`",
+            "trace replay or fuzz/property coverage when the transition space is broad",
+            "semantic-function evidence for representation constructors and transition functions",
+        ],
+        "boundary-adapter" => &[
+            "malformed input and parser rejection evidence in `verification/boundaries/malformed_input.md`",
+            "parser-to-domain-command evidence showing boundary input becomes a domain command before core decisions",
+            "adapter failure evidence for declared effects, including timeout, retry, rejection, or fallback behavior when applicable",
+            "contract smoke evidence through the public command or parent export when externally visible behavior changes",
+        ],
+        "workflow" => &[
+            "accepted and rejected command/event transition evidence",
+            "deadline, compensation, terminal-state, and recovery scenarios when declared",
+            "trace replay evidence for lifecycle order and illegal transitions",
+        ],
+        "storage-adapter" => &[
+            "persistence port contract evidence for success and expected storage failures",
+            "migration, recovery, and corrupted/unavailable store evidence when declared",
+            "idempotency or replay evidence for write paths when applicable",
+        ],
+        "integration-adapter" => &[
+            "external contract boundary evidence using recorded or simulated provider responses",
+            "retry, timeout, idempotency, duplicate, and reconciliation evidence when declared",
+            "malformed or incompatible provider payload rejection evidence",
+        ],
+        "composite" => &[
+            "parent export evidence proving the published surface is backed by the declared child",
+            "composition scenario evidence such as `verification/scenarios/composed_capability.md`",
+            "child verification rollup evidence when contained modules have implementation bindings",
+        ],
+        _ => &[
+            "law, contract, scenario, or boundary evidence matching the declared module promises",
+            "positive and negative cases tied to public contracts, invariants, effects, and compatibility",
+        ],
+    }
+}
+
 fn append_prompt_context(out: &mut String, manifest: &LoadedManifest, root: &Path) -> Result<()> {
     writeln!(out, "## Bounded RMS Context")?;
     writeln!(
@@ -3832,6 +5707,7 @@ fn append_prompt_context(out: &mut String, manifest: &LoadedManifest, root: &Pat
     append_prompt_contract_groups(out, "Requires", get_path(&manifest.value, &["requires"]))?;
     append_prompt_invariants(out, &manifest.value)?;
     append_prompt_effects(out, &manifest.value)?;
+    append_prompt_shape_advisories(out, manifest)?;
     writeln!(
         out,
         "- Compatibility: {}",
@@ -3857,6 +5733,18 @@ fn append_prompt_context(out: &mut String, manifest: &LoadedManifest, root: &Pat
         writeln!(out, "- {}", path.display())?;
     }
 
+    Ok(())
+}
+
+fn append_prompt_shape_advisories(out: &mut String, manifest: &LoadedManifest) -> Result<()> {
+    let advisories = shape_advisories(manifest);
+    if advisories.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "- Shape advisories:")?;
+    for advisory in advisories {
+        writeln!(out, "  - {advisory}")?;
+    }
     Ok(())
 }
 
@@ -4545,7 +6433,7 @@ fn collect_git_name_status(
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("Not a git repository") || stderr.contains("not a git repository") {
             bail!(
-                "git repository required to read changed paths; run `git init` or run deterministic checks directly (`rms validate --root {}`, `rms compose --root {}`, and `rms verify <implementation.yaml>`)",
+                "git repository required to read changed paths; run `git init` or run deterministic checks directly (`rms validate --root {}`, `rms compose --root {}`, and `rms verify <implementation.yaml|composite-module.yaml>`)",
                 root.display(),
                 root.display()
             );
@@ -5286,7 +7174,10 @@ fn validate_loaded_manifest(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
 
     match spec {
         Some("rms/system/v0.1") => validate_system(manifest, diagnostics),
-        Some("rms/module/v0.1") => validate_module(manifest, diagnostics),
+        Some("rms/module/v0.1") => {
+            validate_module(manifest, diagnostics);
+            validate_module_shape_consistency(manifest, diagnostics);
+        }
         Some("rms/contract/v0.1") => validate_contract(manifest, diagnostics),
         Some("rms/context-map/v0.1") => validate_context_map(manifest, diagnostics),
         Some("rms/implementation/v0.1") => validate_implementation(manifest, diagnostics),
@@ -5304,6 +7195,16 @@ fn validate_loaded_manifest(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
     }
 
     scan_for_secret_like_keys(&manifest.value, &manifest.path, diagnostics);
+}
+
+fn validate_module_shape_consistency(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    for advisory in shape_consistency_advisories(manifest) {
+        diagnostics.push(warning(
+            "module.shape-consistency",
+            &manifest.path,
+            advisory,
+        ));
+    }
 }
 
 fn validate_against_embedded_schema(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
@@ -5479,7 +7380,75 @@ fn validate_module(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>)
     check_invariant_evidence(manifest, diagnostics);
     check_verification_paths(manifest, diagnostics);
     check_change_protocols(manifest, diagnostics);
+    check_composition_local_shape(manifest, diagnostics);
     check_profile_obligations(manifest, diagnostics, &profiles);
+}
+
+fn check_composition_local_shape(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(composition) = get_path(&manifest.value, &["composition"]) else {
+        return;
+    };
+
+    if let Some(children) = get_path(composition, &["contains"]).and_then(YamlValue::as_sequence) {
+        let mut names = BTreeSet::new();
+        for child in children {
+            let Some(name) = get_str(child, &["name"]) else {
+                continue;
+            };
+            if !names.insert(name.to_string()) {
+                diagnostics.push(error(
+                    "composition.contains.unique",
+                    &manifest.path,
+                    format!("duplicate contained module `{name}`"),
+                ));
+            }
+            if let Some(visibility) = get_str(child, &["visibility"]) {
+                if !matches!(visibility, "internal" | "public") {
+                    diagnostics.push(error(
+                        "composition.contains.visibility",
+                        &manifest.path,
+                        format!("contained module `{name}` has invalid visibility `{visibility}`"),
+                    ));
+                }
+            }
+            if let Some(path) = get_str(child, &["path"]) {
+                check_relative_ref(
+                    manifest,
+                    diagnostics,
+                    "references.composition.contains.path",
+                    path,
+                    "referenced contained module manifest does not exist",
+                );
+            }
+        }
+    }
+
+    if let Some(exports) = get_path(composition, &["exports"]).and_then(YamlValue::as_sequence) {
+        let mut exported = BTreeSet::new();
+        for export in exports {
+            let Some(name) = get_str(export, &["name"]) else {
+                continue;
+            };
+            let Some(group) = get_str(export, &["group"]) else {
+                continue;
+            };
+            if !matches!(group, "commands" | "queries" | "events" | "capabilities") {
+                diagnostics.push(error(
+                    "composition.exports.group",
+                    &manifest.path,
+                    format!("export `{name}` has invalid group `{group}`"),
+                ));
+                continue;
+            }
+            if !exported.insert((group.to_string(), name.to_string())) {
+                diagnostics.push(error(
+                    "composition.exports.unique",
+                    &manifest.path,
+                    format!("duplicate composition export `{group}.{name}`"),
+                ));
+            }
+        }
+    }
 }
 
 fn validate_contract(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
@@ -7964,6 +9933,16 @@ fn print_context_packet(manifest: &LoadedManifest, root: &Path, task: Option<&st
 
     print_module_brief(manifest);
 
+    if let Some(task) = task {
+        let report = build_route_report(&manifest.path, root, task)?;
+        if report.result != RouteResult::TargetOnly {
+            let mut rendered = String::new();
+            append_route_recommendation_section(&mut rendered, &report)?;
+            println!();
+            print!("{}", rendered);
+        }
+    }
+
     println!();
     println!("## Canonical Files");
     for file_name in ["system.yaml", "context-map.yaml", "GLOSSARY.md"] {
@@ -7991,6 +9970,543 @@ fn print_context_packet(manifest: &LoadedManifest, root: &Path, task: Option<&st
     println!("- Declare new dependencies, effects, profile obligations, and recovery paths.");
     println!("- Verify declared laws, contracts, scenarios, and boundaries that the task affects.");
     Ok(())
+}
+
+fn run_route(module: &Path, root: &Path, task: &str, json_output: bool) -> Result<()> {
+    let report = build_route_report(module, root, task)?;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_route_report(&report);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct RouteReport {
+    result: RouteResult,
+    task: String,
+    target: RouteModuleSummary,
+    recommendation: Option<RouteModuleSummary>,
+    candidates: Vec<RouteCandidate>,
+    warnings: Vec<String>,
+    next_commands: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RouteResult {
+    Routed,
+    Ambiguous,
+    TargetOnly,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RouteModuleSummary {
+    name: String,
+    path: String,
+    kind: String,
+    shape: String,
+    visibility: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RouteCandidate {
+    module: RouteModuleSummary,
+    score: i32,
+    reasons: Vec<String>,
+}
+
+fn build_route_report(module: &Path, root: &Path, task: &str) -> Result<RouteReport> {
+    let target_manifest = load_manifest(module)?;
+    let target_name = get_str(&target_manifest.value, &["module", "name"])
+        .unwrap_or("<unknown>")
+        .to_string();
+    let mut modules = discover_module_index(root)?;
+    modules
+        .entry(target_name.clone())
+        .or_insert_with(|| ModuleIndexEntry {
+            name: target_name.clone(),
+            path: target_manifest.path.clone(),
+            value: target_manifest.value.clone(),
+        });
+
+    let target_entry = modules
+        .get(&target_name)
+        .cloned()
+        .unwrap_or(ModuleIndexEntry {
+            name: target_name.clone(),
+            path: target_manifest.path.clone(),
+            value: target_manifest.value.clone(),
+        });
+    let target_summary = route_module_summary(&target_entry, None);
+    let children = composition_children(&modules)
+        .into_iter()
+        .filter(|child| child.parent == target_name)
+        .collect::<Vec<_>>();
+
+    if children.is_empty() {
+        let next_commands = vec![
+            format!(
+                "rms context {} --root {} --task {:?}",
+                module.display(),
+                root.display(),
+                task
+            ),
+            format!(
+                "rms implement {} --root {} --task {:?}",
+                module.display(),
+                root.display(),
+                task
+            ),
+        ];
+        return Ok(RouteReport {
+            result: RouteResult::TargetOnly,
+            task: task.to_string(),
+            target: target_summary.clone(),
+            recommendation: Some(target_summary.clone()),
+            candidates: vec![RouteCandidate {
+                module: target_summary,
+                score: 0,
+                reasons: vec![
+                    "target module has no declared composition.contains children".to_string(),
+                    "the target remains the owning boundary unless canonical manifests say otherwise"
+                        .to_string(),
+                ],
+            }],
+            warnings: Vec::new(),
+            next_commands,
+        });
+    }
+
+    let exports = composition_exports(&modules)
+        .into_iter()
+        .filter(|export| export.parent == target_name)
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    let mut warnings = vec![format!(
+        "`{target_name}` is a composite parent; route implementation work to a child unless the task changes parent composition, exported public surface, or parent evidence."
+    )];
+    if task_mentions_public_surface_change(task) {
+        warnings.push(
+            "public surface changes may require updating the parent contract and the exported child contract together".to_string(),
+        );
+    }
+
+    for child in children {
+        let Some(child_entry) = modules.get(&child.name) else {
+            candidates.push(RouteCandidate {
+                module: RouteModuleSummary {
+                    name: child.name.clone(),
+                    path: child.path.unwrap_or_else(|| "<missing>".to_string()),
+                    kind: "<missing>".to_string(),
+                    shape: "<unknown>".to_string(),
+                    visibility: Some(child.visibility),
+                },
+                score: -10,
+                reasons: vec![
+                    "declared child module was not discovered under the route root".to_string(),
+                ],
+            });
+            continue;
+        };
+        let mut reasons = Vec::new();
+        let mut score = score_route_candidate(task, child_entry, &mut reasons);
+        if task_mentions_module(task, &child.name) {
+            score += 5;
+            reasons.push(format!(
+                "task mentions child module `{}` or one of its semantic name segments",
+                child.name
+            ));
+        }
+        for export in exports.iter().filter(|export| export.from == child.name) {
+            if task_mentions_token(task, &export.name) || task_mentions_boundary_surface(task) {
+                score += 3;
+                reasons.push(format!(
+                    "child backs parent exported {} `{}`",
+                    export.group, export.name
+                ));
+            }
+        }
+        if reasons.is_empty() {
+            reasons
+                .push("no strong task-language match; kept as a possible child route".to_string());
+        }
+        candidates.push(RouteCandidate {
+            module: route_module_summary(child_entry, Some(child.visibility)),
+            score,
+            reasons,
+        });
+    }
+
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.module.name.cmp(&right.module.name))
+    });
+    let recommendation = unique_top_route(&candidates).map(|candidate| candidate.module.clone());
+    let result = if recommendation.is_some() {
+        RouteResult::Routed
+    } else {
+        warnings.push(
+            "route is ambiguous; inspect the child manifests and choose the owner before editing"
+                .to_string(),
+        );
+        RouteResult::Ambiguous
+    };
+    let next_target = recommendation
+        .as_ref()
+        .map(|module| module.path.clone())
+        .unwrap_or_else(|| module.display().to_string());
+    let next_commands = vec![
+        format!("rms explain {next_target}"),
+        format!(
+            "rms context {next_target} --root {} --task {:?}",
+            root.display(),
+            task
+        ),
+    ];
+
+    Ok(RouteReport {
+        result,
+        task: task.to_string(),
+        target: target_summary,
+        recommendation,
+        candidates,
+        warnings,
+        next_commands,
+    })
+}
+
+fn discover_module_index(root: &Path) -> Result<BTreeMap<String, ModuleIndexEntry>> {
+    let targets = discover_targets(root, vec![], vec![], vec![], vec![], vec![], vec![])?;
+    let mut modules = BTreeMap::new();
+    for target in targets {
+        let manifest = load_manifest(&target)?;
+        if get_str(&manifest.value, &["spec"]) != Some("rms/module/v0.1") {
+            continue;
+        }
+        let name = get_str(&manifest.value, &["module", "name"])
+            .unwrap_or("<unknown>")
+            .to_string();
+        modules.insert(
+            name.clone(),
+            ModuleIndexEntry {
+                name,
+                path: target,
+                value: manifest.value,
+            },
+        );
+    }
+    Ok(modules)
+}
+
+fn route_module_summary(
+    module: &ModuleIndexEntry,
+    visibility: Option<String>,
+) -> RouteModuleSummary {
+    RouteModuleSummary {
+        name: module.name.clone(),
+        path: module.path.display().to_string(),
+        kind: get_str(&module.value, &["module", "kind"])
+            .unwrap_or("<missing>")
+            .to_string(),
+        shape: route_shape(&module.value),
+        visibility,
+    }
+}
+
+fn route_shape(value: &YamlValue) -> String {
+    if let Some(shape) = get_str(value, &["x-scaffold", "shape"]) {
+        return shape.to_string();
+    }
+    let kind = get_str(value, &["module", "kind"]).unwrap_or("");
+    let profiles = get_string_array(value, &["profiles"]);
+    if kind == "composite" || get_path(value, &["composition"]).is_some() {
+        "composite".to_string()
+    } else if profiles.iter().any(|profile| profile == "workflow") {
+        "workflow".to_string()
+    } else if profiles.iter().any(|profile| profile == "stateful") && kind == "adapter" {
+        "storage-adapter".to_string()
+    } else if profiles.iter().any(|profile| profile == "boundary") || kind == "adapter" {
+        "boundary-adapter".to_string()
+    } else {
+        "<unknown>".to_string()
+    }
+}
+
+fn score_route_candidate(task: &str, module: &ModuleIndexEntry, reasons: &mut Vec<String>) -> i32 {
+    let shape = route_shape(&module.value);
+    let mut score = 0;
+    match shape.as_str() {
+        "domain-engine" => {
+            score += score_keywords(
+                task,
+                &[
+                    "rule",
+                    "rules",
+                    "invariant",
+                    "valid",
+                    "invalid",
+                    "transition",
+                    "state",
+                    "decision",
+                    "pure",
+                    "engine",
+                    "law",
+                    "fuzz",
+                    "property",
+                    "adt",
+                    "variant",
+                    "constructor",
+                ],
+            );
+            if score > 0 {
+                reasons.push("task language points at pure decisions, invariants, representation, or transitions".to_string());
+            }
+        }
+        "boundary-adapter" => {
+            score += score_keywords(
+                task,
+                &[
+                    "ui",
+                    "web",
+                    "browser",
+                    "cli",
+                    "screen",
+                    "display",
+                    "input",
+                    "output",
+                    "parse",
+                    "parser",
+                    "adapter",
+                    "button",
+                    "form",
+                    "http",
+                    "api",
+                    "command-line",
+                ],
+            );
+            if score > 0 {
+                reasons.push(
+                    "task language points at parsing, UI, IO, or boundary effects".to_string(),
+                );
+            }
+        }
+        "workflow" => {
+            score += score_keywords(
+                task,
+                &[
+                    "workflow",
+                    "deadline",
+                    "compensation",
+                    "recover",
+                    "recovery",
+                    "step",
+                    "orchestrate",
+                    "saga",
+                ],
+            );
+            if score > 0 {
+                reasons.push(
+                    "task language points at ordered workflow, deadlines, or recovery".to_string(),
+                );
+            }
+        }
+        "storage-adapter" => {
+            score += score_keywords(
+                task,
+                &[
+                    "store",
+                    "storage",
+                    "persist",
+                    "persistence",
+                    "database",
+                    "migration",
+                    "schema",
+                    "read-model",
+                    "cache",
+                ],
+            );
+            if score > 0 {
+                reasons.push(
+                    "task language points at persistence, migrations, or stored state".to_string(),
+                );
+            }
+        }
+        "integration-adapter" => {
+            score += score_keywords(
+                task,
+                &[
+                    "external",
+                    "service",
+                    "retry",
+                    "timeout",
+                    "idempotency",
+                    "reconcile",
+                    "reconciliation",
+                    "provider",
+                    "webhook",
+                ],
+            );
+            if score > 0 {
+                reasons.push(
+                    "task language points at external service integration or reconciliation"
+                        .to_string(),
+                );
+            }
+        }
+        _ => {}
+    }
+
+    for (group, name) in public_surface_names(&module.value) {
+        if task_mentions_token(task, &name) {
+            score += 2;
+            reasons.push(format!("task mentions public {group} `{name}`"));
+        }
+    }
+    score
+}
+
+fn public_surface_names(value: &YamlValue) -> Vec<(String, String)> {
+    let mut names = Vec::new();
+    let Some(provides) = get_path(value, &["provides"]).and_then(YamlValue::as_mapping) else {
+        return names;
+    };
+    for (group, entries) in provides {
+        let Some(group) = group.as_str() else {
+            continue;
+        };
+        let Some(entries) = entries.as_sequence() else {
+            continue;
+        };
+        for entry in entries {
+            if let Some((name, _)) = named_reference(entry) {
+                names.push((group.to_string(), name));
+            }
+        }
+    }
+    names
+}
+
+fn unique_top_route(candidates: &[RouteCandidate]) -> Option<&RouteCandidate> {
+    let top = candidates.first()?;
+    if top.score <= 0 {
+        return None;
+    }
+    if candidates
+        .get(1)
+        .is_some_and(|next| next.score == top.score)
+    {
+        return None;
+    }
+    Some(top)
+}
+
+fn score_keywords(task: &str, keywords: &[&str]) -> i32 {
+    keywords
+        .iter()
+        .filter(|keyword| task_mentions_token(task, keyword))
+        .count() as i32
+}
+
+fn task_mentions_module(task: &str, module_name: &str) -> bool {
+    task_mentions_token(task, module_name)
+        || module_name
+            .split(['-', '_'])
+            .filter(|segment| segment.len() > 2)
+            .any(|segment| task_mentions_token(task, segment))
+}
+
+fn task_mentions_boundary_surface(task: &str) -> bool {
+    score_keywords(
+        task,
+        &[
+            "public", "surface", "command", "query", "event", "api", "cli", "ui", "web",
+        ],
+    ) > 0
+}
+
+fn task_mentions_public_surface_change(task: &str) -> bool {
+    score_keywords(
+        task,
+        &[
+            "contract",
+            "public",
+            "compatibility",
+            "breaking",
+            "command",
+            "query",
+            "event",
+            "api",
+        ],
+    ) > 0
+}
+
+fn task_mentions_token(task: &str, token: &str) -> bool {
+    let normalized_task = semantic_id_segment(task);
+    let normalized_token = semantic_id_segment(token);
+    if normalized_token.is_empty() {
+        return false;
+    }
+    normalized_task
+        .split('-')
+        .collect::<Vec<_>>()
+        .windows(normalized_token.split('-').count())
+        .any(|window| window.join("-") == normalized_token)
+        || normalized_task == normalized_token
+}
+
+fn print_route_report(report: &RouteReport) {
+    println!("# RMS Route");
+    println!();
+    println!("Task: {}", report.task);
+    println!(
+        "Target: {} ({}, shape: {})",
+        report.target.name, report.target.kind, report.target.shape
+    );
+    println!("Result: {}", route_result_label(report.result));
+    if let Some(recommendation) = &report.recommendation {
+        println!(
+            "Recommended module: {} ({}, shape: {})",
+            recommendation.name, recommendation.kind, recommendation.shape
+        );
+        println!("Path: {}", recommendation.path);
+    }
+    println!();
+    println!("## Candidates");
+    for candidate in &report.candidates {
+        let visibility = candidate.module.visibility.as_deref().unwrap_or("<target>");
+        println!(
+            "- {} score={} visibility={} shape={} path={}",
+            candidate.module.name,
+            candidate.score,
+            visibility,
+            candidate.module.shape,
+            candidate.module.path
+        );
+        for reason in &candidate.reasons {
+            println!("  - {reason}");
+        }
+    }
+    if !report.warnings.is_empty() {
+        println!();
+        println!("## Warnings");
+        for warning in &report.warnings {
+            println!("- {warning}");
+        }
+    }
+    println!();
+    print_string_list("Next Commands", &report.next_commands);
+}
+
+fn route_result_label(result: RouteResult) -> &'static str {
+    match result {
+        RouteResult::Routed => "routed",
+        RouteResult::Ambiguous => "ambiguous",
+        RouteResult::TargetOnly => "target-only",
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -10550,17 +13066,20 @@ fn build_conformance_report(module: &Path, implementation: Option<&Path>) -> Res
     let mut diagnostics = Vec::new();
     validate_loaded_manifest(&manifest, &mut diagnostics);
 
+    let is_composite = is_composite_module(&manifest.value);
     let implementation_name = if let Some(path) = implementation {
         let implementation_manifest = load_manifest(path)?;
         validate_loaded_manifest(&implementation_manifest, &mut diagnostics);
         get_str(&implementation_manifest.value, &["binding"])
             .unwrap_or("unknown")
             .to_string()
+    } else if is_composite {
+        "composite-rollup".to_string()
     } else {
         "not-supplied".to_string()
     };
 
-    let checks: Vec<JsonValue> = diagnostics
+    let mut checks: Vec<JsonValue> = diagnostics
         .iter()
         .map(|diagnostic| {
             json!({
@@ -10573,9 +13092,22 @@ fn build_conformance_report(module: &Path, implementation: Option<&Path>) -> Res
         })
         .collect();
 
+    if is_composite {
+        append_composite_conformance_checks(module, &manifest, &mut checks);
+    } else {
+        append_module_shape_conformance_checks(module, &manifest, &mut checks);
+    }
+
     let result = if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         "fail"
-    } else if implementation.is_none() || has_empty_verification_category(&manifest.value) {
+    } else if checks
+        .iter()
+        .any(|check| check.get("result").and_then(JsonValue::as_str) == Some("fail"))
+    {
+        "fail"
+    } else if (!is_composite && implementation.is_none())
+        || has_empty_verification_category(&manifest.value)
+    {
         "partial"
     } else {
         "pass"
@@ -10611,9 +13143,130 @@ fn build_conformance_report(module: &Path, implementation: Option<&Path>) -> Res
     }))
 }
 
+fn append_composite_conformance_checks(
+    module_path: &Path,
+    manifest: &LoadedManifest,
+    checks: &mut Vec<JsonValue>,
+) {
+    let module_name = get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>");
+    let root = rms_root_for(module_path);
+    match compose_system(&root) {
+        Ok(report) => {
+            for finding in report.findings {
+                checks.push(json!({
+                    "id": finding.check,
+                    "category": "composition",
+                    "result": compose_status_conformance_result(finding.status),
+                    "evidence": root.display().to_string(),
+                    "note": finding.message,
+                }));
+            }
+        }
+        Err(error) => checks.push(json!({
+            "id": "composition.compose-system",
+            "category": "composition",
+            "result": "fail",
+            "evidence": root.display().to_string(),
+            "note": error.to_string(),
+        })),
+    }
+
+    if ensure_composite_scenario_evidence(manifest, module_path).is_ok() {
+        checks.push(json!({
+            "id": "composition.parent-scenario-evidence",
+            "category": "scenarios",
+            "result": "pass",
+            "evidence": module_path.display().to_string(),
+            "note": "composite parent declares scenario evidence",
+        }));
+    } else {
+        checks.push(json!({
+            "id": "composition.parent-scenario-evidence",
+            "category": "scenarios",
+            "result": "fail",
+            "evidence": module_path.display().to_string(),
+            "note": "composite parent must declare scenario evidence",
+        }));
+    }
+
+    if let Ok(modules) = load_module_index(&root) {
+        for child in composition_children_for(module_name, &manifest.value) {
+            let Some(child_module) = modules.get(&child.name) else {
+                continue;
+            };
+            let implementation = child_module
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("implementation.yaml");
+            checks.push(json!({
+                "id": "composition.child-implementation",
+                "category": "composition",
+                "result": if implementation.exists() { "pass" } else { "not-applicable" },
+                "evidence": implementation.display().to_string(),
+                "note": format!("contained child `{}` implementation binding", child.name),
+            }));
+        }
+    }
+}
+
+fn append_module_shape_conformance_checks(
+    module_path: &Path,
+    manifest: &LoadedManifest,
+    checks: &mut Vec<JsonValue>,
+) {
+    let root = rms_root_for(module_path);
+    let module_name = get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>");
+    let mut modules = match load_module_index(&root) {
+        Ok(modules) => modules,
+        Err(error) => {
+            checks.push(json!({
+                "id": "shape.module-index",
+                "category": "composition",
+                "result": "skipped",
+                "evidence": root.display().to_string(),
+                "note": format!("could not load module index for shape checks: {error}"),
+            }));
+            return;
+        }
+    };
+    modules
+        .entry(module_name.to_string())
+        .or_insert_with(|| ModuleIndexEntry {
+            name: module_name.to_string(),
+            path: manifest.path.clone(),
+            value: manifest.value.clone(),
+        });
+    let provided_requirements = provided_requirement_index(&modules);
+    let Some(module) = modules.get(module_name) else {
+        return;
+    };
+    let mut findings = Vec::new();
+    check_module_shape_direction(module, &modules, &provided_requirements, &mut findings);
+    for finding in findings {
+        checks.push(json!({
+            "id": finding.check,
+            "category": "composition",
+            "result": compose_status_conformance_result(finding.status),
+            "evidence": root.display().to_string(),
+            "note": finding.message,
+        }));
+    }
+}
+
+fn compose_status_conformance_result(status: ComposeStatus) -> &'static str {
+    match status {
+        ComposeStatus::Satisfied => "pass",
+        ComposeStatus::NotApplicable => "not-applicable",
+        ComposeStatus::ReviewRequired => "skipped",
+        ComposeStatus::Unresolved | ComposeStatus::Incompatible => "fail",
+    }
+}
+
 fn diagnostic_category(check: &str) -> &'static str {
     match check.split('.').next().unwrap_or("other") {
         "schema" | "manifest" | "module" | "context-map" | "implementation" => "manifest",
+        "composition" => "composition",
         "references" => {
             if check.contains("contract") {
                 "contracts"
@@ -10635,7 +13288,23 @@ fn diagnostic_category(check: &str) -> &'static str {
     }
 }
 
-fn run_verify(implementation: &Path, dry_run: bool) -> Result<()> {
+fn run_verify(target: &Path, dry_run: bool) -> Result<()> {
+    let manifest = load_manifest(target)?;
+    match get_str(&manifest.value, &["spec"]) {
+        Some("rms/implementation/v0.1") => run_verify_implementation(target, dry_run),
+        Some("rms/module/v0.1") if is_composite_module(&manifest.value) => {
+            run_verify_composite_module(target, &manifest, dry_run)
+        }
+        Some("rms/module/v0.1") => bail!(
+            "module `{}` is not a composite module; verify its implementation binding instead",
+            get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>")
+        ),
+        Some(other) => bail!("`{}` is not a verifiable RMS target", other),
+        None => bail!("target is missing RMS `spec`"),
+    }
+}
+
+fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()> {
     let manifest = load_manifest(implementation)?;
     let command = get_str(&manifest.value, &["commands", "verify"])
         .ok_or_else(|| anyhow!("implementation binding does not declare `commands.verify`"))?;
@@ -10658,6 +13327,172 @@ fn run_verify(implementation: &Path, dry_run: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_verify_composite_module(
+    module_path: &Path,
+    manifest: &LoadedManifest,
+    dry_run: bool,
+) -> Result<()> {
+    let module_name = get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>");
+    let root = rms_root_for(module_path);
+
+    if dry_run {
+        println!(
+            "rms validate --root {}",
+            shell_arg(&root.display().to_string())
+        );
+        println!(
+            "rms compose --root {}",
+            shell_arg(&root.display().to_string())
+        );
+    }
+
+    let mut diagnostics = Vec::new();
+    validate_loaded_manifest(manifest, &mut diagnostics);
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        for diagnostic in diagnostics {
+            eprintln!(
+                "{} [{}] {}: {}",
+                severity_label(diagnostic.severity),
+                diagnostic.check,
+                diagnostic.path,
+                diagnostic.message
+            );
+        }
+        bail!("composite module manifest validation failed");
+    }
+
+    let compose_report = compose_system(&root)?;
+    if compose_report.result == ComposeResult::Fail {
+        print_compose_report(&compose_report);
+        bail!("composite module composition failed");
+    }
+
+    ensure_composite_scenario_evidence(manifest, module_path)?;
+
+    let modules = load_module_index(&root)?;
+    for child in composition_children_for(module_name, &manifest.value) {
+        let Some(child_module) = modules.get(&child.name) else {
+            bail!("contained child module `{}` was not found", child.name);
+        };
+        let implementation = child_module
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("implementation.yaml");
+        if implementation.exists() {
+            if dry_run {
+                println!(
+                    "rms verify {}",
+                    shell_arg(&implementation.display().to_string())
+                );
+            } else {
+                run_verify_implementation(&implementation, false).with_context(|| {
+                    format!(
+                        "contained child `{}` failed implementation verification",
+                        child.name
+                    )
+                })?;
+            }
+        } else if !dry_run {
+            println!(
+                "not-applicable: contained child `{}` has no implementation.yaml",
+                child.name
+            );
+        }
+    }
+
+    if !dry_run {
+        println!("composite verification passed: {module_name}");
+    }
+    Ok(())
+}
+
+fn is_composite_module(value: &YamlValue) -> bool {
+    get_str(value, &["module", "kind"]) == Some("composite")
+        || get_str(value, &["x-scaffold", "shape"]) == Some("composite")
+        || get_path(value, &["composition"]).is_some()
+}
+
+fn rms_root_for(path: &Path) -> PathBuf {
+    let mut current = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    loop {
+        if current.join("system.yaml").exists() || current.join("context-map.yaml").exists() {
+            return current;
+        }
+        if !current.pop() {
+            return path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
+        }
+    }
+}
+
+fn load_module_index(root: &Path) -> Result<BTreeMap<String, ModuleIndexEntry>> {
+    let mut modules = BTreeMap::new();
+    for target in discover_targets(root, vec![], vec![], vec![], vec![], vec![], vec![])? {
+        let manifest = load_manifest(&target)?;
+        if get_str(&manifest.value, &["spec"]) != Some("rms/module/v0.1") {
+            continue;
+        }
+        let Some(name) = get_str(&manifest.value, &["module", "name"]) else {
+            continue;
+        };
+        modules.insert(
+            name.to_string(),
+            ModuleIndexEntry {
+                name: name.to_string(),
+                path: target,
+                value: manifest.value,
+            },
+        );
+    }
+    Ok(modules)
+}
+
+fn composition_children_for(parent: &str, value: &YamlValue) -> Vec<CompositionChild> {
+    let Some(entries) =
+        get_path(value, &["composition", "contains"]).and_then(YamlValue::as_sequence)
+    else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            Some(CompositionChild {
+                parent: parent.to_string(),
+                name: get_str(entry, &["name"])?.to_string(),
+                visibility: get_str(entry, &["visibility"])
+                    .unwrap_or("internal")
+                    .to_string(),
+                path: get_str(entry, &["path"]).map(ToString::to_string),
+            })
+        })
+        .collect()
+}
+
+fn ensure_composite_scenario_evidence(manifest: &LoadedManifest, module_path: &Path) -> Result<()> {
+    let scenarios = get_string_array(&manifest.value, &["verification", "scenarios"]);
+    if scenarios.is_empty() {
+        bail!("composite module must declare parent-level scenario evidence");
+    }
+    let base = module_path.parent().unwrap_or_else(|| Path::new("."));
+    if scenarios
+        .iter()
+        .any(|scenario| base.join(scenario).exists())
+    {
+        Ok(())
+    } else {
+        bail!("composite module scenario evidence paths do not exist")
+    }
 }
 
 fn run_package(module: &Path, output: Option<&Path>, force: bool) -> Result<()> {
@@ -11819,6 +14654,7 @@ struct ComposeFinding {
 #[derive(Clone, Debug)]
 struct ModuleIndexEntry {
     name: String,
+    path: PathBuf,
     value: YamlValue,
 }
 
@@ -11826,6 +14662,23 @@ struct ModuleIndexEntry {
 struct ProvidedRequirement {
     module: String,
     group: String,
+    contract: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct CompositionChild {
+    parent: String,
+    name: String,
+    visibility: String,
+    path: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct CompositionExport {
+    parent: String,
+    group: String,
+    name: String,
+    from: String,
     contract: Option<String>,
 }
 
@@ -11871,6 +14724,7 @@ fn compose_system(root: &Path) -> Result<ComposeReport> {
                     name.clone(),
                     ModuleIndexEntry {
                         name,
+                        path: target,
                         value: manifest.value,
                     },
                 );
@@ -11908,6 +14762,8 @@ fn compose_system(root: &Path) -> Result<ComposeReport> {
             &mut findings,
         );
     }
+    compose_recursive_modules(&modules, &provided_requirements, &mut findings);
+    compose_shape_direction(&modules, &provided_requirements, &mut findings);
     compose_module_cycles(&modules, &mut findings);
 
     let result = compose_result(&findings);
@@ -12112,6 +14968,552 @@ fn check_external_capability_effect(
                 "external capability `{required_name}` is required but no matching effect is declared"
             ),
         ));
+    }
+}
+
+fn compose_recursive_modules(
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+    provided_requirements: &BTreeMap<String, Vec<ProvidedRequirement>>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let children = composition_children(modules);
+    let exports = composition_exports(modules);
+    let mut parent_by_child: BTreeMap<String, String> = BTreeMap::new();
+    let mut visibility_by_child: BTreeMap<String, String> = BTreeMap::new();
+    let mut children_by_parent: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for child in &children {
+        let Some(child_module) = modules.get(&child.name) else {
+            findings.push(compose_finding(
+                ComposeStatus::Unresolved,
+                "composition.contains.module",
+                Some(child.parent.clone()),
+                Some(child.name.clone()),
+                Some(child.name.clone()),
+                format!("contained module `{}` was not found", child.name),
+            ));
+            continue;
+        };
+
+        if let Some(existing_parent) = parent_by_child.get(&child.name) {
+            findings.push(compose_finding(
+                ComposeStatus::Incompatible,
+                "composition.contains.parent",
+                Some(child.parent.clone()),
+                Some(child.name.clone()),
+                Some(child.name.clone()),
+                format!(
+                    "contained module `{}` is already contained by `{existing_parent}`",
+                    child.name
+                ),
+            ));
+            continue;
+        }
+
+        if let Some(path) = child.path.as_deref() {
+            if let Some(parent_module) = modules.get(&child.parent) {
+                let expected = parent_module
+                    .path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(path);
+                if !paths_equivalent(&expected, &child_module.path) {
+                    findings.push(compose_finding(
+                        ComposeStatus::Incompatible,
+                        "composition.contains.path",
+                        Some(child.parent.clone()),
+                        Some(child.name.clone()),
+                        Some(path.to_string()),
+                        format!(
+                            "contained module `{}` path `{path}` does not match discovered manifest `{}`",
+                            child.name,
+                            child_module.path.display()
+                        ),
+                    ));
+                }
+            }
+        }
+
+        parent_by_child.insert(child.name.clone(), child.parent.clone());
+        visibility_by_child.insert(child.name.clone(), child.visibility.clone());
+        children_by_parent
+            .entry(child.parent.clone())
+            .or_default()
+            .insert(child.name.clone());
+    }
+
+    compose_containment_cycles(&children_by_parent, findings);
+    compose_exports(modules, &children_by_parent, &exports, findings);
+    compose_internal_visibility(
+        modules,
+        provided_requirements,
+        &parent_by_child,
+        &visibility_by_child,
+        findings,
+    );
+}
+
+fn composition_children(modules: &BTreeMap<String, ModuleIndexEntry>) -> Vec<CompositionChild> {
+    let mut children = Vec::new();
+    for module in modules.values() {
+        let Some(entries) =
+            get_path(&module.value, &["composition", "contains"]).and_then(YamlValue::as_sequence)
+        else {
+            continue;
+        };
+        for entry in entries {
+            let Some(name) = get_str(entry, &["name"]) else {
+                continue;
+            };
+            let Some(visibility) = get_str(entry, &["visibility"]) else {
+                continue;
+            };
+            if !matches!(visibility, "internal" | "public") {
+                continue;
+            }
+            children.push(CompositionChild {
+                parent: module.name.clone(),
+                name: name.to_string(),
+                visibility: visibility.to_string(),
+                path: get_str(entry, &["path"]).map(ToString::to_string),
+            });
+        }
+    }
+    children
+}
+
+fn composition_exports(modules: &BTreeMap<String, ModuleIndexEntry>) -> Vec<CompositionExport> {
+    let mut exports = Vec::new();
+    for module in modules.values() {
+        let Some(entries) =
+            get_path(&module.value, &["composition", "exports"]).and_then(YamlValue::as_sequence)
+        else {
+            continue;
+        };
+        for entry in entries {
+            let Some(group) = get_str(entry, &["group"]) else {
+                continue;
+            };
+            let Some(name) = get_str(entry, &["name"]) else {
+                continue;
+            };
+            let Some(from) = get_str(entry, &["from"]) else {
+                continue;
+            };
+            if !matches!(group, "commands" | "queries" | "events" | "capabilities") {
+                continue;
+            }
+            exports.push(CompositionExport {
+                parent: module.name.clone(),
+                group: group.to_string(),
+                name: name.to_string(),
+                from: from.to_string(),
+                contract: get_str(entry, &["contract"]).map(ToString::to_string),
+            });
+        }
+    }
+    exports
+}
+
+fn compose_containment_cycles(
+    children_by_parent: &BTreeMap<String, BTreeSet<String>>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    for module in children_by_parent.keys() {
+        let mut path = Vec::new();
+        let mut visiting = BTreeSet::new();
+        if let Some(cycle) =
+            find_module_cycle(module, module, children_by_parent, &mut visiting, &mut path)
+        {
+            findings.push(compose_finding(
+                ComposeStatus::Incompatible,
+                "composition.contains.cycle",
+                Some(module.clone()),
+                None,
+                None,
+                format!("module containment cycle detected: {}", cycle.join(" -> ")),
+            ));
+            return;
+        }
+    }
+}
+
+fn compose_exports(
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+    children_by_parent: &BTreeMap<String, BTreeSet<String>>,
+    exports: &[CompositionExport],
+    findings: &mut Vec<ComposeFinding>,
+) {
+    for export in exports {
+        if !children_by_parent
+            .get(&export.parent)
+            .is_some_and(|children| children.contains(&export.from))
+        {
+            findings.push(compose_finding(
+                ComposeStatus::Incompatible,
+                "composition.exports.child",
+                Some(export.parent.clone()),
+                Some(export.from.clone()),
+                Some(export.name.clone()),
+                format!(
+                    "composition export `{}` references non-child module `{}`",
+                    export.name, export.from
+                ),
+            ));
+            continue;
+        }
+
+        let Some(parent) = modules.get(&export.parent) else {
+            continue;
+        };
+        if !module_provides(
+            &parent.value,
+            &export.group,
+            &export.name,
+            export.contract.as_deref(),
+        ) {
+            findings.push(compose_finding(
+                ComposeStatus::Incompatible,
+                "composition.exports.parent-provides",
+                Some(export.parent.clone()),
+                Some(export.from.clone()),
+                Some(export.name.clone()),
+                format!(
+                    "parent module `{}` exports `{}` but does not publish it in provides.{}",
+                    export.parent, export.name, export.group
+                ),
+            ));
+        }
+
+        let Some(child) = modules.get(&export.from) else {
+            findings.push(compose_finding(
+                ComposeStatus::Unresolved,
+                "composition.exports.provider",
+                Some(export.parent.clone()),
+                Some(export.from.clone()),
+                Some(export.name.clone()),
+                format!("export provider module `{}` was not found", export.from),
+            ));
+            continue;
+        };
+        if module_provides(
+            &child.value,
+            &export.group,
+            &export.name,
+            export.contract.as_deref(),
+        ) {
+            findings.push(compose_finding(
+                ComposeStatus::Satisfied,
+                "composition.exports.provider",
+                Some(export.parent.clone()),
+                Some(export.from.clone()),
+                Some(export.name.clone()),
+                format!(
+                    "parent export `{}` is backed by child module `{}`",
+                    export.name, export.from
+                ),
+            ));
+        } else {
+            findings.push(compose_finding(
+                ComposeStatus::Incompatible,
+                "composition.exports.provider",
+                Some(export.parent.clone()),
+                Some(export.from.clone()),
+                Some(export.name.clone()),
+                format!(
+                    "child module `{}` does not publish exported {} `{}`",
+                    export.from, export.group, export.name
+                ),
+            ));
+        }
+    }
+}
+
+fn compose_internal_visibility(
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+    provided_requirements: &BTreeMap<String, Vec<ProvidedRequirement>>,
+    parent_by_child: &BTreeMap<String, String>,
+    visibility_by_child: &BTreeMap<String, String>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    for module in modules.values() {
+        let required_modules =
+            named_contract_map(get_path(&module.value, &["requires", "modules"]));
+        for required in required_modules.keys() {
+            check_internal_module_visibility(
+                &module.name,
+                required,
+                parent_by_child,
+                visibility_by_child,
+                findings,
+            );
+        }
+
+        let required_capabilities =
+            named_contract_map(get_path(&module.value, &["requires", "capabilities"]));
+        for (capability, required_contract) in required_capabilities {
+            let Some(providers) = provided_requirements.get(&capability) else {
+                continue;
+            };
+            let compatible = providers
+                .iter()
+                .filter(|provider| {
+                    required_contract.is_none() || provider.contract == required_contract
+                })
+                .collect::<Vec<_>>();
+            if compatible.iter().any(|provider| {
+                module_is_visible_to(
+                    &module.name,
+                    &provider.module,
+                    parent_by_child,
+                    visibility_by_child,
+                )
+            }) {
+                continue;
+            }
+            for provider in compatible {
+                check_internal_module_visibility(
+                    &module.name,
+                    &provider.module,
+                    parent_by_child,
+                    visibility_by_child,
+                    findings,
+                );
+            }
+        }
+    }
+}
+
+fn check_internal_module_visibility(
+    consumer: &str,
+    provider: &str,
+    parent_by_child: &BTreeMap<String, String>,
+    visibility_by_child: &BTreeMap<String, String>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    if visibility_by_child.get(provider).map(String::as_str) != Some("internal") {
+        return;
+    }
+    let Some(parent) = parent_by_child.get(provider) else {
+        return;
+    };
+    if is_descendant_or_same(consumer, parent, parent_by_child) {
+        return;
+    }
+    findings.push(compose_finding(
+        ComposeStatus::Incompatible,
+        "composition.visibility.internal",
+        Some(consumer.to_string()),
+        Some(provider.to_string()),
+        Some(provider.to_string()),
+        format!(
+            "module `{consumer}` is outside parent `{parent}` and cannot depend directly on internal child `{provider}`"
+        ),
+    ));
+}
+
+fn compose_shape_direction(
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+    provided_requirements: &BTreeMap<String, Vec<ProvidedRequirement>>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    for module in modules.values() {
+        check_module_shape_direction(module, modules, provided_requirements, findings);
+    }
+}
+
+fn check_module_shape_direction(
+    module: &ModuleIndexEntry,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+    provided_requirements: &BTreeMap<String, Vec<ProvidedRequirement>>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let shape = route_shape(&module.value);
+    match shape.as_str() {
+        "domain-engine" => {
+            check_domain_engine_shape_direction(module, modules, provided_requirements, findings);
+        }
+        "composite" => {
+            if module_declares_effects(&module.value) {
+                findings.push(compose_finding(
+                    ComposeStatus::ReviewRequired,
+                    "shape.composite.effects",
+                    Some(module.name.clone()),
+                    None,
+                    None,
+                    format!(
+                        "composite parent `{}` declares effects; prefer contained adapters unless the parent effect is explicitly part of the public composition surface",
+                        module.name
+                    ),
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_domain_engine_shape_direction(
+    module: &ModuleIndexEntry,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+    provided_requirements: &BTreeMap<String, Vec<ProvidedRequirement>>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let profiles = get_string_array(&module.value, &["profiles"]);
+    if profiles.iter().any(|profile| profile == "boundary") {
+        findings.push(compose_finding(
+            ComposeStatus::ReviewRequired,
+            "shape.domain-engine.boundary-profile",
+            Some(module.name.clone()),
+            None,
+            Some("boundary".to_string()),
+            format!(
+                "domain-engine `{}` declares the boundary profile; keep untrusted IO and parsing in an adapter unless this is an intentional mixed boundary",
+                module.name
+            ),
+        ));
+    }
+
+    if let Some(effect) = first_declared_effect(&module.value) {
+        findings.push(compose_finding(
+            ComposeStatus::ReviewRequired,
+            "shape.domain-engine.effects",
+            Some(module.name.clone()),
+            None,
+            Some(effect.clone()),
+            format!(
+                "domain-engine `{}` declares effect `{effect}`; keep pure invariant-bearing decisions effect-free or route effects through adapters",
+                module.name
+            ),
+        ));
+    }
+
+    for required in named_contract_map(get_path(&module.value, &["requires", "modules"])).keys() {
+        let Some(provider) = modules.get(required) else {
+            continue;
+        };
+        check_domain_engine_provider_shape(module, provider, required, findings);
+    }
+
+    for (capability, required_contract) in
+        named_contract_map(get_path(&module.value, &["requires", "capabilities"]))
+    {
+        let Some(providers) = provided_requirements.get(&capability) else {
+            continue;
+        };
+        for provider in providers.iter().filter(|provider| {
+            required_contract.is_none() || provider.contract == required_contract
+        }) {
+            let Some(provider_module) = modules.get(&provider.module) else {
+                continue;
+            };
+            check_domain_engine_provider_shape(module, provider_module, &capability, findings);
+        }
+    }
+}
+
+fn check_domain_engine_provider_shape(
+    consumer: &ModuleIndexEntry,
+    provider: &ModuleIndexEntry,
+    requirement: &str,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let provider_shape = route_shape(&provider.value);
+    match provider_shape.as_str() {
+        "boundary-adapter" => findings.push(compose_finding(
+            ComposeStatus::ReviewRequired,
+            "shape.dependency.domain-to-boundary",
+            Some(consumer.name.clone()),
+            Some(provider.name.clone()),
+            Some(requirement.to_string()),
+            format!(
+                "domain-engine `{}` depends on boundary-adapter `{}`; dependency direction should normally point from boundary adapters inward to domain engines",
+                consumer.name, provider.name
+            ),
+        )),
+        "storage-adapter" | "integration-adapter" => findings.push(compose_finding(
+            ComposeStatus::ReviewRequired,
+            "shape.dependency.domain-to-effect-adapter",
+            Some(consumer.name.clone()),
+            Some(provider.name.clone()),
+            Some(requirement.to_string()),
+            format!(
+                "domain-engine `{}` depends directly on {} `{}`; use ports or adapter-owned effects unless this dependency is explicitly justified",
+                consumer.name, provider_shape, provider.name
+            ),
+        )),
+        _ => {}
+    }
+}
+
+fn module_declares_effects(value: &YamlValue) -> bool {
+    get_path(value, &["effects"])
+        .and_then(YamlValue::as_sequence)
+        .is_some_and(|effects| !effects.is_empty())
+}
+
+fn first_declared_effect(value: &YamlValue) -> Option<String> {
+    get_path(value, &["effects"])
+        .and_then(YamlValue::as_sequence)
+        .and_then(|effects| effects.first())
+        .map(effect_label)
+}
+
+fn effect_label(effect: &YamlValue) -> String {
+    get_str(effect, &["name"])
+        .or_else(|| get_str(effect, &["kind"]))
+        .or_else(|| get_str(effect, &["capability"]))
+        .unwrap_or("<unnamed-effect>")
+        .to_string()
+}
+
+fn module_is_visible_to(
+    consumer: &str,
+    provider: &str,
+    parent_by_child: &BTreeMap<String, String>,
+    visibility_by_child: &BTreeMap<String, String>,
+) -> bool {
+    if visibility_by_child.get(provider).map(String::as_str) != Some("internal") {
+        return true;
+    }
+    parent_by_child
+        .get(provider)
+        .is_some_and(|parent| is_descendant_or_same(consumer, parent, parent_by_child))
+}
+
+fn is_descendant_or_same(
+    module: &str,
+    ancestor: &str,
+    parent_by_child: &BTreeMap<String, String>,
+) -> bool {
+    if module == ancestor {
+        return true;
+    }
+    let mut current = module;
+    let mut seen = BTreeSet::new();
+    while let Some(parent) = parent_by_child.get(current) {
+        if parent == ancestor {
+            return true;
+        }
+        if !seen.insert(current.to_string()) {
+            return false;
+        }
+        current = parent;
+    }
+    false
+}
+
+fn module_provides(value: &YamlValue, group: &str, name: &str, contract: Option<&str>) -> bool {
+    named_contract_map(get_path(value, &["provides", group]))
+        .get(name)
+        .is_some_and(|provided_contract| {
+            contract.is_none() || provided_contract.as_deref() == contract
+        })
+}
+
+fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
     }
 }
 
@@ -12792,18 +16194,46 @@ fn scaffold_agent_skills(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_add_module(
-    path: &Path,
-    name: &str,
-    purpose: &str,
-    kind: &str,
-    profiles: &[String],
-    binding: Option<&str>,
-) -> Result<()> {
+#[derive(Clone)]
+struct AddModuleRequest {
+    path: PathBuf,
+    name: String,
+    purpose: String,
+    kind: String,
+    profiles: Vec<String>,
+    shape: Option<ScaffoldShape>,
+    binding: Option<String>,
+    root: PathBuf,
+}
+
+struct AddCapabilityRequest {
+    path: PathBuf,
+    name: String,
+    purpose: String,
+    public_command: Option<String>,
+    domain_child: Option<String>,
+    boundary_child: Option<String>,
+    domain_command: Option<String>,
+    domain_binding: Option<String>,
+    boundary_binding: Option<String>,
+}
+
+fn run_add_module(request: AddModuleRequest, options: &PromptRunOptions) -> Result<()> {
+    let path = &request.path;
     fs::create_dir_all(path)
         .with_context(|| format!("failed to create module directory `{}`", path.display()))?;
     fs::create_dir_all(path.join("contracts"))?;
-    let profiles = normalized_profiles(profiles);
+    let shape = request
+        .shape
+        .unwrap_or_else(|| ScaffoldShape::inferred(&request.kind, &request.profiles));
+    let mut canonical_request = request.clone();
+    canonical_request.kind = normalized_kind_for_shape(&request.kind, shape);
+    canonical_request.profiles = normalized_profiles_for_shape(&request.profiles, shape);
+
+    if options.record || options.provider != Provider::None {
+        write_scaffold_plan_record(&canonical_request, shape, options)?;
+    }
+
     for category in ["laws", "contracts", "scenarios", "boundaries"] {
         let verification_dir = path.join("verification").join(category);
         fs::create_dir_all(&verification_dir)?;
@@ -12815,22 +16245,37 @@ fn run_add_module(
 
     write_new_file(
         &path.join("module.yaml"),
-        &render_module_yaml(name, purpose, kind, &profiles),
+        &render_module_yaml(
+            &canonical_request.name,
+            &canonical_request.purpose,
+            &canonical_request.kind,
+            &canonical_request.profiles,
+            Some(shape),
+        ),
     )?;
     write_new_file(
         &path.join("README.md"),
-        &render_module_readme(name, purpose, kind, &profiles, binding),
+        &render_module_readme(
+            &canonical_request.name,
+            &canonical_request.purpose,
+            &canonical_request.kind,
+            &canonical_request.profiles,
+            canonical_request.binding.as_deref(),
+            shape,
+        ),
     )?;
     write_new_file(
         &path.join("contracts").join("README.md"),
         &render_contracts_readme(),
     )?;
+    scaffold_shape_evidence(path, shape)?;
 
-    if let Some(binding) = binding {
+    if let Some(binding) = canonical_request.binding.as_deref() {
         match binding {
-            "rust" => scaffold_rust_module(path, name)?,
-            "swift" => scaffold_swift_module(path, name)?,
-            "executable" => scaffold_executable_module(path, name)?,
+            "rust" => scaffold_rust_module(path, &canonical_request.name, shape)?,
+            "swift" => scaffold_swift_module(path, &canonical_request.name, shape)?,
+            "js" => scaffold_js_module(path, &canonical_request.name, shape)?,
+            "executable" => scaffold_executable_module(path, &canonical_request.name, shape)?,
             other => bail!("unsupported scaffold binding `{other}`"),
         }
     }
@@ -12839,32 +16284,388 @@ fn run_add_module(
     Ok(())
 }
 
-fn scaffold_rust_module(path: &Path, name: &str) -> Result<()> {
+fn run_add_capability(request: AddCapabilityRequest) -> Result<()> {
+    validate_scaffold_binding(request.domain_binding.as_deref())?;
+    validate_scaffold_binding(request.boundary_binding.as_deref())?;
+
+    let parent_path = request.path;
+    let modules_root = parent_path
+        .parent()
+        .ok_or_else(|| anyhow!("capability path must have a parent directory"))?
+        .to_path_buf();
+    let public_command = request
+        .public_command
+        .unwrap_or_else(|| request.name.clone());
+    let domain_child = request
+        .domain_child
+        .unwrap_or_else(|| format!("{}-rules", request.name));
+    let boundary_child = request
+        .boundary_child
+        .unwrap_or_else(|| format!("{}-adapter", request.name));
+    let domain_command = request
+        .domain_command
+        .unwrap_or_else(|| format!("resolve-{}", request.name));
+    let domain_path = modules_root.join(&domain_child);
+    let boundary_path = modules_root.join(&boundary_child);
+
+    scaffold_capability_parent(
+        &parent_path,
+        &request.name,
+        &request.purpose,
+        &public_command,
+        &domain_child,
+        &boundary_child,
+    )?;
+    scaffold_capability_domain_child(
+        &domain_path,
+        &domain_child,
+        &domain_command,
+        request.domain_binding.as_deref(),
+    )?;
+    scaffold_capability_boundary_child(
+        &boundary_path,
+        &boundary_child,
+        &public_command,
+        &domain_child,
+        &domain_command,
+        request.boundary_binding.as_deref(),
+    )?;
+
+    println!("added RMS capability tree at {}", parent_path.display());
+    Ok(())
+}
+
+fn scaffold_capability_parent(
+    path: &Path,
+    name: &str,
+    purpose: &str,
+    public_command: &str,
+    domain_child: &str,
+    boundary_child: &str,
+) -> Result<()> {
+    create_module_skeleton(path)?;
+    write_new_file(
+        &path.join("module.yaml"),
+        &render_capability_parent_module_yaml(
+            name,
+            purpose,
+            public_command,
+            domain_child,
+            boundary_child,
+        ),
+    )?;
+    write_new_file(
+        &path.join("README.md"),
+        &render_module_readme(
+            name,
+            purpose,
+            "composite",
+            &[String::from("core")],
+            None,
+            ScaffoldShape::Composite,
+        ),
+    )?;
+    write_new_file(
+        &path.join("contracts").join("README.md"),
+        &render_contracts_readme(),
+    )?;
+    write_new_file(
+        &path
+            .join("contracts")
+            .join(format!("{}.v1.yaml", contract_file_stem(public_command))),
+        &render_capability_contract(public_command, "composite parent public command"),
+    )?;
+    scaffold_shape_evidence(path, ScaffoldShape::Composite)?;
+    write_new_file(
+        &path
+            .join("verification")
+            .join("scenarios")
+            .join("composed_capability.md"),
+        &render_composed_capability_evidence(name, public_command, domain_child, boundary_child),
+    )?;
+    Ok(())
+}
+
+fn scaffold_capability_domain_child(
+    path: &Path,
+    name: &str,
+    domain_command: &str,
+    binding: Option<&str>,
+) -> Result<()> {
+    create_module_skeleton(path)?;
+    write_new_file(
+        &path.join("module.yaml"),
+        &render_capability_domain_module_yaml(name, domain_command),
+    )?;
+    write_new_file(
+        &path.join("README.md"),
+        &render_module_readme(
+            name,
+            "Own pure capability decisions and invariants.",
+            "library",
+            &[String::from("core")],
+            binding,
+            ScaffoldShape::DomainEngine,
+        ),
+    )?;
+    write_new_file(
+        &path.join("contracts").join("README.md"),
+        &render_contracts_readme(),
+    )?;
+    write_new_file(
+        &path
+            .join("contracts")
+            .join(format!("{}.v1.yaml", contract_file_stem(domain_command))),
+        &render_capability_contract(domain_command, "domain decision command"),
+    )?;
+    scaffold_shape_evidence(path, ScaffoldShape::DomainEngine)?;
+    scaffold_binding_if_requested(path, name, ScaffoldShape::DomainEngine, binding)?;
+    Ok(())
+}
+
+fn scaffold_capability_boundary_child(
+    path: &Path,
+    name: &str,
+    public_command: &str,
+    domain_child: &str,
+    domain_command: &str,
+    binding: Option<&str>,
+) -> Result<()> {
+    create_module_skeleton(path)?;
+    write_new_file(
+        &path.join("module.yaml"),
+        &render_capability_boundary_module_yaml(name, public_command, domain_child, domain_command),
+    )?;
+    write_new_file(
+        &path.join("README.md"),
+        &render_module_readme(
+            name,
+            "Adapt untrusted input and effects to the pure domain child.",
+            "adapter",
+            &[String::from("boundary"), String::from("core")],
+            binding,
+            ScaffoldShape::BoundaryAdapter,
+        ),
+    )?;
+    write_new_file(
+        &path.join("contracts").join("README.md"),
+        &render_contracts_readme(),
+    )?;
+    write_new_file(
+        &path
+            .join("contracts")
+            .join(format!("{}.v1.yaml", contract_file_stem(public_command))),
+        &render_capability_contract(public_command, "boundary adapter public command"),
+    )?;
+    scaffold_shape_evidence(path, ScaffoldShape::BoundaryAdapter)?;
+    scaffold_binding_if_requested(path, name, ScaffoldShape::BoundaryAdapter, binding)?;
+    Ok(())
+}
+
+fn create_module_skeleton(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)
+        .with_context(|| format!("failed to create module directory `{}`", path.display()))?;
+    fs::create_dir_all(path.join("contracts"))?;
+    for category in ["laws", "contracts", "scenarios", "boundaries"] {
+        let verification_dir = path.join("verification").join(category);
+        fs::create_dir_all(&verification_dir)?;
+        write_new_file(
+            &verification_dir.join("README.md"),
+            &render_verification_readme(category),
+        )?;
+    }
+    Ok(())
+}
+
+fn scaffold_binding_if_requested(
+    path: &Path,
+    name: &str,
+    shape: ScaffoldShape,
+    binding: Option<&str>,
+) -> Result<()> {
+    validate_scaffold_binding(binding)?;
+    match binding {
+        Some("rust") => scaffold_rust_module(path, name, shape),
+        Some("swift") => scaffold_swift_module(path, name, shape),
+        Some("js") => scaffold_js_module(path, name, shape),
+        Some("executable") => scaffold_executable_module(path, name, shape),
+        None => Ok(()),
+        Some(_) => unreachable!("validate_scaffold_binding accepted an unsupported binding"),
+    }
+}
+
+fn validate_scaffold_binding(binding: Option<&str>) -> Result<()> {
+    match binding {
+        Some("rust" | "swift" | "js" | "executable") | None => Ok(()),
+        Some(other) => bail!("unsupported scaffold binding `{other}`"),
+    }
+}
+
+fn write_scaffold_plan_record(
+    request: &AddModuleRequest,
+    shape: ScaffoldShape,
+    options: &PromptRunOptions,
+) -> Result<()> {
+    let manifest = synthetic_workbench_manifest(
+        &request.root,
+        &format!("scaffold-{}", request.name),
+        "advisory scaffold plan",
+    );
+    let mut prompt = render_scaffold_plan_prompt(request, shape)?;
+    if options.provider != Provider::None {
+        prompt.push_str(&render_provider_execution_scope(
+            &manifest,
+            &request.root,
+            options,
+        ));
+    }
+    let run_dir = write_prompt_run_record(
+        &manifest,
+        &request.root,
+        PromptKind::Design,
+        Some(&format!("scaffold module {}", request.name)),
+        None,
+        false,
+        &prompt,
+        options,
+    )?;
+    if options.provider == Provider::Codex {
+        execute_codex_provider(&request.root, &manifest, &prompt, &run_dir, options)?;
+        fs::write(
+            run_dir.join("scaffold-plan.status"),
+            "provider response recorded as advisory evidence; deterministic scaffold remains canonical only after generated artifacts are written\n",
+        )?;
+    }
+    eprintln!("scaffold plan run record: {}", run_dir.display());
+    Ok(())
+}
+
+fn render_scaffold_plan_prompt(request: &AddModuleRequest, shape: ScaffoldShape) -> Result<String> {
+    let mut out = String::new();
+    writeln!(out, "# RMS Scaffold Plan Prompt")?;
+    writeln!(out)?;
+    writeln!(out, "Prompt: rms.design@v1")?;
+    writeln!(out, "Mode: advisory scaffold planning")?;
+    writeln!(out, "Module: {}", request.name)?;
+    writeln!(out, "Target path: {}", request.path.display())?;
+    writeln!(out, "Purpose: {}", request.purpose)?;
+    writeln!(out, "Kind: {}", request.kind)?;
+    writeln!(out, "Shape: {} ({})", shape.as_str(), shape.purpose())?;
+    writeln!(
+        out,
+        "Binding: {}",
+        request.binding.as_deref().unwrap_or("<none>")
+    )?;
+    writeln!(out)?;
+    writeln!(out, "## Required Semantic Roles")?;
+    for role in shape.roles() {
+        writeln!(out, "- {role}")?;
+    }
+    writeln!(out)?;
+    writeln!(out, "## Rules")?;
+    writeln!(out, "- Propose language-idiomatic directories and files for these roles; do not treat names like `domain` or `types` as canonical RMS terms.")?;
+    writeln!(
+        out,
+        "- Keep representation separate from transitions and boundary parsing."
+    )?;
+    writeln!(out, "- Keep external effects behind ports or adapters.")?;
+    writeln!(out, "- Return advisory output only; canonical architecture must be reflected in manifests, contracts, implementation bindings, and evidence.")?;
+    Ok(out)
+}
+
+fn scaffold_shape_evidence(path: &Path, shape: ScaffoldShape) -> Result<()> {
+    write_new_file(
+        &path
+            .join("verification")
+            .join("laws")
+            .join("semantic_shape.md"),
+        &render_shape_law_evidence(shape),
+    )?;
+    match shape {
+        ScaffoldShape::DomainEngine => {
+            write_new_file(
+                &path
+                    .join("verification")
+                    .join("laws")
+                    .join("transition_trace.md"),
+                &render_transition_trace_evidence(),
+            )?;
+            write_new_file(
+                &path
+                    .join("verification")
+                    .join("scenarios")
+                    .join("accepted_rejected.md"),
+                &render_accepted_rejected_evidence(),
+            )?;
+        }
+        ScaffoldShape::BoundaryAdapter
+        | ScaffoldShape::StorageAdapter
+        | ScaffoldShape::IntegrationAdapter => {
+            write_new_file(
+                &path
+                    .join("verification")
+                    .join("boundaries")
+                    .join("malformed_input.md"),
+                &render_malformed_input_evidence(),
+            )?;
+            write_new_file(
+                &path
+                    .join("verification")
+                    .join("contracts")
+                    .join("parser_to_domain_command.md"),
+                &render_parser_to_domain_command_evidence(),
+            )?;
+        }
+        ScaffoldShape::Composite => {
+            write_new_file(
+                &path
+                    .join("verification")
+                    .join("contracts")
+                    .join("parent_export.md"),
+                &render_parent_export_evidence(),
+            )?;
+        }
+        ScaffoldShape::Workflow => {
+            write_new_file(
+                &path
+                    .join("verification")
+                    .join("scenarios")
+                    .join("accepted_rejected.md"),
+                &render_accepted_rejected_evidence(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn scaffold_rust_module(path: &Path, name: &str, shape: ScaffoldShape) -> Result<()> {
     let package_name = sanitize_rust_package_name(name);
     fs::create_dir_all(path.join("src"))?;
     write_new_file(
         &path.join("implementation.yaml"),
-        &render_rust_implementation_yaml(name, &package_name),
+        &render_rust_implementation_yaml(name, &package_name, shape),
     )?;
     write_new_file(
         &path.join("Cargo.toml"),
         &render_rust_cargo_toml(&package_name),
     )?;
+    write_new_file(&path.join("src").join("lib.rs"), &render_rust_lib_rs(shape))?;
     write_new_file(
-        &path.join("src").join("lib.rs"),
-        "pub fn module_name() -> &'static str {\n    env!(\"CARGO_PKG_NAME\")\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn exposes_module_name() {\n        assert_eq!(super::module_name(), env!(\"CARGO_PKG_NAME\"));\n    }\n}\n",
+        &path.join("src").join("representation.rs"),
+        RUST_REPRESENTATION_RS,
     )?;
+    write_new_file(&path.join("src").join("transition.rs"), RUST_TRANSITION_RS)?;
     Ok(())
 }
 
-fn scaffold_swift_module(path: &Path, name: &str) -> Result<()> {
+fn scaffold_swift_module(path: &Path, name: &str, shape: ScaffoldShape) -> Result<()> {
     let package_name = sanitize_swift_package_name(name);
     let target_name = sanitize_swift_target_name(name);
     fs::create_dir_all(path.join("Sources").join(&target_name))?;
     fs::create_dir_all(path.join("Tests").join(format!("{target_name}Tests")))?;
     write_new_file(
         &path.join("implementation.yaml"),
-        &render_swift_implementation_yaml(name, &package_name, &target_name),
+        &render_swift_implementation_yaml(name, &package_name, &target_name, shape),
     )?;
     write_new_file(
         &path.join("Package.swift"),
@@ -12874,8 +16675,22 @@ fn scaffold_swift_module(path: &Path, name: &str) -> Result<()> {
         &path
             .join("Sources")
             .join(&target_name)
+            .join("Representation.swift"),
+        SWIFT_REPRESENTATION,
+    )?;
+    write_new_file(
+        &path
+            .join("Sources")
+            .join(&target_name)
+            .join("Transition.swift"),
+        SWIFT_TRANSITION,
+    )?;
+    write_new_file(
+        &path
+            .join("Sources")
+            .join(&target_name)
             .join(format!("{target_name}.swift")),
-        &render_swift_source(&target_name),
+        &render_swift_source(&target_name, shape),
     )?;
     write_new_file(
         &path
@@ -12887,11 +16702,48 @@ fn scaffold_swift_module(path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn scaffold_executable_module(path: &Path, name: &str) -> Result<()> {
+fn scaffold_js_module(path: &Path, name: &str, shape: ScaffoldShape) -> Result<()> {
+    fs::create_dir_all(path.join("src"))?;
+    fs::create_dir_all(path.join("tests"))?;
     fs::create_dir_all(path.join("scripts"))?;
     write_new_file(
         &path.join("implementation.yaml"),
-        &render_executable_implementation_yaml(name),
+        &render_js_implementation_yaml(name, shape),
+    )?;
+    write_new_file(
+        &path.join("src").join("representation.mjs"),
+        JS_REPRESENTATION_MJS,
+    )?;
+    match shape {
+        ScaffoldShape::BoundaryAdapter
+        | ScaffoldShape::StorageAdapter
+        | ScaffoldShape::IntegrationAdapter => {
+            write_new_file(&path.join("src").join("parser.mjs"), JS_PARSER_MJS)?;
+            write_new_file(&path.join("src").join("ports.mjs"), JS_PORTS_MJS)?;
+            write_new_file(&path.join("src").join("adapter.mjs"), JS_ADAPTER_MJS)?;
+            write_new_file(
+                &path.join("tests").join("boundary-smoke.mjs"),
+                JS_BOUNDARY_TEST_MJS,
+            )?;
+        }
+        _ => {
+            write_new_file(&path.join("src").join("transition.mjs"), JS_TRANSITION_MJS)?;
+            write_new_file(
+                &path.join("tests").join("trace-smoke.mjs"),
+                JS_TRACE_TEST_MJS,
+            )?;
+        }
+    }
+    write_new_file(&path.join("scripts").join("build.sh"), JS_BUILD_SH)?;
+    write_new_file(&path.join("scripts").join("smoke.sh"), JS_SMOKE_SH)?;
+    Ok(())
+}
+
+fn scaffold_executable_module(path: &Path, name: &str, shape: ScaffoldShape) -> Result<()> {
+    fs::create_dir_all(path.join("scripts"))?;
+    write_new_file(
+        &path.join("implementation.yaml"),
+        &render_executable_implementation_yaml(name, shape),
     )?;
     write_new_file(&path.join("scripts").join("build.sh"), EXECUTABLE_BUILD_SH)?;
     write_new_file(&path.join("scripts").join("smoke.sh"), EXECUTABLE_SMOKE_SH)?;
@@ -12905,10 +16757,37 @@ fn scaffold_executable_module(path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn normalized_profiles(profiles: &[String]) -> Vec<String> {
+fn normalized_profiles_for_shape(profiles: &[String], shape: ScaffoldShape) -> Vec<String> {
     let mut normalized = BTreeSet::from(["core".to_string()]);
     normalized.extend(profiles.iter().cloned());
+    match shape {
+        ScaffoldShape::BoundaryAdapter => {
+            normalized.insert("boundary".to_string());
+        }
+        ScaffoldShape::Workflow => {
+            normalized.insert("workflow".to_string());
+        }
+        ScaffoldShape::StorageAdapter | ScaffoldShape::IntegrationAdapter => {
+            normalized.insert("boundary".to_string());
+            normalized.insert("distributed".to_string());
+        }
+        ScaffoldShape::DomainEngine | ScaffoldShape::Composite => {}
+    }
     normalized.into_iter().collect()
+}
+
+fn normalized_kind_for_shape(kind: &str, shape: ScaffoldShape) -> String {
+    match shape {
+        ScaffoldShape::BoundaryAdapter
+        | ScaffoldShape::StorageAdapter
+        | ScaffoldShape::IntegrationAdapter
+            if kind == "module" =>
+        {
+            "adapter".to_string()
+        }
+        ScaffoldShape::Composite if kind == "module" => "composite".to_string(),
+        _ => kind.to_string(),
+    }
 }
 
 fn render_system_yaml(name: &str, purpose: &str, version: &str, contexts: &[String]) -> String {
@@ -12937,15 +16816,141 @@ fn render_glossary_md(name: &str) -> String {
     format!("# {name} Glossary\n\nAdd context-owned terms here.\n")
 }
 
-fn render_module_yaml(name: &str, purpose: &str, kind: &str, profiles: &[String]) -> String {
+fn render_module_yaml(
+    name: &str,
+    purpose: &str,
+    kind: &str,
+    profiles: &[String],
+    shape: Option<ScaffoldShape>,
+) -> String {
+    let composition = shape
+        .filter(|shape| *shape == ScaffoldShape::Composite)
+        .map(|_| "\ncomposition:\n  contains: []\n  exports: []\n".to_string())
+        .unwrap_or_default();
+    let scaffold = shape
+        .map(|shape| {
+            format!(
+                "\nx-scaffold:\n  shape: {}\n  roles:\n{}\n",
+                yaml_quote(shape.as_str()),
+                yaml_string_list(
+                    &shape
+                        .roles()
+                        .iter()
+                        .map(|role| (*role).to_string())
+                        .collect::<Vec<_>>(),
+                    4
+                )
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n{}",
         yaml_quote(name),
         yaml_quote(kind),
         yaml_quote(purpose),
         yaml_string_list(profiles, 2),
-        render_profile_sections(profiles)
+        render_profile_sections(profiles),
+        composition,
+        scaffold
     )
+}
+
+fn render_capability_parent_module_yaml(
+    name: &str,
+    purpose: &str,
+    public_command: &str,
+    domain_child: &str,
+    boundary_child: &str,
+) -> String {
+    format!(
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"composite\"\n  purpose: {}\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - public capability surface\n    - child module composition\n  data: []\n  decisions:\n    - public export composition\n    - child visibility\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ncomposition:\n  contains:\n    - name: {}\n      visibility: internal\n      path: ../{}/module.yaml\n    - name: {}\n      visibility: internal\n      path: ../{}/module.yaml\n  exports:\n    - group: commands\n      name: {}\n      from: {}\n\ninvariants:\n  - id: public-command-is-child-backed\n    statement: The parent public command is backed by the declared boundary child and its domain dependency.\n    enforced_by: composition\n    verified_by: verification/scenarios/composed_capability.md\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios/composed_capability.md\n  boundaries:\n    - verification/boundaries\n\nx-scaffold:\n  shape: \"composite\"\n  roles:\n{}\n",
+        yaml_quote(name),
+        yaml_quote(purpose),
+        yaml_quote(public_command),
+        contract_file_stem(public_command),
+        yaml_quote(domain_child),
+        domain_child,
+        yaml_quote(boundary_child),
+        boundary_child,
+        yaml_quote(public_command),
+        yaml_quote(boundary_child),
+        yaml_string_list(
+            &ScaffoldShape::Composite
+                .roles()
+                .iter()
+                .map(|role| (*role).to_string())
+                .collect::<Vec<_>>(),
+            4,
+        )
+    )
+}
+
+fn render_capability_domain_module_yaml(name: &str, domain_command: &str) -> String {
+    format!(
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"library\"\n  purpose: \"Own pure capability decisions, validated values, and transition evidence.\"\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - domain command\n    - transition outcome\n  data: []\n  decisions:\n    - command acceptance\n    - command rejection\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n\nx-scaffold:\n  shape: \"domain-engine\"\n  roles:\n{}\n",
+        yaml_quote(name),
+        yaml_quote(domain_command),
+        contract_file_stem(domain_command),
+        yaml_string_list(
+            &ScaffoldShape::DomainEngine
+                .roles()
+                .iter()
+                .map(|role| (*role).to_string())
+                .collect::<Vec<_>>(),
+            4,
+        )
+    )
+}
+
+fn render_capability_boundary_module_yaml(
+    name: &str,
+    public_command: &str,
+    domain_child: &str,
+    domain_command: &str,
+) -> String {
+    format!(
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"adapter\"\n  purpose: \"Adapt untrusted input and effects to the pure domain child.\"\n\nprofiles:\n  - \"boundary\"\n  - \"core\"\n\nowns:\n  concepts:\n    - boundary input\n    - parsed domain command\n    - domain child port\n  data: []\n  decisions:\n    - boundary input parsing\n    - malformed input rejection\n    - domain command delegation\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules:\n    - name: {}\n  capabilities:\n    - name: {}\n\ninvariants: []\n\neffects:\n  - name: local-boundary-io\n    kind: local-ui\n\nboundary:\n  trust_boundary: generated-boundary-adapter\n  inputs: []\n  outputs: []\n  validation:\n    - Reject malformed input before domain delegation.\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n\nx-scaffold:\n  shape: \"boundary-adapter\"\n  roles:\n{}\n",
+        yaml_quote(name),
+        yaml_quote(public_command),
+        contract_file_stem(public_command),
+        yaml_quote(domain_child),
+        yaml_quote(domain_command),
+        yaml_string_list(
+            &ScaffoldShape::BoundaryAdapter
+                .roles()
+                .iter()
+                .map(|role| (*role).to_string())
+                .collect::<Vec<_>>(),
+            4,
+        )
+    )
+}
+
+fn render_capability_contract(name: &str, meaning: &str) -> String {
+    format!(
+        "spec: rms/contract/v0.1\nname: {}\nversion: 1\nkind: command\nmeaning: {}\npreconditions:\n  - id: valid-request\n    statement: The caller supplies input accepted by this command boundary.\npostconditions:\n  - id: explicit-outcome\n    statement: The command returns an accepted result or an explicit rejection.\nfailure_categories:\n  - id: rejected-request\n    statement: The request is rejected by boundary validation or domain rules.\ncompatibility:\n  policy: backward-compatible-within-major\n",
+        yaml_quote(name),
+        yaml_quote(meaning),
+    )
+}
+
+fn render_composed_capability_evidence(
+    name: &str,
+    public_command: &str,
+    domain_child: &str,
+    boundary_child: &str,
+) -> String {
+    format!(
+        "# Scenario Evidence: composed capability\n\nPromise:\n\n- `{}` is a composite parent module.\n- The parent exports `{}` through internal boundary child `{}`.\n- The boundary child depends on internal domain child `{}` for pure decisions.\n\nEvidence:\n\n- `rms compose --root <system-root>` verifies containment, internal visibility, and parent export backing.\n- `rms verify <this module.yaml>` rolls up composition and child implementation verification when child bindings exist.\n\nSource revision: recorded by the verifier or conformance report at runtime.\n",
+        markdown_inline(name),
+        markdown_inline(public_command),
+        markdown_inline(boundary_child),
+        markdown_inline(domain_child),
+    )
+}
+
+fn contract_file_stem(name: &str) -> String {
+    semantic_id_segment(name)
 }
 
 fn render_profile_sections(profiles: &[String]) -> String {
@@ -12971,6 +16976,7 @@ fn render_module_readme(
     kind: &str,
     profiles: &[String],
     binding: Option<&str>,
+    shape: ScaffoldShape,
 ) -> String {
     let profile_lines = profiles
         .iter()
@@ -12986,12 +16992,21 @@ fn render_module_readme(
     };
 
     format!(
-        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Representation Decisions\n\n- Public domain values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs or illegal transitions when applicable.\n5. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms verify implementation.yaml` when an implementation binding exists.\n\n## Agent Workflow\n\nUse `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms evolve-contract module.yaml --task \"<task>\"` when public meaning changes, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
+        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Semantic Shape\n\nShape: `{}`: `{}` ({})\n\nRequired roles:\n{}\n\nRepresentation is the RMS-level role for closed variants, validated values, commands, states, events, and result/rejection types. Implement it with language-idiomatic files or modules; do not treat a folder named `domain` or `types` as canonical architecture.\n\n## Representation Decisions\n\n- Closed domain alternatives should use ADTs, sealed variants, enums, or tagged constructors.\n- Public values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Expected domain failures should be explicit result or rejection values rather than ambient exceptions.\n- Lifecycle or order-dependent behavior should use a transition model with accepted and rejected outcomes.\n- Boundary input should be parsed into domain commands before reaching pure decisions.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs or illegal transitions when applicable.\n5. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms verify implementation.yaml` when an implementation binding exists.\n\n## Agent Workflow\n\nUse `rms design --root <system-root> --task \"<task>\"` when module boundaries or semantic shapes are unclear. Use `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms evolve-contract module.yaml --task \"<task>\"` when public meaning changes, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
         markdown_inline(name),
         markdown_inline(purpose),
         markdown_inline(kind),
         binding_line,
-        profile_lines
+        profile_lines,
+        shape.title(),
+        shape.as_str(),
+        shape.purpose(),
+        shape
+            .roles()
+            .iter()
+            .map(|role| format!("- `{}`", markdown_inline(role)))
+            .collect::<Vec<_>>()
+            .join("\n")
     )
 }
 
@@ -13009,11 +17024,23 @@ fn render_verification_readme(category: &str) -> String {
     }
 }
 
-fn render_rust_implementation_yaml(module_name: &str, package_name: &str) -> String {
+fn render_rust_implementation_yaml(
+    module_name: &str,
+    package_name: &str,
+    shape: ScaffoldShape,
+) -> String {
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  public_modules: []\n",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - representation\n    - transition\n  representation:\n    closed_variants:\n      - Command\n      - TransitionOutcome\n    validated_values:\n      - NonEmptyLabel\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: NonEmptyLabel::new\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n",
         yaml_quote(module_name),
         yaml_quote(package_name),
+        yaml_quote(shape.as_str()),
+    )
+}
+
+fn render_rust_lib_rs(shape: ScaffoldShape) -> String {
+    format!(
+        "pub mod representation;\npub mod transition;\n\npub use crate::representation::{{Command, NonEmptyLabel, TransitionOutcome}};\npub use crate::transition::transition;\n\npub fn semantic_shape() -> &'static str {{\n    {:?}\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn rejects_invalid_representation() {{\n        assert!(NonEmptyLabel::new(\"\").is_none());\n    }}\n\n    #[test]\n    fn transition_is_replayable() {{\n        let label = NonEmptyLabel::new(\"example\").unwrap();\n        let outcome = transition(Command::Accept(label));\n        assert!(matches!(outcome, TransitionOutcome::Accepted));\n    }}\n}}\n",
+        shape.as_str()
     )
 }
 
@@ -13027,16 +17054,23 @@ fn render_swift_implementation_yaml(
     module_name: &str,
     package_name: &str,
     target_name: &str,
+    shape: ScaffoldShape,
 ) -> String {
     let source_root = format!("Sources/{target_name}");
     let public_entrypoint = format!("Sources/{target_name}/{target_name}.swift");
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  public_modules: []\n",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n  representation:\n    closed_variants:\n      - Command\n      - TransitionOutcome\n    validated_values:\n      - NonEmptyLabel\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#NonEmptyLabel.init\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n",
         yaml_quote(module_name),
         yaml_quote(&source_root),
         yaml_quote(&public_entrypoint),
         yaml_quote(package_name),
         yaml_quote(target_name),
+        yaml_quote(shape.as_str()),
+        yaml_quote(&public_entrypoint),
+        target_name,
+        target_name,
+        target_name,
+        target_name,
     )
 }
 
@@ -13046,22 +17080,40 @@ fn render_swift_package_swift(package_name: &str, target_name: &str) -> String {
     )
 }
 
-fn render_swift_source(target_name: &str) -> String {
+fn render_swift_source(target_name: &str, shape: ScaffoldShape) -> String {
     format!(
-        "import Foundation\n\npublic struct {target_name}Value: Equatable {{\n    private let rawValue: String\n\n    public init?(_ rawValue: String) {{\n        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)\n        guard !trimmed.isEmpty else {{ return nil }}\n        self.rawValue = trimmed\n    }}\n\n    public var value: String {{ rawValue }}\n}}\n"
+        "public let {target_name}SemanticShape = \"{}\"\n",
+        shape.as_str()
     )
 }
 
 fn render_swift_tests(target_name: &str) -> String {
     format!(
-        "import XCTest\n@testable import {target_name}\n\nfinal class {target_name}Tests: XCTestCase {{\n    func testRejectsEmptyValue() {{\n        XCTAssertNil({target_name}Value(\"\"))\n    }}\n\n    func testAcceptsNonEmptyValue() {{\n        XCTAssertEqual({target_name}Value(\"example\")?.value, \"example\")\n    }}\n}}\n"
+        "import XCTest\n@testable import {target_name}\n\nfinal class {target_name}Tests: XCTestCase {{\n    func testRejectsEmptyValue() {{\n        XCTAssertNil(NonEmptyLabel(\"\"))\n    }}\n\n    func testTransitionIsReplayable() {{\n        let label = NonEmptyLabel(\"example\")!\n        XCTAssertEqual(transition(.accept(label)), .accepted)\n    }}\n}}\n"
     )
 }
 
-fn render_executable_implementation_yaml(module_name: &str) -> String {
+fn render_js_implementation_yaml(module_name: &str, shape: ScaffoldShape) -> String {
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: shell\n\ndependencies:\n  allowed_processes:\n    - sh\n\narchitecture:\n  verification_mode: executable-command\n  static_inspection: opaque\n  public_entrypoints:\n    - scripts/smoke.sh\n  boundary_inputs: []\n  observable_outputs: []\n  declared_assets: []\n\nsemantic_functions:\n  - id: executable-smoke\n    symbol: scripts/smoke.sh\n    kind: adapter\n    purity: boundary\n    assumptions:\n      ensures:\n        - command-backed implementation can be invoked through the declared verify command\n        - RMS does not infer internal domain semantics from opaque executable assets\n    evidence:\n      boundaries:\n        - verification/boundaries/executable_smoke.md\n",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: src/representation.mjs\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\narchitecture:\n  shape: {}\n  public_modules:\n    - src/representation.mjs\n  representation:\n    closed_variants:\n      - Command\n      - TransitionOutcome\n    validated_values:\n      - makeNonEmptyLabel\n    transition_functions:\n      - transition\n  effect_roles:\n{}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#makeNonEmptyLabel\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n",
         yaml_quote(module_name),
+        yaml_quote(shape.as_str()),
+        yaml_string_list(
+            &shape.roles().iter().map(|role| (*role).to_string()).collect::<Vec<_>>(),
+            4
+        )
+    )
+}
+
+fn render_executable_implementation_yaml(module_name: &str, shape: ScaffoldShape) -> String {
+    format!(
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: shell\n\ndependencies:\n  allowed_processes:\n    - sh\n\narchitecture:\n  shape: {}\n  verification_mode: executable-command\n  static_inspection: opaque\n  public_entrypoints:\n    - scripts/smoke.sh\n  semantic_roles:\n{}\n  boundary_inputs: []\n  observable_outputs: []\n  declared_assets: []\n\nsemantic_functions:\n  - id: executable-semantic-smoke\n    symbol: scripts/smoke.sh\n    kind: adapter\n    purity: boundary\n    assumptions:\n      ensures:\n        - command-backed implementation can be invoked through the declared verify command\n        - semantic roles are documented as scaffold obligations rather than statically inferred from opaque executable assets\n        - RMS does not infer internal domain semantics from opaque executable assets\n    evidence:\n      boundaries:\n        - verification/boundaries/executable_smoke.md\n",
+        yaml_quote(module_name),
+        yaml_quote(shape.as_str()),
+        yaml_string_list(
+            &shape.roles().iter().map(|role| (*role).to_string()).collect::<Vec<_>>(),
+            4
+        )
     )
 }
 
@@ -13069,10 +17121,224 @@ fn render_executable_smoke_evidence() -> String {
     "# Boundary Evidence: executable smoke\n\nPromise:\n\n- `implementation.yaml` declares `binding: executable`.\n- RMS treats the implementation as opaque and verifies it through declared commands rather than static source inspection.\n\nCommand:\n\n- `rms verify implementation.yaml` runs `sh scripts/smoke.sh` from the module directory.\n\nCurrent scaffold:\n\n- `scripts/smoke.sh` verifies that `module.yaml` and `implementation.yaml` exist.\n- Replace or extend this script with module-specific checks before using the binding as release evidence.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
 }
 
+fn render_shape_law_evidence(shape: ScaffoldShape) -> String {
+    format!(
+        "# Law Evidence: semantic shape\n\nShape: `{}` ({})\n\nRepresentation obligations:\n\n- Closed alternatives should be represented as ADTs, sealed variants, enums, or tagged constructors.\n- Values with validity rules should be created through validated constructors.\n- Expected failures should be explicit accepted/rejected outcomes.\n- Lifecycle or order-dependent behavior should be replayable through transition traces.\n- Boundary input should be parsed before it reaches pure decisions.\n\nGenerated roles:\n{}\n\nCommand:\n\n- Replace this placeholder with module-specific law, trace, property, fuzz, contract, or boundary evidence.\n\nSource revision: not recorded by the generated scaffold.\n",
+        shape.as_str(),
+        shape.purpose(),
+        shape
+            .roles()
+            .iter()
+            .map(|role| format!("- `{role}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
+fn render_transition_trace_evidence() -> String {
+    "# Law Evidence: transition trace\n\nPromise:\n\n- Pure decisions are replayable from explicit commands, states, events, or transition inputs.\n- Illegal or invalid transitions are rejected or made unrepresentable.\n\nEvidence to add:\n\n- Accepted transition trace from valid input to expected outcome.\n- Rejected transition trace for invalid command, impossible variant, or invalid state/order.\n- Property, fuzz, or table coverage when the transition space is broad.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+}
+
+fn render_accepted_rejected_evidence() -> String {
+    "# Scenario Evidence: accepted and rejected outcomes\n\nPromise:\n\n- The module exposes explicit accepted and rejected outcomes for expected domain failures.\n\nEvidence to add:\n\n- One meaningful accepted scenario.\n- One meaningful rejected scenario.\n- The command or tool used to exercise both paths.\n- The manifest promise, invariant, or contract each path proves.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+}
+
+fn render_malformed_input_evidence() -> String {
+    "# Boundary Evidence: malformed input\n\nPromise:\n\n- Untrusted input is parsed and validated before it reaches pure decisions.\n- Malformed input is rejected with an explicit failure path.\n\nEvidence to add:\n\n- Valid boundary input parsed into a domain command.\n- Malformed, incomplete, or incompatible input rejected before domain delegation.\n- Declared effect, timeout, retry, or fallback behavior when applicable.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+}
+
+fn render_parser_to_domain_command_evidence() -> String {
+    "# Contract Evidence: parser to domain command\n\nPromise:\n\n- Boundary input is translated into a domain command or explicit rejection before core decisions run.\n\nEvidence to add:\n\n- Parser success case naming the produced domain command.\n- Parser rejection case naming the rejection type or failure category.\n- Contract or parent export affected by the boundary behavior.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+}
+
+fn render_parent_export_evidence() -> String {
+    "# Contract Evidence: parent export\n\nPromise:\n\n- The composite parent public surface is backed by the declared child export.\n- Public behavior changes keep parent contract evidence and child contract evidence aligned.\n\nEvidence to add:\n\n- Parent public command, query, event, or capability exercised through the exported surface.\n- Child module contract or implementation evidence that backs the parent surface.\n- `rms compose --root <system-root>` output showing export backing.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+}
+
 const EXECUTABLE_BUILD_SH: &str =
     "#!/usr/bin/env sh\nset -eu\nprintf '%s\\n' 'executable binding build placeholder'\n";
 
 const EXECUTABLE_SMOKE_SH: &str = "#!/usr/bin/env sh\nset -eu\ntest -f module.yaml\ntest -f implementation.yaml\nprintf '%s\\n' 'executable binding smoke passed'\n";
+
+const RUST_REPRESENTATION_RS: &str = r#"#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NonEmptyLabel(String);
+
+impl NonEmptyLabel {
+    pub fn new(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(Self(trimmed.to_string()))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Command {
+    Accept(NonEmptyLabel),
+    Reject(NonEmptyLabel),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TransitionOutcome {
+    Accepted,
+    Rejected { reason: NonEmptyLabel },
+}
+"#;
+
+const RUST_TRANSITION_RS: &str = r#"use crate::representation::{Command, TransitionOutcome};
+
+pub fn transition(command: Command) -> TransitionOutcome {
+    match command {
+        Command::Accept(_) => TransitionOutcome::Accepted,
+        Command::Reject(reason) => TransitionOutcome::Rejected { reason },
+    }
+}
+
+pub fn replay_trace(commands: impl IntoIterator<Item = Command>) -> Vec<TransitionOutcome> {
+    commands.into_iter().map(transition).collect()
+}
+"#;
+
+const SWIFT_REPRESENTATION: &str = r#"public struct NonEmptyLabel: Equatable {
+    private let rawValue: String
+
+    public init?(_ rawValue: String) {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        self.rawValue = trimmed
+    }
+
+    public var value: String { rawValue }
+}
+
+public enum Command: Equatable {
+    case accept(NonEmptyLabel)
+    case reject(NonEmptyLabel)
+}
+
+public enum TransitionOutcome: Equatable {
+    case accepted
+    case rejected(reason: NonEmptyLabel)
+}
+"#;
+
+const SWIFT_TRANSITION: &str = r#"public func transition(_ command: Command) -> TransitionOutcome {
+    switch command {
+    case .accept:
+        return .accepted
+    case .reject(let reason):
+        return .rejected(reason: reason)
+    }
+}
+
+public func replayTrace(_ commands: [Command]) -> [TransitionOutcome] {
+    commands.map(transition)
+}
+"#;
+
+const JS_REPRESENTATION_MJS: &str = r#"export function makeNonEmptyLabel(value) {
+  const label = typeof value === "string" ? value.trim() : "";
+  if (!label) {
+    return null;
+  }
+  return Object.freeze({ tag: "NonEmptyLabel", value: label });
+}
+
+export function accept(label) {
+  return Object.freeze({ tag: "Accept", label });
+}
+
+export function reject(reason) {
+  return Object.freeze({ tag: "Reject", reason });
+}
+
+export function accepted() {
+  return Object.freeze({ tag: "Accepted" });
+}
+
+export function rejected(reason) {
+  return Object.freeze({ tag: "Rejected", reason });
+}
+"#;
+
+const JS_TRANSITION_MJS: &str = r#"import { accepted, rejected } from "./representation.mjs";
+
+export function transition(command) {
+  if (command?.tag === "Accept") {
+    return accepted();
+  }
+  if (command?.tag === "Reject") {
+    return rejected(command.reason);
+  }
+  return rejected(Object.freeze({ tag: "NonEmptyLabel", value: "unknown-command" }));
+}
+
+export function replayTrace(commands) {
+  return commands.map(transition);
+}
+"#;
+
+const JS_PARSER_MJS: &str = r#"import { accept, makeNonEmptyLabel, reject } from "./representation.mjs";
+
+export function parseCommand(input) {
+  const label = makeNonEmptyLabel(input?.label ?? input);
+  if (!label) {
+    return null;
+  }
+  return input?.reject === true ? reject(label) : accept(label);
+}
+"#;
+
+const JS_PORTS_MJS: &str = r#"export function createPorts(overrides = {}) {
+  return Object.freeze({
+    read: overrides.read ?? (() => null),
+    write: overrides.write ?? (() => false),
+  });
+}
+"#;
+
+const JS_ADAPTER_MJS: &str = r#"import { parseCommand } from "./parser.mjs";
+
+export function handleBoundaryInput(input, ports) {
+  const command = parseCommand(input);
+  if (!command) {
+    return Object.freeze({ tag: "Rejected", reason: "malformed-input" });
+  }
+  ports?.write?.(command);
+  return Object.freeze({ tag: "Accepted", command });
+}
+"#;
+
+const JS_TRACE_TEST_MJS: &str = r#"import assert from "node:assert/strict";
+import { accept, makeNonEmptyLabel } from "../src/representation.mjs";
+import { replayTrace } from "../src/transition.mjs";
+
+assert.equal(makeNonEmptyLabel(""), null);
+const label = makeNonEmptyLabel("example");
+assert.deepEqual(replayTrace([accept(label)]).map((item) => item.tag), ["Accepted"]);
+"#;
+
+const JS_BOUNDARY_TEST_MJS: &str = r#"import assert from "node:assert/strict";
+import { handleBoundaryInput } from "../src/adapter.mjs";
+import { createPorts } from "../src/ports.mjs";
+
+const written = [];
+const ports = createPorts({ write: (command) => written.push(command) });
+assert.equal(handleBoundaryInput("", ports).tag, "Rejected");
+assert.equal(handleBoundaryInput("example", ports).tag, "Accepted");
+assert.equal(written.length, 1);
+"#;
+
+const JS_BUILD_SH: &str = "#!/usr/bin/env sh\nset -eu\nnode --check src/representation.mjs\nif [ -f src/transition.mjs ]; then node --check src/transition.mjs; fi\nif [ -f src/parser.mjs ]; then node --check src/parser.mjs; fi\nif [ -f src/adapter.mjs ]; then node --check src/adapter.mjs; fi\n";
+
+const JS_SMOKE_SH: &str = "#!/usr/bin/env sh\nset -eu\nif [ -f tests/trace-smoke.mjs ]; then node tests/trace-smoke.mjs; fi\nif [ -f tests/boundary-smoke.mjs ]; then node tests/boundary-smoke.mjs; fi\nprintf '%s\\n' 'js semantic scaffold smoke passed'\n";
 
 fn yaml_string_list(values: &[String], indent: usize) -> String {
     let prefix = " ".repeat(indent);
@@ -13089,6 +17355,17 @@ fn yaml_quote(value: &str) -> String {
 
 fn markdown_inline(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn shell_arg(value: &str) -> String {
+    if value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || "-_./:".contains(character))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
 }
 
 fn sanitize_rust_package_name(name: &str) -> String {
@@ -13163,11 +17440,14 @@ RMS artifacts are the architectural source of truth. Do not infer ownership, eff
 1. Run `rms diagnose`.
 2. Identify the owning module for the requested behavior.
 3. Run `rms explain <module.yaml>` to understand ownership, public surface, effects, invariants, compatibility, and verification evidence.
-4. Run `rms context <module.yaml> --task "<task>"` before implementation work.
-5. Read the target `module.yaml`, public contracts, direct dependency contracts, applicable glossary entries, and implementation binding.
+4. Run `rms route <module.yaml> --task "<task>"` when the target may be a composite parent or recursive module tree.
+5. Run `rms context <module.yaml> --task "<task>"` before implementation work.
+6. Read the target `module.yaml`, public contracts, direct dependency contracts, applicable glossary entries, and implementation binding.
 
 Use these advisory workbench commands when they match the task:
 
+- `rms design --root . --task "<task>"` before module boundaries or semantic shapes are fixed
+- `rms route <module.yaml> --task "<task>"` before implementing against a composite parent
 - `rms plan <module.yaml> --task "<task>"`
 - `rms implement <module.yaml> --task "<task>"`
 - `rms evolve-contract <module.yaml> --task "<task>"`
@@ -13177,12 +17457,32 @@ Use these advisory workbench commands when they match the task:
 
 Provider-backed prompts are opt-in. Use `--provider codex` or `--ai` only when an external Codex run is intended.
 
+## Adding Modules
+
+When creating a new capability, choose semantic shape before file layout:
+
+- `domain-engine`: pure decisions, closed variants, validated values, transitions, laws, and trace replay.
+- `boundary-adapter`: parsers, boundary validation, ports, effect adapters, and boundary/contract tests.
+- `workflow`: commands, states, events, deadlines, compensation, recovery evidence.
+- `storage-adapter`: persistence ports, failure categories, migration and recovery evidence.
+- `integration-adapter`: external service boundary, retries, idempotency, reconciliation evidence.
+- `composite`: contained submodules, public exports, visibility boundaries, composition evidence.
+
+Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a public capability should be scaffolded as a recursive tree with a composite parent, domain child, and boundary child.
+
+Use `rms add-module <path> --name <name> --purpose "<purpose>" --shape <shape> --binding <binding>` when scaffolding one module. Bindings realize semantic roles idiomatically; they do not define the semantics.
+
+Default split for any capability: put invariant-bearing decisions in a `domain-engine`, and put untrusted input, output, UI, CLI, network, storage, time, randomness, external services, and other effects in adapters.
+
 ## While Implementing
 
 - Keep changes inside the owning module boundary.
 - Change public contracts or manifests before code when public meaning changes.
 - Declare new effects, dependencies, profiles, state, migration, compatibility impact, and recovery paths before relying on them.
-- Prefer explicit domain types, validated constructors, explicit result types, schemas at untrusted boundaries, and focused tests.
+- Make representation first-class: closed variants, validated values, commands, states, events, and accepted/rejected result types belong in an explicit role or unit.
+- Keep pure transitions separate from representation definitions, and keep boundary parsing separate from both.
+- Prefer ADTs, sealed variants, enums, opaque values, validated constructors, explicit result/rejection types, schemas at untrusted boundaries, and focused tests.
+- Use state machines or transition functions when behavior depends on lifecycle or order; illegal transitions must be rejected or made unrepresentable.
 - Do not edit another module's private implementation to bypass its public contract.
 - Treat generated reports, diffs, and provider output as evidence, not architecture.
 
@@ -13192,10 +17492,24 @@ Run the smallest checks that prove the changed promise:
 
 - `rms validate --root .`
 - `rms compose --root .`
-- `rms verify <implementation.yaml>` when the module has an implementation binding.
+- `rms verify <implementation.yaml>` when the module has an implementation binding, or `rms verify <composite-module.yaml>` for composite rollups.
 - `rms gate --root .` when reviewing a working-tree change.
 
 Report remaining manual obligations explicitly, especially compatibility review, missing evidence, undeclared effects, or partial conformance.
+"#;
+
+const INIT_CLAUDE_MD: &str = r#"@AGENTS.md
+
+# Claude Code Adapter
+
+Use the repository's RMS skills when their descriptions match the task. Treat deterministic validation, contracts, and CI as authoritative over conversational instructions.
+"#;
+
+const CODEX_PLUGIN_README: &str = r#"# Codex Plugin Wrapper
+
+This directory packages the canonical RMS skills for Codex. It is an adapter: the semantic source remains RMS manifests, contracts, generated project guidance, and the shared `rms` CLI.
+
+The plugin is optional. Project-local `AGENTS.md` and `.agents/skills` generated by `rms agent init --target codex` are sufficient for RMS-guided work.
 "#;
 
 fn referenced_paths(value: &YamlValue) -> BTreeSet<String> {
@@ -14015,8 +18329,14 @@ import struct ExternalKit.Widget
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
         assert!(agents.contains("RMS artifacts are the architectural source of truth"));
+        assert!(agents.contains("rms design --root . --task"));
+        assert!(agents.contains("choose semantic shape before file layout"));
+        assert!(agents.contains("Default split for any capability"));
+        assert!(agents.contains("Make representation first-class"));
+        assert!(agents.contains("rms route <module.yaml> --task"));
         assert!(agents.contains("rms context <module.yaml> --task"));
         assert!(gitignore.contains(".rms/runs/"));
+        assert!(config_text.contains("# write_scope: module"));
         assert!(config_text.contains("# timeout_seconds: 900"));
         assert_eq!(config.value.ai.default_provider.as_deref(), Some("codex"));
         assert_eq!(config.value.ai.codex.sandbox.as_deref(), Some("read-only"));
@@ -14024,6 +18344,114 @@ import struct ExternalKit.Widget
             config.value.runs.directory.as_deref(),
             Some(Path::new(".rms/runs"))
         );
+    }
+
+    #[test]
+    fn agent_integration_init_and_sync_manage_project_local_guidance() {
+        let root = unique_test_dir("agent-integration");
+        fs::create_dir_all(&root).unwrap();
+
+        run_agent_init(&root, AgentTarget::Codex, false).unwrap();
+        let report = build_agent_integration_report(&root, AgentTarget::Codex);
+        let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        let config_before = fs::read_to_string(root.join(".rms/config.yaml")).unwrap();
+        let overwrite_error = run_agent_init(&root, AgentTarget::Codex, false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(agents.contains("RMS artifacts are the architectural source of truth"));
+        assert_eq!(report.local_skills.status, "present");
+        assert!(!report.plugin_required);
+        assert!(overwrite_error.contains("refusing to overwrite"));
+
+        fs::write(root.join("AGENTS.md"), "stale guidance\n").unwrap();
+        fs::write(
+            root.join(".agents/skills/implement-change/SKILL.md"),
+            "stale skill\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join(".rms/config.yaml"),
+            "ai:\n  default_provider: none\n  codex:\n    sandbox: read-only\nruns:\n  directory: \".rms/custom-runs\"\n",
+        )
+        .unwrap();
+
+        let stale = build_agent_integration_report(&root, AgentTarget::Codex);
+        assert_eq!(stale.local_skills.status, "stale");
+        assert!(stale
+            .local_skills
+            .drifted
+            .iter()
+            .any(|skill| { skill == "implement-change/SKILL.md" }));
+
+        run_agent_sync(&root, AgentTarget::Codex).unwrap();
+        let synced = build_agent_integration_report(&root, AgentTarget::Codex);
+        let synced_agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        let config_after_sync = fs::read_to_string(root.join(".rms/config.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(config_before.contains("default_provider: codex"));
+        assert!(synced_agents.contains("Default split for any capability"));
+        assert_eq!(synced.local_skills.status, "present");
+        assert!(config_after_sync.contains("default_provider: none"));
+        assert!(config_after_sync.contains(".rms/custom-runs"));
+    }
+
+    #[test]
+    fn agent_integration_scaffolds_claude_project_guidance() {
+        let root = unique_test_dir("agent-claude");
+        fs::create_dir_all(&root).unwrap();
+
+        run_agent_init(&root, AgentTarget::Claude, false).unwrap();
+        let report = build_agent_integration_report(&root, AgentTarget::Claude);
+        let claude = fs::read_to_string(root.join("CLAUDE.md")).unwrap();
+        let skill =
+            fs::read_to_string(root.join(".claude/skills/implement-change/SKILL.md")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(claude.contains("@AGENTS.md"));
+        assert!(skill.contains("Implement a Change"));
+        assert_eq!(report.local_skills.status, "present");
+        assert_eq!(
+            report
+                .target_instructions
+                .as_ref()
+                .map(|item| item.status.as_str()),
+            Some("present")
+        );
+        assert!(!report.plugin_required);
+    }
+
+    #[test]
+    fn agent_plugin_install_packages_codex_plugin_marketplace_entry() {
+        let root = unique_test_dir("agent-plugin");
+        let marketplace = root.join(".agents/plugins/marketplace.json");
+        fs::create_dir_all(&root).unwrap();
+
+        run_agent_plugin_install(AgentTarget::Codex, Some(&marketplace), true).unwrap();
+        let plugin_root = root.join("plugins/rms");
+        let report = build_agent_plugin_report(AgentTarget::Codex, Some(&marketplace)).unwrap();
+        let manifest = fs::read_to_string(plugin_root.join(".codex-plugin/plugin.json")).unwrap();
+        let marketplace_source = fs::read_to_string(&marketplace).unwrap();
+        let skill =
+            fs::read_to_string(plugin_root.join("skills/implement-change/SKILL.md")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(manifest.contains("\"name\": \"rms\""));
+        assert!(manifest.contains("+codex."));
+        assert!(marketplace_source.contains("\"path\": \"./plugins/rms\""));
+        assert!(skill.contains("Implement a Change"));
+        assert_eq!(report.marketplace_status, "present");
+        assert_eq!(report.plugin_status, "present");
+        assert!(!report.plugin_required);
+    }
+
+    #[test]
+    fn agent_plugin_install_rejects_unsupported_targets() {
+        let error = run_agent_plugin_install(AgentTarget::Claude, None, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Claude plugin installation is not implemented"));
     }
 
     #[test]
@@ -14047,12 +18475,16 @@ import struct ExternalKit.Widget
         let root = unique_test_dir("rust-module");
 
         run_add_module(
-            &root,
-            "example-rust",
-            "Demonstrate Rust module scaffolding.",
-            "library",
-            &[],
-            Some("rust"),
+            add_module_request(
+                &root,
+                "example-rust",
+                "Demonstrate Rust module scaffolding.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("rust"),
+            ),
+            &no_provider_options(),
         )
         .unwrap();
 
@@ -14077,12 +18509,16 @@ import struct ExternalKit.Widget
         let root = unique_test_dir("swift-module");
 
         run_add_module(
-            &root,
-            "example-swift",
-            "Demonstrate Swift module scaffolding.",
-            "library",
-            &[],
-            Some("swift"),
+            add_module_request(
+                &root,
+                "example-swift",
+                "Demonstrate Swift module scaffolding.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("swift"),
+            ),
+            &no_provider_options(),
         )
         .unwrap();
 
@@ -14107,12 +18543,16 @@ import struct ExternalKit.Widget
         let root = unique_test_dir("executable-module");
 
         run_add_module(
-            &root,
-            "example-executable",
-            "Demonstrate executable module scaffolding.",
-            "adapter",
-            &["boundary".to_string()],
-            Some("executable"),
+            add_module_request(
+                &root,
+                "example-executable",
+                "Demonstrate executable module scaffolding.",
+                "adapter",
+                &["boundary".to_string()],
+                Some(ScaffoldShape::DomainEngine),
+                Some("executable"),
+            ),
+            &no_provider_options(),
         )
         .unwrap();
 
@@ -14148,21 +18588,310 @@ import struct ExternalKit.Widget
     }
 
     #[test]
+    fn js_boundary_adapter_scaffold_separates_representation_parser_and_adapters() {
+        let root = unique_test_dir("js-boundary-module");
+
+        run_add_module(
+            add_module_request(
+                &root,
+                "example-js",
+                "Demonstrate JS boundary scaffolding.",
+                "adapter",
+                &["boundary".to_string()],
+                Some(ScaffoldShape::BoundaryAdapter),
+                Some("js"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+
+        let mut diagnostics = Vec::new();
+        for file in ["module.yaml", "implementation.yaml"] {
+            let manifest = load_manifest(&root.join(file)).unwrap();
+            validate_loaded_manifest(&manifest, &mut diagnostics);
+        }
+        assert!(root.join("src/representation.mjs").exists());
+        assert!(root.join("src/parser.mjs").exists());
+        assert!(root.join("src/ports.mjs").exists());
+        assert!(root.join("src/adapter.mjs").exists());
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        assert!(implementation.contains("binding: js"));
+        assert!(implementation.contains("shape: \"boundary-adapter\""));
+        run_verify(&root.join("implementation.yaml"), false).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn design_prompt_recommends_generic_domain_engine_and_boundary_adapter() {
+        let root = unique_test_dir("design-boundary-split");
+        let rendered = render_design_prompt(&root, "browser-playable Snake game").unwrap();
+
+        fs::remove_dir_all(&root).ok();
+        assert!(rendered.contains("Prompt: rms.design@v1"));
+        assert!(rendered.contains("Candidate split"));
+        assert!(rendered.contains("### Recommended Module Tree"));
+        assert!(rendered.contains("`<capability>` [composite]"));
+        assert!(rendered.contains("`<capability>-rules` [domain-engine, internal]"));
+        assert!(rendered.contains("`<capability>-adapter` [boundary-adapter, internal]"));
+        assert!(rendered.contains("domain-engine"));
+        assert!(rendered.contains("boundary-adapter"));
+        assert!(!rendered.contains("snake-rules"));
+        assert!(!rendered.contains("snake-web"));
+        assert!(!rendered.contains("snake [composite]"));
+    }
+
+    #[test]
+    fn boundary_adapter_shape_scaffold_gets_boundary_semantics() {
+        let root = unique_test_dir("shape-boundary-adapter");
+
+        run_add_module(
+            add_module_request(
+                &root,
+                "shape-boundary-adapter",
+                "Parse external input and delegate to an owned decision module.",
+                "module",
+                &[],
+                Some(ScaffoldShape::BoundaryAdapter),
+                Some("executable"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+
+        let manifest = fs::read_to_string(root.join("module.yaml")).unwrap();
+        let loaded = load_manifest(&root.join("module.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_loaded_manifest(&loaded, &mut diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(manifest.contains("kind: \"adapter\""));
+        assert!(manifest.contains("- \"boundary\""));
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "module.shape-consistency"),
+            "{diagnostics:#?}"
+        );
+    }
+
+    #[test]
+    fn validate_warns_when_boundary_adapter_shape_lacks_boundary_semantics() {
+        let value: YamlValue = serde_yaml::from_str(
+            r#"spec: rms/module/v0.1
+
+module:
+  name: "drifted-cli"
+  version: 0.1.0
+  kind: "module"
+  purpose: "Parse process input and print output."
+
+profiles:
+  - "core"
+
+owns:
+  concepts: []
+  data: []
+  decisions: []
+
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities: []
+
+invariants: []
+
+effects:
+  - name: process-io
+    kind: local-ui
+
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+
+x-scaffold:
+  shape: "boundary-adapter"
+  roles: []
+"#,
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: PathBuf::from("module.yaml"),
+            value,
+        };
+        let mut diagnostics = Vec::new();
+
+        validate_loaded_manifest(&manifest, &mut diagnostics);
+
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "module.shape-consistency"
+                && diagnostic.message.contains("module.kind `adapter`")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "module.shape-consistency"
+                && diagnostic.message.contains("lacks the `boundary` profile")
+        }));
+    }
+
+    #[test]
+    fn design_prompt_allows_boundary_adapter_parser_decisions() {
+        let root = unique_test_dir("design-clean-boundary");
+        fs::create_dir_all(root.join("modules/cli")).unwrap();
+        fs::write(
+            root.join("modules/cli/module.yaml"),
+            r#"spec: rms/module/v0.1
+
+module:
+  name: "tic-tac-toe-cli"
+  version: 0.1.0
+  kind: "adapter"
+  purpose: "Parse local command input and delegate to a rules engine."
+
+profiles:
+  - "boundary"
+  - "core"
+
+owns:
+  concepts:
+    - CLI move input
+    - Parsed move command
+    - Rules engine port
+  data: []
+  decisions:
+    - move input parsing
+    - malformed input rejection
+    - rules command delegation
+
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities: []
+
+invariants: []
+
+effects:
+  - name: local-cli-io
+    kind: local-ui
+
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+
+        let rendered = render_design_prompt(&root, "local Tic-Tac-Toe game").unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("tic-tac-toe-cli"));
+        assert!(!rendered.contains("module mixes boundary effects with owned domain decisions"));
+        assert!(!rendered.contains("Existing modules show shape or boundary pressure"));
+    }
+
+    #[test]
+    fn design_prompt_warns_when_boundary_adapter_owns_domain_rules() {
+        let root = unique_test_dir("design-mixed-boundary");
+        fs::create_dir_all(root.join("modules/web")).unwrap();
+        fs::write(
+            root.join("modules/web/module.yaml"),
+            r#"spec: rms/module/v0.1
+
+module:
+  name: "snake-web"
+  version: 0.1.0
+  kind: "adapter"
+  purpose: "Render Snake and decide game rules in the browser."
+
+profiles:
+  - "boundary"
+  - "core"
+
+owns:
+  concepts:
+    - Board
+    - Snake status
+  data: []
+  decisions:
+    - collision rules
+    - score progression
+    - keyboard input parsing
+
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities: []
+
+invariants: []
+
+effects:
+  - name: browser-dom
+    kind: ui
+
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+
+        let rendered = render_design_prompt(&root, "browser Snake game").unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("module mixes boundary effects with owned domain decisions"));
+        assert!(rendered.contains("Existing modules show shape or boundary pressure"));
+    }
+
+    #[test]
     fn module_scaffold_generates_required_profile_sections() {
         let root = unique_test_dir("profile-module");
 
         run_add_module(
-            &root,
-            "profiled-module",
-            "Demonstrate profile section scaffolding.",
-            "module",
-            &[
-                "stateful".to_string(),
-                "distributed".to_string(),
-                "workflow".to_string(),
-                "boundary".to_string(),
-            ],
-            None,
+            add_module_request(
+                &root,
+                "profiled-module",
+                "Demonstrate profile section scaffolding.",
+                "module",
+                &[
+                    "stateful".to_string(),
+                    "distributed".to_string(),
+                    "workflow".to_string(),
+                    "boundary".to_string(),
+                ],
+                Some(ScaffoldShape::Workflow),
+                None,
+            ),
+            &no_provider_options(),
         )
         .unwrap();
 
@@ -14193,11 +18922,15 @@ import struct ExternalKit.Widget
         assert!(readme.contains(&format!("# {name}")));
         assert!(readme.contains(purpose));
         assert!(readme.contains(&format!("Implementation binding: `{binding}`")));
+        assert!(readme.contains("## Semantic Shape"));
+        assert!(readme.contains("Representation is the RMS-level role"));
         assert!(readme.contains("## Representation Decisions"));
+        assert!(readme.contains("Closed domain alternatives"));
+        assert!(readme.contains("accepted and rejected outcomes"));
         assert!(readme.contains("query/projector"));
         assert!(readme.contains("architecture.allowed_missing_constructors"));
         assert!(readme.contains("`module.yaml` is the source of module ownership"));
-        assert!(readme.contains("Use `rms explain module.yaml`"));
+        assert!(readme.contains("Use `rms design --root <system-root>"));
         assert!(contracts.contains("Place public RMS contract files here"));
         assert!(contracts.contains("Private helpers stay in implementation docs and tests"));
         assert!(laws.contains("Record evidence for invariants"));
@@ -14758,6 +19491,441 @@ verification:
     }
 
     #[test]
+    fn compose_accepts_parent_export_backed_by_internal_child() {
+        let root = unique_test_dir("compose-recursive-pass");
+        fs::create_dir_all(&root).unwrap();
+        write_recursive_parent(&root, "game", "game-rules", "internal", true);
+        write_compose_module(
+            &root.join("game-rules.module.yaml"),
+            "game-rules",
+            "  capabilities:\n    - name: play-game\n      contract: contracts/play-game.yaml\n",
+            "  modules: []\n",
+            "  capabilities: []\n",
+        );
+        write_compose_module(
+            &root.join("consumer.module.yaml"),
+            "consumer",
+            "  capabilities: []\n",
+            "  modules: []\n",
+            "  capabilities:\n    - name: play-game\n      contract: contracts/play-game.yaml\n",
+        );
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Pass, "{:#?}", report.findings);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::Satisfied
+                && finding.check == "composition.exports.provider"
+        }));
+    }
+
+    #[test]
+    fn compose_rejects_missing_contained_module() {
+        let root = unique_test_dir("compose-recursive-missing-child");
+        fs::create_dir_all(&root).unwrap();
+        write_recursive_parent(&root, "game", "game-rules", "internal", true);
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Fail);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::Unresolved
+                && finding.check == "composition.contains.module"
+        }));
+    }
+
+    #[test]
+    fn compose_rejects_export_not_backed_by_child_provides() {
+        let root = unique_test_dir("compose-recursive-unbacked-export");
+        fs::create_dir_all(&root).unwrap();
+        write_recursive_parent(&root, "game", "game-rules", "internal", true);
+        write_compose_module(
+            &root.join("game-rules.module.yaml"),
+            "game-rules",
+            "  capabilities: []\n",
+            "  modules: []\n",
+            "  capabilities: []\n",
+        );
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Fail);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::Incompatible
+                && finding.check == "composition.exports.provider"
+        }));
+    }
+
+    #[test]
+    fn compose_rejects_external_dependency_on_internal_child() {
+        let root = unique_test_dir("compose-recursive-internal-child");
+        fs::create_dir_all(&root).unwrap();
+        write_recursive_parent(&root, "game", "game-rules", "internal", false);
+        write_compose_module(
+            &root.join("game-rules.module.yaml"),
+            "game-rules",
+            "  capabilities: []\n",
+            "  modules: []\n",
+            "  capabilities: []\n",
+        );
+        write_compose_module(
+            &root.join("consumer.module.yaml"),
+            "consumer",
+            "  capabilities: []\n",
+            "  modules:\n    - game-rules\n",
+            "  capabilities: []\n",
+        );
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Fail);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::Incompatible
+                && finding.check == "composition.visibility.internal"
+        }));
+    }
+
+    #[test]
+    fn compose_rejects_child_contained_by_two_parents() {
+        let root = unique_test_dir("compose-recursive-two-parents");
+        fs::create_dir_all(&root).unwrap();
+        write_recursive_parent(&root, "game-a", "game-rules", "internal", false);
+        write_recursive_parent(&root, "game-b", "game-rules", "internal", false);
+        write_compose_module(
+            &root.join("game-rules.module.yaml"),
+            "game-rules",
+            "  capabilities: []\n",
+            "  modules: []\n",
+            "  capabilities: []\n",
+        );
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Fail);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::Incompatible
+                && finding.check == "composition.contains.parent"
+        }));
+    }
+
+    #[test]
+    fn composite_module_scaffold_generates_composition_section() {
+        let root = unique_test_dir("shape-composite");
+
+        run_add_module(
+            add_module_request(
+                &root,
+                "game",
+                "Compose game submodules into one public capability.",
+                "module",
+                &[],
+                Some(ScaffoldShape::Composite),
+                None,
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+
+        let manifest = fs::read_to_string(root.join("module.yaml")).unwrap();
+        let loaded = load_manifest(&root.join("module.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_loaded_manifest(&loaded, &mut diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(manifest.contains("kind: \"composite\""));
+        assert!(manifest.contains("composition:"));
+        assert!(manifest.contains("contains: []"));
+        assert!(manifest.contains("exports: []"));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn composite_module_verify_rolls_up_child_implementations() {
+        let root = unique_test_dir("verify-composite-rollup");
+        write_composite_verify_fixture(&root);
+
+        run_verify(&root.join("parent.module.yaml"), false).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn add_capability_scaffolds_recursive_tree_that_verifies() {
+        let root = unique_test_dir("add-capability-tree");
+        run_init(
+            &root,
+            "capability-fixture",
+            "Exercise recursive capability scaffolding.",
+            "0.1.0",
+            &["fixture".to_string()],
+        )
+        .unwrap();
+
+        run_add_capability(AddCapabilityRequest {
+            path: root.join("modules/play-game"),
+            name: "play-game".to_string(),
+            purpose: "Expose playable game capability.".to_string(),
+            public_command: Some("play-game".to_string()),
+            domain_child: Some("play-game-rules".to_string()),
+            boundary_child: Some("play-game-cli".to_string()),
+            domain_command: Some("resolve-move".to_string()),
+            domain_binding: Some("rust".to_string()),
+            boundary_binding: Some("js".to_string()),
+        })
+        .unwrap();
+
+        let parent = fs::read_to_string(root.join("modules/play-game/module.yaml")).unwrap();
+        let boundary = fs::read_to_string(root.join("modules/play-game-cli/module.yaml")).unwrap();
+        let has_parent_export_evidence = root
+            .join("modules/play-game/verification/contracts/parent_export.md")
+            .exists();
+        let has_transition_trace_evidence = root
+            .join("modules/play-game-rules/verification/laws/transition_trace.md")
+            .exists();
+        let has_accepted_rejected_evidence = root
+            .join("modules/play-game-rules/verification/scenarios/accepted_rejected.md")
+            .exists();
+        let has_malformed_input_evidence = root
+            .join("modules/play-game-cli/verification/boundaries/malformed_input.md")
+            .exists();
+        let has_parser_contract_evidence = root
+            .join("modules/play-game-cli/verification/contracts/parser_to_domain_command.md")
+            .exists();
+        let report = compose_system(&root).unwrap();
+        let mut diagnostics = Vec::new();
+        for file in [
+            "modules/play-game/module.yaml",
+            "modules/play-game-rules/module.yaml",
+            "modules/play-game-cli/module.yaml",
+        ] {
+            let manifest = load_manifest(&root.join(file)).unwrap();
+            validate_loaded_manifest(&manifest, &mut diagnostics);
+        }
+        run_verify(&root.join("modules/play-game/module.yaml"), false).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(parent.contains("kind: \"composite\""));
+        assert!(parent.contains("composition:"));
+        assert!(parent.contains("name: \"play-game-rules\""));
+        assert!(parent.contains("name: \"play-game-cli\""));
+        assert!(boundary.contains("name: \"resolve-move\""));
+        assert!(has_parent_export_evidence);
+        assert!(has_transition_trace_evidence);
+        assert!(has_accepted_rejected_evidence);
+        assert!(has_malformed_input_evidence);
+        assert!(has_parser_contract_evidence);
+        assert_eq!(report.result, ComposeResult::Pass, "{:#?}", report.findings);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn shape_direction_accepts_generated_capability_tree() {
+        let root = route_capability_fixture("shape-direction-valid");
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Pass, "{:#?}", report.findings);
+        assert!(!report
+            .findings
+            .iter()
+            .any(|finding| finding.check.starts_with("shape.")));
+    }
+
+    #[test]
+    fn shape_direction_warns_when_domain_requires_boundary_adapter() {
+        let root = unique_test_dir("shape-domain-to-boundary");
+        fs::create_dir_all(&root).unwrap();
+        write_shape_module(
+            &root.join("rules.module.yaml"),
+            "rules",
+            "library",
+            &["core"],
+            "domain-engine",
+            "  modules:\n    - web\n",
+            "  capabilities: []\n",
+            "[]",
+        );
+        write_shape_module(
+            &root.join("web.module.yaml"),
+            "web",
+            "adapter",
+            &["boundary", "core"],
+            "boundary-adapter",
+            "  modules: []\n",
+            "  capabilities: []\n",
+            "[]",
+        );
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::ReviewRequired);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::ReviewRequired
+                && finding.check == "shape.dependency.domain-to-boundary"
+        }));
+    }
+
+    #[test]
+    fn shape_direction_warns_when_domain_declares_boundary_profile_or_effects() {
+        let root = unique_test_dir("shape-domain-effects");
+        fs::create_dir_all(&root).unwrap();
+        write_shape_module(
+            &root.join("rules.module.yaml"),
+            "rules",
+            "library",
+            &["boundary", "core"],
+            "domain-engine",
+            "  modules: []\n",
+            "  capabilities: []\n",
+            "[{ name: local-ui, kind: local-ui }]",
+        );
+
+        let report = compose_system(&root).unwrap();
+        let conformance = build_conformance_report(&root.join("rules.module.yaml"), None).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::ReviewRequired);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::ReviewRequired
+                && finding.check == "shape.domain-engine.boundary-profile"
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::ReviewRequired
+                && finding.check == "shape.domain-engine.effects"
+        }));
+        assert!(conformance["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| {
+                check["id"] == "shape.domain-engine.effects" && check["result"] == "skipped"
+            }));
+    }
+
+    #[test]
+    fn shape_direction_warns_when_composite_declares_effects() {
+        let root = unique_test_dir("shape-composite-effects");
+        fs::create_dir_all(&root).unwrap();
+        write_shape_module(
+            &root.join("game.module.yaml"),
+            "game",
+            "composite",
+            &["core"],
+            "composite",
+            "  modules: []\n",
+            "  capabilities: []\n",
+            "[{ name: local-ui, kind: local-ui }]",
+        );
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::ReviewRequired);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::ReviewRequired
+                && finding.check == "shape.composite.effects"
+        }));
+    }
+
+    #[test]
+    fn route_recommends_domain_child_for_rule_task() {
+        let root = route_capability_fixture("route-domain-child");
+
+        let report = build_route_report(
+            &root.join("modules/play-game/module.yaml"),
+            &root,
+            "change the rules for invalid move transitions",
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, RouteResult::Routed);
+        assert_eq!(
+            report
+                .recommendation
+                .as_ref()
+                .map(|module| module.name.as_str()),
+            Some("play-game-rules")
+        );
+        assert!(report.candidates[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("pure decisions")));
+    }
+
+    #[test]
+    fn route_recommends_boundary_child_for_cli_task() {
+        let root = route_capability_fixture("route-boundary-child");
+
+        let report = build_route_report(
+            &root.join("modules/play-game/module.yaml"),
+            &root,
+            "add a CLI input parser and display output",
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, RouteResult::Routed);
+        assert_eq!(
+            report
+                .recommendation
+                .as_ref()
+                .map(|module| module.name.as_str()),
+            Some("play-game-cli")
+        );
+        assert!(report.candidates[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("boundary effects")));
+    }
+
+    #[test]
+    fn route_non_composite_targets_current_module() {
+        let root = route_capability_fixture("route-target-only");
+
+        let report = build_route_report(
+            &root.join("modules/play-game-rules/module.yaml"),
+            &root,
+            "add law evidence for invalid transitions",
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, RouteResult::TargetOnly);
+        assert_eq!(
+            report
+                .recommendation
+                .as_ref()
+                .map(|module| module.name.as_str()),
+            Some("play-game-rules")
+        );
+    }
+
+    #[test]
+    fn composite_conformance_report_includes_composition_checks() {
+        let root = unique_test_dir("conformance-composite-rollup");
+        write_composite_verify_fixture(&root);
+
+        let report = build_conformance_report(&root.join("parent.module.yaml"), None).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report["result"], "pass");
+        assert!(report["checks"].as_array().unwrap().iter().any(|check| {
+            check["category"] == "composition" && check["id"] == "composition.exports.provider"
+        }));
+        assert!(report["checks"].as_array().unwrap().iter().any(|check| {
+            check["category"] == "composition" && check["id"] == "composition.child-implementation"
+        }));
+    }
+
+    #[test]
     fn package_includes_manifest_references_and_metadata() {
         let root = unique_test_dir("package");
         write_package_fixture(&root);
@@ -15008,9 +20176,77 @@ verification:
 
         fs::remove_dir_all(&root).unwrap();
         assert!(rendered.contains("Prompt: rms.implement@v1"));
+        assert!(rendered.contains("accepted intent and rationale"));
         assert!(rendered.contains("Classify the change as private implementation"));
         assert!(rendered.contains("Contract/manifest updates required before code changes"));
         assert!(rendered.contains("do not claim edits were made"));
+    }
+
+    #[test]
+    fn intent_prompt_gates_implementation_on_accepted_context() {
+        let root = prompt_fixture("intent-render");
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Intent,
+            Some("add a reliable payment capture flow"),
+            None,
+            false,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("Prompt: rms.intent@v1"));
+        assert!(rendered.contains("Think before code"));
+        assert!(rendered.contains("Normalized stories and accepted interpretation"));
+        assert!(rendered.contains("Canonical artifacts to update before implementation"));
+        assert!(rendered.contains("Implementation gate result"));
+    }
+
+    #[test]
+    fn implement_prompt_routes_composite_parent_to_child() {
+        let root = route_capability_fixture("implement-route-render");
+        let manifest = load_manifest(&root.join("modules/play-game/module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Implement,
+            Some("change the rules for invalid move transitions"),
+            None,
+            false,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("## Route Recommendation"));
+        assert!(rendered.contains("Recommended owner: play-game-rules"));
+        assert!(rendered.contains("### Implementation Routing Rule"));
+        assert!(rendered.contains("Do not add private implementation behavior to composite parent"));
+    }
+
+    #[test]
+    fn plan_prompt_routes_composite_parent_to_boundary_child() {
+        let root = route_capability_fixture("plan-route-render");
+        let manifest = load_manifest(&root.join("modules/play-game/module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Plan,
+            Some("add a CLI input parser and display output"),
+            None,
+            false,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("## Route Recommendation"));
+        assert!(rendered.contains("Recommended owner: play-game-cli"));
+        assert!(rendered.contains("rms context"));
+        assert!(!rendered.contains("### Implementation Routing Rule"));
     }
 
     #[test]
@@ -15054,6 +20290,72 @@ verification:
         assert!(rendered.contains("Prompt: rms.evidence@v1"));
         assert!(rendered.contains("Prefer the smallest evidence"));
         assert!(rendered.contains("Manifest or implementation binding references to update"));
+    }
+
+    #[test]
+    fn evidence_prompt_routes_rule_task_to_domain_proof() {
+        let root = route_capability_fixture("evidence-route-domain");
+        let manifest = load_manifest(&root.join("modules/play-game/module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Evidence,
+            Some("prove invalid move transitions are rejected"),
+            None,
+            false,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("## Route Recommendation"));
+        assert!(rendered.contains("## Evidence Guidance"));
+        assert!(rendered.contains("Evidence owner: play-game-rules"));
+        assert!(rendered.contains("accepted and rejected transition traces"));
+        assert!(rendered.contains("verification/scenarios/accepted_rejected.md"));
+    }
+
+    #[test]
+    fn evidence_prompt_routes_cli_task_to_boundary_proof() {
+        let root = route_capability_fixture("evidence-route-boundary");
+        let manifest = load_manifest(&root.join("modules/play-game/module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Evidence,
+            Some("prove CLI parser rejects malformed input"),
+            None,
+            false,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("Evidence owner: play-game-cli"));
+        assert!(rendered.contains("malformed input and parser rejection evidence"));
+        assert!(rendered.contains("verification/boundaries/malformed_input.md"));
+        assert!(rendered.contains("parser-to-domain-command evidence"));
+    }
+
+    #[test]
+    fn evidence_prompt_names_parent_export_when_public_behavior_changes() {
+        let root = route_capability_fixture("evidence-route-parent-export");
+        let manifest = load_manifest(&root.join("modules/play-game/module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Evidence,
+            Some("prove public play command contract still works"),
+            None,
+            false,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("parent/export contract evidence"));
+        assert!(rendered.contains("verification/contracts/parent_export.md"));
+        assert!(rendered.contains("exported child contract evidence aligned"));
     }
 
     #[test]
@@ -15188,6 +20490,27 @@ verification:
     }
 
     #[test]
+    fn review_prompt_routes_composite_parent_without_implementation_rule() {
+        let root = route_capability_fixture("review-route-render");
+        let manifest = load_manifest(&root.join("modules/play-game/module.yaml")).unwrap();
+
+        let rendered = render_workbench_prompt(
+            &manifest,
+            &root,
+            PromptKind::Review,
+            Some("review CLI input parser and display output changes"),
+            None,
+            false,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("## Route Recommendation"));
+        assert!(rendered.contains("Recommended owner: play-game-cli"));
+        assert!(!rendered.contains("### Implementation Routing Rule"));
+    }
+
+    #[test]
     fn impact_prelude_is_review_only() {
         let root = prompt_fixture("review-impact-only");
         let manifest = load_manifest(&root.join("module.yaml")).unwrap();
@@ -15269,6 +20592,7 @@ verification:
                 "Own widget behavior",
                 "module",
                 &["core".to_string()],
+                None,
             ),
         )
         .unwrap();
@@ -15964,6 +21288,39 @@ runs:
         std::env::temp_dir().join(format!("rms-{label}-{}-{nanos}", std::process::id()))
     }
 
+    fn no_provider_options() -> PromptRunOptions {
+        PromptRunOptions {
+            provider: Provider::None,
+            record: false,
+            run_root: PathBuf::from("runs"),
+            model: None,
+            sandbox: CodexSandbox::ReadOnly,
+            write_scope: ProviderWriteScope::Root,
+            provider_timeout_seconds: DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+        }
+    }
+
+    fn add_module_request(
+        root: &Path,
+        name: &str,
+        purpose: &str,
+        kind: &str,
+        profiles: &[String],
+        shape: Option<ScaffoldShape>,
+        binding: Option<&str>,
+    ) -> AddModuleRequest {
+        AddModuleRequest {
+            path: root.to_path_buf(),
+            name: name.to_string(),
+            purpose: purpose.to_string(),
+            kind: kind.to_string(),
+            profiles: profiles.to_vec(),
+            shape,
+            binding: binding.map(ToString::to_string),
+            root: root.to_path_buf(),
+        }
+    }
+
     fn prompt_fixture(label: &str) -> PathBuf {
         let root = unique_test_dir(label);
         fs::create_dir_all(root.join("verification/laws")).unwrap();
@@ -15977,6 +21334,7 @@ runs:
                 "Exercise workbench prompt rendering",
                 "tool",
                 &[String::from("core")],
+                None,
             ),
         )
         .unwrap();
@@ -16104,6 +21462,215 @@ verification:
             format!(
                 "spec: rms/module/v0.1\n\nmodule:\n  name: {name}\n  version: 0.1.0\n  kind: library\n  purpose: Test composition\n\nprofiles:\n  - core\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n{provides_extra}\nrequires:\n{requires_modules}{requires_capabilities}\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts: []\n  scenarios: []\n  boundaries: []\n"
             ),
+        )
+        .unwrap();
+    }
+
+    fn write_shape_module(
+        path: &Path,
+        name: &str,
+        kind: &str,
+        profiles: &[&str],
+        shape: &str,
+        requires_modules: &str,
+        requires_capabilities: &str,
+        effects: &str,
+    ) {
+        let profiles = profiles
+            .iter()
+            .map(|profile| format!("  - {profile}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(
+            path,
+            format!(
+                "spec: rms/module/v0.1\n\nmodule:\n  name: {name}\n  version: 0.1.0\n  kind: {kind}\n  purpose: Test semantic shape direction\n\nprofiles:\n{profiles}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\nrequires:\n{requires_modules}{requires_capabilities}\ninvariants: []\n\neffects: {effects}\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts: []\n  scenarios: []\n  boundaries: []\n\nx-scaffold:\n  shape: \"{shape}\"\n  roles: []\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_recursive_parent(
+        root: &Path,
+        parent: &str,
+        child: &str,
+        visibility: &str,
+        export_child_capability: bool,
+    ) {
+        let export = if export_child_capability {
+            format!(
+                "  exports:\n    - group: capabilities\n      name: play-game\n      from: {child}\n      contract: contracts/play-game.yaml\n"
+            )
+        } else {
+            "  exports: []\n".to_string()
+        };
+        fs::write(
+            root.join(format!("{parent}.module.yaml")),
+            format!(
+                "spec: rms/module/v0.1\n\nmodule:\n  name: {parent}\n  version: 0.1.0\n  kind: composite\n  purpose: Test recursive composition\n\nprofiles:\n  - core\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities:\n    - name: play-game\n      contract: contracts/play-game.yaml\nrequires:\n  modules: []\n  capabilities: []\ncomposition:\n  contains:\n    - name: {child}\n      visibility: {visibility}\n      path: {child}.module.yaml\n{export}invariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts: []\n  scenarios: []\n  boundaries: []\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn route_capability_fixture(label: &str) -> PathBuf {
+        let root = unique_test_dir(label);
+        run_init(
+            &root,
+            "route-fixture",
+            "Exercise recursive route reports.",
+            "0.1.0",
+            &["fixture".to_string()],
+        )
+        .unwrap();
+        run_add_capability(AddCapabilityRequest {
+            path: root.join("modules/play-game"),
+            name: "play-game".to_string(),
+            purpose: "Expose playable game capability.".to_string(),
+            public_command: Some("play-game".to_string()),
+            domain_child: Some("play-game-rules".to_string()),
+            boundary_child: Some("play-game-cli".to_string()),
+            domain_command: Some("resolve-move".to_string()),
+            domain_binding: Some("rust".to_string()),
+            boundary_binding: Some("js".to_string()),
+        })
+        .unwrap();
+        root
+    }
+
+    fn write_composite_verify_fixture(root: &Path) {
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::create_dir_all(root.join("verification/laws")).unwrap();
+        fs::create_dir_all(root.join("verification/contracts")).unwrap();
+        fs::create_dir_all(root.join("verification/scenarios")).unwrap();
+        fs::create_dir_all(root.join("verification/boundaries")).unwrap();
+        fs::create_dir_all(root.join("child/contracts")).unwrap();
+        fs::create_dir_all(root.join("child/scripts")).unwrap();
+        fs::write(
+            root.join("system.yaml"),
+            "spec: rms/system/v0.1\n\nsystem:\n  name: fixture\n  version: 0.1.0\n  purpose: Composite verify fixture\n\ncontexts: []\npublic_interfaces: []\nexternal_dependencies: []\nworkflows: []\ninvariants: []\ncompatibility:\n  policy: backward-compatible-within-major\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("context-map.yaml"),
+            "spec: rms/context-map/v0.1\n\ncontexts: {}\n",
+        )
+        .unwrap();
+        fs::write(root.join("contracts/do-work.yaml"), "contract\n").unwrap();
+        fs::write(root.join("verification/laws/rollup.md"), "law\n").unwrap();
+        fs::write(
+            root.join("verification/contracts/rollup.md"),
+            "contract evidence\n",
+        )
+        .unwrap();
+        fs::write(root.join("verification/scenarios/rollup.md"), "scenario\n").unwrap();
+        fs::write(
+            root.join("verification/boundaries/rollup.md"),
+            "boundary evidence\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("parent.module.yaml"),
+            r#"spec: rms/module/v0.1
+
+module:
+  name: parent
+  version: 0.1.0
+  kind: composite
+  purpose: Composite verification fixture
+
+profiles:
+  - core
+
+owns:
+  concepts: []
+  data: []
+  decisions: []
+
+provides:
+  commands:
+    - name: do-work
+      contract: contracts/do-work.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+composition:
+  contains:
+    - name: child
+      visibility: internal
+      path: child/module.yaml
+  exports:
+    - group: commands
+      name: do-work
+      from: child
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws:
+    - verification/laws/rollup.md
+  contracts:
+    - verification/contracts/rollup.md
+  scenarios:
+    - verification/scenarios/rollup.md
+  boundaries:
+    - verification/boundaries/rollup.md
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("child/contracts/do-work.yaml"), "contract\n").unwrap();
+        fs::write(
+            root.join("child/module.yaml"),
+            r#"spec: rms/module/v0.1
+
+module:
+  name: child
+  version: 0.1.0
+  kind: adapter
+  purpose: Child verification fixture
+
+profiles:
+  - core
+
+owns:
+  concepts: []
+  data: []
+  decisions: []
+
+provides:
+  commands:
+    - name: do-work
+      contract: contracts/do-work.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("child/implementation.yaml"),
+            "spec: rms/implementation/v0.1\n\nmodule: child\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\ncommands:\n  verify: sh scripts/smoke.sh\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("child/scripts/smoke.sh"),
+            "#!/usr/bin/env sh\nset -eu\nprintf '%s\\n' child-ok\n",
         )
         .unwrap();
     }

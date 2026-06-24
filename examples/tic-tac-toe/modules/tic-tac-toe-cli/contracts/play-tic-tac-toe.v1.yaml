@@ -1,0 +1,22 @@
+spec: rms/contract/v0.1
+name: play-tic-tac-toe
+version: 1
+kind: command
+meaning: Accept local text input for a Tic-Tac-Toe move, parse it into a board cell command, and delegate valid commands to the rules engine port.
+preconditions:
+  - id: rules-port-available
+    statement: A rules engine port is provided for valid parsed move commands.
+postconditions:
+  - id: valid-input-delegated
+    statement: Valid coordinate input is converted to a move command and passed through the rules engine port to the declared `tic-tac-toe-rules` dependency.
+  - id: malformed-input-rejected
+    statement: Malformed or out-of-board input is rejected before rules engine delegation.
+  - id: rules-result-returned
+    statement: Rules-engine accepted and rejected outcomes are returned explicitly to the boundary caller.
+failure_categories:
+  - id: malformed-input
+    statement: The input cannot be parsed as a board cell.
+  - id: rules-rejection
+    statement: The rules engine rejects a syntactically valid move for domain reasons such as occupied cell or terminal game.
+compatibility:
+  policy: backward-compatible-within-major

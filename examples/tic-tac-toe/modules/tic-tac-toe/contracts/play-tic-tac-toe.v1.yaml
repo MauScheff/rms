@@ -1,0 +1,20 @@
+spec: rms/contract/v0.1
+name: play-tic-tac-toe
+version: 1
+kind: command
+meaning: Accept local Tic-Tac-Toe move input through the composed public game surface and return either a parsed move result, delegated rules result, or boundary rejection.
+preconditions:
+  - id: local-input
+    statement: The caller supplies one local move input string.
+postconditions:
+  - id: boundary-before-rules
+    statement: Malformed coordinates are rejected by the boundary adapter before rules delegation.
+  - id: rules-backed-result
+    statement: Valid coordinates are delegated to the internal rules engine through the CLI adapter.
+failure_categories:
+  - id: malformed-input
+    statement: The move input cannot be parsed as a board coordinate.
+  - id: rules-rejection
+    statement: The rules engine rejects the move according to game state.
+compatibility:
+  policy: backward-compatible-within-major

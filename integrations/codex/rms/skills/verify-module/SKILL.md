@@ -8,7 +8,7 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
 1. Run `rms diagnose` when starting from an unfamiliar checkout.
 2. Read the target manifest and implementation binding.
 3. Run `rms validate --root <root>` or validate the explicit target manifests.
-4. Run `rms review <module>` when verifying an active diff. Run `rms verify <implementation.yaml>` when the implementation binding declares `commands.verify`.
+4. Run `rms review <module>` when verifying an active diff. Run `rms verify <implementation.yaml>` when the implementation binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups.
 5. Confirm manifest validity and referenced-file existence.
 6. Check ownership and dependency boundaries:
    - no undeclared imports or calls;
