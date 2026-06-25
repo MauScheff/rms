@@ -476,7 +476,7 @@ The RMS repository uses one canonical release gate:
 rms release check --root .
 ```
 
-The gate runs release metadata checks, formatting, Rust tests, RMS validation, RMS implementation verification, composition and compatibility smokes, package creation and verification smoke, scaffold roundtrip, example binding tests, release-binary smoke, clean-room PATH install smoke, Cargo packaging, and Codex plugin sync validation. It does not invoke optional AI providers. Use `--skip-cargo-package` only for offline local checks.
+The gate runs release metadata checks, formatting, Rust tests, RMS validation, RMS implementation verification, composition and compatibility smokes, package creation and verification smoke, scaffold roundtrip, example binding tests, release-binary smoke, clean-room PATH install smoke, clean-room recursive dogfood, Cargo packaging, and Codex plugin sync validation. It does not invoke optional AI providers. Use `--skip-cargo-package` only for offline local checks.
 
 Release metadata is part of the gate. The Cargo package version, `rms-cli` module version, and packaged Codex plugin version must match. Tag releases are published by `.github/workflows/release.yml`, which builds runner-native CLI archives, packages the Rust source crate, emits SHA-256 checksums, and attaches artifacts to the GitHub release. The operational release runbook lives in `RELEASE.md`.
 

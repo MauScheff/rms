@@ -19,6 +19,10 @@ postconditions:
     statement: The prompt asks for linked intent, decision, contract, law, and evidence records to evolve together when accepted semantics change.
   - id: semantic-roles-before-files
     statement: The prompt asks for representation, commands, transitions, ports, adapters, traces, and evidence before incidental file layout.
+  - id: semantic-structure-precedes-code
+    statement: The prompt asks for semantic structure before implementation code, including ADTs or closed variants, validated values, commands, states, events, accepted and rejected result types, transition boundaries, parser boundaries, and evidence roles.
+  - id: edge-cases-resolved-first
+    statement: The prompt asks for impossible variants, invalid constructors, malformed boundary input, illegal transitions, terminal-state behavior, stale or conflicting state, duplicate or out-of-order external facts, and expected effect failures before implementation steps.
   - id: implement-prompt-includes-route-evidence
     statement: When the target is a composite parent or recursive module tree, the prompt identifies the recommended child owner or declares routing ambiguity before implementation guidance.
   - id: composite-parent-not-implementation-dump

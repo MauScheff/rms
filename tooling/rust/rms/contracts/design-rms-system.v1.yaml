@@ -15,6 +15,10 @@ postconditions:
     statement: The prompt asks for language-agnostic semantic shapes such as domain-engine, boundary-adapter, workflow, storage-adapter, and integration-adapter.
   - id: representation-obligations-named
     statement: The prompt asks for explicit representation obligations including closed variants, validated values, commands, states, events, accepted or rejected outcomes, and boundary schemas.
+  - id: semantic-structure-precedes-code
+    statement: The prompt asks for semantic structure before implementation code, including ADTs or closed variants, validated values, command and state models, transition boundaries, and edge-case decisions.
+  - id: edge-cases-resolved-first
+    statement: The prompt asks for invalid commands, illegal transitions, terminal states, malformed boundary input, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases before file layout is treated as implementation guidance.
   - id: design-provider-execution-is-optional
     statement: Provider-backed design is opt-in and must preserve the rendered prompt and provider response as a run record.
 failure_categories:

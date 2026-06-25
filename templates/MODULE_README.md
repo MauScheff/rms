@@ -25,6 +25,17 @@ Requires:
 - <Invariant identifier>: <statement>
 ```
 
+## Representation and state updates
+
+```text
+Semantic state:
+Derived facts:
+Commands/events that change state:
+Mutation policy:
+```
+
+State whether semantic representations are immutable by default, where transition functions live, and which localized mutable runtime structures are allowed behind ports or adapters.
+
 ## Profiles
 
 ```text

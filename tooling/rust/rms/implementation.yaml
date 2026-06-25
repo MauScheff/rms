@@ -221,6 +221,7 @@ semantic_functions:
         - release readiness is derived from deterministic repository checks and does not invoke optional AI providers
         - release package, module, and plugin versions are checked for consistency before artifacts are accepted
         - release-mode binary artifacts are built, smoke-tested outside `cargo run`, and checked through a temporary PATH install
+        - clean-room dogfood initializes project-local agent guidance, recursive capability scaffolding, route recommendations, context packets, composite verification, and gate execution from the installed release binary
         - Codex plugin packaging is checked against canonical skill source
     evidence:
       contracts:
@@ -288,6 +289,7 @@ semantic_functions:
       ensures:
         - design prompts are advisory and can run before a target module exists
         - module split and semantic shape recommendations remain evidence until reflected in canonical artifacts
+        - design prompts require semantic structure and edge-case decisions before implementation file layout
     evidence:
       contracts:
         - verification/contracts/design_rms_system.md
@@ -409,6 +411,7 @@ semantic_functions:
       ensures:
         - intent, plan, review, refactor, implement, contract evolution, and evidence prompts preserve the RMS bounded context and name deterministic checks
         - intent and implement prompts preserve the think-before-code gate by asking for accepted context and canonical artifact updates before implementation
+        - plan and implement prompts require semantic structure and edge-case decisions before implementation code
         - prompts include route evidence when the target is a composite parent or recursive module tree
         - evidence prompts include proof guidance derived from the routed owner semantic shape
         - review prompts can include derived git impact evidence before diff context without treating it as semantic authority
@@ -450,8 +453,9 @@ semantic_functions:
         - diagnostics-are-evidence-not-authority
     assumptions:
       ensures:
-        - gate plans are derived from git impact analysis and declared implementation bindings
+        - gate plans are derived from git impact analysis, declared implementation bindings, and composite module manifests
         - executable validation, composition, and verification checks are reported with pass or fail status
+        - affected composite parents are verified through their module manifest rollup when they do not own an implementation binding
         - manual review and compatibility obligations are explicit rather than silently treated as passed
     evidence:
       contracts:

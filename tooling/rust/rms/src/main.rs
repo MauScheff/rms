@@ -1470,7 +1470,7 @@ struct GatePlan {
 enum GateCheckAction {
     ValidateRoot,
     ComposeRoot,
-    VerifyImplementation(PathBuf),
+    VerifyTarget(PathBuf),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1575,6 +1575,7 @@ impl PromptKind {
                 "Assign each module a semantic shape: domain-engine, boundary-adapter, workflow, storage-adapter, integration-adapter, or composite.",
                 "Separate pure decisions from external effects, and name required module dependencies.",
                 "Define representation obligations: closed variants, validated values, commands, states, events, accepted/rejected outcomes, and boundary schemas.",
+                "Resolve semantic edge cases before file layout: invalid commands, illegal transitions, terminal states, stale or conflicting state, parser failures, and effect failure categories.",
                 "Define focused evidence: laws, contract scenarios, boundary parser tests, trace replay, fuzz/property checks, recovery, or reconciliation.",
                 "Treat provider output and generated plans as advisory evidence until reflected in canonical artifacts.",
             ],
@@ -1609,6 +1610,7 @@ impl PromptKind {
                 "Name affected invariants, contracts, effects, compatibility promises, and recovery paths.",
                 "Separate domain decisions from external effects where practical.",
                 "Use semantic implementation roles before file-level code: representation, commands, transitions, ports, adapters, traces, and evidence.",
+                "Resolve semantic edge cases before implementation: impossible variants, invalid constructors, illegal transitions, malformed boundary input, stale or conflicting state, and terminal-state behavior.",
                 "Use the strongest available representation for invalid states, expected failures, boundary input, and lifecycle transitions.",
                 "Add the smallest evidence that demonstrates the changed promise.",
                 "Return concrete implementation instructions; do not claim edits were made unless the executing agent actually made them.",
@@ -1663,6 +1665,8 @@ impl PromptKind {
                 "Recommended module set and semantic shape for each module.",
                 "Recommended module tree, including a composite parent when several semantic modules form one public capability.",
                 "Owned concepts, data, decisions, public contracts, dependencies, effects, and profiles.",
+                "Semantic structure before code: ADTs or closed variants, validated values, commands, states, events, result and rejection types, and transition boundaries.",
+                "Edge-case decisions: invalid commands, illegal transitions, terminal states, boundary parse failures, stale or conflicting state, and not-applicable cases.",
                 "Representation obligations for ADTs, validated values, commands, states, events, and result/rejection types.",
                 "Trace, law, fuzz/property, contract, boundary, recovery, or reconciliation evidence.",
                 "Scope boundaries and assumptions.",
@@ -1691,6 +1695,8 @@ impl PromptKind {
                 "Change classification and compatibility impact.",
                 "Concrete implementation steps.",
                 "Contract/manifest updates required before code changes.",
+                "Semantic structure before code: representation, command/state/result ADTs, transition model, parser boundaries, and evidence roles.",
+                "Resolved edge cases before implementation: invalid commands, illegal transitions, malformed input, terminal states, stale or conflicting state, and expected effect failures.",
                 "Representation choices for invalid states, failures, boundary schemas, or lifecycle transitions.",
                 "Verification and conformance evidence.",
             ],
@@ -2624,6 +2630,14 @@ fn run_release_check(root: &Path, skip_cargo_package: bool) -> Result<()> {
         command_with_args(&rms_exe, &["compose", "--root", "examples/swift"], root),
     )?;
     run_release_step(
+        "rms compose examples/tic-tac-toe",
+        command_with_args(
+            &rms_exe,
+            &["compose", "--root", "examples/tic-tac-toe"],
+            root,
+        ),
+    )?;
+    run_release_step(
         "rms check-compat smoke",
         command_with_args(
             &rms_exe,
@@ -2906,6 +2920,7 @@ fn run_release_binary_smoke(root: &Path) -> Result<()> {
         command_with_args(&binary, &["validate", "--root", "examples/minimal"], root),
     )?;
     run_release_install_smoke(root, &binary)?;
+    run_release_clean_room_dogfood(root, &binary)?;
     Ok(())
 }
 
@@ -2955,6 +2970,227 @@ fn run_release_install_smoke(root: &Path, binary: &Path) -> Result<()> {
                 root,
                 &bin_dir,
             )?,
+        )?;
+        Ok(())
+    })();
+
+    let _ = fs::remove_dir_all(&temp);
+    result
+}
+
+fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
+    let temp = std::env::temp_dir().join(format!(
+        "rms-release-dogfood-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    ));
+    let bin_dir = temp.join("bin");
+    let work_dir = temp.join("work");
+    fs::create_dir_all(&bin_dir)
+        .with_context(|| format!("failed to create `{}`", bin_dir.display()))?;
+    fs::create_dir_all(&work_dir)
+        .with_context(|| format!("failed to create `{}`", work_dir.display()))?;
+    let installed_binary = bin_dir.join(format!("rms{}", std::env::consts::EXE_SUFFIX));
+    fs::copy(binary, &installed_binary).with_context(|| {
+        format!(
+            "failed to copy `{}` to `{}`",
+            binary.display(),
+            installed_binary.display()
+        )
+    })?;
+    make_executable(&installed_binary)?;
+
+    let app = work_dir.join("tic-tac-toe");
+    let app_arg = app.to_string_lossy().to_string();
+    let capability = app.join("modules/play-tic-tac-toe");
+    let capability_arg = capability.to_string_lossy().to_string();
+    let parent_module = "modules/play-tic-tac-toe/module.yaml";
+    let rules_module = "modules/tic-tac-toe-rules/module.yaml";
+    let verify_parent = app.join(parent_module);
+    let verify_parent_arg = verify_parent.to_string_lossy().to_string();
+
+    let result = (|| -> Result<()> {
+        run_release_step(
+            "clean-room dogfood init",
+            command_with_path(
+                "rms",
+                &[
+                    "init",
+                    app_arg.as_str(),
+                    "--name",
+                    "dogfood-tic-tac-toe",
+                    "--purpose",
+                    "Clean-room RMS dogfood for recursive semantic scaffolding",
+                    "--context",
+                    "game",
+                ],
+                root,
+                &bin_dir,
+            )?,
+        )?;
+        run_release_step(
+            "clean-room dogfood codex guidance",
+            command_with_path(
+                "rms",
+                &[
+                    "agent",
+                    "init",
+                    "--root",
+                    app_arg.as_str(),
+                    "--target",
+                    "codex",
+                    "--force",
+                ],
+                root,
+                &bin_dir,
+            )?,
+        )?;
+        run_release_step(
+            "clean-room dogfood claude guidance",
+            command_with_path(
+                "rms",
+                &[
+                    "agent",
+                    "init",
+                    "--root",
+                    app_arg.as_str(),
+                    "--target",
+                    "claude",
+                    "--force",
+                ],
+                root,
+                &bin_dir,
+            )?,
+        )?;
+        run_release_step(
+            "clean-room dogfood design",
+            command_with_path(
+                "rms",
+                &[
+                    "design",
+                    "--root",
+                    app_arg.as_str(),
+                    "--task",
+                    "browser-playable Tic Tac Toe game",
+                ],
+                root,
+                &bin_dir,
+            )?,
+        )?;
+        run_release_step(
+            "clean-room dogfood add-capability",
+            command_with_path(
+                "rms",
+                &[
+                    "add-capability",
+                    capability_arg.as_str(),
+                    "--name",
+                    "play-tic-tac-toe",
+                    "--purpose",
+                    "Expose a playable Tic Tac Toe capability",
+                    "--public-command",
+                    "play-tic-tac-toe",
+                    "--domain-child",
+                    "tic-tac-toe-rules",
+                    "--boundary-child",
+                    "tic-tac-toe-cli",
+                    "--domain-command",
+                    "apply-move",
+                    "--domain-binding",
+                    "rust",
+                    "--boundary-binding",
+                    "js",
+                ],
+                root,
+                &bin_dir,
+            )?,
+        )?;
+        assert_clean_room_dogfood_artifacts(&app)?;
+        run_release_step(
+            "clean-room dogfood validate",
+            command_with_path("rms", &["validate", "--root", "."], &app, &bin_dir)?,
+        )?;
+        run_release_step(
+            "clean-room dogfood compose",
+            command_with_path("rms", &["compose", "--root", "."], &app, &bin_dir)?,
+        )?;
+        let rules_route = run_release_step_capture(
+            "clean-room dogfood route rules",
+            command_with_path(
+                "rms",
+                &[
+                    "route",
+                    parent_module,
+                    "--root",
+                    ".",
+                    "--task",
+                    "change win detection and invalid move rules",
+                ],
+                &app,
+                &bin_dir,
+            )?,
+        )?;
+        ensure_output_contains(
+            "clean-room dogfood route rules",
+            &rules_route,
+            "Recommended module: tic-tac-toe-rules",
+        )?;
+        let boundary_route = run_release_step_capture(
+            "clean-room dogfood route boundary",
+            command_with_path(
+                "rms",
+                &[
+                    "route",
+                    parent_module,
+                    "--root",
+                    ".",
+                    "--task",
+                    "change CLI input parsing and malformed move errors",
+                ],
+                &app,
+                &bin_dir,
+            )?,
+        )?;
+        ensure_output_contains(
+            "clean-room dogfood route boundary",
+            &boundary_route,
+            "Recommended module: tic-tac-toe-cli",
+        )?;
+        run_release_step(
+            "clean-room dogfood context",
+            command_with_path(
+                "rms",
+                &[
+                    "context",
+                    rules_module,
+                    "--root",
+                    ".",
+                    "--task",
+                    "change win detection and invalid move rules",
+                ],
+                &app,
+                &bin_dir,
+            )?,
+        )?;
+        run_release_step(
+            "clean-room dogfood verify",
+            command_with_path(
+                "rms",
+                &["verify", verify_parent_arg.as_str()],
+                root,
+                &bin_dir,
+            )?,
+        )?;
+        run_release_step(
+            "clean-room dogfood git init",
+            command_with_path("git", &["init"], &app, &bin_dir)?,
+        )?;
+        run_release_step(
+            "clean-room dogfood gate",
+            command_with_path("rms", &["gate", "--root", "."], &app, &bin_dir)?,
         )?;
         Ok(())
     })();
@@ -3071,6 +3307,106 @@ fn run_release_step(label: &str, mut command: Command) -> Result<()> {
     }
     println!("pass");
     println!();
+    Ok(())
+}
+
+fn run_release_step_capture(label: &str, mut command: Command) -> Result<String> {
+    println!("## {label}");
+    let output = command
+        .output()
+        .with_context(|| format!("failed to start release check step `{label}`"))?;
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "release check step `{label}` failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string()),
+            stdout,
+            stderr,
+        );
+    }
+    println!("pass");
+    println!();
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn ensure_output_contains(label: &str, output: &str, needle: &str) -> Result<()> {
+    if !output.contains(needle) {
+        bail!("release check step `{label}` output did not contain `{needle}`");
+    }
+    Ok(())
+}
+
+fn assert_clean_room_dogfood_artifacts(app: &Path) -> Result<()> {
+    ensure_file_contains(
+        &app.join("AGENTS.md"),
+        "Default split for any capability",
+        "Codex/agent RMS guidance",
+    )?;
+    ensure_file_contains(
+        &app.join(".rms/config.yaml"),
+        "default_provider",
+        "RMS workbench configuration",
+    )?;
+    ensure_file_exists(
+        &app.join(".agents/skills/implement-change/SKILL.md"),
+        "Codex local RMS skill",
+    )?;
+    ensure_file_contains(&app.join("CLAUDE.md"), "@AGENTS.md", "Claude guidance")?;
+    ensure_file_exists(
+        &app.join(".claude/skills/implement-change/SKILL.md"),
+        "Claude local RMS skill",
+    )?;
+    ensure_file_contains(
+        &app.join("modules/play-tic-tac-toe/module.yaml"),
+        "shape: \"composite\"",
+        "composite parent scaffold",
+    )?;
+    ensure_file_contains(
+        &app.join("modules/tic-tac-toe-rules/module.yaml"),
+        "shape: \"domain-engine\"",
+        "domain engine scaffold",
+    )?;
+    ensure_file_contains(
+        &app.join("modules/tic-tac-toe-cli/module.yaml"),
+        "shape: \"boundary-adapter\"",
+        "boundary adapter scaffold",
+    )?;
+    ensure_file_exists(
+        &app.join("modules/tic-tac-toe-rules/src/representation.rs"),
+        "domain representation unit",
+    )?;
+    ensure_file_exists(
+        &app.join("modules/tic-tac-toe-rules/src/transition.rs"),
+        "domain transition unit",
+    )?;
+    ensure_file_exists(
+        &app.join("modules/tic-tac-toe-cli/src/parser.mjs"),
+        "boundary parser unit",
+    )?;
+    Ok(())
+}
+
+fn ensure_file_exists(path: &Path, description: &str) -> Result<()> {
+    if !path.exists() {
+        bail!("{description} missing `{}`", path.display());
+    }
+    Ok(())
+}
+
+fn ensure_file_contains(path: &Path, needle: &str, description: &str) -> Result<()> {
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("failed to read `{}`", path.display()))?;
+    if !contents.contains(needle) {
+        bail!(
+            "{description} at `{}` did not contain `{needle}`",
+            path.display()
+        );
+    }
     Ok(())
 }
 
@@ -4430,6 +4766,7 @@ fn render_design_prompt(root: &Path, task: &str) -> Result<String> {
     append_design_context(&mut out, root, &modules)?;
     append_design_recommendations(&mut out, task, &modules)?;
     writeln!(out)?;
+    append_semantic_structure_checklist(&mut out, PromptKind::Design)?;
     writeln!(out, "## Workflow")?;
     for item in PromptKind::Design.workflow() {
         writeln!(out, "- {item}")?;
@@ -5363,6 +5700,8 @@ fn render_workbench_prompt(
     append_prompt_context(&mut out, manifest, root)?;
     writeln!(out)?;
 
+    append_semantic_structure_checklist(&mut out, kind)?;
+
     writeln!(out, "## Workflow")?;
     for item in kind.workflow() {
         writeln!(out, "- {item}")?;
@@ -5397,6 +5736,28 @@ fn render_workbench_prompt(
     }
 
     Ok(out)
+}
+
+fn append_semantic_structure_checklist(out: &mut String, kind: PromptKind) -> Result<()> {
+    if !matches!(
+        kind,
+        PromptKind::Design | PromptKind::Plan | PromptKind::Implement
+    ) {
+        return Ok(());
+    }
+
+    writeln!(out, "## Semantic Structure Before Code")?;
+    writeln!(
+        out,
+        "- Intent: restate the behavior, the owning context language, and what must never happen."
+    )?;
+    writeln!(out, "- ADTs and values: name closed variants, validated values, commands, states, events, and accepted/rejected result types.")?;
+    writeln!(out, "- Transitions: name accepted transitions, rejected transitions, terminal states, and replayable traces when behavior depends on order or lifecycle.")?;
+    writeln!(out, "- Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.")?;
+    writeln!(out, "- Edge cases first: invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases.")?;
+    writeln!(out, "- Implementation comes after the structure is clear enough to encode in manifests, contracts, representation, transitions, adapters, tests, and evidence.")?;
+    writeln!(out)?;
+    Ok(())
 }
 
 fn append_impact_prompt(out: &mut String, report: &ImpactReport) -> Result<()> {
@@ -6066,17 +6427,17 @@ fn build_gate_plan(root: &Path, diff: Option<&str>, impact: &ImpactReport) -> Ga
                 .iter()
                 .any(|category| gate_category_requires_verification(*category))
             {
-                if let Some(implementation) = &module.implementation {
+                if let Some(target) = module_verification_target(root, module) {
                     push_gate_check(
                         &mut executable_checks,
                         &mut actions,
                         &mut seen_executable,
-                        format!("rms verify {implementation}"),
-                        GateCheckAction::VerifyImplementation(PathBuf::from(implementation)),
+                        format!("rms verify {target}"),
+                        GateCheckAction::VerifyTarget(PathBuf::from(target)),
                     );
                 } else {
                     manual_checks.insert(format!(
-                        "Add or identify an implementation binding before verifying {}",
+                        "Add or identify a deterministic verification target before verifying {}",
                         module.name
                     ));
                 }
@@ -6181,6 +6542,19 @@ fn gate_category_requires_review(category: ImpactCategory) -> bool {
     )
 }
 
+fn module_verification_target(root: &Path, module: &ImpactModuleImpact) -> Option<String> {
+    if let Some(implementation) = &module.implementation {
+        return Some(implementation.clone());
+    }
+
+    let manifest = load_manifest(&root.join(&module.manifest)).ok()?;
+    if is_composite_module(&manifest.value) {
+        Some(module.manifest.clone())
+    } else {
+        None
+    }
+}
+
 fn run_gate_action(root: &Path, action: &GateCheckAction) -> Result<String> {
     match action {
         GateCheckAction::ValidateRoot => {
@@ -6219,13 +6593,27 @@ fn run_gate_action(root: &Path, action: &GateCheckAction) -> Result<String> {
                 compose_result_label(report.result)
             ))
         }
-        GateCheckAction::VerifyImplementation(implementation) => {
-            run_verify_captured(&root.join(implementation))
-        }
+        GateCheckAction::VerifyTarget(target) => run_verify_target_captured(&root.join(target)),
     }
 }
 
-fn run_verify_captured(implementation: &Path) -> Result<String> {
+fn run_verify_target_captured(target: &Path) -> Result<String> {
+    let manifest = load_manifest(target)?;
+    match get_str(&manifest.value, &["spec"]) {
+        Some("rms/implementation/v0.1") => run_verify_implementation_captured(target),
+        Some("rms/module/v0.1") if is_composite_module(&manifest.value) => {
+            run_verify_composite_module_captured(target, &manifest)
+        }
+        Some("rms/module/v0.1") => bail!(
+            "module `{}` is not a composite module; verify its implementation binding instead",
+            get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>")
+        ),
+        Some(other) => bail!("`{}` is not a verifiable RMS target", other),
+        None => bail!("target is missing RMS `spec`"),
+    }
+}
+
+fn run_verify_implementation_captured(implementation: &Path) -> Result<String> {
     let manifest = load_manifest(implementation)?;
     let command = get_str(&manifest.value, &["commands", "verify"])
         .ok_or_else(|| anyhow!("implementation binding does not declare `commands.verify`"))?;
@@ -6246,6 +6634,56 @@ fn run_verify_captured(implementation: &Path) -> Result<String> {
     }
 
     Ok(format!("verify command passed: {command}"))
+}
+
+fn run_verify_composite_module_captured(
+    module_path: &Path,
+    manifest: &LoadedManifest,
+) -> Result<String> {
+    let module_name = get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>");
+    let root = rms_root_for(module_path);
+
+    let mut diagnostics = Vec::new();
+    validate_loaded_manifest(manifest, &mut diagnostics);
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        bail!("composite module manifest validation failed");
+    }
+
+    let compose_report = compose_system(&root)?;
+    if compose_report.result == ComposeResult::Fail {
+        bail!("composite module composition failed");
+    }
+
+    ensure_composite_scenario_evidence(manifest, module_path)?;
+
+    let modules = load_module_index(&root)?;
+    let mut verified_children = 0usize;
+    for child in composition_children_for(module_name, &manifest.value) {
+        let Some(child_module) = modules.get(&child.name) else {
+            bail!("contained child module `{}` was not found", child.name);
+        };
+        let implementation = child_module
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("implementation.yaml");
+        if implementation.exists() {
+            run_verify_implementation_captured(&implementation).with_context(|| {
+                format!(
+                    "contained child `{}` failed implementation verification",
+                    child.name
+                )
+            })?;
+            verified_children += 1;
+        }
+    }
+
+    Ok(format!(
+        "composite verification passed: {module_name}; verified {verified_children} child implementation(s)"
+    ))
 }
 
 fn exit_status_label(status: std::process::ExitStatus) -> String {
@@ -6922,8 +7360,8 @@ fn impact_recommended_checks(
                     | ImpactCategory::VerificationEvidence
             )
         }) {
-            if let Some(implementation) = &module.implementation {
-                checks.insert(format!("rms verify {implementation}"));
+            if let Some(target) = module_verification_target(root, module) {
+                checks.insert(format!("rms verify {target}"));
             }
         }
 
@@ -17474,6 +17912,17 @@ Use `rms add-module <path> --name <name> --purpose "<purpose>" --shape <shape> -
 
 Default split for any capability: put invariant-bearing decisions in a `domain-engine`, and put untrusted input, output, UI, CLI, network, storage, time, randomness, external services, and other effects in adapters.
 
+## Semantic Structure Before Code
+
+Before writing implementation code, make the user's intent concrete enough to encode:
+
+- Intent: restate the behavior in the owning context's language and name what must never happen.
+- ADTs and values: define closed variants, validated values, commands, states, events, and accepted/rejected result types.
+- State and transitions: define accepted transitions, rejected transitions, terminal states, and replayable traces when behavior depends on order or lifecycle.
+- Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
+- Edge cases first: decide invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases.
+- Only then fill implementation files, tests, and evidence.
+
 ## While Implementing
 
 - Keep changes inside the owning module boundary.
@@ -18332,6 +18781,8 @@ import struct ExternalKit.Widget
         assert!(agents.contains("rms design --root . --task"));
         assert!(agents.contains("choose semantic shape before file layout"));
         assert!(agents.contains("Default split for any capability"));
+        assert!(agents.contains("Semantic Structure Before Code"));
+        assert!(agents.contains("Edge cases first"));
         assert!(agents.contains("Make representation first-class"));
         assert!(agents.contains("rms route <module.yaml> --task"));
         assert!(agents.contains("rms context <module.yaml> --task"));
@@ -18631,6 +19082,8 @@ import struct ExternalKit.Widget
         fs::remove_dir_all(&root).ok();
         assert!(rendered.contains("Prompt: rms.design@v1"));
         assert!(rendered.contains("Candidate split"));
+        assert!(rendered.contains("## Semantic Structure Before Code"));
+        assert!(rendered.contains("Edge cases first"));
         assert!(rendered.contains("### Recommended Module Tree"));
         assert!(rendered.contains("`<capability>` [composite]"));
         assert!(rendered.contains("`<capability>-rules` [domain-engine, internal]"));
@@ -19724,6 +20177,66 @@ verification:
     }
 
     #[test]
+    fn clean_room_dogfood_artifacts_route_rules_and_boundary_work() {
+        let root = unique_test_dir("clean-room-dogfood");
+        run_init(
+            &root,
+            "dogfood-tic-tac-toe",
+            "Clean-room RMS dogfood for recursive semantic scaffolding.",
+            "0.1.0",
+            &["game".to_string()],
+        )
+        .unwrap();
+        run_agent_init(&root, AgentTarget::Codex, true).unwrap();
+        run_agent_init(&root, AgentTarget::Claude, true).unwrap();
+        run_add_capability(AddCapabilityRequest {
+            path: root.join("modules/play-tic-tac-toe"),
+            name: "play-tic-tac-toe".to_string(),
+            purpose: "Expose a playable Tic Tac Toe capability.".to_string(),
+            public_command: Some("play-tic-tac-toe".to_string()),
+            domain_child: Some("tic-tac-toe-rules".to_string()),
+            boundary_child: Some("tic-tac-toe-cli".to_string()),
+            domain_command: Some("apply-move".to_string()),
+            domain_binding: Some("rust".to_string()),
+            boundary_binding: Some("js".to_string()),
+        })
+        .unwrap();
+
+        assert_clean_room_dogfood_artifacts(&root).unwrap();
+        let report = compose_system(&root).unwrap();
+        let rules_route = build_route_report(
+            &root.join("modules/play-tic-tac-toe/module.yaml"),
+            &root,
+            "change win detection and invalid move rules",
+        )
+        .unwrap();
+        let boundary_route = build_route_report(
+            &root.join("modules/play-tic-tac-toe/module.yaml"),
+            &root,
+            "change CLI input parsing and malformed move errors",
+        )
+        .unwrap();
+        run_verify(&root.join("modules/play-tic-tac-toe/module.yaml"), false).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Pass, "{:#?}", report.findings);
+        assert_eq!(
+            rules_route
+                .recommendation
+                .as_ref()
+                .map(|module| module.name.as_str()),
+            Some("tic-tac-toe-rules")
+        );
+        assert_eq!(
+            boundary_route
+                .recommendation
+                .as_ref()
+                .map(|module| module.name.as_str()),
+            Some("tic-tac-toe-cli")
+        );
+    }
+
+    #[test]
     fn shape_direction_accepts_generated_capability_tree() {
         let root = route_capability_fixture("shape-direction-valid");
 
@@ -20178,6 +20691,8 @@ verification:
         assert!(rendered.contains("Prompt: rms.implement@v1"));
         assert!(rendered.contains("accepted intent and rationale"));
         assert!(rendered.contains("Classify the change as private implementation"));
+        assert!(rendered.contains("## Semantic Structure Before Code"));
+        assert!(rendered.contains("Resolved edge cases before implementation"));
         assert!(rendered.contains("Contract/manifest updates required before code changes"));
         assert!(rendered.contains("do not claim edits were made"));
     }
@@ -20840,6 +21355,52 @@ verification:
             .any(|command| command.starts_with("rms validate --root ")));
         assert!(commands.contains(&"rms verify implementation.yaml"));
         assert!(plan.report.manual_checks.is_empty());
+    }
+
+    #[test]
+    fn gate_plan_runs_composite_verify_for_parent_evidence_changes() {
+        let root = unique_test_dir("gate-composite-evidence");
+        write_composite_verify_fixture(&root);
+        let changed = vec![ChangedPath {
+            status: "M".to_string(),
+            path: "verification/scenarios/rollup.md".to_string(),
+        }];
+        let report = build_impact_report(&root, None, &changed).unwrap();
+
+        let plan = build_gate_plan(&root, None, &report);
+        let commands = plan
+            .report
+            .executable_checks
+            .iter()
+            .map(|check| check.command.as_str())
+            .collect::<Vec<_>>();
+        let verify_action = plan
+            .actions
+            .iter()
+            .find(|action| {
+                matches!(
+                    action,
+                    GateCheckAction::VerifyTarget(target)
+                        if target == Path::new("parent.module.yaml")
+                )
+            })
+            .unwrap()
+            .clone();
+        let message = run_gate_action(&root, &verify_action).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(plan.report.impact_result, ImpactResult::EvidenceReview);
+        assert_eq!(plan.report.result, GateResult::Pending);
+        assert!(commands
+            .iter()
+            .any(|command| command.starts_with("rms validate --root ")));
+        assert!(commands.contains(&"rms verify parent.module.yaml"));
+        assert!(!plan
+            .report
+            .manual_checks
+            .iter()
+            .any(|check| check.contains("implementation binding before verifying parent")));
+        assert!(message.contains("composite verification passed: parent"));
     }
 
     #[test]

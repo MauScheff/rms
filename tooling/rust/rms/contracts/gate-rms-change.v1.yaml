@@ -14,15 +14,15 @@ postconditions:
   - id: no-impact-skips-work
     statement: Changes with no RMS impact are reported without running RMS verification commands.
   - id: executable-obligations-run
-    statement: RMS validation runs for impacted RMS changes, composition runs for system, context, manifest, contract, operation, and glossary changes, and implementation verification runs for affected modules with implementation bindings.
+    statement: RMS validation runs for impacted RMS changes, composition runs for system, context, manifest, contract, operation, and glossary changes, implementation verification runs for affected modules with implementation bindings, and composite rollup verification runs for affected composite modules.
   - id: manual-obligations-are-explicit
-    statement: Review prompts, compatibility classification, and missing implementation bindings are reported as manual obligations instead of being silently treated as passed.
+    statement: Review prompts, compatibility classification, and missing deterministic verification targets are reported as manual obligations instead of being silently treated as passed.
 failure_categories:
   - id: git-unavailable
     statement: Git is not available, the requested root is not a git repository, or git cannot describe the requested diff; the failure explains how to initialize git or run deterministic checks directly.
   - id: rms-artifact-unreadable
     statement: A discovered RMS artifact cannot be read or parsed.
   - id: executable-check-failed
-    statement: An executable validation, composition, or implementation verification check failed.
+    statement: An executable validation, composition, implementation verification, or composite rollup verification check failed.
 compatibility:
   policy: backward-compatible-within-major

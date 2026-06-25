@@ -8,11 +8,13 @@ preconditions:
     statement: The requested repository root is readable and contains the RMS workspace.
 postconditions:
   - id: deterministic-gate-runs
-    statement: The command runs release metadata checks, formatting, Rust tests, RMS validation, RMS implementation verification, composition and compatibility smokes, package creation and verification smoke, example binding tests, release-binary smoke, optional Cargo packaging, and Codex plugin sync validation.
+    statement: The command runs release metadata checks, formatting, Rust tests, RMS validation, RMS implementation verification, composition and compatibility smokes, package creation and verification smoke, scaffold roundtrip, clean-room recursive dogfood, example binding tests, release-binary smoke, optional Cargo packaging, and Codex plugin sync validation.
   - id: release-metadata-is-consistent
     statement: The Cargo package version, rms-cli module version, and packaged Codex plugin version are identical before release artifacts are accepted.
   - id: release-binary-is-usable
     statement: The release-mode `rms` binary builds, runs deterministic diagnostics and validation outside `cargo run`, and passes a clean-room PATH install smoke from a temporary directory.
+  - id: clean-room-agent-path-works
+    statement: The release-mode binary can initialize a fresh project, create project-local Codex and Claude guidance, scaffold a recursive capability tree, route domain and boundary work to the correct child modules, build a context packet, verify the composite rollup, and run the RMS gate without optional AI providers.
   - id: pass-means-release-ready
     statement: The command reports pass only when every enabled release-readiness check succeeds.
   - id: provider-independent

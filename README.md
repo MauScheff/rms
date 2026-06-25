@@ -383,7 +383,7 @@ Use the same release gate locally, in CI, and before publishing release artifact
 rms release check --root .
 ```
 
-It runs release metadata checks, RMS CLI tests, canonical artifact validation, `rms-cli` implementation verification, example checks, package creation and verification smokes, release-binary smoke, clean-room PATH install smoke, Cargo packaging, and Codex plugin skill sync. It does not invoke optional AI providers.
+It runs release metadata checks, RMS CLI tests, canonical artifact validation, `rms-cli` implementation verification, example checks, package creation and verification smokes, release-binary smoke, clean-room PATH install smoke, clean-room recursive dogfood, Cargo packaging, and Codex plugin skill sync. It does not invoke optional AI providers.
 
 The release process, tag rules, expected artifacts, and done criteria live in `RELEASE.md`.
 

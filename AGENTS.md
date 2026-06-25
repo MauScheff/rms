@@ -26,6 +26,16 @@ When canonical artifacts contradict one another, report architectural drift and 
 
 Use the `inspect-module` skill when the ownership or boundary is unclear.
 
+## Semantic structure before code
+
+Before writing implementation code, make the requested behavior concrete enough to encode:
+
+- Restate intent in the owning context's language and name what must never happen.
+- Define closed variants or ADTs, validated values, commands, states, events, and accepted/rejected result types.
+- Define accepted transitions, rejected transitions, terminal states, and replayable traces when behavior depends on order or lifecycle.
+- Parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
+- Resolve edge cases first: invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases.
+
 ## While implementing
 
 - Preserve public/private boundaries.

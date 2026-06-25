@@ -63,6 +63,11 @@ The requirements every RMS module follows: purpose, ownership, public boundary, 
 A fact accepted inside a bounded context. It may be private to that context.
 
 
+## Derived fact
+
+A fact computed from accepted state or accepted facts. It answers what is true now without becoming an independent source of truth.
+
+
 ## Decision record
 
 A concise record of a consequential architectural or domain decision, its context, alternatives, and consequences. It explains intent but does not silently override public contracts or manifests.
@@ -90,6 +95,10 @@ An operation property under which repeating the same operation with the same ide
 ## Implementation binding
 
 A language- and toolchain-specific description of how a semantic RMS module is built, inspected, and verified.
+
+## Immutable representation
+
+A semantic representation whose accepted value is not changed in place after construction. State changes are modeled by creating a next accepted value, even when the implementation uses localized mutation internally for performance or integration.
 
 ## Integration event
 
@@ -165,6 +174,10 @@ The RMS profile for modules that own a lifecycle or transactional consistency bo
 ## Substitutability
 
 The ability to replace an implementation while preserving compatible contracts, invariants, required capabilities, operational semantics, and state migration behavior.
+
+## Transition
+
+A semantic function that accepts prior state and an accepted command, event, or fact, then produces the next state and accepted or rejected results.
 
 ## System module
 

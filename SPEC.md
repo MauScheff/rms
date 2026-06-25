@@ -59,21 +59,25 @@ A contract defines a public command, query, event, capability, API, or data exch
 
 An effect is contact with state or reality outside a pure decision boundary, including storage, network calls, time, randomness, messaging, filesystem access, secrets, or external services.
 
-### 3.9 Module package
+### 3.9 Derived fact
+
+A derived fact is computed from accepted state and other accepted facts. It MUST NOT create new source-of-truth state by itself.
+
+### 3.10 Module package
 
 A module package is a transport-neutral distribution of a public module. It contains the semantic manifest, published contracts, required conformance material, and enough implementation or endpoint information to use or evaluate the module.
 
-### 3.10 Conformance report
+### 3.11 Conformance report
 
 A conformance report is machine-readable evidence that a particular system or module implementation was evaluated against a named RMS version, profile set, source revision, implementation binding, and validator version.
 
-### 3.11 Semantic function
+### 3.12 Semantic function
 
 A semantic function is an implementation-level function, method, parser, constructor, transition, adapter, or interpreter that carries a named part of a module's declared meaning.
 
 Semantic functions MAY be declared by an implementation binding to connect public contracts, invariants, assumptions, and verification evidence to concrete source symbols. A semantic function declaration MUST NOT create public meaning that is absent from the module manifest or published contracts.
 
-### 3.12 Intent and rationale
+### 3.13 Intent and rationale
 
 Intent is the human-facing statement of why behavior is wanted, including stories, examples, counterexamples, open questions, accepted answers, and rejected interpretations.
 
@@ -106,6 +110,8 @@ A module MUST declare the concepts, state, data, and business decisions it owns.
 A module MUST NOT modify another module's private state directly.
 
 A module MAY request work through a public command or capability and MAY consume information through a public query or event.
+
+Owned semantic state SHOULD NOT be exposed as shared mutable state. Changes to owned semantic state SHOULD enter through the owner boundary as commands, accepted facts, or declared transition functions.
 
 ### 4.4 Public and private surfaces
 
@@ -153,6 +159,8 @@ Effects SHOULD be isolated behind explicit ports, capabilities, or interpreters.
 
 Ambient access to global state, network, storage, time, randomness, or secrets SHOULD be minimized and MUST NOT bypass declared permissions.
 
+Effect handlers SHOULD execute requested work and return observations, failures, timeouts, or acknowledgements through declared results, events, or adapter outputs. They SHOULD NOT make cross-module domain decisions or mutate another module's owned semantic state directly.
+
 ### 4.8 Contracts
 
 A public contract MUST define shape and domain meaning.
@@ -182,7 +190,19 @@ A query MUST NOT perform hidden domain mutation.
 
 An event MUST represent a fact accepted by its owning module. An instruction disguised as an event SHOULD be modeled as a command.
 
-### 4.10 Compatibility
+When asynchronous host inputs feed domain behavior, adapters SHOULD normalize them into typed commands, events, or boundary values before domain decisions are made. Ordering-sensitive behavior SHOULD declare and honor an ordering scope.
+
+Business decisions SHOULD depend on owned state and derived facts, not on scattered direct reads of unrelated private state across module boundaries.
+
+### 4.10 Representation and state updates
+
+Semantic representations SHOULD be immutable by default. A semantic state update SHOULD be expressible as an accepted input plus prior state producing a next state, derived facts, accepted or rejected results, and requested effects.
+
+Localized mutation MAY be used inside an implementation for construction, caching, performance, I/O, or host-runtime integration when it does not leak shared mutable semantic state across the module boundary and preserves the declared contracts, invariants, and operational semantics.
+
+State transitions that affect public behavior SHOULD be explicit semantic functions or equivalent language-native constructs. Illegal states and illegal transitions SHOULD be rejected or made unrepresentable through closed variants, validated constructors, schemas, state models, or transition functions.
+
+### 4.11 Compatibility
 
 A module MUST declare a compatibility policy for public contracts.
 
@@ -190,7 +210,7 @@ Breaking changes MUST be explicit and versioned. A migration or coexistence path
 
 Implementation details MAY change without a public version change when declared behavior remains compatible.
 
-### 4.11 Verification
+### 4.12 Verification
 
 A module MUST declare verification evidence in the following categories as applicable:
 
@@ -201,7 +221,7 @@ A module MUST declare verification evidence in the following categories as appli
 
 A module MUST NOT be required to use every testing technique. The chosen evidence MUST be proportional to risk and strong enough to demonstrate the declared promise.
 
-### 4.12 Operations
+### 4.13 Operations
 
 A module MUST declare the operational mechanisms required by its profiles and effects.
 
@@ -215,7 +235,7 @@ When relevant, this includes:
 
 Operational mechanisms MUST use the same public semantics and ownership boundaries as the implementation.
 
-### 4.13 Semantic function bindings
+### 4.14 Semantic function bindings
 
 An implementation binding MAY declare semantic functions that map source symbols to module invariants, public contracts, assumptions, and evidence.
 
@@ -237,9 +257,9 @@ For each semantic function, a binding SHOULD identify whether its assumptions ar
 - guaranteed as postconditions;
 - demonstrated by verification evidence.
 
-Pure semantic functions SHOULD NOT perform undeclared effects. Effectful semantic functions MUST remain within the module's declared effects and required capabilities.
+Pure semantic functions SHOULD be deterministic for the same accepted inputs and SHOULD NOT perform undeclared effects. Effectful semantic functions MUST remain within the module's declared effects and required capabilities.
 
-### 4.14 Documentation freshness
+### 4.15 Documentation freshness
 
 The manifest and public contracts MUST be updated when public meaning, ownership, dependencies, effects, or compatibility changes.
 
@@ -251,7 +271,7 @@ When intent or rationale records are used, they SHOULD evolve with semantic chan
 
 Implementation work SHOULD be preceded by intent capture when the requested behavior changes public meaning, ownership, lifecycle rules, source of truth, compatibility, external effects, recovery behavior, or proof obligations.
 
-### 4.15 Trust and secrets
+### 4.16 Trust and secrets
 
 Manifests, public contracts, conformance reports, and agent context packets MUST NOT contain credentials or production secrets.
 
@@ -271,9 +291,12 @@ The module MUST additionally declare:
 - legal transitions;
 - consistency and transaction boundary;
 - concurrency policy;
+- representation and mutation policy;
 - persistence and migration policy.
 
 Illegal transitions MUST be rejected or made unrepresentable.
+
+When lifecycle behavior depends on event or command order, transitions SHOULD be reducible over an ordered input stream within the module's consistency boundary. Stale, duplicate, or out-of-order observations SHOULD be rejected, ignored, or reconciled according to declared operational semantics.
 
 ### 5.2 Distributed profile
 
@@ -334,6 +357,8 @@ A module MAY persist current state, an event log, or both. The choice MUST be co
 A module using events MUST distinguish internal domain events from public integration events when internal evolution would otherwise break consumers.
 
 Published events MUST be versioned or governed by a compatibility policy.
+
+Event-sourced and current-state implementations SHOULD still expose deterministic transition semantics for ordered accepted inputs when stateful behavior depends on lifecycle or order. The persisted representation MAY differ from the semantic model when adapters preserve the declared contracts, invariants, and recovery behavior.
 
 ## 7. Substitutability
 
