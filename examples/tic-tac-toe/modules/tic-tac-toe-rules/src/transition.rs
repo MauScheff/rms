@@ -36,6 +36,14 @@ pub fn transition(state: Game, command: Command) -> TransitionOutcome {
     }
 }
 
+pub struct TicTacToeMachine;
+
+impl TicTacToeMachine {
+    pub fn transition(state: Game, command: Command) -> TransitionOutcome {
+        transition(state, command)
+    }
+}
+
 pub fn replay(commands: impl IntoIterator<Item = Command>) -> Trace {
     let mut state = Game::new();
     let mut outcomes = Vec::new();

@@ -1069,6 +1069,19 @@ struct InnerStructureNames {
     label: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum DeclaredSymbolKind {
+    Type,
+    Function,
+}
+
+#[derive(Clone, Debug)]
+struct DeclaredArchitectureSymbol {
+    role: &'static str,
+    symbol: String,
+    kind: DeclaredSymbolKind,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 enum Severity {
@@ -7642,6 +7655,7 @@ fn run_verify_target_captured(target: &Path) -> Result<String> {
 
 fn run_verify_implementation_captured(implementation: &Path) -> Result<String> {
     let manifest = load_manifest(implementation)?;
+    ensure_implementation_manifest_valid_for_verify(&manifest)?;
     let command = get_str(&manifest.value, &["commands", "verify"])
         .ok_or_else(|| anyhow!("implementation binding does not declare `commands.verify`"))?;
     let root = implementation.parent().unwrap_or_else(|| Path::new("."));
@@ -7665,6 +7679,22 @@ fn run_verify_implementation_captured(implementation: &Path) -> Result<String> {
         "verify command passed: {command}{}",
         trace_verify_suffix(&trace_reports)
     ))
+}
+
+fn ensure_implementation_manifest_valid_for_verify(manifest: &LoadedManifest) -> Result<()> {
+    let mut diagnostics = Vec::new();
+    validate_loaded_manifest(manifest, &mut diagnostics);
+    if let Some(diagnostic) = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        bail!(
+            "implementation validation failed: [{}] {}",
+            diagnostic.check,
+            diagnostic.message
+        );
+    }
+    Ok(())
 }
 
 fn verify_declared_trace_bundles(
@@ -9140,6 +9170,7 @@ fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diag
     match get_str(&manifest.value, &["binding"]) {
         Some("rust") => validate_rust_implementation(manifest, diagnostics),
         Some("swift") => validate_swift_implementation(manifest, diagnostics),
+        Some("js") => validate_js_implementation(manifest, diagnostics),
         Some("executable") => validate_executable_implementation(manifest, diagnostics),
         _ => {}
     }
@@ -9840,6 +9871,91 @@ fn semantic_function_items(manifest: &LoadedManifest) -> Option<&[YamlValue]> {
         .map(Vec::as_slice)
 }
 
+fn declared_architecture_symbols(value: &YamlValue) -> Vec<DeclaredArchitectureSymbol> {
+    let mut symbols = Vec::new();
+    if let Some(symbol) = get_str(value, &["architecture", "machine", "name"]) {
+        push_declared_architecture_symbol(
+            &mut symbols,
+            "machine.name",
+            symbol,
+            DeclaredSymbolKind::Type,
+        );
+    }
+    if let Some(symbol) = get_str(value, &["architecture", "machine", "state"]) {
+        push_declared_architecture_symbol(
+            &mut symbols,
+            "machine.state",
+            symbol,
+            DeclaredSymbolKind::Type,
+        );
+    }
+    for (role, path) in [
+        (
+            "machine.commands",
+            &["architecture", "machine", "commands"][..],
+        ),
+        ("machine.events", &["architecture", "machine", "events"][..]),
+        (
+            "machine.effects",
+            &["architecture", "machine", "effects"][..],
+        ),
+        (
+            "machine.effect_results",
+            &["architecture", "machine", "effect_results"][..],
+        ),
+        (
+            "machine.replies",
+            &["architecture", "machine", "replies"][..],
+        ),
+        (
+            "machine.rejections",
+            &["architecture", "machine", "rejections"][..],
+        ),
+    ] {
+        for symbol in get_string_array(value, path) {
+            push_declared_architecture_symbol(
+                &mut symbols,
+                role,
+                &symbol,
+                DeclaredSymbolKind::Type,
+            );
+        }
+    }
+    if let Some(symbol) = get_str(value, &["architecture", "machine", "transition_function"]) {
+        push_declared_architecture_symbol(
+            &mut symbols,
+            "machine.transition_function",
+            symbol,
+            DeclaredSymbolKind::Function,
+        );
+    }
+    symbols
+}
+
+fn push_declared_architecture_symbol(
+    symbols: &mut Vec<DeclaredArchitectureSymbol>,
+    role: &'static str,
+    symbol: &str,
+    kind: DeclaredSymbolKind,
+) {
+    if is_checkable_identifier(symbol) {
+        symbols.push(DeclaredArchitectureSymbol {
+            role,
+            symbol: symbol.to_string(),
+            kind,
+        });
+    }
+}
+
+fn is_checkable_identifier(symbol: &str) -> bool {
+    let mut chars = symbol.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
 fn module_invariant_ids(manifest: &LoadedManifest) -> BTreeSet<String> {
     get_path(&manifest.value, &["invariants"])
         .and_then(YamlValue::as_sequence)
@@ -9986,6 +10102,68 @@ fn validate_swift_implementation(manifest: &LoadedManifest, diagnostics: &mut Ve
     validate_declared_swift_target(manifest, diagnostics, &source_root);
     validate_swift_source_boundaries(manifest, diagnostics, &source_root);
     validate_swift_typing(manifest, diagnostics, base, &source_root);
+}
+
+fn validate_js_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let Some(source_root_ref) = get_str(&manifest.value, &["source", "root"]) else {
+        return;
+    };
+    let Some(public_entrypoint_ref) = get_str(&manifest.value, &["source", "public_entrypoint"])
+    else {
+        return;
+    };
+
+    let source_root = base.join(source_root_ref);
+    let public_entrypoint = base.join(public_entrypoint_ref);
+
+    if !matches!(
+        public_entrypoint.extension().and_then(|ext| ext.to_str()),
+        Some("js" | "mjs" | "cjs")
+    ) {
+        diagnostics.push(error(
+            "implementation.js.public-entrypoint",
+            &manifest.path,
+            "`source.public_entrypoint` must point to a JavaScript source file",
+        ));
+    }
+
+    if public_entrypoint.exists()
+        && source_root.exists()
+        && !public_entrypoint.starts_with(&source_root)
+    {
+        diagnostics.push(error(
+            "implementation.js.public-entrypoint",
+            &manifest.path,
+            "`source.public_entrypoint` must be inside `source.root` for JavaScript bindings",
+        ));
+    }
+
+    if !source_root.exists() {
+        return;
+    }
+
+    let mut summary = JsSourceSummary::default();
+    for path in js_source_files(&source_root) {
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(read_error) => {
+                diagnostics.push(error(
+                    "implementation.js.source.read",
+                    &manifest.path,
+                    format!(
+                        "failed to read JavaScript source `{}`: {read_error}",
+                        path.display()
+                    ),
+                ));
+                continue;
+            }
+        };
+        inspect_js_source(&source, &mut summary);
+    }
+
+    validate_js_declared_architecture_symbols(manifest, diagnostics, &summary);
+    validate_js_semantic_function_symbols(manifest, diagnostics, &summary);
 }
 
 fn validate_executable_implementation(
@@ -10220,6 +10398,7 @@ fn validate_swift_typing(
         module_manifest.as_ref(),
         &summary,
     );
+    validate_swift_declared_architecture_symbols(implementation, diagnostics, &summary);
 }
 
 fn rust_cargo_manifest_path(manifest: &LoadedManifest, base: &Path, source_root: &Path) -> PathBuf {
@@ -10545,6 +10724,7 @@ fn validate_rust_typing(
         module_manifest.as_ref(),
         &summary,
     );
+    validate_rust_declared_architecture_symbols(implementation, diagnostics, &summary);
     validate_rust_semantic_function_symbols(implementation, diagnostics, &summary);
 }
 
@@ -10785,6 +10965,33 @@ fn validate_rust_semantic_function_symbols(
             ));
         }
     }
+}
+
+fn validate_rust_declared_architecture_symbols(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    summary: &RustTypingSummary,
+) {
+    for declared in declared_architecture_symbols(&implementation.value) {
+        let found = match declared.kind {
+            DeclaredSymbolKind::Type => rust_type_exists(summary, &declared.symbol),
+            DeclaredSymbolKind::Function => rust_symbol_exists(summary, &declared.symbol),
+        };
+        if !found {
+            diagnostics.push(error(
+                "structure.declared-symbol-missing",
+                &implementation.path,
+                format!(
+                    "declared architecture {} `{}` was not found in Rust source",
+                    declared.role, declared.symbol
+                ),
+            ));
+        }
+    }
+}
+
+fn rust_type_exists(summary: &RustTypingSummary, symbol: &str) -> bool {
+    summary.public_types.contains(symbol) || summary.private_types.contains(symbol)
 }
 
 fn rust_symbol_exists(summary: &RustTypingSummary, symbol: &str) -> bool {
@@ -11169,6 +11376,12 @@ struct SwiftTypingSummary {
 }
 
 #[derive(Default)]
+struct JsSourceSummary {
+    symbols: BTreeSet<String>,
+    functions: BTreeSet<String>,
+}
+
+#[derive(Default)]
 struct SwiftStructScan {
     name: String,
     depth: i32,
@@ -11210,6 +11423,113 @@ fn swift_source_files(source_root: &Path) -> Vec<PathBuf> {
         .filter(|path| !path_has_component(path, ".git"))
         .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("swift"))
         .collect()
+}
+
+fn js_source_files(source_root: &Path) -> Vec<PathBuf> {
+    WalkDir::new(source_root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .filter(|path| !path_has_component(path, "node_modules"))
+        .filter(|path| !path_has_component(path, ".git"))
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("js" | "mjs" | "cjs")
+            )
+        })
+        .collect()
+}
+
+fn inspect_js_source(source: &str, summary: &mut JsSourceSummary) {
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+
+        if let Some(name) = parse_js_function_name(trimmed) {
+            summary.functions.insert(name.clone());
+            summary.symbols.insert(name);
+        }
+        if let Some(name) = parse_js_declaration_name(trimmed, "const") {
+            summary.symbols.insert(name);
+        }
+        if let Some(name) = parse_js_declaration_name(trimmed, "let") {
+            summary.symbols.insert(name);
+        }
+        if let Some(name) = parse_js_declaration_name(trimmed, "class") {
+            summary.symbols.insert(name);
+        }
+        for name in parse_js_export_list(trimmed) {
+            summary.symbols.insert(name);
+        }
+    }
+}
+
+fn parse_js_function_name(line: &str) -> Option<String> {
+    let mut rest = strip_js_export(line);
+    if let Some(after_async) = rest.strip_prefix("async ") {
+        rest = after_async.trim_start();
+    }
+    let rest = rest.strip_prefix("function ")?.trim_start();
+    Some(js_identifier(rest)?.to_string())
+}
+
+fn parse_js_declaration_name(line: &str, kind: &str) -> Option<String> {
+    let rest = strip_js_export(line);
+    let rest = rest.strip_prefix(kind)?.trim_start();
+    Some(js_identifier(rest)?.to_string())
+}
+
+fn parse_js_export_list(line: &str) -> Vec<String> {
+    let Some(rest) = line.strip_prefix("export {") else {
+        return Vec::new();
+    };
+    let Some((items, _)) = rest.split_once('}') else {
+        return Vec::new();
+    };
+    items
+        .split(',')
+        .filter_map(|item| {
+            let item = item.trim();
+            let name = item
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .split(|token| *token == "as")
+                .next()
+                .and_then(|tokens| tokens.first())
+                .copied()
+                .unwrap_or(item);
+            js_identifier(name).map(str::to_string)
+        })
+        .collect()
+}
+
+fn strip_js_export(line: &str) -> &str {
+    let mut rest = line.trim_start();
+    if let Some(after_export) = rest.strip_prefix("export ") {
+        rest = after_export.trim_start();
+    }
+    if let Some(after_default) = rest.strip_prefix("default ") {
+        rest = after_default.trim_start();
+    }
+    rest
+}
+
+fn js_identifier(value: &str) -> Option<&str> {
+    let identifier = value
+        .trim_start()
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .next()
+        .unwrap_or_default();
+    if is_checkable_identifier(identifier) {
+        Some(identifier)
+    } else {
+        None
+    }
 }
 
 fn collect_swift_imports(source: &str) -> Vec<SwiftImport> {
@@ -11508,6 +11828,105 @@ fn validate_swift_stateful_representation(
             ));
         }
     }
+}
+
+fn validate_swift_declared_architecture_symbols(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    summary: &SwiftTypingSummary,
+) {
+    for declared in declared_architecture_symbols(&implementation.value) {
+        let found = match declared.kind {
+            DeclaredSymbolKind::Type => swift_type_exists(summary, &declared.symbol),
+            DeclaredSymbolKind::Function => summary.functions.contains(&declared.symbol),
+        };
+        if !found {
+            diagnostics.push(error(
+                "structure.declared-symbol-missing",
+                &implementation.path,
+                format!(
+                    "declared architecture {} `{}` was not found in Swift source",
+                    declared.role, declared.symbol
+                ),
+            ));
+        }
+    }
+}
+
+fn swift_type_exists(summary: &SwiftTypingSummary, symbol: &str) -> bool {
+    summary.public_types.contains(symbol) || summary.private_types.contains(symbol)
+}
+
+fn validate_js_declared_architecture_symbols(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    summary: &JsSourceSummary,
+) {
+    for declared in declared_architecture_symbols(&implementation.value) {
+        let found = match declared.kind {
+            DeclaredSymbolKind::Type => js_type_like_symbol_exists(summary, &declared.symbol),
+            DeclaredSymbolKind::Function => summary.functions.contains(&declared.symbol),
+        };
+        if !found {
+            diagnostics.push(error(
+                "structure.declared-symbol-missing",
+                &implementation.path,
+                format!(
+                    "declared architecture {} `{}` was not found in JavaScript source",
+                    declared.role, declared.symbol
+                ),
+            ));
+        }
+    }
+}
+
+fn validate_js_semantic_function_symbols(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    summary: &JsSourceSummary,
+) {
+    let Some(functions) = semantic_function_items(implementation) else {
+        return;
+    };
+    for function in functions {
+        let Some(symbol) = get_str(function, &["symbol"]) else {
+            continue;
+        };
+        let function_name = symbol.rsplit_once('#').map_or(symbol, |(_, name)| name);
+        if !summary.functions.contains(function_name) && !summary.symbols.contains(function_name) {
+            diagnostics.push(error(
+                "implementation.js.semantic-functions.symbol",
+                &implementation.path,
+                format!("semantic function symbol `{symbol}` was not found in JavaScript source"),
+            ));
+        }
+    }
+}
+
+fn js_type_like_symbol_exists(summary: &JsSourceSummary, symbol: &str) -> bool {
+    if summary.symbols.contains(symbol) {
+        return true;
+    }
+    if let Some(lower_camel) = lower_camel_identifier(symbol) {
+        if summary.symbols.contains(&lower_camel) {
+            return true;
+        }
+    }
+    let make_prefix = format!("make{symbol}");
+    let initial_name = format!("initial{symbol}");
+    summary
+        .functions
+        .iter()
+        .any(|function| function == &initial_name || function.starts_with(&make_prefix))
+}
+
+fn lower_camel_identifier(symbol: &str) -> Option<String> {
+    let mut chars = symbol.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_uppercase() {
+        return None;
+    }
+    Some(first.to_ascii_lowercase().to_string() + chars.as_str())
 }
 
 fn parse_swift_public_typealias(line: &str) -> Option<(String, &str)> {
@@ -15875,6 +16294,7 @@ fn run_verify(target: &Path, dry_run: bool) -> Result<()> {
 
 fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()> {
     let manifest = load_manifest(implementation)?;
+    ensure_implementation_manifest_valid_for_verify(&manifest)?;
     let command = get_str(&manifest.value, &["commands", "verify"])
         .ok_or_else(|| anyhow!("implementation binding does not declare `commands.verify`"))?;
     let root = implementation.parent().unwrap_or_else(|| Path::new("."));
@@ -19282,6 +19702,13 @@ fn scaffold_shape_evidence(path: &Path, shape: ScaffoldShape) -> Result<()> {
             write_new_file(
                 &path
                     .join("verification")
+                    .join("laws")
+                    .join("transition_trace.md"),
+                &render_transition_trace_evidence(),
+            )?;
+            write_new_file(
+                &path
+                    .join("verification")
                     .join("traces")
                     .join("transition_trace.yaml"),
                 &render_transition_trace_bundle(),
@@ -20474,6 +20901,11 @@ fn render_js_implementation_yaml(
     } else {
         "    - src/representation.mjs\n    - src/transition.mjs"
     };
+    let transition_function = if boundary_shape {
+        "handleBoundaryInput"
+    } else {
+        "transition"
+    };
     let roles = if boundary_shape {
         format!(
             "{}    parser:\n      - src/parser.mjs\n    adapter:\n      - src/adapter.mjs\n",
@@ -20493,7 +20925,7 @@ fn render_js_implementation_yaml(
         ""
     };
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\narchitecture:\n  shape: {}\n  public_modules:\n{}\n{}  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - make{}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n{}{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\narchitecture:\n  shape: {}\n  public_modules:\n{}\n{}  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: {}\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - make{}\n    transition_functions:\n      - {}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n{}{}",
         yaml_quote(module_name),
         yaml_quote(public_entrypoint),
         yaml_quote(shape.as_str()),
@@ -20507,6 +20939,7 @@ fn render_js_implementation_yaml(
         yaml_quote(&names.effect_result),
         yaml_quote(&names.reply),
         yaml_quote(&names.rejection),
+        yaml_quote(transition_function),
         roles,
         yaml_quote(&names.state),
         yaml_quote(&names.command),
@@ -20524,6 +20957,7 @@ fn render_js_implementation_yaml(
         yaml_quote(&names.transition_record),
         yaml_quote(&names.source_provenance),
         names.label,
+        transition_function,
         names.label,
         transition_semantic_function,
         boundary_semantic_function,
@@ -20801,7 +21235,12 @@ export function handleBoundaryInput(input, ports) {{
   ports?.write?.(parsed.command_envelope);
   return make{reply}Accepted();
 }}
+
+export const {machine} = Object.freeze({{
+  handleBoundaryInput,
+}});
 "#,
+        machine = names.machine,
         prefix = names.prefix,
         reply = names.reply,
     )
@@ -25721,7 +26160,9 @@ journal:
     #[test]
     fn verify_fails_bad_declared_trace_bundle() {
         let root = unique_test_dir("verify-bad-trace");
+        fs::create_dir_all(root.join("scripts")).unwrap();
         fs::create_dir_all(root.join("verification/traces")).unwrap();
+        fs::write(root.join("scripts/verify.sh"), "#!/usr/bin/env sh\ntrue\n").unwrap();
         fs::write(
             root.join("implementation.yaml"),
             r#"spec: rms/implementation/v0.1
@@ -25731,8 +26172,10 @@ source:
   root: .
   public_entrypoint: scripts/verify.sh
 commands:
+  build: "true"
   verify: "true"
 architecture:
+  static_inspection: opaque
   roles:
     replay_bundle:
       - verification/traces/bad.yaml
@@ -25783,6 +26226,82 @@ records:
         fs::remove_dir_all(&root).unwrap();
         assert!(error.contains("trace bundle"));
         assert!(error.contains("trace.timeline-discontinuity"));
+    }
+
+    #[test]
+    fn verify_fails_missing_declared_architecture_symbol() {
+        let root = unique_test_dir("verify-missing-architecture-symbol");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"[package]
+name = "verify-missing-architecture-symbol"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            r#"pub enum PresentState {
+    Ready,
+}
+
+pub fn transition() {}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: missing-symbol
+binding: rust
+source:
+  root: .
+  public_entrypoint: src/lib.rs
+commands:
+  build: "true"
+  verify: "true"
+toolchain:
+  cargo_manifest: Cargo.toml
+  package: verify-missing-architecture-symbol
+dependencies:
+  allowed_external_crates: []
+architecture:
+  shape: domain-engine
+  machine:
+    name: MissingSymbolMachine
+    state: PresentState
+    commands:
+      - MissingCommand
+    events: []
+    effects: []
+    effect_results: []
+    replies: []
+    rejections: []
+    transition_function: transition
+  roles:
+    representation:
+      - src/lib.rs
+    transition:
+      - src/lib.rs
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+        let error = run_verify_implementation_captured(&root.join("implementation.yaml"))
+            .unwrap_err()
+            .to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, "fail");
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.declared-symbol-missing"
+                && diagnostic.message.contains("MissingSymbolMachine")
+        }));
+        assert!(error.contains("structure.declared-symbol-missing"));
+        assert!(error.contains("MissingSymbolMachine"));
     }
 
     #[test]
@@ -26552,7 +27071,7 @@ verification:
         .unwrap();
         fs::write(
             root.join("child/implementation.yaml"),
-            "spec: rms/implementation/v0.1\n\nmodule: child\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\ncommands:\n  verify: sh scripts/smoke.sh\n",
+            "spec: rms/implementation/v0.1\n\nmodule: child\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\ncommands:\n  build: sh scripts/smoke.sh\n  verify: sh scripts/smoke.sh\n",
         )
         .unwrap();
         fs::write(

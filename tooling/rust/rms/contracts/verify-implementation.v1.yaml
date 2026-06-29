@@ -7,6 +7,8 @@ preconditions:
   - id: verifiable-target
     statement: The target is either an implementation binding with commands.verify or a composite module manifest.
 postconditions:
+  - id: implementation-binding-valid
+    statement: Before running the declared verification command, the CLI validates the implementation binding, including declared inner-machine symbols that the binding claims are present in source.
   - id: native-command-result-preserved
     statement: The CLI exits with an error when the declared verification command fails.
   - id: declared-trace-bundles-checked
@@ -14,6 +16,8 @@ postconditions:
   - id: composite-rollup-checked
     statement: For composite modules, the CLI checks manifest validity, repository composition, parent scenario evidence, and contained child implementation verification when child bindings are present.
 failure_categories:
+  - id: implementation-binding-invalid
+    statement: The implementation binding is invalid or declares source-level structure that cannot be found in the implementation.
   - id: missing-verify-command
     statement: The implementation binding does not declare commands.verify.
   - id: verification-failed

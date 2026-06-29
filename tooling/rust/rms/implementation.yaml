@@ -564,6 +564,7 @@ semantic_functions:
       ensures:
         - structure reports are derived from the target implementation binding and validator diagnostics
         - missing machine, role, parser, transition, envelope, trace, replay, first-bad-transition, and evidence obligations are advisory findings rather than hidden architectural authority
+        - declared inspectable source symbols that are not found are reported as validation-backed structure errors
         - generated reports identify the implementation, module, binding, shape, declared machine roles, message envelopes, transition output, trace roles, role paths, and focused diagnostics
     evidence:
       contracts:
@@ -640,7 +641,9 @@ semantic_functions:
       requires:
         - target is an implementation binding with commands.verify or a composite module manifest
       ensures:
+        - implementation bindings are validated before declared verification commands run
         - the declared verification command is run from the implementation binding directory
+        - declared inner-machine symbols are checked against inspectable source for supported language bindings
         - declared local JSON/YAML trace bundles are checked after native verification succeeds
         - composite module verification rolls up manifest validation, composition, parent scenario evidence, and contained child implementation verification
     evidence:

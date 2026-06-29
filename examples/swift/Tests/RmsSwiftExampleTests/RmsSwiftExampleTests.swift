@@ -11,4 +11,13 @@ final class RmsSwiftExampleTests: XCTestCase {
 
         XCTAssertEqual(widget?.name, "example")
     }
+
+    func testMachineDescribesWidgetName() {
+        let widget = SwiftWidget("example")!
+
+        XCTAssertEqual(
+            SwiftExampleMachine.transition(.describe(widget)),
+            .description("example")
+        )
+    }
 }

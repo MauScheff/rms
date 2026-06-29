@@ -8,3 +8,7 @@ export function handleBoundaryInput(input, rulesPort) {
   }
   return accepted(rulesPort.applyMove(parsed));
 }
+
+export const TicTacToeCliBoundary = Object.freeze({
+  handleBoundaryInput,
+});
