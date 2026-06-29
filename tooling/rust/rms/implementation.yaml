@@ -94,6 +94,7 @@ semantic_functions:
     assumptions:
       ensures:
         - validation diagnostics are derived from manifest schemas and semantic reference checks
+        - structure diagnostics normalize canonical role aliases and surface numeric-safety risks as advisory findings
     evidence:
       contracts:
         - verification/contracts/validate_rms_artifacts.md
@@ -234,6 +235,7 @@ semantic_functions:
       ensures:
         - generated module manifest, module README, contract guidance, semantic shape evidence, evidence directories, and optional implementation binding are deterministic scaffold artifacts
         - inspectable implementation bindings include advisory traceable-machine declarations for message envelopes, transition output, trace records, replay bundles, and first-bad-transition support where the binding can express them
+        - inspectable implementation bindings declare numeric-safety obligations and generated evidence asks for numeric boundary proof when validated numeric values affect decisions
         - traceable scaffolds write local JSON/YAML trace bundles under verification/traces and bind them from implementation.yaml
         - runtime-monitor scaffolds declare the Monitor profile, monitor authority placeholders, and runtime trigger evidence without inventing module-specific monitored facts
         - optional advisory scaffold planning records provider output as evidence without making it canonical architecture by itself
@@ -564,6 +566,8 @@ semantic_functions:
       ensures:
         - structure reports are derived from the target implementation binding and validator diagnostics
         - missing machine, role, parser, transition, envelope, trace, replay, first-bad-transition, and evidence obligations are advisory findings rather than hidden architectural authority
+        - parser role aliases are normalized for checks while original role declarations remain visible in reports
+        - unchecked arithmetic in declared roles is flagged when modules declare numeric validated values
         - declared inspectable source symbols that are not found are reported as validation-backed structure errors
         - generated reports identify the implementation, module, binding, shape, declared machine roles, message envelopes, transition output, trace roles, role paths, and focused diagnostics
     evidence:

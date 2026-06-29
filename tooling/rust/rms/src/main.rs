@@ -1790,8 +1790,8 @@ impl PromptKind {
                 "Assign each module a semantic shape: domain-engine, boundary-adapter, runtime-monitor, workflow, storage-adapter, integration-adapter, or composite.",
                 "Separate pure decisions from external effects, and name required module dependencies.",
                 "Define representation obligations: closed variants, validated values, commands, states, events, accepted/rejected outcomes, and boundary schemas.",
-                "Resolve semantic edge cases before file layout: invalid commands, illegal transitions, terminal states, stale or conflicting state, parser failures, and effect failure categories.",
-                "Define focused evidence: laws, contract scenarios, boundary parser tests, runtime monitor trigger/non-trigger cases, transition records, replay bundles, first-bad-transition proof, fuzz/property checks, recovery, or reconciliation.",
+                "Resolve semantic edge cases before file layout: invalid commands, illegal transitions, terminal states, stale or conflicting state, parser failures, numeric overflow or rounding, and effect failure categories.",
+                "Define focused evidence: laws, contract scenarios, boundary parser tests, numeric boundary tests, runtime monitor trigger/non-trigger cases, transition records, replay bundles, first-bad-transition proof, fuzz/property checks, recovery, or reconciliation.",
                 "Treat provider output and generated plans as advisory evidence until reflected in canonical artifacts.",
             ],
             PromptKind::Explain => &[
@@ -6679,7 +6679,8 @@ fn append_semantic_structure_checklist(out: &mut String, kind: PromptKind) -> Re
     writeln!(out, "- Messages: commands, events, effects, and effect results should use explicit envelopes with target/source, correlation, causation, schema/version, sequence, and idempotency metadata where applicable.")?;
     writeln!(out, "- Transitions: name accepted transitions, rejected transitions, terminal states, transition outputs, transition records, replay bundles, and first-bad-transition evidence when behavior depends on order or lifecycle.")?;
     writeln!(out, "- Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.")?;
-    writeln!(out, "- Edge cases first: invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases.")?;
+    writeln!(out, "- Numeric safety: if validated values represent counts, money, quantities, rates, sizes, scores, or other numeric facts, choose checked, saturating, bounded, or explicitly proven arithmetic before implementation.")?;
+    writeln!(out, "- Edge cases first: invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, numeric overflow or rounding, and not-applicable cases.")?;
     writeln!(out, "- Implementation comes after the structure is clear enough to encode in manifests, contracts, representation, transitions, adapters, tests, and evidence.")?;
     writeln!(out)?;
     Ok(())
@@ -9327,6 +9328,7 @@ fn validate_inner_structure(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
     if shape == "domain-engine" {
         inspect_domain_transition_sources(manifest, diagnostics);
     }
+    inspect_numeric_safety_sources(manifest, diagnostics, shape);
 }
 
 fn validate_traceable_machine_structure(
@@ -9679,9 +9681,25 @@ fn parser_expected_for_shape(shape: &str) -> bool {
 }
 
 fn structure_role_paths(manifest: &LoadedManifest, role: &str) -> Vec<String> {
-    get_path(&manifest.value, &["architecture", "roles", role])
-        .map(yaml_string_values)
-        .unwrap_or_default()
+    let mut paths = Vec::new();
+    for role in structure_role_aliases(role) {
+        for path in get_path(&manifest.value, &["architecture", "roles", role])
+            .map(yaml_string_values)
+            .unwrap_or_default()
+        {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
+}
+
+fn structure_role_aliases(role: &str) -> Vec<&str> {
+    match role {
+        "parser" => vec!["parser", "boundary_parser", "boundary-parser", "parsers"],
+        _ => vec![role],
+    }
 }
 
 fn get_structure_values(value: &YamlValue, path: &[&str]) -> Vec<String> {
@@ -9844,6 +9862,253 @@ fn inspect_domain_transition_sources(manifest: &LoadedManifest, diagnostics: &mu
             );
         }
     }
+}
+
+fn inspect_numeric_safety_sources(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    shape: &str,
+) {
+    let numeric_tokens = numeric_validated_value_tokens(&manifest.value);
+    if !numeric_safety_expected_for_shape(shape) || numeric_tokens.is_empty() {
+        return;
+    }
+
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let mut references = Vec::new();
+    for role in ["representation", "transition", "parser"] {
+        for reference in structure_role_paths(manifest, role) {
+            if !references.contains(&reference) {
+                references.push(reference);
+            }
+        }
+    }
+    if references.is_empty() {
+        if let Some(public_entrypoint) = get_str(&manifest.value, &["source", "public_entrypoint"])
+        {
+            references.push(public_entrypoint.to_string());
+        }
+    }
+
+    for reference in references {
+        let path = base.join(&reference);
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some(line) = first_unchecked_numeric_arithmetic_line(&source, &numeric_tokens) {
+            push_unique_warning(
+                diagnostics,
+                "structure.unchecked-numeric-arithmetic",
+                &manifest.path,
+                format!(
+                    "`{shape}` role `{reference}` performs arithmetic on a module with numeric validated values near line {line}; use bounded, checked, saturating, or explicitly proven arithmetic"
+                ),
+            );
+        }
+    }
+}
+
+fn numeric_safety_expected_for_shape(shape: &str) -> bool {
+    matches!(
+        shape,
+        "domain-engine"
+            | "workflow"
+            | "storage-adapter"
+            | "integration-adapter"
+            | "boundary-adapter"
+    )
+}
+
+fn numeric_validated_value_tokens(value: &YamlValue) -> BTreeSet<String> {
+    let mut tokens = BTreeSet::new();
+    let mut found_numeric_value = false;
+    for value in get_string_array(
+        value,
+        &["architecture", "representation", "validated_values"],
+    )
+    .iter()
+    {
+        if looks_numeric_value_name(value) {
+            found_numeric_value = true;
+            tokens.extend(identifier_word_tokens(value));
+        }
+    }
+    if found_numeric_value {
+        tokens.extend(
+            numeric_value_name_tokens()
+                .iter()
+                .map(|token| token.to_string()),
+        );
+    }
+    tokens
+}
+
+fn looks_numeric_value_name(value: &str) -> bool {
+    let tokens = identifier_word_tokens(value);
+    let numeric_tokens = numeric_value_name_tokens();
+    tokens
+        .iter()
+        .any(|token| numeric_tokens.contains(&token.as_str()))
+}
+
+fn numeric_value_name_tokens() -> &'static [&'static str] {
+    &[
+        "amount", "balance", "capacity", "cent", "cents", "cost", "count", "duration", "fee",
+        "limit", "money", "percent", "price", "quantity", "rate", "ratio", "score", "size",
+        "subtotal", "total", "unit", "units",
+    ]
+}
+
+fn first_unchecked_numeric_arithmetic_line(
+    source: &str,
+    numeric_tokens: &BTreeSet<String>,
+) -> Option<usize> {
+    source.lines().enumerate().find_map(|(index, line)| {
+        unchecked_numeric_arithmetic_line(line, numeric_tokens).then_some(index + 1)
+    })
+}
+
+fn unchecked_numeric_arithmetic_line(line: &str, numeric_tokens: &BTreeSet<String>) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty()
+        || trimmed.starts_with("//")
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("use ")
+        || trimmed.starts_with("pub use ")
+    {
+        return false;
+    }
+
+    let safe_markers = [
+        "checked_",
+        "saturating_",
+        "wrapping_",
+        "overflowing_",
+        "checkedAdd",
+        "checkedSubtract",
+        "checkedMultiply",
+        "checkedDivide",
+        "saturating",
+        "BigInt",
+        "Number.isSafeInteger",
+        "ReportingOverflow",
+        "addingReportingOverflow",
+        "subtractingReportingOverflow",
+        "multipliedReportingOverflow",
+        "dividedReportingOverflow",
+        "remainderReportingOverflow",
+    ];
+    if safe_markers.iter().any(|marker| line.contains(marker)) {
+        return false;
+    }
+
+    let code = mask_quoted_segments(line);
+    if !line_mentions_numeric_concept(&code, numeric_tokens) {
+        return false;
+    }
+    let chars = code.chars().collect::<Vec<_>>();
+    for (index, character) in chars.iter().enumerate() {
+        if is_unchecked_arithmetic_operator(&chars, index, *character) {
+            return true;
+        }
+    }
+    false
+}
+
+fn line_mentions_numeric_concept(line: &str, numeric_tokens: &BTreeSet<String>) -> bool {
+    identifier_word_tokens(line)
+        .iter()
+        .any(|token| numeric_tokens.contains(token))
+}
+
+fn is_unchecked_arithmetic_operator(chars: &[char], index: usize, character: char) -> bool {
+    let previous = index.checked_sub(1).and_then(|index| chars.get(index));
+    let next = chars.get(index + 1);
+    let previous_non_space = previous_non_whitespace(chars, index);
+
+    match character {
+        '+' => true,
+        '-' => next != Some(&'>') && !looks_like_unary_operator(previous_non_space),
+        '*' => previous != Some(&':') && previous != Some(&'('),
+        '/' => {
+            next != Some(&'/')
+                && next != Some(&'*')
+                && previous != Some(&'*')
+                && previous != Some(&'/')
+                && !matches!(
+                    previous_non_space,
+                    None | Some('=' | '(' | '[' | '{' | ',' | ':' | ';' | '!')
+                )
+        }
+        '%' => previous != Some(&'%') && next != Some(&'%'),
+        _ => false,
+    }
+}
+
+fn previous_non_whitespace(chars: &[char], index: usize) -> Option<char> {
+    chars
+        .get(..index)?
+        .iter()
+        .rev()
+        .copied()
+        .find(|character| !character.is_whitespace())
+}
+
+fn looks_like_unary_operator(previous: Option<char>) -> bool {
+    matches!(
+        previous,
+        None | Some(
+            '(' | '['
+                | '{'
+                | '='
+                | ':'
+                | ','
+                | ';'
+                | '!'
+                | '<'
+                | '>'
+                | '+'
+                | '-'
+                | '*'
+                | '/'
+                | '%'
+                | '&'
+                | '|'
+                | '?'
+        )
+    )
+}
+
+fn mask_quoted_segments(line: &str) -> String {
+    let mut output = String::with_capacity(line.len());
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for character in line.chars() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+                output.push(' ');
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                output.push(' ');
+                continue;
+            }
+            if character == active_quote {
+                quote = None;
+            }
+            output.push(' ');
+            continue;
+        }
+        if matches!(character, '"' | '\'' | '`') {
+            quote = Some(character);
+            output.push(' ');
+        } else {
+            output.push(character);
+        }
+    }
+    output
 }
 
 fn contains_hidden_effect_marker(source: &str) -> bool {
@@ -20140,7 +20405,7 @@ fn render_module_readme(
     };
 
     format!(
-        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Semantic Shape\n\nShape: `{}`: `{}` ({})\n\nRequired roles:\n{}\n\nRepresentation is the RMS-level role for closed variants, validated values, commands, states, events, and result/rejection types. Implement it with language-idiomatic files or modules; do not treat a folder named `domain` or `types` as canonical architecture. Traceable-machine roles make debugging bad states explicit: message envelopes carry identity and causality, transitions return next state plus emitted events, commands, effects, and reply, transition records capture before/after/input/output/source provenance, journals explain, replay bundles reproduce, and first-bad-transition evidence points to the fix. Use domain-named role suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Do not derive inner role names from role or surface suffixes such as rules, engine, adapter, cli, web, rust, swift, or js unless those words are genuine domain language.\n\n## Representation Decisions\n\n- Closed domain alternatives should use ADTs, sealed variants, enums, or tagged constructors.\n- Public values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Expected domain failures should be explicit result or rejection values rather than ambient exceptions.\n- Lifecycle or order-dependent behavior should use a transition model with accepted and rejected outcomes, transition records, replay bundles, and first-bad-transition diagnostics when applicable.\n- Boundary input should be parsed into enveloped domain commands before reaching pure decisions.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Projections observe and derive timelines; they do not emit workflow commands or mutate another module's state.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Runtime Monitor Decisions\n\n- Use this section when the module declares the `monitor` profile or `runtime-monitor` shape.\n- Declare observed inputs, derived facts or streams, trigger conditions, monitor authority, retrigger/idempotency policy, and fail-open/fail-closed/degraded behavior in `module.yaml`.\n- Supervisory outputs must be public commands, events, alarms, findings, or capabilities. Do not mutate controlled module state directly.\n- Add runtime evidence for trigger and non-trigger cases before relying on a monitor for release or operational assurance.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs, illegal transitions, replayed bad states, or passive projections when applicable.\n5. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms structure implementation.yaml` and `rms verify implementation.yaml` when an implementation binding exists.\n6. Replace scaffold placeholder evidence before declaring this module implemented; `rms validate --root <system-root>` should not report placeholder, bootstrap, unpinned, or semantic-shape-only evidence for implemented promises.\n\n## Agent Workflow\n\nUse `rms design --root <system-root> --task \"<task>\"` when module boundaries or semantic shapes are unclear. Use `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms evolve-contract module.yaml --task \"<task>\"` when public meaning changes, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
+        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Semantic Shape\n\nShape: `{}`: `{}` ({})\n\nRequired roles:\n{}\n\nRepresentation is the RMS-level role for closed variants, validated values, commands, states, events, and result/rejection types. Implement it with language-idiomatic files or modules; do not treat a folder named `domain` or `types` as canonical architecture. Traceable-machine roles make debugging bad states explicit: message envelopes carry identity and causality, transitions return next state plus emitted events, commands, effects, and reply, transition records capture before/after/input/output/source provenance, journals explain, replay bundles reproduce, and first-bad-transition evidence points to the fix. Use domain-named role suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Do not derive inner role names from role or surface suffixes such as rules, engine, adapter, cli, web, rust, swift, or js unless those words are genuine domain language.\n\n## Representation Decisions\n\n- Closed domain alternatives should use ADTs, sealed variants, enums, or tagged constructors.\n- Public values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Validated numeric values should use checked, saturating, bounded, or explicitly proven arithmetic, with evidence for overflow, floors, ceilings, and rounding when arithmetic affects decisions.\n- Expected domain failures should be explicit result or rejection values rather than ambient exceptions.\n- Lifecycle or order-dependent behavior should use a transition model with accepted and rejected outcomes, transition records, replay bundles, and first-bad-transition diagnostics when applicable.\n- Boundary input should be parsed into enveloped domain commands before reaching pure decisions.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Projections observe and derive timelines; they do not emit workflow commands or mutate another module's state.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Runtime Monitor Decisions\n\n- Use this section when the module declares the `monitor` profile or `runtime-monitor` shape.\n- Declare observed inputs, derived facts or streams, trigger conditions, monitor authority, retrigger/idempotency policy, and fail-open/fail-closed/degraded behavior in `module.yaml`.\n- Supervisory outputs must be public commands, events, alarms, findings, or capabilities. Do not mutate controlled module state directly.\n- Add runtime evidence for trigger and non-trigger cases before relying on a monitor for release or operational assurance.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs, illegal transitions, replayed bad states, numeric boundary cases, or passive projections when applicable.\n5. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms structure implementation.yaml` and `rms verify implementation.yaml` when an implementation binding exists.\n6. Replace scaffold placeholder evidence before declaring this module implemented; `rms validate --root <system-root>` should not report placeholder, bootstrap, unpinned, or semantic-shape-only evidence for implemented promises.\n\n## Agent Workflow\n\nUse `rms design --root <system-root> --task \"<task>\"` when module boundaries or semantic shapes are unclear. Use `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms evolve-contract module.yaml --task \"<task>\"` when public meaning changes, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
         markdown_inline(name),
         markdown_inline(purpose),
         markdown_inline(kind),
@@ -20257,6 +20522,11 @@ fn render_traceable_architecture_yaml(names: &InnerStructureNames, shape: Scaffo
         let _ = writeln!(out, "    idempotency_keys:");
         let _ = writeln!(out, "      - effect_id");
     }
+    let _ = writeln!(out, "  numeric_safety:");
+    let _ = writeln!(
+        out,
+        "    validated_arithmetic: checked-or-bounded-or-proven"
+    );
     let _ = writeln!(out, "  trace:");
     let _ = writeln!(out, "    journal: transition-records");
     let _ = writeln!(out, "    timeline_projection: transition-records");
@@ -21322,7 +21592,7 @@ fn render_executable_smoke_evidence() -> String {
 
 fn render_shape_law_evidence(shape: ScaffoldShape) -> String {
     format!(
-        "# Law Evidence: semantic shape\n\nShape: `{}` ({})\n\nRepresentation obligations:\n\n- Closed alternatives should be represented as ADTs, sealed variants, enums, or tagged constructors.\n- Values with validity rules should be created through validated constructors.\n- Expected failures should be explicit accepted/rejected outcomes.\n- Messages that cross roles should use explicit command, event, effect, or effect-result envelopes.\n- Lifecycle or order-dependent behavior should produce transition records and be replayable from a replay bundle.\n- Boundary input should be parsed before it reaches pure decisions.\n\nGenerated roles:\n{}\n\nCommand:\n\n- Replace this placeholder with module-specific law, trace, property, fuzz, contract, or boundary evidence.\n\nSource revision: not recorded by the generated scaffold.\n",
+        "# Law Evidence: semantic shape\n\nShape: `{}` ({})\n\nRepresentation obligations:\n\n- Closed alternatives should be represented as ADTs, sealed variants, enums, or tagged constructors.\n- Values with validity rules should be created through validated constructors.\n- Expected failures should be explicit accepted/rejected outcomes.\n- Messages that cross roles should use explicit command, event, effect, or effect-result envelopes.\n- Lifecycle or order-dependent behavior should produce transition records and be replayable from a replay bundle.\n- Boundary input should be parsed before it reaches pure decisions.\n- Validated numeric values should use checked, saturating, bounded, or explicitly proven arithmetic with edge evidence for overflow, floors, ceilings, and rounding where applicable.\n\nGenerated roles:\n{}\n\nCommand:\n\n- Replace this placeholder with module-specific law, trace, property, fuzz, contract, or boundary evidence.\n\nSource revision: not recorded by the generated scaffold.\n",
         shape.as_str(),
         shape.purpose(),
         shape
@@ -21335,7 +21605,7 @@ fn render_shape_law_evidence(shape: ScaffoldShape) -> String {
 }
 
 fn render_transition_trace_evidence() -> String {
-    "# Law Evidence: transition trace\n\nPromise:\n\n- Pure decisions are replayable from explicit commands, states, events, or transition inputs.\n- Each transition record captures state before, state after, input variant, outputs, and source provenance.\n- Illegal or invalid transitions are rejected or made unrepresentable.\n\nEvidence to add:\n\n- Accepted transition record from valid input to expected output.\n- Rejected transition record for invalid command, impossible variant, or invalid state/order.\n- Replay bundle that can reproduce the observed sequence.\n- First-bad-transition note when a sequence can enter a bad state.\n- Property, fuzz, or table coverage when the transition space is broad.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+    "# Law Evidence: transition trace\n\nPromise:\n\n- Pure decisions are replayable from explicit commands, states, events, or transition inputs.\n- Each transition record captures state before, state after, input variant, outputs, and source provenance.\n- Illegal or invalid transitions are rejected or made unrepresentable.\n\nEvidence to add:\n\n- Accepted transition record from valid input to expected output.\n- Rejected transition record for invalid command, impossible variant, or invalid state/order.\n- Replay bundle that can reproduce the observed sequence.\n- First-bad-transition note when a sequence can enter a bad state.\n- Property, fuzz, or table coverage when the transition space is broad.\n- Numeric edge coverage for validated numeric values, including overflow, lower/upper bounds, capping, and rounding when the transition performs arithmetic.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
 }
 
 fn render_transition_trace_bundle() -> String {
@@ -21455,7 +21725,7 @@ records:
 }
 
 fn render_accepted_rejected_evidence() -> String {
-    "# Scenario Evidence: accepted and rejected outcomes\n\nPromise:\n\n- The module exposes explicit accepted and rejected outcomes for expected domain failures.\n\nEvidence to add:\n\n- One meaningful accepted scenario.\n- One meaningful rejected scenario.\n- The command or tool used to exercise both paths.\n- The manifest promise, invariant, or contract each path proves.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+    "# Scenario Evidence: accepted and rejected outcomes\n\nPromise:\n\n- The module exposes explicit accepted and rejected outcomes for expected domain failures.\n\nEvidence to add:\n\n- One meaningful accepted scenario.\n- One meaningful rejected scenario.\n- The command or tool used to exercise both paths.\n- The manifest promise, invariant, or contract each path proves.\n- Boundary-value cases for numeric validated values when accepted or rejected outcomes depend on arithmetic.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
 }
 
 fn render_monitor_trigger_evidence() -> String {
@@ -21779,7 +22049,8 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Traceable machine: workflows orchestrate; machines execute; commands ask; events report; effects touch the world; projections observe; journals explain; replay reproduces; first-bad-transition evidence points to the fix.
 - Messages and outputs: keep command, event, effect, and effect-result envelopes explicit; transition outputs should name next state, emitted events, commands, effects, and reply.
 - Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
-- Edge cases first: decide invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases.
+- Numeric safety: if validated values represent counts, money, quantities, rates, sizes, scores, or other numeric facts, choose checked, saturating, bounded, or explicitly proven arithmetic before implementation.
+- Edge cases first: decide invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, numeric overflow or rounding, and not-applicable cases.
 - Only then fill implementation files, tests, and evidence.
 
 ## While Implementing
@@ -22692,6 +22963,7 @@ import struct ExternalKit.Widget
         assert!(agents.contains("Naming rule"));
         assert!(agents.contains("omit `--domain-child`"));
         assert!(agents.contains("Semantic Structure Before Code"));
+        assert!(agents.contains("Numeric safety"));
         assert!(agents.contains("Edge cases first"));
         assert!(agents.contains("Traceable machine"));
         assert!(agents.contains("command, event, effect, and effect-result envelopes"));
@@ -22871,6 +23143,7 @@ import struct ExternalKit.Widget
             "rust",
         );
         let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        let readme = fs::read_to_string(root.join("README.md")).unwrap();
         let representation = fs::read_to_string(root.join("src/representation.rs")).unwrap();
         let transition = fs::read_to_string(root.join("src/transition.rs")).unwrap();
         let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
@@ -22886,7 +23159,9 @@ import struct ExternalKit.Widget
         assert!(implementation.contains("- \"ExampleState\""));
         assert!(implementation.contains("command_envelope:"));
         assert!(implementation.contains("transition:"));
+        assert!(implementation.contains("numeric_safety:"));
         assert!(implementation.contains("first_bad_transition"));
+        assert!(readme.contains("Validated numeric values"));
         assert!(representation.contains("pub enum ExampleCommand"));
         assert!(representation.contains("pub struct ExampleCommandEnvelope"));
         assert!(representation.contains("pub enum ExampleEffectLifecycle"));
@@ -23006,6 +23281,7 @@ import struct ExternalKit.Widget
         assert!(implementation.contains("name: \"ExampleMachine\""));
         assert!(implementation.contains("- \"ExampleCommand\""));
         assert!(implementation.contains("command_envelope:"));
+        assert!(implementation.contains("numeric_safety:"));
         assert!(implementation.contains("first_bad_transition"));
         assert!(representation.contains("public enum ExampleCommand"));
         assert!(representation.contains("public struct ExampleCommandEnvelope"));
@@ -23116,6 +23392,7 @@ import struct ExternalKit.Widget
         assert!(implementation.contains("- \"ExampleBoundaryCommand\""));
         assert!(implementation.contains("command_envelope:"));
         assert!(implementation.contains("effect_lifecycle:"));
+        assert!(implementation.contains("numeric_safety:"));
         assert!(implementation.contains("parser:"));
         assert!(implementation.contains("message_envelope:"));
         assert!(representation.contains("makeExampleBoundaryCommandAccept"));
@@ -23217,6 +23494,145 @@ architecture:
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.check == "structure.first-bad-transition-unsupported"
         }));
+    }
+
+    #[test]
+    fn structure_report_accepts_parser_role_aliases() {
+        let root = unique_test_dir("structure-parser-alias");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/parser.mjs"), "export function parse() {}\n").unwrap();
+        fs::write(
+            root.join("src/adapter.mjs"),
+            "export function handle() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: "parser-alias"
+binding: js
+source:
+  root: .
+  public_entrypoint: src/adapter.mjs
+commands:
+  build: node --check src/adapter.mjs
+  verify: node --check src/adapter.mjs
+architecture:
+  shape: boundary-adapter
+  roles:
+    boundary_parser:
+      - src/parser.mjs
+    adapter:
+      - src/adapter.mjs
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "structure.boundary-parser-missing"),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn structure_report_warns_on_unchecked_numeric_arithmetic() {
+        let root = unique_test_dir("structure-numeric-safety");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/transition.mjs"),
+            "export function transition(subtotal, fee) { return subtotal + fee; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: "numeric-safety"
+binding: js
+source:
+  root: .
+  public_entrypoint: src/transition.mjs
+commands:
+  build: node --check src/transition.mjs
+  verify: node --check src/transition.mjs
+toolchain:
+  runner: node
+architecture:
+  shape: domain-engine
+  roles:
+    representation:
+      - src/transition.mjs
+    transition:
+      - src/transition.mjs
+  representation:
+    validated_values:
+      - Money
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.unchecked-numeric-arithmetic"
+                && diagnostic.message.contains("numeric validated values")
+        }));
+    }
+
+    #[test]
+    fn structure_report_accepts_checked_numeric_arithmetic() {
+        let root = unique_test_dir("structure-numeric-safety-checked");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/transition.mjs"),
+            "export function transition(amount, fee) { return checkedAdd(amount, fee); }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: "numeric-safety-checked"
+binding: js
+source:
+  root: .
+  public_entrypoint: src/transition.mjs
+commands:
+  build: node --check src/transition.mjs
+  verify: node --check src/transition.mjs
+toolchain:
+  runner: node
+architecture:
+  shape: domain-engine
+  roles:
+    representation:
+      - src/transition.mjs
+    transition:
+      - src/transition.mjs
+  representation:
+    validated_values:
+      - Money
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "structure.unchecked-numeric-arithmetic"),
+            "{:#?}",
+            report.diagnostics
+        );
     }
 
     #[test]

@@ -10,7 +10,9 @@ postconditions:
   - id: report-derived-from-binding
     statement: The report identifies the target implementation, module, binding, semantic shape, declared machine roles, message envelopes, transition output, trace roles, declared role files, and focused structure, source-symbol, or evidence diagnostics derived from the implementation binding.
   - id: advisory-findings-preserved
-    statement: Missing or stale inner-structure declarations, placeholder evidence, hidden-effect findings, projection command emission, hidden choreography, and traceability gaps are reported as advisory diagnostics unless another validation error makes the implementation invalid.
+    statement: Missing or stale inner-structure declarations, placeholder evidence, hidden-effect findings, projection command emission, hidden choreography, unchecked numeric arithmetic, and traceability gaps are reported as advisory diagnostics unless another validation error makes the implementation invalid.
+  - id: role-aliases-normalized
+    statement: Canonical structure checks treat parser, boundary_parser, boundary-parser, and parsers as equivalent parser role declarations while preserving the original role names in reports.
   - id: declared-symbol-findings-preserved
     statement: If an implementation binding declares machine/state/command/event/effect/reply/rejection or transition-function symbols that cannot be found in inspectable source, the report marks the implementation invalid with source-symbol diagnostics.
 failure_categories:

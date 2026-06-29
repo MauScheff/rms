@@ -9,6 +9,8 @@ preconditions:
 postconditions:
   - id: diagnostics-reflect-artifacts
     statement: Reported diagnostics are derived from parsed RMS artifacts and embedded validation rules.
+  - id: structure-diagnostics-include-inner-shape
+    statement: Implementation structure diagnostics recognize canonical role aliases such as parser/boundary_parser/parsers and report numeric-safety risks when modules with numeric validated values perform unchecked arithmetic in declared roles.
 failure_categories:
   - id: parse-failure
     statement: An input artifact cannot be parsed as the expected format.

@@ -4,7 +4,7 @@ Covered by `cargo test --manifest-path Cargo.toml`, including deterministic scaf
 
 Executable coverage:
 
-- `rust_module_scaffold_generates_valid_binding_artifacts` verifies generated Rust `module.yaml` and `implementation.yaml` validate, the module README records semantic shape guidance, generated code separates representation, message envelope, transition output, transition record, trace, and replay roles, and `rms verify` checks the generated trace bundle.
+- `rust_module_scaffold_generates_valid_binding_artifacts` verifies generated Rust `module.yaml` and `implementation.yaml` validate, the module README records semantic shape and numeric-safety guidance, generated code separates representation, message envelope, transition output, transition record, trace, and replay roles, and `rms verify` checks the generated trace bundle.
 - `workflow_rust_scaffold_generates_traceable_orchestration_roles` verifies workflow scaffolds declare subscription registry, timeline projection, replay, first-bad-transition roles, and a checkable trace bundle.
 - `swift_module_scaffold_generates_valid_binding_artifacts` verifies the same traceable scaffold guarantees and generated trace bundle for the Swift binding.
 - `js_boundary_adapter_scaffold_separates_representation_parser_and_adapters` verifies the JS binding separates representation, command envelope, parser, ports, adapter, and trace roles, writes `verification/traces/boundary_parse.yaml`, and passes `rms verify implementation.yaml`.
