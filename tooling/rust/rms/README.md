@@ -79,7 +79,7 @@ Before publishing or sharing this CLI, run:
 rms release check --root .
 ```
 
-Before claiming an RMS-generated project is production-ready, run:
+Before claiming an RMS-generated project is production-ready, follow the production-pilot workflow in `../../../PRODUCTION.md` and run:
 
 ```bash
 rms audit --root <project> --strict

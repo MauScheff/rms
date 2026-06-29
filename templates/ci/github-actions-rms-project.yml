@@ -1,0 +1,54 @@
+name: RMS Project CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  # Pin this to the reviewed RMS release tag used by the project.
+  RMS_VERSION: v0.1.0-rc.4
+
+jobs:
+  rms:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Strict audit requires source provenance.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install pinned RMS CLI
+        run: |
+          set -euo pipefail
+          cargo install \
+            --git https://github.com/reliable-modular-systems/reliable-modular-systems \
+            --tag "${RMS_VERSION}" \
+            rms \
+            --locked
+
+      - name: RMS diagnose
+        run: rms diagnose
+
+      - name: RMS validate
+        run: rms validate --root .
+
+      - name: RMS compose
+        run: rms compose --root .
+
+      - name: RMS gate
+        run: rms gate --root .
+
+      - name: RMS strict audit
+        run: rms audit --root . --strict
+
+      # Add project-native checks here when they are not already declared
+      # through implementation.yaml and reached by `rms gate`.
+      #
+      # Examples:
+      # - cargo test --workspace --locked
+      # - swift test
+      # - npm test
+      # - npm run lint

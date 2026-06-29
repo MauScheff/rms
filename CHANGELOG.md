@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.1.0-rc.4 - 2026-06-30
+
+Compatibility impact: additive within RMS 0.1. Existing manifests, packages, examples, `rms init` invocations, `rms add-module` invocations, and `rms add-capability` invocations remain compatible. Strict production audit is intentionally stronger and may now fail projects that lack git source provenance or source-pinned evidence.
+
+Known limitations:
+
+- RMS 0.1 remains a pilot draft, not a 1.0 compatibility promise.
+- Production pilot use requires project CI, source-pinned evidence, and human review for domain, security, operational, and product risk.
+- Optional agent plugins remain convenience packaging; project-local RMS guidance and the `rms` CLI remain sufficient.
+
+- Added `PRODUCTION.md` with the production-pilot RMS operating gate, evidence provenance rules, agent bootstrap flow, and release decision table.
+- Added `templates/ci/github-actions-rms-project.yml` as a downstream RMS project CI template.
+- Added `rms audit --root <path> --strict` as the production-readiness gate for RMS projects.
+- Added strict audit source-provenance checks so production audit fails when the audit root has no resolvable source revision.
+- Added local trace bundle first-bad-transition metadata support in `rms trace diagnose`.
+- Added `rms add-capability` recursive capability scaffolding for composite parent plus domain and boundary children.
+- Added semantic inner-structure scaffolding for domain-named machines, ADTs, message envelopes, transition outputs, transition records, replay bundles, and first-bad-transition evidence.
+- Added Codex and Claude project-local agent bootstrap and sync support.
 - Added `rms --version` for quick installed CLI version checks.
 - Added `rms add-module --binding executable` for opaque command-backed modules, with generated build/smoke scripts, boundary evidence, validation, and release scaffold coverage.
 - Added empty profile sections to `rms add-module` output when Stateful, Distributed, Workflow, or Boundary profiles are requested, so generated manifests validate without inventing module-specific semantics.

@@ -336,6 +336,8 @@ rms verify-package dist/rust-example.rms
 
 Start with one boundary. Do not model every folder. Split when pure invariants, external effects, ownership, replaceability, or evidence needs point to different honest boundaries.
 
+For production-intended projects, use `PRODUCTION.md` as the operating runbook. It defines the required project gate, evidence provenance rules, agent bootstrap flow, and downstream CI template.
+
 1. Treat the repository as a system module.
 2. Use `rms design --root . --task "<task>"` when module boundaries or semantic shapes are unclear.
 3. Identify one domain boundary with real ownership, invariants, or replaceability pressure.
@@ -390,6 +392,7 @@ For any other coding agent, provide a context packet containing the system summa
 | `MANIFEST.md` | Manifest model and field reference. |
 | `TOOLING.md` | Tooling, packaging, composition, and conformance model. |
 | `QUICKSTART.md` | First 10 minutes with the CLI. |
+| `PRODUCTION.md` | Production-pilot operating guide, strict audit gate, and CI template reference. |
 | `DOGFOOD.md` | Walkthrough using the RMS CLI module itself. |
 | `RELEASE.md` | Release process, artifact rules, and done criteria. |
 | `GLOSSARY.md` | Canonical terminology. |
@@ -411,6 +414,8 @@ rms release check --root .
 It runs release metadata checks, RMS CLI tests, canonical artifact validation, `rms-cli` implementation verification, example checks, package creation and verification smokes, release-binary smoke, clean-room PATH install smoke, clean-room recursive dogfood, Cargo packaging, and Codex plugin skill sync. It does not invoke optional AI providers.
 
 Use `rms audit --root <project> --strict` before claiming a project is production-ready RMS software. The release gate remains the repository publication gate; strict audit is the project-readiness gate.
+
+For downstream project CI, copy `templates/ci/github-actions-rms-project.yml` and pin `RMS_VERSION` to the reviewed RMS release tag used by the project.
 
 The release process, tag rules, expected artifacts, and done criteria live in `RELEASE.md`.
 

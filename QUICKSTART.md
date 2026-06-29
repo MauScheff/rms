@@ -156,6 +156,21 @@ rms release check --root .
 
 The gate builds and smoke-tests the release-mode `rms` binary, copies it into a temporary PATH install for a clean-room smoke, validates canonical artifacts, verifies the `rms-cli` implementation binding, checks examples, packages modules, checks Cargo packaging, and verifies packaged Codex skills. It does not invoke optional AI providers.
 
+## Production Pilot Gate
+
+For a production-intended project, continue from quickstart to `PRODUCTION.md`.
+
+At minimum, commit the project and run:
+
+```bash
+rms validate --root .
+rms compose --root .
+rms gate --root .
+rms audit --root . --strict
+```
+
+Strict audit is intentionally stronger than local validation: it fails unknown source revision, unpinned evidence, scaffold evidence, missing trace bundles, and other production-readiness blockers. Use `templates/ci/github-actions-rms-project.yml` as the starting CI gate for downstream projects.
+
 ## Done
 
 The quickstart has succeeded when:

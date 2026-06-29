@@ -10,6 +10,7 @@
 | `MANIFEST.md` | Manifest semantics and examples | Yes where it restates the spec |
 | `GLOSSARY.md` | Canonical terminology | Yes for RMS terms |
 | `TOOLING.md` | Tooling, composition, packaging, and conformance guidance | Partly; commands are recommended |
+| `PRODUCTION.md` | Production-pilot operating gate, evidence provenance rules, agent bootstrap flow, and downstream CI guidance | No; operational guidance |
 | `SECURITY.md` | Agent, plugin, credential, and supply-chain trust model | No; requirements restated from the spec remain normative |
 | `LICENSE` | Project license | Yes for distribution |
 | `CONTRIBUTING.md` | Contribution and scope discipline | No |

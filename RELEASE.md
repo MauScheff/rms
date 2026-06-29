@@ -40,6 +40,21 @@ The gate runs release metadata checks, formatting, Rust tests, RMS validation, R
 
 Use `--skip-cargo-package` only for offline local checks where crates.io index access is unavailable.
 
+## Production Project Gate
+
+`rms release check` is the publication gate for this RMS repository. It is not the release gate for every downstream RMS project.
+
+For production-intended projects, use `PRODUCTION.md` and require:
+
+```bash
+rms validate --root .
+rms compose --root .
+rms gate --root .
+rms audit --root . --strict
+```
+
+The downstream CI template is `templates/ci/github-actions-rms-project.yml`. It installs a pinned RMS tag, checks out full git history for provenance, and runs the production-pilot RMS gate.
+
 ## Tag Release
 
 1. Update versions in the Cargo package, `rms-cli` module manifest, and Codex plugin manifest.

@@ -7,5 +7,6 @@ Use these templates only where they improve discovery:
 - `INTENT.md` for a think-before-code record that captures human intent, accepted answers, candidate contracts, laws, and proof lanes before implementation.
 - `GLOSSARY_ENTRY.md` for a precise domain term.
 - `DECISION.md` for a consequential decision that needs durable rationale.
+- `ci/github-actions-rms-project.yml` for a production-pilot RMS project CI gate.
 
 Do not duplicate detailed contracts or manifests in prose. Link to the canonical artifact.

@@ -65,7 +65,7 @@ jobs:
           archive="rms-${GITHUB_REF_NAME}-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz"
           mkdir -p dist/stage
           cp target/release/rms dist/stage/rms
-          cp README.md LICENSE RELEASE.md dist/stage/
+          cp README.md LICENSE RELEASE.md PRODUCTION.md dist/stage/
           tar -C dist/stage -czf "dist/${archive}" .
           (cd dist && shasum -a 256 "${archive}" > "${archive}.sha256")
       - name: Archive binary
@@ -75,7 +75,7 @@ jobs:
           $archive = "rms-$env:GITHUB_REF_NAME-$env:RUNNER_OS-$env:RUNNER_ARCH.zip"
           New-Item -ItemType Directory -Force dist/stage | Out-Null
           Copy-Item target/release/rms.exe dist/stage/rms.exe
-          Copy-Item README.md,LICENSE,RELEASE.md dist/stage/
+          Copy-Item README.md,LICENSE,RELEASE.md,PRODUCTION.md dist/stage/
           Compress-Archive -Path dist/stage/* -DestinationPath "dist/$archive"
           $hash = Get-FileHash "dist/$archive" -Algorithm SHA256
           "$($hash.Hash.ToLower())  $archive" | Out-File -Encoding ascii "dist/$archive.sha256"
