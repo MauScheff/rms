@@ -63,7 +63,7 @@ Before writing implementation code, make the requested behavior concrete enough 
 
 ## Verification
 
-Use the repository-native commands declared by the implementation binding or project tooling. Prefer `rms review <module>`, `rms validate --root .`, `rms compose --root .`, `rms structure <implementation.yaml>`, `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, `rms trace diagnose <trace-bundle>`, `rms check-compat`, `rms verify <implementation.yaml|composite-module.yaml>`, and `rms conformance` where applicable. Before release or sharing generated integrations, run `rms release check --root .`.
+Use the repository-native commands declared by the implementation binding or project tooling. Prefer `rms review <module>`, `rms validate --root .`, `rms compose --root .`, `rms structure <implementation.yaml>`, `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, `rms trace diagnose <trace-bundle>`, `rms check-compat`, `rms verify <implementation.yaml|composite-module.yaml>`, `rms conformance`, and `rms audit --root .` where applicable. Before release or sharing generated integrations, run `rms release check --root .`.
 
 Before completion, verify as applicable:
 
@@ -90,5 +90,6 @@ A change is complete when:
 7. operational recovery is documented when external truth can diverge;
 8. conformance evidence identifies the source revision and tools used.
 9. `rms validate --root .` has no `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` warnings for modules claimed as implemented.
+10. `rms audit --root . --strict` passes before claiming production-ready RMS software.
 
 Use the `verify-module` skill before finalizing a substantial change.

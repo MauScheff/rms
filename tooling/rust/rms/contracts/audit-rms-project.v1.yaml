@@ -1,0 +1,22 @@
+spec: rms/contract/v0.1
+name: audit-rms-project
+version: 1
+kind: command
+meaning: Audit an RMS project for production-readiness blockers derived from canonical artifacts, implementation bindings, trace evidence, and local provenance.
+preconditions:
+  - id: readable-project-root
+    statement: The requested root is readable by the process.
+postconditions:
+  - id: report-derived-from-artifacts
+    statement: The report identifies validation, composition, structure, trace, verification-target, compatibility, and provenance findings derived from RMS artifacts and local evidence.
+  - id: strict-mode-promotes-blockers
+    statement: In strict mode, production-readiness blockers such as placeholder evidence, unpinned evidence, semantic-shape-only proof, unchecked numeric arithmetic, private-role imports, missing trace bundles, and missing verification commands are reported as failures.
+  - id: provider-independent
+    statement: The audit command does not invoke optional AI providers or mutate project artifacts.
+failure_categories:
+  - id: audit-failed
+    statement: One or more production-readiness checks failed.
+  - id: unreadable-artifact
+    statement: A referenced RMS artifact or evidence file could not be read or parsed.
+compatibility:
+  policy: backward-compatible-within-major

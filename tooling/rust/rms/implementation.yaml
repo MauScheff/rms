@@ -519,6 +519,24 @@ semantic_functions:
     evidence:
       contracts:
         - verification/contracts/gate_rms_change.md
+  - id: audit-rms-project-command
+    symbol: run_audit
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/audit-rms-project.v1.yaml
+      invariants:
+        - canonical-artifacts-remain-authoritative
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - audit reports are derived from validation diagnostics, composition findings, implementation structure reports, trace bundles, verification declarations, compatibility evidence, and RMS run provenance
+        - strict mode promotes production-readiness blockers to failures without invoking optional AI providers or mutating project artifacts
+        - audit reports list verification targets but leave native execution to `rms verify`, `rms gate`, or release checks
+    evidence:
+      contracts:
+        - verification/contracts/audit_rms_project.md
   - id: build-context-packet-command
     symbol: print_context_packet
     kind: projector

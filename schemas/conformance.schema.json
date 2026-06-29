@@ -73,6 +73,9 @@
         "const": "core"
       }
     },
+    "strict": {
+      "type": "boolean"
+    },
     "validator": {
       "type": "object",
       "required": [
@@ -122,6 +125,11 @@
               "profiles",
               "compatibility",
               "composition",
+              "structure",
+              "traces",
+              "verification",
+              "provenance",
+              "production-readiness",
               "operations",
               "security",
               "other"
@@ -131,6 +139,7 @@
             "enum": [
               "pass",
               "fail",
+              "review-required",
               "skipped",
               "not-applicable"
             ]

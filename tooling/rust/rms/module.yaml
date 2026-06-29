@@ -27,6 +27,7 @@ owns:
     - RMS advisory intent capture
     - RMS git impact report
     - RMS gate report
+    - RMS audit report
     - RMS advisory contract evolution
     - RMS advisory evidence plan
     - RMS workbench run record
@@ -43,6 +44,7 @@ owns:
     - generated conformance reports
     - generated git impact reports
     - generated gate reports
+    - generated audit reports
     - generated workbench run records
     - generated advisory scaffold plans
     - generated advisory intent-capture prompts
@@ -70,6 +72,7 @@ owns:
     - workbench-config-resolution
     - workbench-config-initialization
     - release-readiness-result
+    - production-readiness-audit-result
     - module-atlas-shape
     - implementation-inner-structure-result
     - local-trace-diagnostic-result
@@ -100,6 +103,8 @@ provides:
       contract: contracts/analyze-git-impact.v1.yaml
     - name: gate-rms-change
       contract: contracts/gate-rms-change.v1.yaml
+    - name: audit-rms-project
+      contract: contracts/audit-rms-project.v1.yaml
     - name: refactor-module-workbench
       contract: contracts/refactor-module-workbench.v1.yaml
     - name: implement-module-workbench

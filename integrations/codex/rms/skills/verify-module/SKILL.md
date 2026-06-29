@@ -8,7 +8,7 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
 1. Run `rms diagnose` when starting from an unfamiliar checkout.
 2. Read the target manifest and implementation binding.
 3. Run `rms validate --root <root>` or validate the explicit target manifests.
-4. Run `rms review <module>` when verifying an active diff. Run `rms verify <implementation.yaml>` when the implementation binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups.
+4. Run `rms review <module>` when verifying an active diff. Run `rms verify <implementation.yaml>` when the implementation binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups. Run `rms audit --root <root> --strict` before claiming production-ready RMS software.
 5. Confirm manifest validity and referenced-file existence.
 6. Check ownership and dependency boundaries:
    - no undeclared imports or calls;
@@ -37,4 +37,4 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - Boundary: validation, trust, limits, compatibility.
 11. Check public compatibility against the previous accepted version with `rms check-compat` when manifests changed.
 12. Confirm manifests, glossary, contracts, and operational docs remain accurate.
-13. Produce an evidence summary with pass, fail, skipped, and not-applicable items. For stateful or workflow behavior, name whether transition records, golden timeline tests, replay bundles, `rms trace` checks, and first-bad-transition diagnostics were checked. Do not report success without identifying the checks actually run, and do not treat implemented modules as complete while `rms validate --root <root>` reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` for those modules.
+13. Produce an evidence summary with pass, fail, skipped, and not-applicable items. For stateful or workflow behavior, name whether transition records, golden timeline tests, replay bundles, `rms trace` checks, first-bad-transition diagnostics, and strict audit were checked. Do not report success without identifying the checks actually run, and do not treat implemented modules as complete while `rms validate --root <root>` reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` for those modules.

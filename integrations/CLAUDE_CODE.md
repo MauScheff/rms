@@ -23,7 +23,7 @@ Claude Code skills follow the open Agent Skills standard, with Claude-specific e
 .claude/skills/<skill-name>/SKILL.md
 ```
 
-The canonical source should remain the project-level `skills/` directory. Skills should call `rms diagnose`, `rms explain`, `rms plan`, `rms implement`, `rms evolve-contract`, `rms evidence`, `rms review`, `rms prompt`, `rms context`, `rms validate`, and `rms verify` rather than embedding a second RMS workflow. Use `rms config init` to create local provider defaults when appropriate. Use `rms diagnose --json` when an agent needs structured readiness. Use CLI run records for durable agent evidence; a Claude provider adapter can be added without changing RMS semantics. Review and pin executable skill content before installation. Run `rms release check --root .` before sharing release artifacts or generated integrations.
+The canonical source should remain the project-level `skills/` directory. Skills should call `rms diagnose`, `rms explain`, `rms plan`, `rms implement`, `rms evolve-contract`, `rms evidence`, `rms review`, `rms prompt`, `rms context`, `rms validate`, `rms compose`, `rms structure`, `rms trace`, `rms verify`, `rms gate`, and `rms audit` rather than embedding a second RMS workflow. Use `rms config init` to create local provider defaults when appropriate. Use `rms diagnose --json` when an agent needs structured readiness and `rms audit --root . --strict` before claiming production-ready RMS software. Use CLI run records for durable agent evidence; a Claude provider adapter can be added without changing RMS semantics. Review and pin executable skill content before installation. Run `rms release check --root .` before sharing release artifacts or generated integrations.
 
 ## Plugins
 

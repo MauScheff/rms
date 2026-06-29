@@ -742,9 +742,28 @@ enum Commands {
         #[arg(long)]
         implementation: Option<PathBuf>,
 
+        /// Treat production-readiness warnings as failing conformance checks.
+        #[arg(long)]
+        strict: bool,
+
         /// Optional output file. Prints to stdout when omitted.
         #[arg(long)]
         output: Option<PathBuf>,
+    },
+
+    /// Audit an RMS project for production-readiness blockers.
+    Audit {
+        /// Root directory containing RMS system, context map, and module manifests.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Treat production-readiness warnings as failures.
+        #[arg(long)]
+        strict: bool,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Compare two module manifests and classify compatibility impact.
@@ -949,6 +968,25 @@ struct Diagnostic {
     check: String,
     path: String,
     message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AuditReport {
+    result: String,
+    root: String,
+    strict: bool,
+    source_revision: String,
+    checks: Vec<AuditCheck>,
+    verification_targets: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AuditCheck {
+    id: String,
+    category: String,
+    result: String,
+    evidence: String,
+    note: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -4205,9 +4243,10 @@ fn main() -> Result<()> {
         Commands::Conformance {
             module,
             implementation,
+            strict,
             output,
         } => {
-            let report = build_conformance_report(&module, implementation.as_deref())?;
+            let report = build_conformance_report(&module, implementation.as_deref(), strict)?;
             let rendered = serde_json::to_string_pretty(&report)?;
             if let Some(path) = output {
                 fs::write(path, rendered)?;
@@ -4216,6 +4255,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Commands::Audit { root, strict, json } => run_audit(&root, strict, json),
         Commands::CheckCompat { old, new, json } => run_check_compat(&old, &new, json),
         Commands::Compose { root, json } => run_compose(&root, json),
         Commands::Verify { target, dry_run } => run_verify(&target, dry_run),
@@ -4477,6 +4517,10 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
             format!("Use `rms validate --root {}` before completion.", root.display()),
             format!(
                 "Use `rms gate --root {}` to run git-impact-selected RMS checks.",
+                root.display()
+            ),
+            format!(
+                "Use `rms audit --root {}` and `--strict` before claiming production-ready RMS software.",
                 root.display()
             ),
             "Use `rms structure <implementation.yaml>` to inspect declared machine, role, and evidence structure.".to_string(),
@@ -6932,6 +6976,10 @@ fn append_evidence_guidance_prompt(
     )?;
     writeln!(
         out,
+        "- `rms audit --root <root> --strict` should pass before claiming production-ready RMS software."
+    )?;
+    writeln!(
+        out,
         "- Every active evidence file should name the promise proved, positive and negative cases when applicable, the command/tool used, and the source revision or working-tree status."
     )?;
     writeln!(
@@ -9329,6 +9377,7 @@ fn validate_inner_structure(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
         inspect_domain_transition_sources(manifest, diagnostics);
     }
     inspect_numeric_safety_sources(manifest, diagnostics, shape);
+    inspect_cross_module_private_import_sources(manifest, diagnostics);
 }
 
 fn validate_traceable_machine_structure(
@@ -9906,6 +9955,95 @@ fn inspect_numeric_safety_sources(
             );
         }
     }
+}
+
+fn inspect_cross_module_private_import_sources(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let mut references = Vec::new();
+    for role in ["adapter", "parser", "transition", "representation"] {
+        for reference in structure_role_paths(manifest, role) {
+            if !references.contains(&reference) {
+                references.push(reference);
+            }
+        }
+    }
+    if references.is_empty() {
+        if let Some(public_entrypoint) = get_str(&manifest.value, &["source", "public_entrypoint"])
+        {
+            references.push(public_entrypoint.to_string());
+        }
+    }
+
+    for reference in references {
+        let path = base.join(&reference);
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some(line) = first_cross_module_private_import_line(&source, &path) {
+            push_unique_warning(
+                diagnostics,
+                "structure.cross-module-private-import",
+                &manifest.path,
+                format!(
+                    "role `{reference}` appears to import another module's private representation or transition internals near line {line}; call declared public entrypoints or contract-shaped commands instead"
+                ),
+            );
+        }
+    }
+}
+
+fn first_cross_module_private_import_line(source: &str, path: &Path) -> Option<usize> {
+    source
+        .lines()
+        .enumerate()
+        .find_map(|(index, line)| cross_module_private_import_line(line, path).then_some(index + 1))
+}
+
+fn cross_module_private_import_line(line: &str, path: &Path) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.is_empty() {
+        return false;
+    }
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("");
+    let is_js_like = matches!(extension, "js" | "mjs" | "cjs" | "ts" | "tsx");
+    let is_rust_or_swift_like = matches!(extension, "rs" | "swift");
+    let code = mask_quoted_segments(line);
+    let code_lower = code.to_ascii_lowercase();
+
+    let rust_or_swift_private_role = is_rust_or_swift_like
+        && ["::transition::", "::representation::"]
+            .iter()
+            .any(|marker| code_lower.contains(marker))
+        && ![
+            "crate::transition",
+            "crate::representation",
+            "self::transition",
+            "self::representation",
+            "super::transition",
+            "super::representation",
+        ]
+        .iter()
+        .any(|marker| code_lower.contains(marker));
+    if rust_or_swift_private_role {
+        return true;
+    }
+
+    let line_lower = line.to_ascii_lowercase();
+    is_js_like
+        && (line_lower.contains(" from ")
+            || line_lower.trim_start().starts_with("import ")
+            || line_lower.contains("require("))
+        && line_lower.contains("../")
+        && (line_lower.contains("transition.")
+            || line_lower.contains("representation.")
+            || line_lower.contains("/transition")
+            || line_lower.contains("/representation"))
 }
 
 fn numeric_safety_expected_for_shape(shape: &str) -> bool {
@@ -16079,7 +16217,11 @@ fn html_script_json(value: &str) -> String {
 
 const ATLAS_HTML_TEMPLATE: &str = include_str!("atlas_template.html");
 
-fn build_conformance_report(module: &Path, implementation: Option<&Path>) -> Result<JsonValue> {
+fn build_conformance_report(
+    module: &Path,
+    implementation: Option<&Path>,
+    strict: bool,
+) -> Result<JsonValue> {
     let manifest = load_manifest(module)?;
     let mut diagnostics = Vec::new();
     validate_loaded_manifest(&manifest, &mut diagnostics);
@@ -16115,6 +16257,9 @@ fn build_conformance_report(module: &Path, implementation: Option<&Path>) -> Res
     } else {
         append_module_shape_conformance_checks(module, &manifest, &mut checks);
     }
+    if strict {
+        append_strict_conformance_checks(module, implementation, &mut checks);
+    }
 
     let result = if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         "fail"
@@ -16123,7 +16268,10 @@ fn build_conformance_report(module: &Path, implementation: Option<&Path>) -> Res
         .any(|check| check.get("result").and_then(JsonValue::as_str) == Some("fail"))
     {
         "fail"
-    } else if (!is_composite && implementation.is_none())
+    } else if checks
+        .iter()
+        .any(|check| check.get("result").and_then(JsonValue::as_str) == Some("review-required"))
+        || (!is_composite && implementation.is_none())
         || has_empty_verification_category(&manifest.value)
     {
         "partial"
@@ -16143,6 +16291,7 @@ fn build_conformance_report(module: &Path, implementation: Option<&Path>) -> Res
                 .unwrap_or_else(|| "unknown".to_string()),
         },
         "profiles": get_string_array(&manifest.value, &["profiles"]),
+        "strict": strict,
         "validator": {
             "name": VALIDATOR_NAME,
             "version": VALIDATOR_VERSION,
@@ -16159,6 +16308,556 @@ fn build_conformance_report(module: &Path, implementation: Option<&Path>) -> Res
             checks
         },
     }))
+}
+
+fn append_strict_conformance_checks(
+    module: &Path,
+    implementation: Option<&Path>,
+    checks: &mut Vec<JsonValue>,
+) {
+    let root = rms_root_for(module);
+    let Ok(report) = build_audit_report(&root, true) else {
+        checks.push(json!({
+            "id": "audit.strict",
+            "category": "production-readiness",
+            "result": "fail",
+            "evidence": root.display().to_string(),
+            "note": "strict audit could not be built",
+        }));
+        return;
+    };
+
+    for check in report.checks {
+        if check.result == "fail" || check.result == "review-required" {
+            let applies_to_requested_implementation = implementation
+                .map(|implementation| check.evidence == implementation.display().to_string())
+                .unwrap_or(false);
+            let applies_to_requested_module = check.evidence == module.display().to_string();
+            let applies_to_root = check.evidence == root.display().to_string();
+            if applies_to_requested_implementation || applies_to_requested_module || applies_to_root
+            {
+                checks.push(json!({
+                    "id": check.id,
+                    "category": check.category,
+                    "result": check.result,
+                    "evidence": check.evidence,
+                    "note": check.note,
+                }));
+            }
+        }
+    }
+}
+
+fn run_audit(root: &Path, strict: bool, json_output: bool) -> Result<()> {
+    let report = build_audit_report(root, strict)?;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_audit_report(&report);
+    }
+
+    if report.result == "fail" {
+        bail!("RMS audit failed");
+    }
+    Ok(())
+}
+
+fn build_audit_report(root: &Path, strict: bool) -> Result<AuditReport> {
+    let root = normalize_empty_path(root.to_path_buf());
+    let mut checks = Vec::new();
+    let mut verification_targets = BTreeSet::new();
+
+    append_validation_audit_checks(&root, strict, &mut checks)?;
+    append_composition_audit_checks(&root, strict, &mut checks);
+    append_module_audit_checks(&root, strict, &mut checks, &mut verification_targets);
+    append_implementation_audit_checks(&root, strict, &mut checks, &mut verification_targets)?;
+    append_blind_provenance_audit_checks(&root, strict, &mut checks);
+    append_replacement_audit_checks(&root, strict, &mut checks);
+
+    let result = audit_result(&checks);
+    Ok(AuditReport {
+        result,
+        root: root.display().to_string(),
+        strict,
+        source_revision: source_revision(&root).unwrap_or_else(|| "unknown".to_string()),
+        checks,
+        verification_targets: verification_targets.into_iter().collect(),
+    })
+}
+
+fn append_validation_audit_checks(
+    root: &Path,
+    strict: bool,
+    checks: &mut Vec<AuditCheck>,
+) -> Result<()> {
+    let diagnostics =
+        collect_validation_diagnostics(root, vec![], vec![], vec![], vec![], vec![], vec![])?;
+    if diagnostics.is_empty() {
+        checks.push(audit_check(
+            "validate.root",
+            "validation",
+            "pass",
+            root,
+            "RMS validation produced no diagnostics",
+        ));
+        return Ok(());
+    }
+
+    for diagnostic in diagnostics {
+        checks.push(audit_check_from_diagnostic(&diagnostic, strict));
+    }
+    Ok(())
+}
+
+fn append_composition_audit_checks(root: &Path, _strict: bool, checks: &mut Vec<AuditCheck>) {
+    match compose_system(root) {
+        Ok(report) => {
+            checks.push(audit_check(
+                "compose.root",
+                "composition",
+                match report.result {
+                    ComposeResult::Pass => "pass",
+                    ComposeResult::ReviewRequired => "review-required",
+                    ComposeResult::Fail => "fail",
+                },
+                root,
+                format!(
+                    "composition result: {}",
+                    compose_result_label(report.result)
+                ),
+            ));
+            for finding in report.findings {
+                if finding.status == ComposeStatus::ReviewRequired
+                    || finding.status == ComposeStatus::Unresolved
+                    || finding.status == ComposeStatus::Incompatible
+                {
+                    checks.push(audit_check(
+                        finding.check,
+                        "composition",
+                        match finding.status {
+                            ComposeStatus::Satisfied | ComposeStatus::NotApplicable => "pass",
+                            ComposeStatus::ReviewRequired => "review-required",
+                            ComposeStatus::Unresolved | ComposeStatus::Incompatible => "fail",
+                        },
+                        root,
+                        finding.message,
+                    ));
+                }
+            }
+        }
+        Err(error) => checks.push(audit_check(
+            "compose.root",
+            "composition",
+            "fail",
+            root,
+            format!("composition could not be checked: {error}"),
+        )),
+    }
+}
+
+fn append_module_audit_checks(
+    root: &Path,
+    _strict: bool,
+    checks: &mut Vec<AuditCheck>,
+    verification_targets: &mut BTreeSet<String>,
+) {
+    match load_module_index(root) {
+        Ok(modules) if modules.is_empty() => checks.push(audit_check(
+            "modules.discovered",
+            "manifest",
+            "fail",
+            root,
+            "no RMS module manifests were discovered",
+        )),
+        Ok(modules) => {
+            checks.push(audit_check(
+                "modules.discovered",
+                "manifest",
+                "pass",
+                root,
+                format!("{} module(s) discovered", modules.len()),
+            ));
+            for module in modules.values() {
+                if is_composite_module(&module.value) {
+                    verification_targets.insert(module.path.display().to_string());
+                    if ensure_composite_scenario_evidence(
+                        &LoadedManifest {
+                            path: module.path.clone(),
+                            value: module.value.clone(),
+                        },
+                        &module.path,
+                    )
+                    .is_err()
+                    {
+                        checks.push(audit_check(
+                            "audit.composite-scenario-evidence",
+                            "evidence",
+                            "fail",
+                            &module.path,
+                            format!(
+                                "composite module `{}` must declare concrete parent scenario evidence",
+                                module.name
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        Err(error) => checks.push(audit_check(
+            "modules.discovered",
+            "manifest",
+            "fail",
+            root,
+            format!("module index could not be loaded: {error}"),
+        )),
+    }
+}
+
+fn append_implementation_audit_checks(
+    root: &Path,
+    strict: bool,
+    checks: &mut Vec<AuditCheck>,
+    verification_targets: &mut BTreeSet<String>,
+) -> Result<()> {
+    let mut implementation_paths = Vec::new();
+    for target in discover_targets(root, vec![], vec![], vec![], vec![], vec![], vec![])? {
+        let Ok(manifest) = load_manifest(&target) else {
+            continue;
+        };
+        if get_str(&manifest.value, &["spec"]) == Some("rms/implementation/v0.1") {
+            implementation_paths.push(target);
+        }
+    }
+
+    if implementation_paths.is_empty() {
+        checks.push(audit_check(
+            "implementations.discovered",
+            "implementation",
+            "review-required",
+            root,
+            "no RMS implementation bindings were discovered",
+        ));
+        return Ok(());
+    }
+
+    for implementation in implementation_paths {
+        match build_structure_report(&implementation) {
+            Ok(report) => {
+                checks.push(audit_check(
+                    format!("structure.{}", report.module),
+                    "structure",
+                    audit_structure_result(&report, strict),
+                    Path::new(&report.implementation),
+                    format!(
+                        "implementation `{}` structure result: {}",
+                        report.module, report.result
+                    ),
+                ));
+                for diagnostic in &report.diagnostics {
+                    checks.push(audit_check_from_diagnostic(diagnostic, strict));
+                }
+            }
+            Err(error) => checks.push(audit_check(
+                "structure.report",
+                "structure",
+                "fail",
+                &implementation,
+                format!("structure report could not be built: {error}"),
+            )),
+        }
+
+        let manifest = load_manifest(&implementation)?;
+        if get_str(&manifest.value, &["commands", "verify"]).is_some() {
+            verification_targets.insert(implementation.display().to_string());
+            checks.push(audit_check(
+                "implementation.verify-command",
+                "verification",
+                "pass",
+                &implementation,
+                "implementation declares commands.verify",
+            ));
+        } else {
+            checks.push(audit_check(
+                "implementation.verify-command",
+                "verification",
+                "fail",
+                &implementation,
+                "implementation must declare commands.verify for production readiness",
+            ));
+        }
+
+        append_trace_audit_checks(&manifest, strict, checks);
+    }
+
+    Ok(())
+}
+
+fn append_trace_audit_checks(
+    manifest: &LoadedManifest,
+    strict: bool,
+    checks: &mut Vec<AuditCheck>,
+) {
+    let shape = get_str(&manifest.value, &["architecture", "shape"]).unwrap_or("");
+    let root = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let trace_bundles = implementation_trace_bundle_paths(manifest, root);
+    if traceable_structure_expected_for_shape(shape) && replay_bundle_expected_for_shape(shape) {
+        checks.push(audit_check(
+            "trace.replay-bundle-declared",
+            "traces",
+            if trace_bundles.is_empty() {
+                "fail"
+            } else {
+                "pass"
+            },
+            &manifest.path,
+            if trace_bundles.is_empty() {
+                format!("`{shape}` implementation has no declared local trace bundle")
+            } else {
+                format!("{} trace bundle(s) discovered", trace_bundles.len())
+            },
+        ));
+    }
+
+    for bundle in trace_bundles {
+        match build_trace_report(&bundle) {
+            Ok(report) => {
+                let result = if trace_has_errors(&report) {
+                    "fail"
+                } else if report
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.severity == Severity::Warning)
+                {
+                    if strict {
+                        "fail"
+                    } else {
+                        "review-required"
+                    }
+                } else {
+                    "pass"
+                };
+                checks.push(audit_check(
+                    "trace.bundle",
+                    "traces",
+                    result,
+                    &bundle,
+                    format!(
+                        "trace bundle `{}` result: {}",
+                        bundle.display(),
+                        report.result
+                    ),
+                ));
+            }
+            Err(error) => checks.push(audit_check(
+                "trace.bundle",
+                "traces",
+                "fail",
+                &bundle,
+                format!("trace bundle could not be checked: {error}"),
+            )),
+        }
+    }
+}
+
+fn append_blind_provenance_audit_checks(root: &Path, strict: bool, checks: &mut Vec<AuditCheck>) {
+    let claim_paths = [
+        root.join(".rms").join("blind-dogfood.yaml"),
+        root.join(".rms").join("claims").join("blind-dogfood.yaml"),
+    ];
+    if !claim_paths.iter().any(|path| path.exists()) {
+        checks.push(audit_check(
+            "dogfood.provenance",
+            "provenance",
+            "not-applicable",
+            root,
+            "no blind-dogfood claim marker found",
+        ));
+        return;
+    }
+
+    let runs_dir = root.join(".rms").join("runs");
+    let has_run_record = runs_dir.is_dir()
+        && WalkDir::new(&runs_dir)
+            .max_depth(2)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry.file_type().is_file()
+                    && entry.file_name().to_str() == Some("request.yaml")
+                    && entry
+                        .path()
+                        .parent()
+                        .is_some_and(|parent| parent.join("prompt.md").exists())
+            });
+    checks.push(audit_check(
+        "dogfood.provenance",
+        "provenance",
+        if has_run_record {
+            "pass"
+        } else if strict {
+            "fail"
+        } else {
+            "review-required"
+        },
+        &runs_dir,
+        "blind dogfood claims require RMS run records with request and prompt evidence",
+    ));
+}
+
+fn append_replacement_audit_checks(root: &Path, strict: bool, checks: &mut Vec<AuditCheck>) {
+    let mut replacement_claim_found = false;
+    let mut compatibility_proof_found = false;
+    let verification_root = root.join("verification");
+    let search_root = if verification_root.exists() {
+        verification_root
+    } else {
+        root.to_path_buf()
+    };
+    for entry in WalkDir::new(&search_root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        if entry
+            .path()
+            .extension()
+            .and_then(|extension| extension.to_str())
+            != Some("md")
+        {
+            continue;
+        }
+        let Ok(source) = fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let lower = source.to_ascii_lowercase();
+        if lower.contains("replacement") || lower.contains("replace implementation") {
+            replacement_claim_found = true;
+        }
+        if lower.contains("rms check-compat") || lower.contains("compatibility: compatible") {
+            compatibility_proof_found = true;
+        }
+    }
+    if replacement_claim_found {
+        checks.push(audit_check(
+            "replacement.compatibility-proof",
+            "compatibility",
+            if compatibility_proof_found {
+                "pass"
+            } else if strict {
+                "fail"
+            } else {
+                "review-required"
+            },
+            root,
+            "replacement claims require compatibility proof such as `rms check-compat` evidence",
+        ));
+    }
+}
+
+fn audit_structure_result(report: &StructureReport, strict: bool) -> &'static str {
+    if report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        "fail"
+    } else if report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| audit_blocking_diagnostic(&diagnostic.check))
+    {
+        if strict {
+            "fail"
+        } else {
+            "review-required"
+        }
+    } else if report.result == "review-required" {
+        "review-required"
+    } else {
+        "pass"
+    }
+}
+
+fn audit_check_from_diagnostic(diagnostic: &Diagnostic, strict: bool) -> AuditCheck {
+    let result = match diagnostic.severity {
+        Severity::Error => "fail",
+        Severity::Warning if strict && audit_blocking_diagnostic(&diagnostic.check) => "fail",
+        Severity::Warning => "review-required",
+        Severity::Info => "pass",
+    };
+    AuditCheck {
+        id: diagnostic.check.clone(),
+        category: diagnostic_category(&diagnostic.check).to_string(),
+        result: result.to_string(),
+        evidence: diagnostic.path.clone(),
+        note: diagnostic.message.clone(),
+    }
+}
+
+fn audit_blocking_diagnostic(check: &str) -> bool {
+    check.starts_with("evidence.")
+        || matches!(
+            check,
+            "structure.unchecked-numeric-arithmetic"
+                | "structure.cross-module-private-import"
+                | "structure.replay-bundle-missing"
+                | "structure.transition-output-missing"
+                | "structure.message-envelope-missing"
+                | "structure.boundary-parser-missing"
+                | "structure.hidden-effect-in-domain"
+                | "structure.expected-failure-throws"
+                | "structure.projection-emits-command"
+                | "structure.hidden-choreography"
+        )
+        || check.starts_with("trace.")
+}
+
+fn audit_check(
+    id: impl Into<String>,
+    category: impl Into<String>,
+    result: impl Into<String>,
+    evidence: &Path,
+    note: impl Into<String>,
+) -> AuditCheck {
+    AuditCheck {
+        id: id.into(),
+        category: category.into(),
+        result: result.into(),
+        evidence: evidence.display().to_string(),
+        note: note.into(),
+    }
+}
+
+fn audit_result(checks: &[AuditCheck]) -> String {
+    if checks.iter().any(|check| check.result == "fail") {
+        "fail".to_string()
+    } else if checks.iter().any(|check| check.result == "review-required") {
+        "review-required".to_string()
+    } else {
+        "pass".to_string()
+    }
+}
+
+fn print_audit_report(report: &AuditReport) {
+    println!("RMS audit: {}", report.result);
+    println!("root: {}", report.root);
+    println!("strict: {}", report.strict);
+    println!("source revision: {}", report.source_revision);
+    if !report.verification_targets.is_empty() {
+        println!("verification targets:");
+        for target in &report.verification_targets {
+            println!("  - {target}");
+        }
+    }
+    println!("checks:");
+    for check in &report.checks {
+        println!(
+            "  {} [{}] {}: {}",
+            check.result, check.id, check.evidence, check.note
+        );
+    }
 }
 
 fn append_composite_conformance_checks(
@@ -16894,6 +17593,7 @@ fn package_module(
         implementation
             .as_ref()
             .map(|manifest| manifest.path.as_path()),
+        false,
     )?;
     let conformance_path = output.join("conformance-report.json");
     fs::write(
@@ -22079,6 +22779,7 @@ Run the smallest checks that prove the changed promise:
 - `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, or `rms trace diagnose <trace-bundle>` when local transition evidence exists.
 - `rms verify <implementation.yaml>` when the module has an implementation binding, or `rms verify <composite-module.yaml>` for composite rollups.
 - `rms gate --root .` when reviewing a working-tree change.
+- `rms audit --root . --strict` before claiming production-ready RMS software.
 
 For stateful or workflow behavior, include transition records, golden timeline tests, replay bundles, and first-bad-transition diagnostics when they apply.
 
@@ -22972,6 +23673,7 @@ import struct ExternalKit.Widget
         assert!(agents.contains("Do not use role-derived inner names"));
         assert!(agents.contains("rms structure <implementation.yaml>"));
         assert!(agents.contains("rms trace check <trace-bundle>"));
+        assert!(agents.contains("rms audit --root . --strict"));
         assert!(agents.contains("<Domain>Machine"));
         assert!(agents.contains("evidence.placeholder"));
         assert!(agents.contains("rms route <module.yaml> --task"));
@@ -23633,6 +24335,79 @@ architecture:
             "{:#?}",
             report.diagnostics
         );
+    }
+
+    #[test]
+    fn structure_report_flags_cross_module_private_imports() {
+        let root = unique_test_dir("structure-private-import");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/adapter.rs"),
+            "use payment_domain::transition::transition;\npub fn call() { let _ = transition; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: "private-import"
+binding: rust
+source:
+  root: .
+  public_entrypoint: src/adapter.rs
+commands:
+  build: cargo check
+  verify: cargo test
+toolchain:
+  cargo_manifest: Cargo.toml
+  package: private-import
+dependencies:
+  allowed_external_crates:
+    - payment_domain
+architecture:
+  shape: boundary-adapter
+  roles:
+    adapter:
+      - src/adapter.rs
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "structure.cross-module-private-import"));
+    }
+
+    #[test]
+    fn strict_audit_fails_scaffold_evidence() {
+        let root = unique_test_dir("strict-audit-scaffold");
+        run_add_module(
+            add_module_request(
+                &root,
+                "audit-example",
+                "Exercise strict production audit.",
+                "library",
+                &["core".to_string()],
+                Some(ScaffoldShape::DomainEngine),
+                Some("rust"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+
+        let strict = build_audit_report(&root, true).unwrap();
+        let relaxed = build_audit_report(&root, false).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(strict.result, "fail");
+        assert!(strict
+            .checks
+            .iter()
+            .any(|check| check.id == "evidence.placeholder" && check.result == "fail"));
+        assert_ne!(relaxed.result, "fail");
     }
 
     #[test]
@@ -25247,7 +26022,8 @@ verification:
         );
 
         let report = compose_system(&root).unwrap();
-        let conformance = build_conformance_report(&root.join("rules.module.yaml"), None).unwrap();
+        let conformance =
+            build_conformance_report(&root.join("rules.module.yaml"), None, false).unwrap();
 
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(report.result, ComposeResult::ReviewRequired);
@@ -25372,7 +26148,8 @@ verification:
         let root = unique_test_dir("conformance-composite-rollup");
         write_composite_verify_fixture(&root);
 
-        let report = build_conformance_report(&root.join("parent.module.yaml"), None).unwrap();
+        let report =
+            build_conformance_report(&root.join("parent.module.yaml"), None, false).unwrap();
 
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(report["result"], "pass");

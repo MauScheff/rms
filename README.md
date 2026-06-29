@@ -195,6 +195,15 @@ rms trace diagnose verification/traces/transition_trace.yaml
 
 Trace commands inspect JSON or YAML trace bundles with recorded transition records. They reconstruct timelines and identify the first structurally bad transition when the bundle contains enough local evidence; they do not route messages, dispatch effects, or require a runtime framework.
 
+Audit production-readiness blockers:
+
+```bash
+rms audit --root .
+rms audit --root . --strict
+```
+
+`rms audit` aggregates validation, composition, implementation structure, trace bundle, verification-target, compatibility, and provenance findings. Non-strict audit is a review surface. Strict audit treats production blockers such as placeholder evidence, unpinned evidence, unchecked numeric arithmetic, private-role imports, and missing trace bundles as failures.
+
 Check local RMS and optional AI-provider readiness:
 
 ```bash
@@ -361,7 +370,7 @@ For Codex:
 - Use `rms agent plugin sync --target codex` after upgrading RMS so Codex reloads the packaged plugin skills.
 - Use the plugin wrapper in `integrations/codex/rms` only when installable distribution is useful; it is optional convenience packaging, not a semantic dependency.
 - Package skills from canonical `skills/` for plugin releases.
-- Make the agent use the shared `rms` CLI: `diagnose`, `design`, `explain`, `route`, `plan`, `implement`, `evolve-contract`, `evidence`, `refactor`, `review`, `prompt`, `run`, `trace`, `config`, `context`, `validate`, `compose`, `check-compat`, `verify`, and `conformance`.
+- Make the agent use the shared `rms` CLI: `diagnose`, `design`, `explain`, `route`, `plan`, `implement`, `evolve-contract`, `evidence`, `refactor`, `review`, `prompt`, `run`, `trace`, `config`, `context`, `validate`, `compose`, `check-compat`, `verify`, `conformance`, and `audit`.
 - Use hooks only to call the shared `rms` CLI.
 
 For Claude Code:
@@ -400,6 +409,8 @@ rms release check --root .
 ```
 
 It runs release metadata checks, RMS CLI tests, canonical artifact validation, `rms-cli` implementation verification, example checks, package creation and verification smokes, release-binary smoke, clean-room PATH install smoke, clean-room recursive dogfood, Cargo packaging, and Codex plugin skill sync. It does not invoke optional AI providers.
+
+Use `rms audit --root <project> --strict` before claiming a project is production-ready RMS software. The release gate remains the repository publication gate; strict audit is the project-readiness gate.
 
 The release process, tag rules, expected artifacts, and done criteria live in `RELEASE.md`.
 

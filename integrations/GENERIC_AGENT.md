@@ -22,6 +22,12 @@ rms prompt <kind> <module> --task "<task>" --record
 rms run list
 rms run latest
 rms run inspect <run-id-or-path>
+rms validate --root <root>
+rms compose --root <root>
+rms verify <implementation.yaml|composite-module.yaml>
+rms gate --root <root>
+rms audit --root <root>
+rms audit --root <root> --strict
 rms release check --root <root>
 ```
 
@@ -37,7 +43,7 @@ Relevant decisions
 Verification commands
 ```
 
-The agent should follow the workflows in `skills/` and the portable rules in `AGENTS.md`, but the CLI is the preferred operating surface. Skills and prompts should not duplicate RMS rules when a CLI command can inspect, render a workbench prompt, or validate the canonical artifacts.
+The agent should follow the workflows in `skills/` and the portable rules in `AGENTS.md`, but the CLI is the preferred operating surface. Skills and prompts should not duplicate RMS rules when a CLI command can inspect, render a workbench prompt, validate canonical artifacts, verify declared implementations, or audit production readiness.
 
 When preserving an agent interaction matters, use the CLI run-record options rather than an agent-specific transcript format.
 

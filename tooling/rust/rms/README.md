@@ -62,16 +62,27 @@ rms explain --module examples/minimal/module.yaml "How does this module work?" -
 rms run list
 rms run latest
 rms run inspect <run-id>
+rms validate --root .
+rms compose --root .
+rms gate --root .
+rms audit --root .
+rms audit --root . --strict
 rms release check --root .
 rms context examples/minimal/module.yaml --task "change payment capture behavior"
 rms atlas examples/minimal/module.yaml --output dist/rms-atlas/minimal
-rms conformance examples/minimal/module.yaml --implementation examples/minimal/implementation.yaml
+rms conformance examples/minimal/module.yaml --implementation examples/minimal/implementation.yaml --strict
 ```
 
 Before publishing or sharing this CLI, run:
 
 ```bash
 rms release check --root .
+```
+
+Before claiming an RMS-generated project is production-ready, run:
+
+```bash
+rms audit --root <project> --strict
 ```
 
 The quickstart is in `../../../QUICKSTART.md`, the self-hosted walkthrough is in `../../../DOGFOOD.md`, and the release process is in `../../../RELEASE.md` from the repository root.

@@ -53,6 +53,7 @@ rms package <module>
 rms verify-package <package>
 rms graph [system|module]
 rms conformance [module]
+rms audit [system]
 ```
 
 A project may expose these through another CLI or build system. The semantic behavior should remain stable.
@@ -93,7 +94,8 @@ rms compose --root <path>
 rms check-compat <old-module.yaml> <new-module.yaml>
 rms package <module.yaml> [--output <directory>]
 rms verify-package <package-directory>
-rms conformance <module.yaml> [--implementation implementation.yaml]
+rms conformance <module.yaml> [--implementation implementation.yaml] [--strict]
+rms audit --root <path> [--strict] [--json]
 rms verify <implementation.yaml|composite-module.yaml>
 ```
 
@@ -136,6 +138,10 @@ The generic executable binding declares `binding: executable` in `implementation
 The first compatibility checker is manifest-level. It classifies public surface removals and contract path changes as breaking, additive public surface changes as compatible additive, and profile/effect/capability/policy changes as requiring operational review.
 
 The first composition checker is manifest-level. It checks required module presence, required capability providers, capability contract compatibility, context-map relationships when both sides are named contexts, externally satisfied capability effects, and direct module dependency cycles.
+
+### `audit`
+
+Aggregates project-readiness findings from validation, composition, implementation structure, trace bundles, verification declarations, compatibility evidence, and RMS run provenance. Non-strict audit is a review surface. `--strict` promotes production-readiness blockers such as scaffold evidence, unpinned evidence, unchecked numeric arithmetic, private role imports, missing trace bundles, and missing verification commands to failures. The command does not invoke optional AI providers or mutate project artifacts.
 
 ### `structure`
 
