@@ -24,6 +24,45 @@ architecture:
   shape: domain-engine
   public_modules:
     - widget
+  messages:
+    command_envelope:
+      - command_id
+      - target_machine
+      - correlation_id
+      - causation_id
+      - idempotency_key
+    event_envelope:
+      - event_id
+      - source_machine
+      - correlation_id
+      - causation_id
+      - sequence
+      - schema_version
+      - occurred_at
+    effect_envelope:
+      - effect_id
+      - requester
+      - correlation_id
+      - causation_id
+      - idempotency_key
+    effect_result_envelope:
+      - effect_id
+      - requester
+      - correlation_id
+      - causation_id
+      - status
+  transition:
+    output:
+      - next_state
+      - events
+      - commands
+      - effects
+      - reply
+  trace:
+    journal: verification/traces/transition_trace.yaml
+    timeline_projection: verification/traces/transition_trace.yaml
+    replay_bundle: verification/traces/transition_trace.yaml
+    first_bad_transition: source-provenance-from-transition-record
   machine:
     name: RustExampleMachine
     state: RustExampleState
@@ -41,8 +80,19 @@ architecture:
       - src/widget.rs
     transition:
       - src/lib.rs
+    message_envelope:
+      - src/widget.rs
+    transition_record:
+      - src/lib.rs
+    journal:
+      - verification/traces/transition_trace.yaml
+    timeline_projection:
+      - verification/traces/transition_trace.yaml
+    replay_bundle:
+      - verification/traces/transition_trace.yaml
     trace_evidence:
       - verification/scenarios/widget_acceptance
+      - verification/traces/transition_trace.yaml
 
 semantic_functions:
   - id: widget-constructor

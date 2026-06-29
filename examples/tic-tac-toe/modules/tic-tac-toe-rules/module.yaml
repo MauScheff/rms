@@ -66,13 +66,15 @@ compatibility:
 
 verification:
   laws:
-    - verification/laws
+    - verification/laws/transition_trace.md
   contracts:
     - verification/contracts
   scenarios:
     - verification/scenarios
   boundaries:
     - verification/boundaries
+  traces:
+    - verification/traces
 
 x-scaffold:
   shape: "domain-engine"

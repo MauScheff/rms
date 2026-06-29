@@ -71,13 +71,15 @@ compatibility:
 
 verification:
   laws:
-    - verification/laws
+    - verification/laws/boundary_parse.md
   contracts:
     - verification/contracts
   scenarios:
     - verification/scenarios
   boundaries:
     - verification/boundaries
+  traces:
+    - verification/traces
 
 x-scaffold:
   shape: "boundary-adapter"

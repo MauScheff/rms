@@ -24,6 +24,45 @@ architecture:
   public_modules:
     - representation
     - transition
+  messages:
+    command_envelope:
+      - command_id
+      - target_machine
+      - correlation_id
+      - causation_id
+      - idempotency_key
+    event_envelope:
+      - event_id
+      - source_machine
+      - correlation_id
+      - causation_id
+      - sequence
+      - schema_version
+      - occurred_at
+    effect_envelope:
+      - effect_id
+      - requester
+      - correlation_id
+      - causation_id
+      - idempotency_key
+    effect_result_envelope:
+      - effect_id
+      - requester
+      - correlation_id
+      - causation_id
+      - status
+  transition:
+    output:
+      - next_state
+      - events
+      - commands
+      - effects
+      - reply
+  trace:
+    journal: verification/traces/transition_trace.yaml
+    timeline_projection: verification/traces/transition_trace.yaml
+    replay_bundle: verification/traces/transition_trace.yaml
+    first_bad_transition: source-provenance-from-transition-record
   machine:
     name: TicTacToeMachine
     state: Game
@@ -43,8 +82,19 @@ architecture:
       - src/representation.rs
     transition:
       - src/transition.rs
+    message_envelope:
+      - src/representation.rs
+    transition_record:
+      - src/transition.rs
+    journal:
+      - verification/traces/transition_trace.yaml
+    timeline_projection:
+      - verification/traces/transition_trace.yaml
+    replay_bundle:
+      - verification/traces/transition_trace.yaml
     trace_evidence:
       - verification/laws/transition_trace.md
+      - verification/traces/transition_trace.yaml
   state_type: Game
   transition_function: transition
   representation:
@@ -85,6 +135,8 @@ semantic_functions:
         - verification/contracts/apply_move.md
       scenarios:
         - verification/scenarios/game_lifecycle.md
+      traces:
+        - verification/traces/transition_trace.yaml
   - id: trace-replay
     symbol: replay
     kind: interpreter
@@ -92,3 +144,5 @@ semantic_functions:
     evidence:
       laws:
         - verification/laws/transition_trace.md
+      traces:
+        - verification/traces/transition_trace.yaml

@@ -48,4 +48,5 @@ verification:
     - verification/scenarios
   boundaries:
     - verification/boundaries
-
+  traces:
+    - verification/traces

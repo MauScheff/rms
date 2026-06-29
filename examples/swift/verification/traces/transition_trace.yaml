@@ -1,0 +1,51 @@
+spec: rms/trace-bundle/v0.1
+machine: SwiftExampleMachine
+records:
+  - id: describe-swift-widget-accepted
+    state_before: Ready
+    input:
+      command_id: describe-swift-widget-1
+      target_machine: SwiftExampleMachine
+      correlation_id: swift-example-correlation-1
+      causation_id: user-request-1
+      idempotency_key: null
+      command:
+        tag: DescribeSwiftWidget
+        widget_name: example
+    output:
+      next_state: Ready
+      events: []
+      commands: []
+      effects: []
+      reply:
+        tag: DescribeSwiftWidgetReply
+        description: example
+    state_after: Ready
+    source:
+      file: Sources/RmsSwiftExample/RmsSwiftExample.swift
+      function: describeWidget
+      branch: accepted-widget
+  - id: swift-widget-constructor-rejected-empty-name
+    state_before: Ready
+    input:
+      command_id: construct-swift-widget-1
+      target_machine: SwiftExampleMachine
+      correlation_id: swift-example-correlation-2
+      causation_id: user-request-2
+      idempotency_key: null
+      command:
+        tag: ConstructSwiftWidget
+        name: ""
+    output:
+      next_state: Ready
+      events: []
+      commands: []
+      effects: []
+      reply:
+        tag: Rejected
+        reason: EmptySwiftWidgetName
+    state_after: Ready
+    source:
+      file: Sources/RmsSwiftExample/RmsSwiftExample.swift
+      function: SwiftWidget.init
+      branch: rejected-empty-name

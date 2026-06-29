@@ -27,19 +27,100 @@ architecture:
     - src/parser.mjs
     - src/ports.mjs
     - src/adapter.mjs
+  messages:
+    command_envelope:
+      - command_id
+      - target_machine
+      - correlation_id
+      - causation_id
+      - idempotency_key
+    event_envelope:
+      - event_id
+      - source_machine
+      - correlation_id
+      - causation_id
+      - sequence
+      - schema_version
+      - occurred_at
+    effect_envelope:
+      - effect_id
+      - requester
+      - correlation_id
+      - causation_id
+      - idempotency_key
+    effect_result_envelope:
+      - effect_id
+      - requester
+      - correlation_id
+      - causation_id
+      - status
+  transition:
+    output:
+      - next_state
+      - events
+      - commands
+      - effects
+      - reply
+  effects:
+    lifecycle:
+      - Pending
+      - Running
+      - Succeeded
+      - Failed
+      - RetryScheduled
+      - Abandoned
+  trace:
+    journal: verification/traces/boundary_parse.yaml
+    timeline_projection: verification/traces/boundary_parse.yaml
+    replay_bundle: verification/traces/boundary_parse.yaml
+    first_bad_transition: source-provenance-from-transition-record
+  machine:
+    name: TicTacToeCliBoundary
+    state: BoundaryState
+    commands:
+      - RawCliInput
+    events:
+      - ParsedMove
+    effects:
+      - InvokeRulesBridge
+    effect_results:
+      - RulesBridgeResult
+    replies:
+      - BoundaryResult
+    rejections:
+      - "malformed-input"
+      - "out-of-board"
+    transition_function: handleBoundaryInput
   roles:
     representation:
+      - src/representation.mjs
+    message_envelope:
       - src/representation.mjs
     parser:
       - src/parser.mjs
     adapter:
       - src/adapter.mjs
+    effect_lifecycle:
+      - src/ports.mjs
+    transition_record:
+      - src/adapter.mjs
+    journal:
+      - verification/traces/boundary_parse.yaml
+    timeline_projection:
+      - verification/traces/boundary_parse.yaml
+    replay_bundle:
+      - verification/traces/boundary_parse.yaml
     trace_evidence:
       - verification/boundaries/cli_input.md
+      - verification/traces/boundary_parse.yaml
   representation:
     closed_variants:
+      - BoundaryState
+      - RawCliInput
       - ParsedMove
       - BoundaryResult
+      - InvokeRulesBridge
+      - RulesBridgeResult
     validated_values:
       - makeCell
     transition_functions:
@@ -72,6 +153,8 @@ semantic_functions:
         - verification/contracts/play_tic_tac_toe.md
       boundaries:
         - verification/boundaries/cli_input.md
+      traces:
+        - verification/traces/boundary_parse.yaml
   - id: rules-port-adapter
     symbol: src/adapter.mjs#handleBoundaryInput
     kind: adapter

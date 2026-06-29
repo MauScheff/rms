@@ -26,6 +26,9 @@ const DEFAULT_RUN_ROOT: &str = ".rms/runs";
 const DEFAULT_PROVIDER_TIMEOUT_SECONDS: u64 = 900;
 const WORKBENCH_CONFIG_PATH: &str = ".rms/config.yaml";
 const CODEX_PLUGIN_PATH: &str = "integrations/codex/rms";
+const REQUIRED_VERIFICATION_CATEGORIES: [&str; 4] =
+    ["laws", "contracts", "scenarios", "boundaries"];
+const OPTIONAL_VERIFICATION_CATEGORIES: [&str; 3] = ["traces", "runtime", "reconciliation"];
 const CANONICAL_SKILLS: &[&str] = &[
     "inspect-module",
     "implement-change",
@@ -71,6 +74,12 @@ const INIT_AGENT_SKILLS: &[(&str, &str)] = &[
         include_str!("../assets/skills/verify-module/SKILL.md"),
     ),
 ];
+
+fn verification_reference_categories() -> impl Iterator<Item = &'static str> {
+    REQUIRED_VERIFICATION_CATEGORIES
+        .into_iter()
+        .chain(OPTIONAL_VERIFICATION_CATEGORIES)
+}
 
 #[derive(Parser)]
 #[command(name = "rms")]
@@ -7161,7 +7170,7 @@ fn append_prompt_effects(out: &mut String, value: &YamlValue) -> Result<()> {
 
 fn append_prompt_verification(out: &mut String, value: &YamlValue) -> Result<()> {
     writeln!(out, "- Verification:")?;
-    for category in ["laws", "contracts", "scenarios", "boundaries", "traces"] {
+    for category in verification_reference_categories() {
         let items = get_string_array(value, &["verification", category]);
         writeln!(
             out,
@@ -9188,7 +9197,7 @@ fn validate_semantic_function_declarations(
             }
         }
 
-        for category in ["laws", "contracts", "scenarios", "boundaries", "traces"] {
+        for category in verification_reference_categories() {
             for path in get_string_array(function, &["evidence", category]) {
                 check_relative_ref(
                     implementation,
@@ -11692,7 +11701,7 @@ fn load_binding_module_manifest(
 }
 
 fn require_verification_categories(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
-    for category in ["laws", "contracts", "scenarios", "boundaries"] {
+    for category in REQUIRED_VERIFICATION_CATEGORIES {
         require_array(
             manifest,
             diagnostics,
@@ -11801,15 +11810,7 @@ fn check_verification_paths(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
     let Some(verification) = get_path(&manifest.value, &["verification"]) else {
         return;
     };
-    for category in [
-        "laws",
-        "contracts",
-        "scenarios",
-        "boundaries",
-        "traces",
-        "runtime",
-        "reconciliation",
-    ] {
+    for category in verification_reference_categories() {
         let Some(paths) = get_path(verification, &[category]).and_then(YamlValue::as_sequence)
         else {
             continue;
@@ -13467,7 +13468,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
         vec![module_ref.clone()],
     );
 
-    for category in ["laws", "contracts", "scenarios", "boundaries", "traces"] {
+    for category in verification_reference_categories() {
         for path in get_string_array(&manifest.value, &["verification", category]) {
             let id = stable_atlas_id("verification", &format!("{category}:{path}"));
             push_verification_node(
@@ -21405,14 +21406,7 @@ fn referenced_paths(value: &YamlValue) -> BTreeSet<String> {
     }
 
     if let Some(verification) = get_path(value, &["verification"]) {
-        for category in [
-            "laws",
-            "contracts",
-            "scenarios",
-            "boundaries",
-            "runtime",
-            "reconciliation",
-        ] {
+        for category in verification_reference_categories() {
             if let Some(items) =
                 get_path(verification, &[category]).and_then(YamlValue::as_sequence)
             {
@@ -21435,8 +21429,8 @@ fn referenced_paths(value: &YamlValue) -> BTreeSet<String> {
 }
 
 fn has_empty_verification_category(value: &YamlValue) -> bool {
-    ["laws", "contracts", "scenarios", "boundaries"]
-        .iter()
+    REQUIRED_VERIFICATION_CATEGORIES
+        .into_iter()
         .any(|category| {
             get_path(value, &["verification", category])
                 .and_then(YamlValue::as_sequence)
@@ -21750,7 +21744,7 @@ fn print_effects(value: &YamlValue) {
 fn print_verification(value: &YamlValue) {
     println!();
     println!("## Verification");
-    for category in ["laws", "contracts", "scenarios", "boundaries", "traces"] {
+    for category in verification_reference_categories() {
         let items = get_string_array(value, &["verification", category]);
         println!(
             "- {category}: {}",
@@ -21934,6 +21928,8 @@ verification:
   scenarios:
     - verification/scenarios
   boundaries: []
+  traces:
+    - verification/traces
 "#,
         )
         .unwrap();
@@ -21944,6 +21940,7 @@ verification:
         assert!(references.contains("verification/laws/law"));
         assert!(references.contains("verification/laws"));
         assert!(references.contains("verification/scenarios"));
+        assert!(references.contains("verification/traces"));
     }
 
     #[test]
@@ -24543,6 +24540,9 @@ verification:
         assert!(output.join("module.yaml").exists());
         assert!(output.join("contracts/do-work.yaml").exists());
         assert!(output.join("verification/laws/law").exists());
+        assert!(output
+            .join("verification/traces/transition_trace.yaml")
+            .exists());
         assert!(output.join("conformance-report.json").exists());
         let package_manifest = fs::read_to_string(output.join("PACKAGE.json")).unwrap();
         assert!(package_manifest.contains("\"spec\": \"rms/package/v0.1\""));
@@ -24574,12 +24574,18 @@ verification:
     fn write_package_fixture(root: &Path) {
         fs::create_dir_all(root.join("contracts")).unwrap();
         fs::create_dir_all(root.join("verification/laws")).unwrap();
+        fs::create_dir_all(root.join("verification/traces")).unwrap();
         fs::write(
             root.join("contracts/do-work.yaml"),
             "spec: rms/contract/v0.1\nname: do-work\nkind: command\nmeaning: Do work.\n",
         )
         .unwrap();
         fs::write(root.join("verification/laws/law"), "law evidence\n").unwrap();
+        fs::write(
+            root.join("verification/traces/transition_trace.yaml"),
+            "spec: rms/trace-bundle/v0.1\nmachine: PackageFixtureMachine\nrecords: []\n",
+        )
+        .unwrap();
         fs::write(
             root.join("module.yaml"),
             r#"spec: rms/module/v0.1
@@ -24629,6 +24635,8 @@ verification:
   contracts: []
   scenarios: []
   boundaries: []
+  traces:
+    - verification/traces
 "#,
         )
         .unwrap();

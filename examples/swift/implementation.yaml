@@ -22,6 +22,45 @@ dependencies:
 architecture:
   shape: domain-engine
   public_modules: []
+  messages:
+    command_envelope:
+      - command_id
+      - target_machine
+      - correlation_id
+      - causation_id
+      - idempotency_key
+    event_envelope:
+      - event_id
+      - source_machine
+      - correlation_id
+      - causation_id
+      - sequence
+      - schema_version
+      - occurred_at
+    effect_envelope:
+      - effect_id
+      - requester
+      - correlation_id
+      - causation_id
+      - idempotency_key
+    effect_result_envelope:
+      - effect_id
+      - requester
+      - correlation_id
+      - causation_id
+      - status
+  transition:
+    output:
+      - next_state
+      - events
+      - commands
+      - effects
+      - reply
+  trace:
+    journal: verification/traces/transition_trace.yaml
+    timeline_projection: verification/traces/transition_trace.yaml
+    replay_bundle: verification/traces/transition_trace.yaml
+    first_bad_transition: source-provenance-from-transition-record
   machine:
     name: SwiftExampleMachine
     state: SwiftExampleState
@@ -39,5 +78,16 @@ architecture:
       - Sources/RmsSwiftExample/RmsSwiftExample.swift
     transition:
       - Sources/RmsSwiftExample/RmsSwiftExample.swift
+    message_envelope:
+      - Sources/RmsSwiftExample/RmsSwiftExample.swift
+    transition_record:
+      - Sources/RmsSwiftExample/RmsSwiftExample.swift
+    journal:
+      - verification/traces/transition_trace.yaml
+    timeline_projection:
+      - verification/traces/transition_trace.yaml
+    replay_bundle:
+      - verification/traces/transition_trace.yaml
     trace_evidence:
       - verification/scenarios/accept_non_empty_widget
+      - verification/traces/transition_trace.yaml

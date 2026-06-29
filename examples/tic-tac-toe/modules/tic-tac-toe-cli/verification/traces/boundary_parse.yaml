@@ -1,0 +1,87 @@
+spec: rms/trace-bundle/v0.1
+machine: TicTacToeCliBoundary
+records:
+  - id: parse-valid-coordinate
+    state_before: Ready
+    input:
+      command_id: raw-input-1
+      target_machine: TicTacToeCliBoundary
+      correlation_id: tic-tac-toe-cli-correlation-1
+      causation_id: user-request-1
+      idempotency_key: null
+      command:
+        tag: RawCliInput
+        text: A1
+    output:
+      next_state: Ready
+      events:
+        - event_id: parsed-move-1
+          source_machine: TicTacToeCliBoundary
+          correlation_id: tic-tac-toe-cli-correlation-1
+          causation_id: raw-input-1
+          sequence: 1
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event:
+            tag: ParsedMove
+            cell:
+              row: 0
+              column: 0
+              index: 0
+      commands:
+        - command_id: apply-move-1
+          target_machine: TicTacToeMachine
+          correlation_id: tic-tac-toe-cli-correlation-1
+          causation_id: raw-input-1
+          idempotency_key: game-1-cell-0
+          command:
+            tag: PlaceMark
+            cell:
+              row: 0
+              column: 0
+              index: 0
+      effects:
+        - effect_id: rules-bridge-1
+          requester: TicTacToeCliBoundary
+          correlation_id: tic-tac-toe-cli-correlation-1
+          causation_id: raw-input-1
+          idempotency_key: game-1-cell-0
+          effect:
+            tag: InvokeRulesBridge
+      reply:
+        tag: Accepted
+        value:
+          tag: ParsedMove
+          cell:
+            row: 0
+            column: 0
+            index: 0
+    state_after: Ready
+    source:
+      file: src/adapter.mjs
+      function: handleBoundaryInput
+      branch: parsed-and-delegated
+  - id: reject-malformed-coordinate
+    state_before: Ready
+    input:
+      command_id: raw-input-2
+      target_machine: TicTacToeCliBoundary
+      correlation_id: tic-tac-toe-cli-correlation-2
+      causation_id: user-request-2
+      idempotency_key: null
+      command:
+        tag: RawCliInput
+        text: ""
+    output:
+      next_state: Ready
+      events: []
+      commands: []
+      effects: []
+      reply:
+        tag: Rejected
+        reason: malformed-input
+    state_after: Ready
+    source:
+      file: src/parser.mjs
+      function: parseMoveText
+      branch: rejected-malformed-input

@@ -1,0 +1,85 @@
+spec: rms/trace-bundle/v0.1
+machine: TicTacToeMachine
+records:
+  - id: accept-opening-move
+    state_before:
+      board: [null, null, null, null, null, null, null, null, null]
+      status:
+        tag: InProgress
+        next: X
+    input:
+      command_id: place-mark-1
+      target_machine: TicTacToeMachine
+      correlation_id: tic-tac-toe-rules-correlation-1
+      causation_id: user-request-1
+      idempotency_key: game-1-cell-0
+      command:
+        tag: PlaceMark
+        cell:
+          row: 0
+          column: 0
+          index: 0
+    output:
+      next_state:
+        board: [X, null, null, null, null, null, null, null, null]
+        status:
+          tag: InProgress
+          next: O
+      events: []
+      commands: []
+      effects: []
+      reply:
+        tag: Accepted
+        state:
+          board: [X, null, null, null, null, null, null, null, null]
+          status:
+            tag: InProgress
+            next: O
+    state_after:
+      board: [X, null, null, null, null, null, null, null, null]
+      status:
+        tag: InProgress
+        next: O
+    source:
+      file: src/transition.rs
+      function: transition
+      branch: accepted-place-mark
+  - id: reject-occupied-cell
+    state_before:
+      board: [X, null, null, null, null, null, null, null, null]
+      status:
+        tag: InProgress
+        next: O
+    input:
+      command_id: place-mark-2
+      target_machine: TicTacToeMachine
+      correlation_id: tic-tac-toe-rules-correlation-1
+      causation_id: place-mark-1
+      idempotency_key: game-1-cell-0
+      command:
+        tag: PlaceMark
+        cell:
+          row: 0
+          column: 0
+          index: 0
+    output:
+      next_state:
+        board: [X, null, null, null, null, null, null, null, null]
+        status:
+          tag: InProgress
+          next: O
+      events: []
+      commands: []
+      effects: []
+      reply:
+        tag: Rejected
+        reason: CellOccupied
+    state_after:
+      board: [X, null, null, null, null, null, null, null, null]
+      status:
+        tag: InProgress
+        next: O
+    source:
+      file: src/transition.rs
+      function: transition
+      branch: rejected-cell-occupied

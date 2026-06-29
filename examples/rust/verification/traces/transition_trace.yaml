@@ -1,0 +1,51 @@
+spec: rms/trace-bundle/v0.1
+machine: RustExampleMachine
+records:
+  - id: describe-widget-accepted
+    state_before: Ready
+    input:
+      command_id: describe-widget-1
+      target_machine: RustExampleMachine
+      correlation_id: rust-example-correlation-1
+      causation_id: user-request-1
+      idempotency_key: null
+      command:
+        tag: DescribeWidget
+        widget_name: example
+    output:
+      next_state: Ready
+      events: []
+      commands: []
+      effects: []
+      reply:
+        tag: DescribeWidgetReply
+        description: example
+    state_after: Ready
+    source:
+      file: src/lib.rs
+      function: describe_widget
+      branch: accepted-widget
+  - id: widget-constructor-rejected-empty-name
+    state_before: Ready
+    input:
+      command_id: construct-widget-1
+      target_machine: RustExampleMachine
+      correlation_id: rust-example-correlation-2
+      causation_id: user-request-2
+      idempotency_key: null
+      command:
+        tag: ConstructWidget
+        name: ""
+    output:
+      next_state: Ready
+      events: []
+      commands: []
+      effects: []
+      reply:
+        tag: Rejected
+        reason: EmptyWidgetName
+    state_after: Ready
+    source:
+      file: src/widget.rs
+      function: Widget::new
+      branch: rejected-empty-name
