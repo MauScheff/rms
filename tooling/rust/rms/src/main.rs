@@ -21263,6 +21263,10 @@ fn render_traceable_roles_yaml(
         let _ = writeln!(out, "    {role}:");
         let _ = writeln!(out, "      - {path}");
     }
+    if parser_expected_for_shape(shape.as_str()) {
+        let _ = writeln!(out, "    parser:");
+        let _ = writeln!(out, "      - {transition_path}");
+    }
     let _ = writeln!(out, "    replay_bundle:");
     let _ = writeln!(
         out,
@@ -21288,6 +21292,25 @@ fn render_traceable_roles_yaml(
     out
 }
 
+fn render_transition_semantic_evidence_yaml(shape: ScaffoldShape) -> String {
+    match shape {
+        ScaffoldShape::DomainEngine | ScaffoldShape::Workflow => {
+            "      laws:\n        - verification/laws/transition_trace.md\n      traces:\n        - verification/traces/transition_trace.yaml\n".to_string()
+        }
+        ScaffoldShape::BoundaryAdapter
+        | ScaffoldShape::StorageAdapter
+        | ScaffoldShape::IntegrationAdapter => {
+            "      boundaries:\n        - verification/boundaries/malformed_input.md\n      traces:\n        - verification/traces/boundary_parse.yaml\n".to_string()
+        }
+        ScaffoldShape::RuntimeMonitor => {
+            "      runtime:\n        - verification/runtime/trigger_cases.md\n".to_string()
+        }
+        ScaffoldShape::Composite => {
+            "      contracts:\n        - verification/contracts/parent_export.md\n".to_string()
+        }
+    }
+}
+
 fn render_rust_implementation_yaml(
     module_name: &str,
     package_name: &str,
@@ -21295,7 +21318,7 @@ fn render_rust_implementation_yaml(
     names: &InnerStructureNames,
 ) -> String {
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - representation\n    - transition\n{}  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n      traces:\n        - verification/traces/transition_trace.yaml\n",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - representation\n    - transition\n{}  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
         yaml_quote(module_name),
         yaml_quote(package_name),
         yaml_quote(shape.as_str()),
@@ -21326,6 +21349,7 @@ fn render_rust_implementation_yaml(
         yaml_quote(&names.source_provenance),
         yaml_quote(&names.label),
         names.label,
+        render_transition_semantic_evidence_yaml(shape),
     )
 }
 
@@ -21586,7 +21610,7 @@ fn render_swift_implementation_yaml(
     let source_root = format!("Sources/{target_name}");
     let public_entrypoint = format!("Sources/{target_name}/{target_name}.swift");
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n      traces:\n        - verification/traces/transition_trace.yaml\n",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
         yaml_quote(module_name),
         yaml_quote(&source_root),
         yaml_quote(&public_entrypoint),
@@ -21629,6 +21653,7 @@ fn render_swift_implementation_yaml(
         target_name,
         names.label,
         target_name,
+        render_transition_semantic_evidence_yaml(shape),
     )
 }
 
@@ -21878,7 +21903,7 @@ fn render_js_implementation_yaml(
     };
     let roles = if boundary_shape {
         format!(
-            "{}    parser:\n      - src/parser.mjs\n    adapter:\n      - src/adapter.mjs\n",
+            "{}    adapter:\n      - src/adapter.mjs\n",
             render_traceable_roles_yaml(shape, "src/representation.mjs", "src/adapter.mjs")
         )
     } else {
@@ -22764,6 +22789,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Do not use role-derived inner names such as `<Domain>RulesMachine`, `<Domain>AdapterMachine`, `<Domain>CliMachine`, or `<Domain>WebMachine`; prefer `<Domain>Machine` for pure decisions and `<Domain>BoundaryMachine` only when a boundary state/transition role is useful.
 - Keep pure transitions separate from representation definitions, and keep boundary parsing separate from both.
 - Replace generated role files incrementally. Do not delete a declared role file and leave the project invalid while hand-building a replacement; add the replacement first or keep the old file until `rms structure <implementation.yaml>` and the binding's syntax check can run.
+- When replacing generated role code, update `implementation.yaml` in the same change so `architecture.roles`, `architecture.machine`, `architecture.representation`, and `semantic_functions` name the actual files and symbols.
 - Prefer ADTs, sealed variants, enums, opaque values, validated constructors, explicit result/rejection types, schemas at untrusted boundaries, and focused tests.
 - Use state machines or transition functions when behavior depends on lifecycle or order; illegal transitions must be rejected or made unrepresentable.
 - Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
@@ -24132,6 +24158,51 @@ import struct ExternalKit.Widget
                 .diagnostics
                 .iter()
                 .all(|diagnostic| diagnostic.check != "structure.role-suffix-machine-name"),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn rust_boundary_adapter_scaffold_uses_boundary_evidence_and_parser_role() {
+        let root = unique_test_dir("rust-boundary-module");
+
+        run_add_module(
+            add_module_request(
+                &root,
+                "example-rust",
+                "Demonstrate Rust boundary scaffolding.",
+                "adapter",
+                &["boundary".to_string()],
+                Some(ScaffoldShape::BoundaryAdapter),
+                Some("rust"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+
+        let mut diagnostics = Vec::new();
+        for file in ["module.yaml", "implementation.yaml"] {
+            let manifest = load_manifest(&root.join(file)).unwrap();
+            validate_loaded_manifest(&manifest, &mut diagnostics);
+        }
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        let trace_report =
+            build_trace_report(&root.join("verification/traces/boundary_parse.yaml")).unwrap();
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_no_error_diagnostics(&diagnostics);
+        assert!(implementation.contains("parser:"));
+        assert!(implementation.contains("verification/boundaries/malformed_input.md"));
+        assert!(implementation.contains("verification/traces/boundary_parse.yaml"));
+        assert!(!implementation.contains("verification/traces/transition_trace.yaml"));
+        assert_eq!(trace_report.result, "pass");
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "structure.boundary-parser-missing"),
             "{:#?}",
             report.diagnostics
         );

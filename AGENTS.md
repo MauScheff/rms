@@ -53,6 +53,7 @@ Before writing implementation code, make the requested behavior concrete enough 
 - Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
 - Keep workflow choreography explicit in the workflow transition model, subscription registry, effect lifecycle, inbox/outbox, or declared adapter boundary rather than hidden in listener chains.
 - Replace generated role files incrementally. Do not delete a declared role file and leave the project invalid while hand-building a replacement; add the replacement first or keep the old file until `rms structure <implementation.yaml>` and the binding's syntax check can run.
+- When replacing generated role code, update `implementation.yaml` in the same change so `architecture.roles`, `architecture.machine`, `architecture.representation`, and `semantic_functions` name the actual files and symbols.
 - Change public contracts deliberately and follow the compatibility policy.
 - Prefer the smallest design that fully satisfies the declared semantics.
 - Keep artifacts semantically reachable. New files, helpers, fixtures, generated outputs, adapters, shims, dependencies, and abstractions should serve a current manifest promise, contract, invariant, effect, profile obligation, recovery path, implementation binding, or verification need.
