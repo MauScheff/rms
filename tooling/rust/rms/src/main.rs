@@ -10436,7 +10436,7 @@ fn validate_rust_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec
     validate_declared_rust_package(manifest, diagnostics, &cargo);
     validate_rust_dependency_allowlist(manifest, diagnostics, &cargo);
     validate_rust_public_modules(manifest, diagnostics, &public_entrypoint);
-    validate_rust_source_boundaries(manifest, diagnostics, &source_root);
+    validate_rust_source_boundaries(manifest, diagnostics, &source_root, &cargo);
     validate_rust_typing(manifest, diagnostics, base, &source_root);
 }
 
@@ -10972,6 +10972,7 @@ fn validate_rust_source_boundaries(
     manifest: &LoadedManifest,
     diagnostics: &mut Vec<Diagnostic>,
     source_root: &Path,
+    cargo: &TomlValue,
 ) {
     if !source_root.exists() {
         return;
@@ -10989,6 +10990,7 @@ fn validate_rust_source_boundaries(
             .collect();
     let mut local_modules = local_module_roots(source_root);
     local_modules.extend(public_modules.iter().cloned());
+    local_modules.extend(rust_local_crate_names(cargo));
     let allowed_public_reexports: BTreeSet<_> = get_string_array(
         &manifest.value,
         &["architecture", "allowed_public_reexports"],
@@ -11443,6 +11445,26 @@ fn collect_rust_dependencies(cargo: &TomlValue) -> BTreeSet<String> {
     }
 
     dependencies
+}
+
+fn rust_local_crate_names(cargo: &TomlValue) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    if let Some(lib_name) = cargo
+        .get("lib")
+        .and_then(TomlValue::as_table)
+        .and_then(|lib| lib.get("name"))
+        .and_then(TomlValue::as_str)
+    {
+        names.insert(lib_name.to_string());
+    }
+    if let Some(package_name) = cargo
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(TomlValue::as_str)
+    {
+        names.insert(package_name.replace('-', "_"));
+    }
+    names
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23562,6 +23584,26 @@ libc = "0.2"
     }
 
     #[test]
+    fn rust_local_crate_names_include_package_crate_form_and_lib_name() {
+        let cargo: TomlValue = r#"
+[package]
+name = "checkout-boundary"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "checkout_boundary_lib"
+"#
+        .parse()
+        .unwrap();
+
+        let local_crates = rust_local_crate_names(&cargo);
+
+        assert!(local_crates.contains("checkout_boundary"));
+        assert!(local_crates.contains("checkout_boundary_lib"));
+    }
+
+    #[test]
     fn extracts_public_modules_from_rust_entrypoint() {
         let modules = public_modules_declared_in_source(
             r#"
@@ -23621,6 +23663,66 @@ pub use external_crate::Thing;
             rust_import_root_kind("crate", &local_modules),
             RustImportRootKind::SelfQualified
         );
+    }
+
+    #[test]
+    fn rust_source_boundaries_accept_bin_importing_own_library_crate() {
+        let root = unique_test_dir("rust-own-crate-import");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"[package]
+name = "checkout-boundary"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn run() {}\n").unwrap();
+        fs::write(
+            root.join("src/main.rs"),
+            "use checkout_boundary::run;\nfn main() { run(); }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: "checkout-boundary"
+binding: rust
+source:
+  root: .
+  public_entrypoint: src/lib.rs
+commands:
+  build: cargo build --manifest-path Cargo.toml
+  verify: cargo test --manifest-path Cargo.toml
+toolchain:
+  cargo_manifest: Cargo.toml
+  package: checkout-boundary
+dependencies:
+  allowed_external_crates: []
+architecture:
+  shape: boundary-adapter
+  public_modules: []
+"#,
+        )
+        .unwrap();
+        let manifest = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+
+        validate_loaded_manifest(&manifest, &mut diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "implementation.rust.imports.declared"),
+            "{:#?}",
+            diagnostics
+        );
+        assert_no_error_diagnostics(&diagnostics);
     }
 
     #[test]
