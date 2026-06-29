@@ -13,4 +13,5 @@ commands:
   format: "true"
 
 architecture:
+  static_inspection: opaque
   dependency_checker: manual-fixture-review

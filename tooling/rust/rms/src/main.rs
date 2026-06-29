@@ -766,6 +766,16 @@ enum Commands {
         dry_run: bool,
     },
 
+    /// Print a focused inner-structure report for an implementation binding.
+    Structure {
+        /// Path to implementation.yaml.
+        implementation: PathBuf,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Assemble a portable RMS module package directory.
     Package {
         /// Path to module.yaml or *.module.yaml.
@@ -896,11 +906,11 @@ enum Commands {
         #[arg(long)]
         public_command: Option<String>,
 
-        /// Domain child module name. Defaults to <name>-rules.
+        /// Domain child module name. Defaults to <name>-domain.
         #[arg(long)]
         domain_child: Option<String>,
 
-        /// Boundary child module name. Defaults to <name>-adapter.
+        /// Boundary child module name. Defaults to <name>-boundary.
         #[arg(long)]
         boundary_child: Option<String>,
 
@@ -924,6 +934,51 @@ struct Diagnostic {
     check: String,
     path: String,
     message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct StructureReport {
+    result: String,
+    implementation: String,
+    module: String,
+    binding: String,
+    shape: Option<String>,
+    machine: StructureMachineReport,
+    roles: Vec<StructureRoleReport>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct StructureMachineReport {
+    name: Option<String>,
+    state: Option<String>,
+    commands: Vec<String>,
+    events: Vec<String>,
+    effects: Vec<String>,
+    effect_results: Vec<String>,
+    replies: Vec<String>,
+    rejections: Vec<String>,
+    transition_function: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct StructureRoleReport {
+    role: String,
+    paths: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct InnerStructureNames {
+    prefix: String,
+    machine: String,
+    state: String,
+    command: String,
+    event: String,
+    effect: String,
+    effect_result: String,
+    reply: String,
+    rejection: String,
+    label: String,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, ValueEnum)]
@@ -4017,6 +4072,10 @@ fn main() -> Result<()> {
         Commands::CheckCompat { old, new, json } => run_check_compat(&old, &new, json),
         Commands::Compose { root, json } => run_compose(&root, json),
         Commands::Verify { target, dry_run } => run_verify(&target, dry_run),
+        Commands::Structure {
+            implementation,
+            json,
+        } => run_structure(&implementation, json),
         Commands::Package {
             module,
             output,
@@ -4273,6 +4332,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
                 "Use `rms gate --root {}` to run git-impact-selected RMS checks.",
                 root.display()
             ),
+            "Use `rms structure <implementation.yaml>` to inspect declared machine, role, and evidence structure.".to_string(),
             "Use `rms verify <implementation.yaml>` when an implementation binding declares verification, or `rms verify <composite-module.yaml>` for composite rollups.".to_string(),
         ],
     })
@@ -4902,11 +4962,15 @@ fn append_design_recommendations(
         )?;
         writeln!(
             out,
-            "  - `<capability>-rules` [domain-engine, internal]: pure invariant-bearing decisions, closed variants, validated values, accepted/rejected transitions, laws, and trace replay."
+            "  - `<semantic-domain-child>` [domain-engine, internal]: pure invariant-bearing decisions, closed variants, validated values, accepted/rejected transitions, laws, and trace replay."
         )?;
         writeln!(
             out,
-            "  - `<capability>-adapter` [boundary-adapter, internal]: untrusted input/output, UI/CLI/web/process/network/storage/time/randomness effects, parsers, ports, and boundary evidence."
+            "  - `<semantic-boundary-child>` [boundary-adapter, internal]: untrusted input/output, UI/CLI/web/process/network/storage/time/randomness effects, parsers, ports, and boundary evidence."
+        )?;
+        writeln!(
+            out,
+            "  - Name children in product/domain language; `rules`, `engine`, `adapter`, `cli`, `web`, and similar role words are implementation hints, not canonical semantics."
         )?;
         writeln!(
             out,
@@ -4961,8 +5025,8 @@ fn shape_advisories(manifest: &LoadedManifest) -> Vec<String> {
         .unwrap_or(0);
     let kind = get_str(&manifest.value, &["module", "kind"]).unwrap_or("");
     let has_boundary = profiles.iter().any(|profile| profile == "boundary") || kind == "adapter";
-    let has_domain_decisions = decisions.iter().any(|decision| {
-        is_domain_rule_decision(decision) || !is_boundary_adapter_decision(decision)
+    let has_domain_decisions = decisions.iter().chain(concepts.iter()).any(|decision| {
+        is_domain_rule_decision(decision) && !is_boundary_adapter_decision(decision)
     });
     let has_effects = effects > 0;
     let mut advisories = shape_consistency_advisories(manifest);
@@ -5043,12 +5107,15 @@ fn is_boundary_adapter_decision(decision: &str) -> bool {
         "dom",
         "effect",
         "encode",
+        "format",
+        "formatting",
         "http",
         "input",
         "io",
         "map",
         "malformed",
         "normalize",
+        "output",
         "parse",
         "parser",
         "port",
@@ -5798,6 +5865,7 @@ fn append_semantic_structure_checklist(out: &mut String, kind: PromptKind) -> Re
         "- Intent: restate the behavior, the owning context language, and what must never happen."
     )?;
     writeln!(out, "- ADTs and values: name closed variants, validated values, commands, states, events, and accepted/rejected result types.")?;
+    writeln!(out, "- Role names: use domain-named suffixes where the language allows it, such as `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`.")?;
     writeln!(out, "- Transitions: name accepted transitions, rejected transitions, terminal states, and replayable traces when behavior depends on order or lifecycle.")?;
     writeln!(out, "- Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.")?;
     writeln!(out, "- Edge cases first: invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases.")?;
@@ -8049,6 +8117,7 @@ fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diag
     check_optional_path(manifest, diagnostics, &["source", "root"]);
     check_optional_path(manifest, diagnostics, &["source", "public_entrypoint"]);
     validate_semantic_function_declarations(manifest, diagnostics);
+    validate_inner_structure(manifest, diagnostics);
 
     match get_str(&manifest.value, &["binding"]) {
         Some("rust") => validate_rust_implementation(manifest, diagnostics),
@@ -8119,9 +8188,307 @@ fn validate_semantic_function_declarations(
                     &path,
                     "semantic function references evidence that does not exist",
                 );
+                check_evidence_quality(implementation, diagnostics, &path);
             }
         }
     }
+}
+
+fn validate_inner_structure(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    if get_str(&manifest.value, &["architecture", "static_inspection"]) == Some("opaque")
+        || get_str(&manifest.value, &["binding"]) == Some("executable")
+    {
+        return;
+    }
+
+    let Some(shape) = get_str(&manifest.value, &["architecture", "shape"]) else {
+        push_unique_warning(
+            diagnostics,
+            "structure.semantic-shape-missing",
+            &manifest.path,
+            "implementation should declare `architecture.shape` before structure checks can be precise",
+        );
+        return;
+    };
+
+    if machine_expected_for_shape(shape)
+        && get_str(&manifest.value, &["architecture", "machine", "name"]).is_none()
+    {
+        push_unique_warning(
+            diagnostics,
+            "structure.machine-missing",
+            &manifest.path,
+            format!("`{shape}` implementations should declare `architecture.machine.name`"),
+        );
+    }
+    if let Some(machine_name) = get_str(&manifest.value, &["architecture", "machine", "name"]) {
+        warn_on_role_suffix_machine_name(manifest, diagnostics, shape, machine_name);
+    }
+
+    if transition_expected_for_shape(shape)
+        && get_str(
+            &manifest.value,
+            &["architecture", "machine", "transition_function"],
+        )
+        .is_none()
+    {
+        push_unique_warning(
+            diagnostics,
+            "structure.transition-missing",
+            &manifest.path,
+            format!("`{shape}` implementations should declare a transition function"),
+        );
+    }
+
+    if representation_expected_for_shape(shape)
+        && structure_role_paths(manifest, "representation").is_empty()
+    {
+        push_unique_warning(
+            diagnostics,
+            "structure.representation-missing",
+            &manifest.path,
+            format!("`{shape}` implementations should declare a representation role"),
+        );
+    }
+
+    if transition_expected_for_shape(shape)
+        && structure_role_paths(manifest, "transition").is_empty()
+    {
+        push_unique_warning(
+            diagnostics,
+            "structure.transition-missing",
+            &manifest.path,
+            format!("`{shape}` implementations should declare a transition role"),
+        );
+    }
+
+    if parser_expected_for_shape(shape) && structure_role_paths(manifest, "parser").is_empty() {
+        push_unique_warning(
+            diagnostics,
+            "structure.boundary-parser-missing",
+            &manifest.path,
+            format!("`{shape}` implementations should declare a boundary parser role"),
+        );
+    }
+
+    validate_structure_role_paths(manifest, diagnostics);
+
+    if shape == "domain-engine" {
+        inspect_domain_transition_sources(manifest, diagnostics);
+    }
+}
+
+fn warn_on_role_suffix_machine_name(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    shape: &str,
+    machine_name: &str,
+) {
+    let Some(role_suffix) = machine_role_suffix_token(machine_name, shape) else {
+        return;
+    };
+    push_unique_warning(
+        diagnostics,
+        "structure.role-suffix-machine-name",
+        &manifest.path,
+        format!(
+            "machine name `{machine_name}` appears derived from role or surface suffix `{role_suffix}`; prefer capability/domain language before `Machine`"
+        ),
+    );
+}
+
+fn machine_role_suffix_token(machine_name: &str, shape: &str) -> Option<String> {
+    let stem = machine_name.strip_suffix("Machine").unwrap_or(machine_name);
+    let tokens = identifier_word_tokens(stem);
+    if tokens.len() <= 1 {
+        return None;
+    }
+    let suffix = tokens.last()?;
+    if !is_role_suffix_token(suffix) {
+        return None;
+    }
+    if allowed_machine_role_suffix_tokens(shape)
+        .iter()
+        .any(|allowed| suffix == allowed)
+    {
+        return None;
+    }
+    Some(suffix.to_string())
+}
+
+fn allowed_machine_role_suffix_tokens(shape: &str) -> &'static [&'static str] {
+    match shape {
+        "boundary-adapter" => &["boundary"],
+        "workflow" => &["workflow"],
+        "storage-adapter" => &["storage"],
+        "integration-adapter" => &["integration"],
+        "runtime-monitor" => &["monitor"],
+        "composite" => &["composite"],
+        _ => &[],
+    }
+}
+
+fn identifier_word_tokens(value: &str) -> Vec<String> {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+
+    for index in 0..chars.len() {
+        let character = chars[index];
+        if !character.is_ascii_alphanumeric() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+
+        let previous = index
+            .checked_sub(1)
+            .and_then(|previous| chars.get(previous));
+        let next = chars.get(index + 1);
+        let starts_new_word = !current.is_empty()
+            && character.is_ascii_uppercase()
+            && previous.is_some_and(|previous| {
+                previous.is_ascii_lowercase()
+                    || previous.is_ascii_digit()
+                    || (previous.is_ascii_uppercase()
+                        && next.is_some_and(|next| next.is_ascii_lowercase()))
+            });
+        if starts_new_word {
+            tokens.push(std::mem::take(&mut current));
+        }
+        current.push(character.to_ascii_lowercase());
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn machine_expected_for_shape(shape: &str) -> bool {
+    matches!(
+        shape,
+        "domain-engine"
+            | "workflow"
+            | "storage-adapter"
+            | "integration-adapter"
+            | "runtime-monitor"
+    )
+}
+
+fn representation_expected_for_shape(shape: &str) -> bool {
+    matches!(
+        shape,
+        "domain-engine"
+            | "boundary-adapter"
+            | "workflow"
+            | "storage-adapter"
+            | "integration-adapter"
+            | "runtime-monitor"
+    )
+}
+
+fn transition_expected_for_shape(shape: &str) -> bool {
+    matches!(shape, "domain-engine" | "workflow" | "runtime-monitor")
+}
+
+fn parser_expected_for_shape(shape: &str) -> bool {
+    matches!(
+        shape,
+        "boundary-adapter" | "storage-adapter" | "integration-adapter"
+    )
+}
+
+fn structure_role_paths(manifest: &LoadedManifest, role: &str) -> Vec<String> {
+    get_path(&manifest.value, &["architecture", "roles", role])
+        .map(yaml_string_values)
+        .unwrap_or_default()
+}
+
+fn validate_structure_role_paths(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(roles) =
+        get_path(&manifest.value, &["architecture", "roles"]).and_then(YamlValue::as_mapping)
+    else {
+        return;
+    };
+    for (role, value) in roles {
+        let role = role.as_str().unwrap_or("<unknown>");
+        for path in yaml_string_values(value) {
+            check_relative_ref(
+                manifest,
+                diagnostics,
+                format!("references.structure.role.{role}"),
+                &path,
+                "structure role references an artifact that does not exist",
+            );
+            if is_evidence_role(role) {
+                check_evidence_quality(manifest, diagnostics, &path);
+            }
+        }
+    }
+}
+
+fn is_evidence_role(role: &str) -> bool {
+    let lower = role.to_ascii_lowercase();
+    lower.contains("evidence") || lower.contains("trace")
+}
+
+fn inspect_domain_transition_sources(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let mut references = structure_role_paths(manifest, "transition");
+    if references.is_empty() {
+        if let Some(public_entrypoint) = get_str(&manifest.value, &["source", "public_entrypoint"])
+        {
+            references.push(public_entrypoint.to_string());
+        }
+    }
+
+    for reference in references {
+        let path = base.join(&reference);
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if contains_hidden_effect_marker(&source) {
+            push_unique_warning(
+                diagnostics,
+                "structure.hidden-effect-in-domain",
+                &manifest.path,
+                format!(
+                    "domain-engine transition role `{reference}` contains time, randomness, IO, process, or network effect markers"
+                ),
+            );
+        }
+        if source.contains("throw new Error") || source.contains("throw Error") {
+            push_unique_warning(
+                diagnostics,
+                "structure.expected-failure-throws",
+                &manifest.path,
+                format!(
+                    "domain-engine transition role `{reference}` appears to throw for expected failures; prefer explicit rejection values"
+                ),
+            );
+        }
+    }
+}
+
+fn contains_hidden_effect_marker(source: &str) -> bool {
+    [
+        "Date.now",
+        "Math.random",
+        "fetch(",
+        "readFile",
+        "writeFile",
+        "node:fs",
+        "from \"fs\"",
+        "from 'fs'",
+        "process.env",
+        "std::fs",
+        "SystemTime::now",
+        "rand::",
+    ]
+    .iter()
+    .any(|marker| source.contains(marker))
 }
 
 fn semantic_function_items(manifest: &LoadedManifest) -> Option<&[YamlValue]> {
@@ -10091,6 +10458,7 @@ fn check_invariant_evidence(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
                 path,
                 "referenced invariant evidence does not exist",
             );
+            check_evidence_quality(manifest, diagnostics, path);
         }
     }
 }
@@ -10119,7 +10487,108 @@ fn check_verification_paths(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
                 path,
                 "referenced verification evidence does not exist",
             );
+            check_evidence_quality(manifest, diagnostics, path);
         }
+    }
+}
+
+fn check_evidence_quality(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    reference: &str,
+) {
+    if reference.starts_with("http://")
+        || reference.starts_with("https://")
+        || reference.starts_with("urn:")
+    {
+        return;
+    }
+
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let full_path = base.join(reference);
+    if full_path.is_dir() {
+        for entry in WalkDir::new(&full_path)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+        {
+            if entry.path().file_name().and_then(|name| name.to_str()) == Some("README.md") {
+                continue;
+            }
+            let Ok(source) = fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let nested_reference = display_relative(base, entry.path());
+            check_evidence_source_quality(
+                manifest,
+                diagnostics,
+                &nested_reference,
+                &source,
+                entry.path(),
+            );
+        }
+        return;
+    }
+
+    if !full_path.is_file() {
+        return;
+    }
+    let Ok(source) = fs::read_to_string(&full_path) else {
+        return;
+    };
+    check_evidence_source_quality(manifest, diagnostics, reference, &source, &full_path);
+}
+
+fn check_evidence_source_quality(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    reference: &str,
+    source: &str,
+    full_path: &Path,
+) {
+    let lower = source.to_ascii_lowercase();
+
+    if lower.contains("replace this placeholder")
+        || lower.contains("evidence to add")
+        || lower.contains("replace or extend this script")
+    {
+        push_unique_warning(
+            diagnostics,
+            "evidence.placeholder",
+            &manifest.path,
+            format!("referenced evidence `{reference}` still contains scaffold placeholder text"),
+        );
+    }
+
+    if lower.contains("bootstrap")
+        || lower.contains("generated scaffold")
+        || lower.contains("scaffold obligations")
+    {
+        push_unique_warning(
+            diagnostics,
+            "evidence.bootstrap-active",
+            &manifest.path,
+            format!("referenced evidence `{reference}` still reads as bootstrap scaffold evidence"),
+        );
+    }
+
+    if lower.contains("source revision: not recorded") {
+        push_unique_warning(
+            diagnostics,
+            "evidence.source-unpinned",
+            &manifest.path,
+            format!("referenced evidence `{reference}` does not pin a source revision"),
+        );
+    }
+
+    if full_path.file_name().and_then(|name| name.to_str()) == Some("semantic_shape.md") {
+        push_unique_warning(
+            diagnostics,
+            "evidence.semantic-shape-only",
+            &manifest.path,
+            format!("referenced evidence `{reference}` is shape evidence; use concrete law, contract, boundary, scenario, trace, runtime, recovery, or reconciliation evidence for release proof"),
+        );
     }
 }
 
@@ -13792,10 +14261,165 @@ fn compose_status_conformance_result(status: ComposeStatus) -> &'static str {
     }
 }
 
+fn run_structure(implementation: &Path, json_output: bool) -> Result<()> {
+    let report = build_structure_report(implementation)?;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_structure_report(&report);
+    }
+    Ok(())
+}
+
+fn build_structure_report(implementation: &Path) -> Result<StructureReport> {
+    let manifest = load_manifest(implementation)?;
+    if get_str(&manifest.value, &["spec"]) != Some("rms/implementation/v0.1") {
+        bail!(
+            "`{}` is not an RMS implementation binding",
+            implementation.display()
+        );
+    }
+
+    let mut diagnostics = Vec::new();
+    validate_loaded_manifest(&manifest, &mut diagnostics);
+    let focused_diagnostics = diagnostics
+        .into_iter()
+        .filter(|diagnostic| {
+            diagnostic.check.starts_with("structure.")
+                || diagnostic.check.starts_with("evidence.")
+                || diagnostic.severity == Severity::Error
+        })
+        .collect::<Vec<_>>();
+
+    let result = if focused_diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        "fail"
+    } else if focused_diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Warning)
+    {
+        "review-required"
+    } else {
+        "pass"
+    };
+
+    Ok(StructureReport {
+        result: result.to_string(),
+        implementation: implementation.display().to_string(),
+        module: get_str(&manifest.value, &["module"])
+            .unwrap_or("<unknown>")
+            .to_string(),
+        binding: get_str(&manifest.value, &["binding"])
+            .unwrap_or("<unknown>")
+            .to_string(),
+        shape: get_str(&manifest.value, &["architecture", "shape"]).map(str::to_string),
+        machine: structure_machine_report(&manifest.value),
+        roles: structure_role_report(&manifest.value),
+        diagnostics: focused_diagnostics,
+    })
+}
+
+fn structure_machine_report(value: &YamlValue) -> StructureMachineReport {
+    StructureMachineReport {
+        name: get_str(value, &["architecture", "machine", "name"]).map(str::to_string),
+        state: get_str(value, &["architecture", "machine", "state"]).map(str::to_string),
+        commands: get_string_array(value, &["architecture", "machine", "commands"]),
+        events: get_string_array(value, &["architecture", "machine", "events"]),
+        effects: get_string_array(value, &["architecture", "machine", "effects"]),
+        effect_results: get_string_array(value, &["architecture", "machine", "effect_results"]),
+        replies: get_string_array(value, &["architecture", "machine", "replies"]),
+        rejections: get_string_array(value, &["architecture", "machine", "rejections"]),
+        transition_function: get_str(value, &["architecture", "machine", "transition_function"])
+            .map(str::to_string),
+    }
+}
+
+fn structure_role_report(value: &YamlValue) -> Vec<StructureRoleReport> {
+    let Some(roles) = get_path(value, &["architecture", "roles"]).and_then(YamlValue::as_mapping)
+    else {
+        return Vec::new();
+    };
+
+    roles
+        .iter()
+        .filter_map(|(key, value)| {
+            let role = key.as_str()?.to_string();
+            Some(StructureRoleReport {
+                role,
+                paths: yaml_string_values(value),
+            })
+        })
+        .collect()
+}
+
+fn print_structure_report(report: &StructureReport) {
+    println!("RMS structure: {}", report.result);
+    println!("implementation: {}", report.implementation);
+    println!("module: {}", report.module);
+    println!("binding: {}", report.binding);
+    if let Some(shape) = &report.shape {
+        println!("shape: {shape}");
+    }
+    println!("machine:");
+    println!(
+        "  name: {}",
+        report.machine.name.as_deref().unwrap_or("<missing>")
+    );
+    println!(
+        "  state: {}",
+        report.machine.state.as_deref().unwrap_or("<not declared>")
+    );
+    print_structure_values("  commands", &report.machine.commands);
+    print_structure_values("  events", &report.machine.events);
+    print_structure_values("  effects", &report.machine.effects);
+    print_structure_values("  effect_results", &report.machine.effect_results);
+    print_structure_values("  replies", &report.machine.replies);
+    print_structure_values("  rejections", &report.machine.rejections);
+    println!(
+        "  transition_function: {}",
+        report
+            .machine
+            .transition_function
+            .as_deref()
+            .unwrap_or("<missing>")
+    );
+    println!("roles:");
+    if report.roles.is_empty() {
+        println!("  <missing>");
+    } else {
+        for role in &report.roles {
+            println!("  {}: {}", role.role, role.paths.join(", "));
+        }
+    }
+    if !report.diagnostics.is_empty() {
+        println!("findings:");
+        for diagnostic in &report.diagnostics {
+            println!(
+                "  {} [{}] {}",
+                severity_label(diagnostic.severity),
+                diagnostic.check,
+                diagnostic.message
+            );
+        }
+    }
+}
+
+fn print_structure_values(label: &str, values: &[String]) {
+    if values.is_empty() {
+        println!("{label}: <not declared>");
+    } else {
+        println!("{label}: {}", values.join(", "));
+    }
+}
+
 fn diagnostic_category(check: &str) -> &'static str {
     match check.split('.').next().unwrap_or("other") {
         "schema" | "manifest" | "module" | "context-map" | "implementation" => "manifest",
         "composition" => "composition",
+        "structure" => "manifest",
+        "evidence" => "laws",
         "references" => {
             if check.contains("contract") {
                 "contracts"
@@ -13954,14 +14578,23 @@ fn rms_root_for(path: &Path) -> PathBuf {
         .to_path_buf();
     loop {
         if current.join("system.yaml").exists() || current.join("context-map.yaml").exists() {
-            return current;
+            return normalize_empty_path(current);
         }
         if !current.pop() {
-            return path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf();
+            return normalize_empty_path(
+                path.parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf(),
+            );
         }
+    }
+}
+
+fn normalize_empty_path(path: PathBuf) -> PathBuf {
+    if path.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        path
     }
 }
 
@@ -16801,9 +17434,24 @@ fn run_add_module(request: AddModuleRequest, options: &PromptRunOptions) -> Resu
 
     if let Some(binding) = canonical_request.binding.as_deref() {
         match binding {
-            "rust" => scaffold_rust_module(path, &canonical_request.name, shape)?,
-            "swift" => scaffold_swift_module(path, &canonical_request.name, shape)?,
-            "js" => scaffold_js_module(path, &canonical_request.name, shape)?,
+            "rust" => scaffold_rust_module(
+                path,
+                &canonical_request.name,
+                &canonical_request.name,
+                shape,
+            )?,
+            "swift" => scaffold_swift_module(
+                path,
+                &canonical_request.name,
+                &canonical_request.name,
+                shape,
+            )?,
+            "js" => scaffold_js_module(
+                path,
+                &canonical_request.name,
+                &canonical_request.name,
+                shape,
+            )?,
             "executable" => scaffold_executable_module(path, &canonical_request.name, shape)?,
             other => bail!("unsupported scaffold binding `{other}`"),
         }
@@ -16827,10 +17475,10 @@ fn run_add_capability(request: AddCapabilityRequest) -> Result<()> {
         .unwrap_or_else(|| request.name.clone());
     let domain_child = request
         .domain_child
-        .unwrap_or_else(|| format!("{}-rules", request.name));
+        .unwrap_or_else(|| default_domain_child_name(&request.name));
     let boundary_child = request
         .boundary_child
-        .unwrap_or_else(|| format!("{}-adapter", request.name));
+        .unwrap_or_else(|| default_boundary_child_name(&request.name));
     let domain_command = request
         .domain_command
         .unwrap_or_else(|| format!("resolve-{}", request.name));
@@ -16848,12 +17496,14 @@ fn run_add_capability(request: AddCapabilityRequest) -> Result<()> {
     scaffold_capability_domain_child(
         &domain_path,
         &domain_child,
+        &request.name,
         &domain_command,
         request.domain_binding.as_deref(),
     )?;
     scaffold_capability_boundary_child(
         &boundary_path,
         &boundary_child,
+        &request.name,
         &public_command,
         &domain_child,
         &domain_command,
@@ -16918,6 +17568,7 @@ fn scaffold_capability_parent(
 fn scaffold_capability_domain_child(
     path: &Path,
     name: &str,
+    semantic_name: &str,
     domain_command: &str,
     binding: Option<&str>,
 ) -> Result<()> {
@@ -16948,13 +17599,20 @@ fn scaffold_capability_domain_child(
         &render_capability_contract(domain_command, "domain decision command"),
     )?;
     scaffold_shape_evidence(path, ScaffoldShape::DomainEngine)?;
-    scaffold_binding_if_requested(path, name, ScaffoldShape::DomainEngine, binding)?;
+    scaffold_binding_if_requested(
+        path,
+        name,
+        semantic_name,
+        ScaffoldShape::DomainEngine,
+        binding,
+    )?;
     Ok(())
 }
 
 fn scaffold_capability_boundary_child(
     path: &Path,
     name: &str,
+    semantic_name: &str,
     public_command: &str,
     domain_child: &str,
     domain_command: &str,
@@ -16987,8 +17645,22 @@ fn scaffold_capability_boundary_child(
         &render_capability_contract(public_command, "boundary adapter public command"),
     )?;
     scaffold_shape_evidence(path, ScaffoldShape::BoundaryAdapter)?;
-    scaffold_binding_if_requested(path, name, ScaffoldShape::BoundaryAdapter, binding)?;
+    scaffold_binding_if_requested(
+        path,
+        name,
+        semantic_name,
+        ScaffoldShape::BoundaryAdapter,
+        binding,
+    )?;
     Ok(())
+}
+
+fn default_domain_child_name(capability_name: &str) -> String {
+    format!("{}-domain", semantic_id_segment(capability_name))
+}
+
+fn default_boundary_child_name(capability_name: &str) -> String {
+    format!("{}-boundary", semantic_id_segment(capability_name))
 }
 
 fn create_module_skeleton(path: &Path) -> Result<()> {
@@ -17009,14 +17681,15 @@ fn create_module_skeleton(path: &Path) -> Result<()> {
 fn scaffold_binding_if_requested(
     path: &Path,
     name: &str,
+    semantic_name: &str,
     shape: ScaffoldShape,
     binding: Option<&str>,
 ) -> Result<()> {
     validate_scaffold_binding(binding)?;
     match binding {
-        Some("rust") => scaffold_rust_module(path, name, shape),
-        Some("swift") => scaffold_swift_module(path, name, shape),
-        Some("js") => scaffold_js_module(path, name, shape),
+        Some("rust") => scaffold_rust_module(path, name, semantic_name, shape),
+        Some("swift") => scaffold_swift_module(path, name, semantic_name, shape),
+        Some("js") => scaffold_js_module(path, name, semantic_name, shape),
         Some("executable") => scaffold_executable_module(path, name, shape),
         None => Ok(()),
         Some(_) => unreachable!("validate_scaffold_binding accepted an unsupported binding"),
@@ -17176,34 +17849,52 @@ fn scaffold_shape_evidence(path: &Path, shape: ScaffoldShape) -> Result<()> {
     Ok(())
 }
 
-fn scaffold_rust_module(path: &Path, name: &str, shape: ScaffoldShape) -> Result<()> {
+fn scaffold_rust_module(
+    path: &Path,
+    name: &str,
+    semantic_name: &str,
+    shape: ScaffoldShape,
+) -> Result<()> {
     let package_name = sanitize_rust_package_name(name);
+    let names = inner_structure_names(semantic_name, shape);
     fs::create_dir_all(path.join("src"))?;
     write_new_file(
         &path.join("implementation.yaml"),
-        &render_rust_implementation_yaml(name, &package_name, shape),
+        &render_rust_implementation_yaml(name, &package_name, shape, &names),
     )?;
     write_new_file(
         &path.join("Cargo.toml"),
         &render_rust_cargo_toml(&package_name),
     )?;
-    write_new_file(&path.join("src").join("lib.rs"), &render_rust_lib_rs(shape))?;
+    write_new_file(
+        &path.join("src").join("lib.rs"),
+        &render_rust_lib_rs(shape, &names),
+    )?;
     write_new_file(
         &path.join("src").join("representation.rs"),
-        RUST_REPRESENTATION_RS,
+        &render_rust_representation_rs(&names),
     )?;
-    write_new_file(&path.join("src").join("transition.rs"), RUST_TRANSITION_RS)?;
+    write_new_file(
+        &path.join("src").join("transition.rs"),
+        &render_rust_transition_rs(&names),
+    )?;
     Ok(())
 }
 
-fn scaffold_swift_module(path: &Path, name: &str, shape: ScaffoldShape) -> Result<()> {
+fn scaffold_swift_module(
+    path: &Path,
+    name: &str,
+    semantic_name: &str,
+    shape: ScaffoldShape,
+) -> Result<()> {
     let package_name = sanitize_swift_package_name(name);
     let target_name = sanitize_swift_target_name(name);
+    let names = inner_structure_names(semantic_name, shape);
     fs::create_dir_all(path.join("Sources").join(&target_name))?;
     fs::create_dir_all(path.join("Tests").join(format!("{target_name}Tests")))?;
     write_new_file(
         &path.join("implementation.yaml"),
-        &render_swift_implementation_yaml(name, &package_name, &target_name, shape),
+        &render_swift_implementation_yaml(name, &package_name, &target_name, shape, &names),
     )?;
     write_new_file(
         &path.join("Package.swift"),
@@ -17214,14 +17905,14 @@ fn scaffold_swift_module(path: &Path, name: &str, shape: ScaffoldShape) -> Resul
             .join("Sources")
             .join(&target_name)
             .join("Representation.swift"),
-        SWIFT_REPRESENTATION,
+        &render_swift_representation(&names),
     )?;
     write_new_file(
         &path
             .join("Sources")
             .join(&target_name)
             .join("Transition.swift"),
-        SWIFT_TRANSITION,
+        &render_swift_transition(&names),
     )?;
     write_new_file(
         &path
@@ -17235,40 +17926,55 @@ fn scaffold_swift_module(path: &Path, name: &str, shape: ScaffoldShape) -> Resul
             .join("Tests")
             .join(format!("{target_name}Tests"))
             .join(format!("{target_name}Tests.swift")),
-        &render_swift_tests(&target_name),
+        &render_swift_tests(&target_name, &names),
     )?;
     Ok(())
 }
 
-fn scaffold_js_module(path: &Path, name: &str, shape: ScaffoldShape) -> Result<()> {
+fn scaffold_js_module(
+    path: &Path,
+    name: &str,
+    semantic_name: &str,
+    shape: ScaffoldShape,
+) -> Result<()> {
+    let names = inner_structure_names(semantic_name, shape);
     fs::create_dir_all(path.join("src"))?;
     fs::create_dir_all(path.join("tests"))?;
     fs::create_dir_all(path.join("scripts"))?;
     write_new_file(
         &path.join("implementation.yaml"),
-        &render_js_implementation_yaml(name, shape),
+        &render_js_implementation_yaml(name, shape, &names),
     )?;
     write_new_file(
         &path.join("src").join("representation.mjs"),
-        JS_REPRESENTATION_MJS,
+        &render_js_representation_mjs(&names),
     )?;
     match shape {
         ScaffoldShape::BoundaryAdapter
         | ScaffoldShape::StorageAdapter
         | ScaffoldShape::IntegrationAdapter => {
-            write_new_file(&path.join("src").join("parser.mjs"), JS_PARSER_MJS)?;
+            write_new_file(
+                &path.join("src").join("parser.mjs"),
+                &render_js_parser_mjs(&names),
+            )?;
             write_new_file(&path.join("src").join("ports.mjs"), JS_PORTS_MJS)?;
-            write_new_file(&path.join("src").join("adapter.mjs"), JS_ADAPTER_MJS)?;
+            write_new_file(
+                &path.join("src").join("adapter.mjs"),
+                &render_js_adapter_mjs(&names),
+            )?;
             write_new_file(
                 &path.join("tests").join("boundary-smoke.mjs"),
-                JS_BOUNDARY_TEST_MJS,
+                &render_js_boundary_test_mjs(&names),
             )?;
         }
         _ => {
-            write_new_file(&path.join("src").join("transition.mjs"), JS_TRANSITION_MJS)?;
+            write_new_file(
+                &path.join("src").join("transition.mjs"),
+                &render_js_transition_mjs(&names),
+            )?;
             write_new_file(
                 &path.join("tests").join("trace-smoke.mjs"),
-                JS_TRACE_TEST_MJS,
+                &render_js_trace_test_mjs(&names),
             )?;
         }
     }
@@ -17543,7 +18249,7 @@ fn render_module_readme(
     };
 
     format!(
-        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Semantic Shape\n\nShape: `{}`: `{}` ({})\n\nRequired roles:\n{}\n\nRepresentation is the RMS-level role for closed variants, validated values, commands, states, events, and result/rejection types. Implement it with language-idiomatic files or modules; do not treat a folder named `domain` or `types` as canonical architecture.\n\n## Representation Decisions\n\n- Closed domain alternatives should use ADTs, sealed variants, enums, or tagged constructors.\n- Public values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Expected domain failures should be explicit result or rejection values rather than ambient exceptions.\n- Lifecycle or order-dependent behavior should use a transition model with accepted and rejected outcomes.\n- Boundary input should be parsed into domain commands before reaching pure decisions.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Runtime Monitor Decisions\n\n- Use this section when the module declares the `monitor` profile or `runtime-monitor` shape.\n- Declare observed inputs, derived facts or streams, trigger conditions, monitor authority, retrigger/idempotency policy, and fail-open/fail-closed/degraded behavior in `module.yaml`.\n- Supervisory outputs must be public commands, events, alarms, findings, or capabilities. Do not mutate controlled module state directly.\n- Add runtime evidence for trigger and non-trigger cases before relying on a monitor for release or operational assurance.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs or illegal transitions when applicable.\n5. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms verify implementation.yaml` when an implementation binding exists.\n\n## Agent Workflow\n\nUse `rms design --root <system-root> --task \"<task>\"` when module boundaries or semantic shapes are unclear. Use `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms evolve-contract module.yaml --task \"<task>\"` when public meaning changes, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
+        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Semantic Shape\n\nShape: `{}`: `{}` ({})\n\nRequired roles:\n{}\n\nRepresentation is the RMS-level role for closed variants, validated values, commands, states, events, and result/rejection types. Implement it with language-idiomatic files or modules; do not treat a folder named `domain` or `types` as canonical architecture. Use domain-named role suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`.\n\n## Representation Decisions\n\n- Closed domain alternatives should use ADTs, sealed variants, enums, or tagged constructors.\n- Public values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Expected domain failures should be explicit result or rejection values rather than ambient exceptions.\n- Lifecycle or order-dependent behavior should use a transition model with accepted and rejected outcomes.\n- Boundary input should be parsed into domain commands before reaching pure decisions.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Runtime Monitor Decisions\n\n- Use this section when the module declares the `monitor` profile or `runtime-monitor` shape.\n- Declare observed inputs, derived facts or streams, trigger conditions, monitor authority, retrigger/idempotency policy, and fail-open/fail-closed/degraded behavior in `module.yaml`.\n- Supervisory outputs must be public commands, events, alarms, findings, or capabilities. Do not mutate controlled module state directly.\n- Add runtime evidence for trigger and non-trigger cases before relying on a monitor for release or operational assurance.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs or illegal transitions when applicable.\n5. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms structure implementation.yaml` and `rms verify implementation.yaml` when an implementation binding exists.\n\n## Agent Workflow\n\nUse `rms design --root <system-root> --task \"<task>\"` when module boundaries or semantic shapes are unclear. Use `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms evolve-contract module.yaml --task \"<task>\"` when public meaning changes, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
         markdown_inline(name),
         markdown_inline(purpose),
         markdown_inline(kind),
@@ -17580,19 +18286,147 @@ fn render_rust_implementation_yaml(
     module_name: &str,
     package_name: &str,
     shape: ScaffoldShape,
+    names: &InnerStructureNames,
 ) -> String {
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - representation\n    - transition\n  representation:\n    closed_variants:\n      - Command\n      - TransitionOutcome\n    validated_values:\n      - NonEmptyLabel\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: NonEmptyLabel::new\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - representation\n    - transition\n  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n    representation:\n      - src/representation.rs\n    transition:\n      - src/transition.rs\n    trace_evidence:\n      - verification/laws/transition_trace.md\n  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n",
         yaml_quote(module_name),
         yaml_quote(package_name),
         yaml_quote(shape.as_str()),
+        yaml_quote(&names.machine),
+        yaml_quote(&names.state),
+        yaml_quote(&names.command),
+        yaml_quote(&names.event),
+        yaml_quote(&names.effect),
+        yaml_quote(&names.effect_result),
+        yaml_quote(&names.reply),
+        yaml_quote(&names.rejection),
+        yaml_quote(&names.state),
+        yaml_quote(&names.command),
+        yaml_quote(&names.event),
+        yaml_quote(&names.effect),
+        yaml_quote(&names.effect_result),
+        yaml_quote(&names.reply),
+        yaml_quote(&names.rejection),
+        yaml_quote(&names.label),
+        names.label,
     )
 }
 
-fn render_rust_lib_rs(shape: ScaffoldShape) -> String {
+fn render_rust_lib_rs(shape: ScaffoldShape, names: &InnerStructureNames) -> String {
     format!(
-        "pub mod representation;\npub mod transition;\n\npub use crate::representation::{{Command, NonEmptyLabel, TransitionOutcome}};\npub use crate::transition::transition;\n\npub fn semantic_shape() -> &'static str {{\n    {:?}\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn rejects_invalid_representation() {{\n        assert!(NonEmptyLabel::new(\"\").is_none());\n    }}\n\n    #[test]\n    fn transition_is_replayable() {{\n        let label = NonEmptyLabel::new(\"example\").unwrap();\n        let outcome = transition(Command::Accept(label));\n        assert!(matches!(outcome, TransitionOutcome::Accepted));\n    }}\n}}\n",
+        "pub mod representation;\npub mod transition;\n\npub use crate::representation::{{{command}, {effect}, {effect_result}, {event}, {label}, {rejection}, {reply}, {state}}};\npub use crate::transition::{{replay_trace, transition, {machine}}};\n\npub fn semantic_shape() -> &'static str {{\n    {:?}\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn rejects_invalid_representation() {{\n        assert!({label}::new(\"\").is_none());\n    }}\n\n    #[test]\n    fn transition_is_replayable() {{\n        let label = {label}::new(\"example\").unwrap();\n        let outcome = {machine}::transition({command}::Accept(label));\n        assert!(matches!(outcome, {reply}::Accepted));\n    }}\n}}\n",
         shape.as_str()
+        ,
+        command = names.command,
+        effect = names.effect,
+        effect_result = names.effect_result,
+        event = names.event,
+        label = names.label,
+        machine = names.machine,
+        rejection = names.rejection,
+        reply = names.reply,
+        state = names.state,
+    )
+}
+
+fn render_rust_representation_rs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct {label}(String);
+
+impl {label} {{
+    pub fn new(value: impl Into<String>) -> Option<Self> {{
+        let value = value.into();
+        let trimmed = value.trim();
+        if trimmed.is_empty() {{
+            None
+        }} else {{
+            Some(Self(trimmed.to_string()))
+        }}
+    }}
+
+    pub fn as_str(&self) -> &str {{
+        &self.0
+    }}
+}}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum {state} {{
+    Ready,
+}}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum {command} {{
+    Accept({label}),
+    Reject({label}),
+}}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum {event} {{
+    Accepted,
+    Rejected({rejection}),
+}}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum {effect} {{
+    None,
+}}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum {effect_result} {{
+    Completed,
+}}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum {rejection} {{
+    InvalidCommand({label}),
+}}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum {reply} {{
+    Accepted,
+    Rejected({rejection}),
+}}
+"#,
+        command = names.command,
+        effect = names.effect,
+        effect_result = names.effect_result,
+        event = names.event,
+        label = names.label,
+        rejection = names.rejection,
+        reply = names.reply,
+        state = names.state,
+    )
+}
+
+fn render_rust_transition_rs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"use crate::representation::{{{command}, {rejection}, {reply}}};
+
+pub struct {machine};
+
+impl {machine} {{
+    pub fn transition(command: {command}) -> {reply} {{
+        transition(command)
+    }}
+}}
+
+pub fn transition(command: {command}) -> {reply} {{
+    match command {{
+        {command}::Accept(_) => {reply}::Accepted,
+        {command}::Reject(reason) => {reply}::Rejected({rejection}::InvalidCommand(reason)),
+    }}
+}}
+
+pub fn replay_trace(commands: impl IntoIterator<Item = {command}>) -> Vec<{reply}> {{
+    commands.into_iter().map(transition).collect()
+}}
+"#,
+        command = names.command,
+        machine = names.machine,
+        rejection = names.rejection,
+        reply = names.reply,
     )
 }
 
@@ -17607,11 +18441,12 @@ fn render_swift_implementation_yaml(
     package_name: &str,
     target_name: &str,
     shape: ScaffoldShape,
+    names: &InnerStructureNames,
 ) -> String {
     let source_root = format!("Sources/{target_name}");
     let public_entrypoint = format!("Sources/{target_name}/{target_name}.swift");
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n  representation:\n    closed_variants:\n      - Command\n      - TransitionOutcome\n    validated_values:\n      - NonEmptyLabel\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#NonEmptyLabel.init\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n    representation:\n      - Sources/{}/Representation.swift\n    transition:\n      - Sources/{}/Transition.swift\n    trace_evidence:\n      - verification/laws/transition_trace.md\n  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n",
         yaml_quote(module_name),
         yaml_quote(&source_root),
         yaml_quote(&public_entrypoint),
@@ -17621,7 +18456,26 @@ fn render_swift_implementation_yaml(
         yaml_quote(&public_entrypoint),
         target_name,
         target_name,
+        yaml_quote(&names.machine),
+        yaml_quote(&names.state),
+        yaml_quote(&names.command),
+        yaml_quote(&names.event),
+        yaml_quote(&names.effect),
+        yaml_quote(&names.effect_result),
+        yaml_quote(&names.reply),
+        yaml_quote(&names.rejection),
         target_name,
+        target_name,
+        yaml_quote(&names.state),
+        yaml_quote(&names.command),
+        yaml_quote(&names.event),
+        yaml_quote(&names.effect),
+        yaml_quote(&names.effect_result),
+        yaml_quote(&names.reply),
+        yaml_quote(&names.rejection),
+        yaml_quote(&names.label),
+        target_name,
+        names.label,
         target_name,
     )
 }
@@ -17639,21 +18493,368 @@ fn render_swift_source(target_name: &str, shape: ScaffoldShape) -> String {
     )
 }
 
-fn render_swift_tests(target_name: &str) -> String {
+fn render_swift_representation(names: &InnerStructureNames) -> String {
     format!(
-        "import XCTest\n@testable import {target_name}\n\nfinal class {target_name}Tests: XCTestCase {{\n    func testRejectsEmptyValue() {{\n        XCTAssertNil(NonEmptyLabel(\"\"))\n    }}\n\n    func testTransitionIsReplayable() {{\n        let label = NonEmptyLabel(\"example\")!\n        XCTAssertEqual(transition(.accept(label)), .accepted)\n    }}\n}}\n"
+        r#"public struct {label}: Equatable {{
+    private let rawValue: String
+
+    public init?(_ rawValue: String) {{
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {{ return nil }}
+        self.rawValue = trimmed
+    }}
+
+    public var value: String {{ rawValue }}
+}}
+
+public enum {state}: Equatable {{
+    case ready
+}}
+
+public enum {command}: Equatable {{
+    case accept({label})
+    case reject({label})
+}}
+
+public enum {event}: Equatable {{
+    case accepted
+    case rejected({rejection})
+}}
+
+public enum {effect}: Equatable {{
+    case none
+}}
+
+public enum {effect_result}: Equatable {{
+    case completed
+}}
+
+public enum {rejection}: Equatable {{
+    case invalidCommand({label})
+}}
+
+public enum {reply}: Equatable {{
+    case accepted
+    case rejected({rejection})
+}}
+"#,
+        command = names.command,
+        effect = names.effect,
+        effect_result = names.effect_result,
+        event = names.event,
+        label = names.label,
+        rejection = names.rejection,
+        reply = names.reply,
+        state = names.state,
     )
 }
 
-fn render_js_implementation_yaml(module_name: &str, shape: ScaffoldShape) -> String {
+fn render_swift_transition(names: &InnerStructureNames) -> String {
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: src/representation.mjs\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\narchitecture:\n  shape: {}\n  public_modules:\n    - src/representation.mjs\n  representation:\n    closed_variants:\n      - Command\n      - TransitionOutcome\n    validated_values:\n      - makeNonEmptyLabel\n    transition_functions:\n      - transition\n  effect_roles:\n{}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#makeNonEmptyLabel\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n",
+        r#"public enum {machine} {{
+    public static func transition(_ command: {command}) -> {reply} {{
+        return transition(command)
+    }}
+}}
+
+public func transition(_ command: {command}) -> {reply} {{
+    switch command {{
+    case .accept:
+        return .accepted
+    case .reject(let reason):
+        return .rejected(.invalidCommand(reason))
+    }}
+}}
+
+public func replayTrace(_ commands: [{command}]) -> [{reply}] {{
+    commands.map(transition)
+}}
+"#,
+        command = names.command,
+        machine = names.machine,
+        reply = names.reply,
+    )
+}
+
+fn render_swift_tests(target_name: &str, names: &InnerStructureNames) -> String {
+    format!(
+        "import XCTest\n@testable import {target_name}\n\nfinal class {target_name}Tests: XCTestCase {{\n    func testRejectsEmptyValue() {{\n        XCTAssertNil({label}(\"\"))\n    }}\n\n    func testTransitionIsReplayable() {{\n        let label = {label}(\"example\")!\n        XCTAssertEqual({machine}.transition(.accept(label)), .accepted)\n    }}\n}}\n",
+        label = names.label,
+        machine = names.machine,
+    )
+}
+
+fn render_js_implementation_yaml(
+    module_name: &str,
+    shape: ScaffoldShape,
+    names: &InnerStructureNames,
+) -> String {
+    let boundary_shape = matches!(
+        shape,
+        ScaffoldShape::BoundaryAdapter
+            | ScaffoldShape::StorageAdapter
+            | ScaffoldShape::IntegrationAdapter
+    );
+    let public_entrypoint = if boundary_shape {
+        "src/adapter.mjs"
+    } else {
+        "src/transition.mjs"
+    };
+    let public_modules = if boundary_shape {
+        "    - src/representation.mjs\n    - src/parser.mjs\n    - src/ports.mjs\n    - src/adapter.mjs"
+    } else {
+        "    - src/representation.mjs\n    - src/transition.mjs"
+    };
+    let roles = if boundary_shape {
+        "    representation:\n      - src/representation.mjs\n    parser:\n      - src/parser.mjs\n    adapter:\n      - src/adapter.mjs\n    trace_evidence:\n      - verification/boundaries/malformed_input.md"
+    } else {
+        "    representation:\n      - src/representation.mjs\n    transition:\n      - src/transition.mjs\n    trace_evidence:\n      - verification/laws/transition_trace.md"
+    };
+    let transition_semantic_function = if boundary_shape {
+        ""
+    } else {
+        "  - id: transition-model\n    symbol: src/transition.mjs#transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n"
+    };
+    let boundary_semantic_function = if boundary_shape {
+        "  - id: boundary-parser\n    symbol: src/parser.mjs#parseCommand\n    kind: parser\n    purity: pure\n    evidence:\n      boundaries:\n        - verification/boundaries/malformed_input.md\n  - id: boundary-adapter\n    symbol: src/adapter.mjs#handleBoundaryInput\n    kind: adapter\n    purity: boundary\n    evidence:\n      contracts:\n        - verification/contracts/parser_to_domain_command.md\n"
+    } else {
+        ""
+    };
+    format!(
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\narchitecture:\n  shape: {}\n  public_modules:\n{}\n  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}\n  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - make{}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n{}{}",
         yaml_quote(module_name),
+        yaml_quote(public_entrypoint),
         yaml_quote(shape.as_str()),
-        yaml_string_list(
-            &shape.roles().iter().map(|role| (*role).to_string()).collect::<Vec<_>>(),
-            4
-        )
+        public_modules,
+        yaml_quote(&names.machine),
+        yaml_quote(&names.state),
+        yaml_quote(&names.command),
+        yaml_quote(&names.event),
+        yaml_quote(&names.effect),
+        yaml_quote(&names.effect_result),
+        yaml_quote(&names.reply),
+        yaml_quote(&names.rejection),
+        roles,
+        yaml_quote(&names.state),
+        yaml_quote(&names.command),
+        yaml_quote(&names.event),
+        yaml_quote(&names.effect),
+        yaml_quote(&names.effect_result),
+        yaml_quote(&names.reply),
+        yaml_quote(&names.rejection),
+        names.label,
+        names.label,
+        transition_semantic_function,
+        boundary_semantic_function,
+    )
+}
+
+fn render_js_representation_mjs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"export function make{label}(value) {{
+  const label = typeof value === "string" ? value.trim() : "";
+  if (!label) {{
+    return null;
+  }}
+  return Object.freeze({{ tag: "{label}", value: label }});
+}}
+
+export function initial{state}() {{
+  return Object.freeze({{ tag: "{state}.Ready" }});
+}}
+
+export function make{command}Accept(label) {{
+  return Object.freeze({{ tag: "{command}.Accept", label }});
+}}
+
+export function make{command}Reject(reason) {{
+  return Object.freeze({{ tag: "{command}.Reject", reason }});
+}}
+
+export function make{event}Accepted() {{
+  return Object.freeze({{ tag: "{event}.Accepted" }});
+}}
+
+export function make{event}Rejected(rejection) {{
+  return Object.freeze({{ tag: "{event}.Rejected", rejection }});
+}}
+
+export function make{effect}None() {{
+  return Object.freeze({{ tag: "{effect}.None" }});
+}}
+
+export function make{effect_result}Completed() {{
+  return Object.freeze({{ tag: "{effect_result}.Completed" }});
+}}
+
+export function make{rejection}InvalidCommand(reason) {{
+  return Object.freeze({{ tag: "{rejection}.InvalidCommand", reason }});
+}}
+
+export function make{rejection}MalformedInput(reason) {{
+  return Object.freeze({{ tag: "{rejection}.MalformedInput", reason }});
+}}
+
+export function make{reply}Accepted() {{
+  return Object.freeze({{ tag: "{reply}.Accepted" }});
+}}
+
+export function make{reply}Rejected(rejection) {{
+  return Object.freeze({{ tag: "{reply}.Rejected", rejection }});
+}}
+"#,
+        command = names.command,
+        effect = names.effect,
+        effect_result = names.effect_result,
+        event = names.event,
+        label = names.label,
+        rejection = names.rejection,
+        reply = names.reply,
+        state = names.state,
+    )
+}
+
+fn render_js_transition_mjs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"import {{
+  make{rejection}InvalidCommand,
+  make{reply}Accepted,
+  make{reply}Rejected,
+}} from "./representation.mjs";
+
+export function transition(command) {{
+  switch (command?.tag) {{
+    case "{command}.Accept":
+      return make{reply}Accepted();
+    case "{command}.Reject":
+      return make{reply}Rejected(make{rejection}InvalidCommand(command.reason));
+    default:
+      return make{reply}Rejected(make{rejection}InvalidCommand("unknown-command"));
+  }}
+}}
+
+export function replayTrace(commands) {{
+  return commands.map(transition);
+}}
+
+export const {machine} = Object.freeze({{
+  transition,
+  replayTrace,
+}});
+"#,
+        command = names.command,
+        machine = names.machine,
+        rejection = names.rejection,
+        reply = names.reply,
+    )
+}
+
+fn render_js_parser_mjs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"import {{
+  make{command}Accept,
+  make{command}Reject,
+  make{label},
+  make{rejection}MalformedInput,
+}} from "./representation.mjs";
+
+export function parseCommand(input) {{
+  const label = make{label}(input?.label ?? input);
+  if (!label) {{
+    return Object.freeze({{
+      tag: "{prefix}ParseRejected",
+      rejection: make{rejection}MalformedInput("missing-label"),
+    }});
+  }}
+
+  const command = input?.reject === true
+    ? make{command}Reject(label)
+    : make{command}Accept(label);
+  return Object.freeze({{ tag: "{prefix}ParsedCommand", command }});
+}}
+"#,
+        command = names.command,
+        label = names.label,
+        prefix = names.prefix,
+        rejection = names.rejection,
+    )
+}
+
+fn render_js_adapter_mjs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"import {{
+  make{reply}Accepted,
+  make{reply}Rejected,
+}} from "./representation.mjs";
+import {{ parseCommand }} from "./parser.mjs";
+
+export function handleBoundaryInput(input, ports) {{
+  const parsed = parseCommand(input);
+  if (parsed.tag === "{prefix}ParseRejected") {{
+    return make{reply}Rejected(parsed.rejection);
+  }}
+
+  ports?.write?.(parsed.command);
+  return make{reply}Accepted();
+}}
+"#,
+        prefix = names.prefix,
+        reply = names.reply,
+    )
+}
+
+fn render_js_trace_test_mjs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"import assert from "node:assert/strict";
+import test from "node:test";
+import {{
+  make{command}Accept,
+  make{label},
+}} from "../src/representation.mjs";
+import {{ replayTrace, {machine} }} from "../src/transition.mjs";
+
+test("{machine} rejects invalid representation", () => {{
+  assert.equal(make{label}(""), null);
+}});
+
+test("{machine} replays accepted commands", () => {{
+  const label = make{label}("example");
+  assert.deepEqual(replayTrace([make{command}Accept(label)]).map((item) => item.tag), [
+    "{reply}.Accepted",
+  ]);
+  assert.equal({machine}.transition(make{command}Accept(label)).tag, "{reply}.Accepted");
+}});
+"#,
+        command = names.command,
+        label = names.label,
+        machine = names.machine,
+        reply = names.reply,
+    )
+}
+
+fn render_js_boundary_test_mjs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"import assert from "node:assert/strict";
+import test from "node:test";
+import {{ handleBoundaryInput }} from "../src/adapter.mjs";
+import {{ createPorts }} from "../src/ports.mjs";
+
+test("{machine} boundary adapter rejects malformed input", () => {{
+  const ports = createPorts();
+  assert.equal(handleBoundaryInput("", ports).tag, "{reply}.Rejected");
+}});
+
+test("{machine} boundary adapter writes parsed commands", () => {{
+  const written = [];
+  const ports = createPorts({{ write: (command) => written.push(command) }});
+  assert.equal(handleBoundaryInput("example", ports).tag, "{reply}.Accepted");
+  assert.equal(written.length, 1);
+  assert.equal(written[0].tag, "{command}.Accept");
+}});
+"#,
+        command = names.command,
+        machine = names.machine,
+        reply = names.reply,
     )
 }
 
@@ -17716,180 +18917,12 @@ const EXECUTABLE_BUILD_SH: &str =
 
 const EXECUTABLE_SMOKE_SH: &str = "#!/usr/bin/env sh\nset -eu\ntest -f module.yaml\ntest -f implementation.yaml\nprintf '%s\\n' 'executable binding smoke passed'\n";
 
-const RUST_REPRESENTATION_RS: &str = r#"#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NonEmptyLabel(String);
-
-impl NonEmptyLabel {
-    pub fn new(value: impl Into<String>) -> Option<Self> {
-        let value = value.into();
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(Self(trimmed.to_string()))
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Command {
-    Accept(NonEmptyLabel),
-    Reject(NonEmptyLabel),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TransitionOutcome {
-    Accepted,
-    Rejected { reason: NonEmptyLabel },
-}
-"#;
-
-const RUST_TRANSITION_RS: &str = r#"use crate::representation::{Command, TransitionOutcome};
-
-pub fn transition(command: Command) -> TransitionOutcome {
-    match command {
-        Command::Accept(_) => TransitionOutcome::Accepted,
-        Command::Reject(reason) => TransitionOutcome::Rejected { reason },
-    }
-}
-
-pub fn replay_trace(commands: impl IntoIterator<Item = Command>) -> Vec<TransitionOutcome> {
-    commands.into_iter().map(transition).collect()
-}
-"#;
-
-const SWIFT_REPRESENTATION: &str = r#"public struct NonEmptyLabel: Equatable {
-    private let rawValue: String
-
-    public init?(_ rawValue: String) {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        self.rawValue = trimmed
-    }
-
-    public var value: String { rawValue }
-}
-
-public enum Command: Equatable {
-    case accept(NonEmptyLabel)
-    case reject(NonEmptyLabel)
-}
-
-public enum TransitionOutcome: Equatable {
-    case accepted
-    case rejected(reason: NonEmptyLabel)
-}
-"#;
-
-const SWIFT_TRANSITION: &str = r#"public func transition(_ command: Command) -> TransitionOutcome {
-    switch command {
-    case .accept:
-        return .accepted
-    case .reject(let reason):
-        return .rejected(reason: reason)
-    }
-}
-
-public func replayTrace(_ commands: [Command]) -> [TransitionOutcome] {
-    commands.map(transition)
-}
-"#;
-
-const JS_REPRESENTATION_MJS: &str = r#"export function makeNonEmptyLabel(value) {
-  const label = typeof value === "string" ? value.trim() : "";
-  if (!label) {
-    return null;
-  }
-  return Object.freeze({ tag: "NonEmptyLabel", value: label });
-}
-
-export function accept(label) {
-  return Object.freeze({ tag: "Accept", label });
-}
-
-export function reject(reason) {
-  return Object.freeze({ tag: "Reject", reason });
-}
-
-export function accepted() {
-  return Object.freeze({ tag: "Accepted" });
-}
-
-export function rejected(reason) {
-  return Object.freeze({ tag: "Rejected", reason });
-}
-"#;
-
-const JS_TRANSITION_MJS: &str = r#"import { accepted, rejected } from "./representation.mjs";
-
-export function transition(command) {
-  if (command?.tag === "Accept") {
-    return accepted();
-  }
-  if (command?.tag === "Reject") {
-    return rejected(command.reason);
-  }
-  return rejected(Object.freeze({ tag: "NonEmptyLabel", value: "unknown-command" }));
-}
-
-export function replayTrace(commands) {
-  return commands.map(transition);
-}
-"#;
-
-const JS_PARSER_MJS: &str = r#"import { accept, makeNonEmptyLabel, reject } from "./representation.mjs";
-
-export function parseCommand(input) {
-  const label = makeNonEmptyLabel(input?.label ?? input);
-  if (!label) {
-    return null;
-  }
-  return input?.reject === true ? reject(label) : accept(label);
-}
-"#;
-
 const JS_PORTS_MJS: &str = r#"export function createPorts(overrides = {}) {
   return Object.freeze({
     read: overrides.read ?? (() => null),
     write: overrides.write ?? (() => false),
   });
 }
-"#;
-
-const JS_ADAPTER_MJS: &str = r#"import { parseCommand } from "./parser.mjs";
-
-export function handleBoundaryInput(input, ports) {
-  const command = parseCommand(input);
-  if (!command) {
-    return Object.freeze({ tag: "Rejected", reason: "malformed-input" });
-  }
-  ports?.write?.(command);
-  return Object.freeze({ tag: "Accepted", command });
-}
-"#;
-
-const JS_TRACE_TEST_MJS: &str = r#"import assert from "node:assert/strict";
-import { accept, makeNonEmptyLabel } from "../src/representation.mjs";
-import { replayTrace } from "../src/transition.mjs";
-
-assert.equal(makeNonEmptyLabel(""), null);
-const label = makeNonEmptyLabel("example");
-assert.deepEqual(replayTrace([accept(label)]).map((item) => item.tag), ["Accepted"]);
-"#;
-
-const JS_BOUNDARY_TEST_MJS: &str = r#"import assert from "node:assert/strict";
-import { handleBoundaryInput } from "../src/adapter.mjs";
-import { createPorts } from "../src/ports.mjs";
-
-const written = [];
-const ports = createPorts({ write: (command) => written.push(command) });
-assert.equal(handleBoundaryInput("", ports).tag, "Rejected");
-assert.equal(handleBoundaryInput("example", ports).tag, "Accepted");
-assert.equal(written.length, 1);
 "#;
 
 const JS_BUILD_SH: &str = "#!/usr/bin/env sh\nset -eu\nnode --check src/representation.mjs\nif [ -f src/transition.mjs ]; then node --check src/transition.mjs; fi\nif [ -f src/parser.mjs ]; then node --check src/parser.mjs; fi\nif [ -f src/adapter.mjs ]; then node --check src/adapter.mjs; fi\n";
@@ -17921,6 +18954,138 @@ fn shell_arg(value: &str) -> String {
         value.to_string()
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+fn inner_structure_names(semantic_name: &str, shape: ScaffoldShape) -> InnerStructureNames {
+    let prefix = semantic_role_prefix(semantic_name, shape);
+    InnerStructureNames {
+        machine: format!("{prefix}Machine"),
+        state: format!("{prefix}State"),
+        command: format!("{prefix}Command"),
+        event: format!("{prefix}Event"),
+        effect: format!("{prefix}Effect"),
+        effect_result: format!("{prefix}EffectResult"),
+        reply: format!("{prefix}Reply"),
+        rejection: format!("{prefix}Rejection"),
+        label: format!("{prefix}Label"),
+        prefix,
+    }
+}
+
+fn semantic_role_prefix(semantic_name: &str, shape: ScaffoldShape) -> String {
+    let mut tokens = semantic_identifier_tokens(semantic_name);
+    while tokens.len() > 1
+        && tokens
+            .last()
+            .is_some_and(|token| is_role_suffix_token(token.as_str()))
+    {
+        tokens.pop();
+    }
+
+    let mut prefix = pascal_case_tokens(&tokens);
+    let role_suffix = match shape {
+        ScaffoldShape::DomainEngine => "",
+        ScaffoldShape::BoundaryAdapter => "Boundary",
+        ScaffoldShape::RuntimeMonitor => "Monitor",
+        ScaffoldShape::Workflow => "Workflow",
+        ScaffoldShape::StorageAdapter => "Storage",
+        ScaffoldShape::IntegrationAdapter => "Integration",
+        ScaffoldShape::Composite => "Composite",
+    };
+    if !role_suffix.is_empty() && !prefix.ends_with(role_suffix) {
+        prefix.push_str(role_suffix);
+    }
+    prefix
+}
+
+fn semantic_identifier_tokens(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            current.push(character.to_ascii_lowercase());
+        } else if !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    if tokens.is_empty() {
+        tokens.push("module".to_string());
+    }
+    tokens
+}
+
+fn is_role_suffix_token(token: &str) -> bool {
+    matches!(
+        token,
+        "adapter"
+            | "adaptor"
+            | "api"
+            | "boundary"
+            | "boundaries"
+            | "cli"
+            | "domain"
+            | "engine"
+            | "integration"
+            | "javascript"
+            | "js"
+            | "mjs"
+            | "monitor"
+            | "persistence"
+            | "python"
+            | "rules"
+            | "rule"
+            | "rust"
+            | "runtime"
+            | "storage"
+            | "store"
+            | "swift"
+            | "ts"
+            | "typescript"
+            | "ui"
+            | "web"
+            | "workflow"
+    )
+}
+
+fn pascal_case_tokens(tokens: &[String]) -> String {
+    let prefix = tokens
+        .iter()
+        .map(|token| pascal_case_identifier(token))
+        .collect::<Vec<_>>()
+        .join("");
+    if prefix.is_empty() {
+        "Module".to_string()
+    } else {
+        prefix
+    }
+}
+
+fn pascal_case_identifier(value: &str) -> String {
+    let mut output = String::new();
+    let mut capitalize_next = true;
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            if output.is_empty() && character.is_ascii_digit() {
+                output.push_str("Module");
+            }
+            if capitalize_next {
+                output.extend(character.to_uppercase());
+                capitalize_next = false;
+            } else {
+                output.push(character);
+            }
+        } else {
+            capitalize_next = true;
+        }
+    }
+    if output.is_empty() {
+        "Module".to_string()
+    } else {
+        output
     }
 }
 
@@ -18009,6 +19174,7 @@ Use these advisory workbench commands when they match the task:
 - `rms evolve-contract <module.yaml> --task "<task>"`
 - `rms evidence <module.yaml> --task "<task>"`
 - `rms refactor <module.yaml> --task "<task>"`
+- `rms structure <implementation.yaml>` when implementation inner roles, machine declarations, or evidence placeholders are unclear
 - `rms review <module.yaml> --impact`
 
 Provider-backed prompts are opt-in. Use `--provider codex` or `--ai` only when an external Codex run is intended.
@@ -18048,6 +19214,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Change public contracts or manifests before code when public meaning changes.
 - Declare new effects, dependencies, profiles, state, migration, compatibility impact, and recovery paths before relying on them.
 - Make representation first-class: closed variants, validated values, commands, states, events, and accepted/rejected result types belong in an explicit role or unit.
+- Use domain-named role suffixes for generated or declared ADTs where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`.
 - Keep pure transitions separate from representation definitions, and keep boundary parsing separate from both.
 - Prefer ADTs, sealed variants, enums, opaque values, validated constructors, explicit result/rejection types, schemas at untrusted boundaries, and focused tests.
 - Use state machines or transition functions when behavior depends on lifecycle or order; illegal transitions must be rejected or made unrepresentable.
@@ -18060,6 +19227,7 @@ Run the smallest checks that prove the changed promise:
 
 - `rms validate --root .`
 - `rms compose --root .`
+- `rms structure <implementation.yaml>` when an implementation binding exists and inner roles changed.
 - `rms verify <implementation.yaml>` when the module has an implementation binding, or `rms verify <composite-module.yaml>` for composite rollups.
 - `rms gate --root .` when reviewing a working-tree change.
 
@@ -18176,6 +19344,22 @@ fn get_string_array(value: &YamlValue, path: &[&str]) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn yaml_string_values(value: &YamlValue) -> Vec<String> {
+    if let Some(value) = value.as_str() {
+        return vec![value.to_string()];
+    }
+    value
+        .as_sequence()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(YamlValue::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn require_str(
     manifest: &LoadedManifest,
     diagnostics: &mut Vec<Diagnostic>,
@@ -18225,6 +19409,31 @@ fn warning(check: impl Into<String>, path: &Path, message: impl Into<String>) ->
         path: path.display().to_string(),
         message: message.into(),
     }
+}
+
+fn push_unique_warning(
+    diagnostics: &mut Vec<Diagnostic>,
+    check: impl Into<String>,
+    path: &Path,
+    message: impl Into<String>,
+) {
+    let check = check.into();
+    let path_string = path.display().to_string();
+    let message = message.into();
+    if diagnostics.iter().any(|diagnostic| {
+        diagnostic.severity == Severity::Warning
+            && diagnostic.check == check
+            && diagnostic.path == path_string
+            && diagnostic.message == message
+    }) {
+        return;
+    }
+    diagnostics.push(Diagnostic {
+        severity: Severity::Warning,
+        check,
+        path: path_string,
+        message,
+    });
 }
 
 fn error_diagnostic(
@@ -18742,6 +19951,8 @@ verification: {}
             diagnostic_category("profile.distributed.reconciliation"),
             "profiles"
         );
+        assert_eq!(diagnostic_category("structure.machine-missing"), "manifest");
+        assert_eq!(diagnostic_category("evidence.placeholder"), "laws");
         assert_eq!(diagnostic_category("security.secret-key"), "security");
     }
 
@@ -18903,6 +20114,8 @@ import struct ExternalKit.Widget
         assert!(agents.contains("Semantic Structure Before Code"));
         assert!(agents.contains("Edge cases first"));
         assert!(agents.contains("Make representation first-class"));
+        assert!(agents.contains("rms structure <implementation.yaml>"));
+        assert!(agents.contains("<Domain>Machine"));
         assert!(agents.contains("rms route <module.yaml> --task"));
         assert!(agents.contains("rms context <module.yaml> --task"));
         assert!(gitignore.contains(".rms/runs/"));
@@ -19069,9 +20282,21 @@ import struct ExternalKit.Widget
             "Demonstrate Rust module scaffolding.",
             "rust",
         );
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        let representation = fs::read_to_string(root.join("src/representation.rs")).unwrap();
+        let transition = fs::read_to_string(root.join("src/transition.rs")).unwrap();
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
 
         fs::remove_dir_all(&root).unwrap();
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_no_error_diagnostics(&diagnostics);
+        assert!(implementation.contains("name: \"ExampleMachine\""));
+        assert!(implementation.contains("- \"ExampleCommand\""));
+        assert!(implementation.contains("- \"ExampleState\""));
+        assert!(representation.contains("pub enum ExampleCommand"));
+        assert!(representation.contains("pub enum ExampleState"));
+        assert!(representation.contains("pub enum ExampleReply"));
+        assert!(transition.contains("pub struct ExampleMachine"));
+        assert_eq!(report.machine.name.as_deref(), Some("ExampleMachine"));
     }
 
     #[test]
@@ -19103,9 +20328,22 @@ import struct ExternalKit.Widget
             "Demonstrate Swift module scaffolding.",
             "swift",
         );
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        let representation =
+            fs::read_to_string(root.join("Sources/ExampleSwift/Representation.swift")).unwrap();
+        let transition =
+            fs::read_to_string(root.join("Sources/ExampleSwift/Transition.swift")).unwrap();
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
 
         fs::remove_dir_all(&root).unwrap();
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_no_error_diagnostics(&diagnostics);
+        assert!(implementation.contains("name: \"ExampleMachine\""));
+        assert!(implementation.contains("- \"ExampleCommand\""));
+        assert!(representation.contains("public enum ExampleCommand"));
+        assert!(representation.contains("public enum ExampleState"));
+        assert!(representation.contains("public enum ExampleReply"));
+        assert!(transition.contains("public enum ExampleMachine"));
+        assert_eq!(report.machine.name.as_deref(), Some("ExampleMachine"));
     }
 
     #[test]
@@ -19154,7 +20392,7 @@ import struct ExternalKit.Widget
         run_verify(&root.join("implementation.yaml"), false).unwrap();
 
         fs::remove_dir_all(&root).unwrap();
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_no_error_diagnostics(&diagnostics);
     }
 
     #[test]
@@ -19185,12 +20423,199 @@ import struct ExternalKit.Widget
         assert!(root.join("src/ports.mjs").exists());
         assert!(root.join("src/adapter.mjs").exists());
         let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        let representation = fs::read_to_string(root.join("src/representation.mjs")).unwrap();
         assert!(implementation.contains("binding: js"));
         assert!(implementation.contains("shape: \"boundary-adapter\""));
+        assert!(implementation.contains("name: \"ExampleBoundaryMachine\""));
+        assert!(implementation.contains("- \"ExampleBoundaryCommand\""));
+        assert!(implementation.contains("parser:"));
+        assert!(representation.contains("makeExampleBoundaryCommandAccept"));
+        assert!(representation.contains("makeExampleBoundaryReplyRejected"));
         run_verify(&root.join("implementation.yaml"), false).unwrap();
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
 
         fs::remove_dir_all(&root).unwrap();
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_no_error_diagnostics(&diagnostics);
+        assert_eq!(
+            report.machine.name.as_deref(),
+            Some("ExampleBoundaryMachine")
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "structure.role-suffix-machine-name"),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn structure_report_flags_missing_inner_roles() {
+        let root = unique_test_dir("structure-missing");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/transition.mjs"),
+            "export function transition() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: "missing-structure"
+binding: js
+source:
+  root: .
+  public_entrypoint: src/transition.mjs
+commands:
+  build: node --check src/transition.mjs
+  verify: node --check src/transition.mjs
+architecture:
+  shape: domain-engine
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, "review-required");
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "structure.machine-missing"));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "structure.transition-missing"));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "structure.representation-missing"));
+    }
+
+    #[test]
+    fn structure_report_flags_role_suffix_machine_names() {
+        let root = unique_test_dir("structure-role-suffix-machine");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/representation.mjs"),
+            "export const ok = true;\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/transition.mjs"),
+            "export function transition(state, command) { return { state, command }; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: "coupon-rules"
+binding: js
+source:
+  root: .
+  public_entrypoint: src/transition.mjs
+commands:
+  build: node --check src/transition.mjs
+  verify: node --check src/transition.mjs
+architecture:
+  shape: domain-engine
+  machine:
+    name: CouponRulesMachine
+    state: CouponRulesState
+    commands:
+      - CouponRulesCommand
+    events:
+      - CouponRulesEvent
+    effects: []
+    effect_results: []
+    replies:
+      - CouponRulesReply
+    rejections:
+      - CouponRulesRejection
+    transition_function: transition
+  roles:
+    representation:
+      - src/representation.mjs
+    transition:
+      - src/transition.mjs
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.role-suffix-machine-name"
+                && diagnostic.message.contains("CouponRulesMachine")
+        }));
+    }
+
+    #[test]
+    fn structure_report_flags_hidden_domain_effects() {
+        let root = unique_test_dir("structure-hidden-effect");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/representation.mjs"),
+            "export const ok = true;\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/transition.mjs"),
+            "export function transition() { Date.now(); throw new Error('bad-state'); }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: "hidden-effect"
+binding: js
+source:
+  root: .
+  public_entrypoint: src/transition.mjs
+commands:
+  build: node --check src/transition.mjs
+  verify: node --check src/transition.mjs
+architecture:
+  shape: domain-engine
+  machine:
+    name: HiddenEffectMachine
+    state: HiddenEffectState
+    commands:
+      - HiddenEffectCommand
+    events:
+      - HiddenEffectEvent
+    effects:
+      - HiddenEffectEffect
+    effect_results:
+      - HiddenEffectEffectResult
+    replies:
+      - HiddenEffectReply
+    rejections:
+      - HiddenEffectRejection
+    transition_function: transition
+  roles:
+    representation:
+      - src/representation.mjs
+    transition:
+      - src/transition.mjs
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "structure.hidden-effect-in-domain"));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "structure.expected-failure-throws"));
     }
 
     #[test]
@@ -19205,8 +20630,9 @@ import struct ExternalKit.Widget
         assert!(rendered.contains("Edge cases first"));
         assert!(rendered.contains("### Recommended Module Tree"));
         assert!(rendered.contains("`<capability>` [composite]"));
-        assert!(rendered.contains("`<capability>-rules` [domain-engine, internal]"));
-        assert!(rendered.contains("`<capability>-adapter` [boundary-adapter, internal]"));
+        assert!(rendered.contains("`<semantic-domain-child>` [domain-engine, internal]"));
+        assert!(rendered.contains("`<semantic-boundary-child>` [boundary-adapter, internal]"));
+        assert!(rendered.contains("Name children in product/domain language"));
         assert!(rendered.contains("domain-engine"));
         assert!(rendered.contains("boundary-adapter"));
         assert!(!rendered.contains("snake-rules"));
@@ -19297,7 +20723,8 @@ import struct ExternalKit.Widget
         assert!(manifest.contains("shape: \"runtime-monitor\""));
         assert!(readme.contains("## Runtime Monitor Decisions"));
         assert!(runtime_evidence.contains("One trigger case"));
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_no_error_diagnostics(&diagnostics);
+        assert_has_warning(&diagnostics, "evidence.placeholder");
     }
 
     #[test]
@@ -19533,7 +20960,8 @@ verification:
         assert!(module_yaml.contains("authority: observe-only"));
 
         fs::remove_dir_all(&root).unwrap();
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_no_error_diagnostics(&diagnostics);
+        assert_has_warning(&diagnostics, "evidence.placeholder");
     }
 
     fn assert_module_scaffold_guidance(root: &Path, name: &str, purpose: &str, binding: &str) {
@@ -20268,7 +21696,8 @@ verification:
         assert!(manifest.contains("composition:"));
         assert!(manifest.contains("contains: []"));
         assert!(manifest.contains("exports: []"));
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_no_error_diagnostics(&diagnostics);
+        assert_has_warning(&diagnostics, "evidence.placeholder");
     }
 
     #[test]
@@ -20308,6 +21737,10 @@ verification:
 
         let parent = fs::read_to_string(root.join("modules/play-game/module.yaml")).unwrap();
         let boundary = fs::read_to_string(root.join("modules/play-game-cli/module.yaml")).unwrap();
+        let domain_implementation =
+            fs::read_to_string(root.join("modules/play-game-rules/implementation.yaml")).unwrap();
+        let boundary_implementation =
+            fs::read_to_string(root.join("modules/play-game-cli/implementation.yaml")).unwrap();
         let has_parent_export_evidence = root
             .join("modules/play-game/verification/contracts/parent_export.md")
             .exists();
@@ -20341,13 +21774,17 @@ verification:
         assert!(parent.contains("name: \"play-game-rules\""));
         assert!(parent.contains("name: \"play-game-cli\""));
         assert!(boundary.contains("name: \"resolve-move\""));
+        assert!(domain_implementation.contains("name: \"PlayGameMachine\""));
+        assert!(!domain_implementation.contains("PlayGameRulesMachine"));
+        assert!(boundary_implementation.contains("name: \"PlayGameBoundaryMachine\""));
         assert!(has_parent_export_evidence);
         assert!(has_transition_trace_evidence);
         assert!(has_accepted_rejected_evidence);
         assert!(has_malformed_input_evidence);
         assert!(has_parser_contract_evidence);
         assert_eq!(report.result, ComposeResult::Pass, "{:#?}", report.findings);
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_no_error_diagnostics(&diagnostics);
+        assert_has_warning(&diagnostics, "evidence.placeholder");
     }
 
     #[test]
@@ -22021,6 +23458,25 @@ runs:
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("rms-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    fn assert_no_error_diagnostics(diagnostics: &[Diagnostic]) {
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != Severity::Error),
+            "{diagnostics:#?}"
+        );
+    }
+
+    fn assert_has_warning(diagnostics: &[Diagnostic], check: &str) {
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Severity::Warning
+                    && diagnostic.check == check),
+            "{diagnostics:#?}"
+        );
     }
 
     fn no_provider_options() -> PromptRunOptions {

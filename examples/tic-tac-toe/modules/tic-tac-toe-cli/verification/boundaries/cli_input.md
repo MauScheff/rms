@@ -16,3 +16,5 @@ Covered cases:
 - valid parsed moves are delegated through the rules port;
 - the default rules port invokes the local Rust rules bridge, which depends on `tic-tac-toe-rules`;
 - domain rejections from the rules engine, such as an occupied cell, are returned explicitly.
+
+Source revision: repository example fixture.

@@ -30,7 +30,17 @@ dependencies:
     - walkdir
 
 architecture:
+  shape: boundary-adapter
   public_modules: []
+  roles:
+    representation:
+      - src/main.rs
+    parser:
+      - src/main.rs
+    adapter:
+      - src/main.rs
+    trace_evidence:
+      - verification/contracts/inspect_implementation_structure.md
 
 semantic_functions:
   - id: validate-rms-artifacts-command
@@ -496,6 +506,23 @@ semantic_functions:
       contracts:
         - verification/contracts/build_module_atlas.md
         - verification/contracts/build_module_atlas_question_audit.md
+  - id: inspect-implementation-structure-command
+    symbol: run_structure
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/inspect-implementation-structure.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - structure reports are derived from the target implementation binding and validator diagnostics
+        - missing machine, role, parser, transition, and evidence obligations are advisory findings rather than hidden architectural authority
+        - generated reports identify the implementation, module, binding, shape, declared machine roles, role paths, and focused diagnostics
+    evidence:
+      contracts:
+        - verification/contracts/inspect_implementation_structure.md
   - id: package-module-command
     symbol: run_package
     kind: adapter

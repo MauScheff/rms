@@ -35,6 +35,7 @@ Before writing implementation code, make the requested behavior concrete enough 
 - Define accepted transitions, rejected transitions, terminal states, and replayable traces when behavior depends on order or lifecycle.
 - Parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
 - Resolve edge cases first: invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases.
+- Use domain-named role suffixes where the language allows it so inner roles stay unambiguous: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`.
 
 ## While implementing
 
@@ -57,7 +58,7 @@ Before writing implementation code, make the requested behavior concrete enough 
 
 ## Verification
 
-Use the repository-native commands declared by the implementation binding or project tooling. Prefer `rms review <module>`, `rms validate --root .`, `rms compose --root .`, `rms check-compat`, `rms verify <implementation.yaml|composite-module.yaml>`, and `rms conformance` where applicable. Before release or sharing generated integrations, run `rms release check --root .`.
+Use the repository-native commands declared by the implementation binding or project tooling. Prefer `rms review <module>`, `rms validate --root .`, `rms compose --root .`, `rms structure <implementation.yaml>`, `rms check-compat`, `rms verify <implementation.yaml|composite-module.yaml>`, and `rms conformance` where applicable. Before release or sharing generated integrations, run `rms release check --root .`.
 
 Before completion, verify as applicable:
 

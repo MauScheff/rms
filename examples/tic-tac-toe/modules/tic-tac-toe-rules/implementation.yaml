@@ -24,6 +24,27 @@ architecture:
   public_modules:
     - representation
     - transition
+  machine:
+    name: TicTacToeMachine
+    state: Game
+    commands:
+      - Command
+    events:
+      - TransitionOutcome
+    effects: []
+    effect_results: []
+    replies:
+      - TransitionOutcome
+    rejections:
+      - MoveRejection
+    transition_function: transition
+  roles:
+    representation:
+      - src/representation.rs
+    transition:
+      - src/transition.rs
+    trace_evidence:
+      - verification/laws/transition_trace.md
   state_type: Game
   transition_function: transition
   representation:
@@ -45,7 +66,6 @@ semantic_functions:
     purity: pure
     evidence:
       laws:
-        - verification/laws/semantic_shape.md
         - verification/laws/transition_trace.md
   - id: transition-model
     symbol: transition
@@ -60,7 +80,6 @@ semantic_functions:
         - terminal-games-reject-moves
     evidence:
       laws:
-        - verification/laws/semantic_shape.md
         - verification/laws/transition_trace.md
       contracts:
         - verification/contracts/apply_move.md

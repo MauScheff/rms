@@ -21,8 +21,28 @@ dependencies:
     - serde
 
 architecture:
+  shape: domain-engine
   public_modules:
     - widget
+  machine:
+    name: RustExampleMachine
+    state: RustExampleState
+    commands:
+      - DescribeWidgetCommand
+    events: []
+    effects: []
+    effect_results: []
+    replies:
+      - DescribeWidgetReply
+    rejections: []
+    transition_function: describe_widget
+  roles:
+    representation:
+      - src/widget.rs
+    transition:
+      - src/lib.rs
+    trace_evidence:
+      - verification/scenarios/widget_acceptance
 
 semantic_functions:
   - id: widget-constructor

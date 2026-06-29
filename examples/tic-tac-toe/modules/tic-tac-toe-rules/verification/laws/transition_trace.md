@@ -12,4 +12,4 @@ Covered cases:
 - drawn games reject further moves;
 - replayed traces expose accepted and rejected outcomes.
 
-Source revision: not recorded for the example scaffold.
+Source revision: repository example fixture.

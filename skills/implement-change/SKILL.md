@@ -41,7 +41,7 @@ description: Implement a feature, fix, or refactor in an RMS project while prese
    - use schemas and validators at untrusted or versioned boundaries;
    - use query/projector-produced read models for derived facts; if such public types have private fields and no public constructor, declare them in `architecture.allowed_missing_constructors` and add evidence for the producing query/projector;
    - use a state model or transition function only when behavior depends on lifecycle order.
-11. Keep representation, pure transitions, boundary parsing, ports/adapters, and trace/evidence roles separate where practical.
+11. Keep representation, pure transitions, boundary parsing, ports/adapters, and trace/evidence roles separate where practical. Use domain-named role suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`.
 12. When a change touches lifecycle behavior, update the declared state model before implementation and make illegal transitions rejected or unrepresentable.
 13. Keep decisions separate from external effects where practical.
 14. Do not introduce undeclared dependencies, effects, or cross-module state mutation.
@@ -51,7 +51,7 @@ description: Implement a feature, fix, or refactor in an RMS project while prese
    - meaningful success and failure scenarios;
    - impossible variants, invalid constructors, and illegal transitions when applicable;
    - boundary behavior when applicable.
-16. Run `rms review <module>` before finalizing when a diff exists. Run `rms validate --root <root>` and project-native verification from the implementation binding. Use `rms verify <implementation.yaml>` when the binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups.
+16. Run `rms review <module>` before finalizing when a diff exists. Run `rms validate --root <root>`, `rms structure <implementation.yaml>` when inner roles changed, and project-native verification from the implementation binding. Use `rms verify <implementation.yaml>` when the binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups.
 17. Summarize:
     - changed behavior;
     - affected contracts and invariants;

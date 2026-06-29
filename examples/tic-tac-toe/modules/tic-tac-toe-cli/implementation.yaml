@@ -27,6 +27,15 @@ architecture:
     - src/parser.mjs
     - src/ports.mjs
     - src/adapter.mjs
+  roles:
+    representation:
+      - src/representation.mjs
+    parser:
+      - src/parser.mjs
+    adapter:
+      - src/adapter.mjs
+    trace_evidence:
+      - verification/boundaries/cli_input.md
   representation:
     closed_variants:
       - ParsedMove
@@ -49,8 +58,6 @@ semantic_functions:
     kind: constructor
     purity: pure
     evidence:
-      laws:
-        - verification/laws/semantic_shape.md
       boundaries:
         - verification/boundaries/cli_input.md
   - id: move-parser

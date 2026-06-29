@@ -4,7 +4,7 @@ module:
   name: rms-cli
   version: 0.1.0-rc.3
   kind: tool
-  purpose: Provide the canonical command-line workbench for inspecting, validating, packaging, explaining, and verifying RMS modules.
+  purpose: Provide the canonical command-line workbench for inspecting, validating, packaging, explaining, structuring, and verifying RMS modules.
 
 profiles:
   - core
@@ -34,6 +34,7 @@ owns:
     - RMS release readiness report
     - RMS module atlas
     - RMS capability tree scaffold
+    - RMS implementation inner structure report
   data:
     - embedded RMS schemas
     - embedded RMS prompt templates
@@ -47,6 +48,7 @@ owns:
     - generated route reports
     - generated capability tree scaffold artifacts
     - generated module atlas artifacts
+    - generated implementation structure reports
     - optional workbench configuration
   decisions:
     - manifest-validation-result
@@ -67,6 +69,7 @@ owns:
     - workbench-config-initialization
     - release-readiness-result
     - module-atlas-shape
+    - implementation-inner-structure-result
     - package-inclusion-set
     - conformance-outcome
 
@@ -126,6 +129,8 @@ provides:
       contract: contracts/build-context-packet.v1.yaml
     - name: build-module-atlas
       contract: contracts/build-module-atlas.v1.yaml
+    - name: inspect-implementation-structure
+      contract: contracts/inspect-implementation-structure.v1.yaml
     - name: package-module
       contract: contracts/package-module.v1.yaml
     - name: verify-implementation
@@ -181,10 +186,12 @@ boundary:
     - Codex plugin manifest and packaged skill files
     - TOML package manifests
     - Rust and Swift source files
+    - JavaScript source files
   validation:
     - embedded JSON Schema validation for RMS manifests
     - path existence checks for referenced evidence
     - implementation binding checks for Rust and Swift source boundaries
+    - advisory inner-structure checks for declared implementation shapes and roles
   trust:
     - Repository files are treated as untrusted input unless they are canonical RMS artifacts.
     - Generated reports are evidence and must not override manifests or contracts.

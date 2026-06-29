@@ -124,6 +124,14 @@ rms add-capability ./my-system/modules/tic-tac-toe \
 
 This creates `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification directories. Semantic shapes such as `domain-engine`, `boundary-adapter`, `workflow`, `storage-adapter`, `integration-adapter`, and `composite` define role obligations before file layout. Bindings such as `rust`, `swift`, `js`, and `executable` realize those roles idiomatically. The executable binding remains the opaque command-backed lane for web, mobile, CLI, native UI, generated assets, or integration surfaces when RMS cannot statically inspect internals.
 
+Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, transition, parser, adapter, and trace evidence roles, plus a domain-named machine when applicable. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, and `Rejection`. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`.
+
+Inspect those declarations with:
+
+```bash
+rms structure ./my-system/modules/widget/implementation.yaml
+```
+
 Validate the included examples:
 
 ```bash
@@ -391,13 +399,15 @@ The release process, tag rules, expected artifacts, and done criteria live in `R
 
 This repository is RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use: modules, ownership, contracts, invariants, effects, profiles, composition, substitutability, and conformance.
 
-The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection and explanation, advisory workbench prompts, optional provider-backed prompt execution, composition checks, context packets, compatibility classification, portable package directories, package integrity verification, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
+The Rust CLI is intentionally small but usable. It provides the first enforcement layer: schema validation, semantic reference checks, module inspection and explanation, advisory workbench prompts, optional provider-backed prompt execution, composition checks, inner-structure reports, context packets, compatibility classification, portable package directories, package integrity verification, and conformance reports. Language bindings and deeper static analysis can evolve independently under `tooling/<language>/`.
 
 The CLI is itself an RMS module bundle under `tooling/rust/rms/`: it has a `module.yaml`, published command contracts, an `implementation.yaml`, and evidence paths. This keeps the workbench subject to the same manifest, contract, effect, and verification discipline it asks projects to adopt.
 
 The first implementation binding is Rust. It validates Cargo package shape, crate-root entrypoints, public module declarations, source import roots, public re-exports, explicit external-crate allowlists, primitive type aliases, public domain fields, failure discipline, constructor evidence, query-produced read-model exceptions, Stateful representation declarations, and semantic function source symbols.
 
 Swift is the second binding. It validates Swift package shape, target identity, source entrypoints, import allowlists, public re-exports, primitive type aliases, public stored fields, trap-based failure discipline, constructor evidence, query-produced read-model exceptions, and Stateful representation declarations.
+
+JavaScript scaffolding supports inspectable local bindings for domain engines and boundary adapters, including tagged role constructors, parser/adapter separation, and named `node:test` evidence.
 
 The executable binding is the generic opaque lane. It validates the manifest and declared entrypoint paths, then relies on `commands.build` and `commands.verify` for evidence. RMS does not infer internal domain semantics from executable assets; use it when the implementation surface is web, mobile, CLI, native UI, generated assets, or another project shape without a dedicated static binding.
 

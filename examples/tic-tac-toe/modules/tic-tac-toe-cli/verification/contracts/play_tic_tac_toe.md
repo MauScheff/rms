@@ -14,3 +14,5 @@ Covered cases:
 - malformed empty input is rejected before delegation;
 - the default rules port invokes the Rust rules engine through `rules-bridge/Cargo.toml`;
 - occupied-cell rejection is returned from the real rules engine without adding the rejected move to accepted history.
+
+Source revision: repository example fixture.

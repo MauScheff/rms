@@ -37,6 +37,7 @@ rms review <module> [--diff <git-spec>] [--impact]
 rms impact [<git-spec>]
 rms gate [<git-spec>]
 rms atlas <module>
+rms structure <implementation>
 rms run list
 rms run latest
 rms run inspect <run-id-or-path>
@@ -75,6 +76,7 @@ rms review <module.yaml> [--diff <git-spec>] [--impact] [--ai|--provider codex] 
 rms impact [<git-spec>] [--root <path>] [--json]
 rms gate [<git-spec>] [--root <path>] [--dry-run] [--json]
 rms atlas <module.yaml> [--root <path>] [--output <directory>] [--force]
+rms structure <implementation.yaml> [--json]
 rms run list [--root <path>] [--run-root <directory>]
 rms run latest [--root <path>] [--run-root <directory>]
 rms run inspect <run-id-or-path> [--root <path>] [--run-root <directory>]
@@ -105,15 +107,17 @@ Generated agent and workbench files are operational guidance. They must route fu
 
 ### `add-module`
 
-Scaffolds a valid module directory with `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification evidence directories. When `--binding rust`, `--binding swift`, or `--binding executable` is supplied, it also creates a minimal `implementation.yaml` and scaffold artifacts that pass that binding's checks. The command refuses to overwrite existing files.
+Scaffolds a valid module directory with `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification evidence directories. When `--binding rust`, `--binding swift`, `--binding js`, or `--binding executable` is supplied, it also creates a minimal `implementation.yaml` and scaffold artifacts that pass that binding's checks. The command refuses to overwrite existing files.
 
 Generated module guidance is an adapter over canonical artifacts. It tells humans and agents how to fill ownership, public contracts, effects, invariants, compatibility, and evidence into `module.yaml`, `contracts/`, `implementation.yaml`, and `verification/`; it does not invent module-specific semantics.
 
 When Stateful, Distributed, Workflow, or Boundary profiles are requested, the scaffold includes the required empty profile section so the manifest validates. Fill those sections with real lifecycle, reconciliation, workflow, or boundary semantics before relying on the profile.
 
+Inspectable bindings also scaffold inner structure declarations under `architecture.machine` and `architecture.roles`. Generated role types use semantic domain-prefixed suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`. Role, binding, and surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped from generated inner names so module slugs do not become domain types.
+
 ### `add-capability`
 
-Scaffolds a recursive capability tree: a composite parent module at the requested path, a sibling `domain-engine` child, and a sibling `boundary-adapter` child. The parent declares `composition.contains`, exports the boundary child public command, and includes parent scenario evidence so `rms verify <parent/module.yaml>` can roll up composition and child implementation checks.
+Scaffolds a recursive capability tree: a composite parent module at the requested path, a sibling `domain-engine` child, and a sibling `boundary-adapter` child. The parent declares `composition.contains`, exports the boundary child public command, and includes parent scenario evidence so `rms verify <parent/module.yaml>` can roll up composition and child implementation checks. Default child paths are generic `-domain` and `-boundary`; choose product/domain names when the capability language is clearer.
 
 Use this when `rms design` recommends a composite tree for one public capability. Use `rms add-module` for single modules or when the hierarchy is already in place.
 
@@ -126,6 +130,10 @@ The generic executable binding declares `binding: executable` in `implementation
 The first compatibility checker is manifest-level. It classifies public surface removals and contract path changes as breaking, additive public surface changes as compatible additive, and profile/effect/capability/policy changes as requiring operational review.
 
 The first composition checker is manifest-level. It checks required module presence, required capability providers, capability contract compatibility, context-map relationships when both sides are named contexts, externally satisfied capability effects, and direct module dependency cycles.
+
+### `structure`
+
+Prints a focused inner-structure report for an `implementation.yaml`. The report identifies the module, binding, semantic shape, declared machine roles, role files, transition function, and structure/evidence diagnostics. Missing machine, representation, parser, transition, hidden-effect, slug-derived machine-name, and placeholder-evidence findings are advisory in v0.1, but they are intended to catch drift before agents start inventing local architecture. `rms validate`, `rms structure`, and `rms conformance` warn when referenced evidence still contains scaffold placeholders, bootstrap prose, unpinned source revisions, or `semantic_shape.md`-only proof.
 
 ### `inspect`
 

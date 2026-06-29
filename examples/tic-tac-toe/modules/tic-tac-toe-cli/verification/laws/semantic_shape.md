@@ -2,23 +2,17 @@
 
 Shape: `boundary-adapter` (parsers, boundary validation, ports, effect adapters, and contract or boundary tests)
 
-Representation obligations:
+Evidence:
 
-- Closed alternatives should be represented as ADTs, sealed variants, enums, or tagged constructors.
-- Values with validity rules should be created through validated constructors.
-- Expected failures should be explicit accepted/rejected outcomes.
-- Lifecycle or order-dependent behavior should be replayable through transition traces.
-- Boundary input should be parsed before it reaches pure decisions.
-
-Generated roles:
-- `representation`
-- `parsers`
-- `ports`
-- `adapters`
-- `boundary-evidence`
+- `src/representation.mjs` defines tagged constructors for accepted/rejected boundary outcomes.
+- `src/parser.mjs` parses untrusted coordinates into finite board-cell commands before delegation.
+- `src/adapter.mjs` rejects malformed input before invoking the rules port.
+- `src/ports.mjs` keeps the default Rust rules bridge behind an adapter port.
+- Boundary and contract behavior are covered by `verification/boundaries/cli_input.md` and `verification/contracts/play_tic_tac_toe.md`.
 
 Command:
 
-- Replace this placeholder with module-specific law, trace, property, fuzz, contract, or boundary evidence.
+- `sh examples/tic-tac-toe/modules/tic-tac-toe-cli/scripts/smoke.sh`
+- `rms structure examples/tic-tac-toe/modules/tic-tac-toe-cli/implementation.yaml`
 
-Source revision: not recorded by the generated scaffold.
+Source revision: local working tree.

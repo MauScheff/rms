@@ -9,7 +9,7 @@ source:
 
 commands:
   build: swift build --package-path .
-  verify: swift test --package-path .
+  verify: if [ "$(sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ]; then arch -arm64 swift test --package-path . --disable-swift-testing; else swift test --package-path . --disable-swift-testing; fi
 
 toolchain:
   package_manifest: Package.swift
@@ -20,4 +20,24 @@ dependencies:
   allowed_external_modules: []
 
 architecture:
+  shape: domain-engine
   public_modules: []
+  machine:
+    name: SwiftExampleMachine
+    state: SwiftExampleState
+    commands:
+      - DescribeSwiftWidgetCommand
+    events: []
+    effects: []
+    effect_results: []
+    replies:
+      - DescribeSwiftWidgetReply
+    rejections: []
+    transition_function: describeWidget
+  roles:
+    representation:
+      - Sources/RmsSwiftExample/RmsSwiftExample.swift
+    transition:
+      - Sources/RmsSwiftExample/RmsSwiftExample.swift
+    trace_evidence:
+      - verification/scenarios/accept_non_empty_widget

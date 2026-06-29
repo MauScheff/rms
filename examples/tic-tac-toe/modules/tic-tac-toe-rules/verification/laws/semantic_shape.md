@@ -2,23 +2,16 @@
 
 Shape: `domain-engine` (pure decisions, closed variants, validated values, transitions, laws, and trace replay)
 
-Representation obligations:
+Evidence:
 
-- Closed alternatives should be represented as ADTs, sealed variants, enums, or tagged constructors.
-- Values with validity rules should be created through validated constructors.
-- Expected failures should be explicit accepted/rejected outcomes.
-- Lifecycle or order-dependent behavior should be replayable through transition traces.
-- Boundary input should be parsed before it reaches pure decisions.
-
-Generated roles:
-- `representation`
-- `commands`
-- `transitions`
-- `trace-replay`
-- `law-evidence`
+- `src/representation.rs` defines closed Rust enums for `Command`, `GameStatus`, `Mark`, `MoveRejection`, and `TransitionOutcome`.
+- `Cell::new` and `Cell::from_index` make out-of-board cells unrepresentable.
+- `src/transition.rs` keeps move application pure: `transition(Game, Command) -> TransitionOutcome`.
+- Accepted and rejected lifecycle traces are covered by `verification/laws/transition_trace.md` and `verification/scenarios/game_lifecycle.md`.
 
 Command:
 
-- Replace this placeholder with module-specific law, trace, property, fuzz, contract, or boundary evidence.
+- `cargo test --manifest-path examples/tic-tac-toe/modules/tic-tac-toe-rules/Cargo.toml`
+- `rms structure examples/tic-tac-toe/modules/tic-tac-toe-rules/implementation.yaml`
 
-Source revision: not recorded by the generated scaffold.
+Source revision: local working tree.
