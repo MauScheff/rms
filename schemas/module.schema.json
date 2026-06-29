@@ -55,7 +55,8 @@
           "stateful",
           "distributed",
           "workflow",
-          "boundary"
+          "boundary",
+          "monitor"
         ]
       },
       "contains": {
@@ -183,6 +184,32 @@
     },
     "boundary": {
       "type": "object",
+      "additionalProperties": true
+    },
+    "monitor": {
+      "type": "object",
+      "properties": {
+        "authority": {
+          "enum": [
+            "observe-only",
+            "advisory",
+            "enforcing",
+            "fail-safe"
+          ]
+        },
+        "inputs": {
+          "type": "array"
+        },
+        "derived": {
+          "type": "array"
+        },
+        "triggers": {
+          "type": "array"
+        },
+        "failure_mode": {
+          "type": "string"
+        }
+      },
       "additionalProperties": true
     }
   },
@@ -389,6 +416,22 @@
       "then": {
         "required": [
           "boundary"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "profiles": {
+            "contains": {
+              "const": "monitor"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "monitor"
         ]
       }
     }

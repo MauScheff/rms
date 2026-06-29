@@ -184,6 +184,7 @@ semantic_functions:
     assumptions:
       ensures:
         - generated module manifest, module README, contract guidance, semantic shape evidence, evidence directories, and optional implementation binding are deterministic scaffold artifacts
+        - runtime-monitor scaffolds declare the Monitor profile, monitor authority placeholders, and runtime trigger evidence without inventing module-specific monitored facts
         - optional advisory scaffold planning records provider output as evidence without making it canonical architecture by itself
         - generated guidance routes future work through canonical artifacts and does not define module-specific semantics
     evidence:
@@ -290,6 +291,7 @@ semantic_functions:
         - design prompts are advisory and can run before a target module exists
         - module split and semantic shape recommendations remain evidence until reflected in canonical artifacts
         - design prompts require semantic structure and edge-case decisions before implementation file layout
+        - runtime monitoring and supervisory control are modeled as runtime-monitor shape guidance with explicit authority and declared outputs
     evidence:
       contracts:
         - verification/contracts/design_rms_system.md

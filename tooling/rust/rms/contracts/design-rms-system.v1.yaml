@@ -12,7 +12,9 @@ postconditions:
   - id: design-prompt-created
     statement: The prompt summarizes discovered RMS context and asks for the smallest honest module set rather than a module per noun.
   - id: semantic-shapes-named
-    statement: The prompt asks for language-agnostic semantic shapes such as domain-engine, boundary-adapter, workflow, storage-adapter, and integration-adapter.
+    statement: The prompt asks for language-agnostic semantic shapes such as domain-engine, boundary-adapter, runtime-monitor, workflow, storage-adapter, and integration-adapter.
+  - id: monitor-authority-named
+    statement: When runtime monitoring or supervisory control is relevant, the prompt asks for explicit monitor authority and declared outputs rather than direct mutation of controlled module state.
   - id: representation-obligations-named
     statement: The prompt asks for explicit representation obligations including closed variants, validated values, commands, states, events, accepted or rejected outcomes, and boundary schemas.
   - id: semantic-structure-precedes-code

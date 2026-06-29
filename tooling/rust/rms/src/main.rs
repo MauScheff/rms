@@ -1160,6 +1160,8 @@ enum ScaffoldShape {
     DomainEngine,
     #[value(name = "boundary-adapter")]
     BoundaryAdapter,
+    #[value(name = "runtime-monitor")]
+    RuntimeMonitor,
     Workflow,
     #[value(name = "storage-adapter")]
     StorageAdapter,
@@ -1173,6 +1175,7 @@ impl ScaffoldShape {
         match self {
             ScaffoldShape::DomainEngine => "domain-engine",
             ScaffoldShape::BoundaryAdapter => "boundary-adapter",
+            ScaffoldShape::RuntimeMonitor => "runtime-monitor",
             ScaffoldShape::Workflow => "workflow",
             ScaffoldShape::StorageAdapter => "storage-adapter",
             ScaffoldShape::IntegrationAdapter => "integration-adapter",
@@ -1184,6 +1187,7 @@ impl ScaffoldShape {
         match self {
             ScaffoldShape::DomainEngine => "Domain Engine",
             ScaffoldShape::BoundaryAdapter => "Boundary Adapter",
+            ScaffoldShape::RuntimeMonitor => "Runtime Monitor",
             ScaffoldShape::Workflow => "Workflow",
             ScaffoldShape::StorageAdapter => "Storage Adapter",
             ScaffoldShape::IntegrationAdapter => "Integration Adapter",
@@ -1198,6 +1202,9 @@ impl ScaffoldShape {
             }
             ScaffoldShape::BoundaryAdapter => {
                 "parsers, boundary validation, ports, effect adapters, and contract or boundary tests"
+            }
+            ScaffoldShape::RuntimeMonitor => {
+                "observed inputs, derived streams or facts, trigger conditions, monitor authority, and runtime evidence"
             }
             ScaffoldShape::Workflow => {
                 "commands, states, events, deadlines, compensation, and recovery evidence"
@@ -1229,6 +1236,13 @@ impl ScaffoldShape {
                 "ports",
                 "adapters",
                 "boundary-evidence",
+            ],
+            ScaffoldShape::RuntimeMonitor => &[
+                "observations",
+                "derived-streams",
+                "triggers",
+                "supervisory-outputs",
+                "runtime-evidence",
             ],
             ScaffoldShape::Workflow => &[
                 "representation",
@@ -1262,7 +1276,9 @@ impl ScaffoldShape {
     }
 
     fn inferred(kind: &str, profiles: &[String]) -> Self {
-        if profiles.iter().any(|profile| profile == "workflow") {
+        if profiles.iter().any(|profile| profile == "monitor") {
+            ScaffoldShape::RuntimeMonitor
+        } else if profiles.iter().any(|profile| profile == "workflow") {
             ScaffoldShape::Workflow
         } else if kind.contains("adapter") || profiles.iter().any(|profile| profile == "boundary") {
             ScaffoldShape::BoundaryAdapter
@@ -1572,11 +1588,11 @@ impl PromptKind {
             PromptKind::Design => &[
                 "Start from system purpose, contexts, existing modules, glossary language, and the requested task.",
                 "Propose the smallest honest module set; do not create a module for every noun.",
-                "Assign each module a semantic shape: domain-engine, boundary-adapter, workflow, storage-adapter, integration-adapter, or composite.",
+                "Assign each module a semantic shape: domain-engine, boundary-adapter, runtime-monitor, workflow, storage-adapter, integration-adapter, or composite.",
                 "Separate pure decisions from external effects, and name required module dependencies.",
                 "Define representation obligations: closed variants, validated values, commands, states, events, accepted/rejected outcomes, and boundary schemas.",
                 "Resolve semantic edge cases before file layout: invalid commands, illegal transitions, terminal states, stale or conflicting state, parser failures, and effect failure categories.",
-                "Define focused evidence: laws, contract scenarios, boundary parser tests, trace replay, fuzz/property checks, recovery, or reconciliation.",
+                "Define focused evidence: laws, contract scenarios, boundary parser tests, runtime monitor trigger/non-trigger cases, trace replay, fuzz/property checks, recovery, or reconciliation.",
                 "Treat provider output and generated plans as advisory evidence until reflected in canonical artifacts.",
             ],
             PromptKind::Explain => &[
@@ -1668,7 +1684,7 @@ impl PromptKind {
                 "Semantic structure before code: ADTs or closed variants, validated values, commands, states, events, result and rejection types, and transition boundaries.",
                 "Edge-case decisions: invalid commands, illegal transitions, terminal states, boundary parse failures, stale or conflicting state, and not-applicable cases.",
                 "Representation obligations for ADTs, validated values, commands, states, events, and result/rejection types.",
-                "Trace, law, fuzz/property, contract, boundary, recovery, or reconciliation evidence.",
+                "Trace, law, fuzz/property, contract, boundary, runtime monitor, recovery, or reconciliation evidence.",
                 "Scope boundaries and assumptions.",
             ],
             PromptKind::Explain => &[
@@ -4859,8 +4875,23 @@ fn append_design_recommendations(
         "resolver",
         "validation",
     ];
+    let monitor_terms = [
+        "monitor",
+        "runtime",
+        "observe",
+        "observed",
+        "derived",
+        "stream",
+        "trigger",
+        "alarm",
+        "envelope",
+        "supervisory",
+        "guard",
+        "fallback",
+    ];
     let mentions_boundary = boundary_terms.iter().any(|term| lower.contains(term));
     let mentions_decision = decision_terms.iter().any(|term| lower.contains(term));
+    let mentions_monitor = monitor_terms.iter().any(|term| lower.contains(term));
     if mentions_boundary && mentions_decision {
         writeln!(out, "- Candidate split: invariant-bearing decisions in a `domain-engine` plus untrusted input/output and effects in a `boundary-adapter`.")?;
         writeln!(out)?;
@@ -4886,6 +4917,10 @@ fn append_design_recommendations(
     }
     writeln!(out, "- Choose `domain-engine` when the module owns pure decisions, invariants, transitions, or traceable rules.")?;
     writeln!(out, "- Choose `boundary-adapter` when untrusted input, UI, CLI, network, storage, time, randomness, or external effects enter or leave.")?;
+    writeln!(out, "- Choose `runtime-monitor` when the module observes runtime inputs over time, computes derived facts or streams, and emits findings, alarms, events, or declared supervisory commands.")?;
+    if mentions_monitor {
+        writeln!(out, "- Monitor authority must be explicit: observe-only, advisory, enforcing, or fail-safe. Supervisory outputs must cross public contracts and must not mutate controlled module state directly.")?;
+    }
     if modules
         .iter()
         .any(|module| !shape_advisories(module).is_empty())
@@ -4962,6 +4997,7 @@ fn shape_consistency_advisories(manifest: &LoadedManifest) -> Vec<String> {
     let kind = get_str(&manifest.value, &["module", "kind"]).unwrap_or("");
     let scaffold_shape = get_str(&manifest.value, &["x-scaffold", "shape"]).unwrap_or("");
     let has_boundary_profile = profiles.iter().any(|profile| profile == "boundary");
+    let has_monitor_profile = profiles.iter().any(|profile| profile == "monitor");
     let mut advisories = Vec::new();
     if scaffold_shape == "boundary-adapter" && kind != "adapter" {
         advisories.push(
@@ -4976,6 +5012,16 @@ fn shape_consistency_advisories(manifest: &LoadedManifest) -> Vec<String> {
     if scaffold_shape == "domain-engine" && effects > 0 {
         advisories.push(
             "domain-engine scaffold declares effects; keep pure decisions separate from adapters unless the manifest intentionally owns an effectful boundary".to_string(),
+        );
+    }
+    if scaffold_shape == "runtime-monitor" && !has_monitor_profile {
+        advisories.push(
+            "runtime-monitor scaffold lacks the `monitor` profile; declare runtime observation, trigger, authority, and failure-mode obligations".to_string(),
+        );
+    }
+    if has_monitor_profile && get_path(&manifest.value, &["monitor"]).is_none() {
+        advisories.push(
+            "monitor profile is declared without a `monitor` section for inputs, derived facts, triggers, authority, and failure mode".to_string(),
         );
     }
     advisories
@@ -6012,6 +6058,13 @@ fn evidence_guidance_items(shape: &str) -> &'static [&'static str] {
             "parser-to-domain-command evidence showing boundary input becomes a domain command before core decisions",
             "adapter failure evidence for declared effects, including timeout, retry, rejection, or fallback behavior when applicable",
             "contract smoke evidence through the public command or parent export when externally visible behavior changes",
+        ],
+        "runtime-monitor" => &[
+            "runtime evidence for trigger and non-trigger cases over declared observations",
+            "derived fact or stream evidence showing monitor decisions are computed from accepted inputs",
+            "authority evidence proving observe-only, advisory, enforcing, or fail-safe outputs cross declared contracts",
+            "stale, duplicate, or out-of-order observation evidence when ordering affects monitor decisions",
+            "failure-mode evidence for fail-open, fail-closed, or degraded behavior",
         ],
         "workflow" => &[
             "accepted and rejected command/event transition evidence",
@@ -7796,7 +7849,7 @@ fn validate_module(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>)
     for profile in &profiles {
         if !matches!(
             profile.as_str(),
-            "core" | "stateful" | "distributed" | "workflow" | "boundary"
+            "core" | "stateful" | "distributed" | "workflow" | "boundary" | "monitor"
         ) {
             diagnostics.push(error(
                 "profiles.allowed",
@@ -9992,6 +10045,16 @@ fn check_profile_obligations(
             "boundary modules must declare a `boundary` section",
         ));
     }
+
+    if profiles.iter().any(|profile| profile == "monitor")
+        && get_path(&manifest.value, &["monitor"]).is_none()
+    {
+        diagnostics.push(error(
+            "profile.monitor",
+            &manifest.path,
+            "monitor modules must declare a `monitor` section",
+        ));
+    }
 }
 
 fn check_contract_refs(
@@ -10663,6 +10726,8 @@ fn route_shape(value: &YamlValue) -> String {
     let profiles = get_string_array(value, &["profiles"]);
     if kind == "composite" || get_path(value, &["composition"]).is_some() {
         "composite".to_string()
+    } else if profiles.iter().any(|profile| profile == "monitor") || kind == "monitor" {
+        "runtime-monitor".to_string()
     } else if profiles.iter().any(|profile| profile == "workflow") {
         "workflow".to_string()
     } else if profiles.iter().any(|profile| profile == "stateful") && kind == "adapter" {
@@ -10749,6 +10814,32 @@ fn score_route_candidate(task: &str, module: &ModuleIndexEntry, reasons: &mut Ve
             if score > 0 {
                 reasons.push(
                     "task language points at ordered workflow, deadlines, or recovery".to_string(),
+                );
+            }
+        }
+        "runtime-monitor" => {
+            score += score_keywords(
+                task,
+                &[
+                    "monitor",
+                    "runtime",
+                    "observe",
+                    "observation",
+                    "derived",
+                    "stream",
+                    "trigger",
+                    "alarm",
+                    "envelope",
+                    "supervisory",
+                    "guard",
+                    "fallback",
+                    "override",
+                    "violation",
+                ],
+            );
+            if score > 0 {
+                reasons.push(
+                    "task language points at runtime observation, derived facts, triggers, or supervisory behavior".to_string(),
                 );
             }
         }
@@ -16672,7 +16763,7 @@ fn run_add_module(request: AddModuleRequest, options: &PromptRunOptions) -> Resu
         write_scaffold_plan_record(&canonical_request, shape, options)?;
     }
 
-    for category in ["laws", "contracts", "scenarios", "boundaries"] {
+    for category in ["laws", "contracts", "scenarios", "boundaries", "runtime"] {
         let verification_dir = path.join("verification").join(category);
         fs::create_dir_all(&verification_dir)?;
         write_new_file(
@@ -16904,7 +16995,7 @@ fn create_module_skeleton(path: &Path) -> Result<()> {
     fs::create_dir_all(path)
         .with_context(|| format!("failed to create module directory `{}`", path.display()))?;
     fs::create_dir_all(path.join("contracts"))?;
-    for category in ["laws", "contracts", "scenarios", "boundaries"] {
+    for category in ["laws", "contracts", "scenarios", "boundaries", "runtime"] {
         let verification_dir = path.join("verification").join(category);
         fs::create_dir_all(&verification_dir)?;
         write_new_file(
@@ -17072,6 +17163,15 @@ fn scaffold_shape_evidence(path: &Path, shape: ScaffoldShape) -> Result<()> {
                 &render_accepted_rejected_evidence(),
             )?;
         }
+        ScaffoldShape::RuntimeMonitor => {
+            write_new_file(
+                &path
+                    .join("verification")
+                    .join("runtime")
+                    .join("trigger_cases.md"),
+                &render_monitor_trigger_evidence(),
+            )?;
+        }
     }
     Ok(())
 }
@@ -17202,6 +17302,9 @@ fn normalized_profiles_for_shape(profiles: &[String], shape: ScaffoldShape) -> V
         ScaffoldShape::BoundaryAdapter => {
             normalized.insert("boundary".to_string());
         }
+        ScaffoldShape::RuntimeMonitor => {
+            normalized.insert("monitor".to_string());
+        }
         ScaffoldShape::Workflow => {
             normalized.insert("workflow".to_string());
         }
@@ -17223,6 +17326,7 @@ fn normalized_kind_for_shape(kind: &str, shape: ScaffoldShape) -> String {
         {
             "adapter".to_string()
         }
+        ScaffoldShape::RuntimeMonitor if kind == "module" => "monitor".to_string(),
         ScaffoldShape::Composite if kind == "module" => "composite".to_string(),
         _ => kind.to_string(),
     }
@@ -17261,6 +17365,11 @@ fn render_module_yaml(
     profiles: &[String],
     shape: Option<ScaffoldShape>,
 ) -> String {
+    let verification_runtime = if profiles.iter().any(|profile| profile == "monitor") {
+        "  runtime:\n    - verification/runtime\n"
+    } else {
+        ""
+    };
     let composition = shape
         .filter(|shape| *shape == ScaffoldShape::Composite)
         .map(|_| "\ncomposition:\n  contains: []\n  exports: []\n".to_string())
@@ -17282,13 +17391,14 @@ fn render_module_yaml(
         })
         .unwrap_or_default();
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n{}",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n{}{}",
         yaml_quote(name),
         yaml_quote(kind),
         yaml_quote(purpose),
         yaml_string_list(profiles, 2),
         render_profile_sections(profiles),
         composition,
+        verification_runtime,
         scaffold
     )
 }
@@ -17405,6 +17515,9 @@ fn render_profile_sections(profiles: &[String]) -> String {
     if profiles.iter().any(|profile| profile == "boundary") {
         sections.push_str("\nboundary: {}\n");
     }
+    if profiles.iter().any(|profile| profile == "monitor") {
+        sections.push_str("\nmonitor:\n  authority: observe-only\n  inputs: []\n  derived: []\n  triggers: []\n  failure_mode: fail-open\n");
+    }
     sections
 }
 
@@ -17430,7 +17543,7 @@ fn render_module_readme(
     };
 
     format!(
-        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Semantic Shape\n\nShape: `{}`: `{}` ({})\n\nRequired roles:\n{}\n\nRepresentation is the RMS-level role for closed variants, validated values, commands, states, events, and result/rejection types. Implement it with language-idiomatic files or modules; do not treat a folder named `domain` or `types` as canonical architecture.\n\n## Representation Decisions\n\n- Closed domain alternatives should use ADTs, sealed variants, enums, or tagged constructors.\n- Public values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Expected domain failures should be explicit result or rejection values rather than ambient exceptions.\n- Lifecycle or order-dependent behavior should use a transition model with accepted and rejected outcomes.\n- Boundary input should be parsed into domain commands before reaching pure decisions.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs or illegal transitions when applicable.\n5. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms verify implementation.yaml` when an implementation binding exists.\n\n## Agent Workflow\n\nUse `rms design --root <system-root> --task \"<task>\"` when module boundaries or semantic shapes are unclear. Use `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms evolve-contract module.yaml --task \"<task>\"` when public meaning changes, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
+        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Semantic Shape\n\nShape: `{}`: `{}` ({})\n\nRequired roles:\n{}\n\nRepresentation is the RMS-level role for closed variants, validated values, commands, states, events, and result/rejection types. Implement it with language-idiomatic files or modules; do not treat a folder named `domain` or `types` as canonical architecture.\n\n## Representation Decisions\n\n- Closed domain alternatives should use ADTs, sealed variants, enums, or tagged constructors.\n- Public values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Expected domain failures should be explicit result or rejection values rather than ambient exceptions.\n- Lifecycle or order-dependent behavior should use a transition model with accepted and rejected outcomes.\n- Boundary input should be parsed into domain commands before reaching pure decisions.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Runtime Monitor Decisions\n\n- Use this section when the module declares the `monitor` profile or `runtime-monitor` shape.\n- Declare observed inputs, derived facts or streams, trigger conditions, monitor authority, retrigger/idempotency policy, and fail-open/fail-closed/degraded behavior in `module.yaml`.\n- Supervisory outputs must be public commands, events, alarms, findings, or capabilities. Do not mutate controlled module state directly.\n- Add runtime evidence for trigger and non-trigger cases before relying on a monitor for release or operational assurance.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs or illegal transitions when applicable.\n5. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms verify implementation.yaml` when an implementation binding exists.\n\n## Agent Workflow\n\nUse `rms design --root <system-root> --task \"<task>\"` when module boundaries or semantic shapes are unclear. Use `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms evolve-contract module.yaml --task \"<task>\"` when public meaning changes, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
         markdown_inline(name),
         markdown_inline(purpose),
         markdown_inline(kind),
@@ -17458,6 +17571,7 @@ fn render_verification_readme(category: &str) -> String {
         "contracts" => "# Contract Evidence\n\nRecord evidence that public contracts in `contracts/` are satisfied.\n\nEach evidence file should identify:\n\n- the contract path and version;\n- success behavior and expected failures;\n- boundary validation for untrusted or versioned input;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
         "scenarios" => "# Scenario Evidence\n\nRecord end-to-end behavior that matters to this module's declared purpose.\n\nEach evidence file should identify:\n\n- the manifest promise or public contract exercised;\n- setup, action, expected result, and failure path;\n- recovery or reconciliation behavior when declared;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
         "boundaries" => "# Boundary Evidence\n\nRecord evidence for trust boundaries, external effects, dependency contracts, schemas, limits, and compatibility promises.\n\nEach evidence file should identify:\n\n- the boundary input, dependency, or effect under test;\n- validation, rejection, timeout, retry, or compatibility behavior;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
+        "runtime" => "# Runtime Monitor Evidence\n\nRecord evidence for monitor-profile runtime observations, derived facts or streams, trigger decisions, supervisory outputs, and failure modes.\n\nEach evidence file should identify:\n\n- the observed input stream or runtime fact;\n- trigger and non-trigger cases;\n- ordering, sampling, stale, duplicate, or out-of-order behavior when relevant;\n- emitted findings, events, alarms, or commands;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
         other => format!("# {other}\n\nAdd RMS {other} evidence here.\n"),
     }
 }
@@ -17579,6 +17693,10 @@ fn render_transition_trace_evidence() -> String {
 
 fn render_accepted_rejected_evidence() -> String {
     "# Scenario Evidence: accepted and rejected outcomes\n\nPromise:\n\n- The module exposes explicit accepted and rejected outcomes for expected domain failures.\n\nEvidence to add:\n\n- One meaningful accepted scenario.\n- One meaningful rejected scenario.\n- The command or tool used to exercise both paths.\n- The manifest promise, invariant, or contract each path proves.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+}
+
+fn render_monitor_trigger_evidence() -> String {
+    "# Runtime Monitor Evidence: trigger cases\n\nPromise:\n\n- Runtime observations are accepted through declared inputs.\n- Derived facts or streams are computed from those observations.\n- Trigger decisions produce only declared findings, events, alarms, commands, or capabilities.\n- Supervisory outputs cross public contracts and do not mutate controlled module state directly.\n\nEvidence to add:\n\n- One trigger case where the declared condition holds.\n- One non-trigger case where the condition does not hold.\n- Stale, duplicate, or out-of-order observation behavior when ordering matters.\n- Authority and failure-mode behavior for observe-only, advisory, enforcing, or fail-safe operation.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
 }
 
 fn render_malformed_input_evidence() -> String {
@@ -17901,6 +18019,7 @@ When creating a new capability, choose semantic shape before file layout:
 
 - `domain-engine`: pure decisions, closed variants, validated values, transitions, laws, and trace replay.
 - `boundary-adapter`: parsers, boundary validation, ports, effect adapters, and boundary/contract tests.
+- `runtime-monitor`: observed runtime inputs, derived facts or streams, trigger decisions, monitor authority, and runtime evidence.
 - `workflow`: commands, states, events, deadlines, compensation, recovery evidence.
 - `storage-adapter`: persistence ports, failure categories, migration and recovery evidence.
 - `integration-adapter`: external service boundary, retries, idempotency, reconciliation evidence.
@@ -19096,6 +19215,21 @@ import struct ExternalKit.Widget
     }
 
     #[test]
+    fn design_prompt_names_runtime_monitor_for_supervisory_tasks() {
+        let root = unique_test_dir("design-runtime-monitor");
+        let rendered = render_design_prompt(
+            &root,
+            "runtime monitor that observes operational inputs and triggers supervisory fallback",
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).ok();
+        assert!(rendered.contains("runtime-monitor"));
+        assert!(rendered.contains("Monitor authority must be explicit"));
+        assert!(rendered.contains("Supervisory outputs must cross public contracts"));
+    }
+
+    #[test]
     fn boundary_adapter_shape_scaffold_gets_boundary_semantics() {
         let root = unique_test_dir("shape-boundary-adapter");
 
@@ -19127,6 +19261,43 @@ import struct ExternalKit.Widget
                 .all(|diagnostic| diagnostic.check != "module.shape-consistency"),
             "{diagnostics:#?}"
         );
+    }
+
+    #[test]
+    fn runtime_monitor_shape_scaffold_gets_monitor_semantics() {
+        let root = unique_test_dir("shape-runtime-monitor");
+
+        run_add_module(
+            add_module_request(
+                &root,
+                "shape-runtime-monitor",
+                "Observe runtime inputs and emit declared supervisory outputs.",
+                "module",
+                &[],
+                Some(ScaffoldShape::RuntimeMonitor),
+                Some("executable"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+
+        let manifest = fs::read_to_string(root.join("module.yaml")).unwrap();
+        let readme = fs::read_to_string(root.join("README.md")).unwrap();
+        let runtime_evidence =
+            fs::read_to_string(root.join("verification/runtime/trigger_cases.md")).unwrap();
+        let loaded = load_manifest(&root.join("module.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_loaded_manifest(&loaded, &mut diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(manifest.contains("kind: \"monitor\""));
+        assert!(manifest.contains("- \"monitor\""));
+        assert!(manifest.contains("authority: observe-only"));
+        assert!(manifest.contains("runtime:\n    - verification/runtime"));
+        assert!(manifest.contains("shape: \"runtime-monitor\""));
+        assert!(readme.contains("## Runtime Monitor Decisions"));
+        assert!(runtime_evidence.contains("One trigger case"));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]
@@ -19340,6 +19511,7 @@ verification:
                     "distributed".to_string(),
                     "workflow".to_string(),
                     "boundary".to_string(),
+                    "monitor".to_string(),
                 ],
                 Some(ScaffoldShape::Workflow),
                 None,
@@ -19357,6 +19529,8 @@ verification:
         assert!(module_yaml.contains("operations:\n  reconciliation: []"));
         assert!(module_yaml.contains("workflow: {}"));
         assert!(module_yaml.contains("boundary: {}"));
+        assert!(module_yaml.contains("monitor:"));
+        assert!(module_yaml.contains("authority: observe-only"));
 
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");

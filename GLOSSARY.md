@@ -129,6 +129,14 @@ A cohesive unit of meaning and ownership with an explicit public contract and pr
 
 A transport-neutral distribution containing a module manifest, published contracts, conformance material, and implementation or endpoint information sufficient to use or evaluate the module.
 
+## Monitor authority
+
+The declared degree of behavior a runtime monitor may cause: observe-only, advisory, enforcing, or fail-safe.
+
+## Monitor profile
+
+The RMS profile for modules that observe runtime inputs over time, compute derived facts or streams, check envelopes or invariants, and emit declared findings, events, or supervisory commands.
+
 ## Operational semantics
 
 Behavior that affects composition under real execution, including timeout, retry, duplication, ordering, concurrency, consistency, compensation, and reconciliation.
@@ -158,6 +166,14 @@ The accepted explanation for why a contract, law, invariant, boundary, compatibi
 
 A process that compares internal state with external or authoritative reality and records or repairs mismatches.
 
+## Runtime monitor
+
+A module or implementation role that observes declared runtime inputs over time, computes derived facts or streams, and triggers declared outputs when conditions hold.
+
+## Safety envelope
+
+A declared runtime condition or boundary that must remain true for a system, module, operation, or controlled behavior to be considered acceptable.
+
 ## Scenario verification
 
 Evidence that important end-to-end or cross-module behaviors, failures, retries, and recovery paths work as intended.
@@ -178,6 +194,10 @@ The ability to replace an implementation while preserving compatible contracts, 
 ## Transition
 
 A semantic function that accepts prior state and an accepted command, event, or fact, then produces the next state and accepted or rejected results.
+
+## Trigger
+
+A declared monitor condition that emits a finding, event, alarm, or command when its condition holds under the monitor's temporal semantics.
 
 ## System module
 

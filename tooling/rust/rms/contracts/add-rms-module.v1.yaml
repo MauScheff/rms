@@ -12,13 +12,13 @@ preconditions:
     statement: The requested module name, purpose, kind, profiles, optional semantic shape, optional binding, and optional provider settings are valid for scaffold generation.
 postconditions:
   - id: module-manifest-created
-    statement: The generated `module.yaml` records the requested name, purpose, kind, normalized profiles, optional semantic scaffold shape, required profile sections, compatibility policy, and verification directories without inventing ownership, public surface, invariants, effects, or dependencies.
+    statement: The generated `module.yaml` records the requested name, purpose, kind, normalized profiles, optional semantic scaffold shape, required profile sections including monitor obligations when requested, compatibility policy, and verification directories without inventing ownership, public surface, invariants, effects, or dependencies.
   - id: module-guidance-created
     statement: The generated module `README.md` routes future work through `module.yaml`, public contracts, implementation bindings, semantic representation roles, transition guidance, and verification evidence.
   - id: contract-guidance-created
     statement: The generated `contracts/README.md` distinguishes public RMS contracts from private implementation details and names the required contract evidence loop.
   - id: evidence-directories-created
-    statement: The generated `verification/laws`, `verification/contracts`, `verification/scenarios`, and `verification/boundaries` directories each contain guidance and semantic-shape placeholders for recording proof tied to declared module promises.
+    statement: The generated `verification/laws`, `verification/contracts`, `verification/scenarios`, `verification/boundaries`, and `verification/runtime` directories each contain guidance and semantic-shape placeholders for recording proof tied to declared module promises.
   - id: optional-binding-created
     statement: When a supported binding is requested, the generated implementation binding skeleton validates under RMS checks, supplies its declared verification command, and uses language-idiomatic representation and transition placeholders where the binding can express them.
   - id: optional-scaffold-plan-recorded

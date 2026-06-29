@@ -8,8 +8,8 @@ description: Design and add a new RMS module or bounded context with a coherent 
 1. Run `rms diagnose` when starting from an unfamiliar checkout.
 2. Confirm that a new boundary is justified by distinct language, ownership, invariants, change cadence, or replaceability. Do not create a module for every noun.
 3. Use `rms design --root <root> --task "<task>"` first when module boundaries or semantic shapes are unclear.
-4. Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when the requested capability should be a recursive tree with a composite parent, domain child, and boundary child. Use `rms add-module <path> --name <name> --purpose "<purpose>"` when the CLI can scaffold one requested shape. Use `--shape domain-engine`, `--shape boundary-adapter`, `--shape workflow`, `--shape storage-adapter`, `--shape integration-adapter`, or `--shape composite` to record semantic role obligations. Add `--binding rust`, `--binding swift`, `--binding js`, or `--binding executable` for implementation scaffolding. Refine the generated artifacts rather than maintaining parallel agent-only scaffolding.
-5. Choose whether the new unit is a bounded context, internal module, workflow, adapter, or library.
+4. Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when the requested capability should be a recursive tree with a composite parent, domain child, and boundary child. Use `rms add-module <path> --name <name> --purpose "<purpose>"` when the CLI can scaffold one requested shape. Use `--shape domain-engine`, `--shape boundary-adapter`, `--shape runtime-monitor`, `--shape workflow`, `--shape storage-adapter`, `--shape integration-adapter`, or `--shape composite` to record semantic role obligations. Add `--binding rust`, `--binding swift`, `--binding js`, or `--binding executable` for implementation scaffolding. Refine the generated artifacts rather than maintaining parallel agent-only scaffolding.
+5. Choose whether the new unit is a bounded context, internal module, runtime monitor, workflow, adapter, or library.
 6. Define:
    - one-sentence purpose;
    - authoritative terminology;
@@ -33,6 +33,7 @@ description: Design and add a new RMS module or bounded context with a coherent 
 12. Define the consistency boundary, lifecycle, legal transitions, concurrency, persistence, and migration only if the Stateful profile applies. Illegal transitions must be rejected or made unrepresentable.
 13. Define retry, timeout, ordering, duplicate handling, and reconciliation only if the Distributed profile applies.
 14. Define coordination state, deadlines, terminal states, and compensation only if the Workflow profile applies.
-15. Add law, contract, and scenario evidence. Include negative evidence for impossible variants, invalid constructors, malformed boundary input, illegal transitions, and replay traces when applicable.
-16. Update the system manifest, context map, and glossary index.
-17. Validate that no existing owner now has overlapping responsibility with `rms validate --root <root>` and `rms compose --root <root>`.
+15. Define observed inputs, derived facts or streams, trigger conditions, monitor authority, retrigger/idempotency policy, and failure mode only if the Monitor profile applies.
+16. Add law, contract, scenario, boundary, and runtime evidence as applicable. Include negative evidence for impossible variants, invalid constructors, malformed boundary input, illegal transitions, replay traces, and monitor trigger/non-trigger cases when applicable.
+17. Update the system manifest, context map, and glossary index.
+18. Validate that no existing owner now has overlapping responsibility with `rms validate --root <root>` and `rms compose --root <root>`.

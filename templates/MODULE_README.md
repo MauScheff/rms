@@ -44,11 +44,24 @@ stateful      # when applicable
 distributed   # when applicable
 workflow      # when applicable
 boundary      # when applicable
+monitor       # when applicable
 ```
 
 ## Effects and operational semantics
 
 Describe only the effects and semantics that matter to callers and operators.
+
+## Runtime monitoring
+
+```text
+Observed inputs:
+Derived facts/streams:
+Triggers:
+Authority:
+Failure mode:
+```
+
+Use this section only for monitor-profile modules. Supervisory outputs must be declared events, alarms, commands, or capabilities; monitors must not mutate controlled module state directly.
 
 ## Compatibility
 

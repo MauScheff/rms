@@ -348,6 +348,24 @@ The module MUST additionally declare:
 
 Boundary verification SHOULD include fuzzing or generated adversarial cases when parser complexity or security risk justifies it.
 
+### 5.5 Monitor profile
+
+The Monitor profile applies when a module observes runtime inputs over time to compute derived facts, check envelopes or invariants, and emit findings, events, or declared supervisory commands.
+
+The module MUST additionally declare:
+
+- observed inputs and their source contracts or capabilities;
+- temporal semantics such as ordering, sampling, clock, or history window when relevant;
+- derived facts or streams used for monitor decisions;
+- trigger conditions and emitted outputs;
+- monitor authority: observe-only, advisory, enforcing, or fail-safe;
+- idempotency, cooldown, or retrigger policy when triggers can repeat;
+- fail-open, fail-closed, or degraded-mode behavior.
+
+A monitor MUST NOT mutate controlled module state directly. Supervisory behavior MUST cross public contracts as commands, events, alarms, findings, or capabilities owned by the receiving boundary.
+
+Monitor verification SHOULD include trigger and non-trigger cases, stale or out-of-order observations when relevant, and failure-mode evidence for the declared authority.
+
 ## 6. State and event requirements
 
 RMS does not require event sourcing.
