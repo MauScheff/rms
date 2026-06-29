@@ -22707,6 +22707,7 @@ RMS artifacts are the architectural source of truth. Do not infer ownership, eff
 
 Use these advisory workbench commands when they match the task:
 
+- Fresh intent-only project: after `rms init`, run `rms design --root . --task "<task>"` before choosing `rms add-module` or `rms add-capability`.
 - `rms design --root . --task "<task>"` before module boundaries or semantic shapes are fixed
 - `rms route <module.yaml> --task "<task>"` before implementing against a composite parent
 - `rms plan <module.yaml> --task "<task>"`
@@ -22731,7 +22732,7 @@ When creating a new capability, choose semantic shape before file layout:
 - `integration-adapter`: external service boundary, retries, idempotency, reconciliation evidence.
 - `composite`: contained submodules, public exports, visibility boundaries, composition evidence.
 
-Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a public capability should be scaffolded as a recursive tree with a composite parent, domain child, and boundary child.
+Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a public capability should be scaffolded as a recursive tree with a composite parent, domain child, and boundary child. Prefer this over a single module when the intent combines user/boundary interaction, lifecycle decisions, and effect simulation or external-service coordination.
 
 Use `rms add-module <path> --name <name> --purpose "<purpose>" --shape <shape> --binding <binding>` when scaffolding one module. Bindings realize semantic roles idiomatically; they do not define the semantics.
 
@@ -22762,6 +22763,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Use domain-named role suffixes for generated or declared ADTs where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`.
 - Do not use role-derived inner names such as `<Domain>RulesMachine`, `<Domain>AdapterMachine`, `<Domain>CliMachine`, or `<Domain>WebMachine`; prefer `<Domain>Machine` for pure decisions and `<Domain>BoundaryMachine` only when a boundary state/transition role is useful.
 - Keep pure transitions separate from representation definitions, and keep boundary parsing separate from both.
+- Replace generated role files incrementally. Do not delete a declared role file and leave the project invalid while hand-building a replacement; add the replacement first or keep the old file until `rms structure <implementation.yaml>` and the binding's syntax check can run.
 - Prefer ADTs, sealed variants, enums, opaque values, validated constructors, explicit result/rejection types, schemas at untrusted boundaries, and focused tests.
 - Use state machines or transition functions when behavior depends on lifecycle or order; illegal transitions must be rejected or made unrepresentable.
 - Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
