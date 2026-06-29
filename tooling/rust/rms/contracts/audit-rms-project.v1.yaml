@@ -10,7 +10,7 @@ postconditions:
   - id: report-derived-from-artifacts
     statement: The report identifies validation, composition, structure, trace, verification-target, compatibility, and provenance findings derived from RMS artifacts and local evidence.
   - id: strict-mode-promotes-blockers
-    statement: In strict mode, production-readiness blockers such as placeholder evidence, unpinned evidence, semantic-shape-only proof, unchecked numeric arithmetic, private-role imports, missing trace bundles, and missing verification commands are reported as failures.
+    statement: In strict mode, production-readiness blockers such as unknown source revision, placeholder evidence, unpinned evidence, semantic-shape-only proof, unchecked numeric arithmetic, private-role imports, missing trace bundles, and missing verification commands are reported as failures.
   - id: provider-independent
     statement: The audit command does not invoke optional AI providers or mutate project artifacts.
 failure_categories:

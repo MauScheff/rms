@@ -14,7 +14,7 @@ postconditions:
   - id: replay-is-record-derived
     statement: Replay reconstructs a deterministic timeline from recorded transition records, including state before, state after, input, reply, emitted event/command/effect counts, and source provenance when present.
   - id: first-bad-transition-is-identified
-    statement: Diagnosis identifies the first structurally bad transition when local recorded evidence is sufficient, while reporting that none was found when the bundle has no record-scoped findings.
+    statement: Diagnosis identifies the first structurally bad transition when local recorded evidence is sufficient, honors valid bundle-level first_bad_transition metadata, and reports that none was found when the bundle has no record-scoped findings or declared first-bad transition.
   - id: output-can-be-machine-readable
     statement: Check, replay, and diagnose can emit JSON reports for tooling or text reports for humans.
 failure_categories:

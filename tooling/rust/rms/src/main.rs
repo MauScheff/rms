@@ -5755,7 +5755,14 @@ fn build_trace_report(bundle: &Path) -> Result<TraceReport> {
             None,
             "trace bundle should contain a `records`, `transitions`, or `journal` array",
         );
-        return Ok(trace_report(bundle, spec, machine, records, diagnostics));
+        return Ok(trace_report(
+            bundle,
+            spec,
+            machine,
+            records,
+            diagnostics,
+            None,
+        ));
     };
 
     if record_values.is_empty() {
@@ -5775,8 +5782,17 @@ fn build_trace_report(bundle: &Path) -> Result<TraceReport> {
         records.push(trace_record_summary(index, record));
         previous_after = trace_record_state_after(record);
     }
+    let declared_first_bad =
+        declared_first_bad_trace_transition(bundle, &value, &records, &mut diagnostics);
 
-    Ok(trace_report(bundle, spec, machine, records, diagnostics))
+    Ok(trace_report(
+        bundle,
+        spec,
+        machine,
+        records,
+        diagnostics,
+        declared_first_bad,
+    ))
 }
 
 fn trace_report(
@@ -5785,8 +5801,10 @@ fn trace_report(
     machine: Option<String>,
     records: Vec<TraceRecordSummary>,
     diagnostics: Vec<TraceDiagnostic>,
+    declared_first_bad: Option<TraceFirstBadTransition>,
 ) -> TraceReport {
-    let first_bad_transition = first_bad_trace_transition(&diagnostics, &records);
+    let first_bad_transition =
+        first_bad_trace_transition(&diagnostics, &records).or(declared_first_bad);
     TraceReport {
         result: trace_result(&diagnostics).to_string(),
         bundle: bundle.display().to_string(),
@@ -5796,6 +5814,45 @@ fn trace_report(
         first_bad_transition,
         diagnostics,
     }
+}
+
+fn declared_first_bad_trace_transition(
+    bundle: &Path,
+    value: &YamlValue,
+    records: &[TraceRecordSummary],
+    diagnostics: &mut Vec<TraceDiagnostic>,
+) -> Option<TraceFirstBadTransition> {
+    let Some(declared) = get_path(value, &["first_bad_transition"]) else {
+        return None;
+    };
+    let Some(index) = get_path(declared, &["index"]).and_then(yaml_usize) else {
+        push_trace_diagnostic(
+            diagnostics,
+            Severity::Error,
+            "trace.first-bad-transition-invalid",
+            bundle,
+            None,
+            "`first_bad_transition.index` should be a zero-based record index",
+        );
+        return None;
+    };
+    let Some(record) = records.iter().find(|record| record.index == index) else {
+        push_trace_diagnostic(
+            diagnostics,
+            Severity::Error,
+            "trace.first-bad-transition-out-of-range",
+            bundle,
+            None,
+            "`first_bad_transition.index` does not refer to a transition record",
+        );
+        return None;
+    };
+
+    Some(TraceFirstBadTransition {
+        index,
+        reason: "declared by trace bundle metadata".to_string(),
+        source: record.source.clone(),
+    })
 }
 
 fn load_trace_bundle(path: &Path) -> Result<YamlValue> {
@@ -6334,6 +6391,16 @@ fn yaml_scalar_string(value: &YamlValue) -> Option<String> {
     }
     if let Some(value) = value.as_f64() {
         return Some(value.to_string());
+    }
+    None
+}
+
+fn yaml_usize(value: &YamlValue) -> Option<usize> {
+    if let Some(value) = value.as_u64() {
+        return usize::try_from(value).ok();
+    }
+    if let Some(value) = value.as_i64() {
+        return usize::try_from(value).ok();
     }
     None
 }
@@ -12753,7 +12820,11 @@ fn check_evidence_source_quality(
         );
     }
 
-    if lower.contains("source revision: not recorded") {
+    if lower.contains("source revision: not recorded")
+        || lower.contains("source revision: unknown")
+        || lower.contains("before first git commit")
+        || (lower.contains("local workspace") && !lower.contains("git:"))
+    {
         push_unique_warning(
             diagnostics,
             "evidence.source-unpinned",
@@ -16388,7 +16459,9 @@ fn build_audit_report(root: &Path, strict: bool) -> Result<AuditReport> {
     let root = normalize_empty_path(root.to_path_buf());
     let mut checks = Vec::new();
     let mut verification_targets = BTreeSet::new();
+    let source_revision = source_revision(&root);
 
+    append_source_revision_audit_checks(&root, strict, source_revision.as_deref(), &mut checks);
     append_validation_audit_checks(&root, strict, &mut checks)?;
     append_composition_audit_checks(&root, strict, &mut checks);
     append_module_audit_checks(&root, strict, &mut checks, &mut verification_targets);
@@ -16401,10 +16474,36 @@ fn build_audit_report(root: &Path, strict: bool) -> Result<AuditReport> {
         result,
         root: root.display().to_string(),
         strict,
-        source_revision: source_revision(&root).unwrap_or_else(|| "unknown".to_string()),
+        source_revision: source_revision.unwrap_or_else(|| "unknown".to_string()),
         checks,
         verification_targets: verification_targets.into_iter().collect(),
     })
+}
+
+fn append_source_revision_audit_checks(
+    root: &Path,
+    strict: bool,
+    source_revision: Option<&str>,
+    checks: &mut Vec<AuditCheck>,
+) {
+    checks.push(audit_check(
+        "provenance.source-revision",
+        "provenance",
+        if source_revision.is_some() {
+            "pass"
+        } else if strict {
+            "fail"
+        } else {
+            "review-required"
+        },
+        root,
+        if let Some(revision) = source_revision {
+            format!("audit root source revision resolved to `{revision}`")
+        } else {
+            "strict production audit requires a resolvable source revision such as a git commit"
+                .to_string()
+        },
+    ));
 }
 
 fn append_validation_audit_checks(
@@ -24586,6 +24685,63 @@ architecture:
     }
 
     #[test]
+    fn strict_audit_fails_without_source_revision() {
+        let root = unique_test_dir("strict-audit-source-revision");
+        run_add_module(
+            add_module_request(
+                &root,
+                "audit-source-example",
+                "Exercise strict source provenance audit.",
+                "library",
+                &["core".to_string()],
+                Some(ScaffoldShape::DomainEngine),
+                Some("rust"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+
+        let strict = build_audit_report(&root, true).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(strict
+            .checks
+            .iter()
+            .any(|check| check.id == "provenance.source-revision" && check.result == "fail"));
+    }
+
+    #[test]
+    fn local_workspace_evidence_is_source_unpinned_without_git_revision() {
+        let root = unique_test_dir("evidence-local-workspace");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = LoadedManifest {
+            path: root.join("module.yaml"),
+            value: serde_yaml::from_str("spec: rms/module/v0.1\nmodule:\n  name: evidence\n")
+                .unwrap(),
+        };
+        let evidence = root.join("evidence.md");
+        fs::write(
+            &evidence,
+            "Source revision: local workspace 2026-06-29 before first git commit\n",
+        )
+        .unwrap();
+        let mut diagnostics = Vec::new();
+
+        check_evidence_source_quality(
+            &manifest,
+            &mut diagnostics,
+            "evidence.md",
+            &fs::read_to_string(&evidence).unwrap(),
+            &evidence,
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "evidence.source-unpinned"));
+    }
+
+    #[test]
     fn structure_report_flags_role_suffix_machine_names() {
         let root = unique_test_dir("structure-role-suffix-machine");
         fs::create_dir_all(root.join("src")).unwrap();
@@ -27523,6 +27679,103 @@ journal:
         let first_bad = report.first_bad_transition.expect("first bad transition");
         assert_eq!(first_bad.index, 1);
         assert!(first_bad.reason.contains("trace.timeline-discontinuity"));
+    }
+
+    #[test]
+    fn trace_bundle_reports_declared_first_bad_transition() {
+        let root = unique_test_dir("trace-declared-first-bad");
+        fs::create_dir_all(&root).unwrap();
+        let bundle = root.join("trace.yaml");
+        fs::write(
+            &bundle,
+            r#"spec: rms/trace-bundle/v0.1
+machine: BookingMachine
+records:
+  - id: t1
+    state_before: Held
+    input: Confirm
+    output:
+      next_state: Confirmed
+      events: []
+      commands: []
+      effects: []
+      reply: Accepted
+    state_after: Confirmed
+    source:
+      function: transition
+      branch: Confirm
+  - id: t2
+    state_before: Confirmed
+    input: Cancel
+    output:
+      next_state: Confirmed
+      events:
+        - tag: CommandRejected
+          rejection: IllegalTransition
+      commands: []
+      effects: []
+      reply:
+        tag: Rejected
+        rejection: IllegalTransition
+    state_after: Confirmed
+    source:
+      function: transition
+      branch: IllegalTransition
+first_bad_transition:
+  index: 1
+  state_after_replay: Confirmed
+"#,
+        )
+        .unwrap();
+
+        let report = build_trace_report(&bundle).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, "pass");
+        let first_bad = report.first_bad_transition.expect("first bad transition");
+        assert_eq!(first_bad.index, 1);
+        assert_eq!(first_bad.reason, "declared by trace bundle metadata");
+        assert!(first_bad
+            .source
+            .as_deref()
+            .unwrap_or("")
+            .contains("IllegalTransition"));
+    }
+
+    #[test]
+    fn trace_bundle_rejects_out_of_range_declared_first_bad_transition() {
+        let root = unique_test_dir("trace-declared-first-bad-invalid");
+        fs::create_dir_all(&root).unwrap();
+        let bundle = root.join("trace.yaml");
+        fs::write(
+            &bundle,
+            r#"spec: rms/trace-bundle/v0.1
+machine: BookingMachine
+records:
+  - id: t1
+    state_before: Held
+    input: Confirm
+    output:
+      next_state: Confirmed
+      events: []
+      commands: []
+      effects: []
+      reply: Accepted
+    state_after: Confirmed
+first_bad_transition:
+  index: 9
+"#,
+        )
+        .unwrap();
+
+        let report = build_trace_report(&bundle).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, "fail");
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "trace.first-bad-transition-out-of-range" }));
     }
 
     #[test]

@@ -5,6 +5,8 @@ Covered by `cargo test --manifest-path tooling/rust/rms/Cargo.toml`, including s
 Evidence:
 
 - `strict_audit_fails_scaffold_evidence` verifies `rms audit --strict` semantics fail scaffold placeholder evidence while non-strict audit reports review-required findings without failing the project.
+- `strict_audit_fails_without_source_revision` verifies strict audit fails when the audit root has no resolvable source revision.
+- `local_workspace_evidence_is_source_unpinned_without_git_revision` verifies local-workspace evidence without a git revision is reported as unpinned evidence.
 - `structure_report_flags_cross_module_private_imports` verifies implementation structure diagnostics flag boundary/source role files that import another module's private `transition` or `representation` internals.
 - Existing validation, composition, structure, trace, and gate tests cover the deterministic checks reused by audit reports.
 
