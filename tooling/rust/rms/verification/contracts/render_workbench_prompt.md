@@ -1,6 +1,6 @@
 # Contract Evidence: render-workbench-prompt
 
-Covered by CLI smoke execution of `rms prompt <kind> <module> --task "<task>"`. The rendered prompt names its prompt id, advisory mode, bounded module context, workflow instructions, expected output, and deterministic checks.
+Covered by CLI smoke execution of `rms prompt <kind> <module> --task "<task>"`. The rendered prompt names its prompt id, advisory mode, bounded module context, workflow instructions, traceable-machine guidance where implementation structure is relevant, expected output, and deterministic checks.
 
 Run-record behavior is covered by `rms prompt <kind> <module> --task "<task>" --record`, which writes `request.yaml`, `prompt.md`, and `checks.json` without calling a provider.
 

@@ -4,9 +4,10 @@ Covered by `cargo test --manifest-path Cargo.toml`, including deterministic scaf
 
 Executable coverage:
 
-- `rust_module_scaffold_generates_valid_binding_artifacts` verifies generated Rust `module.yaml` and `implementation.yaml` validate, the module README records semantic shape guidance, and generated code separates representation and transition roles.
-- `swift_module_scaffold_generates_valid_binding_artifacts` verifies the same scaffold guarantees for the Swift binding.
-- `js_boundary_adapter_scaffold_separates_representation_parser_and_adapters` verifies the JS binding separates representation, parser, ports, and adapter roles and passes `rms verify implementation.yaml`.
+- `rust_module_scaffold_generates_valid_binding_artifacts` verifies generated Rust `module.yaml` and `implementation.yaml` validate, the module README records semantic shape guidance, and generated code separates representation, message envelope, transition output, transition record, trace, and replay roles.
+- `workflow_rust_scaffold_generates_traceable_orchestration_roles` verifies workflow scaffolds declare subscription registry, timeline projection, replay, and first-bad-transition roles.
+- `swift_module_scaffold_generates_valid_binding_artifacts` verifies the same traceable scaffold guarantees for the Swift binding.
+- `js_boundary_adapter_scaffold_separates_representation_parser_and_adapters` verifies the JS binding separates representation, command envelope, parser, ports, adapter, and trace roles and passes `rms verify implementation.yaml`.
 - `executable_module_scaffold_generates_valid_binding_artifacts` verifies the executable binding scaffold validates with the Boundary profile, declares opaque command-backed verification semantics, writes build and smoke scripts, records boundary evidence, and passes `rms verify implementation.yaml` without claiming static insight into opaque executable internals.
 - `runtime_monitor_shape_scaffold_gets_monitor_semantics` verifies `--shape runtime-monitor` records monitor kind, Monitor-profile obligations, monitor authority placeholders, runtime verification references, and trigger evidence placeholders.
 - `module_scaffold_generates_required_profile_sections` verifies requested Stateful, Distributed, Workflow, Boundary, and Monitor profiles produce the required empty profile sections while keeping module-specific semantics unset.

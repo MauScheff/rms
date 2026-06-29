@@ -19,6 +19,8 @@ description: Implement a feature, fix, or refactor in an RMS project while prese
    - closed variants or ADTs;
    - validated values;
    - commands, states, events, and accepted/rejected result types;
+   - command, event, effect, and effect-result envelopes;
+   - transition output, transition records, journal, timeline projection, replay bundle, and first-bad-transition evidence;
    - transition boundaries;
    - parser, port, adapter, trace, and evidence roles.
 6. Resolve semantic edge cases before implementation:
@@ -41,17 +43,18 @@ description: Implement a feature, fix, or refactor in an RMS project while prese
    - use schemas and validators at untrusted or versioned boundaries;
    - use query/projector-produced read models for derived facts; if such public types have private fields and no public constructor, declare them in `architecture.allowed_missing_constructors` and add evidence for the producing query/projector;
    - use a state model or transition function only when behavior depends on lifecycle order.
-11. Keep representation, pure transitions, boundary parsing, ports/adapters, and trace/evidence roles separate where practical. Use domain-named role suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`.
+11. Keep representation, pure transitions, boundary parsing, ports/adapters, and trace/evidence roles separate where practical. Use domain-named role suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`. Do not derive inner names from role or surface suffixes such as rules, engine, adapter, cli, web, rust, swift, or js unless those words are genuine domain language. Workflows orchestrate, machines execute, commands ask, events report, effects touch the world, projections observe, journals explain, replay reproduces, and first-bad-transition evidence points to the fix.
 12. When a change touches lifecycle behavior, update the declared state model before implementation and make illegal transitions rejected or unrepresentable.
 13. Keep decisions separate from external effects where practical.
-14. Do not introduce undeclared dependencies, effects, or cross-module state mutation.
+14. Do not introduce undeclared dependencies, effects, or cross-module state mutation. Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
 15. Add the smallest verification evidence that demonstrates:
    - affected laws;
    - contract compatibility;
    - meaningful success and failure scenarios;
    - impossible variants, invalid constructors, and illegal transitions when applicable;
-   - boundary behavior when applicable.
-16. Run `rms review <module>` before finalizing when a diff exists. Run `rms validate --root <root>`, `rms structure <implementation.yaml>` when inner roles changed, and project-native verification from the implementation binding. Use `rms verify <implementation.yaml>` when the binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups.
+   - boundary behavior when applicable;
+   - transition records, golden timelines, replay bundles, and first-bad-transition diagnostics for stateful or workflow behavior.
+16. Run `rms review <module>` before finalizing when a diff exists. Run `rms validate --root <root>`, `rms structure <implementation.yaml>` when inner roles changed, and project-native verification from the implementation binding. Use `rms verify <implementation.yaml>` when the binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups. Do not declare implemented modules done while validation reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` for those modules.
 17. Summarize:
     - changed behavior;
     - affected contracts and invariants;

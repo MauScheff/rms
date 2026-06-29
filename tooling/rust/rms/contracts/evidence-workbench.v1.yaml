@@ -12,11 +12,13 @@ postconditions:
   - id: evidence-category-is-identified
     statement: The prompt asks the reviewer or agent to classify the evidence as law, contract, scenario, boundary, runtime, reconciliation, or migration evidence.
   - id: positive-and-negative-cases-are-named
-    statement: The prompt asks for positive evidence and negative cases for impossible variants, invalid constructors, malformed boundary input, and illegal transitions when applicable.
+    statement: The prompt asks for positive evidence and negative cases for impossible variants, invalid constructors, malformed boundary input, illegal transitions, transition records, replay bundles, golden timelines, and first-bad-transition diagnostics when applicable.
   - id: routed-owner-evidence-guidance
     statement: When the target may be a composite parent or recursive module tree, evidence guidance is derived from the routed owner shape and names the smallest relevant law, contract, scenario, or boundary proof lanes.
   - id: artifact-references-are-named
     statement: The prompt asks which manifest or implementation binding references should point to the evidence.
+  - id: scaffold-evidence-completion-is-named
+    statement: The prompt asks the reviewer or agent to replace scaffold placeholder, bootstrap, unpinned, and semantic-shape-only evidence before declaring implemented modules complete.
   - id: evidence-guidance-is-advisory
     statement: The command renders or executes guidance and does not itself edit source files.
 failure_categories:

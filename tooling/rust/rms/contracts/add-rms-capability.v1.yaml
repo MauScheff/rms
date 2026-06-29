@@ -13,6 +13,8 @@ postconditions:
     statement: A composite parent module is created with public command, composition contains entries, export metadata, contract, and scenario evidence.
   - id: children-created
     statement: Domain and boundary child modules are created with semantic shapes, contracts, evidence, and optional implementation bindings.
+  - id: default-child-names-are-neutral
+    statement: When child names are not supplied, generated child paths use neutral `-domain` and `-boundary` suffixes rather than role, surface, or binding-specific names.
   - id: recursive-checks-ready
     statement: The generated tree is intended to pass validation, composition, and composite parent verification before module-specific behavior is filled in.
 failure_categories:

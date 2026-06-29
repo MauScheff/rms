@@ -35,6 +35,7 @@ owns:
     - RMS module atlas
     - RMS capability tree scaffold
     - RMS implementation inner structure report
+    - RMS local trace bundle report
   data:
     - embedded RMS schemas
     - embedded RMS prompt templates
@@ -49,6 +50,7 @@ owns:
     - generated capability tree scaffold artifacts
     - generated module atlas artifacts
     - generated implementation structure reports
+    - local trace bundle artifacts
     - optional workbench configuration
   decisions:
     - manifest-validation-result
@@ -70,6 +72,7 @@ owns:
     - release-readiness-result
     - module-atlas-shape
     - implementation-inner-structure-result
+    - local-trace-diagnostic-result
     - package-inclusion-set
     - conformance-outcome
 
@@ -131,6 +134,8 @@ provides:
       contract: contracts/build-module-atlas.v1.yaml
     - name: inspect-implementation-structure
       contract: contracts/inspect-implementation-structure.v1.yaml
+    - name: inspect-trace-bundle
+      contract: contracts/inspect-trace-bundle.v1.yaml
     - name: package-module
       contract: contracts/package-module.v1.yaml
     - name: verify-implementation

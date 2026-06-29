@@ -20,19 +20,21 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - contracts;
    - scenarios;
    - boundaries when applicable.
+   - local trace bundles with `rms trace check`, `rms trace replay`, or `rms trace diagnose` when transition evidence is recorded as JSON or YAML.
 8. Check domain representation evidence:
    - closed domain alternatives use ADTs, sealed variants, enums, or an equivalent explicit representation;
    - values with validity rules cannot be constructed invalidly except through rejected boundary input;
    - expected domain failures are represented explicitly enough for callers to handle;
    - untrusted or versioned input is validated before domain entry;
    - public read models or result structs without public constructors are declared in `architecture.allowed_missing_constructors` only when they are produced by a named query/projector with evidence;
-   - lifecycle/order-dependent behavior has a state model, transition table, or transition function.
+   - lifecycle/order-dependent behavior has a state model, transition table, or transition function;
+   - traceable behavior declares message envelopes, transition output, transition records, replay support, and first-bad-transition evidence where applicable.
 9. Check negative cases. Verification should reject or make unrepresentable impossible variants, invalid constructors, malformed boundary input, and illegal state transitions.
 10. Check all declared profile obligations:
    - Stateful: transitions, concurrency, persistence, migration;
-   - Distributed: idempotency, delivery, retry, timeout, duplicates, reconciliation;
-   - Workflow: terminal states, deadlines, compensation, resumption;
+   - Distributed: idempotency, delivery, retry, timeout, duplicates, effect lifecycle, reconciliation;
+   - Workflow: terminal states, deadlines, subscription registry, golden timeline, replay bundle, compensation, resumption;
    - Boundary: validation, trust, limits, compatibility.
 11. Check public compatibility against the previous accepted version with `rms check-compat` when manifests changed.
 12. Confirm manifests, glossary, contracts, and operational docs remain accurate.
-13. Produce an evidence summary with pass, fail, skipped, and not-applicable items. Do not report success without identifying the checks actually run.
+13. Produce an evidence summary with pass, fail, skipped, and not-applicable items. For stateful or workflow behavior, name whether transition records, golden timeline tests, replay bundles, `rms trace` checks, and first-bad-transition diagnostics were checked. Do not report success without identifying the checks actually run, and do not treat implemented modules as complete while `rms validate --root <root>` reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` for those modules.

@@ -10,7 +10,7 @@ postconditions:
   - id: cli-remains-sufficient
     statement: The command reports or creates project-local guidance without making Codex plugins, global skills, or provider execution required for RMS semantics.
   - id: project-local-guidance-created
-    statement: Agent initialization creates portable `AGENTS.md`, target-local skills, target adapter files such as `CLAUDE.md` when needed, and missing `.rms/config.yaml` from the current RMS binary.
+    statement: Agent initialization creates portable `AGENTS.md`, target-local skills, target adapter files such as `CLAUDE.md` when needed, and missing `.rms/config.yaml` from the current RMS binary, including semantic naming, traceable-machine structure, passive projection, and evidence-completion guidance.
   - id: project-local-guidance-synchronized
     statement: Agent synchronization refreshes generated `AGENTS.md`, target-local skills, and target adapter files from the current RMS binary while preserving existing workbench configuration.
   - id: diagnosis-reports-readiness

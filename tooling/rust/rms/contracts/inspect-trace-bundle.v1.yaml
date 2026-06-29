@@ -1,0 +1,28 @@
+spec: rms/contract/v0.1
+name: inspect-trace-bundle
+version: 1
+kind: command
+meaning: Check, replay, and diagnose local RMS trace bundles from recorded transition evidence without requiring an RMS runtime.
+preconditions:
+  - id: readable-trace-bundle
+    statement: The target path is a readable JSON or YAML trace bundle.
+postconditions:
+  - id: trace-check-is-local
+    statement: The command inspects local trace-bundle data and does not execute module business logic, route messages, dispatch effects, or require a runtime dependency.
+  - id: trace-shape-diagnostics-produced
+    statement: Trace checks report structural diagnostics for missing records, missing transition output, state continuity, state-after mismatches, explicit record diagnostics, and incomplete message envelopes when envelopes are present.
+  - id: replay-is-record-derived
+    statement: Replay reconstructs a deterministic timeline from recorded transition records, including state before, state after, input, reply, emitted event/command/effect counts, and source provenance when present.
+  - id: first-bad-transition-is-identified
+    statement: Diagnosis identifies the first structurally bad transition when local recorded evidence is sufficient, while reporting that none was found when the bundle has no record-scoped findings.
+  - id: output-can-be-machine-readable
+    statement: Check, replay, and diagnose can emit JSON reports for tooling or text reports for humans.
+failure_categories:
+  - id: unreadable-bundle
+    statement: The trace bundle cannot be read from the requested path.
+  - id: invalid-bundle-syntax
+    statement: The trace bundle cannot be parsed as JSON or YAML.
+  - id: unreplayable-bundle
+    statement: The trace bundle is structurally invalid enough that check or replay cannot succeed.
+compatibility:
+  policy: backward-compatible-within-major

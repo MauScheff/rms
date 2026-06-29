@@ -116,15 +116,13 @@ Add a recursive capability tree when one public capability needs a composite par
 rms add-capability ./my-system/modules/tic-tac-toe \
   --name tic-tac-toe \
   --purpose "Expose playable Tic-Tac-Toe" \
-  --domain-child tic-tac-toe-rules \
-  --boundary-child tic-tac-toe-cli \
   --domain-binding rust \
   --boundary-binding js
 ```
 
 This creates `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification directories. Semantic shapes such as `domain-engine`, `boundary-adapter`, `workflow`, `storage-adapter`, `integration-adapter`, and `composite` define role obligations before file layout. Bindings such as `rust`, `swift`, `js`, and `executable` realize those roles idiomatically. The executable binding remains the opaque command-backed lane for web, mobile, CLI, native UI, generated assets, or integration surfaces when RMS cannot statically inspect internals.
 
-Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, transition, parser, adapter, and trace evidence roles, plus a domain-named machine when applicable. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, and `Rejection`. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`.
+Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, message envelopes, transition output, transition records, parser, adapter, journal, timeline projection, replay bundle, first-bad-transition, and trace evidence roles, plus a domain-named machine when applicable. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, `Rejection`, `Transition`, and `TransitionRecord`. Prefer the `add-capability` default child paths unless the user supplied better product/domain names; do not invent `-rules`, `-adapter`, `-cli`, or `-web` child names just to describe RMS roles. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`, and a boundary role should avoid names like `CouponEvaluationAdapterMachine`.
 
 Inspect those declarations with:
 
@@ -159,7 +157,7 @@ rms route examples/tic-tac-toe/modules/tic-tac-toe/module.yaml \
   --task "change invalid move rules"
 ```
 
-`rms context`, `rms plan`, `rms implement`, and `rms review` include the same route evidence automatically when task text targets a composite parent. `rms evidence` uses it to recommend proof lanes such as transition traces for domain engines, malformed-input tests for boundary adapters, and parent-export evidence for public behavior changes.
+`rms context`, `rms plan`, `rms implement`, and `rms review` include the same route evidence automatically when task text targets a composite parent. `rms evidence` uses it to recommend proof lanes such as transition records and replay bundles for domain engines, malformed-input tests for boundary adapters, and parent-export evidence for public behavior changes.
 
 Classify the RMS impact of git changes:
 
@@ -186,6 +184,16 @@ rms explain --module examples/commerce/payments.module.yaml \
   "How does payment recovery work?" \
   --provider codex
 ```
+
+Check local transition evidence without a runtime:
+
+```bash
+rms trace check verification/laws/transition_trace.yaml
+rms trace replay verification/laws/transition_trace.yaml
+rms trace diagnose verification/laws/transition_trace.yaml
+```
+
+Trace commands inspect JSON or YAML trace bundles with recorded transition records. They reconstruct timelines and identify the first structurally bad transition when the bundle contains enough local evidence; they do not route messages, dispatch effects, or require a runtime framework.
 
 Check local RMS and optional AI-provider readiness:
 
@@ -328,7 +336,7 @@ Start with one boundary. Do not model every folder. Split when pure invariants, 
 7. Add an `implementation.yaml` that points to native build and verification commands. Use `semantic_functions` for representation constructors, parsers, transitions, adapters, and other symbols that discharge important contracts, invariants, and assumptions.
 8. Run `rms validate`, then use `rms context` before implementation work.
 
-Semantic scaffolds are language-agnostic. RMS names roles such as representation, commands, transitions, ports, adapters, traces, composition exports, visibility boundaries, and evidence; each binding chooses idiomatic files or modules. Closed alternatives should use ADTs, sealed variants, enums, or tagged constructors. Values with validity rules should use validated constructors. Lifecycle/order-dependent behavior should expose accepted and rejected transitions that can be replayed from traces.
+Semantic scaffolds are language-agnostic. RMS names roles such as representation, command/event/effect envelopes, transition output, transition records, ports, adapters, journals, timeline projections, replay bundles, composition exports, visibility boundaries, and evidence; each binding chooses idiomatic files or modules. Closed alternatives should use ADTs, sealed variants, enums, or tagged constructors. Values with validity rules should use validated constructors. Lifecycle/order-dependent behavior should expose accepted and rejected transitions that produce stable records and can be replayed to find the first bad transition.
 
 The core profile is always required. Add optional profiles only when they are true:
 
@@ -353,7 +361,7 @@ For Codex:
 - Use `rms agent plugin sync --target codex` after upgrading RMS so Codex reloads the packaged plugin skills.
 - Use the plugin wrapper in `integrations/codex/rms` only when installable distribution is useful; it is optional convenience packaging, not a semantic dependency.
 - Package skills from canonical `skills/` for plugin releases.
-- Make the agent use the shared `rms` CLI: `diagnose`, `design`, `explain`, `route`, `plan`, `implement`, `evolve-contract`, `evidence`, `refactor`, `review`, `prompt`, `run`, `config`, `context`, `validate`, `compose`, `check-compat`, `verify`, and `conformance`.
+- Make the agent use the shared `rms` CLI: `diagnose`, `design`, `explain`, `route`, `plan`, `implement`, `evolve-contract`, `evidence`, `refactor`, `review`, `prompt`, `run`, `trace`, `config`, `context`, `validate`, `compose`, `check-compat`, `verify`, and `conformance`.
 - Use hooks only to call the shared `rms` CLI.
 
 For Claude Code:

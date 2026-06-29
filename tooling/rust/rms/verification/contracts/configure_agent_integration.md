@@ -5,6 +5,7 @@ Covered by `cargo test --manifest-path Cargo.toml`, including deterministic agen
 Executable coverage:
 
 - `agent_integration_init_and_sync_manage_project_local_guidance` verifies `rms agent init` creates project-local `AGENTS.md`, `.agents/skills`, and `.rms/config.yaml`; refuses accidental overwrite; `rms agent sync` refreshes stale generated guidance and skills; and sync preserves existing workbench config.
+- The same test verifies generated guidance tells agents to rely on RMS semantic defaults, avoid role-derived names, inspect traceable inner structure, keep projections passive, and resolve placeholder evidence before declaring implemented modules done.
 - The same test verifies diagnosis data reports project-local skills as present and records that the Codex plugin is not required.
 - `agent_integration_scaffolds_claude_project_guidance` verifies the Claude target creates `CLAUDE.md`, installs RMS skills under `.claude/skills`, and records that a Claude plugin is not required.
 - `agent_plugin_install_packages_codex_plugin_marketplace_entry` verifies optional Codex plugin installation writes a self-contained plugin package, skill files, and personal marketplace entry without requiring global mutation during tests.

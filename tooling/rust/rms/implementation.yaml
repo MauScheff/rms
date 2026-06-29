@@ -32,12 +32,51 @@ dependencies:
 architecture:
   shape: boundary-adapter
   public_modules: []
+  messages:
+    command_envelope:
+      - command_id
+      - target_machine
+      - correlation_id
+      - causation_id
+      - idempotency_key
+    event_envelope:
+      - event_id
+      - source_machine
+      - correlation_id
+      - causation_id
+      - sequence
+      - schema_version
+      - occurred_at
+    effect_envelope:
+      - effect_id
+      - requester
+      - correlation_id
+      - causation_id
+      - idempotency_key
+    effect_result_envelope:
+      - effect_id
+      - requester
+      - correlation_id
+      - causation_id
+      - status
+  effects:
+    lifecycle:
+      - Pending
+      - Running
+      - Succeeded
+      - Failed
+      - RetryScheduled
+      - Abandoned
   roles:
     representation:
+      - src/main.rs
+    message_envelope:
       - src/main.rs
     parser:
       - src/main.rs
     adapter:
+      - src/main.rs
+    effect_lifecycle:
       - src/main.rs
     trace_evidence:
       - verification/contracts/inspect_implementation_structure.md
@@ -194,6 +233,7 @@ semantic_functions:
     assumptions:
       ensures:
         - generated module manifest, module README, contract guidance, semantic shape evidence, evidence directories, and optional implementation binding are deterministic scaffold artifacts
+        - inspectable implementation bindings include advisory traceable-machine declarations for message envelopes, transition output, trace records, replay bundles, and first-bad-transition support where the binding can express them
         - runtime-monitor scaffolds declare the Monitor profile, monitor authority placeholders, and runtime trigger evidence without inventing module-specific monitored facts
         - optional advisory scaffold planning records provider output as evidence without making it canonical architecture by itself
         - generated guidance routes future work through canonical artifacts and does not define module-specific semantics
@@ -213,6 +253,7 @@ semantic_functions:
     assumptions:
       ensures:
         - generated composite parent, domain child, boundary child, contracts, evidence, and optional child implementation bindings are deterministic scaffold artifacts
+        - default child names use neutral domain and boundary paths while inner role names come from semantic capability language
         - parent composition exports and child dependencies are wired through canonical manifests rather than agent-only guidance
         - generated parent verification can roll up composition and child implementation verification
     evidence:
@@ -266,6 +307,7 @@ semantic_functions:
     assumptions:
       ensures:
         - rendered prompts are advisory and derived from canonical module context plus selected workflow template
+        - plan, implement, and evidence prompts ask for traceable-machine structure before incidental file layout when the selected workflow needs implementation structure
         - provider execution is opt-in, appends execution scope including timeout, and requires a run record
     evidence:
       contracts:
@@ -300,7 +342,7 @@ semantic_functions:
       ensures:
         - design prompts are advisory and can run before a target module exists
         - module split and semantic shape recommendations remain evidence until reflected in canonical artifacts
-        - design prompts require semantic structure and edge-case decisions before implementation file layout
+        - design prompts require semantic structure, traceable-machine obligations, and edge-case decisions before implementation file layout
         - runtime monitoring and supervisory control are modeled as runtime-monitor shape guidance with explicit authority and declared outputs
     evidence:
       contracts:
@@ -465,7 +507,8 @@ semantic_functions:
         - diagnostics-are-evidence-not-authority
     assumptions:
       ensures:
-        - gate plans are derived from git impact analysis, declared implementation bindings, and composite module manifests
+        - gate plans are derived from git impact analysis, declared implementation bindings, and composite module manifests when git changed-path evidence is available
+        - non-git roots without an explicit diff fall back to deterministic full-project validation, composition, implementation verification, and composite rollup verification
         - executable validation, composition, and verification checks are reported with pass or fail status
         - affected composite parents are verified through their module manifest rollup when they do not own an implementation binding
         - manual review and compatibility obligations are explicit rather than silently treated as passed
@@ -518,11 +561,57 @@ semantic_functions:
     assumptions:
       ensures:
         - structure reports are derived from the target implementation binding and validator diagnostics
-        - missing machine, role, parser, transition, and evidence obligations are advisory findings rather than hidden architectural authority
-        - generated reports identify the implementation, module, binding, shape, declared machine roles, role paths, and focused diagnostics
+        - missing machine, role, parser, transition, envelope, trace, replay, first-bad-transition, and evidence obligations are advisory findings rather than hidden architectural authority
+        - generated reports identify the implementation, module, binding, shape, declared machine roles, message envelopes, transition output, trace roles, role paths, and focused diagnostics
     evidence:
       contracts:
         - verification/contracts/inspect_implementation_structure.md
+  - id: trace-bundle-check-command
+    symbol: run_trace_check
+    kind: parser
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/inspect-trace-bundle.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - trace checks read local JSON or YAML trace bundles and report structural diagnostics without executing module business logic or requiring a runtime
+        - trace checks validate transition records, output shape, timeline continuity, and envelope completeness when envelopes are present
+    evidence:
+      contracts:
+        - verification/contracts/inspect_trace_bundle.md
+  - id: trace-bundle-replay-command
+    symbol: run_trace_replay
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/inspect-trace-bundle.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - replay output reconstructs a deterministic timeline from recorded transition records rather than invoking a runtime
+    evidence:
+      contracts:
+        - verification/contracts/inspect_trace_bundle.md
+  - id: trace-bundle-diagnose-command
+    symbol: run_trace_diagnose
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+        - contracts/inspect-trace-bundle.v1.yaml
+      invariants:
+        - diagnostics-are-evidence-not-authority
+    assumptions:
+      ensures:
+        - diagnostics identify the first structurally bad transition when local recorded evidence is sufficient
+    evidence:
+      contracts:
+        - verification/contracts/inspect_trace_bundle.md
   - id: package-module-command
     symbol: run_package
     kind: adapter

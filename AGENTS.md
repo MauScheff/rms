@@ -33,9 +33,12 @@ Before writing implementation code, make the requested behavior concrete enough 
 - Restate intent in the owning context's language and name what must never happen.
 - Define closed variants or ADTs, validated values, commands, states, events, and accepted/rejected result types.
 - Define accepted transitions, rejected transitions, terminal states, and replayable traces when behavior depends on order or lifecycle.
+- Use traceable machine structure where behavior can enter a bad state: workflows orchestrate; machines execute; commands ask; events report; effects touch the world; projections observe; journals explain; replay reproduces; first-bad-transition evidence points to the fix.
+- When an implementation binding exists, declare or preserve command, event, effect, and effect-result envelopes; transition outputs; transition records; journal, timeline, replay-bundle, and first-bad-transition roles where they apply.
 - Parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
 - Resolve edge cases first: invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases.
 - Use domain-named role suffixes where the language allows it so inner roles stay unambiguous: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`.
+- Do not invent module, child, or machine names from role/surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `rust`, `swift`, or `js` unless those words are genuinely domain language. Prefer RMS `add-capability` defaults or user-supplied product/capability names.
 
 ## While implementing
 
@@ -47,6 +50,8 @@ Before writing implementation code, make the requested behavior concrete enough 
 - Use algebraic data types, sealed variants, enums, opaque values, validated constructors, explicit result types, and boundary schemas to make invalid states hard to represent.
 - Use a state model only when behavior depends on lifecycle or order. Illegal transitions must be rejected or made unrepresentable.
 - Use events, queues, outbox/inbox patterns, or reconciliation only when the declared profiles require them.
+- Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
+- Keep workflow choreography explicit in the workflow transition model, subscription registry, effect lifecycle, inbox/outbox, or declared adapter boundary rather than hidden in listener chains.
 - Change public contracts deliberately and follow the compatibility policy.
 - Prefer the smallest design that fully satisfies the declared semantics.
 - Keep artifacts semantically reachable. New files, helpers, fixtures, generated outputs, adapters, shims, dependencies, and abstractions should serve a current manifest promise, contract, invariant, effect, profile obligation, recovery path, implementation binding, or verification need.
@@ -58,7 +63,7 @@ Before writing implementation code, make the requested behavior concrete enough 
 
 ## Verification
 
-Use the repository-native commands declared by the implementation binding or project tooling. Prefer `rms review <module>`, `rms validate --root .`, `rms compose --root .`, `rms structure <implementation.yaml>`, `rms check-compat`, `rms verify <implementation.yaml|composite-module.yaml>`, and `rms conformance` where applicable. Before release or sharing generated integrations, run `rms release check --root .`.
+Use the repository-native commands declared by the implementation binding or project tooling. Prefer `rms review <module>`, `rms validate --root .`, `rms compose --root .`, `rms structure <implementation.yaml>`, `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, `rms trace diagnose <trace-bundle>`, `rms check-compat`, `rms verify <implementation.yaml|composite-module.yaml>`, and `rms conformance` where applicable. Before release or sharing generated integrations, run `rms release check --root .`.
 
 Before completion, verify as applicable:
 
@@ -66,6 +71,7 @@ Before completion, verify as applicable:
 - public contracts and adapters;
 - meaningful success and failure scenarios;
 - untrusted boundaries;
+- transition records, golden timeline tests, replay bundles, and first-bad-transition diagnostics for stateful or workflow behavior;
 - compatibility with existing consumers and stored state;
 - dependency and effect declarations.
 
@@ -83,5 +89,6 @@ A change is complete when:
 6. required verification passes;
 7. operational recovery is documented when external truth can diverge;
 8. conformance evidence identifies the source revision and tools used.
+9. `rms validate --root .` has no `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` warnings for modules claimed as implemented.
 
 Use the `verify-module` skill before finalizing a substantial change.

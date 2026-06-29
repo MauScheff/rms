@@ -38,6 +38,9 @@ rms impact [<git-spec>]
 rms gate [<git-spec>]
 rms atlas <module>
 rms structure <implementation>
+rms trace check <trace-bundle>
+rms trace replay <trace-bundle>
+rms trace diagnose <trace-bundle>
 rms run list
 rms run latest
 rms run inspect <run-id-or-path>
@@ -77,6 +80,9 @@ rms impact [<git-spec>] [--root <path>] [--json]
 rms gate [<git-spec>] [--root <path>] [--dry-run] [--json]
 rms atlas <module.yaml> [--root <path>] [--output <directory>] [--force]
 rms structure <implementation.yaml> [--json]
+rms trace check <trace-bundle.yaml|json> [--json]
+rms trace replay <trace-bundle.yaml|json> [--json]
+rms trace diagnose <trace-bundle.yaml|json> [--json]
 rms run list [--root <path>] [--run-root <directory>]
 rms run latest [--root <path>] [--run-root <directory>]
 rms run inspect <run-id-or-path> [--root <path>] [--run-root <directory>]
@@ -113,11 +119,11 @@ Generated module guidance is an adapter over canonical artifacts. It tells human
 
 When Stateful, Distributed, Workflow, or Boundary profiles are requested, the scaffold includes the required empty profile section so the manifest validates. Fill those sections with real lifecycle, reconciliation, workflow, or boundary semantics before relying on the profile.
 
-Inspectable bindings also scaffold inner structure declarations under `architecture.machine` and `architecture.roles`. Generated role types use semantic domain-prefixed suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`. Role, binding, and surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped from generated inner names so module slugs do not become domain types.
+Inspectable bindings also scaffold inner structure declarations under `architecture.machine`, `architecture.messages`, `architecture.transition`, `architecture.trace`, and `architecture.roles`. Generated role types use semantic domain-prefixed suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Role, binding, and surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped from generated inner names so module slugs do not become domain types.
 
 ### `add-capability`
 
-Scaffolds a recursive capability tree: a composite parent module at the requested path, a sibling `domain-engine` child, and a sibling `boundary-adapter` child. The parent declares `composition.contains`, exports the boundary child public command, and includes parent scenario evidence so `rms verify <parent/module.yaml>` can roll up composition and child implementation checks. Default child paths are generic `-domain` and `-boundary`; choose product/domain names when the capability language is clearer.
+Scaffolds a recursive capability tree: a composite parent module at the requested path, a sibling `domain-engine` child, and a sibling `boundary-adapter` child. The parent declares `composition.contains`, exports the boundary child public command, and includes parent scenario evidence so `rms verify <parent/module.yaml>` can roll up composition and child implementation checks. Default child paths are generic `-domain` and `-boundary`; choose product/domain names when the capability language is clearer. Do not pass `--domain-child` or `--boundary-child` just to add role words such as `rules`, `engine`, `adapter`, `cli`, `web`, or binding names.
 
 Use this when `rms design` recommends a composite tree for one public capability. Use `rms add-module` for single modules or when the hierarchy is already in place.
 
@@ -133,7 +139,13 @@ The first composition checker is manifest-level. It checks required module prese
 
 ### `structure`
 
-Prints a focused inner-structure report for an `implementation.yaml`. The report identifies the module, binding, semantic shape, declared machine roles, role files, transition function, and structure/evidence diagnostics. Missing machine, representation, parser, transition, hidden-effect, slug-derived machine-name, and placeholder-evidence findings are advisory in v0.1, but they are intended to catch drift before agents start inventing local architecture. `rms validate`, `rms structure`, and `rms conformance` warn when referenced evidence still contains scaffold placeholders, bootstrap prose, unpinned source revisions, or `semantic_shape.md`-only proof.
+Prints a focused inner-structure report for an `implementation.yaml`. The report identifies the module, binding, semantic shape, declared machine roles, message envelopes, transition output, trace roles, role files, transition function, replay support, first-bad-transition support, and structure/evidence diagnostics. Missing machine, representation, parser, transition, message-envelope, journal, timeline-projection, replay-bundle, hidden-effect, hidden-choreography, slug-derived machine-name, and placeholder-evidence findings are advisory in v0.1, but they are intended to catch drift before agents start inventing local architecture. `rms validate`, `rms structure`, and `rms conformance` warn when referenced evidence still contains scaffold placeholders, bootstrap prose, unpinned source revisions, or `semantic_shape.md`-only proof.
+
+### `trace`
+
+Checks, replays, and diagnoses local trace bundles without requiring a runtime. A trace bundle is a JSON or YAML evidence file with `spec: rms/trace-bundle/v0.1` and a `records`, `transitions`, or `journal` array. Each record may include `state_before`, `input`, `output`, `state_after`, `source`, and record-level diagnostics.
+
+`rms trace check` validates recorded structure, transition output, state continuity, and envelope completeness when envelopes are present. `rms trace replay` reconstructs the recorded timeline from local evidence. `rms trace diagnose` identifies the first structurally bad transition when the recorded data is sufficient. These commands inspect files only; they do not route messages, dispatch effects, or impose a runtime framework.
 
 ### `inspect`
 
@@ -266,7 +278,7 @@ Shortcut for `rms prompt evolve-contract`. Requires `--task` and produces an adv
 
 ### `evidence`
 
-Shortcut for `rms prompt evidence`. Requires `--task` and produces an advisory evidence prompt. The prompt asks for the changed promise, the smallest strong evidence, positive and negative cases, and manifest or implementation binding references to update. Supports `--record`, `--ai`, and `--provider codex`. It does not itself edit source files.
+Shortcut for `rms prompt evidence`. Requires `--task` and produces an advisory evidence prompt. The prompt asks for the changed promise, the smallest strong evidence, positive and negative cases, manifest or implementation binding references to update, and placeholder-evidence cleanup required before declaring an implemented module done. Supports `--record`, `--ai`, and `--provider codex`. It does not itself edit source files.
 
 ### `review`
 
@@ -290,7 +302,7 @@ rms gate --dry-run --json
 
 The gate runs validation for impacted RMS changes, composition for architecture-level changes, and implementation verification for affected modules with implementation bindings. Review prompts, compatibility classification, and missing implementation bindings are reported as manual obligations instead of being silently treated as passed.
 
-`rms gate` depends on git changed-path evidence. In a fresh project that is not a git repository, initialize git first or run the deterministic checks directly: `rms validate --root .`, `rms compose --root .`, and `rms verify <implementation.yaml|composite-module.yaml>`.
+When git changed-path evidence is available, `rms gate` uses it to select the smallest useful checks. In a fresh project that is not a git repository, `rms gate` falls back to deterministic full-project checks: validation, composition, and every discovered implementation or composite verification target. The fallback reports review-required impact because it cannot classify a diff without git.
 
 ### `refactor`
 

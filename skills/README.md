@@ -42,6 +42,9 @@ rms prompt <kind> <module> --task "<task>" --ai
 rms run list
 rms run latest
 rms run inspect <run-id-or-path>
+rms trace check <trace-bundle>
+rms trace replay <trace-bundle>
+rms trace diagnose <trace-bundle>
 rms inspect <module>
 rms context <module> --task "<task>"
 rms validate --root <root>

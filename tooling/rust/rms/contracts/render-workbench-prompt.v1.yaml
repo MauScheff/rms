@@ -11,6 +11,8 @@ postconditions:
     statement: Without a provider, the command prints an advisory prompt and does not edit source files or call an AI provider.
   - id: prompt-derived-from-context
     statement: The prompt includes bounded module context derived from canonical artifacts.
+  - id: structure-guidance-is-semantic
+    statement: Workbench prompts that discuss implementation structure ask for semantic roles, traceable-machine obligations, and evidence before incidental file layout.
   - id: intent-workflow-is-supported
     statement: The supported workflow templates include intent capture for understanding and accepting semantic context before implementation.
   - id: provider-run-is-recorded
