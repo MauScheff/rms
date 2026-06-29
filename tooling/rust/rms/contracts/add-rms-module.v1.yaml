@@ -18,9 +18,11 @@ postconditions:
   - id: contract-guidance-created
     statement: The generated `contracts/README.md` distinguishes public RMS contracts from private implementation details and names the required contract evidence loop.
   - id: evidence-directories-created
-    statement: The generated `verification/laws`, `verification/contracts`, `verification/scenarios`, `verification/boundaries`, and `verification/runtime` directories each contain guidance and semantic-shape placeholders for recording proof tied to declared module promises.
+    statement: The generated `verification/laws`, `verification/contracts`, `verification/scenarios`, `verification/boundaries`, `verification/traces`, and `verification/runtime` directories each contain guidance and semantic-shape placeholders for recording proof tied to declared module promises.
   - id: optional-binding-created
     statement: When a supported binding is requested, the generated implementation binding skeleton validates under RMS checks, supplies its declared verification command, and uses language-idiomatic representation, message envelope, transition output, transition record, trace, and replay placeholders where the binding can express them.
+  - id: trace-bundle-created
+    statement: Traceable semantic shapes generate a local JSON/YAML trace bundle under `verification/traces` and bind it from `implementation.yaml` when an inspectable binding is requested.
   - id: optional-scaffold-plan-recorded
     statement: When advisory scaffold planning is requested, the rendered scaffold plan and optional provider response are recorded as evidence without becoming canonical architecture by themselves.
 failure_categories:

@@ -119,7 +119,7 @@ Generated module guidance is an adapter over canonical artifacts. It tells human
 
 When Stateful, Distributed, Workflow, or Boundary profiles are requested, the scaffold includes the required empty profile section so the manifest validates. Fill those sections with real lifecycle, reconciliation, workflow, or boundary semantics before relying on the profile.
 
-Inspectable bindings also scaffold inner structure declarations under `architecture.machine`, `architecture.messages`, `architecture.transition`, `architecture.trace`, and `architecture.roles`. Generated role types use semantic domain-prefixed suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Role, binding, and surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped from generated inner names so module slugs do not become domain types.
+Inspectable bindings also scaffold inner structure declarations under `architecture.machine`, `architecture.messages`, `architecture.transition`, `architecture.trace`, and `architecture.roles`. Generated role types use semantic domain-prefixed suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Role, binding, and surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped from generated inner names so module slugs do not become domain types. Traceable scaffolds also seed `verification/traces/*.yaml`; `rms verify` checks declared JSON/YAML trace bundles after the native verify command.
 
 ### `add-capability`
 
@@ -146,6 +146,8 @@ Prints a focused inner-structure report for an `implementation.yaml`. The report
 Checks, replays, and diagnoses local trace bundles without requiring a runtime. A trace bundle is a JSON or YAML evidence file with `spec: rms/trace-bundle/v0.1` and a `records`, `transitions`, or `journal` array. Each record may include `state_before`, `input`, `output`, `state_after`, `source`, and record-level diagnostics.
 
 `rms trace check` validates recorded structure, transition output, state continuity, and envelope completeness when envelopes are present. `rms trace replay` reconstructs the recorded timeline from local evidence. `rms trace diagnose` identifies the first structurally bad transition when the recorded data is sufficient. These commands inspect files only; they do not route messages, dispatch effects, or impose a runtime framework.
+
+`rms verify <implementation.yaml>` also checks declared local trace bundles from `architecture.roles.replay_bundle`, `architecture.roles.trace_evidence`, semantic-function `evidence.traces`, and `verification/traces/`. Native build/test commands remain the binding's responsibility; trace bundle checking is RMS's structural evidence layer.
 
 ### `inspect`
 

@@ -122,7 +122,7 @@ rms add-capability ./my-system/modules/tic-tac-toe \
 
 This creates `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification directories. Semantic shapes such as `domain-engine`, `boundary-adapter`, `workflow`, `storage-adapter`, `integration-adapter`, and `composite` define role obligations before file layout. Bindings such as `rust`, `swift`, `js`, and `executable` realize those roles idiomatically. The executable binding remains the opaque command-backed lane for web, mobile, CLI, native UI, generated assets, or integration surfaces when RMS cannot statically inspect internals.
 
-Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, message envelopes, transition output, transition records, parser, adapter, journal, timeline projection, replay bundle, first-bad-transition, and trace evidence roles, plus a domain-named machine when applicable. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, `Rejection`, `Transition`, and `TransitionRecord`. Prefer the `add-capability` default child paths unless the user supplied better product/domain names; do not invent `-rules`, `-adapter`, `-cli`, or `-web` child names just to describe RMS roles. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`, and a boundary role should avoid names like `CouponEvaluationAdapterMachine`.
+Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, message envelopes, transition output, transition records, parser, adapter, journal, timeline projection, replay bundle, first-bad-transition, and trace evidence roles, plus a domain-named machine when applicable. They also seed local trace bundles under `verification/traces/`, and `rms verify` checks those bundles after native verification. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, `Rejection`, `Transition`, and `TransitionRecord`. Prefer the `add-capability` default child paths unless the user supplied better product/domain names; do not invent `-rules`, `-adapter`, `-cli`, or `-web` child names just to describe RMS roles. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`, and a boundary role should avoid names like `CouponEvaluationAdapterMachine`.
 
 Inspect those declarations with:
 
@@ -188,9 +188,9 @@ rms explain --module examples/commerce/payments.module.yaml \
 Check local transition evidence without a runtime:
 
 ```bash
-rms trace check verification/laws/transition_trace.yaml
-rms trace replay verification/laws/transition_trace.yaml
-rms trace diagnose verification/laws/transition_trace.yaml
+rms trace check verification/traces/transition_trace.yaml
+rms trace replay verification/traces/transition_trace.yaml
+rms trace diagnose verification/traces/transition_trace.yaml
 ```
 
 Trace commands inspect JSON or YAML trace bundles with recorded transition records. They reconstruct timelines and identify the first structurally bad transition when the bundle contains enough local evidence; they do not route messages, dispatch effects, or require a runtime framework.

@@ -234,6 +234,7 @@ semantic_functions:
       ensures:
         - generated module manifest, module README, contract guidance, semantic shape evidence, evidence directories, and optional implementation binding are deterministic scaffold artifacts
         - inspectable implementation bindings include advisory traceable-machine declarations for message envelopes, transition output, trace records, replay bundles, and first-bad-transition support where the binding can express them
+        - traceable scaffolds write local JSON/YAML trace bundles under verification/traces and bind them from implementation.yaml
         - runtime-monitor scaffolds declare the Monitor profile, monitor authority placeholders, and runtime trigger evidence without inventing module-specific monitored facts
         - optional advisory scaffold planning records provider output as evidence without making it canonical architecture by itself
         - generated guidance routes future work through canonical artifacts and does not define module-specific semantics
@@ -253,6 +254,7 @@ semantic_functions:
     assumptions:
       ensures:
         - generated composite parent, domain child, boundary child, contracts, evidence, and optional child implementation bindings are deterministic scaffold artifacts
+        - generated domain and boundary children include local trace bundles that child verification checks
         - default child names use neutral domain and boundary paths while inner role names come from semantic capability language
         - parent composition exports and child dependencies are wired through canonical manifests rather than agent-only guidance
         - generated parent verification can roll up composition and child implementation verification
@@ -639,6 +641,7 @@ semantic_functions:
         - target is an implementation binding with commands.verify or a composite module manifest
       ensures:
         - the declared verification command is run from the implementation binding directory
+        - declared local JSON/YAML trace bundles are checked after native verification succeeds
         - composite module verification rolls up manifest validation, composition, parent scenario evidence, and contained child implementation verification
     evidence:
       scenarios:

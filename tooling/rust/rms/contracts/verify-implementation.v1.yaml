@@ -9,6 +9,8 @@ preconditions:
 postconditions:
   - id: native-command-result-preserved
     statement: The CLI exits with an error when the declared verification command fails.
+  - id: declared-trace-bundles-checked
+    statement: After a native implementation verification command passes, the CLI checks declared local JSON/YAML trace bundles from implementation roles, semantic-function trace evidence, and `verification/traces`.
   - id: composite-rollup-checked
     statement: For composite modules, the CLI checks manifest validity, repository composition, parent scenario evidence, and contained child implementation verification when child bindings are present.
 failure_categories:
@@ -16,6 +18,8 @@ failure_categories:
     statement: The implementation binding does not declare commands.verify.
   - id: verification-failed
     statement: The declared verification command exits unsuccessfully.
+  - id: trace-bundle-invalid
+    statement: A declared trace bundle cannot be parsed or contains structural trace errors.
   - id: composite-rollup-failed
     statement: Composite module validation, composition, parent scenario evidence, or a contained child implementation verification fails.
 compatibility:

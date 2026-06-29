@@ -1457,6 +1457,16 @@ impl ScaffoldShape {
     }
 }
 
+fn scaffold_trace_bundle_file(shape: ScaffoldShape) -> Option<&'static str> {
+    match shape {
+        ScaffoldShape::DomainEngine | ScaffoldShape::Workflow => Some("transition_trace.yaml"),
+        ScaffoldShape::BoundaryAdapter
+        | ScaffoldShape::StorageAdapter
+        | ScaffoldShape::IntegrationAdapter => Some("boundary_parse.yaml"),
+        ScaffoldShape::RuntimeMonitor | ScaffoldShape::Composite => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CodexSandbox {
     #[value(name = "read-only")]
@@ -7151,7 +7161,7 @@ fn append_prompt_effects(out: &mut String, value: &YamlValue) -> Result<()> {
 
 fn append_prompt_verification(out: &mut String, value: &YamlValue) -> Result<()> {
     writeln!(out, "- Verification:")?;
-    for category in ["laws", "contracts", "scenarios", "boundaries"] {
+    for category in ["laws", "contracts", "scenarios", "boundaries", "traces"] {
         let items = get_string_array(value, &["verification", category]);
         writeln!(
             out,
@@ -7641,7 +7651,119 @@ fn run_verify_implementation_captured(implementation: &Path) -> Result<String> {
         );
     }
 
-    Ok(format!("verify command passed: {command}"))
+    let trace_reports = verify_declared_trace_bundles(&manifest, root)?;
+    Ok(format!(
+        "verify command passed: {command}{}",
+        trace_verify_suffix(&trace_reports)
+    ))
+}
+
+fn verify_declared_trace_bundles(
+    manifest: &LoadedManifest,
+    module_root: &Path,
+) -> Result<Vec<TraceReport>> {
+    let mut reports = Vec::new();
+    for bundle in implementation_trace_bundle_paths(manifest, module_root) {
+        let report = build_trace_report(&bundle)?;
+        if trace_has_errors(&report) {
+            bail!(
+                "trace bundle `{}` failed RMS trace check{}",
+                bundle.display(),
+                trace_error_suffix(&report)
+            );
+        }
+        reports.push(report);
+    }
+    Ok(reports)
+}
+
+fn implementation_trace_bundle_paths(
+    manifest: &LoadedManifest,
+    module_root: &Path,
+) -> Vec<PathBuf> {
+    let mut paths = BTreeSet::new();
+    for role in [
+        "replay_bundle",
+        "trace_evidence",
+        "journal",
+        "timeline_projection",
+    ] {
+        for reference in structure_role_paths(manifest, role) {
+            push_trace_bundle_candidate(module_root, &reference, &mut paths);
+        }
+    }
+    if let Some(functions) =
+        get_path(&manifest.value, &["semantic_functions"]).and_then(YamlValue::as_sequence)
+    {
+        for function in functions {
+            for reference in get_string_array(function, &["evidence", "traces"]) {
+                push_trace_bundle_candidate(module_root, &reference, &mut paths);
+            }
+        }
+    }
+    let trace_dir = module_root.join("verification").join("traces");
+    if trace_dir.is_dir() {
+        for entry in WalkDir::new(&trace_dir)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+        {
+            if is_trace_bundle_file(entry.path()) {
+                paths.insert(entry.path().to_path_buf());
+            }
+        }
+    }
+    paths.into_iter().collect()
+}
+
+fn push_trace_bundle_candidate(root: &Path, reference: &str, paths: &mut BTreeSet<PathBuf>) {
+    if reference.starts_with("http://")
+        || reference.starts_with("https://")
+        || reference.starts_with("urn:")
+    {
+        return;
+    }
+    let path = root.join(reference);
+    if is_trace_bundle_file(&path) {
+        paths.insert(path);
+    }
+}
+
+fn is_trace_bundle_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("yaml" | "yml" | "json")
+    )
+}
+
+fn trace_verify_suffix(reports: &[TraceReport]) -> String {
+    if reports.is_empty() {
+        return String::new();
+    }
+    let warnings = reports
+        .iter()
+        .flat_map(|report| &report.diagnostics)
+        .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+        .count();
+    if warnings == 0 {
+        format!("; {} trace bundle(s) checked", reports.len())
+    } else {
+        format!(
+            "; {} trace bundle(s) checked with {} warning(s)",
+            reports.len(),
+            warnings
+        )
+    }
+}
+
+fn trace_error_suffix(report: &TraceReport) -> String {
+    report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.severity == Severity::Error)
+        .map(|diagnostic| format!(": [{}] {}", diagnostic.check, diagnostic.message))
+        .unwrap_or_default()
 }
 
 fn run_verify_composite_module_captured(
@@ -9066,7 +9188,7 @@ fn validate_semantic_function_declarations(
             }
         }
 
-        for category in ["laws", "contracts", "scenarios", "boundaries"] {
+        for category in ["laws", "contracts", "scenarios", "boundaries", "traces"] {
             for path in get_string_array(function, &["evidence", category]) {
                 check_relative_ref(
                     implementation,
@@ -11684,6 +11806,7 @@ fn check_verification_paths(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
         "contracts",
         "scenarios",
         "boundaries",
+        "traces",
         "runtime",
         "reconciliation",
     ] {
@@ -13344,7 +13467,7 @@ fn build_module_atlas(manifest: &LoadedManifest, root: &Path) -> Result<AtlasDoc
         vec![module_ref.clone()],
     );
 
-    for category in ["laws", "contracts", "scenarios", "boundaries"] {
+    for category in ["laws", "contracts", "scenarios", "boundaries", "traces"] {
         for path in get_string_array(&manifest.value, &["verification", category]) {
             let id = stable_atlas_id("verification", &format!("{category}:{path}"));
             push_verification_node(
@@ -15769,6 +15892,13 @@ fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()>
 
     if !status.success() {
         bail!("verify command failed with status {status}");
+    }
+
+    for report in verify_declared_trace_bundles(&manifest, root)? {
+        println!(
+            "trace bundle checked: {} ({})",
+            report.bundle, report.result
+        );
     }
 
     Ok(())
@@ -18688,7 +18818,14 @@ fn run_add_module(request: AddModuleRequest, options: &PromptRunOptions) -> Resu
         write_scaffold_plan_record(&canonical_request, shape, options)?;
     }
 
-    for category in ["laws", "contracts", "scenarios", "boundaries", "runtime"] {
+    for category in [
+        "laws",
+        "contracts",
+        "scenarios",
+        "boundaries",
+        "traces",
+        "runtime",
+    ] {
         let verification_dir = path.join("verification").join(category);
         fs::create_dir_all(&verification_dir)?;
         write_new_file(
@@ -18959,7 +19096,14 @@ fn create_module_skeleton(path: &Path) -> Result<()> {
     fs::create_dir_all(path)
         .with_context(|| format!("failed to create module directory `{}`", path.display()))?;
     fs::create_dir_all(path.join("contracts"))?;
-    for category in ["laws", "contracts", "scenarios", "boundaries", "runtime"] {
+    for category in [
+        "laws",
+        "contracts",
+        "scenarios",
+        "boundaries",
+        "traces",
+        "runtime",
+    ] {
         let verification_dir = path.join("verification").join(category);
         fs::create_dir_all(&verification_dir)?;
         write_new_file(
@@ -19087,6 +19231,13 @@ fn scaffold_shape_evidence(path: &Path, shape: ScaffoldShape) -> Result<()> {
             write_new_file(
                 &path
                     .join("verification")
+                    .join("traces")
+                    .join("transition_trace.yaml"),
+                &render_transition_trace_bundle(),
+            )?;
+            write_new_file(
+                &path
+                    .join("verification")
                     .join("scenarios")
                     .join("accepted_rejected.md"),
                 &render_accepted_rejected_evidence(),
@@ -19109,6 +19260,13 @@ fn scaffold_shape_evidence(path: &Path, shape: ScaffoldShape) -> Result<()> {
                     .join("parser_to_domain_command.md"),
                 &render_parser_to_domain_command_evidence(),
             )?;
+            write_new_file(
+                &path
+                    .join("verification")
+                    .join("traces")
+                    .join("boundary_parse.yaml"),
+                &render_boundary_parse_trace_bundle(),
+            )?;
         }
         ScaffoldShape::Composite => {
             write_new_file(
@@ -19120,6 +19278,13 @@ fn scaffold_shape_evidence(path: &Path, shape: ScaffoldShape) -> Result<()> {
             )?;
         }
         ScaffoldShape::Workflow => {
+            write_new_file(
+                &path
+                    .join("verification")
+                    .join("traces")
+                    .join("transition_trace.yaml"),
+                &render_transition_trace_bundle(),
+            )?;
             write_new_file(
                 &path
                     .join("verification")
@@ -19368,6 +19533,11 @@ fn render_module_yaml(
     } else {
         ""
     };
+    let verification_traces = if shape.and_then(scaffold_trace_bundle_file).is_some() {
+        "  traces:\n    - verification/traces\n"
+    } else {
+        ""
+    };
     let composition = shape
         .filter(|shape| *shape == ScaffoldShape::Composite)
         .map(|_| "\ncomposition:\n  contains: []\n  exports: []\n".to_string())
@@ -19389,13 +19559,14 @@ fn render_module_yaml(
         })
         .unwrap_or_default();
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n{}{}",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n{}{}{}",
         yaml_quote(name),
         yaml_quote(kind),
         yaml_quote(purpose),
         yaml_string_list(profiles, 2),
         render_profile_sections(profiles),
         composition,
+        verification_traces,
         verification_runtime,
         scaffold
     )
@@ -19433,7 +19604,7 @@ fn render_capability_parent_module_yaml(
 
 fn render_capability_domain_module_yaml(name: &str, domain_command: &str) -> String {
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"library\"\n  purpose: \"Own pure capability decisions, validated values, and transition evidence.\"\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - domain command\n    - transition outcome\n  data: []\n  decisions:\n    - command acceptance\n    - command rejection\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n\nx-scaffold:\n  shape: \"domain-engine\"\n  roles:\n{}\n",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"library\"\n  purpose: \"Own pure capability decisions, validated values, and transition evidence.\"\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - domain command\n    - transition outcome\n  data: []\n  decisions:\n    - command acceptance\n    - command rejection\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n  traces:\n    - verification/traces\n\nx-scaffold:\n  shape: \"domain-engine\"\n  roles:\n{}\n",
         yaml_quote(name),
         yaml_quote(domain_command),
         contract_file_stem(domain_command),
@@ -19455,7 +19626,7 @@ fn render_capability_boundary_module_yaml(
     domain_command: &str,
 ) -> String {
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"adapter\"\n  purpose: \"Adapt untrusted input and effects to the pure domain child.\"\n\nprofiles:\n  - \"boundary\"\n  - \"core\"\n\nowns:\n  concepts:\n    - boundary input\n    - parsed domain command\n    - domain child port\n  data: []\n  decisions:\n    - boundary input parsing\n    - malformed input rejection\n    - domain command delegation\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules:\n    - name: {}\n  capabilities:\n    - name: {}\n\ninvariants: []\n\neffects:\n  - name: local-boundary-io\n    kind: local-ui\n\nboundary:\n  trust_boundary: generated-boundary-adapter\n  inputs: []\n  outputs: []\n  validation:\n    - Reject malformed input before domain delegation.\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n\nx-scaffold:\n  shape: \"boundary-adapter\"\n  roles:\n{}\n",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"adapter\"\n  purpose: \"Adapt untrusted input and effects to the pure domain child.\"\n\nprofiles:\n  - \"boundary\"\n  - \"core\"\n\nowns:\n  concepts:\n    - boundary input\n    - parsed domain command\n    - domain child port\n  data: []\n  decisions:\n    - boundary input parsing\n    - malformed input rejection\n    - domain command delegation\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules:\n    - name: {}\n  capabilities:\n    - name: {}\n\ninvariants: []\n\neffects:\n  - name: local-boundary-io\n    kind: local-ui\n\nboundary:\n  trust_boundary: generated-boundary-adapter\n  inputs: []\n  outputs: []\n  validation:\n    - Reject malformed input before domain delegation.\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n  traces:\n    - verification/traces\n\nx-scaffold:\n  shape: \"boundary-adapter\"\n  roles:\n{}\n",
         yaml_quote(name),
         yaml_quote(public_command),
         contract_file_stem(public_command),
@@ -19569,6 +19740,7 @@ fn render_verification_readme(category: &str) -> String {
         "contracts" => "# Contract Evidence\n\nRecord evidence that public contracts in `contracts/` are satisfied.\n\nEach evidence file should identify:\n\n- the contract path and version;\n- success behavior and expected failures;\n- boundary validation for untrusted or versioned input;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
         "scenarios" => "# Scenario Evidence\n\nRecord end-to-end behavior that matters to this module's declared purpose.\n\nEach evidence file should identify:\n\n- the manifest promise or public contract exercised;\n- setup, action, expected result, and failure path;\n- recovery or reconciliation behavior when declared;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
         "boundaries" => "# Boundary Evidence\n\nRecord evidence for trust boundaries, external effects, dependency contracts, schemas, limits, and compatibility promises.\n\nEach evidence file should identify:\n\n- the boundary input, dependency, or effect under test;\n- validation, rejection, timeout, retry, or compatibility behavior;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
+        "traces" => "# Trace Evidence\n\nRecord local JSON or YAML trace bundles for transition records, replay bundles, timeline projections, and first-bad-transition diagnostics.\n\nEach trace bundle should identify:\n\n- the machine or workflow under test;\n- state before, input, transition output, state after, and source provenance for each record;\n- emitted events, commands, effects, effect results, and replies where applicable;\n- the command or tool used, usually `rms trace check`, `rms trace replay`, or `rms trace diagnose`.\n\nTrace evidence is local and does not require an RMS runtime.\n".to_string(),
         "runtime" => "# Runtime Monitor Evidence\n\nRecord evidence for monitor-profile runtime observations, derived facts or streams, trigger decisions, supervisory outputs, and failure modes.\n\nEach evidence file should identify:\n\n- the observed input stream or runtime fact;\n- trigger and non-trigger cases;\n- ordering, sampling, stale, duplicate, or out-of-order behavior when relevant;\n- emitted findings, events, alarms, or commands;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
         other => format!("# {other}\n\nAdd RMS {other} evidence here.\n"),
     }
@@ -19674,6 +19846,8 @@ fn render_traceable_roles_yaml(
     transition_path: &str,
 ) -> String {
     let mut out = String::new();
+    let replay_bundle_path =
+        scaffold_trace_bundle_file(shape).map(|file| format!("verification/traces/{file}"));
     let trace_evidence_path = if parser_expected_for_shape(shape.as_str()) {
         "verification/boundaries/malformed_input.md"
     } else {
@@ -19686,11 +19860,20 @@ fn render_traceable_roles_yaml(
         ("transition_record", transition_path),
         ("journal", transition_path),
         ("timeline_projection", transition_path),
-        ("replay_bundle", transition_path),
         ("effect_lifecycle", representation_path),
-        ("trace_evidence", trace_evidence_path),
     ] {
         let _ = writeln!(out, "    {role}:");
+        let _ = writeln!(out, "      - {path}");
+    }
+    let _ = writeln!(out, "    replay_bundle:");
+    let _ = writeln!(
+        out,
+        "      - {}",
+        replay_bundle_path.as_deref().unwrap_or(transition_path)
+    );
+    let _ = writeln!(out, "    trace_evidence:");
+    let _ = writeln!(out, "      - {trace_evidence_path}");
+    if let Some(path) = replay_bundle_path.as_deref() {
         let _ = writeln!(out, "      - {path}");
     }
     if shape == ScaffoldShape::Workflow {
@@ -19714,7 +19897,7 @@ fn render_rust_implementation_yaml(
     names: &InnerStructureNames,
 ) -> String {
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - representation\n    - transition\n{}  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - representation\n    - transition\n{}  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n      traces:\n        - verification/traces/transition_trace.yaml\n",
         yaml_quote(module_name),
         yaml_quote(package_name),
         yaml_quote(shape.as_str()),
@@ -20005,7 +20188,7 @@ fn render_swift_implementation_yaml(
     let source_root = format!("Sources/{target_name}");
     let public_entrypoint = format!("Sources/{target_name}/{target_name}.swift");
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}  machine:\n    name: {}\n    state: {}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n      traces:\n        - verification/traces/transition_trace.yaml\n",
         yaml_quote(module_name),
         yaml_quote(&source_root),
         yaml_quote(&public_entrypoint),
@@ -20301,10 +20484,10 @@ fn render_js_implementation_yaml(
     let transition_semantic_function = if boundary_shape {
         ""
     } else {
-        "  - id: transition-model\n    symbol: src/transition.mjs#transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n"
+        "  - id: transition-model\n    symbol: src/transition.mjs#transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n      traces:\n        - verification/traces/transition_trace.yaml\n"
     };
     let boundary_semantic_function = if boundary_shape {
-        "  - id: boundary-parser\n    symbol: src/parser.mjs#parseCommand\n    kind: parser\n    purity: pure\n    evidence:\n      boundaries:\n        - verification/boundaries/malformed_input.md\n  - id: boundary-adapter\n    symbol: src/adapter.mjs#handleBoundaryInput\n    kind: adapter\n    purity: boundary\n    evidence:\n      contracts:\n        - verification/contracts/parser_to_domain_command.md\n"
+        "  - id: boundary-parser\n    symbol: src/parser.mjs#parseCommand\n    kind: parser\n    purity: pure\n    evidence:\n      boundaries:\n        - verification/boundaries/malformed_input.md\n      traces:\n        - verification/traces/boundary_parse.yaml\n  - id: boundary-adapter\n    symbol: src/adapter.mjs#handleBoundaryInput\n    kind: adapter\n    purity: boundary\n    evidence:\n      contracts:\n        - verification/contracts/parser_to_domain_command.md\n      traces:\n        - verification/traces/boundary_parse.yaml\n"
     } else {
         ""
     };
@@ -20713,6 +20896,122 @@ fn render_shape_law_evidence(shape: ScaffoldShape) -> String {
 
 fn render_transition_trace_evidence() -> String {
     "# Law Evidence: transition trace\n\nPromise:\n\n- Pure decisions are replayable from explicit commands, states, events, or transition inputs.\n- Each transition record captures state before, state after, input variant, outputs, and source provenance.\n- Illegal or invalid transitions are rejected or made unrepresentable.\n\nEvidence to add:\n\n- Accepted transition record from valid input to expected output.\n- Rejected transition record for invalid command, impossible variant, or invalid state/order.\n- Replay bundle that can reproduce the observed sequence.\n- First-bad-transition note when a sequence can enter a bad state.\n- Property, fuzz, or table coverage when the transition space is broad.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+}
+
+fn render_transition_trace_bundle() -> String {
+    r#"spec: rms/trace-bundle/v0.1
+machine: TraceableScaffoldMachine
+records:
+  - id: accepted-1
+    state_before: Ready
+    input:
+      command_id: command-accepted-1
+      target_machine: TraceableScaffoldMachine
+      correlation_id: correlation-accepted-1
+      causation_id: user-request-1
+      idempotency_key: null
+      command:
+        tag: Accept
+    output:
+      next_state: Ready
+      events:
+        - event_id: event-accepted-1
+          source_machine: TraceableScaffoldMachine
+          correlation_id: correlation-accepted-1
+          causation_id: command-accepted-1
+          sequence: 1
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event:
+            tag: Accepted
+      commands: []
+      effects: []
+      reply:
+        tag: Accepted
+    state_after: Ready
+    source:
+      file: verification/traces/transition_trace.yaml
+      function: transition
+      branch: accepted
+  - id: rejected-1
+    state_before: Ready
+    input:
+      command_id: command-rejected-1
+      target_machine: TraceableScaffoldMachine
+      correlation_id: correlation-rejected-1
+      causation_id: user-request-2
+      idempotency_key: null
+      command:
+        tag: Reject
+    output:
+      next_state: Ready
+      events:
+        - event_id: event-rejected-1
+          source_machine: TraceableScaffoldMachine
+          correlation_id: correlation-rejected-1
+          causation_id: command-rejected-1
+          sequence: 2
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event:
+            tag: Rejected
+      commands: []
+      effects: []
+      reply:
+        tag: Rejected
+    state_after: Ready
+    source:
+      file: verification/traces/transition_trace.yaml
+      function: transition
+      branch: rejected
+"#
+    .to_string()
+}
+
+fn render_boundary_parse_trace_bundle() -> String {
+    r#"spec: rms/trace-bundle/v0.1
+machine: BoundaryScaffoldMachine
+records:
+  - id: parsed-1
+    state_before: AwaitingInput
+    input:
+      command_id: boundary-input-1
+      target_machine: BoundaryScaffoldMachine
+      correlation_id: boundary-correlation-1
+      causation_id: user-request-1
+      idempotency_key: null
+      command:
+        tag: RawInputReceived
+    output:
+      next_state: Parsed
+      events:
+        - event_id: boundary-event-1
+          source_machine: BoundaryScaffoldMachine
+          correlation_id: boundary-correlation-1
+          causation_id: boundary-input-1
+          sequence: 1
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event:
+            tag: DomainCommandParsed
+      commands:
+        - command_id: domain-command-1
+          target_machine: DomainScaffoldMachine
+          correlation_id: boundary-correlation-1
+          causation_id: boundary-input-1
+          idempotency_key: null
+          command:
+            tag: Accept
+      effects: []
+      reply:
+        tag: Accepted
+    state_after: Parsed
+    source:
+      file: verification/traces/boundary_parse.yaml
+      function: parse-and-adapt
+      branch: parsed
+"#
+    .to_string()
 }
 
 fn render_accepted_rejected_evidence() -> String {
@@ -21451,7 +21750,7 @@ fn print_effects(value: &YamlValue) {
 fn print_verification(value: &YamlValue) {
     println!();
     println!("## Verification");
-    for category in ["laws", "contracts", "scenarios", "boundaries"] {
+    for category in ["laws", "contracts", "scenarios", "boundaries", "traces"] {
         let items = get_string_array(value, &["verification", category]);
         println!(
             "- {category}: {}",
@@ -22139,6 +22438,10 @@ import struct ExternalKit.Widget
         let representation = fs::read_to_string(root.join("src/representation.rs")).unwrap();
         let transition = fs::read_to_string(root.join("src/transition.rs")).unwrap();
         let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+        let trace_report =
+            build_trace_report(&root.join("verification/traces/transition_trace.yaml")).unwrap();
+        let verify_message =
+            run_verify_implementation_captured(&root.join("implementation.yaml")).unwrap();
 
         fs::remove_dir_all(&root).unwrap();
         assert_no_error_diagnostics(&diagnostics);
@@ -22155,6 +22458,9 @@ import struct ExternalKit.Widget
         assert!(representation.contains("pub enum ExampleReply"));
         assert!(transition.contains("pub struct ExampleMachine"));
         assert!(transition.contains("pub struct ExampleTransitionRecord"));
+        assert!(implementation.contains("verification/traces/transition_trace.yaml"));
+        assert_eq!(trace_report.result, "pass");
+        assert!(verify_message.contains("trace bundle(s) checked"));
         assert_eq!(report.machine.name.as_deref(), Some("ExampleMachine"));
         assert_eq!(
             report.transition.output,
@@ -22194,13 +22500,17 @@ import struct ExternalKit.Widget
         let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
         let module_yaml = fs::read_to_string(root.join("module.yaml")).unwrap();
         let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+        let trace_report =
+            build_trace_report(&root.join("verification/traces/transition_trace.yaml")).unwrap();
         run_verify(&root.join("implementation.yaml"), false).unwrap();
 
         fs::remove_dir_all(&root).unwrap();
         assert!(module_yaml.contains("workflow: {}"));
+        assert!(module_yaml.contains("traces:"));
         assert!(implementation.contains("subscriptions:"));
         assert!(implementation.contains("subscription_registry:"));
         assert!(implementation.contains("timeline_projection: transition-records"));
+        assert_eq!(trace_report.result, "pass");
         for missing in [
             "structure.subscription-registry-missing",
             "structure.timeline-projection-missing",
@@ -22252,6 +22562,8 @@ import struct ExternalKit.Widget
         let transition =
             fs::read_to_string(root.join("Sources/ExampleSwift/Transition.swift")).unwrap();
         let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+        let trace_report =
+            build_trace_report(&root.join("verification/traces/transition_trace.yaml")).unwrap();
 
         fs::remove_dir_all(&root).unwrap();
         assert_no_error_diagnostics(&diagnostics);
@@ -22266,6 +22578,8 @@ import struct ExternalKit.Widget
         assert!(representation.contains("public enum ExampleReply"));
         assert!(transition.contains("public enum ExampleMachine"));
         assert!(transition.contains("public struct ExampleTransitionRecord"));
+        assert!(implementation.contains("verification/traces/transition_trace.yaml"));
+        assert_eq!(trace_report.result, "pass");
         assert_eq!(report.machine.name.as_deref(), Some("ExampleMachine"));
         assert_eq!(
             report.transition.output,
@@ -22358,6 +22672,8 @@ import struct ExternalKit.Widget
         assert!(root.join("src/adapter.mjs").exists());
         let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
         let representation = fs::read_to_string(root.join("src/representation.mjs")).unwrap();
+        let trace_report =
+            build_trace_report(&root.join("verification/traces/boundary_parse.yaml")).unwrap();
         assert!(implementation.contains("binding: js"));
         assert!(implementation.contains("shape: \"boundary-adapter\""));
         assert!(implementation.contains("name: \"ExampleBoundaryMachine\""));
@@ -22370,6 +22686,8 @@ import struct ExternalKit.Widget
         assert!(representation.contains("makeExampleBoundaryCommandEnvelope"));
         assert!(representation.contains("ExampleBoundaryEffectLifecycle"));
         assert!(representation.contains("makeExampleBoundaryReplyRejected"));
+        assert!(implementation.contains("verification/traces/boundary_parse.yaml"));
+        assert_eq!(trace_report.result, "pass");
         run_verify(&root.join("implementation.yaml"), false).unwrap();
         let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
 
@@ -25390,6 +25708,73 @@ journal:
         let first_bad = report.first_bad_transition.expect("first bad transition");
         assert_eq!(first_bad.index, 1);
         assert!(first_bad.reason.contains("trace.timeline-discontinuity"));
+    }
+
+    #[test]
+    fn verify_fails_bad_declared_trace_bundle() {
+        let root = unique_test_dir("verify-bad-trace");
+        fs::create_dir_all(root.join("verification/traces")).unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: bad-trace
+binding: executable
+source:
+  root: .
+  public_entrypoint: scripts/verify.sh
+commands:
+  verify: "true"
+architecture:
+  roles:
+    replay_bundle:
+      - verification/traces/bad.yaml
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("verification/traces/bad.yaml"),
+            r#"spec: rms/trace-bundle/v0.1
+machine: BadTraceMachine
+records:
+  - id: t1
+    state_before: Ready
+    input:
+      command_id: c1
+      target_machine: BadTraceMachine
+      correlation_id: flow-1
+      causation_id: user-1
+    output:
+      next_state: Done
+      events: []
+      commands: []
+      effects: []
+      reply: Accepted
+    state_after: Done
+  - id: t2
+    state_before: Ready
+    input:
+      command_id: c2
+      target_machine: BadTraceMachine
+      correlation_id: flow-1
+      causation_id: c1
+    output:
+      next_state: Closed
+      events: []
+      commands: []
+      effects: []
+      reply: Accepted
+    state_after: Closed
+"#,
+        )
+        .unwrap();
+
+        let error = run_verify_implementation_captured(&root.join("implementation.yaml"))
+            .unwrap_err()
+            .to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(error.contains("trace bundle"));
+        assert!(error.contains("trace.timeline-discontinuity"));
     }
 
     #[test]
