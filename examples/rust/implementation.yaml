@@ -65,7 +65,11 @@ architecture:
     first_bad_transition: source-provenance-from-transition-record
   machine:
     name: RustExampleMachine
+    mode: stateless-decision-machine
+    stateless_justification: "describe-widget is a pure query over already validated input; no lifecycle or ordering state is owned by this example"
     state: RustExampleState
+    states:
+      - Ready
     commands:
       - DescribeWidgetCommand
     events: []

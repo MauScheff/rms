@@ -1,0 +1,20 @@
+spec: rms/contract/v0.1
+name: plan-semantic-change
+version: 1
+kind: command
+meaning: Render or run an advisory RMS prompt that proposes a language-neutral semantic-change object for a module or implementation binding.
+preconditions:
+  - id: target-readable
+    statement: The target module.yaml or implementation.yaml is readable and parseable.
+  - id: task-provided
+    statement: The caller supplies a product or maintenance intent.
+postconditions:
+  - id: advisory-output
+    statement: The command produces a bounded prompt or provider response; it does not mutate canonical artifacts.
+  - id: semantic-change-requested
+    statement: The prompt asks for rms/semantic-change/v0.1 when laws, contracts, machine structure, effects, or evidence obligations must change.
+failure_categories:
+  - id: unsupported-target
+    statement: The target is not an RMS module or implementation manifest.
+compatibility:
+  policy: backward-compatible-within-major

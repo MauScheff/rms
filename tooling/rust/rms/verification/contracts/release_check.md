@@ -1,5 +1,7 @@
 # Contract Evidence: release-check
 
+Proves: `check-release-readiness`.
+
 Covered by `cargo test --manifest-path Cargo.toml` and by release-check smoke execution.
 
 Executable coverage:

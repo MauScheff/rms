@@ -1,0 +1,18 @@
+spec: rms/contract/v0.1
+name: check-semantic-change
+version: 1
+kind: command
+meaning: Check a module or implementation for semantic-first completeness and machine structure conformance.
+preconditions:
+  - id: target-readable
+    statement: The target module.yaml or implementation.yaml is readable and parseable.
+postconditions:
+  - id: semantic-findings-reported
+    statement: The command reports missing law evidence, contract evidence, empty evidence lanes, and implementation structure diagnostics.
+  - id: strict-promotes-blockers
+    statement: --strict promotes production semantic and structure blockers to failures.
+failure_categories:
+  - id: semantic-incomplete
+    statement: Required laws, contracts, machine structure, or evidence are missing or drifted.
+compatibility:
+  policy: backward-compatible-within-major

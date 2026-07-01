@@ -122,13 +122,63 @@ rms add-capability ./my-system/modules/tic-tac-toe \
 
 This creates `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification directories. Semantic shapes such as `domain-engine`, `boundary-adapter`, `workflow`, `storage-adapter`, `integration-adapter`, and `composite` define role obligations before file layout. Bindings such as `rust`, `swift`, `js`, and `executable` realize those roles idiomatically. The executable binding remains the opaque command-backed lane for web, mobile, CLI, native UI, generated assets, or integration surfaces when RMS cannot statically inspect internals.
 
-Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, message envelopes, transition output, transition records, parser, adapter, journal, timeline projection, replay bundle, first-bad-transition, and trace evidence roles, plus a domain-named machine when applicable. They also seed local trace bundles under `verification/traces/`, and `rms verify` checks those bundles after native verification. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, `Rejection`, `Transition`, and `TransitionRecord`. Prefer the `add-capability` default child paths unless the user supplied better product/domain names; do not invent `-rules`, `-adapter`, `-cli`, or `-web` child names just to describe RMS roles. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`, and a boundary role should avoid names like `CouponEvaluationAdapterMachine`.
+Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, message envelopes, transition output, transition records, parser, adapter, journal, timeline projection, replay bundle, first-bad-transition, and trace evidence roles, plus a domain-named machine with an explicit mode and state variants. They also seed local trace bundles under `verification/traces/`, and `rms verify` checks those bundles after native verification. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, `Rejection`, `Transition`, and `TransitionRecord`. Prefer the `add-capability` default child paths unless the user supplied better product/domain names; do not invent `-rules`, `-adapter`, `-cli`, or `-web` child names just to describe RMS roles. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`, and a boundary role should avoid names like `CouponEvaluationAdapterMachine`.
 
 Inspect those declarations with:
 
 ```bash
 rms structure ./my-system/modules/widget/implementation.yaml
 ```
+
+Change product meaning through the semantic gate:
+
+```bash
+rms spec plan ./my-system/modules/widget/module.yaml \
+  --task "add confirmation before writing a local log"
+
+rms spec apply ./my-system/modules/widget/module.yaml \
+  --change-yaml 'spec: rms/semantic-change/v0.1
+intent:
+  summary: Local log writes require confirmation.
+laws:
+  add:
+    - id: confirmation-before-local-log
+      statement: A local log write is requested only after confirmation.
+contracts:
+  add:
+    - name: confirm-log
+      version: v1
+      command: ConfirmLog
+evidence:
+  add:
+    - kind: trace
+      proves: confirmation-before-local-log
+      path: verification/traces/confirmation_before_log.yaml'
+
+rms spec check ./my-system/modules/widget/module.yaml
+```
+
+Use the focused machine gate when laws, public contracts, and evidence obligations are already correct:
+
+```bash
+rms machine plan ./my-system/modules/widget/implementation.yaml \
+  --task "add confirmation before writing a local log"
+
+rms machine apply ./my-system/modules/widget/implementation.yaml \
+  --change-yaml 'spec: rms/machine-change/v0.1
+machine:
+  mode: stateful-transition-machine
+  states:
+    add: [PendingConfirmation]
+  commands:
+    add: [Confirm]
+  replies:
+    add: [Confirmed]'
+
+rms machine check ./my-system/modules/widget/implementation.yaml
+```
+
+`rms spec plan`, `rms machine plan`, and provider output are advisory. `rms spec apply` and `rms machine apply` are the deterministic steps that update canonical declarations and role placeholders. Agents then fill declared role bodies; pure helpers stay pure, and IO belongs behind declared effects/effect-results in adapter, port, or effect-executor roles.
 
 Validate the included examples:
 
@@ -372,7 +422,7 @@ For Codex:
 - Use `rms agent plugin sync --target codex` after upgrading RMS so Codex reloads the packaged plugin skills.
 - Use the plugin wrapper in `integrations/codex/rms` only when installable distribution is useful; it is optional convenience packaging, not a semantic dependency.
 - Package skills from canonical `skills/` for plugin releases.
-- Make the agent use the shared `rms` CLI: `diagnose`, `design`, `explain`, `route`, `plan`, `implement`, `evolve-contract`, `evidence`, `refactor`, `review`, `prompt`, `run`, `trace`, `config`, `context`, `validate`, `compose`, `check-compat`, `verify`, `conformance`, and `audit`.
+- Make the agent use the shared `rms` CLI: `diagnose`, `design`, `explain`, `route`, `plan`, `implement`, `evolve-contract`, `evidence`, `refactor`, `review`, `prompt`, `run`, `machine`, `trace`, `config`, `context`, `validate`, `compose`, `check-compat`, `verify`, `conformance`, and `audit`.
 - Use hooks only to call the shared `rms` CLI.
 
 For Claude Code:

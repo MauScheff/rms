@@ -1,5 +1,7 @@
 # Contract Evidence: latest-workbench-run
 
+Proves: `inspect-latest-workbench-run`.
+
 Covered by `cargo test --manifest-path Cargo.toml`, including deterministic run-record ordering coverage.
 
 Executable coverage:

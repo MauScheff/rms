@@ -65,7 +65,12 @@ architecture:
     first_bad_transition: source-provenance-from-transition-record
   machine:
     name: TicTacToeMachine
+    mode: stateful-transition-machine
     state: Game
+    states:
+      - InProgress
+      - Won
+      - Draw
     commands:
       - Command
     events:

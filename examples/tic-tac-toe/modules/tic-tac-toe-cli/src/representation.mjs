@@ -8,8 +8,18 @@ export function makeCell(row, column) {
   return Object.freeze({ tag: "Cell", row, column, index: row * 3 + column });
 }
 
+export const AwaitingInput = Object.freeze({ tag: "BoundaryState.AwaitingInput" });
+export const ParsedCommand = Object.freeze({ tag: "BoundaryState.ParsedCommand" });
+export const Delegating = Object.freeze({ tag: "BoundaryState.Delegating" });
+export const Completed = Object.freeze({ tag: "BoundaryState.Completed" });
+export const Rejected = Object.freeze({ tag: "BoundaryState.Rejected" });
+
 export const BoundaryState = Object.freeze({
-  Ready: "BoundaryState.Ready",
+  AwaitingInput,
+  ParsedCommand,
+  Delegating,
+  Completed,
+  Rejected,
 });
 
 export function makeRawCliInput(text) {

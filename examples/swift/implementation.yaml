@@ -63,7 +63,11 @@ architecture:
     first_bad_transition: source-provenance-from-transition-record
   machine:
     name: SwiftExampleMachine
+    mode: stateless-decision-machine
+    stateless_justification: "describeWidget is a pure query over already validated input; no lifecycle or ordering state is owned by this example"
     state: SwiftExampleState
+    states:
+      - Ready
     commands:
       - DescribeSwiftWidgetCommand
     events: []

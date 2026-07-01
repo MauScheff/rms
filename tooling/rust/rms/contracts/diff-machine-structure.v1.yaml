@@ -1,0 +1,18 @@
+spec: rms/contract/v0.1
+name: diff-machine-structure
+version: 1
+kind: command
+meaning: Show the current git diff for an implementation binding so machine-gate changes can be reviewed against canonical artifacts.
+preconditions:
+  - id: implementation-path-supplied
+    statement: A target implementation binding path is supplied.
+postconditions:
+  - id: diff-reported
+    statement: The command reports the current git diff for the target implementation binding when git diff is available.
+  - id: machine-readable-output
+    statement: "`--json` reports implementation path, source revision, changed flag, and diff text."
+failure_categories:
+  - id: diff-unavailable
+    statement: Git diff is unavailable or the path is outside an accessible worktree.
+compatibility:
+  policy: backward-compatible-within-major

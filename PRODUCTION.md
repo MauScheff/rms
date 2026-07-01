@@ -33,6 +33,7 @@ A project is ready for production pilot use when all requirements hold:
 | Evidence is concrete | No active implemented module reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only`. |
 | Public compatibility is explicit | Contract or manifest changes include `rms check-compat` evidence or an explicit compatibility decision. |
 | Agents can start cold | `AGENTS.md`, `.rms/config.yaml`, and local agent skills are generated or synced from the pinned RMS CLI. |
+| Semantic changes are gated | New laws, contracts, states, commands, events, effects, transitions, semantic roles, public entrypoints, and evidence obligations are introduced through `rms spec apply`, then checked with `rms spec check`. |
 
 ## New Project Flow
 
@@ -81,6 +82,16 @@ rms add-module ./modules/<module> \
 ```
 
 Then implement inside the generated roles. Update `module.yaml`, contracts, `implementation.yaml`, and evidence when behavior changes.
+
+When product meaning changes, do not ask the agent to hand-create laws, contracts, transitions, or evidence files. Have it run:
+
+```bash
+rms spec plan <module.yaml|implementation.yaml> --task "<task>"
+rms spec apply <module.yaml|implementation.yaml> --change-yaml '<semantic-change>'
+rms spec check <module.yaml|implementation.yaml>
+```
+
+Use `rms machine plan/apply/check` only for focused inner-machine edits when laws, public contracts, and evidence obligations are already correct. Provider plans are advisory until `rms spec apply` or `rms machine apply` reflects them in canonical artifacts. Agents may edit declared role bodies and private pure helpers inside pure role files. IO belongs in declared adapter, port, or effect-executor roles as effects plus effect results.
 
 ## Existing Project Flow
 
@@ -147,6 +158,7 @@ During work in progress, evidence may be temporary. Before production:
 - rerun `rms audit --root . --strict`.
 
 Strict audit intentionally fails outside a git checkout or when active evidence is unpinned.
+Strict audit also fails when production-relevant implementation, manifest, contract, evidence, role, or agent-guidance files are dirty or untracked. Commit the production candidate before claiming `rms audit --root . --strict` as release evidence.
 
 ## CI Gate
 

@@ -1,0 +1,28 @@
+spec: rms/contract/v0.1
+name: apply-machine-change
+version: 1
+kind: command
+meaning: "Validate and apply an `rms/machine-change/v0.1` object to an implementation binding's canonical machine declarations and generated role placeholders."
+preconditions:
+  - id: implementation-readable
+    statement: "The target `implementation.yaml` is readable and parseable."
+  - id: exactly-one-change-source
+    statement: Exactly one inline JSON, inline YAML, or change file input is supplied.
+postconditions:
+  - id: canonical-artifacts-updated
+    statement: "Successful non-dry-run application updates `architecture.machine`, traceable-machine defaults, declared roles, transitions, and local trace placeholders in canonical artifacts."
+  - id: invalid-change-rejected
+    statement: Unknown states, commands, events, effects, effect results, replies, rejections, duplicate variants, unsupported modes, and invalid effect executors are rejected before writes.
+  - id: dry-run-does-not-write
+    statement: "`--dry-run` reports planned writes and diagnostics without mutating tracked files."
+  - id: provider-output-not-authority
+    statement: Provider-generated plans have no semantic authority unless represented by the applied machine-change object.
+failure_categories:
+  - id: invalid-change-spec
+    statement: The change input is missing or uses an unsupported spec identifier.
+  - id: unknown-transition-reference
+    statement: A transition references undeclared state, input, output, event, command, effect, reply, or rejection.
+  - id: missing-effect-executor
+    statement: A declared effect executor does not name a declared effect.
+compatibility:
+  policy: backward-compatible-within-major

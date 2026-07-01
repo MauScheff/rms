@@ -141,6 +141,22 @@ provides:
       contract: contracts/inspect-implementation-structure.v1.yaml
     - name: inspect-trace-bundle
       contract: contracts/inspect-trace-bundle.v1.yaml
+    - name: plan-machine-change
+      contract: contracts/plan-machine-change.v1.yaml
+    - name: apply-machine-change
+      contract: contracts/apply-machine-change.v1.yaml
+    - name: plan-semantic-change
+      contract: contracts/plan-semantic-change.v1.yaml
+    - name: apply-semantic-change
+      contract: contracts/apply-semantic-change.v1.yaml
+    - name: check-semantic-change
+      contract: contracts/check-semantic-change.v1.yaml
+    - name: diff-semantic-change
+      contract: contracts/diff-semantic-change.v1.yaml
+    - name: check-machine-structure
+      contract: contracts/check-machine-structure.v1.yaml
+    - name: diff-machine-structure
+      contract: contracts/diff-machine-structure.v1.yaml
     - name: package-module
       contract: contracts/package-module.v1.yaml
     - name: verify-implementation

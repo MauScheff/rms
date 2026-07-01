@@ -8,7 +8,7 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
 1. Run `rms diagnose` when starting from an unfamiliar checkout.
 2. Read the target manifest and implementation binding.
 3. Run `rms validate --root <root>` or validate the explicit target manifests.
-4. Run `rms review <module>` when verifying an active diff. Run `rms verify <implementation.yaml>` when the implementation binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups. Run `rms audit --root <root> --strict` before claiming production-ready RMS software.
+4. Run `rms review <module>` when verifying an active diff. Run `rms spec check <module.yaml|implementation.yaml>` and `rms machine check <implementation.yaml>` when an implementation binding exists. Run `rms verify <implementation.yaml>` when the implementation binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups. Run `rms audit --root <root> --strict` before claiming production-ready RMS software.
 5. Confirm manifest validity and referenced-file existence.
 6. Check ownership and dependency boundaries:
    - no undeclared imports or calls;
@@ -29,6 +29,7 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - public read models or result structs without public constructors are declared in `architecture.allowed_missing_constructors` only when they are produced by a named query/projector with evidence;
    - lifecycle/order-dependent behavior has a state model, transition table, or transition function;
    - traceable behavior declares message envelopes, transition output, transition records, replay support, and first-bad-transition evidence where applicable.
+   - semantic roles, state variants, commands, events, effects, effect results, public entrypoints, and evidence roles are declared in canonical artifacts rather than invented by direct source edits.
 9. Check negative cases. Verification should reject or make unrepresentable impossible variants, invalid constructors, malformed boundary input, and illegal state transitions.
 10. Check all declared profile obligations:
    - Stateful: transitions, concurrency, persistence, migration;

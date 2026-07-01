@@ -123,6 +123,92 @@ When Stateful, Distributed, Workflow, or Boundary profiles are requested, the sc
 
 Inspectable bindings also scaffold inner structure declarations under `architecture.machine`, `architecture.messages`, `architecture.transition`, `architecture.trace`, and `architecture.roles`. Generated role types use semantic domain-prefixed suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Role, binding, and surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped from generated inner names so module slugs do not become domain types. Traceable scaffolds also seed `verification/traces/*.yaml`; `rms verify` checks declared JSON/YAML trace bundles after the native verify command.
 
+### `spec`
+
+Semantic changes are the outer meaning gate:
+
+```bash
+rms spec plan <module.yaml|implementation.yaml> --task "<intent>" [--ai|--provider codex] [--record] [--output <path>]
+rms spec apply <module.yaml|implementation.yaml> (--change-json '<json>' | --change-yaml '<yaml>' | --change-file <path>) [--dry-run]
+rms spec check <module.yaml|implementation.yaml> [--strict] [--json]
+rms spec diff <module.yaml|implementation.yaml> [--json]
+```
+
+Use this when a change needs new laws, public contracts, machine states, transitions, effects, effect results, rejection types, or evidence obligations. `rms spec apply` updates canonical semantics first, then agents fill declared role bodies. Provider planning is advisory until `rms spec apply` succeeds.
+
+The semantic-change format is language-neutral and may include a nested machine change:
+
+```yaml
+spec: rms/semantic-change/v0.1
+module: modules/example/module.yaml
+intent:
+  summary: Failed payment after reservation releases inventory.
+laws:
+  add:
+    - id: payment-failure-releases-inventory
+      statement: Failed payment after reservation emits ReleaseInventory before final status.
+contracts:
+  add:
+    - name: resolve-checkout
+      version: v1
+      command: ResolveCheckout
+evidence:
+  add:
+    - kind: trace
+      proves: payment-failure-releases-inventory
+      path: verification/traces/payment_failure_release.yaml
+```
+
+### `machine`
+
+Semantic machine structure is the focused inner-machine gate:
+
+```bash
+rms machine plan <implementation.yaml> --task "<intent>" [--ai|--provider codex] [--record] [--output <path>]
+rms machine apply <implementation.yaml> (--change-json '<json>' | --change-yaml '<yaml>' | --change-file <path>) [--dry-run]
+rms machine check <implementation.yaml> [--strict] [--json]
+rms machine diff <implementation.yaml> [--json]
+```
+
+Use this for focused inner-machine edits when laws, public contracts, and evidence obligations are already correct. For product-meaning changes, prefer `rms spec apply` so laws, contracts, machine structure, and evidence move together.
+
+The canonical change format is language-neutral:
+
+```yaml
+spec: rms/machine-change/v0.1
+module: modules/example/implementation.yaml
+machine:
+  mode: stateful-transition-machine
+  states:
+    add: [NeedsContext, PendingConfirmation]
+  commands:
+    add: [Start, Confirm]
+  events:
+    add: [ContextRequested, Confirmed]
+  effects:
+    add: [AppendLocalLog]
+  effect_results:
+    add: [LocalLogAppended]
+  replies:
+    add: [AskForContext, Done]
+  rejections:
+    add: [NoPendingWork]
+transitions:
+  add:
+    - from: Ready
+      on: Start
+      to: NeedsContext
+      events: [ContextRequested]
+      reply: AskForContext
+roles:
+  add:
+    - kind: effect_executor
+      effect: AppendLocalLog
+      binding_hint: local_filesystem
+```
+
+Agents may add small private pure helpers inside declared pure role files. Private IO helpers are not allowed in pure roles; IO must be represented as declared effects plus effect results and executed only in adapter, port, or effect-executor roles.
+
 ### `add-capability`
 
 Scaffolds a recursive capability tree: a composite parent module at the requested path, a sibling `domain-engine` child, and a sibling `boundary-adapter` child. The parent declares `composition.contains`, exports the boundary child public command, and includes parent scenario evidence so `rms verify <parent/module.yaml>` can roll up composition and child implementation checks. Default child paths are generic `-domain` and `-boundary`; choose product/domain names when the capability language is clearer. Do not pass `--domain-child` or `--boundary-child` just to add role words such as `rules`, `engine`, `adapter`, `cli`, `web`, or binding names.
@@ -141,7 +227,7 @@ The first composition checker is manifest-level. It checks required module prese
 
 ### `audit`
 
-Aggregates project-readiness findings from validation, composition, implementation structure, trace bundles, verification declarations, compatibility evidence, and RMS run provenance. Non-strict audit is a review surface. `--strict` promotes production-readiness blockers such as scaffold evidence, unpinned evidence, unchecked numeric arithmetic, private role imports, missing trace bundles, and missing verification commands to failures. The command does not invoke optional AI providers or mutate project artifacts.
+Aggregates project-readiness findings from validation, composition, implementation structure, trace bundles, verification declarations, compatibility evidence, and RMS run provenance. Non-strict audit is a review surface. `--strict` promotes production-readiness blockers such as scaffold evidence, unpinned evidence, unchecked numeric arithmetic, private role imports, missing trace bundles, dirty or untracked production-relevant files, scaffold-named trace bundles, hidden effects in pure roles, lifecycle-without-state, and missing verification commands to failures. The command does not invoke optional AI providers or mutate project artifacts.
 
 ### `structure`
 

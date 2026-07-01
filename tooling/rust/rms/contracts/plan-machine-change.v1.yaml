@@ -1,0 +1,26 @@
+spec: rms/contract/v0.1
+name: plan-machine-change
+version: 1
+kind: command
+meaning: Render or run an advisory RMS prompt that proposes a language-neutral machine-change object for an implementation binding.
+preconditions:
+  - id: implementation-readable
+    statement: "The target `implementation.yaml` is readable and parseable."
+  - id: task-supplied
+    statement: A product or maintenance intent is supplied.
+postconditions:
+  - id: plan-is-advisory
+    statement: The command does not mutate canonical artifacts; provider output becomes architecture only after `rms machine apply` validates and writes it.
+  - id: output-is-machine-shaped
+    statement: "The prompt asks for `rms/machine-change/v0.1` when states, commands, events, effects, replies, rejections, transitions, or semantic roles must change."
+  - id: role-boundary-is-stated
+    statement: The prompt states that agents edit declared role bodies and do not hand-create semantic architecture by direct file edits.
+  - id: provider-run-is-recorded
+    statement: When provider execution is requested, the run record contains prompt, request metadata, validation snapshot, provider logs, and response.
+failure_categories:
+  - id: invalid-implementation
+    statement: The target file is not an RMS implementation binding.
+  - id: provider-unavailable
+    statement: The requested provider cannot be started or exits unsuccessfully.
+compatibility:
+  policy: backward-compatible-within-major

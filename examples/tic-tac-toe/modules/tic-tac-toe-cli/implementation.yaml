@@ -76,7 +76,14 @@ architecture:
     first_bad_transition: source-provenance-from-transition-record
   machine:
     name: TicTacToeCliBoundary
+    mode: boundary-machine
     state: BoundaryState
+    states:
+      - AwaitingInput
+      - ParsedCommand
+      - Delegating
+      - Completed
+      - Rejected
     commands:
       - RawCliInput
     events:
@@ -90,7 +97,7 @@ architecture:
     rejections:
       - "malformed-input"
       - "out-of-board"
-    transition_function: handleBoundaryInput
+    transition_function: handleBoundaryTransition
   roles:
     representation:
       - src/representation.mjs
@@ -124,7 +131,7 @@ architecture:
     validated_values:
       - makeCell
     transition_functions:
-      - handleBoundaryInput
+      - handleBoundaryTransition
   effect_roles:
     - "representation"
     - "parsers"
@@ -156,6 +163,20 @@ semantic_functions:
       traces:
         - verification/traces/boundary_parse.yaml
   - id: rules-port-adapter
+    symbol: src/adapter.mjs#handleBoundaryTransition
+    kind: transition
+    purity: boundary
+    discharges:
+      contracts:
+        - contracts/play-tic-tac-toe.v1.yaml
+    evidence:
+      contracts:
+        - verification/contracts/play_tic_tac_toe.md
+      boundaries:
+        - verification/boundaries/cli_input.md
+      traces:
+        - verification/traces/boundary_parse.yaml
+  - id: rules-port-adapter-reply
     symbol: src/adapter.mjs#handleBoundaryInput
     kind: adapter
     purity: boundary

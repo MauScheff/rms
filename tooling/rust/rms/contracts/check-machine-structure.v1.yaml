@@ -1,0 +1,20 @@
+spec: rms/contract/v0.1
+name: check-machine-structure
+version: 1
+kind: command
+meaning: Check an implementation binding's semantic machine declarations, role files, traceable-machine obligations, and structure diagnostics.
+preconditions:
+  - id: implementation-readable
+    statement: "The target `implementation.yaml` is readable and parseable."
+postconditions:
+  - id: structure-report-produced
+    statement: The command reports declared machine name, mode, state type, state variants, messages, transition output, trace roles, role files, and findings.
+  - id: strict-promotes-production-blockers
+    statement: "`--strict` fails on production machine-gate blockers such as scaffold traces, lifecycle-without-state, hidden effects in pure roles, role-file drift, and unhandled effect results."
+failure_categories:
+  - id: invalid-implementation
+    statement: The target file is not an RMS implementation binding.
+  - id: strict-finding
+    statement: Strict mode found a production-blocking structure diagnostic.
+compatibility:
+  policy: backward-compatible-within-major

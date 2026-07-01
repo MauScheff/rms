@@ -487,6 +487,38 @@ commands:
 architecture:
   dependency_checker: tools/check-module-boundaries
   contract_generator: tools/generate-payment-contracts
+  machine:
+    name: PaymentsMachine
+    mode: workflow-effect-machine
+    state: PaymentsState
+    states:
+      - NotStarted
+      - WaitingForEffect
+      - Completed
+      - Failed
+    commands:
+      - AuthorizePayment
+    events:
+      - PaymentAuthorized
+      - PaymentDeclined
+    effects:
+      - CallPaymentProvider
+    effect_results:
+      - PaymentProviderAuthorized
+      - PaymentProviderUnknown
+    replies:
+      - AuthorizationAccepted
+      - AuthorizationRejected
+    rejections:
+      - InvalidPaymentRequest
+    transition_function: transition
+  roles:
+    representation:
+      - src/representation.ts
+    transition:
+      - src/transition.ts
+    effect_executor:
+      - src/effects.ts
 
 semantic_functions:
   - id: authorize-payment-decision
@@ -528,6 +560,36 @@ Semantic function declarations
 ```
 
 It must not redefine domain meaning or compatibility promises.
+
+### Semantic-First Gate
+
+Product meaning changes move through `rms spec apply` before code. The canonical semantic-change fields are language-neutral:
+
+| Field | Meaning |
+|---|---|
+| `intent.summary` | Human-readable reason for the semantic delta. |
+| `laws.add` | Invariants, laws, or product promises that must hold. |
+| `contracts.add` | Public commands, queries, events, APIs, or capabilities consumed outside the module. |
+| `machine` | Optional machine section reused from `rms/machine-change/v0.1` for states, inputs, outputs, transitions, and inner roles. |
+| `evidence.add` | Required proof lanes for laws, contracts, transitions, effects, scenarios, traces, or boundary behavior. |
+
+Use `rms spec apply` to add or change laws, contracts, machine structure, effects, semantic roles, public entrypoints, and evidence obligations together. Agents may edit bodies inside declared role files after the semantic delta is applied. Focused inner-machine edits may use `rms machine apply` when laws, public contracts, and evidence obligations are already correct.
+
+### Semantic Machine Structure
+
+Every implemented module should declare a domain-named machine. The canonical fields are language-neutral:
+
+| Field | Meaning |
+|---|---|
+| `architecture.machine.name` | Domain-named machine role, such as `PaymentsMachine` or `NutritionAssistantMachine`. |
+| `architecture.machine.mode` | One of `stateless-decision-machine`, `stateful-transition-machine`, `workflow-effect-machine`, `boundary-machine`, `storage-machine`, `integration-machine`, or `projection-machine`. |
+| `architecture.machine.state` | Binding type or role name for the state ADT. |
+| `architecture.machine.states` | Closed state variants. Stateless machines usually contain `Ready` and must justify why lifecycle state is not meaningful. |
+| `architecture.machine.commands/events/effects/effect_results/replies/rejections` | Closed variants that define what the machine accepts, emits, asks the world to do, observes back, returns, and rejects. |
+| `architecture.machine.transitions` | Accepted and rejected state/input/output transitions when order or lifecycle matters. |
+| `architecture.roles.*` | Binding files or artifacts that realize representation, transition, parser, adapter, effect executor, journal, replay, trace evidence, and related roles. |
+
+Use `rms machine apply` to add or change these architecture fields only when the semantic layer is already correct. If laws, public contracts, effects, or evidence obligations change, use `rms spec apply` instead.
 
 ### `semantic_functions`
 
