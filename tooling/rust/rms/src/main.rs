@@ -773,6 +773,10 @@ enum Commands {
         #[arg(long)]
         strict: bool,
 
+        /// Include illustrative examples in production-readiness audit scope.
+        #[arg(long)]
+        include_examples: bool,
+
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -4868,7 +4872,12 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Commands::Audit { root, strict, json } => run_audit(&root, strict, json),
+        Commands::Audit {
+            root,
+            strict,
+            include_examples,
+            json,
+        } => run_audit(&root, strict, include_examples, json),
         Commands::CheckCompat { old, new, json } => run_check_compat(&old, &new, json),
         Commands::Compose { root, json } => run_compose(&root, json),
         Commands::Verify { target, dry_run } => run_verify(&target, dry_run),
@@ -17419,8 +17428,8 @@ fn append_strict_conformance_checks(
     }
 }
 
-fn run_audit(root: &Path, strict: bool, json_output: bool) -> Result<()> {
-    let report = build_audit_report(root, strict)?;
+fn run_audit(root: &Path, strict: bool, include_examples: bool, json_output: bool) -> Result<()> {
+    let report = build_audit_report_with_scope(root, strict, include_examples)?;
     if json_output {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -17434,18 +17443,38 @@ fn run_audit(root: &Path, strict: bool, json_output: bool) -> Result<()> {
 }
 
 fn build_audit_report(root: &Path, strict: bool) -> Result<AuditReport> {
+    build_audit_report_with_scope(root, strict, false)
+}
+
+fn build_audit_report_with_scope(
+    root: &Path,
+    strict: bool,
+    include_examples: bool,
+) -> Result<AuditReport> {
     let root = normalize_empty_path(root.to_path_buf());
     let mut checks = Vec::new();
     let mut verification_targets = BTreeSet::new();
     let source_revision = source_revision(&root);
 
     append_source_revision_audit_checks(&root, strict, source_revision.as_deref(), &mut checks);
-    append_worktree_audit_checks(&root, strict, &mut checks);
-    append_semantic_drift_audit_checks(&root, strict, &mut checks);
-    append_validation_audit_checks(&root, strict, &mut checks)?;
+    append_worktree_audit_checks(&root, strict, include_examples, &mut checks);
+    append_semantic_drift_audit_checks(&root, strict, include_examples, &mut checks);
+    append_validation_audit_checks(&root, strict, include_examples, &mut checks)?;
     append_composition_audit_checks(&root, strict, &mut checks);
-    append_module_audit_checks(&root, strict, &mut checks, &mut verification_targets);
-    append_implementation_audit_checks(&root, strict, &mut checks, &mut verification_targets)?;
+    append_module_audit_checks(
+        &root,
+        strict,
+        include_examples,
+        &mut checks,
+        &mut verification_targets,
+    );
+    append_implementation_audit_checks(
+        &root,
+        strict,
+        include_examples,
+        &mut checks,
+        &mut verification_targets,
+    )?;
     append_blind_provenance_audit_checks(&root, strict, &mut checks);
     append_replacement_audit_checks(&root, strict, &mut checks);
 
@@ -17486,7 +17515,12 @@ fn append_source_revision_audit_checks(
     ));
 }
 
-fn append_worktree_audit_checks(root: &Path, strict: bool, checks: &mut Vec<AuditCheck>) {
+fn append_worktree_audit_checks(
+    root: &Path,
+    strict: bool,
+    include_examples: bool,
+    checks: &mut Vec<AuditCheck>,
+) {
     let output = match Command::new("git")
         .current_dir(root)
         .args(["status", "--porcelain"])
@@ -17513,7 +17547,8 @@ fn append_worktree_audit_checks(root: &Path, strict: bool, checks: &mut Vec<Audi
         }
         let marker = &line[..2];
         let path = line[3..].trim();
-        if !is_production_claim_path(path) {
+        if !is_production_claim_path(path) || !audit_path_str_in_scope(root, path, include_examples)
+        {
             continue;
         }
         if marker == "??" {
@@ -17558,7 +17593,12 @@ fn append_worktree_audit_checks(root: &Path, strict: bool, checks: &mut Vec<Audi
     }
 }
 
-fn append_semantic_drift_audit_checks(root: &Path, strict: bool, checks: &mut Vec<AuditCheck>) {
+fn append_semantic_drift_audit_checks(
+    root: &Path,
+    strict: bool,
+    include_examples: bool,
+    checks: &mut Vec<AuditCheck>,
+) {
     let output = match Command::new("git")
         .current_dir(root)
         .args(["status", "--porcelain"])
@@ -17575,6 +17615,9 @@ fn append_semantic_drift_audit_checks(root: &Path, strict: bool, checks: &mut Ve
             continue;
         }
         let path = line[3..].trim();
+        if !audit_path_str_in_scope(root, path, include_examples) {
+            continue;
+        }
         if is_source_drift_path(path) {
             source_paths.push(path.to_string());
         }
@@ -17626,6 +17669,28 @@ fn is_production_claim_path(path: &str) -> bool {
         || path.starts_with(".rms/")
 }
 
+fn audit_path_in_scope(root: &Path, path: &Path, include_examples: bool) -> bool {
+    audit_path_str_in_scope(root, &path.display().to_string(), include_examples)
+}
+
+fn audit_path_str_in_scope(root: &Path, path: &str, include_examples: bool) -> bool {
+    if include_examples || audit_root_is_inside_examples(root) {
+        return true;
+    }
+    let normalized = path
+        .trim()
+        .trim_start_matches("./")
+        .trim_start_matches(".\\");
+    normalized != "examples"
+        && !normalized.starts_with("examples/")
+        && !normalized.starts_with("examples\\")
+}
+
+fn audit_root_is_inside_examples(root: &Path) -> bool {
+    root.components()
+        .any(|component| component.as_os_str() == "examples")
+}
+
 fn is_source_drift_path(path: &str) -> bool {
     path.contains("/src/")
         || path.starts_with("src/")
@@ -17648,10 +17713,14 @@ fn is_semantic_artifact_path(path: &str) -> bool {
 fn append_validation_audit_checks(
     root: &Path,
     strict: bool,
+    include_examples: bool,
     checks: &mut Vec<AuditCheck>,
 ) -> Result<()> {
     let diagnostics =
-        collect_validation_diagnostics(root, vec![], vec![], vec![], vec![], vec![], vec![])?;
+        collect_validation_diagnostics(root, vec![], vec![], vec![], vec![], vec![], vec![])?
+            .into_iter()
+            .filter(|diagnostic| audit_path_str_in_scope(root, &diagnostic.path, include_examples))
+            .collect::<Vec<_>>();
     if diagnostics.is_empty() {
         checks.push(audit_check(
             "validate.root",
@@ -17718,6 +17787,7 @@ fn append_composition_audit_checks(root: &Path, _strict: bool, checks: &mut Vec<
 fn append_module_audit_checks(
     root: &Path,
     strict: bool,
+    include_examples: bool,
     checks: &mut Vec<AuditCheck>,
     verification_targets: &mut BTreeSet<String>,
 ) {
@@ -17738,6 +17808,9 @@ fn append_module_audit_checks(
                 format!("{} module(s) discovered", modules.len()),
             ));
             for module in modules.values() {
+                if !audit_path_in_scope(root, &module.path, include_examples) {
+                    continue;
+                }
                 let loaded = LoadedManifest {
                     path: module.path.clone(),
                     value: module.value.clone(),
@@ -17785,6 +17858,7 @@ fn append_module_audit_checks(
 fn append_implementation_audit_checks(
     root: &Path,
     strict: bool,
+    include_examples: bool,
     checks: &mut Vec<AuditCheck>,
     verification_targets: &mut BTreeSet<String>,
 ) -> Result<()> {
@@ -17794,6 +17868,9 @@ fn append_implementation_audit_checks(
             continue;
         };
         if get_str(&manifest.value, &["spec"]) == Some("rms/implementation/v0.1") {
+            if !audit_path_in_scope(root, &target, include_examples) {
+                continue;
+            }
             implementation_paths.push(target);
         }
     }
@@ -28921,6 +28998,30 @@ architecture:
             .checks
             .iter()
             .any(|check| check.id == "provenance.source-revision" && check.result == "fail"));
+    }
+
+    #[test]
+    fn audit_scope_excludes_examples_from_repo_root_by_default() {
+        assert!(!audit_path_str_in_scope(
+            Path::new("."),
+            "examples/rust/implementation.yaml",
+            false
+        ));
+        assert!(audit_path_str_in_scope(
+            Path::new("."),
+            "examples/rust/implementation.yaml",
+            true
+        ));
+        assert!(audit_path_str_in_scope(
+            Path::new("examples/rust"),
+            "implementation.yaml",
+            false
+        ));
+        assert!(audit_path_str_in_scope(
+            Path::new("."),
+            "tooling/rust/rms/implementation.yaml",
+            false
+        ));
     }
 
     #[test]

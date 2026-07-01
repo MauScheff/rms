@@ -250,9 +250,10 @@ Audit production-readiness blockers:
 ```bash
 rms audit --root .
 rms audit --root . --strict
+rms audit --root . --strict --include-examples
 ```
 
-`rms audit` aggregates validation, composition, implementation structure, trace bundle, verification-target, compatibility, and provenance findings. Non-strict audit is a review surface. Strict audit treats production blockers such as placeholder evidence, unpinned evidence, unchecked numeric arithmetic, private-role imports, and missing trace bundles as failures.
+`rms audit` aggregates validation, composition, implementation structure, trace bundle, verification-target, compatibility, and provenance findings. Non-strict audit is a review surface. Strict audit treats production blockers such as placeholder evidence, unpinned evidence, unchecked numeric arithmetic, private-role imports, and missing trace bundles as failures. Repository-root audits skip illustrative `examples/` modules by default; use `--include-examples` when examples are part of the production claim.
 
 Check local RMS and optional AI-provider readiness:
 

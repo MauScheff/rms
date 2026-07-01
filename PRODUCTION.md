@@ -160,6 +160,8 @@ During work in progress, evidence may be temporary. Before production:
 Strict audit intentionally fails outside a git checkout or when active evidence is unpinned.
 Strict audit also fails when production-relevant implementation, manifest, contract, evidence, role, or agent-guidance files are dirty or untracked. Commit the production candidate before claiming `rms audit --root . --strict` as release evidence.
 
+Repository-root strict audit treats checked-in `examples/` as illustrative by default. Use `rms audit --root . --strict --include-examples` when examples are part of the production claim, or audit an examples subdirectory directly when that example is the target.
+
 ## CI Gate
 
 Use the copyable GitHub Actions template at:

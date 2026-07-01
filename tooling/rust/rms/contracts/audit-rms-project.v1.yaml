@@ -11,6 +11,8 @@ postconditions:
     statement: The report identifies validation, composition, structure, trace, verification-target, compatibility, and provenance findings derived from RMS artifacts and local evidence.
   - id: strict-mode-promotes-blockers
     statement: In strict mode, production-readiness blockers such as unknown source revision, placeholder evidence, unpinned evidence, semantic-shape-only proof, unchecked numeric arithmetic, private-role imports, missing trace bundles, and missing verification commands are reported as failures.
+  - id: examples-are-opt-in-from-repository-root
+    statement: Repository-root audits treat checked-in examples as illustrative by default; examples are included when requested with include-examples or when the audit root is inside the examples tree.
   - id: provider-independent
     statement: The audit command does not invoke optional AI providers or mutate project artifacts.
 failure_categories:

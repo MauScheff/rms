@@ -95,7 +95,7 @@ rms check-compat <old-module.yaml> <new-module.yaml>
 rms package <module.yaml> [--output <directory>]
 rms verify-package <package-directory>
 rms conformance <module.yaml> [--implementation implementation.yaml] [--strict]
-rms audit --root <path> [--strict] [--json]
+rms audit --root <path> [--strict] [--include-examples] [--json]
 rms verify <implementation.yaml|composite-module.yaml>
 ```
 
@@ -227,7 +227,7 @@ The first composition checker is manifest-level. It checks required module prese
 
 ### `audit`
 
-Aggregates project-readiness findings from validation, composition, implementation structure, trace bundles, verification declarations, compatibility evidence, and RMS run provenance. Non-strict audit is a review surface. `--strict` promotes production-readiness blockers such as scaffold evidence, unpinned evidence, unchecked numeric arithmetic, private role imports, missing trace bundles, dirty or untracked production-relevant files, scaffold-named trace bundles, hidden effects in pure roles, lifecycle-without-state, and missing verification commands to failures. The command does not invoke optional AI providers or mutate project artifacts.
+Aggregates project-readiness findings from validation, composition, implementation structure, trace bundles, verification declarations, compatibility evidence, and RMS run provenance. Non-strict audit is a review surface. `--strict` promotes production-readiness blockers such as scaffold evidence, unpinned evidence, unchecked numeric arithmetic, private role imports, missing trace bundles, dirty or untracked production-relevant files, scaffold-named trace bundles, hidden effects in pure roles, lifecycle-without-state, and missing verification commands to failures. Repository-root audits skip illustrative `examples/` modules by default; pass `--include-examples` or audit an examples subdirectory directly when examples are the target. The command does not invoke optional AI providers or mutate project artifacts.
 
 ### `structure`
 
