@@ -21623,7 +21623,7 @@ fn validate_semantic_module_completeness(
         let Some(id) = get_str(invariant, &["id"]) else {
             continue;
         };
-        if !semantic_module_has_evidence_for(module, id) {
+        if !semantic_invariant_has_evidence(module, invariant, id) {
             push_unique_warning(
                 diagnostics,
                 "semantic.law-without-evidence",
@@ -21735,6 +21735,39 @@ fn nearest_system_external_dependencies(module: &LoadedManifest) -> BTreeSet<Str
         current = directory.parent();
     }
     BTreeSet::new()
+}
+
+fn semantic_invariant_has_evidence(
+    module: &LoadedManifest,
+    invariant: &YamlValue,
+    id: &str,
+) -> bool {
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    if get_declared_evidence_references(invariant)
+        .iter()
+        .any(|reference| concrete_evidence_path_exists(&base.join(reference)))
+    {
+        return true;
+    }
+    semantic_module_has_evidence_for(module, id)
+}
+
+fn get_declared_evidence_references(value: &YamlValue) -> Vec<String> {
+    let mut references = Vec::new();
+    for key in ["evidence", "verified_by"] {
+        if let Some(reference) = get_str(value, &[key]) {
+            references.push(reference.to_string());
+        }
+        if let Some(items) = get_path(value, &[key]).and_then(YamlValue::as_sequence) {
+            references.extend(
+                items
+                    .iter()
+                    .filter_map(YamlValue::as_str)
+                    .map(str::to_string),
+            );
+        }
+    }
+    references
 }
 
 fn semantic_module_has_evidence_for(module: &LoadedManifest, id: &str) -> bool {
@@ -25946,7 +25979,7 @@ fn render_composed_capability_evidence(
     boundary_child: &str,
 ) -> String {
     format!(
-        "# Scenario Evidence: composed capability\n\nPromise:\n\n- `{}` is a composite parent module.\n- The parent exports `{}` through internal boundary child `{}`.\n- The boundary child depends on internal domain child `{}` for pure decisions.\n\nEvidence:\n\n- `rms compose --root <system-root>` verifies containment, internal visibility, and parent export backing.\n- `rms verify <this module.yaml>` rolls up composition and child implementation verification when child bindings exist.\n\nSource revision: recorded by the verifier or conformance report at runtime.\n",
+        "# Scenario Evidence: composed capability\n\nPromise:\n\n- Invariant `public-command-is-child-backed` holds for composite parent `{}`.\n- The parent exports `{}` through internal boundary child `{}`.\n- The boundary child depends on internal domain child `{}` for pure decisions.\n\nEvidence:\n\n- `rms compose --root <system-root>` verifies containment, internal visibility, and parent export backing.\n- `rms verify <this module.yaml>` rolls up composition and child implementation verification when child bindings exist.\n\nSource revision: recorded by the verifier or conformance report at runtime.\n",
         markdown_inline(name),
         markdown_inline(public_command),
         markdown_inline(boundary_child),
@@ -32092,6 +32125,10 @@ verification:
         .unwrap();
 
         let parent = fs::read_to_string(root.join("modules/play-game/module.yaml")).unwrap();
+        let parent_scenario_evidence = fs::read_to_string(
+            root.join("modules/play-game/verification/scenarios/composed_capability.md"),
+        )
+        .unwrap();
         let boundary = fs::read_to_string(root.join("modules/play-game-cli/module.yaml")).unwrap();
         let domain_implementation =
             fs::read_to_string(root.join("modules/play-game-rules/implementation.yaml")).unwrap();
@@ -32114,6 +32151,7 @@ verification:
             .exists();
         let report = compose_system(&root).unwrap();
         let mut diagnostics = Vec::new();
+        let mut semantic_diagnostics = Vec::new();
         for file in [
             "modules/play-game/module.yaml",
             "modules/play-game-rules/module.yaml",
@@ -32121,6 +32159,7 @@ verification:
         ] {
             let manifest = load_manifest(&root.join(file)).unwrap();
             validate_loaded_manifest(&manifest, &mut diagnostics);
+            validate_semantic_module_completeness(&manifest, &mut semantic_diagnostics);
         }
         run_verify(&root.join("modules/play-game/module.yaml"), false).unwrap();
 
@@ -32129,6 +32168,7 @@ verification:
         assert!(parent.contains("composition:"));
         assert!(parent.contains("name: \"play-game-rules\""));
         assert!(parent.contains("name: \"play-game-cli\""));
+        assert!(parent_scenario_evidence.contains("public-command-is-child-backed"));
         assert!(boundary.contains("name: \"resolve-move\""));
         assert!(domain_implementation.contains("name: \"PlayGameMachine\""));
         assert!(!domain_implementation.contains("PlayGameRulesMachine"));
@@ -32145,6 +32185,12 @@ verification:
                 .iter()
                 .all(|diagnostic| diagnostic.check != "evidence.placeholder"),
             "{diagnostics:#?}"
+        );
+        assert!(
+            semantic_diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "semantic.law-without-evidence"),
+            "{semantic_diagnostics:#?}"
         );
     }
 
