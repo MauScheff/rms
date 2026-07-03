@@ -67,6 +67,49 @@ architecture:
       - Failed
       - RetryScheduled
       - Abandoned
+  transition:
+    output:
+      - next_state
+      - events
+      - commands
+      - effects
+      - reply
+  machine:
+    name: RmsWorkbenchMachine
+    mode: boundary-machine
+    states:
+      - Ready
+      - WritingSemanticChangeRecord
+    commands:
+      - ApplySemanticChange
+    events:
+      - SemanticChangeRecorded
+    effects:
+      - WriteSemanticChangeRecord
+    effect_results:
+      - SemanticChangeRecordWritten
+      - SemanticChangeRecordWriteRejected
+    replies:
+      - SemanticChangeApplied
+    rejections: []
+    transition_function: run_spec_apply
+    transitions:
+      - from: Ready
+        on: ApplySemanticChange
+        to: Ready
+        effects:
+          - WriteSemanticChangeRecord
+        reply: SemanticChangeApplied
+      - from: Ready
+        on: SemanticChangeRecordWritten
+        to: Ready
+        events:
+          - SemanticChangeRecorded
+        reply: SemanticChangeApplied
+      - from: Ready
+        on: SemanticChangeRecordWriteRejected
+        to: Ready
+        reply: SemanticChangeApplied
   roles:
     representation:
       - src/main.rs

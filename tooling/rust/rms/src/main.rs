@@ -24,6 +24,7 @@ const VALIDATOR_NAME: &str = "rms";
 const VALIDATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_RUN_ROOT: &str = ".rms/runs";
 const DEFAULT_PROVIDER_TIMEOUT_SECONDS: u64 = 900;
+const DEFAULT_DOGFOOD_PHASE_TIMEOUT_SECONDS: u64 = 3600;
 const WORKBENCH_CONFIG_PATH: &str = ".rms/config.yaml";
 const CODEX_PLUGIN_PATH: &str = "integrations/codex/rms";
 const REQUIRED_VERIFICATION_CATEGORIES: [&str; 4] =
@@ -1081,6 +1082,53 @@ struct SpecDiffReport {
     diff: String,
 }
 
+#[allow(dead_code)]
+struct RmsWorkbenchMachine;
+
+#[allow(dead_code)]
+enum RmsWorkbenchCommand {
+    ApplySemanticChange,
+}
+
+#[allow(dead_code)]
+enum RmsWorkbenchEvent {
+    SemanticChangeRecorded,
+}
+
+#[allow(dead_code)]
+enum RmsWorkbenchEffect {
+    WriteSemanticChangeRecord,
+}
+
+#[allow(dead_code)]
+enum RmsWorkbenchEffectResult {
+    SemanticChangeRecordWritten,
+    SemanticChangeRecordWriteRejected,
+}
+
+#[allow(dead_code)]
+enum RmsWorkbenchReply {
+    SemanticChangeApplied,
+}
+
+#[allow(dead_code)]
+struct ApplySemanticChange;
+
+#[allow(dead_code)]
+struct SemanticChangeRecorded;
+
+#[allow(dead_code)]
+struct WriteSemanticChangeRecord;
+
+#[allow(dead_code)]
+struct SemanticChangeRecordWritten;
+
+#[allow(dead_code)]
+struct SemanticChangeRecordWriteRejected;
+
+#[allow(dead_code)]
+struct SemanticChangeApplied;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct SemanticChange {
     spec: String,
@@ -1670,6 +1718,10 @@ enum DogfoodCommands {
         /// Blind agent to run.
         #[arg(long, default_value = "codex")]
         agent: DogfoodAgent,
+
+        /// Maximum seconds to wait for each blind-agent phase.
+        #[arg(long, default_value_t = DEFAULT_DOGFOOD_PHASE_TIMEOUT_SECONDS)]
+        phase_timeout_seconds: u64,
     },
 }
 
@@ -4979,7 +5031,8 @@ fn main() -> Result<()> {
                 scenario,
                 root,
                 agent,
-            } => run_dogfood_run(scenario, &root, agent),
+                phase_timeout_seconds,
+            } => run_dogfood_run(scenario, &root, agent, phase_timeout_seconds),
         },
         Commands::Config { command } => match command {
             ConfigCommands::Init {
@@ -5957,7 +6010,11 @@ fn append_design_recommendations(
         "cli",
         "command line",
         "local-first reference app",
+        "local-first",
         "runnable",
+        "status",
+        "write local file",
+        "write local",
         "smoke",
     ]
     .iter()
@@ -5999,6 +6056,7 @@ fn append_design_recommendations(
     }
     if mentions_runnable_surface {
         writeln!(out, "- Because the intent names an app/tool/runnable surface, include a boundary adapter with a declared smoke command or executable surface; do not leave the result as library-only unless the user explicitly requested a library.")?;
+        writeln!(out, "- Preferred scaffold for a runnable product app is a composite capability with at least one boundary child and one domain/workflow child. A single-module app is acceptable only when `module.yaml` or `implementation.yaml` records the semantic single-module justification.")?;
     }
     writeln!(out, "- Choose `domain-engine` when the module owns pure decisions, invariants, transitions, or traceable rules.")?;
     writeln!(out, "- Choose `boundary-adapter` when untrusted input, UI, CLI, network, storage, time, randomness, or external effects enter or leave.")?;
@@ -10960,6 +11018,50 @@ fn inspect_effect_result_handling(manifest: &LoadedManifest, diagnostics: &mut V
         &manifest.value,
         &["architecture", "machine", "effect_results"],
     );
+    let effects = get_string_array(&manifest.value, &["architecture", "machine", "effects"]);
+    let commands = get_string_array(&manifest.value, &["architecture", "machine", "commands"]);
+    let handled = existing_transition_inputs(manifest);
+    let unclassified_outcome_inputs = handled
+        .iter()
+        .filter(|input| {
+            effect_result_like_transition_input(input)
+                && !effect_results.contains(input)
+                && !commands.contains(input)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for input in &unclassified_outcome_inputs {
+        push_unique_warning(
+            diagnostics,
+            "structure.transition-input-not-classified",
+            &manifest.path,
+            format!(
+                "transition input `{input}` looks like an effect outcome but is neither a declared command nor a declared effect result"
+            ),
+        );
+    }
+    if effect_results.is_empty()
+        && !effects.is_empty()
+        && (!unclassified_outcome_inputs.is_empty()
+            || effect_lifecycle_needs_result_semantics(manifest))
+        && !implementation_has_effect_result_exception(manifest)
+    {
+        let detail = if unclassified_outcome_inputs.is_empty() {
+            "effect lifecycle declares retry, recovery, abandoned, or failure states but no effect results"
+                .to_string()
+        } else {
+            format!(
+                "transition consumes outcome input(s) {} but `architecture.machine.effect_results` is empty",
+                unclassified_outcome_inputs.join(", ")
+            )
+        };
+        push_unique_warning(
+            diagnostics,
+            "structure.effect-result-change-not-declared",
+            &manifest.path,
+            detail,
+        );
+    }
     for effect_result in &effect_results {
         if semantic_name_contains_any(
             effect_result,
@@ -10976,7 +11078,7 @@ fn inspect_effect_result_handling(manifest: &LoadedManifest, diagnostics: &mut V
             );
         }
     }
-    for effect in get_string_array(&manifest.value, &["architecture", "machine", "effects"]) {
+    for effect in effects {
         if semantic_name_contains_any(
             &effect,
             &[
@@ -11029,7 +11131,6 @@ fn inspect_effect_result_handling(manifest: &LoadedManifest, diagnostics: &mut V
     if effect_results.is_empty() {
         return;
     }
-    let handled = existing_transition_inputs(manifest);
     let has_declared_transitions =
         get_path(&manifest.value, &["architecture", "machine", "transitions"])
             .and_then(YamlValue::as_sequence)
@@ -11063,6 +11164,66 @@ fn inspect_effect_result_handling(manifest: &LoadedManifest, diagnostics: &mut V
             );
         }
     }
+}
+
+fn effect_result_like_transition_input(input: &str) -> bool {
+    semantic_name_contains_any(
+        input,
+        &[
+            "succeeded",
+            "success",
+            "failed",
+            "failure",
+            "unknown",
+            "uncertain",
+            "timeout",
+            "timedout",
+            "stale",
+            "partial",
+            "conflict",
+            "completed",
+            "abandoned",
+        ],
+    )
+}
+
+fn effect_lifecycle_needs_result_semantics(manifest: &LoadedManifest) -> bool {
+    let mode = get_str(&manifest.value, &["architecture", "machine", "mode"]).unwrap_or("");
+    if !matches!(
+        mode,
+        "workflow-effect-machine" | "storage-machine" | "integration-machine"
+    ) {
+        return false;
+    }
+    let states = get_string_array(&manifest.value, &["architecture", "machine", "states"]);
+    states.iter().any(|state| {
+        semantic_name_contains_any(
+            state,
+            &[
+                "retry",
+                "abandoned",
+                "recover",
+                "recovery",
+                "failed",
+                "failure",
+                "waitingfor",
+                "pending",
+            ],
+        )
+    })
+}
+
+fn implementation_has_effect_result_exception(manifest: &LoadedManifest) -> bool {
+    [
+        &["architecture", "machine", "effect_result_justification"][..],
+        &["architecture", "machine", "effect_results_justification"][..],
+        &["architecture", "machine", "no_effect_results_justification"][..],
+        &["architecture", "effect_results_justification"][..],
+        &["x-rms", "effect_results_justification"][..],
+        &["x-rms", "no_effect_results_justification"][..],
+    ]
+    .iter()
+    .any(|path| get_str(&manifest.value, path).is_some_and(|text| !text.trim().is_empty()))
 }
 
 fn implementation_has_reconciliation_evidence(manifest: &LoadedManifest) -> bool {
@@ -17840,6 +18001,7 @@ fn build_audit_report_with_scope(
         &mut checks,
         &mut verification_targets,
     )?;
+    append_applied_semantic_change_audit_checks(&root, strict, include_examples, &mut checks);
     append_command_log_audit_checks(&root, strict, &mut checks);
     append_blind_provenance_audit_checks(&root, strict, &mut checks);
     append_replacement_audit_checks(&root, strict, &mut checks);
@@ -18017,6 +18179,361 @@ fn append_semantic_drift_audit_checks(
             ),
         ));
     }
+}
+
+fn append_applied_semantic_change_audit_checks(
+    root: &Path,
+    strict: bool,
+    include_examples: bool,
+    checks: &mut Vec<AuditCheck>,
+) {
+    let modules = match load_module_index(root) {
+        Ok(modules) => modules,
+        Err(_) => return,
+    };
+    for module in modules.values() {
+        if !audit_path_in_scope(root, &module.path, include_examples) {
+            continue;
+        }
+        let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+        let changes_dir = base.join("verification").join("changes");
+        if !changes_dir.is_dir() {
+            continue;
+        }
+        let implementation_path = base.join("implementation.yaml");
+        let implementation = match load_optional_yaml(&implementation_path) {
+            Ok(value) => value,
+            Err(error) => {
+                checks.push(audit_check(
+                    "semantic.applied-change-not-reflected",
+                    "semantic",
+                    if strict { "fail" } else { "review-required" },
+                    &implementation_path,
+                    format!(
+                        "could not read implementation binding for applied change audit: {error}"
+                    ),
+                ));
+                None
+            }
+        };
+        for entry in WalkDir::new(&changes_dir)
+            .max_depth(1)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+        {
+            let path = entry.path();
+            if !matches!(
+                path.extension().and_then(|extension| extension.to_str()),
+                Some("yaml") | Some("yml")
+            ) {
+                continue;
+            }
+            let source = match fs::read_to_string(path) {
+                Ok(source) => source,
+                Err(error) => {
+                    checks.push(audit_check(
+                        "semantic.applied-change-not-reflected",
+                        "semantic",
+                        if strict { "fail" } else { "review-required" },
+                        path,
+                        format!("could not read semantic-change record: {error}"),
+                    ));
+                    continue;
+                }
+            };
+            let change: SemanticChange = match serde_yaml::from_str(&source) {
+                Ok(change) => change,
+                Err(error) => {
+                    checks.push(audit_check(
+                        "semantic.applied-change-not-reflected",
+                        "semantic",
+                        if strict { "fail" } else { "review-required" },
+                        path,
+                        format!("could not parse semantic-change record: {error}"),
+                    ));
+                    continue;
+                }
+            };
+            append_semantic_change_module_reflection_checks(
+                &module.value,
+                base,
+                path,
+                &change,
+                strict,
+                checks,
+            );
+            if let Some(implementation) = implementation.as_ref() {
+                append_semantic_change_implementation_reflection_checks(
+                    implementation,
+                    &implementation_path,
+                    path,
+                    &change,
+                    strict,
+                    checks,
+                );
+            }
+        }
+    }
+}
+
+fn append_semantic_change_module_reflection_checks(
+    module: &YamlValue,
+    module_base: &Path,
+    change_path: &Path,
+    change: &SemanticChange,
+    strict: bool,
+    checks: &mut Vec<AuditCheck>,
+) {
+    if let Some(laws) = &change.laws {
+        let invariant_ids = get_path(module, &["invariants"])
+            .and_then(YamlValue::as_sequence)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| get_str(item, &["id"]))
+                    .map(ToString::to_string)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        for law in &laws.add {
+            if !invariant_ids.contains(&law.id) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    change_path,
+                    format!(
+                        "semantic-change declares law `{}`, but `module.yaml` does not contain a matching invariant id",
+                        law.id
+                    ),
+                );
+            }
+        }
+    }
+
+    if let Some(contracts) = &change.contracts {
+        let public_surface = module_public_surface_names(module);
+        for contract in &contracts.add {
+            let expected = contract.command.as_deref().unwrap_or(&contract.name);
+            if !public_surface.contains(expected) && !public_surface.contains(&contract.name) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    change_path,
+                    format!(
+                        "semantic-change declares contract `{}`, but `module.yaml` does not expose `{expected}` in the public surface",
+                        contract.name
+                    ),
+                );
+            }
+        }
+    }
+
+    if let Some(evidence) = &change.evidence {
+        let verification_refs = module_verification_references(module);
+        for item in &evidence.add {
+            let path = item.path.trim();
+            if path.is_empty()
+                || !verification_reference_covers_path(&verification_refs, path)
+                || !concrete_evidence_path_exists(&module_base.join(path))
+            {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    change_path,
+                    format!(
+                        "semantic-change declares evidence `{}` for `{}`, but module verification does not reference a concrete evidence file",
+                        item.path, item.proves
+                    ),
+                );
+            }
+        }
+    }
+}
+
+fn verification_reference_covers_path(references: &BTreeSet<String>, path: &str) -> bool {
+    references.iter().any(|reference| {
+        let reference = reference.trim().trim_end_matches('/');
+        path == reference || path.starts_with(&format!("{reference}/"))
+    })
+}
+
+fn append_semantic_change_implementation_reflection_checks(
+    implementation: &YamlValue,
+    implementation_path: &Path,
+    change_path: &Path,
+    change: &SemanticChange,
+    strict: bool,
+    checks: &mut Vec<AuditCheck>,
+) {
+    let Some(machine) = &change.machine else {
+        return;
+    };
+    for (field, additions) in semantic_machine_variant_groups(machine) {
+        let declared = get_string_array(implementation, &["architecture", "machine", field])
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let missing = additions
+            .iter()
+            .filter(|value| !declared.contains(*value))
+            .cloned()
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            continue;
+        }
+        let check_id = if field == "effect_results" {
+            "structure.effect-result-change-not-declared"
+        } else {
+            "semantic.applied-change-not-reflected"
+        };
+        push_applied_change_reflection_failure(
+            checks,
+            strict,
+            check_id,
+            implementation_path,
+            format!(
+                "semantic-change `{}` declares machine {} {}, but `implementation.yaml` does not declare them",
+                change_path.display(),
+                field,
+                missing.join(", ")
+            ),
+        );
+    }
+
+    if let Some(transitions) = &machine.transitions {
+        let declared_transitions = implementation_transition_triplets(implementation);
+        let declared_commands =
+            get_string_array(implementation, &["architecture", "machine", "commands"])
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+        let declared_effect_results = get_string_array(
+            implementation,
+            &["architecture", "machine", "effect_results"],
+        )
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        for transition in &transitions.add {
+            let input = transition_input_variant(&transition.on);
+            if !declared_transitions.contains(&(
+                transition.from.clone(),
+                input.clone(),
+                transition.to.clone(),
+            )) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    implementation_path,
+                    format!(
+                        "semantic-change `{}` declares transition {} --{}--> {}, but implementation transitions do not reflect it",
+                        change_path.display(),
+                        transition.from,
+                        transition.on,
+                        transition.to
+                    ),
+                );
+            }
+            if effect_result_like_transition_input(&input)
+                && !declared_commands.contains(&input)
+                && !declared_effect_results.contains(&input)
+            {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "structure.transition-input-not-classified",
+                    implementation_path,
+                    format!(
+                        "semantic-change `{}` declares outcome-like transition input `{input}`, but it is neither a command nor an effect result in `implementation.yaml`",
+                        change_path.display()
+                    ),
+                );
+            }
+        }
+    }
+}
+
+fn push_applied_change_reflection_failure(
+    checks: &mut Vec<AuditCheck>,
+    strict: bool,
+    id: &'static str,
+    evidence: &Path,
+    note: impl Into<String>,
+) {
+    checks.push(audit_check(
+        id,
+        diagnostic_category(id),
+        if strict { "fail" } else { "review-required" },
+        evidence,
+        note,
+    ));
+}
+
+fn semantic_machine_variant_groups(
+    machine: &SemanticMachineChange,
+) -> [(&'static str, &Vec<String>); 7] {
+    [
+        ("states", &machine.states.add),
+        ("commands", &machine.commands.add),
+        ("events", &machine.events.add),
+        ("effects", &machine.effects.add),
+        ("effect_results", &machine.effect_results.add),
+        ("replies", &machine.replies.add),
+        ("rejections", &machine.rejections.add),
+    ]
+}
+
+fn module_public_surface_names(module: &YamlValue) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for section in [
+        &["provides", "commands"][..],
+        &["provides", "queries"][..],
+        &["provides", "events"][..],
+        &["provides", "capabilities"][..],
+    ] {
+        if let Some(items) = get_path(module, section).and_then(YamlValue::as_sequence) {
+            for item in items {
+                if let Some(name) = get_str(item, &["name"]) {
+                    names.insert(name.to_string());
+                }
+                if let Some(command) = get_str(item, &["command"]) {
+                    names.insert(command.to_string());
+                }
+                if let Some(contract) = get_str(item, &["contract"]) {
+                    names.insert(contract.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+fn module_verification_references(module: &YamlValue) -> BTreeSet<String> {
+    verification_reference_categories()
+        .into_iter()
+        .flat_map(|category| get_string_array(module, &["verification", category]))
+        .collect()
+}
+
+fn implementation_transition_triplets(value: &YamlValue) -> BTreeSet<(String, String, String)> {
+    get_path(value, &["architecture", "machine", "transitions"])
+        .and_then(YamlValue::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    Some((
+                        get_str(item, &["from"])?.to_string(),
+                        transition_input_variant(get_str(item, &["on"])?),
+                        get_str(item, &["to"])?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn is_production_claim_path(path: &str) -> bool {
@@ -18392,6 +18909,7 @@ fn append_trace_audit_checks(
         }
     }
     append_boundary_machine_trace_coverage_checks(manifest, strict, &trace_reports, checks);
+    append_workflow_trace_coverage_checks(manifest, strict, &trace_reports, checks);
 }
 
 fn append_boundary_machine_trace_coverage_checks(
@@ -18494,6 +19012,65 @@ fn trace_state_mentions(observed: &str, state: &str) -> bool {
         || observed.contains(&format!(".{state}"))
         || observed.contains(&format!(":{state}"))
         || observed.contains(&format!("tag: {state}"))
+}
+
+fn append_workflow_trace_coverage_checks(
+    manifest: &LoadedManifest,
+    strict: bool,
+    reports: &[TraceReport],
+    checks: &mut Vec<AuditCheck>,
+) {
+    if get_str(&manifest.value, &["architecture", "machine", "mode"])
+        != Some("workflow-effect-machine")
+    {
+        return;
+    }
+    let required_inputs = existing_transition_inputs(manifest)
+        .into_iter()
+        .filter(|input| {
+            effect_result_like_transition_input(input)
+                || semantic_name_contains_any(
+                    input,
+                    &[
+                        "status",
+                        "read",
+                        "correct",
+                        "reject",
+                        "invalid",
+                        "malformed",
+                    ],
+                )
+        })
+        .collect::<Vec<_>>();
+    if required_inputs.is_empty() || reports.is_empty() {
+        return;
+    }
+    let observed_inputs = reports
+        .iter()
+        .flat_map(|report| report.records.iter())
+        .filter_map(|record| record.input.as_deref())
+        .collect::<Vec<_>>();
+    let missing = required_inputs
+        .iter()
+        .filter(|input| {
+            !observed_inputs
+                .iter()
+                .any(|observed| semantic_text_mentions_id(observed, input))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        checks.push(audit_check(
+            "trace.workflow-coverage-thin",
+            "traces",
+            if strict { "fail" } else { "review-required" },
+            &manifest.path,
+            format!(
+                "workflow declares important transition input(s) {} that are not covered by declared trace bundles",
+                missing.join(", ")
+            ),
+        ));
+    }
 }
 
 fn append_blind_provenance_audit_checks(root: &Path, strict: bool, checks: &mut Vec<AuditCheck>) {
@@ -18653,8 +19230,10 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "structure.effect-without-executor"
                 | "structure.effect-result-unhandled"
                 | "structure.effect-result-type-not-declared"
+                | "structure.effect-result-change-not-declared"
                 | "structure.effect-result-declared-not-consumed"
                 | "structure.effect-result-envelope-unused"
+                | "structure.transition-input-not-classified"
                 | "structure.state-string-not-adt"
                 | "structure.scaffold-trace-active"
                 | "structure.semantic-role-not-cli-declared"
@@ -20545,7 +21124,12 @@ fn run_spec_diff(target: &Path, json_output: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_dogfood_run(scenario: DogfoodScenario, root: &Path, agent: DogfoodAgent) -> Result<()> {
+fn run_dogfood_run(
+    scenario: DogfoodScenario,
+    root: &Path,
+    agent: DogfoodAgent,
+    phase_timeout_seconds: u64,
+) -> Result<()> {
     fs::create_dir_all(root)
         .with_context(|| format!("failed to create dogfood root `{}`", root.display()))?;
     ensure_dogfood_git_repo(root)?;
@@ -20561,11 +21145,21 @@ fn run_dogfood_run(scenario: DogfoodScenario, root: &Path, agent: DogfoodAgent) 
     let started = Instant::now();
     let rms_exe = std::env::current_exe().with_context(|| "failed to locate current rms binary")?;
     let mut phase_reports = Vec::new();
+    let mut run_failure: Option<String> = None;
 
     for (index, phase) in dogfood_phases(scenario).iter().enumerate() {
+        let phase_started = Instant::now();
         let phase_dir = run_dir.join(format!("{:02}-{}", index + 1, phase.id));
         fs::create_dir_all(&phase_dir)
             .with_context(|| format!("failed to create `{}`", phase_dir.display()))?;
+        write_dogfood_progress(
+            &run_dir,
+            json!({
+                "phase": phase.id,
+                "event": "started",
+                "elapsed_ms": started.elapsed().as_millis(),
+            }),
+        )?;
         let prompt = render_dogfood_prompt(root, phase);
         fs::write(phase_dir.join("prompt.md"), &prompt).with_context(|| {
             format!(
@@ -20575,26 +21169,86 @@ fn run_dogfood_run(scenario: DogfoodScenario, root: &Path, agent: DogfoodAgent) 
         })?;
 
         let agent_result = match agent {
-            DogfoodAgent::Codex => execute_dogfood_codex(root, &prompt, &phase_dir)?,
+            DogfoodAgent::Codex => {
+                execute_dogfood_codex(root, &prompt, &phase_dir, phase_timeout_seconds)?
+            }
         };
-        let checks = run_dogfood_checks(root, &rms_exe, &phase_dir, false)?;
-        let commit =
-            dogfood_git_commit(root, &format!("dogfood {} {}", scenario.label(), phase.id))?;
+        write_dogfood_progress(
+            &run_dir,
+            json!({
+                "phase": phase.id,
+                "event": "agent-complete",
+                "elapsed_ms": started.elapsed().as_millis(),
+                "agent_status": agent_result.get("status").and_then(JsonValue::as_bool).unwrap_or(false),
+            }),
+        )?;
+        let agent_ok = agent_result
+            .get("status")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
+        let checks = if agent_ok {
+            run_dogfood_checks(root, &rms_exe, &phase_dir, false)?
+        } else {
+            Vec::new()
+        };
+        let checks_ok = checks.iter().all(|check| {
+            check
+                .get("status")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false)
+        });
+        let commit = if agent_ok && checks_ok {
+            dogfood_git_commit(root, &format!("dogfood {} {}", scenario.label(), phase.id))?
+        } else {
+            None
+        };
+        let phase_elapsed_ms = phase_started.elapsed().as_millis();
+        let phase_status = agent_ok && checks_ok;
         phase_reports.push(json!({
             "id": phase.id,
             "intent": phase.intent,
+            "elapsed_ms": phase_elapsed_ms,
+            "status": phase_status,
             "agent": agent_result,
             "checks": checks,
             "commit": commit,
         }));
+        write_dogfood_progress(
+            &run_dir,
+            json!({
+                "phase": phase.id,
+                "event": "completed",
+                "elapsed_ms": started.elapsed().as_millis(),
+                "phase_elapsed_ms": phase_elapsed_ms,
+                "status": phase_status,
+            }),
+        )?;
+        if !agent_ok {
+            run_failure = Some(format!("dogfood phase `{}` agent failed", phase.id));
+            break;
+        }
+        if !checks_ok {
+            run_failure = Some(format!("dogfood phase `{}` checks failed", phase.id));
+            break;
+        }
     }
 
     let final_dir = run_dir.join("final");
     fs::create_dir_all(&final_dir)
         .with_context(|| format!("failed to create `{}`", final_dir.display()))?;
-    let final_checks = run_dogfood_checks(root, &rms_exe, &final_dir, true)?;
+    let final_checks = if run_failure.is_none() {
+        run_dogfood_checks(root, &rms_exe, &final_dir, true)?
+    } else {
+        Vec::new()
+    };
     let cleanup_findings = dogfood_cleanup_findings(root);
+    let module_topology = dogfood_module_topology(root)?;
     let elapsed_ms = started.elapsed().as_millis();
+    let strict_audit_ok = final_checks.iter().any(|check| {
+        check.get("label").and_then(JsonValue::as_str) == Some("audit-strict")
+            && check.get("status").and_then(JsonValue::as_bool) == Some(true)
+    });
+    let status = run_failure.is_none() && strict_audit_ok;
     let report = json!({
         "spec": "rms/dogfood-report/v0.1",
         "scenario": scenario.label(),
@@ -20603,7 +21257,11 @@ fn run_dogfood_run(scenario: DogfoodScenario, root: &Path, agent: DogfoodAgent) 
         "run_dir": run_dir.display().to_string(),
         "started_at": started_at,
         "elapsed_ms": elapsed_ms,
+        "phase_timeout_seconds": phase_timeout_seconds,
+        "status": status,
+        "failure": run_failure,
         "source_revision": source_revision(root),
+        "module_topology": module_topology,
         "phases": phase_reports,
         "cleanup_findings": cleanup_findings,
         "final_checks": final_checks,
@@ -20619,19 +21277,14 @@ fn run_dogfood_run(scenario: DogfoodScenario, root: &Path, agent: DogfoodAgent) 
         )
     })?;
 
-    let strict_audit_ok = report["final_checks"]
-        .as_array()
-        .unwrap_or(&Vec::new())
-        .iter()
-        .any(|check| {
-            check.get("label").and_then(JsonValue::as_str) == Some("audit-strict")
-                && check.get("status").and_then(JsonValue::as_bool) == Some(true)
-        });
     println!("dogfood report: {}", run_dir.join("report.json").display());
-    if !strict_audit_ok {
+    if !status {
         bail!(
-            "dogfood scenario `{}` failed final strict audit",
-            scenario.label()
+            "{}",
+            report
+                .get("failure")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("dogfood scenario failed final strict audit")
         );
     }
     Ok(())
@@ -20677,16 +21330,26 @@ fn dogfood_phases(scenario: DogfoodScenario) -> Vec<DogfoodPhase> {
 
 fn render_dogfood_prompt(root: &Path, phase: &DogfoodPhase) -> String {
     format!(
-        "Working directory: {}\n\nUse RMS CLI/project guidance.\nRecord commands and final verification output.\n\n{}\n",
+        "Working directory: {}\n\nUse RMS CLI/project guidance. Treat product intent as enough input unless RMS says clarification is required. Encode semantic changes before source changes. For runnable local apps, provide a runnable boundary surface or record an explicit single-module exception in canonical RMS artifacts. Model local/external outcomes as effect results when they drive transitions. Record concrete boundary and trace evidence. Record commands and final verification output.\n\n{}\n",
         root.display(),
         phase.intent,
     )
 }
 
-fn execute_dogfood_codex(root: &Path, prompt: &str, phase_dir: &Path) -> Result<JsonValue> {
+fn execute_dogfood_codex(
+    root: &Path,
+    prompt: &str,
+    phase_dir: &Path,
+    timeout_seconds: u64,
+) -> Result<JsonValue> {
     let response_path = phase_dir.join("codex-response.md");
     let stdout_path = phase_dir.join("codex.stdout.log");
     let stderr_path = phase_dir.join("codex.stderr.log");
+    let stdout_file = fs::File::create(&stdout_path)
+        .with_context(|| format!("failed to create `{}`", stdout_path.display()))?;
+    let stderr_file = fs::File::create(&stderr_path)
+        .with_context(|| format!("failed to create `{}`", stderr_path.display()))?;
+    let started = Instant::now();
     let mut child = Command::new("codex")
         .arg("exec")
         .arg("--cd")
@@ -20697,8 +21360,8 @@ fn execute_dogfood_codex(root: &Path, prompt: &str, phase_dir: &Path) -> Result<
         .arg(&response_path)
         .arg("-")
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
         .spawn()
         .with_context(|| "failed to start `codex exec` for dogfood run")?;
     if let Some(mut stdin) = child.stdin.take() {
@@ -20706,17 +21369,30 @@ fn execute_dogfood_codex(root: &Path, prompt: &str, phase_dir: &Path) -> Result<
             .write_all(prompt.as_bytes())
             .with_context(|| "failed to write dogfood prompt to `codex exec`")?;
     }
-    let output = child
-        .wait_with_output()
-        .with_context(|| "failed to wait for dogfood `codex exec`")?;
-    fs::write(&stdout_path, &output.stdout)
-        .with_context(|| format!("failed to write `{}`", stdout_path.display()))?;
-    fs::write(&stderr_path, &output.stderr)
-        .with_context(|| format!("failed to write `{}`", stderr_path.display()))?;
+    let timeout = Duration::from_secs(timeout_seconds);
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .with_context(|| "failed to poll dogfood `codex exec`")?
+        {
+            break status;
+        }
+        if timeout_seconds > 0 && started.elapsed() >= timeout {
+            timed_out = true;
+            let _ = child.kill();
+            break child
+                .wait()
+                .with_context(|| "failed to wait for timed-out dogfood `codex exec`")?;
+        }
+        thread::sleep(Duration::from_secs(1));
+    };
     Ok(json!({
         "agent": "codex",
-        "status": output.status.success(),
-        "exit_code": output.status.code(),
+        "status": status.success() && !timed_out,
+        "exit_code": status.code(),
+        "timeout": timed_out,
+        "elapsed_ms": started.elapsed().as_millis(),
         "response": response_path.display().to_string(),
         "stdout": stdout_path.display().to_string(),
         "stderr": stderr_path.display().to_string(),
@@ -20758,7 +21434,7 @@ fn run_dogfood_checks(
             .unwrap_or(false);
         checks.push(check);
         if !status {
-            bail!("dogfood check `{label}` failed");
+            break;
         }
     }
     if final_strict {
@@ -20775,7 +21451,7 @@ fn run_dogfood_checks(
             .unwrap_or(false);
         checks.push(check);
         if !status {
-            bail!("dogfood strict audit failed");
+            return Ok(checks);
         }
     }
     Ok(checks)
@@ -20788,17 +21464,20 @@ fn run_dogfood_rms_check(
     label: &str,
     args: &[&str],
 ) -> Result<JsonValue> {
+    let started = Instant::now();
     let output = Command::new(rms_exe)
         .current_dir(root)
         .args(args)
         .output()
         .with_context(|| format!("failed to run dogfood check `{label}`"))?;
+    let elapsed_ms = started.elapsed().as_millis();
     write_dogfood_command_logs(checks_dir, label, &output)?;
     Ok(json!({
         "label": label,
         "command": format!("{} {}", rms_exe.display(), args.join(" ")),
         "status": output.status.success(),
         "exit_code": output.status.code(),
+        "elapsed_ms": elapsed_ms,
         "stdout": checks_dir.join(format!("{label}.stdout.log")).display().to_string(),
         "stderr": checks_dir.join(format!("{label}.stderr.log")).display().to_string(),
     }))
@@ -20812,18 +21491,21 @@ fn run_dogfood_shell_check(
 ) -> Result<JsonValue> {
     let rms_path = std::env::current_exe()?.display().to_string();
     let script = script.replace("rms structure", &format!("{rms_path} structure"));
+    let started = Instant::now();
     let output = Command::new("sh")
         .current_dir(root)
         .arg("-c")
         .arg(&script)
         .output()
         .with_context(|| format!("failed to run dogfood check `{label}`"))?;
+    let elapsed_ms = started.elapsed().as_millis();
     write_dogfood_command_logs(checks_dir, label, &output)?;
     Ok(json!({
         "label": label,
         "command": format!("sh -c {}", shell_arg(&script)),
         "status": output.status.success(),
         "exit_code": output.status.code(),
+        "elapsed_ms": elapsed_ms,
         "stdout": checks_dir.join(format!("{label}.stdout.log")).display().to_string(),
         "stderr": checks_dir.join(format!("{label}.stderr.log")).display().to_string(),
     }))
@@ -20855,6 +21537,108 @@ fn write_dogfood_command_logs(
         )
     })?;
     Ok(())
+}
+
+fn write_dogfood_progress(run_dir: &Path, event: JsonValue) -> Result<()> {
+    let path = run_dir.join("progress.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open `{}`", path.display()))?;
+    writeln!(file, "{}", serde_json::to_string(&event)?)
+        .with_context(|| format!("failed to write `{}`", path.display()))
+}
+
+fn dogfood_module_topology(root: &Path) -> Result<JsonValue> {
+    let modules = load_module_index(root)?;
+    let mut entries = Vec::new();
+    let mut recursive = modules.len() > 1;
+    let mut runnable_surface = false;
+    let mut single_module_exception_recorded = false;
+    for module in modules.values() {
+        let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+        let implementation_path = base.join("implementation.yaml");
+        let implementation = load_optional_yaml(&implementation_path)?;
+        let implementation_value = implementation.as_ref().unwrap_or(&YamlValue::Null);
+        let shape = get_str(implementation_value, &["module", "shape"])
+            .or_else(|| get_str(&module.value, &["module", "shape"]))
+            .unwrap_or("unspecified");
+        let profiles = get_string_array(&module.value, &["profiles"]);
+        let children = composition_children_for(&module.name, &module.value);
+        if shape == "composite" || !children.is_empty() {
+            recursive = true;
+        }
+        if implementation_declares_runnable_surface(implementation_value) {
+            runnable_surface = true;
+        }
+        if has_single_module_exception(&module.value)
+            || has_single_module_exception(implementation_value)
+        {
+            single_module_exception_recorded = true;
+        }
+        entries.push(json!({
+            "name": module.name,
+            "path": module.path.display().to_string(),
+            "shape": shape,
+            "profiles": profiles,
+            "children": children.iter().map(|child| child.name.clone()).collect::<Vec<_>>(),
+            "implementation": if implementation_path.exists() {
+                Some(implementation_path.display().to_string())
+            } else {
+                None
+            },
+        }));
+    }
+    let single_module = modules.len() == 1;
+    let matches_reference_expectation =
+        recursive || (single_module && single_module_exception_recorded);
+    Ok(json!({
+        "module_count": modules.len(),
+        "single_module": single_module,
+        "recursive": recursive,
+        "runnable_surface_detected": runnable_surface,
+        "single_module_exception_recorded": single_module_exception_recorded,
+        "expected_for_reference_app": "recursive-or-explicit-single-module-exception",
+        "matches_expected": matches_reference_expectation,
+        "modules": entries,
+    }))
+}
+
+fn implementation_declares_runnable_surface(value: &YamlValue) -> bool {
+    let entrypoints = get_string_array(value, &["source", "public_entrypoints"]);
+    if entrypoints.iter().any(|entry| {
+        let lower = entry.to_ascii_lowercase();
+        lower.contains("main") || lower.contains("run") || lower.contains("cli")
+    }) {
+        return true;
+    }
+    for key in ["build", "run", "smoke", "verify"] {
+        if get_string_array(value, &["commands", key])
+            .iter()
+            .any(|command| {
+                let lower = command.to_ascii_lowercase();
+                lower.contains("cargo run")
+                    || lower.contains("node ")
+                    || lower.contains("swift run")
+                    || lower.contains("python ")
+            })
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_single_module_exception(value: &YamlValue) -> bool {
+    [
+        &["architecture", "single_module_justification"][..],
+        &["module", "single_module_justification"][..],
+        &["x-rms", "single_module_justification"][..],
+        &["x-rms", "single-module-justification"][..],
+    ]
+    .iter()
+    .any(|path| get_str(value, path).is_some_and(|text| !text.trim().is_empty()))
 }
 
 fn ensure_dogfood_git_repo(root: &Path) -> Result<()> {
@@ -21720,6 +22504,36 @@ fn validate_semantic_module_completeness(
             "module declares recovery, retry, compensation, unknown outcomes, or reconciliation behavior without concrete reconciliation evidence",
         );
     }
+    let profiles = get_string_array(&module.value, &["profiles"]);
+    let has_boundary_profile = profiles
+        .iter()
+        .any(|profile| semantic_name_contains_any(profile, &["boundary", "adapter"]));
+    if has_boundary_profile
+        && !module_has_concrete_boundary_evidence(module)
+        && !module_has_boundary_evidence_exception(module)
+    {
+        push_unique_warning(
+            diagnostics,
+            "semantic.boundary-without-evidence",
+            &module.path,
+            "boundary/profile modules should declare concrete boundary evidence or explicitly justify library-only/no-untrusted-boundary behavior",
+        );
+    }
+    let has_workflow_profile = profiles
+        .iter()
+        .any(|profile| semantic_name_contains_any(profile, &["workflow"]));
+    if has_boundary_profile
+        && has_workflow_profile
+        && module_declares_local_or_external_effects(module)
+        && !has_single_module_exception(&module.value)
+    {
+        push_unique_warning(
+            diagnostics,
+            "semantic.single-module-app-justification-missing",
+            &module.path,
+            "module combines boundary, workflow, and effects; record a single-module justification or split the runnable surface from domain/workflow behavior",
+        );
+    }
     inspect_empty_evidence_lanes(module, diagnostics);
 }
 
@@ -21825,6 +22639,53 @@ fn module_has_concrete_reconciliation_evidence(module: &LoadedManifest) -> bool 
     get_string_array(&module.value, &["verification", "reconciliation"])
         .iter()
         .any(|reference| concrete_evidence_path_exists(&base.join(reference)))
+}
+
+fn module_has_concrete_boundary_evidence(module: &LoadedManifest) -> bool {
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    get_string_array(&module.value, &["verification", "boundaries"])
+        .iter()
+        .any(|reference| concrete_evidence_path_exists(&base.join(reference)))
+}
+
+fn module_has_boundary_evidence_exception(module: &LoadedManifest) -> bool {
+    [
+        &["verification", "boundary_exception"][..],
+        &["verification", "boundary_justification"][..],
+        &["module", "boundary_justification"][..],
+        &["x-rms", "boundary_justification"][..],
+        &["x-rms", "no_untrusted_boundary_justification"][..],
+        &["x-rms", "library_only_justification"][..],
+    ]
+    .iter()
+    .any(|path| get_str(&module.value, path).is_some_and(|text| !text.trim().is_empty()))
+}
+
+fn module_declares_local_or_external_effects(module: &LoadedManifest) -> bool {
+    if get_path(&module.value, &["effects"])
+        .and_then(YamlValue::as_sequence)
+        .is_some_and(|items| !items.is_empty())
+    {
+        return true;
+    }
+    let rendered = serde_yaml::to_string(&module.value).unwrap_or_default();
+    semantic_name_contains_any(
+        &rendered,
+        &[
+            "filesystem",
+            "file system",
+            "local file",
+            "write local",
+            "network",
+            "database",
+            "stdout",
+            "stderr",
+            "process",
+            "clock",
+            "random",
+            "provider",
+        ],
+    )
 }
 
 fn concrete_evidence_path_exists(path: &Path) -> bool {
@@ -29877,6 +30738,63 @@ architecture:
     }
 
     #[test]
+    fn structure_report_flags_outcome_transition_inputs_not_declared_as_effect_results() {
+        let root = unique_test_dir("structure-outcome-inputs");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn transition() {}\n").unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: nutrition-logging
+binding: rust
+source:
+  root: .
+  public_entrypoint: src/lib.rs
+commands:
+  build: cargo check
+  verify: cargo test
+architecture:
+  shape: workflow
+  machine:
+    name: NutritionLoggingWorkflowMachine
+    mode: workflow-effect-machine
+    states: [Ready, WaitingForLocalWrite, WriteFailed]
+    commands: [DraftFoodLog]
+    events: [FoodLogDrafted]
+    effects: [AppendMarkdownDayLog]
+    effect_results: []
+    replies: [ConfirmLogDraft]
+    rejections: [MalformedFoodItem]
+    transition_function: transition
+    transitions:
+      - from: WaitingForLocalWrite
+        on: LocalWriteSucceeded
+        to: Ready
+        reply: ConfirmLogDraft
+      - from: WaitingForLocalWrite
+        on: LocalWriteFailed
+        to: WriteFailed
+        reply: ConfirmLogDraft
+  roles:
+    representation: [src/lib.rs]
+    transition: [src/lib.rs]
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "structure.transition-input-not-classified" }));
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.effect-result-change-not-declared"
+        }));
+    }
+
+    #[test]
     fn structure_report_accepts_parser_role_aliases() {
         let root = unique_test_dir("structure-parser-alias");
         fs::create_dir_all(root.join("src")).unwrap();
@@ -30623,6 +31541,169 @@ architecture:
         assert!(checks.iter().any(|check| {
             check.id == "semantic.placeholder-change-command" && check.result == "fail"
         }));
+    }
+
+    #[test]
+    fn strict_audit_flags_applied_semantic_change_not_reflected_in_machine() {
+        let root = unique_test_dir("strict-audit-semantic-change-reflection");
+        let module_root = root.join("modules/nutrition-logging");
+        fs::create_dir_all(module_root.join("verification/changes")).unwrap();
+        fs::create_dir_all(module_root.join("verification/traces")).unwrap();
+        fs::create_dir_all(module_root.join("src")).unwrap();
+        fs::write(
+            module_root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: nutrition-logging
+  version: 0.1.0
+  kind: application
+  purpose: Nutrition logging
+profiles: [workflow, boundary]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects:
+  - name: append-markdown-day-log
+    kind: local-filesystem
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+  traces: []
+"#,
+        )
+        .unwrap();
+        fs::write(module_root.join("src/lib.rs"), "pub fn transition() {}\n").unwrap();
+        fs::write(
+            module_root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: nutrition-logging
+binding: rust
+source:
+  root: .
+  public_entrypoint: src/lib.rs
+commands:
+  build: cargo check
+  verify: cargo test
+architecture:
+  shape: workflow
+  machine:
+    name: NutritionLoggingWorkflowMachine
+    mode: workflow-effect-machine
+    states: [Ready, WaitingForLocalWrite, WriteFailed]
+    commands: [DraftFoodLog]
+    events: [FoodLogDrafted]
+    effects: [AppendMarkdownDayLog]
+    effect_results: []
+    replies: [ConfirmLogDraft]
+    rejections: [MalformedFoodItem]
+    transition_function: transition
+    transitions:
+      - from: WaitingForLocalWrite
+        on: LocalWriteSucceeded
+        to: Ready
+        reply: ConfirmLogDraft
+  roles:
+    representation: [src/lib.rs]
+    transition: [src/lib.rs]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            module_root.join("verification/changes/local-write.yaml"),
+            r#"spec: rms/semantic-change/v0.1
+module: modules/nutrition-logging/module.yaml
+intent:
+  summary: Local write outcomes drive nutrition logging state.
+machine:
+  mode: workflow-effect-machine
+  states:
+    add: [WaitingForLocalWrite, WriteFailed]
+  commands:
+    add: [DraftFoodLog]
+  effects:
+    add: [AppendMarkdownDayLog]
+  effect_results:
+    add: [LocalWriteSucceeded, LocalWriteFailed]
+  replies:
+    add: [ConfirmLogDraft]
+  rejections:
+    add: [MalformedFoodItem]
+  transitions:
+    add:
+      - from: WaitingForLocalWrite
+        on: LocalWriteSucceeded
+        to: Ready
+        reply: ConfirmLogDraft
+"#,
+        )
+        .unwrap();
+
+        let report = build_audit_report(&root, true).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report.checks.iter().any(|check| {
+            check.id == "structure.effect-result-change-not-declared" && check.result == "fail"
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.id == "structure.transition-input-not-classified" && check.result == "fail"
+        }));
+    }
+
+    #[test]
+    fn semantic_module_flags_boundary_profile_without_boundary_evidence() {
+        let manifest = loaded_module_manifest(
+            "module.yaml",
+            r#"spec: rms/module/v0.1
+module:
+  name: boundary-example
+  version: 0.1.0
+  kind: application
+  purpose: Boundary example
+profiles: [boundary]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        );
+        let mut diagnostics = Vec::new();
+
+        validate_semantic_module_completeness(&manifest, &mut diagnostics);
+
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "semantic.boundary-without-evidence"));
     }
 
     #[test]

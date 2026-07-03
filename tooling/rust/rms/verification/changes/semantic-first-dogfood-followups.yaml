@@ -79,16 +79,16 @@ evidence:
   add:
     - kind: unit-test
       proves: composite-evidence-lanes-are-concrete
-      path: tooling/rust/rms/src/main.rs#add_capability_parent_does_not_declare_empty_boundary_lane
+      path: verification/laws/composite_evidence_lanes_are_concrete.md
     - kind: unit-test
       proves: effect-results-are-canonical-machine-inputs
-      path: tooling/rust/rms/src/main.rs#structure_report_flags_effect_result_representation_drift
+      path: verification/laws/effect_results_are_canonical_machine_inputs.md
     - kind: unit-test
       proves: boundary-lifecycle-is-trace-evidenced
-      path: tooling/rust/rms/src/main.rs#strict_audit_boundary_machine_requires_lifecycle_trace_coverage
+      path: verification/laws/boundary_lifecycle_is_trace_evidenced.md
     - kind: unit-test
       proves: source-drift-has-semantic-record
-      path: tooling/rust/rms/src/main.rs#strict_audit_flags_placeholder_semantic_change_command_logs
+      path: verification/laws/source_drift_has_semantic_record.md
 
 provenance:
   source_revision_before_change: git:39e32e74c7f7

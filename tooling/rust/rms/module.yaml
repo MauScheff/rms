@@ -183,6 +183,22 @@ invariants:
     statement: Diagnostic, context, package, and conformance outputs must identify their source artifacts and remain derived evidence rather than hidden architectural truth.
     enforced_by: derived-output-renderers
     verified_by: verification/laws/diagnostics_are_evidence_not_authority.md
+  - id: composite-evidence-lanes-are-concrete
+    statement: Composite scaffolds must not declare empty evidence lanes for production claims.
+    enforced_by: add-capability-evidence-scaffold
+    verified_by: verification/laws/composite_evidence_lanes_are_concrete.md
+  - id: effect-results-are-canonical-machine-inputs
+    statement: Machine-shaped modules that represent effect-result types or envelopes declare semantic effect results and consume them through transitions.
+    enforced_by: effect-result-structure-diagnostics
+    verified_by: verification/laws/effect_results_are_canonical_machine_inputs.md
+  - id: boundary-lifecycle-is-trace-evidenced
+    statement: Boundary-machine states used for parse, delegation, completion, and rejection are evidenced by replayable transition traces.
+    enforced_by: boundary-trace-coverage-audit
+    verified_by: verification/laws/boundary_lifecycle_is_trace_evidenced.md
+  - id: source-drift-has-semantic-record
+    statement: Source behavior changes require a committed semantic-change record before strict production audit can pass.
+    enforced_by: strict-audit-semantic-drift-check
+    verified_by: verification/laws/source_drift_has_semantic_record.md
 
 effects:
   - name: read-repository-files
