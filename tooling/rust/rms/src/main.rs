@@ -21561,8 +21561,10 @@ fn dogfood_module_topology(root: &Path) -> Result<JsonValue> {
         let implementation_path = base.join("implementation.yaml");
         let implementation = load_optional_yaml(&implementation_path)?;
         let implementation_value = implementation.as_ref().unwrap_or(&YamlValue::Null);
-        let shape = get_str(implementation_value, &["module", "shape"])
+        let shape = get_str(implementation_value, &["architecture", "shape"])
+            .or_else(|| get_str(implementation_value, &["module", "shape"]))
             .or_else(|| get_str(&module.value, &["module", "shape"]))
+            .or_else(|| get_str(&module.value, &["x-scaffold", "shape"]))
             .unwrap_or("unspecified");
         let profiles = get_string_array(&module.value, &["profiles"]);
         let children = composition_children_for(&module.name, &module.value);
@@ -21606,10 +21608,21 @@ fn dogfood_module_topology(root: &Path) -> Result<JsonValue> {
 }
 
 fn implementation_declares_runnable_surface(value: &YamlValue) -> bool {
-    let entrypoints = get_string_array(value, &["source", "public_entrypoints"]);
+    let mut entrypoints = get_string_array(value, &["source", "public_entrypoints"]);
+    if let Some(entrypoint) = get_str(value, &["source", "public_entrypoint"]) {
+        entrypoints.push(entrypoint.to_string());
+    }
+    if let Some(entrypoint) = get_str(value, &["source", "executable_entrypoint"]) {
+        entrypoints.push(entrypoint.to_string());
+    }
+    entrypoints.extend(get_string_array(value, &["architecture", "public_modules"]));
     if entrypoints.iter().any(|entry| {
         let lower = entry.to_ascii_lowercase();
-        lower.contains("main") || lower.contains("run") || lower.contains("cli")
+        lower.contains("main")
+            || lower.contains("run")
+            || lower.contains("cli")
+            || lower.contains("bin/")
+            || lower.contains("adapter")
     }) {
         return true;
     }
@@ -21622,6 +21635,8 @@ fn implementation_declares_runnable_surface(value: &YamlValue) -> bool {
                     || lower.contains("node ")
                     || lower.contains("swift run")
                     || lower.contains("python ")
+                    || lower.contains("scripts/smoke")
+                    || lower.contains("smoke.sh")
             })
         {
             return true;
@@ -33406,6 +33421,35 @@ verification:
                 .as_ref()
                 .map(|module| module.name.as_str()),
             Some("play-tic-tac-toe-boundary")
+        );
+    }
+
+    #[test]
+    fn dogfood_topology_detects_executable_boundary_surface() {
+        let implementation: YamlValue = serde_yaml::from_str(
+            r#"spec: rms/implementation/v0.1
+module: local-journal
+binding: js
+source:
+  root: .
+  public_entrypoint: src/adapter.mjs
+  executable_entrypoint: bin/nutrition-log.mjs
+commands:
+  build: sh scripts/build.sh
+  verify: sh scripts/smoke.sh
+architecture:
+  shape: boundary-adapter
+  public_modules:
+    - src/adapter.mjs
+    - bin/nutrition-log.mjs
+"#,
+        )
+        .unwrap();
+
+        assert!(implementation_declares_runnable_surface(&implementation));
+        assert_eq!(
+            get_str(&implementation, &["architecture", "shape"]),
+            Some("boundary-adapter")
         );
     }
 
