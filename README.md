@@ -124,6 +124,8 @@ This creates `module.yaml`, a module `README.md`, `contracts/README.md`, and gui
 
 Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, message envelopes, transition output, transition records, parser, adapter, journal, timeline projection, replay bundle, first-bad-transition, and trace evidence roles, plus a domain-named machine with an explicit mode and state variants. They also seed local trace bundles under `verification/traces/`, and `rms verify` checks those bundles after native verification. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, `Rejection`, `Transition`, and `TransitionRecord`. Prefer the `add-capability` default child paths unless the user supplied better product/domain names; do not invent `-rules`, `-adapter`, `-cli`, or `-web` child names just to describe RMS roles. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`, and a boundary role should avoid names like `CouponEvaluationAdapterMachine`.
 
+For app, tool, CLI, local-first reference app, runnable, or smoke-test intents, the boundary child should expose a declared smoke command or executable surface. A library-only boundary is appropriate only when the product intent is explicitly library-only.
+
 Inspect those declarations with:
 
 ```bash
@@ -178,7 +180,7 @@ machine:
 rms machine check ./my-system/modules/widget/implementation.yaml
 ```
 
-`rms spec plan`, `rms machine plan`, and provider output are advisory. `rms spec apply` and `rms machine apply` are the deterministic steps that update canonical declarations and role placeholders. Agents then fill declared role bodies; pure helpers stay pure, and IO belongs behind declared effects/effect-results in adapter, port, or effect-executor roles.
+`rms spec plan`, `rms machine plan`, and provider output are advisory. `rms spec apply` and `rms machine apply` are the deterministic steps that update canonical declarations and role placeholders. `rms spec apply` also records the exact applied semantic-change object under `verification/changes/`. Agents then fill declared role bodies; pure helpers stay pure, and IO belongs behind declared effects/effect-results in adapter, port, or effect-executor roles.
 
 Validate the included examples:
 

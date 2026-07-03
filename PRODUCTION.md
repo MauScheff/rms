@@ -70,6 +70,8 @@ rms add-capability ./modules/<capability> \
   --boundary-binding js
 ```
 
+For app, tool, CLI, local-first reference app, runnable, or smoke-test intents, the boundary module should expose a declared smoke command or executable surface. Do not leave those intents as library-only unless the product explicitly asks for a library.
+
 Use `rms add-module` only when the module is truly standalone or when the semantic shape is already clear:
 
 ```bash
@@ -91,7 +93,7 @@ rms spec apply <module.yaml|implementation.yaml> --change-yaml '<semantic-change
 rms spec check <module.yaml|implementation.yaml>
 ```
 
-Use `rms machine plan/apply/check` only for focused inner-machine edits when laws, public contracts, and evidence obligations are already correct. Provider plans are advisory until `rms spec apply` or `rms machine apply` reflects them in canonical artifacts. Agents may edit declared role bodies and private pure helpers inside pure role files. IO belongs in declared adapter, port, or effect-executor roles as effects plus effect results.
+`rms spec apply` records the exact applied semantic-change object under `verification/changes/`. Use `rms machine plan/apply/check` only for focused inner-machine edits when laws, public contracts, and evidence obligations are already correct. Provider plans are advisory until `rms spec apply` or `rms machine apply` reflects them in canonical artifacts. Agents may edit declared role bodies and private pure helpers inside pure role files. IO belongs in declared adapter, port, or effect-executor roles as effects plus effect results.
 
 ## Existing Project Flow
 

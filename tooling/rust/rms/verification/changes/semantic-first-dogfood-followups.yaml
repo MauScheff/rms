@@ -1,0 +1,100 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+
+intent:
+  summary: Tighten blind-dogfood production readiness so fresh reference apps can pass strict audit after commit without project-specific cleanup.
+
+laws:
+  add:
+    - id: composite-evidence-lanes-are-concrete
+      statement: Composite scaffolds must not declare empty evidence lanes for production claims.
+      kind: invariant
+    - id: effect-results-are-canonical-machine-inputs
+      statement: Machine-shaped modules that represent effect-result types or envelopes declare semantic effect results and consume them through transitions.
+      kind: invariant
+    - id: boundary-lifecycle-is-trace-evidenced
+      statement: Boundary-machine states used for parse, delegation, completion, and rejection are evidenced by replayable transition traces.
+      kind: invariant
+    - id: source-drift-has-semantic-record
+      statement: Source behavior changes require a committed semantic-change record before strict production audit can pass.
+      kind: invariant
+
+contracts:
+  add:
+    - name: add-rms-capability
+      version: v1
+      command: AddCapability
+      accepts:
+        - product intent that needs a recursive RMS capability tree
+      rejects:
+        - empty production evidence lanes
+      evidence:
+        - verification/contracts/add_rms_capability.md
+    - name: inspect-implementation-structure
+      version: v1
+      command: InspectImplementationStructure
+      accepts:
+        - implementation binding with declared machine, roles, traces, and evidence
+      rejects:
+        - effect-result drift
+        - incomplete boundary lifecycle traces
+      evidence:
+        - verification/contracts/inspect_implementation_structure.md
+    - name: audit-rms-project
+      version: v1
+      command: AuditRmsProject
+      accepts:
+        - production readiness audit over committed RMS artifacts
+      rejects:
+        - source-only behavior drift
+        - placeholder semantic-change command logs
+      evidence:
+        - verification/contracts/audit_rms_project.md
+
+machine:
+  mode: boundary-machine
+  effects:
+    add:
+      - WriteSemanticChangeRecord
+  effect_results:
+    add:
+      - SemanticChangeRecordWritten
+      - SemanticChangeRecordWriteRejected
+  transitions:
+    add:
+      - from: Ready
+        on: ApplySemanticChange
+        to: Ready
+        effects:
+          - WriteSemanticChangeRecord
+        reply: SemanticChangeApplied
+      - from: Ready
+        on: SemanticChangeRecordWritten
+        to: Ready
+        events:
+          - SemanticChangeRecorded
+        reply: SemanticChangeApplied
+
+evidence:
+  add:
+    - kind: unit-test
+      proves: composite-evidence-lanes-are-concrete
+      path: tooling/rust/rms/src/main.rs#add_capability_parent_does_not_declare_empty_boundary_lane
+    - kind: unit-test
+      proves: effect-results-are-canonical-machine-inputs
+      path: tooling/rust/rms/src/main.rs#structure_report_flags_effect_result_representation_drift
+    - kind: unit-test
+      proves: boundary-lifecycle-is-trace-evidenced
+      path: tooling/rust/rms/src/main.rs#strict_audit_boundary_machine_requires_lifecycle_trace_coverage
+    - kind: unit-test
+      proves: source-drift-has-semantic-record
+      path: tooling/rust/rms/src/main.rs#strict_audit_flags_placeholder_semantic_change_command_logs
+
+provenance:
+  source_revision_before_change: git:39e32e74c7f7
+  commands:
+    - cargo test --manifest-path tooling/rust/rms/Cargo.toml
+    - cargo test --workspace --locked
+    - target/debug/rms validate --root .
+    - target/debug/rms compose --root .
+    - target/debug/rms gate --root .

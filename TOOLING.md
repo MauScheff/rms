@@ -134,7 +134,7 @@ rms spec check <module.yaml|implementation.yaml> [--strict] [--json]
 rms spec diff <module.yaml|implementation.yaml> [--json]
 ```
 
-Use this when a change needs new laws, public contracts, machine states, transitions, effects, effect results, rejection types, or evidence obligations. `rms spec apply` updates canonical semantics first, then agents fill declared role bodies. Provider planning is advisory until `rms spec apply` succeeds.
+Use this when a change needs new laws, public contracts, machine states, transitions, effects, effect results, rejection types, or evidence obligations. `rms spec apply` updates canonical semantics first and records the exact applied semantic-change object under `verification/changes/`; then agents fill declared role bodies. Provider planning is advisory until `rms spec apply` succeeds.
 
 The semantic-change format is language-neutral and may include a nested machine change:
 
@@ -214,6 +214,8 @@ Agents may add small private pure helpers inside declared pure role files. Priva
 Scaffolds a recursive capability tree: a composite parent module at the requested path, a sibling `domain-engine` child, and a sibling `boundary-adapter` child. The parent declares `composition.contains`, exports the boundary child public command, and includes parent scenario evidence so `rms verify <parent/module.yaml>` can roll up composition and child implementation checks. Default child paths are generic `-domain` and `-boundary`; choose product/domain names when the capability language is clearer. Do not pass `--domain-child` or `--boundary-child` just to add role words such as `rules`, `engine`, `adapter`, `cli`, `web`, or binding names.
 
 Use this when `rms design` recommends a composite tree for one public capability. Use `rms add-module` for single modules or when the hierarchy is already in place.
+
+For app, tool, CLI, local-first reference app, runnable, or smoke-test intents, choose or add a boundary surface with a declared smoke command or executable entrypoint. A library-only boundary is appropriate only for explicitly library-only product intent.
 
 The first language binding is Rust. A Rust implementation binding declares `binding: rust` in `implementation.yaml`; the CLI then checks Cargo manifest shape, package identity, public entrypoint placement, explicit external crate dependencies, source import roots, public external re-exports, declared public modules, primitive type aliases, public domain fields, failure discipline, constructor evidence, query-produced read-model exceptions, Stateful representation declarations, and semantic function source symbols.
 
