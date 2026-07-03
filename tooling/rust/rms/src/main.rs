@@ -677,6 +677,12 @@ enum Commands {
         command: SpecCommands,
     },
 
+    /// Run repeatable blind-agent RMS dogfood scenarios.
+    Dogfood {
+        #[command(subcommand)]
+        command: DogfoodCommands,
+    },
+
     /// Manage RMS workbench configuration.
     Config {
         #[command(subcommand)]
@@ -1647,6 +1653,54 @@ enum SpecCommands {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum DogfoodCommands {
+    /// Run a blind-agent dogfood scenario and record prompts, logs, commits, and RMS checks.
+    Run {
+        /// Scenario to run.
+        #[arg(long)]
+        scenario: DogfoodScenario,
+
+        /// Fresh or existing project root for the dogfood run.
+        #[arg(long)]
+        root: PathBuf,
+
+        /// Blind agent to run.
+        #[arg(long, default_value = "codex")]
+        agent: DogfoodAgent,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum DogfoodScenario {
+    #[value(name = "checkout-reference")]
+    CheckoutReference,
+    #[value(name = "nutrition-reference")]
+    NutritionReference,
+}
+
+impl DogfoodScenario {
+    fn label(self) -> &'static str {
+        match self {
+            DogfoodScenario::CheckoutReference => "checkout-reference",
+            DogfoodScenario::NutritionReference => "nutrition-reference",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum DogfoodAgent {
+    Codex,
+}
+
+impl DogfoodAgent {
+    fn label(self) -> &'static str {
+        match self {
+            DogfoodAgent::Codex => "codex",
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -3450,7 +3504,7 @@ fn run_release_check(root: &Path, skip_cargo_package: bool) -> Result<()> {
             ),
         )?;
     }
-    run_release_plugin_check(root)?;
+    run_release_plugin_check(root, &rms_exe)?;
 
     println!();
     println!("pass: release check");
@@ -3657,9 +3711,11 @@ fn run_release_package_smoke(root: &Path, rms_exe: &Path) -> Result<()> {
     result
 }
 
-fn run_release_plugin_check(root: &Path) -> Result<()> {
+fn run_release_plugin_check(root: &Path, rms_exe: &Path) -> Result<()> {
     println!("## codex plugin wrapper");
     validate_codex_plugin_sync(root)?;
+    validate_embedded_skill_assets(root)?;
+    run_release_agent_distribution_smoke(rms_exe)?;
     println!("pass");
     println!();
     Ok(())
@@ -4223,6 +4279,124 @@ fn validate_codex_plugin_sync(root: &Path) -> Result<()> {
         bail!("Codex plugin skill set does not match canonical skill set");
     }
     Ok(())
+}
+
+fn validate_embedded_skill_assets(root: &Path) -> Result<()> {
+    compare_skill_file(
+        &root.join("skills/README.md"),
+        &root.join("tooling/rust/rms/assets/skills/README.md"),
+        "embedded skills README",
+    )?;
+    compare_skill_file(
+        &root.join("skills/README.md"),
+        &root.join("integrations/codex/rms/skills/README.md"),
+        "Codex plugin skills README",
+    )?;
+    for skill in CANONICAL_SKILLS {
+        let canonical = root.join("skills").join(skill).join("SKILL.md");
+        compare_skill_file(
+            &canonical,
+            &root
+                .join("tooling/rust/rms/assets/skills")
+                .join(skill)
+                .join("SKILL.md"),
+            &format!("embedded skill `{skill}`"),
+        )?;
+        compare_skill_file(
+            &canonical,
+            &root
+                .join("integrations/codex/rms/skills")
+                .join(skill)
+                .join("SKILL.md"),
+            &format!("Codex plugin skill `{skill}`"),
+        )?;
+    }
+    Ok(())
+}
+
+fn compare_skill_file(canonical: &Path, copy: &Path, label: &str) -> Result<()> {
+    let canonical_source = fs::read_to_string(canonical)
+        .with_context(|| format!("failed to read `{}`", canonical.display()))?;
+    let copy_source =
+        fs::read_to_string(copy).with_context(|| format!("failed to read `{}`", copy.display()))?;
+    if canonical_source != copy_source {
+        bail!("{label} is out of sync with `{}`", canonical.display());
+    }
+    Ok(())
+}
+
+fn run_release_agent_distribution_smoke(rms_exe: &Path) -> Result<()> {
+    let temp = std::env::temp_dir().join(format!(
+        "rms-release-agent-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    ));
+    let project = temp.join("project");
+    let marketplace = temp.join("marketplace.json");
+    fs::create_dir_all(&project)
+        .with_context(|| format!("failed to create `{}`", project.display()))?;
+    let result = (|| -> Result<()> {
+        run_release_step(
+            "agent init codex",
+            command_with_args(
+                rms_exe,
+                &["agent", "init", "--target", "codex", "--root", "."],
+                &project,
+            ),
+        )?;
+        run_release_step(
+            "agent sync codex",
+            command_with_args(
+                rms_exe,
+                &["agent", "sync", "--target", "codex", "--root", "."],
+                &project,
+            ),
+        )?;
+        run_release_step(
+            "agent plugin install codex",
+            command_with_args(
+                rms_exe,
+                &[
+                    "agent",
+                    "plugin",
+                    "install",
+                    "--target",
+                    "codex",
+                    "--marketplace-path",
+                    marketplace.to_string_lossy().as_ref(),
+                    "--skip-codex-add",
+                ],
+                &project,
+            ),
+        )?;
+        run_release_step(
+            "agent plugin diagnose codex",
+            command_with_args(
+                rms_exe,
+                &[
+                    "agent",
+                    "plugin",
+                    "diagnose",
+                    "--target",
+                    "codex",
+                    "--marketplace-path",
+                    marketplace.to_string_lossy().as_ref(),
+                ],
+                &project,
+            ),
+        )?;
+        ensure_file_exists(
+            &project.join(".agents/skills/implement-change/SKILL.md"),
+            "temp project Codex RMS skill",
+        )?;
+        ensure_file_exists(&marketplace, "temp Codex marketplace")?;
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&temp);
+    result
 }
 
 fn render_workbench_config(provider: Provider, model: Option<&str>, run_root: &Path) -> String {
@@ -4799,6 +4973,13 @@ fn main() -> Result<()> {
                 json,
             } => run_spec_check(&target, strict, json),
             SpecCommands::Diff { target, json } => run_spec_diff(&target, json),
+        },
+        Commands::Dogfood { command } => match command {
+            DogfoodCommands::Run {
+                scenario,
+                root,
+                agent,
+            } => run_dogfood_run(scenario, &root, agent),
         },
         Commands::Config { command } => match command {
             ConfigCommands::Init {
@@ -5654,6 +5835,8 @@ fn render_design_prompt(root: &Path, task: &str) -> Result<String> {
     writeln!(out)?;
     writeln!(out, "## Operating Rule")?;
     writeln!(out, "Use RMS canonical artifacts as the source of architectural truth. Use design output as advisory evidence until reflected in system, context, module, contract, implementation, and verification artifacts.")?;
+    writeln!(out, "Product intent is enough input from the user: ask clarifying questions only when needed, surface semantic edge cases, name what must never happen, and propose laws, contracts, machines, effects, rejections, and evidence before code.")?;
+    writeln!(out, "For external truth, decide what happens when outcomes are unknown, duplicate, stale, partial, conflicting, delayed, or later corrected; use reconciliation or recovery evidence when those cases matter.")?;
     writeln!(out)?;
     append_design_context(&mut out, root, &modules)?;
     append_design_recommendations(&mut out, task, &modules)?;
@@ -10143,7 +10326,7 @@ fn validate_traceable_machine_structure(
         return;
     }
 
-    let missing_envelopes = [
+    let mut envelope_declarations = vec![
         (
             "command_envelope",
             get_structure_values(
@@ -10165,17 +10348,24 @@ fn validate_traceable_machine_structure(
                 &["architecture", "messages", "effect_envelope"],
             ),
         ),
-        (
+    ];
+    let effect_results = get_string_array(
+        &manifest.value,
+        &["architecture", "machine", "effect_results"],
+    );
+    if !effect_results.is_empty() || represented_effect_result_envelope_types(manifest) {
+        envelope_declarations.push((
             "effect_result_envelope",
             get_structure_values(
                 &manifest.value,
                 &["architecture", "messages", "effect_result_envelope"],
             ),
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(name, values)| if values.is_empty() { Some(name) } else { None })
-    .collect::<Vec<_>>();
+        ));
+    }
+    let missing_envelopes = envelope_declarations
+        .into_iter()
+        .filter_map(|(name, values)| if values.is_empty() { Some(name) } else { None })
+        .collect::<Vec<_>>();
     if !missing_envelopes.is_empty() {
         push_unique_warning(
             diagnostics,
@@ -10765,10 +10955,50 @@ fn inspect_effect_result_handling(manifest: &LoadedManifest, diagnostics: &mut V
     if !has_machine {
         return;
     }
+    let has_reconciliation_evidence = implementation_has_reconciliation_evidence(manifest);
     let effect_results = get_string_array(
         &manifest.value,
         &["architecture", "machine", "effect_results"],
     );
+    for effect_result in &effect_results {
+        if semantic_name_contains_any(
+            effect_result,
+            &["unknown", "uncertain", "stale", "partial", "conflict"],
+        ) && !has_reconciliation_evidence
+        {
+            push_unique_warning(
+                diagnostics,
+                "structure.unknown-effect-result-without-reconciliation",
+                &manifest.path,
+                format!(
+                    "effect result `{effect_result}` represents uncertain external truth without reconciliation evidence"
+                ),
+            );
+        }
+    }
+    for effect in get_string_array(&manifest.value, &["architecture", "machine", "effects"]) {
+        if semantic_name_contains_any(
+            &effect,
+            &[
+                "compensate",
+                "compensation",
+                "rollback",
+                "release",
+                "recover",
+                "recovery",
+            ],
+        ) && !has_reconciliation_evidence
+        {
+            push_unique_warning(
+                diagnostics,
+                "structure.compensation-without-recovery-evidence",
+                &manifest.path,
+                format!(
+                    "effect `{effect}` appears to compensate or recover external truth without reconciliation evidence"
+                ),
+            );
+        }
+    }
     let represented_effect_results = represented_effect_result_types(manifest);
     if effect_results.is_empty() && !represented_effect_results.is_empty() {
         push_unique_warning(
@@ -10833,6 +11063,50 @@ fn inspect_effect_result_handling(manifest: &LoadedManifest, diagnostics: &mut V
             );
         }
     }
+}
+
+fn implementation_has_reconciliation_evidence(manifest: &LoadedManifest) -> bool {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    if concrete_evidence_path_exists(&base.join("verification").join("reconciliation")) {
+        return true;
+    }
+    for role in [
+        "trace_evidence",
+        "journal",
+        "timeline_projection",
+        "replay_bundle",
+        "effect_lifecycle",
+    ] {
+        for reference in structure_role_paths(manifest, role) {
+            let normalized = normalize_semantic_identifier(&reference);
+            if semantic_name_contains_any(
+                &normalized,
+                &["reconciliation", "reconcile", "recovery", "recover"],
+            ) {
+                return true;
+            }
+            let path = base.join(&reference);
+            if path.is_file()
+                && fs::read_to_string(&path).is_ok_and(|source| {
+                    let normalized = normalize_semantic_identifier(&source);
+                    semantic_name_contains_any(
+                        &normalized,
+                        &["reconciliation", "reconcile", "recovery", "recover"],
+                    )
+                })
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn semantic_name_contains_any(value: &str, needles: &[&str]) -> bool {
+    let normalized = normalize_semantic_identifier(value);
+    needles
+        .iter()
+        .any(|needle| semantic_text_mentions_id(&normalized, needle))
 }
 
 fn represented_effect_result_types(manifest: &LoadedManifest) -> Vec<String> {
@@ -20082,6 +20356,8 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "## Operating Rule")?;
     writeln!(out, "RMS owns semantics and architecture. Agents fill declared role bodies. If meaning changes, return an `rms/semantic-change/v0.1` object; do not encode behavior only in source files.")?;
     writeln!(out, "Laws, contracts, machine transitions, effects, and evidence obligations come before implementation code. Provider output is advisory until `rms spec apply` updates canonical artifacts and records the exact applied change under `verification/changes/`.")?;
+    writeln!(out, "Ask clarifying questions only when needed. Otherwise infer the smallest coherent semantic model from the task, name edge cases and must-never-happen conditions, and encode them in the semantic-change object.")?;
+    writeln!(out, "For external truth, include reconciliation or recovery evidence when outcomes can be unknown, duplicate, stale, partial, conflicting, delayed, or later corrected.")?;
     writeln!(out)?;
     writeln!(out, "## Required Output")?;
     writeln!(out, "Return only YAML or JSON matching this language-neutral schema when meaning changes. If no semantic change is needed, say that current semantics are sufficient and name the declared role files to edit.")?;
@@ -20129,6 +20405,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         "`rms spec apply` records the exact semantic-change object under `verification/changes/`; command logs with placeholders are not evidence.",
         "Pure transitions reject illegal states instead of throwing or doing IO.",
         "Boundary adapters parse raw input into command envelopes or typed rejections before delegation.",
+        "Unknown, duplicate, stale, partial, conflicting, delayed, or corrected external outcomes have reconciliation or recovery evidence when they affect correctness.",
     ] {
         writeln!(out, "- {item}")?;
     }
@@ -20266,6 +20543,468 @@ fn run_spec_diff(target: &Path, json_output: bool) -> Result<()> {
         println!("{}", report.diff);
     }
     Ok(())
+}
+
+fn run_dogfood_run(scenario: DogfoodScenario, root: &Path, agent: DogfoodAgent) -> Result<()> {
+    fs::create_dir_all(root)
+        .with_context(|| format!("failed to create dogfood root `{}`", root.display()))?;
+    ensure_dogfood_git_repo(root)?;
+
+    let started_at = dogfood_timestamp();
+    let run_dir = root
+        .join(".rms")
+        .join("dogfood")
+        .join(format!("{}-{started_at}", scenario.label()));
+    fs::create_dir_all(&run_dir)
+        .with_context(|| format!("failed to create `{}`", run_dir.display()))?;
+
+    let started = Instant::now();
+    let rms_exe = std::env::current_exe().with_context(|| "failed to locate current rms binary")?;
+    let mut phase_reports = Vec::new();
+
+    for (index, phase) in dogfood_phases(scenario).iter().enumerate() {
+        let phase_dir = run_dir.join(format!("{:02}-{}", index + 1, phase.id));
+        fs::create_dir_all(&phase_dir)
+            .with_context(|| format!("failed to create `{}`", phase_dir.display()))?;
+        let prompt = render_dogfood_prompt(root, phase);
+        fs::write(phase_dir.join("prompt.md"), &prompt).with_context(|| {
+            format!(
+                "failed to write `{}`",
+                phase_dir.join("prompt.md").display()
+            )
+        })?;
+
+        let agent_result = match agent {
+            DogfoodAgent::Codex => execute_dogfood_codex(root, &prompt, &phase_dir)?,
+        };
+        let checks = run_dogfood_checks(root, &rms_exe, &phase_dir, false)?;
+        let commit =
+            dogfood_git_commit(root, &format!("dogfood {} {}", scenario.label(), phase.id))?;
+        phase_reports.push(json!({
+            "id": phase.id,
+            "intent": phase.intent,
+            "agent": agent_result,
+            "checks": checks,
+            "commit": commit,
+        }));
+    }
+
+    let final_dir = run_dir.join("final");
+    fs::create_dir_all(&final_dir)
+        .with_context(|| format!("failed to create `{}`", final_dir.display()))?;
+    let final_checks = run_dogfood_checks(root, &rms_exe, &final_dir, true)?;
+    let cleanup_findings = dogfood_cleanup_findings(root);
+    let elapsed_ms = started.elapsed().as_millis();
+    let report = json!({
+        "spec": "rms/dogfood-report/v0.1",
+        "scenario": scenario.label(),
+        "agent": agent.label(),
+        "root": root.display().to_string(),
+        "run_dir": run_dir.display().to_string(),
+        "started_at": started_at,
+        "elapsed_ms": elapsed_ms,
+        "source_revision": source_revision(root),
+        "phases": phase_reports,
+        "cleanup_findings": cleanup_findings,
+        "final_checks": final_checks,
+    });
+    fs::write(
+        run_dir.join("report.json"),
+        serde_json::to_string_pretty(&report)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write `{}`",
+            run_dir.join("report.json").display()
+        )
+    })?;
+
+    let strict_audit_ok = report["final_checks"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .any(|check| {
+            check.get("label").and_then(JsonValue::as_str) == Some("audit-strict")
+                && check.get("status").and_then(JsonValue::as_bool) == Some(true)
+        });
+    println!("dogfood report: {}", run_dir.join("report.json").display());
+    if !strict_audit_ok {
+        bail!(
+            "dogfood scenario `{}` failed final strict audit",
+            scenario.label()
+        );
+    }
+    Ok(())
+}
+
+struct DogfoodPhase {
+    id: &'static str,
+    intent: &'static str,
+}
+
+fn dogfood_phases(scenario: DogfoodScenario) -> Vec<DogfoodPhase> {
+    match scenario {
+        DogfoodScenario::CheckoutReference => vec![
+            DogfoodPhase {
+                id: "build",
+                intent: "Goal: build a local-first commerce checkout reference app using RMS. The app should support starting checkout, reserving inventory, authorizing payment, handling payment failure, releasing inventory after failed payment, reporting checkout status, and recording replayable evidence. Keep it local-only: no real network, database, auth, or web server.",
+            },
+            DogfoodPhase {
+                id: "maintenance",
+                intent: "Goal: change the checkout/payment behavior so unknown payment authorization outcomes enter a reconciliation path before final customer outcome. Preserve public contracts unless RMS says they must evolve. Use RMS guidance and verification.",
+            },
+            DogfoodPhase {
+                id: "replacement",
+                intent: "Goal: replace the payment implementation behind the same public RMS contract. Preserve compatibility, prove the replacement with RMS checks, and document any migration or compatibility evidence RMS requires.",
+            },
+            DogfoodPhase {
+                id: "audit",
+                intent: "Goal: audit this RMS project for production readiness. Use RMS CLI outputs and canonical artifacts only. Report structural drift, missing evidence, contract risk, boundary violations, trace gaps, and release blockers.",
+            },
+        ],
+        DogfoodScenario::NutritionReference => vec![
+            DogfoodPhase {
+                id: "build",
+                intent: "Goal: build a local-first nutrition logging reference app using RMS. The app should capture target-day context when missing, draft food logs, require confirmation before writing, support correcting a recent log, answer status, write local Markdown day logs, handle local write failure, and record replayable evidence. Keep it local-only: no real network, database, auth, or web server.",
+            },
+            DogfoodPhase {
+                id: "audit",
+                intent: "Goal: audit this RMS nutrition project for production readiness. Use RMS CLI outputs and canonical artifacts only. Report structural drift, missing evidence, contract risk, boundary violations, trace gaps, recovery gaps, and release blockers.",
+            },
+        ],
+    }
+}
+
+fn render_dogfood_prompt(root: &Path, phase: &DogfoodPhase) -> String {
+    format!(
+        "Working directory: {}\n\nUse RMS CLI/project guidance.\nRecord commands and final verification output.\n\n{}\n",
+        root.display(),
+        phase.intent,
+    )
+}
+
+fn execute_dogfood_codex(root: &Path, prompt: &str, phase_dir: &Path) -> Result<JsonValue> {
+    let response_path = phase_dir.join("codex-response.md");
+    let stdout_path = phase_dir.join("codex.stdout.log");
+    let stderr_path = phase_dir.join("codex.stderr.log");
+    let mut child = Command::new("codex")
+        .arg("exec")
+        .arg("--cd")
+        .arg(root)
+        .arg("--sandbox")
+        .arg("danger-full-access")
+        .arg("--output-last-message")
+        .arg(&response_path)
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| "failed to start `codex exec` for dogfood run")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(prompt.as_bytes())
+            .with_context(|| "failed to write dogfood prompt to `codex exec`")?;
+    }
+    let output = child
+        .wait_with_output()
+        .with_context(|| "failed to wait for dogfood `codex exec`")?;
+    fs::write(&stdout_path, &output.stdout)
+        .with_context(|| format!("failed to write `{}`", stdout_path.display()))?;
+    fs::write(&stderr_path, &output.stderr)
+        .with_context(|| format!("failed to write `{}`", stderr_path.display()))?;
+    Ok(json!({
+        "agent": "codex",
+        "status": output.status.success(),
+        "exit_code": output.status.code(),
+        "response": response_path.display().to_string(),
+        "stdout": stdout_path.display().to_string(),
+        "stderr": stderr_path.display().to_string(),
+    }))
+}
+
+fn run_dogfood_checks(
+    root: &Path,
+    rms_exe: &Path,
+    phase_dir: &Path,
+    final_strict: bool,
+) -> Result<Vec<JsonValue>> {
+    let checks_dir = phase_dir.join("checks");
+    fs::create_dir_all(&checks_dir)
+        .with_context(|| format!("failed to create `{}`", checks_dir.display()))?;
+    let mut checks = Vec::new();
+    for (label, args) in [
+        ("diagnose", vec!["diagnose"]),
+        ("validate", vec!["validate", "--root", "."]),
+        ("compose", vec!["compose", "--root", "."]),
+        (
+            "structure",
+            vec![
+                "sh",
+                "-c",
+                "find . -name implementation.yaml -maxdepth 5 -print -exec rms structure {} \\;",
+            ],
+        ),
+        ("gate", vec!["gate", "--root", "."]),
+    ] {
+        let check = if label == "structure" {
+            run_dogfood_shell_check(root, &checks_dir, label, &args[2])?
+        } else {
+            run_dogfood_rms_check(root, rms_exe, &checks_dir, label, &args)?
+        };
+        let status = check
+            .get("status")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
+        checks.push(check);
+        if !status {
+            bail!("dogfood check `{label}` failed");
+        }
+    }
+    if final_strict {
+        let check = run_dogfood_rms_check(
+            root,
+            rms_exe,
+            &checks_dir,
+            "audit-strict",
+            &["audit", "--root", ".", "--strict"],
+        )?;
+        let status = check
+            .get("status")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
+        checks.push(check);
+        if !status {
+            bail!("dogfood strict audit failed");
+        }
+    }
+    Ok(checks)
+}
+
+fn run_dogfood_rms_check(
+    root: &Path,
+    rms_exe: &Path,
+    checks_dir: &Path,
+    label: &str,
+    args: &[&str],
+) -> Result<JsonValue> {
+    let output = Command::new(rms_exe)
+        .current_dir(root)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run dogfood check `{label}`"))?;
+    write_dogfood_command_logs(checks_dir, label, &output)?;
+    Ok(json!({
+        "label": label,
+        "command": format!("{} {}", rms_exe.display(), args.join(" ")),
+        "status": output.status.success(),
+        "exit_code": output.status.code(),
+        "stdout": checks_dir.join(format!("{label}.stdout.log")).display().to_string(),
+        "stderr": checks_dir.join(format!("{label}.stderr.log")).display().to_string(),
+    }))
+}
+
+fn run_dogfood_shell_check(
+    root: &Path,
+    checks_dir: &Path,
+    label: &str,
+    script: &str,
+) -> Result<JsonValue> {
+    let rms_path = std::env::current_exe()?.display().to_string();
+    let script = script.replace("rms structure", &format!("{rms_path} structure"));
+    let output = Command::new("sh")
+        .current_dir(root)
+        .arg("-c")
+        .arg(&script)
+        .output()
+        .with_context(|| format!("failed to run dogfood check `{label}`"))?;
+    write_dogfood_command_logs(checks_dir, label, &output)?;
+    Ok(json!({
+        "label": label,
+        "command": format!("sh -c {}", shell_arg(&script)),
+        "status": output.status.success(),
+        "exit_code": output.status.code(),
+        "stdout": checks_dir.join(format!("{label}.stdout.log")).display().to_string(),
+        "stderr": checks_dir.join(format!("{label}.stderr.log")).display().to_string(),
+    }))
+}
+
+fn write_dogfood_command_logs(
+    checks_dir: &Path,
+    label: &str,
+    output: &std::process::Output,
+) -> Result<()> {
+    fs::write(
+        checks_dir.join(format!("{label}.stdout.log")),
+        &output.stdout,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write `{}`",
+            checks_dir.join(format!("{label}.stdout.log")).display()
+        )
+    })?;
+    fs::write(
+        checks_dir.join(format!("{label}.stderr.log")),
+        &output.stderr,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write `{}`",
+            checks_dir.join(format!("{label}.stderr.log")).display()
+        )
+    })?;
+    Ok(())
+}
+
+fn ensure_dogfood_git_repo(root: &Path) -> Result<()> {
+    let is_repo = Command::new("git")
+        .current_dir(root)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !is_repo {
+        run_git(root, &["init"])?;
+    }
+    if !git_config_exists(root, "user.email") {
+        run_git(
+            root,
+            &["config", "user.email", "rms-dogfood@example.invalid"],
+        )?;
+    }
+    if !git_config_exists(root, "user.name") {
+        run_git(root, &["config", "user.name", "RMS Dogfood"])?;
+    }
+    ensure_git_info_exclude(root, ".rms/dogfood/")?;
+    Ok(())
+}
+
+fn dogfood_git_commit(root: &Path, message: &str) -> Result<Option<String>> {
+    run_git(root, &["add", "-A"])?;
+    let status = Command::new("git")
+        .current_dir(root)
+        .args(["status", "--porcelain"])
+        .output()
+        .with_context(|| "failed to inspect dogfood git status")?;
+    if !status.status.success() {
+        bail!("failed to inspect dogfood git status");
+    }
+    if String::from_utf8_lossy(&status.stdout).trim().is_empty() {
+        return Ok(None);
+    }
+    run_git(root, &["commit", "-m", message])?;
+    let revision = Command::new("git")
+        .current_dir(root)
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .with_context(|| "failed to read dogfood commit revision")?;
+    if revision.status.success() {
+        Ok(Some(
+            String::from_utf8_lossy(&revision.stdout).trim().to_string(),
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+fn git_config_exists(root: &Path, key: &str) -> bool {
+    Command::new("git")
+        .current_dir(root)
+        .args(["config", "--get", key])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn run_git(root: &Path, args: &[&str]) -> Result<()> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run `git {}`", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "`git {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn ensure_git_info_exclude(root: &Path, pattern: &str) -> Result<()> {
+    let exclude = root.join(".git").join("info").join("exclude");
+    if let Some(parent) = exclude.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create `{}`", parent.display()))?;
+    }
+    let current = fs::read_to_string(&exclude).unwrap_or_default();
+    if current.lines().any(|line| line.trim() == pattern) {
+        return Ok(());
+    }
+    let mut updated = current;
+    if !updated.ends_with('\n') && !updated.is_empty() {
+        updated.push('\n');
+    }
+    updated.push_str(pattern);
+    updated.push('\n');
+    fs::write(&exclude, updated).with_context(|| format!("failed to write `{}`", exclude.display()))
+}
+
+fn dogfood_timestamp() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    seconds.to_string()
+}
+
+fn dogfood_cleanup_findings(root: &Path) -> JsonValue {
+    let mut placeholder_files = BTreeSet::new();
+    let mut empty_evidence_lanes = BTreeSet::new();
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| !dogfood_skip_scan_path(entry.path()))
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        if entry.file_type().is_file() {
+            if fs::read_to_string(path).is_ok_and(|source| {
+                let lower = source.to_ascii_lowercase();
+                lower.contains("evidence to add")
+                    || lower.contains("semantic shape only")
+                    || lower.contains("not recorded yet")
+                    || lower.contains("replace this placeholder")
+            }) {
+                placeholder_files.insert(display_relative(root, path));
+            }
+        }
+        if entry.file_type().is_dir()
+            && path
+                .components()
+                .any(|component| component.as_os_str() == "verification")
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    verification_reference_categories().any(|category| category == name)
+                })
+            && !concrete_evidence_path_exists(path)
+        {
+            empty_evidence_lanes.insert(display_relative(root, path));
+        }
+    }
+    json!({
+        "placeholder_marker_files": placeholder_files.into_iter().collect::<Vec<_>>(),
+        "empty_evidence_lanes": empty_evidence_lanes.into_iter().collect::<Vec<_>>(),
+    })
+}
+
+fn dogfood_skip_scan_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        let value = component.as_os_str();
+        value == ".git" || value == "target" || value == ".rms"
+    })
 }
 
 struct SpecTargetContext {
@@ -20859,7 +21598,7 @@ fn render_semantic_contract(contract: &SemanticContractChange) -> String {
 
 fn render_semantic_evidence(item: &SemanticEvidenceItemChange) -> String {
     format!(
-        "# Evidence: {kind} proves {proves}\n\nPromise:\n\n- {proves}\n\nScenario:\n\n- Exercise the semantic change that owns `{proves}`.\n\nCommand/tool:\n\n- Record the exact command used to verify this evidence before a production claim.\n\nExpected result:\n\n- The declared law, contract, transition, effect, or rejection is satisfied and any rejected path is explicit.\n\nSource revision: not recorded yet; commit the project and replace this line with the git revision before strict audit.\n",
+        "# Evidence: {kind} proves {proves}\n\nPromise:\n\n- {proves}\n\nScenario:\n\n- Exercise the semantic change that owns `{proves}`.\n\nCommand/tool:\n\n- Record the exact command used to verify this evidence before a production claim.\n\nExpected result:\n\n- The declared law, contract, transition, effect, or rejection is satisfied and any rejected path is explicit.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
         kind = item.kind,
         proves = item.proves
     )
@@ -20918,7 +21657,84 @@ fn validate_semantic_module_completeness(
             );
         }
     }
+    for capability in get_path(&module.value, &["provides", "capabilities"])
+        .and_then(YamlValue::as_sequence)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
+        let Some(name) = get_str(capability, &["name"]) else {
+            continue;
+        };
+        if get_str(capability, &["contract"]).is_none() {
+            push_unique_warning(
+                diagnostics,
+                "semantic.provider-capability-contract-missing",
+                &module.path,
+                format!("provided capability `{name}` should publish a contract"),
+            );
+        }
+        if !semantic_module_has_evidence_for(module, name) {
+            push_unique_warning(
+                diagnostics,
+                "semantic.contract-without-evidence",
+                &module.path,
+                format!("provided capability `{name}` should reference concrete evidence"),
+            );
+        }
+    }
+    let external_dependencies = nearest_system_external_dependencies(module);
+    for capability in get_path(&module.value, &["requires", "capabilities"])
+        .and_then(YamlValue::as_sequence)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
+        let Some(name) = get_str(capability, &["name"]) else {
+            continue;
+        };
+        if external_dependencies.contains(name) {
+            continue;
+        }
+        if get_str(capability, &["contract"]).is_none() {
+            push_unique_warning(
+                diagnostics,
+                "semantic.required-capability-contract-missing",
+                &module.path,
+                format!("required capability `{name}` should name the contract it expects"),
+            );
+        } else if !semantic_module_has_evidence_for(module, name) {
+            push_unique_warning(
+                diagnostics,
+                "semantic.dependency-contract-without-evidence",
+                &module.path,
+                format!("required capability `{name}` should have dependency contract evidence"),
+            );
+        }
+    }
+    if module_declares_reconciliation_need(module)
+        && !module_has_concrete_reconciliation_evidence(module)
+    {
+        push_unique_warning(
+            diagnostics,
+            "semantic.reconciliation-without-evidence",
+            &module.path,
+            "module declares recovery, retry, compensation, unknown outcomes, or reconciliation behavior without concrete reconciliation evidence",
+        );
+    }
     inspect_empty_evidence_lanes(module, diagnostics);
+}
+
+fn nearest_system_external_dependencies(module: &LoadedManifest) -> BTreeSet<String> {
+    let mut current = module.path.parent();
+    while let Some(directory) = current {
+        let system_path = directory.join("system.yaml");
+        if let Ok(Some(system)) = load_optional_yaml(&system_path) {
+            return get_string_array(&system, &["external_dependencies"])
+                .into_iter()
+                .collect();
+        }
+        current = directory.parent();
+    }
+    BTreeSet::new()
 }
 
 fn semantic_module_has_evidence_for(module: &LoadedManifest, id: &str) -> bool {
@@ -20948,6 +21764,49 @@ fn semantic_module_has_evidence_for(module: &LoadedManifest, id: &str) -> bool {
         }
     }
     false
+}
+
+fn module_declares_reconciliation_need(module: &LoadedManifest) -> bool {
+    let rendered = serde_yaml::to_string(&module.value).unwrap_or_default();
+    let normalized = normalize_semantic_identifier(&rendered);
+    [
+        "reconciliation",
+        "reconcile",
+        "recovery",
+        "recover",
+        "retry",
+        "unknown",
+        "uncertain",
+        "compensation",
+        "compensating",
+        "stale",
+        "partial",
+        "conflicting",
+    ]
+    .iter()
+    .any(|term| semantic_text_mentions_id(&normalized, term))
+}
+
+fn module_has_concrete_reconciliation_evidence(module: &LoadedManifest) -> bool {
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    get_string_array(&module.value, &["verification", "reconciliation"])
+        .iter()
+        .any(|reference| concrete_evidence_path_exists(&base.join(reference)))
+}
+
+fn concrete_evidence_path_exists(path: &Path) -> bool {
+    if path.is_file() {
+        return path.file_name().and_then(|name| name.to_str()) != Some("README.md");
+    }
+    path.is_dir()
+        && WalkDir::new(path)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry.file_type().is_file()
+                    && entry.path().file_name().and_then(|name| name.to_str()) != Some("README.md")
+            })
 }
 
 fn semantic_text_mentions_id(source: &str, id: &str) -> bool {
@@ -22777,6 +23636,17 @@ fn compose_required_capabilities(
             } else {
                 findings.push(compose_finding(
                     ComposeStatus::Incompatible,
+                    "composition.capability-contract-mismatch",
+                    Some(module.name.clone()),
+                    None,
+                    Some(required_name.clone()),
+                    format!(
+                        "required capability `{required_name}` exists, but no provider publishes the required contract `{}`",
+                        required_contract.as_deref().unwrap_or("<none>")
+                    ),
+                ));
+                findings.push(compose_finding(
+                    ComposeStatus::Incompatible,
                     "requires.capabilities.contract",
                     Some(module.name.clone()),
                     None,
@@ -24105,22 +24975,6 @@ fn run_add_module(request: AddModuleRequest, options: &PromptRunOptions) -> Resu
         write_scaffold_plan_record(&canonical_request, shape, options)?;
     }
 
-    for category in [
-        "laws",
-        "contracts",
-        "scenarios",
-        "boundaries",
-        "traces",
-        "runtime",
-    ] {
-        let verification_dir = path.join("verification").join(category);
-        fs::create_dir_all(&verification_dir)?;
-        write_new_file(
-            &verification_dir.join("README.md"),
-            &render_verification_readme(category),
-        )?;
-    }
-
     write_new_file(
         &path.join("module.yaml"),
         &render_module_yaml(
@@ -24274,6 +25128,18 @@ fn scaffold_capability_parent(
             .join(format!("{}.v1.yaml", contract_file_stem(public_command))),
         &render_capability_contract(public_command, "composite parent public command"),
     )?;
+    write_new_file(
+        &path
+            .join("verification")
+            .join("contracts")
+            .join(format!("{}.md", contract_file_stem(public_command))),
+        &render_capability_contract_evidence(
+            name,
+            public_command,
+            &format!("contracts/{}.v1.yaml", contract_file_stem(public_command)),
+            Some(boundary_child),
+        ),
+    )?;
     scaffold_shape_evidence(
         path,
         ScaffoldShape::Composite,
@@ -24321,6 +25187,18 @@ fn scaffold_capability_domain_child(
             .join("contracts")
             .join(format!("{}.v1.yaml", contract_file_stem(domain_command))),
         &render_capability_contract(domain_command, "domain decision command"),
+    )?;
+    write_new_file(
+        &path
+            .join("verification")
+            .join("contracts")
+            .join(format!("{}.md", contract_file_stem(domain_command))),
+        &render_capability_contract_evidence(
+            name,
+            domain_command,
+            &format!("contracts/{}.v1.yaml", contract_file_stem(domain_command)),
+            None,
+        ),
     )?;
     scaffold_shape_evidence(
         path,
@@ -24372,6 +25250,39 @@ fn scaffold_capability_boundary_child(
             .join(format!("{}.v1.yaml", contract_file_stem(public_command))),
         &render_capability_contract(public_command, "boundary adapter public command"),
     )?;
+    let required_domain_contract = path
+        .join("contracts")
+        .join(format!("{}.v1.yaml", contract_file_stem(domain_command)));
+    if !required_domain_contract.exists() {
+        write_new_file(
+            &required_domain_contract,
+            &render_capability_contract(domain_command, "required domain decision command"),
+        )?;
+    }
+    write_new_file(
+        &path
+            .join("verification")
+            .join("contracts")
+            .join(format!("{}.md", contract_file_stem(public_command))),
+        &render_capability_contract_evidence(
+            name,
+            public_command,
+            &format!("contracts/{}.v1.yaml", contract_file_stem(public_command)),
+            Some(domain_child),
+        ),
+    )?;
+    write_new_file(
+        &path.join("verification").join("contracts").join(format!(
+            "{}-dependency.md",
+            contract_file_stem(domain_command)
+        )),
+        &render_capability_dependency_contract_evidence(
+            name,
+            domain_child,
+            domain_command,
+            &format!("contracts/{}.v1.yaml", contract_file_stem(domain_command)),
+        ),
+    )?;
     scaffold_shape_evidence(
         path,
         ScaffoldShape::BoundaryAdapter,
@@ -24399,21 +25310,6 @@ fn create_module_skeleton(path: &Path) -> Result<()> {
     fs::create_dir_all(path)
         .with_context(|| format!("failed to create module directory `{}`", path.display()))?;
     fs::create_dir_all(path.join("contracts"))?;
-    for category in [
-        "laws",
-        "contracts",
-        "scenarios",
-        "boundaries",
-        "traces",
-        "runtime",
-    ] {
-        let verification_dir = path.join("verification").join(category);
-        fs::create_dir_all(&verification_dir)?;
-        write_new_file(
-            &verification_dir.join("README.md"),
-            &render_verification_readme(category),
-        )?;
-    }
     Ok(())
 }
 
@@ -24519,13 +25415,6 @@ fn scaffold_shape_evidence(
     shape: ScaffoldShape,
     names: &InnerStructureNames,
 ) -> Result<()> {
-    write_new_file(
-        &path
-            .join("verification")
-            .join("laws")
-            .join("semantic_shape.md"),
-        &render_shape_law_evidence(shape),
-    )?;
     match shape {
         ScaffoldShape::DomainEngine => {
             write_new_file(
@@ -24533,7 +25422,7 @@ fn scaffold_shape_evidence(
                     .join("verification")
                     .join("laws")
                     .join("transition_trace.md"),
-                &render_transition_trace_evidence(),
+                &render_transition_trace_evidence(names),
             )?;
             write_new_file(
                 &path
@@ -24547,7 +25436,7 @@ fn scaffold_shape_evidence(
                     .join("verification")
                     .join("scenarios")
                     .join("accepted_rejected.md"),
-                &render_accepted_rejected_evidence(),
+                &render_accepted_rejected_evidence(names),
             )?;
         }
         ScaffoldShape::BoundaryAdapter
@@ -24558,14 +25447,14 @@ fn scaffold_shape_evidence(
                     .join("verification")
                     .join("boundaries")
                     .join("malformed_input.md"),
-                &render_malformed_input_evidence(),
+                &render_malformed_input_evidence(names),
             )?;
             write_new_file(
                 &path
                     .join("verification")
                     .join("contracts")
                     .join("parser_to_domain_command.md"),
-                &render_parser_to_domain_command_evidence(),
+                &render_parser_to_domain_command_evidence(names),
             )?;
             write_new_file(
                 &path
@@ -24597,7 +25486,7 @@ fn scaffold_shape_evidence(
                     .join("verification")
                     .join("laws")
                     .join("transition_trace.md"),
-                &render_transition_trace_evidence(),
+                &render_transition_trace_evidence(names),
             )?;
             write_new_file(
                 &path
@@ -24611,7 +25500,7 @@ fn scaffold_shape_evidence(
                     .join("verification")
                     .join("scenarios")
                     .join("accepted_rejected.md"),
-                &render_accepted_rejected_evidence(),
+                &render_accepted_rejected_evidence(names),
             )?;
         }
         ScaffoldShape::RuntimeMonitor => {
@@ -24620,7 +25509,7 @@ fn scaffold_shape_evidence(
                     .join("verification")
                     .join("runtime")
                     .join("trigger_cases.md"),
-                &render_monitor_trigger_evidence(),
+                &render_monitor_trigger_evidence(names),
             )?;
         }
     }
@@ -24849,15 +25738,45 @@ fn render_module_yaml(
     profiles: &[String],
     shape: Option<ScaffoldShape>,
 ) -> String {
-    let verification_runtime = if profiles.iter().any(|profile| profile == "monitor") {
-        "  runtime:\n    - verification/runtime\n"
+    let verification_laws = match shape {
+        Some(ScaffoldShape::DomainEngine | ScaffoldShape::Workflow) => {
+            "  laws:\n    - verification/laws/transition_trace.md\n".to_string()
+        }
+        _ => "  laws: []\n".to_string(),
+    };
+    let verification_contracts = match shape {
+        Some(
+            ScaffoldShape::BoundaryAdapter
+            | ScaffoldShape::StorageAdapter
+            | ScaffoldShape::IntegrationAdapter,
+        ) => "  contracts:\n    - verification/contracts/parser_to_domain_command.md\n".to_string(),
+        Some(ScaffoldShape::Composite) => {
+            "  contracts:\n    - verification/contracts/parent_export.md\n".to_string()
+        }
+        _ => "  contracts: []\n".to_string(),
+    };
+    let verification_scenarios = match shape {
+        Some(ScaffoldShape::DomainEngine | ScaffoldShape::Workflow) => {
+            "  scenarios:\n    - verification/scenarios/accepted_rejected.md\n".to_string()
+        }
+        _ => "  scenarios: []\n".to_string(),
+    };
+    let verification_boundaries = match shape {
+        Some(
+            ScaffoldShape::BoundaryAdapter
+            | ScaffoldShape::StorageAdapter
+            | ScaffoldShape::IntegrationAdapter,
+        ) => "  boundaries:\n    - verification/boundaries/malformed_input.md\n".to_string(),
+        _ => "  boundaries: []\n".to_string(),
+    };
+    let verification_runtime = if shape == Some(ScaffoldShape::RuntimeMonitor) {
+        "  runtime:\n    - verification/runtime/trigger_cases.md\n"
     } else {
         ""
     };
-    let verification_traces = if shape.and_then(scaffold_trace_bundle_file).is_some() {
-        "  traces:\n    - verification/traces\n"
-    } else {
-        ""
+    let verification_traces = match shape.and_then(scaffold_trace_bundle_file) {
+        Some(file) => format!("  traces:\n    - verification/traces/{file}\n"),
+        None => String::new(),
     };
     let composition = shape
         .filter(|shape| *shape == ScaffoldShape::Composite)
@@ -24880,13 +25799,17 @@ fn render_module_yaml(
         })
         .unwrap_or_default();
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n{}{}{}",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n{}{}{}{}{}{}{}",
         yaml_quote(name),
         yaml_quote(kind),
         yaml_quote(purpose),
         yaml_string_list(profiles, 2),
         render_profile_sections(profiles),
         composition,
+        verification_laws,
+        verification_contracts,
+        verification_scenarios,
+        verification_boundaries,
         verification_traces,
         verification_runtime,
         scaffold
@@ -24901,7 +25824,7 @@ fn render_capability_parent_module_yaml(
     boundary_child: &str,
 ) -> String {
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"composite\"\n  purpose: {}\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - public capability surface\n    - child module composition\n  data: []\n  decisions:\n    - public export composition\n    - child visibility\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ncomposition:\n  contains:\n    - name: {}\n      visibility: internal\n      path: ../{}/module.yaml\n    - name: {}\n      visibility: internal\n      path: ../{}/module.yaml\n  exports:\n    - group: commands\n      name: {}\n      from: {}\n\ninvariants:\n  - id: public-command-is-child-backed\n    statement: The parent public command is backed by the declared boundary child and its domain dependency.\n    enforced_by: composition\n    verified_by: verification/scenarios/composed_capability.md\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios/composed_capability.md\n  boundaries: []\n\nx-scaffold:\n  shape: \"composite\"\n  roles:\n{}\n",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"composite\"\n  purpose: {}\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - public capability surface\n    - child module composition\n  data: []\n  decisions:\n    - public export composition\n    - child visibility\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ncomposition:\n  contains:\n    - name: {}\n      visibility: internal\n      path: ../{}/module.yaml\n    - name: {}\n      visibility: internal\n      path: ../{}/module.yaml\n  exports:\n    - group: commands\n      name: {}\n      from: {}\n\ninvariants:\n  - id: public-command-is-child-backed\n    statement: The parent public command is backed by the declared boundary child and its domain dependency.\n    enforced_by: composition\n    verified_by: verification/scenarios/composed_capability.md\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts:\n    - verification/contracts/parent_export.md\n    - verification/contracts/{}.md\n  scenarios:\n    - verification/scenarios/composed_capability.md\n  boundaries: []\n\nx-scaffold:\n  shape: \"composite\"\n  roles:\n{}\n",
         yaml_quote(name),
         yaml_quote(purpose),
         yaml_quote(public_command),
@@ -24912,6 +25835,7 @@ fn render_capability_parent_module_yaml(
         boundary_child,
         yaml_quote(public_command),
         yaml_quote(boundary_child),
+        contract_file_stem(public_command),
         yaml_string_list(
             &ScaffoldShape::Composite
                 .roles()
@@ -24925,9 +25849,10 @@ fn render_capability_parent_module_yaml(
 
 fn render_capability_domain_module_yaml(name: &str, domain_command: &str) -> String {
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"library\"\n  purpose: \"Own pure capability decisions, validated values, and transition evidence.\"\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - domain command\n    - transition outcome\n  data: []\n  decisions:\n    - command acceptance\n    - command rejection\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n  traces:\n    - verification/traces\n\nx-scaffold:\n  shape: \"domain-engine\"\n  roles:\n{}\n",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"library\"\n  purpose: \"Own pure capability decisions, validated values, and transition evidence.\"\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - domain command\n    - transition outcome\n  data: []\n  decisions:\n    - command acceptance\n    - command rejection\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws/transition_trace.md\n  contracts:\n    - verification/contracts/{}.md\n  scenarios:\n    - verification/scenarios/accepted_rejected.md\n  boundaries: []\n  traces:\n    - verification/traces/transition_trace.yaml\n\nx-scaffold:\n  shape: \"domain-engine\"\n  roles:\n{}\n",
         yaml_quote(name),
         yaml_quote(domain_command),
+        contract_file_stem(domain_command),
         contract_file_stem(domain_command),
         yaml_string_list(
             &ScaffoldShape::DomainEngine
@@ -24947,12 +25872,15 @@ fn render_capability_boundary_module_yaml(
     domain_command: &str,
 ) -> String {
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"adapter\"\n  purpose: \"Adapt untrusted input and effects to the pure domain child.\"\n\nprofiles:\n  - \"boundary\"\n  - \"core\"\n\nowns:\n  concepts:\n    - boundary input\n    - parsed domain command\n    - domain child port\n  data: []\n  decisions:\n    - boundary input parsing\n    - malformed input rejection\n    - domain command delegation\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules:\n    - name: {}\n  capabilities:\n    - name: {}\n\ninvariants: []\n\neffects:\n  - name: local-boundary-io\n    kind: local-ui\n\nboundary:\n  trust_boundary: generated-boundary-adapter\n  inputs: []\n  outputs: []\n  validation:\n    - Reject malformed input before domain delegation.\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws\n  contracts:\n    - verification/contracts\n  scenarios:\n    - verification/scenarios\n  boundaries:\n    - verification/boundaries\n  traces:\n    - verification/traces\n\nx-scaffold:\n  shape: \"boundary-adapter\"\n  roles:\n{}\n",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"adapter\"\n  purpose: \"Adapt untrusted input and effects to the pure domain child.\"\n\nprofiles:\n  - \"boundary\"\n  - \"core\"\n\nowns:\n  concepts:\n    - boundary input\n    - parsed domain command\n    - domain child port\n  data: []\n  decisions:\n    - boundary input parsing\n    - malformed input rejection\n    - domain command delegation\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules:\n    - name: {}\n  capabilities:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n\ninvariants: []\n\neffects:\n  - name: local-boundary-io\n    kind: local-ui\n\nboundary:\n  trust_boundary: generated-boundary-adapter\n  inputs: []\n  outputs: []\n  validation:\n    - Reject malformed input before domain delegation.\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts:\n    - verification/contracts/{}.md\n    - verification/contracts/{}-dependency.md\n    - verification/contracts/parser_to_domain_command.md\n  scenarios: []\n  boundaries:\n    - verification/boundaries/malformed_input.md\n  traces:\n    - verification/traces/boundary_parse.yaml\n    - verification/traces/malformed_input_trace.yaml\n\nx-scaffold:\n  shape: \"boundary-adapter\"\n  roles:\n{}\n",
         yaml_quote(name),
         yaml_quote(public_command),
         contract_file_stem(public_command),
         yaml_quote(domain_child),
         yaml_quote(domain_command),
+        contract_file_stem(domain_command),
+        contract_file_stem(public_command),
+        contract_file_stem(domain_command),
         yaml_string_list(
             &ScaffoldShape::BoundaryAdapter
                 .roles()
@@ -24969,6 +25897,45 @@ fn render_capability_contract(name: &str, meaning: &str) -> String {
         "spec: rms/contract/v0.1\nname: {}\nversion: 1\nkind: command\nmeaning: {}\npreconditions:\n  - id: valid-request\n    statement: The caller supplies input accepted by this command boundary.\npostconditions:\n  - id: explicit-outcome\n    statement: The command returns an accepted result or an explicit rejection.\nfailure_categories:\n  - id: rejected-request\n    statement: The request is rejected by boundary validation or domain rules.\ncompatibility:\n  policy: backward-compatible-within-major\n",
         yaml_quote(name),
         yaml_quote(meaning),
+    )
+}
+
+fn render_capability_contract_evidence(
+    module_name: &str,
+    command: &str,
+    contract_path: &str,
+    backed_by: Option<&str>,
+) -> String {
+    let backing_line = backed_by
+        .map(|module| {
+            format!(
+                "- `{}` is backed by `{}` through declared RMS composition or dependency.\n",
+                markdown_inline(command),
+                markdown_inline(module)
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "# Contract Evidence: {command}\n\nPromise:\n\n- Module `{module}` publishes `{command}` through `{contract_path}`.\n{backing_line}- Expected failures are returned as explicit rejections instead of hidden throws or implicit states.\n\nCommand/tool:\n\n- `rms verify <module.yaml|implementation.yaml>` verifies the command against declared module structure.\n- `rms compose --root <system-root>` checks provider/consumer compatibility when the command crosses module boundaries.\n\nExpected result:\n\n- `{command}` has a matching public contract artifact.\n- Accepted and rejected paths are covered by the module's declared scenario or trace evidence.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        command = markdown_inline(command),
+        module = markdown_inline(module_name),
+        contract_path = markdown_inline(contract_path),
+        backing_line = backing_line,
+    )
+}
+
+fn render_capability_dependency_contract_evidence(
+    module_name: &str,
+    provider_module: &str,
+    required_command: &str,
+    required_contract_path: &str,
+) -> String {
+    format!(
+        "# Dependency Contract Evidence: {required_command}\n\nPromise:\n\n- Module `{module}` depends on `{provider}` through required capability `{required_command}`.\n- The required contract is `{required_contract_path}` and must stay compatible with the provider contract.\n- Boundary input is translated into the required domain command before domain delegation.\n\nCommand/tool:\n\n- `rms compose --root <system-root>` compares required and provided capability contracts.\n- `rms verify implementation.yaml` exercises parser/delegation evidence when a binding exists.\n\nExpected result:\n\n- Required capability `{required_command}` resolves to provider `{provider}` with the same contract reference.\n- Malformed boundary input stops before domain delegation.\n- Accepted boundary input produces an enveloped domain command compatible with `{required_command}`.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        required_command = markdown_inline(required_command),
+        module = markdown_inline(module_name),
+        provider = markdown_inline(provider_module),
+        required_contract_path = markdown_inline(required_contract_path),
     )
 }
 
@@ -25053,18 +26020,6 @@ fn render_module_readme(
 
 fn render_contracts_readme() -> String {
     "# Contracts\n\nPlace public RMS contract files here.\n\nA contract belongs here when consumers outside this module can call, observe, depend on, or substitute against the behavior. Private helpers stay in implementation docs and tests.\n\nWhen adding or changing a contract:\n\n1. Declare it from `module.yaml`.\n2. Specify preconditions, postconditions, failure categories, and compatibility policy.\n3. Bind implemented symbols from `implementation.yaml` when code provides the behavior.\n4. Add matching evidence under `verification/contracts/`.\n".to_string()
-}
-
-fn render_verification_readme(category: &str) -> String {
-    match category {
-        "laws" => "# Law Evidence\n\nRecord evidence for invariants and algebraic or domain laws declared in `module.yaml`.\n\nEach evidence file should identify:\n\n- the invariant, law, or manifest promise under test;\n- positive and negative cases;\n- the command or tool used;\n- the source revision when applicable.\n\nDo not add law evidence for behavior that is not declared by the module.\n".to_string(),
-        "contracts" => "# Contract Evidence\n\nRecord evidence that public contracts in `contracts/` are satisfied.\n\nEach evidence file should identify:\n\n- the contract path and version;\n- success behavior and expected failures;\n- boundary validation for untrusted or versioned input;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
-        "scenarios" => "# Scenario Evidence\n\nRecord end-to-end behavior that matters to this module's declared purpose.\n\nEach evidence file should identify:\n\n- the manifest promise or public contract exercised;\n- setup, action, expected result, and failure path;\n- recovery or reconciliation behavior when declared;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
-        "boundaries" => "# Boundary Evidence\n\nRecord evidence for trust boundaries, external effects, dependency contracts, schemas, limits, and compatibility promises.\n\nEach evidence file should identify:\n\n- the boundary input, dependency, or effect under test;\n- validation, rejection, timeout, retry, or compatibility behavior;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
-        "traces" => "# Trace Evidence\n\nRecord local JSON or YAML trace bundles for transition records, replay bundles, timeline projections, and first-bad-transition diagnostics.\n\nEach trace bundle should identify:\n\n- the machine or workflow under test;\n- state before, input, transition output, state after, and source provenance for each record;\n- emitted events, commands, effects, effect results, and replies where applicable;\n- the command or tool used, usually `rms trace check`, `rms trace replay`, or `rms trace diagnose`.\n\nTrace evidence is local and does not require an RMS runtime.\n".to_string(),
-        "runtime" => "# Runtime Monitor Evidence\n\nRecord evidence for monitor-profile runtime observations, derived facts or streams, trigger decisions, supervisory outputs, and failure modes.\n\nEach evidence file should identify:\n\n- the observed input stream or runtime fact;\n- trigger and non-trigger cases;\n- ordering, sampling, stale, duplicate, or out-of-order behavior when relevant;\n- emitted findings, events, alarms, or commands;\n- the command or tool used;\n- the source revision when applicable.\n".to_string(),
-        other => format!("# {other}\n\nAdd RMS {other} evidence here.\n"),
-    }
 }
 
 fn render_traceable_architecture_yaml(names: &InnerStructureNames, shape: ScaffoldShape) -> String {
@@ -25265,6 +26220,25 @@ fn render_transition_semantic_evidence_yaml(shape: ScaffoldShape) -> String {
     }
 }
 
+fn render_representation_constructor_evidence_yaml(shape: ScaffoldShape) -> String {
+    match shape {
+        ScaffoldShape::DomainEngine | ScaffoldShape::Workflow => {
+            "      laws:\n        - verification/laws/transition_trace.md\n".to_string()
+        }
+        ScaffoldShape::BoundaryAdapter
+        | ScaffoldShape::StorageAdapter
+        | ScaffoldShape::IntegrationAdapter => {
+            "      contracts:\n        - verification/contracts/parser_to_domain_command.md\n      boundaries:\n        - verification/boundaries/malformed_input.md\n".to_string()
+        }
+        ScaffoldShape::RuntimeMonitor => {
+            "      runtime:\n        - verification/runtime/trigger_cases.md\n".to_string()
+        }
+        ScaffoldShape::Composite => {
+            "      contracts:\n        - verification/contracts/parent_export.md\n".to_string()
+        }
+    }
+}
+
 fn render_rust_implementation_yaml(
     module_name: &str,
     package_name: &str,
@@ -25272,7 +26246,7 @@ fn render_rust_implementation_yaml(
     names: &InnerStructureNames,
 ) -> String {
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - representation\n    - transition\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - representation\n    - transition\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
         yaml_quote(module_name),
         yaml_quote(package_name),
         yaml_quote(shape.as_str()),
@@ -25306,6 +26280,7 @@ fn render_rust_implementation_yaml(
         yaml_quote(&names.source_provenance),
         yaml_quote(&names.label),
         names.label,
+        render_representation_constructor_evidence_yaml(shape),
         render_transition_semantic_evidence_yaml(shape),
     )
 }
@@ -25567,7 +26542,7 @@ fn render_swift_implementation_yaml(
     let source_root = format!("Sources/{target_name}");
     let public_entrypoint = format!("Sources/{target_name}/{target_name}.swift");
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
         yaml_quote(module_name),
         yaml_quote(&source_root),
         yaml_quote(&public_entrypoint),
@@ -25612,6 +26587,7 @@ fn render_swift_implementation_yaml(
         yaml_quote(&names.label),
         target_name,
         names.label,
+        render_representation_constructor_evidence_yaml(shape),
         target_name,
         render_transition_semantic_evidence_yaml(shape),
     )
@@ -25885,7 +26861,7 @@ fn render_js_implementation_yaml(
         ""
     };
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\narchitecture:\n  shape: {}\n  public_modules:\n{}\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: {}\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - make{}\n    transition_functions:\n      - {}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/semantic_shape.md\n{}{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\narchitecture:\n  shape: {}\n  public_modules:\n{}\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: {}\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - make{}\n    transition_functions:\n      - {}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n{}{}{}",
         yaml_quote(module_name),
         yaml_quote(public_entrypoint),
         yaml_quote(shape.as_str()),
@@ -25922,6 +26898,7 @@ fn render_js_implementation_yaml(
         names.label,
         transition_function,
         names.label,
+        render_representation_constructor_evidence_yaml(shape),
         transition_semantic_function,
         boundary_semantic_function,
     )
@@ -26376,25 +27353,18 @@ fn render_executable_implementation_yaml(module_name: &str, shape: ScaffoldShape
 }
 
 fn render_executable_smoke_evidence() -> String {
-    "# Boundary Evidence: executable smoke\n\nPromise:\n\n- `implementation.yaml` declares `binding: executable`.\n- RMS treats the implementation as opaque and verifies it through declared commands rather than static source inspection.\n\nCommand:\n\n- `rms verify implementation.yaml` runs `sh scripts/smoke.sh` from the module directory.\n\nCurrent scaffold:\n\n- `scripts/smoke.sh` verifies that `module.yaml` and `implementation.yaml` exist.\n- Replace or extend this script with module-specific checks before using the binding as release evidence.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+    "# Boundary Evidence: executable smoke\n\nPromise:\n\n- `implementation.yaml` declares `binding: executable`.\n- RMS treats the implementation as opaque and verifies it through declared commands rather than static source inspection.\n\nCommand/tool:\n\n- `rms verify implementation.yaml` runs `sh scripts/smoke.sh` from the module directory.\n\nExpected result:\n\n- `scripts/smoke.sh` exits successfully only when `module.yaml` and `implementation.yaml` are present.\n- The executable binding is reachable through the declared verify command.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n".to_string()
 }
 
-fn render_shape_law_evidence(shape: ScaffoldShape) -> String {
+fn render_transition_trace_evidence(names: &InnerStructureNames) -> String {
     format!(
-        "# Law Evidence: semantic shape\n\nShape: `{}` ({})\n\nRepresentation obligations:\n\n- Closed alternatives should be represented as ADTs, sealed variants, enums, or tagged constructors.\n- Values with validity rules should be created through validated constructors.\n- Expected failures should be explicit accepted/rejected outcomes.\n- Messages that cross roles should use explicit command, event, effect, or effect-result envelopes.\n- Lifecycle or order-dependent behavior should produce transition records and be replayable from a replay bundle.\n- Boundary input should be parsed before it reaches pure decisions.\n- Validated numeric values should use checked, saturating, bounded, or explicitly proven arithmetic with edge evidence for overflow, floors, ceilings, and rounding where applicable.\n\nGenerated roles:\n{}\n\nCommand:\n\n- Replace this placeholder with module-specific law, trace, property, fuzz, contract, or boundary evidence.\n\nSource revision: not recorded by the generated scaffold.\n",
-        shape.as_str(),
-        shape.purpose(),
-        shape
-            .roles()
-            .iter()
-            .map(|role| format!("- `{role}`"))
-            .collect::<Vec<_>>()
-            .join("\n")
+        "# Law Evidence: transition trace\n\nPromise:\n\n- `{machine}` decisions are replayable from explicit transition inputs.\n- Each transition record captures state before, state after, input variant, outputs, and source provenance.\n- Accepted and rejected starter paths are explicit and reproducible.\n\nCommand/tool:\n\n- `rms verify implementation.yaml` runs the binding verify command and checks `verification/traces/transition_trace.yaml`.\n- `rms trace check verification/traces/transition_trace.yaml` validates the replay bundle shape.\n\nExpected result:\n\n- The trace bundle contains accepted and rejected records for `{machine}`.\n- The records name `{state}`, `{command}`, `{event}`, and `{reply}` variants and keep state/output consistency.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        machine = names.machine,
+        state = names.state,
+        command = names.command,
+        event = names.event,
+        reply = names.reply,
     )
-}
-
-fn render_transition_trace_evidence() -> String {
-    "# Law Evidence: transition trace\n\nPromise:\n\n- Pure decisions are replayable from explicit commands, states, events, or transition inputs.\n- Each transition record captures state before, state after, input variant, outputs, and source provenance.\n- Illegal or invalid transitions are rejected or made unrepresentable.\n\nEvidence to add:\n\n- Accepted transition record from valid input to expected output.\n- Rejected transition record for invalid command, impossible variant, or invalid state/order.\n- Replay bundle that can reproduce the observed sequence.\n- First-bad-transition note when a sequence can enter a bad state.\n- Property, fuzz, or table coverage when the transition space is broad.\n- Numeric edge coverage for validated numeric values, including overflow, lower/upper bounds, capping, and rounding when the transition performs arithmetic.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
 }
 
 fn render_transition_trace_bundle(names: &InnerStructureNames) -> String {
@@ -26635,28 +27605,48 @@ records:
     )
 }
 
-fn render_accepted_rejected_evidence() -> String {
-    "# Scenario Evidence: accepted and rejected outcomes\n\nPromise:\n\n- The module exposes explicit accepted and rejected outcomes for expected domain failures.\n\nEvidence to add:\n\n- One meaningful accepted scenario.\n- One meaningful rejected scenario.\n- The command or tool used to exercise both paths.\n- The manifest promise, invariant, or contract each path proves.\n- Boundary-value cases for numeric validated values when accepted or rejected outcomes depend on arithmetic.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+fn render_accepted_rejected_evidence(names: &InnerStructureNames) -> String {
+    format!(
+        "# Scenario Evidence: accepted and rejected outcomes\n\nPromise:\n\n- `{machine}` exposes explicit accepted and rejected outcomes for expected failures.\n\nCommand/tool:\n\n- `rms verify implementation.yaml` runs the generated binding tests.\n- `rms trace replay verification/traces/transition_trace.yaml` reproduces the starter accepted/rejected sequence.\n\nExpected result:\n\n- Accepted input returns `{reply}.Accepted`.\n- Rejected input returns `{reply}.Rejected` with `{rejection}` instead of throwing or hiding the failure.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        machine = names.machine,
+        reply = names.reply,
+        rejection = names.rejection,
+    )
 }
 
-fn render_monitor_trigger_evidence() -> String {
-    "# Runtime Monitor Evidence: trigger cases\n\nPromise:\n\n- Runtime observations are accepted through declared inputs.\n- Derived facts or streams are computed from those observations.\n- Trigger decisions produce only declared findings, events, alarms, commands, or capabilities.\n- Supervisory outputs cross public contracts and do not mutate controlled module state directly.\n\nEvidence to add:\n\n- One trigger case where the declared condition holds.\n- One non-trigger case where the condition does not hold.\n- Stale, duplicate, or out-of-order observation behavior when ordering matters.\n- Authority and failure-mode behavior for observe-only, advisory, enforcing, or fail-safe operation.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+fn render_monitor_trigger_evidence(names: &InnerStructureNames) -> String {
+    format!(
+        "# Runtime Monitor Evidence: trigger cases\n\nPromise:\n\n- `{machine}` accepts observed inputs through declared monitor roles.\n- Derived facts or streams are computed without mutating controlled module state directly.\n- Trigger decisions produce only declared findings, events, alarms, commands, or capabilities.\n\nCommand/tool:\n\n- `rms verify implementation.yaml` runs the generated monitor binding checks when present.\n\nExpected result:\n\n- Trigger and non-trigger cases are represented through `{event}` and `{reply}` variants.\n- Stale, duplicate, or out-of-order observations are handled by explicit state or rejection paths before production use.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        machine = names.machine,
+        event = names.event,
+        reply = names.reply,
+    )
 }
 
-fn render_malformed_input_evidence() -> String {
-    "# Boundary Evidence: malformed input\n\nPromise:\n\n- Untrusted input is parsed and validated before it reaches pure decisions.\n- Malformed input is rejected with an explicit failure path.\n\nEvidence to add:\n\n- Valid boundary input parsed into a domain command.\n- Malformed, incomplete, or incompatible input rejected before domain delegation.\n- Declared effect, timeout, retry, or fallback behavior when applicable.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+fn render_malformed_input_evidence(names: &InnerStructureNames) -> String {
+    format!(
+        "# Boundary Evidence: malformed input\n\nPromise:\n\n- `{machine}` parses and validates untrusted input before pure decisions run.\n- Malformed input is rejected with an explicit failure path.\n\nCommand/tool:\n\n- `rms verify implementation.yaml` runs generated boundary tests.\n- `rms trace check verification/traces/malformed_input_trace.yaml` validates the malformed-input trace.\n\nExpected result:\n\n- Valid input progresses through parsed/delegated/completed boundary states.\n- Malformed input produces `{reply}.Rejected` and does not delegate a domain command.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        machine = names.machine,
+        reply = names.reply,
+    )
 }
 
-fn render_parser_to_domain_command_evidence() -> String {
-    "# Contract Evidence: parser to domain command\n\nPromise:\n\n- Boundary input is translated into a domain command or explicit rejection before core decisions run.\n\nEvidence to add:\n\n- Parser success case naming the produced domain command.\n- Parser rejection case naming the rejection type or failure category.\n- Contract or parent export affected by the boundary behavior.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+fn render_parser_to_domain_command_evidence(names: &InnerStructureNames) -> String {
+    format!(
+        "# Contract Evidence: parser to domain command\n\nPromise:\n\n- `{machine}` translates boundary input into an enveloped domain command or explicit rejection before core decisions run.\n\nCommand/tool:\n\n- `rms verify implementation.yaml` runs generated parser and adapter tests.\n- `rms trace replay verification/traces/boundary_parse.yaml` reproduces the parse/delegate/complete path.\n\nExpected result:\n\n- Parser success produces `{command}` or `{command_envelope}` values.\n- Parser rejection produces `{rejection}` without domain delegation.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        machine = names.machine,
+        command = names.command,
+        command_envelope = names.command_envelope,
+        rejection = names.rejection,
+    )
 }
 
 fn render_parent_export_evidence() -> String {
-    "# Contract Evidence: parent export\n\nPromise:\n\n- The composite parent public surface is backed by the declared child export.\n- Public behavior changes keep parent contract evidence and child contract evidence aligned.\n\nEvidence to add:\n\n- Parent public command, query, event, or capability exercised through the exported surface.\n- Child module contract or implementation evidence that backs the parent surface.\n- `rms compose --root <system-root>` output showing export backing.\n\nSource revision: not recorded by the generated scaffold.\n".to_string()
+    "# Contract Evidence: parent export\n\nPromise:\n\n- The composite parent public surface is backed by the declared child export.\n- Public behavior changes keep parent contract evidence and child contract evidence aligned.\n\nCommand/tool:\n\n- `rms compose --root <system-root>` verifies containment, visibility, and export backing.\n- `rms verify <parent module.yaml>` rolls up child implementation verification when child bindings exist.\n\nExpected result:\n\n- Parent export is backed by the declared boundary child.\n- Boundary child composes with the declared domain child through a contract-shaped capability.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n".to_string()
 }
 
 const EXECUTABLE_BUILD_SH: &str =
-    "#!/usr/bin/env sh\nset -eu\nprintf '%s\\n' 'executable binding build placeholder'\n";
+    "#!/usr/bin/env sh\nset -eu\nprintf '%s\\n' 'executable binding build passed'\n";
 
 const EXECUTABLE_SMOKE_SH: &str = "#!/usr/bin/env sh\nset -eu\ntest -f module.yaml\ntest -f implementation.yaml\nprintf '%s\\n' 'executable binding smoke passed'\n";
 
@@ -26899,13 +27889,15 @@ fn write_new_file(path: &Path, contents: &str) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("failed to write `{}`", path.display()))
 }
 
-const INIT_GITIGNORE: &str = ".DS_Store\ntarget/\ndist/\n.rms/runs/\n";
+const INIT_GITIGNORE: &str = ".DS_Store\ntarget/\ndist/\n.rms/runs/\n.rms/dogfood/\n";
 
 const INIT_AGENTS_MD: &str = r#"# Agent Instructions
 
 This repository follows Reliable Modular Systems.
 
 RMS artifacts are the architectural source of truth. Do not infer ownership, effects, dependencies, compatibility, or recovery behavior from incidental code shape when manifests or contracts say otherwise.
+
+Product intent is enough input from the user. Convert natural language into RMS semantics by asking only necessary clarifying questions, surfacing edge cases, naming what must never happen, and encoding the result in canonical artifacts before code.
 
 Core rule:
 
@@ -26976,6 +27968,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
 - Numeric safety: if validated values represent counts, money, quantities, rates, sizes, scores, or other numeric facts, choose checked, saturating, bounded, or explicitly proven arithmetic before implementation.
 - Edge cases first: decide invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, numeric overflow or rounding, and not-applicable cases.
+- External truth: decide what happens when an external outcome is unknown, duplicate, stale, partial, conflicting, delayed, or later corrected. Declare reconciliation, recovery, retry, compensation, or convergence evidence before relying on that behavior.
 - Only then fill implementation files, tests, and evidence.
 
 ## While Implementing
@@ -28059,6 +29052,7 @@ import struct ExternalKit.Widget
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
         assert!(agents.contains("RMS artifacts are the architectural source of truth"));
+        assert!(agents.contains("Product intent is enough input from the user"));
         assert!(agents.contains("rms design --root . --task"));
         assert!(agents.contains("choose semantic shape before file layout"));
         assert!(agents.contains("Default split for any capability"));
@@ -28067,6 +29061,7 @@ import struct ExternalKit.Widget
         assert!(agents.contains("Semantic Structure Before Code"));
         assert!(agents.contains("Numeric safety"));
         assert!(agents.contains("Edge cases first"));
+        assert!(agents.contains("External truth"));
         assert!(agents.contains("Traceable machine"));
         assert!(agents.contains("command, event, effect, and effect-result envelopes"));
         assert!(agents.contains("Keep projections passive"));
@@ -28080,6 +29075,7 @@ import struct ExternalKit.Widget
         assert!(agents.contains("rms route <module.yaml> --task"));
         assert!(agents.contains("rms context <module.yaml> --task"));
         assert!(gitignore.contains(".rms/runs/"));
+        assert!(gitignore.contains(".rms/dogfood/"));
         assert!(config_text.contains("# write_scope: module"));
         assert!(config_text.contains("# timeout_seconds: 900"));
         assert_eq!(config.value.ai.default_provider.as_deref(), Some("codex"));
@@ -28461,7 +29457,7 @@ import struct ExternalKit.Widget
         assert!(implementation.contains("verification_mode: executable-command"));
         assert!(implementation.contains("static_inspection: opaque"));
         assert!(implementation.contains("RMS does not infer internal domain semantics"));
-        assert!(build_script.contains("executable binding build placeholder"));
+        assert!(build_script.contains("executable binding build passed"));
         assert!(smoke_script.contains("test -f module.yaml"));
         assert!(smoke_evidence.contains("RMS treats the implementation as opaque"));
         run_verify(&root.join("implementation.yaml"), false).unwrap();
@@ -28800,6 +29796,50 @@ architecture:
         fs::remove_dir_all(&root).unwrap();
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.check == "structure.effect-result-declared-not-consumed"
+        }));
+    }
+
+    #[test]
+    fn structure_report_flags_unknown_effect_result_without_reconciliation() {
+        let root = unique_test_dir("structure-unknown-effect-result");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn transition() {}\n").unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: checkout-domain
+binding: rust
+source:
+  root: .
+  public_entrypoint: src/lib.rs
+commands:
+  build: cargo check
+  verify: cargo test
+architecture:
+  shape: workflow
+  machine:
+    name: CheckoutMachine
+    mode: workflow-effect-machine
+    states: [WaitingForPayment]
+    commands: [CheckoutCommand]
+    events: [CheckoutEvent]
+    effects: [CheckoutEffect]
+    effect_results: [PaymentUnknown]
+    replies: [CheckoutReply]
+    rejections: [CheckoutRejection]
+    transition_function: transition
+  roles:
+    representation: [src/lib.rs]
+    transition: [src/lib.rs]
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.unknown-effect-result-without-reconciliation"
         }));
     }
 
@@ -29475,7 +30515,7 @@ architecture:
     }
 
     #[test]
-    fn strict_audit_fails_scaffold_evidence() {
+    fn strict_audit_fresh_scaffold_has_no_placeholder_evidence() {
         let root = unique_test_dir("strict-audit-scaffold");
         run_add_module(
             add_module_request(
@@ -29499,7 +30539,11 @@ architecture:
         assert!(strict
             .checks
             .iter()
-            .any(|check| check.id == "evidence.placeholder" && check.result == "fail"));
+            .all(|check| check.id != "evidence.placeholder"));
+        assert!(strict
+            .checks
+            .iter()
+            .any(|check| { check.id == "provenance.source-revision" && check.result == "fail" }));
         assert_ne!(relaxed.result, "fail");
     }
 
@@ -29988,12 +31032,17 @@ architecture:
         assert!(manifest.contains("kind: \"monitor\""));
         assert!(manifest.contains("- \"monitor\""));
         assert!(manifest.contains("authority: observe-only"));
-        assert!(manifest.contains("runtime:\n    - verification/runtime"));
+        assert!(manifest.contains("runtime:\n    - verification/runtime/trigger_cases.md"));
         assert!(manifest.contains("shape: \"runtime-monitor\""));
         assert!(readme.contains("## Runtime Monitor Decisions"));
-        assert!(runtime_evidence.contains("One trigger case"));
+        assert!(runtime_evidence.contains("Trigger and non-trigger cases"));
         assert_no_error_diagnostics(&diagnostics);
-        assert_has_warning(&diagnostics, "evidence.placeholder");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "evidence.placeholder"),
+            "{diagnostics:#?}"
+        );
     }
 
     #[test]
@@ -30230,18 +31279,20 @@ verification:
 
         fs::remove_dir_all(&root).unwrap();
         assert_no_error_diagnostics(&diagnostics);
-        assert_has_warning(&diagnostics, "evidence.placeholder");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "evidence.placeholder"),
+            "{diagnostics:#?}"
+        );
     }
 
     fn assert_module_scaffold_guidance(root: &Path, name: &str, purpose: &str, binding: &str) {
         let readme = fs::read_to_string(root.join("README.md")).unwrap();
         let contracts = fs::read_to_string(root.join("contracts/README.md")).unwrap();
-        let laws = fs::read_to_string(root.join("verification/laws/README.md")).unwrap();
-        let contract_evidence =
-            fs::read_to_string(root.join("verification/contracts/README.md")).unwrap();
-        let scenarios = fs::read_to_string(root.join("verification/scenarios/README.md")).unwrap();
-        let boundaries =
-            fs::read_to_string(root.join("verification/boundaries/README.md")).unwrap();
+        let laws = fs::read_to_string(root.join("verification/laws/transition_trace.md")).unwrap();
+        let scenarios =
+            fs::read_to_string(root.join("verification/scenarios/accepted_rejected.md")).unwrap();
 
         assert!(readme.contains(&format!("# {name}")));
         assert!(readme.contains(purpose));
@@ -30257,10 +31308,12 @@ verification:
         assert!(readme.contains("Use `rms design --root <system-root>"));
         assert!(contracts.contains("Place public RMS contract files here"));
         assert!(contracts.contains("Private helpers stay in implementation docs and tests"));
-        assert!(laws.contains("Record evidence for invariants"));
-        assert!(contract_evidence.contains("success behavior and expected failures"));
-        assert!(scenarios.contains("end-to-end behavior"));
-        assert!(boundaries.contains("trust boundaries"));
+        assert!(laws.contains("transition trace"));
+        assert!(scenarios.contains("accepted and rejected outcomes"));
+        assert!(!root.join("verification/laws/README.md").exists());
+        assert!(!root.join("verification/contracts/README.md").exists());
+        assert!(!root.join("verification/scenarios/README.md").exists());
+        assert!(!root.join("verification/boundaries/README.md").exists());
     }
 
     #[test]
@@ -30733,6 +31786,35 @@ verification:
     }
 
     #[test]
+    fn compose_reports_capability_contract_mismatch() {
+        let root = unique_test_dir("compose-capability-contract-mismatch");
+        fs::create_dir_all(&root).unwrap();
+        write_compose_module(
+            &root.join("provider.module.yaml"),
+            "provider",
+            "  capabilities:\n    - name: send-email\n      contract: contracts/send-email.v1.yaml\n",
+            "  modules: []\n",
+            "  capabilities: []\n",
+        );
+        write_compose_module(
+            &root.join("consumer.module.yaml"),
+            "consumer",
+            "  capabilities: []\n",
+            "  modules: []\n",
+            "  capabilities:\n    - name: send-email\n      contract: contracts/send-email.v2.yaml\n",
+        );
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Fail);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::Incompatible
+                && finding.check == "composition.capability-contract-mismatch"
+        }));
+    }
+
+    #[test]
     fn compose_reports_unresolved_capability() {
         let root = unique_test_dir("compose-unresolved");
         fs::create_dir_all(&root).unwrap();
@@ -30966,7 +32048,12 @@ verification:
         assert!(manifest.contains("contains: []"));
         assert!(manifest.contains("exports: []"));
         assert_no_error_diagnostics(&diagnostics);
-        assert_has_warning(&diagnostics, "evidence.placeholder");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "evidence.placeholder"),
+            "{diagnostics:#?}"
+        );
     }
 
     #[test]
@@ -31053,7 +32140,12 @@ verification:
         assert!(has_parser_contract_evidence);
         assert_eq!(report.result, ComposeResult::Pass, "{:#?}", report.findings);
         assert_no_error_diagnostics(&diagnostics);
-        assert_has_warning(&diagnostics, "evidence.placeholder");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "evidence.placeholder"),
+            "{diagnostics:#?}"
+        );
     }
 
     #[test]
@@ -31188,6 +32280,124 @@ verification:
                 .map(|module| module.name.as_str()),
             Some("play-tic-tac-toe-boundary")
         );
+    }
+
+    #[test]
+    fn semantic_completeness_flags_required_capability_without_contract() {
+        let root = unique_test_dir("semantic-required-capability-contract");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: boundary
+  version: 0.1.0
+  kind: adapter
+  purpose: Test required capability contracts.
+profiles: [boundary, core]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities:
+    - name: decide-checkout
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_semantic_module_completeness(&manifest, &mut diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "semantic.required-capability-contract-missing"
+        }));
+    }
+
+    #[test]
+    fn semantic_completeness_skips_external_capability_contracts() {
+        let root = unique_test_dir("semantic-external-capability-contract");
+        let module_dir = root.join("modules/adapter");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::write(
+            root.join("system.yaml"),
+            r#"spec: rms/system/v0.1
+system:
+  name: fixture
+  version: 0.1.0
+  purpose: External capability fixture.
+contexts: []
+public_interfaces: []
+external_dependencies:
+  - filesystem
+workflows: []
+invariants: []
+compatibility:
+  policy: backward-compatible-within-major
+"#,
+        )
+        .unwrap();
+        fs::write(
+            module_dir.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: adapter
+  version: 0.1.0
+  kind: adapter
+  purpose: Test external capability contracts.
+profiles: [boundary, core]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities:
+    - name: filesystem
+invariants: []
+effects:
+  - name: filesystem-read
+    kind: filesystem-read
+    capability: filesystem
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        let manifest = load_manifest(&module_dir.join("module.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_semantic_module_completeness(&manifest, &mut diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().all(|diagnostic| {
+            diagnostic.check != "semantic.required-capability-contract-missing"
+        }));
     }
 
     #[test]
@@ -33270,16 +34480,6 @@ runs:
             diagnostics
                 .iter()
                 .all(|diagnostic| diagnostic.severity != Severity::Error),
-            "{diagnostics:#?}"
-        );
-    }
-
-    fn assert_has_warning(diagnostics: &[Diagnostic], check: &str) {
-        assert!(
-            diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.severity == Severity::Warning
-                    && diagnostic.check == check),
             "{diagnostics:#?}"
         );
     }

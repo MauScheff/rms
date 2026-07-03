@@ -4,6 +4,8 @@ These skills express architecture workflows without assuming a programming langu
 
 The RMS CLI is the stable workbench for humans and agents. Skills should make agents use the CLI before carrying RMS rules in prompt memory. The CLI inspects canonical artifacts, builds bounded context, runs deterministic checks, and records evidence; skills only choose the right workflow.
 
+Product intent is enough input from the user. Agents should convert natural language into RMS semantics by asking only necessary clarifying questions, surfacing edge cases, naming what must never happen, and applying semantic changes before code.
+
 Canonical skills:
 
 - `inspect-module`
@@ -65,7 +67,7 @@ rms conformance <module> --implementation <implementation.yaml>
 rms release check --root <root>
 ```
 
-Skills should use `rms explain`, `rms implement`, `rms evolve-contract`, `rms evidence`, `rms refactor`, `rms prompt <kind>`, and the advisory `rms plan` / `rms review` commands to render bounded prompts for humans or agents. Use `rms spec plan/apply/check` when a change needs new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, public entrypoints, or evidence obligations. `rms spec apply` records the exact applied semantic-change object under `verification/changes/`; command logs with placeholders are not evidence. Use `rms machine plan/apply/check` for focused inner-machine edits after semantic obligations are already correct. Use `--ai` only when `.rms/config.yaml` declares the intended default provider; use `--provider codex` for an explicit Codex run. Provider runs are bounded by `ai.codex.timeout_seconds` or `--provider-timeout-seconds`.
+Skills should use `rms explain`, `rms implement`, `rms evolve-contract`, `rms evidence`, `rms refactor`, `rms prompt <kind>`, and the advisory `rms plan` / `rms review` commands to render bounded prompts for humans or agents. Use `rms spec plan/apply/check` when a change needs new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, public entrypoints, or evidence obligations. `rms spec apply` records the exact applied semantic-change object under `verification/changes/`; command logs with placeholders are not evidence. Use `rms machine plan/apply/check` for focused inner-machine edits after semantic obligations are already correct. For external truth, decide what happens when an outcome is unknown, duplicate, stale, partial, conflicting, delayed, or later corrected; use reconciliation or recovery evidence when correctness depends on that behavior. Use `--ai` only when `.rms/config.yaml` declares the intended default provider; use `--provider codex` for an explicit Codex run. Provider runs are bounded by `ai.codex.timeout_seconds` or `--provider-timeout-seconds`.
 
 ## Safety
 

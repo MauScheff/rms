@@ -1,8 +1,12 @@
 # Reliable Modular Systems
 
-Reliable Modular Systems is a small specification and toolchain for building software out of explicit, replaceable modules.
+Reliable Modular Systems is a semantic workbench for coding agents.
 
-RMS gives each meaningful boundary a manifest: what it owns, what it provides, what it requires, which invariants must hold, which effects it may perform, and what evidence proves the promise. The result is architecture that can be read by humans, bounded for agents, and checked by deterministic tooling.
+RMS lets a builder describe software in natural language, then gives the agent a disciplined path from intent to reliable code. The agent is instructed to clarify ambiguity, surface edge cases, and encode the meaning first: modules, laws, contracts, state machines, effects, evidence, and ownership boundaries. Only after that does it fill the declared roles with implementation code.
+
+The result is software shaped for reliability by default: explicit modules, ADTs or closed variants, traceable state machines, boundary parsers, declared effects, replayable evidence, and deterministic gates that make change reviewable by humans and agents.
+
+RMS owns semantics. Agents fill declared roles. The CLI proves the result.
 
 ```text
 Model meaning.
@@ -18,11 +22,30 @@ Modern codebases fail less from missing abstractions than from unclear ownership
 
 RMS makes those promises explicit without requiring a framework, language, deployment style, or coding agent. It works for monoliths, libraries, services, workflows, and agent-maintained repositories.
 
+## The Core Loop
+
+```text
+user intent
+-> RMS semantic structure
+-> generated agent guidance
+-> declared module and machine roles
+-> agent-filled implementation
+-> deterministic verification and audit
+```
+
+For builders, RMS means you can stay in product language longer. You can say what should happen, what must never happen, and what edge cases worry you. The agent uses RMS to turn that into concrete semantics before writing code.
+
+For developers, RMS means architecture is not hidden in a prompt, a convention, or one agent's taste. The important meaning is committed as canonical artifacts: `module.yaml`, contracts, laws, implementation bindings, transition records, traces, and evidence.
+
+For agents, RMS narrows the job. The agent does not invent architecture directly in source files. It uses the CLI to create or change semantic structure, then edits inside declared roles. Bugs become diagnosable bad states: invalid commands, illegal transitions, unexpected effect results, stale projections, missing evidence, or boundary violations.
+
 ## What You Get
 
 - A canonical specification for modules, bounded contexts, contracts, effects, profiles, compatibility, and conformance.
-- YAML manifests for systems, context maps, modules, contracts, implementations, and conformance reports.
-- A Rust reference CLI that acts as the human and agent workbench for validation, explanation, context packets, packaging, and conformance evidence.
+- YAML manifests for systems, context maps, modules, contracts, implementations, semantic changes, machine changes, and conformance reports.
+- A semantic gate for changing meaning before code: laws, contracts, commands, states, events, effects, effect results, replies, rejections, transitions, public entrypoints, and evidence obligations.
+- Traceable machine scaffolds that make state, effects, transition outputs, journals, replay bundles, and first-bad-transition diagnostics first-class.
+- A Rust reference CLI that acts as the human and agent workbench for validation, explanation, context packets, semantic planning, structure checks, trace replay, compatibility, audit, packaging, and conformance evidence.
 - Agent skills for inspecting modules, implementing changes, pruning semantic residue, adding modules, evolving contracts, composing modules, and verifying conformance through the shared CLI surface.
 - Thin Codex and Claude integration guidance that points agents at the same semantic model instead of creating agent-specific architecture.
 
@@ -69,6 +92,12 @@ cargo run -p rms -- release check --root .
 ## First Commands
 
 For a guided first pass, use `QUICKSTART.md`. For a self-hosted RMS walkthrough, use `DOGFOOD.md`.
+
+The golden path is:
+
+```text
+init -> design -> add-capability -> spec apply -> implement roles -> gate -> audit
+```
 
 Create a new RMS system:
 
@@ -120,7 +149,7 @@ rms add-capability ./my-system/modules/tic-tac-toe \
   --boundary-binding js
 ```
 
-This creates `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification directories. Semantic shapes such as `domain-engine`, `boundary-adapter`, `workflow`, `storage-adapter`, `integration-adapter`, and `composite` define role obligations before file layout. Bindings such as `rust`, `swift`, `js`, and `executable` realize those roles idiomatically. The executable binding remains the opaque command-backed lane for web, mobile, CLI, native UI, generated assets, or integration surfaces when RMS cannot statically inspect internals.
+This creates `module.yaml`, a module `README.md`, `contracts/README.md`, concrete evidence files referenced by the manifests, and optional implementation bindings. Semantic shapes such as `domain-engine`, `boundary-adapter`, `workflow`, `storage-adapter`, `integration-adapter`, and `composite` define role obligations before file layout. Bindings such as `rust`, `swift`, `js`, and `executable` realize those roles idiomatically. The executable binding remains the opaque command-backed lane for web, mobile, CLI, native UI, generated assets, or integration surfaces when RMS cannot statically inspect internals.
 
 Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, message envelopes, transition output, transition records, parser, adapter, journal, timeline projection, replay bundle, first-bad-transition, and trace evidence roles, plus a domain-named machine with an explicit mode and state variants. They also seed local trace bundles under `verification/traces/`, and `rms verify` checks those bundles after native verification. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, `Rejection`, `Transition`, and `TransitionRecord`. Prefer the `add-capability` default child paths unless the user supplied better product/domain names; do not invent `-rules`, `-adapter`, `-cli`, or `-web` child names just to describe RMS roles. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`, and a boundary role should avoid names like `CouponEvaluationAdapterMachine`.
 
@@ -181,6 +210,8 @@ rms machine check ./my-system/modules/widget/implementation.yaml
 ```
 
 `rms spec plan`, `rms machine plan`, and provider output are advisory. `rms spec apply` and `rms machine apply` are the deterministic steps that update canonical declarations and role placeholders. `rms spec apply` also records the exact applied semantic-change object under `verification/changes/`. Agents then fill declared role bodies; pure helpers stay pure, and IO belongs behind declared effects/effect-results in adapter, port, or effect-executor roles.
+
+When behavior depends on external truth, model uncertainty before code: unknown, duplicate, stale, partial, conflicting, delayed, or later-corrected outcomes need explicit recovery, retry, compensation, convergence, or reconciliation evidence.
 
 Validate the included examples:
 
@@ -256,6 +287,15 @@ rms audit --root . --strict --include-examples
 ```
 
 `rms audit` aggregates validation, composition, implementation structure, trace bundle, verification-target, compatibility, and provenance findings. Non-strict audit is a review surface. Strict audit treats production blockers such as placeholder evidence, unpinned evidence, unchecked numeric arithmetic, private-role imports, and missing trace bundles as failures. Repository-root audits skip illustrative `examples/` modules by default; use `--include-examples` when examples are part of the production claim.
+
+Run repeatable blind-agent dogfood from a clean project root:
+
+```bash
+rms dogfood run --scenario checkout-reference --root /tmp/rms-checkout --agent codex
+rms dogfood run --scenario nutrition-reference --root /tmp/rms-nutrition --agent codex
+```
+
+Dogfood records blind-agent prompts, command logs, generated commits, RMS checks, final strict audit output, elapsed time, and cleanup findings under `.rms/dogfood/`.
 
 Check local RMS and optional AI-provider readiness:
 
@@ -464,7 +504,7 @@ Use the same release gate locally, in CI, and before publishing release artifact
 rms release check --root .
 ```
 
-It runs release metadata checks, RMS CLI tests, canonical artifact validation, `rms-cli` implementation verification, example checks, package creation and verification smokes, release-binary smoke, clean-room PATH install smoke, clean-room recursive dogfood, Cargo packaging, and Codex plugin skill sync. It does not invoke optional AI providers.
+It runs release metadata checks, RMS CLI tests, canonical artifact validation, `rms-cli` implementation verification, example checks, package creation and verification smokes, release-binary smoke, clean-room PATH install smoke, clean-room recursive dogfood, Cargo packaging, embedded skill asset checks, Codex plugin skill sync, and a temp agent/plugin install-diagnose smoke. It does not invoke optional AI providers.
 
 Use `rms audit --root <project> --strict` before claiming a project is production-ready RMS software. The release gate remains the repository publication gate; strict audit is the project-readiness gate.
 

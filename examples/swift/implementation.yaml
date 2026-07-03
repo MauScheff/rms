@@ -43,12 +43,6 @@ architecture:
       - correlation_id
       - causation_id
       - idempotency_key
-    effect_result_envelope:
-      - effect_id
-      - requester
-      - correlation_id
-      - causation_id
-      - status
   transition:
     output:
       - next_state

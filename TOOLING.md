@@ -115,7 +115,7 @@ Generated agent and workbench files are operational guidance. They must route fu
 
 ### `add-module`
 
-Scaffolds a valid module directory with `module.yaml`, a module `README.md`, `contracts/README.md`, and guided verification evidence directories. When `--binding rust`, `--binding swift`, `--binding js`, or `--binding executable` is supplied, it also creates a minimal `implementation.yaml` and scaffold artifacts that pass that binding's checks. The command refuses to overwrite existing files.
+Scaffolds a valid module directory with `module.yaml`, a module `README.md`, `contracts/README.md`, and concrete evidence files referenced by the generated manifests. When `--binding rust`, `--binding swift`, `--binding js`, or `--binding executable` is supplied, it also creates a minimal `implementation.yaml` and scaffold artifacts that pass that binding's checks. The command refuses to overwrite existing files.
 
 Generated module guidance is an adapter over canonical artifacts. It tells humans and agents how to fill ownership, public contracts, effects, invariants, compatibility, and evidence into `module.yaml`, `contracts/`, `implementation.yaml`, and `verification/`; it does not invent module-specific semantics.
 
@@ -134,7 +134,7 @@ rms spec check <module.yaml|implementation.yaml> [--strict] [--json]
 rms spec diff <module.yaml|implementation.yaml> [--json]
 ```
 
-Use this when a change needs new laws, public contracts, machine states, transitions, effects, effect results, rejection types, or evidence obligations. `rms spec apply` updates canonical semantics first and records the exact applied semantic-change object under `verification/changes/`; then agents fill declared role bodies. Provider planning is advisory until `rms spec apply` succeeds.
+Use this when a change needs new laws, public contracts, machine states, transitions, effects, effect results, rejection types, recovery or reconciliation obligations, or evidence obligations. `rms spec apply` updates canonical semantics first and records the exact applied semantic-change object under `verification/changes/`; then agents fill declared role bodies. Provider planning is advisory until `rms spec apply` succeeds.
 
 The semantic-change format is language-neutral and may include a nested machine change:
 
@@ -208,6 +208,19 @@ roles:
 ```
 
 Agents may add small private pure helpers inside declared pure role files. Private IO helpers are not allowed in pure roles; IO must be represented as declared effects plus effect results and executed only in adapter, port, or effect-executor roles.
+
+If external truth can be unknown, duplicate, stale, partial, conflicting, delayed, or later corrected, model recovery, retry, compensation, convergence, or reconciliation evidence before source changes.
+
+### `dogfood`
+
+Runs a repeatable blind-agent scenario and records the full audit trail:
+
+```bash
+rms dogfood run --scenario checkout-reference --root <path> --agent codex
+rms dogfood run --scenario nutrition-reference --root <path> --agent codex
+```
+
+Each run creates isolated phase prompts, Codex stdout/stderr, RMS check logs, git commits when changes exist, final strict audit output, elapsed time, and a JSON report under `.rms/dogfood/`. Dogfood fails if any deterministic phase check fails or if final `rms audit --root . --strict` fails after commits.
 
 ### `add-capability`
 
@@ -592,7 +605,7 @@ The RMS repository uses one canonical release gate:
 rms release check --root .
 ```
 
-The gate runs release metadata checks, formatting, Rust tests, RMS validation, RMS implementation verification, composition and compatibility smokes, package creation and verification smoke, scaffold roundtrip, example binding tests, release-binary smoke, clean-room PATH install smoke, clean-room recursive dogfood, Cargo packaging, and Codex plugin sync validation. It does not invoke optional AI providers. Use `--skip-cargo-package` only for offline local checks.
+The gate runs release metadata checks, formatting, Rust tests, RMS validation, RMS implementation verification, composition and compatibility smokes, package creation and verification smoke, scaffold roundtrip, example binding tests, release-binary smoke, clean-room PATH install smoke, clean-room recursive dogfood, Cargo packaging, embedded skill asset checks, Codex plugin sync validation, and a temp agent/plugin install-diagnose smoke. It does not invoke optional AI providers. Use `--skip-cargo-package` only for offline local checks.
 
 Release metadata is part of the gate. The Cargo package version, `rms-cli` module version, and packaged Codex plugin version must match. Tag releases are published by `.github/workflows/release.yml`, which builds runner-native CLI archives, packages the Rust source crate, emits SHA-256 checksums, and attaches artifacts to the GitHub release. The operational release runbook lives in `RELEASE.md`.
 
