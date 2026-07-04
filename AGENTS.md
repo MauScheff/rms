@@ -2,6 +2,15 @@
 
 This repository follows the Reliable Modular Systems specification.
 
+## Operating model
+
+- RMS owns semantics and architecture; agents fill declared role bodies.
+- Use RMS CLI gates before changing meaning or structure: modules, public commands, contracts, laws, states, events, effects, effect results, transitions, roles, public entrypoints, and evidence obligations.
+- Do not hand-create semantic roles, hidden entrypoints, or parallel architecture in source files. Apply the semantic change first with `rms spec apply` or the focused machine change with `rms machine apply`.
+- Runnable UI, CLI, browser, or app surfaces must call the declared public entrypoint, parser, adapter, or boundary machine. Do not put the real product behavior only in an undeclared runnable file while the declared machine remains a generic scaffold.
+- Public commands in `module.yaml` must be represented by the declared implementation surface. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
+- Private helpers inside pure roles must stay pure. IO belongs in declared adapter, port, or effect-executor roles as explicit effects and effect results.
+
 ## Canonical artifacts
 
 Treat the following as one coherent semantic set:

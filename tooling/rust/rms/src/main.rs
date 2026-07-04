@@ -10373,6 +10373,8 @@ fn validate_machine_gate_structure(
     inspect_pure_role_effect_markers(manifest, diagnostics);
     inspect_effect_executor_coverage(manifest, diagnostics);
     inspect_effect_result_handling(manifest, diagnostics);
+    inspect_public_command_representation(manifest, diagnostics);
+    inspect_runnable_surface_boundary_use(manifest, diagnostics);
 }
 
 fn validate_traceable_machine_structure(
@@ -10927,6 +10929,366 @@ fn inspect_parser_role_drift(manifest: &LoadedManifest, diagnostics: &mut Vec<Di
             );
         }
     }
+}
+
+fn inspect_public_command_representation(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let Some(module_manifest) = load_binding_module_manifest(manifest, base) else {
+        return;
+    };
+    let public_commands = module_provided_command_names(&module_manifest.value);
+    if public_commands.is_empty() {
+        return;
+    }
+
+    let mut candidates =
+        get_string_array(&manifest.value, &["architecture", "machine", "commands"]);
+    candidates.extend(module_verification_references(&module_manifest.value));
+    candidates.extend(get_string_array(
+        &manifest.value,
+        &["architecture", "representation", "closed_variants"],
+    ));
+    candidates.extend(get_string_array(
+        &manifest.value,
+        &["architecture", "representation", "transition_functions"],
+    ));
+    candidates.extend(semantic_function_symbols(manifest));
+    let declared_source = read_declared_semantic_surface_sources(manifest, false);
+    if !declared_source.trim().is_empty() {
+        candidates.push(declared_source.clone());
+    }
+
+    let missing = public_commands
+        .iter()
+        .filter(|command| {
+            !candidates
+                .iter()
+                .any(|candidate| semantic_name_is_represented_by(candidate, command))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return;
+    }
+
+    push_unique_warning(
+        diagnostics,
+        "structure.public-command-not-represented",
+        &manifest.path,
+        format!(
+            "module publishes command(s) {}, but the declared machine, semantic functions, and declared role sources do not represent them; apply a semantic change or route the product command through the declared boundary/domain surface",
+            missing.join(", ")
+        ),
+    );
+
+    if source_contains_generic_accept_reject_scaffold(&declared_source) {
+        push_unique_warning(
+            diagnostics,
+            "structure.generic-scaffold-command-active",
+            &manifest.path,
+            "declared role sources still expose generic Accept/Reject scaffold commands while the module publishes product-specific commands",
+        );
+    }
+}
+
+fn module_provided_command_names(module: &YamlValue) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    if let Some(items) =
+        get_path(module, &["provides", "commands"]).and_then(YamlValue::as_sequence)
+    {
+        for item in items {
+            if let Some(name) = item.as_str() {
+                names.insert(name.to_string());
+            }
+            if let Some(name) = get_str(item, &["name"]) {
+                names.insert(name.to_string());
+            }
+            if let Some(command) = get_str(item, &["command"]) {
+                names.insert(command.to_string());
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+fn semantic_function_symbols(manifest: &LoadedManifest) -> Vec<String> {
+    let Some(functions) = semantic_function_items(manifest) else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for function in functions {
+        if let Some(id) = get_str(function, &["id"]) {
+            candidates.push(id.to_string());
+        }
+        if let Some(symbol) = get_str(function, &["symbol"]) {
+            candidates.push(symbol.to_string());
+        }
+        for contract in get_string_array(function, &["discharges", "contracts"]) {
+            candidates.push(contract);
+        }
+        for category in verification_reference_categories() {
+            for evidence in get_string_array(function, &["evidence", category]) {
+                candidates.push(evidence);
+            }
+        }
+    }
+    candidates
+}
+
+fn semantic_name_is_represented_by(candidate: &str, name: &str) -> bool {
+    if candidate.contains(name) || semantic_text_mentions_id(candidate, name) {
+        return true;
+    }
+    let wanted = semantic_token_set(name)
+        .into_iter()
+        .filter(|token| !is_low_signal_semantic_token(token))
+        .collect::<BTreeSet<_>>();
+    if wanted.is_empty() {
+        return false;
+    }
+    let candidate_tokens = semantic_token_set(candidate);
+    wanted
+        .iter()
+        .all(|token| candidate_tokens.contains(token.as_str()))
+}
+
+fn semantic_token_set(value: &str) -> BTreeSet<String> {
+    identifier_word_tokens(value)
+        .into_iter()
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn is_low_signal_semantic_token(token: &str) -> bool {
+    matches!(
+        token,
+        "a" | "an"
+            | "and"
+            | "api"
+            | "app"
+            | "command"
+            | "do"
+            | "get"
+            | "handle"
+            | "run"
+            | "the"
+            | "to"
+    )
+}
+
+fn read_declared_semantic_surface_sources(
+    manifest: &LoadedManifest,
+    include_runnable_roles: bool,
+) -> String {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let mut references = declared_semantic_surface_references(manifest, include_runnable_roles);
+    references.sort();
+    references.dedup();
+
+    let mut source = String::new();
+    for reference in references {
+        let path = base.join(&reference);
+        if path.is_file() {
+            if let Ok(contents) = fs::read_to_string(&path) {
+                source.push_str(&contents);
+                source.push('\n');
+            }
+        }
+    }
+    source
+}
+
+fn declared_semantic_surface_references(
+    manifest: &LoadedManifest,
+    include_runnable_roles: bool,
+) -> Vec<String> {
+    let mut references = Vec::new();
+    if let Some(public_entrypoint) = get_str(&manifest.value, &["source", "public_entrypoint"]) {
+        references.push(public_entrypoint.to_string());
+    }
+    for role in [
+        "representation",
+        "transition",
+        "parser",
+        "adapter",
+        "effect_executor",
+        "ports",
+        "port",
+        "pure_transform",
+    ] {
+        references.extend(structure_role_paths(manifest, role));
+    }
+    if include_runnable_roles {
+        for role in runnable_surface_role_names() {
+            references.extend(structure_role_paths(manifest, role));
+        }
+    }
+    if let Some(functions) = semantic_function_items(manifest) {
+        for function in functions {
+            if let Some(symbol) = get_str(function, &["symbol"]) {
+                if let Some(path) = symbol.split('#').next() {
+                    if symbol_source_path_like(path) {
+                        references.push(path.to_string());
+                    }
+                }
+            }
+        }
+    }
+    references
+}
+
+fn source_contains_generic_accept_reject_scaffold(source: &str) -> bool {
+    (source.contains("CommandAccept") || source.contains("Command.Accept"))
+        && (source.contains("CommandReject") || source.contains("Command.Reject"))
+        && (source.contains("missing-label")
+            || source.contains("input?.label")
+            || source.contains("InvalidCommand")
+            || source.contains("MalformedInput"))
+}
+
+fn inspect_runnable_surface_boundary_use(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if get_str(&manifest.value, &["architecture", "shape"]) != Some("boundary-adapter") {
+        return;
+    }
+
+    let runnable_refs = runnable_surface_references(manifest);
+    if runnable_refs.is_empty() {
+        return;
+    }
+
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let boundary_refs = boundary_entrypoint_references(manifest);
+    let pure_refs = private_decision_role_references(manifest);
+    for reference in runnable_refs {
+        let path = base.join(&reference);
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if boundary_refs
+            .iter()
+            .any(|boundary| same_semantic_path(boundary, &reference))
+        {
+            continue;
+        }
+        let uses_boundary = boundary_refs
+            .iter()
+            .any(|boundary| source_mentions_path_or_stem(&source, boundary))
+            || source.contains("handleBoundaryInput")
+            || source.contains("handleBoundaryTransition");
+        let imports_private_decision_role = pure_refs
+            .iter()
+            .any(|private_role| source_mentions_path_or_stem(&source, private_role));
+        if imports_private_decision_role && !uses_boundary {
+            push_unique_warning(
+                diagnostics,
+                "structure.runnable-surface-bypasses-boundary",
+                &manifest.path,
+                format!(
+                    "runnable surface `{reference}` imports declared pure/private role code without going through the declared boundary adapter or public entrypoint"
+                ),
+            );
+        }
+    }
+}
+
+fn runnable_surface_role_names() -> &'static [&'static str] {
+    &[
+        "browser_adapter",
+        "browser-adapter",
+        "cli",
+        "cli_adapter",
+        "cli-adapter",
+        "ui",
+        "ui_adapter",
+        "ui-adapter",
+        "web_adapter",
+        "web-adapter",
+        "app",
+        "runnable_surface",
+        "runnable-surface",
+    ]
+}
+
+fn runnable_surface_references(manifest: &LoadedManifest) -> Vec<String> {
+    let mut references = Vec::new();
+    for role in runnable_surface_role_names() {
+        references.extend(structure_role_paths(manifest, role));
+    }
+    for reference in get_string_array(&manifest.value, &["architecture", "public_modules"]) {
+        if looks_like_runnable_surface_path(&reference) {
+            references.push(reference);
+        }
+    }
+    references.sort();
+    references.dedup();
+    references
+}
+
+fn looks_like_runnable_surface_path(reference: &str) -> bool {
+    let path = reference.replace('\\', "/");
+    let file = path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&path)
+        .to_ascii_lowercase();
+    path.starts_with("public/")
+        || path.contains("/public/")
+        || file.starts_with("app.")
+        || file.starts_with("main.")
+        || file.starts_with("cli.")
+        || file == "index.js"
+        || file == "index.mjs"
+}
+
+fn boundary_entrypoint_references(manifest: &LoadedManifest) -> Vec<String> {
+    let mut references = Vec::new();
+    if let Some(public_entrypoint) = get_str(&manifest.value, &["source", "public_entrypoint"]) {
+        references.push(public_entrypoint.to_string());
+    }
+    for role in ["adapter", "transition"] {
+        references.extend(structure_role_paths(manifest, role));
+    }
+    references.sort();
+    references.dedup();
+    references
+}
+
+fn private_decision_role_references(manifest: &LoadedManifest) -> Vec<String> {
+    let mut references = Vec::new();
+    for role in ["pure_transform", "domain", "representation", "transition"] {
+        references.extend(structure_role_paths(manifest, role));
+    }
+    let boundary_refs = boundary_entrypoint_references(manifest)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    references.retain(|reference| !boundary_refs.contains(reference));
+    references.sort();
+    references.dedup();
+    references
+}
+
+fn same_semantic_path(left: &str, right: &str) -> bool {
+    left.replace('\\', "/") == right.replace('\\', "/")
+}
+
+fn source_mentions_path_or_stem(source: &str, reference: &str) -> bool {
+    let normalized_ref = reference.replace('\\', "/");
+    if source.contains(&normalized_ref) {
+        return true;
+    }
+    let Some(file_name) = normalized_ref.rsplit('/').next() else {
+        return false;
+    };
+    source.contains(file_name)
+        || file_name
+            .split_once('.')
+            .is_some_and(|(stem, _)| !stem.is_empty() && source.contains(stem))
 }
 
 fn inspect_pure_role_effect_markers(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
@@ -19250,6 +19612,9 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "structure.role-symbol-missing"
                 | "structure.adapter-effect-without-port-or-executor"
                 | "structure.code-role-without-semantic-owner"
+                | "structure.public-command-not-represented"
+                | "structure.generic-scaffold-command-active"
+                | "structure.runnable-surface-bypasses-boundary"
         )
         || check.starts_with("trace.")
 }
@@ -28814,6 +29179,20 @@ Core rule:
 - Agents fill declared roles.
 - Bugs should become diagnosable bad states.
 
+You can:
+
+- edit bodies inside RMS-declared role files;
+- add small private pure helpers inside declared pure role files;
+- add effectful helper code only inside declared adapter, port, or effect-executor roles;
+- use provider-backed RMS prompts as advisory planning input.
+
+You cannot:
+
+- hand-create laws, contracts, public commands, states, events, effects, effect results, transitions, semantic roles, public entrypoints, or evidence obligations;
+- implement real product behavior only in an undeclared UI, CLI, browser, or app file while the declared machine remains generic;
+- bypass another module's public contract or a module's declared public entrypoint;
+- treat provider output, generated reports, or command logs as semantic authority until RMS canonical artifacts reflect them.
+
 ## Before Changing Behavior
 
 1. Run `rms diagnose`.
@@ -28869,6 +29248,7 @@ Naming rule: choose module and inner role names from product/capability language
 Before writing implementation code, make the user's intent concrete enough to encode:
 
 - Semantic gate: do not hand-create laws, contracts, semantic roles, states, commands, events, effects, transition functions, parsers, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply`, then edit the declared role bodies.
+- Public surface gate: public commands in `module.yaml` must be represented by the declared implementation surface. A real app, UI, CLI, or browser surface must call the declared public entrypoint, parser, adapter, or boundary machine. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
 - Intent: restate the behavior in the owning context's language and name what must never happen.
 - ADTs and values: define closed variants, validated values, commands, states, events, and accepted/rejected result types.
 - State and transitions: define accepted transitions, rejected transitions, terminal states, transition records, and replayable traces when behavior depends on order or lifecycle.
@@ -28898,6 +29278,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Use state machines or transition functions when behavior depends on lifecycle or order; illegal transitions must be rejected or made unrepresentable.
 - Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
 - Keep workflow choreography explicit in the workflow transition model, subscription registry, effect lifecycle, inbox/outbox, or declared adapter boundary rather than hidden in listener chains.
+- Keep runnable surfaces connected to the declared RMS boundary. If `public/app.*`, `src/cli.*`, or similar files are the real product surface, declare them as roles and route them through the declared adapter/public entrypoint instead of importing pure/private decision code directly.
 - Do not edit another module's private implementation to bypass its public contract.
 - Treat generated reports, diffs, and provider output as evidence, not architecture.
 
@@ -30852,6 +31233,270 @@ architecture:
             "{:#?}",
             report.diagnostics
         );
+    }
+
+    #[test]
+    fn structure_report_flags_product_commands_missing_from_declared_machine_surface() {
+        let root = unique_test_dir("structure-public-command-drift");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: tile-pattern-processor
+  version: 0.1.0
+  kind: adapter
+  purpose: Process uploaded pattern tiles.
+profiles: [boundary, core]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands:
+    - ProcessSourcePattern
+    - ExportAlphaMaskPng
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/representation.mjs"),
+            r#"export const AwaitingInput = Object.freeze({ tag: "TilePatternProcessorBoundaryState.AwaitingInput" });
+export const Completed = Object.freeze({ tag: "TilePatternProcessorBoundaryState.Completed" });
+export const Rejected = Object.freeze({ tag: "TilePatternProcessorBoundaryState.Rejected" });
+export const TilePatternProcessorBoundaryCommand = Object.freeze({});
+export const TilePatternProcessorBoundaryEvent = Object.freeze({});
+export const TilePatternProcessorBoundaryEffect = Object.freeze({});
+export const TilePatternProcessorBoundaryEffectResult = Object.freeze({});
+export const TilePatternProcessorBoundaryReply = Object.freeze({});
+export const TilePatternProcessorBoundaryRejection = Object.freeze({});
+export function makeTilePatternProcessorBoundaryCommandAccept(label) { return Object.freeze({ tag: "TilePatternProcessorBoundaryCommand.Accept", label }); }
+export function makeTilePatternProcessorBoundaryCommandReject(label) { return Object.freeze({ tag: "TilePatternProcessorBoundaryCommand.Reject", label }); }
+export function makeTilePatternProcessorBoundaryLabel(value) { return value ? String(value) : null; }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/parser.mjs"),
+            r#"import { makeTilePatternProcessorBoundaryCommandAccept, makeTilePatternProcessorBoundaryCommandReject, makeTilePatternProcessorBoundaryLabel } from "./representation.mjs";
+export function parseCommand(input) {
+  const label = makeTilePatternProcessorBoundaryLabel(input?.label ?? input);
+  if (!label) return { tag: "TilePatternProcessorBoundaryParseRejected", reason: "missing-label" };
+  return input?.reject === true
+    ? makeTilePatternProcessorBoundaryCommandReject(label)
+    : makeTilePatternProcessorBoundaryCommandAccept(label);
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/adapter.mjs"),
+            r#"import { parseCommand } from "./parser.mjs";
+export function handleBoundaryTransition(input) {
+  return { tag: "TilePatternProcessorBoundaryTransitionRecord", state_before: "AwaitingInput", state_after: "Completed", output: { next_state: "Completed", events: [], commands: [], effects: [], reply: parseCommand(input) } };
+}
+export const TilePatternProcessorBoundaryMachine = Object.freeze({ handleBoundaryTransition });
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: tile-pattern-processor
+binding: js
+source:
+  root: .
+  public_entrypoint: src/adapter.mjs
+commands:
+  build: node --check src/adapter.mjs
+  verify: node --check src/adapter.mjs
+architecture:
+  shape: boundary-adapter
+  machine:
+    name: TilePatternProcessorBoundaryMachine
+    mode: boundary-machine
+    states: [AwaitingInput, Completed, Rejected]
+    commands: [TilePatternProcessorBoundaryCommand]
+    events: [TilePatternProcessorBoundaryEvent]
+    effects: [TilePatternProcessorBoundaryEffect]
+    effect_results: [TilePatternProcessorBoundaryEffectResult]
+    replies: [TilePatternProcessorBoundaryReply]
+    rejections: [TilePatternProcessorBoundaryRejection]
+    transition_function: handleBoundaryTransition
+  roles:
+    representation: [src/representation.mjs]
+    parser: [src/parser.mjs]
+    adapter: [src/adapter.mjs]
+    transition: [src/adapter.mjs]
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.check == "structure.public-command-not-represented"),
+            "{:#?}",
+            report.diagnostics
+        );
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "structure.generic-scaffold-command-active" }));
+        assert!(audit_blocking_diagnostic(
+            "structure.public-command-not-represented"
+        ));
+        assert!(audit_blocking_diagnostic(
+            "structure.generic-scaffold-command-active"
+        ));
+    }
+
+    #[test]
+    fn structure_report_flags_runnable_surface_bypassing_boundary_adapter() {
+        let root = unique_test_dir("structure-runnable-bypass");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("public")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: tile-pattern-processor
+  version: 0.1.0
+  kind: adapter
+  purpose: Process uploaded pattern tiles.
+profiles: [boundary, core]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands:
+    - ProcessSourcePattern
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/tileMask.mjs"),
+            "export function makeAlphaArrayFromRgba() { return []; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/representation.mjs"),
+            r#"export const AwaitingInput = Object.freeze({ tag: "TilePatternProcessorBoundaryState.AwaitingInput" });
+export const Completed = Object.freeze({ tag: "TilePatternProcessorBoundaryState.Completed" });
+export const TilePatternProcessorBoundaryCommand = Object.freeze({});
+export const TilePatternProcessorBoundaryEvent = Object.freeze({});
+export const TilePatternProcessorBoundaryEffect = Object.freeze({});
+export const TilePatternProcessorBoundaryEffectResult = Object.freeze({});
+export const TilePatternProcessorBoundaryReply = Object.freeze({});
+export const TilePatternProcessorBoundaryRejection = Object.freeze({});
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/parser.mjs"),
+            "export function parseCommand(input) { return input; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/adapter.mjs"),
+            r#"export function handleBoundaryTransition(input) {
+  return { tag: "TilePatternProcessorBoundaryTransitionRecord", state_before: "AwaitingInput", state_after: "Completed", output: { next_state: "Completed", events: [], commands: [], effects: [], reply: input } };
+}
+export const TilePatternProcessorBoundaryMachine = Object.freeze({ handleBoundaryTransition });
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("public/app.mjs"),
+            r#"import { makeAlphaArrayFromRgba } from "../src/tileMask.mjs";
+export function renderSelectedPattern(input) {
+  return makeAlphaArrayFromRgba(input);
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: tile-pattern-processor
+binding: js
+source:
+  root: .
+  public_entrypoint: src/adapter.mjs
+commands:
+  build: node --check src/adapter.mjs
+  verify: node --check src/adapter.mjs
+architecture:
+  shape: boundary-adapter
+  public_modules:
+    - public/app.mjs
+    - src/adapter.mjs
+  machine:
+    name: TilePatternProcessorBoundaryMachine
+    mode: boundary-machine
+    states: [AwaitingInput, Completed]
+    commands: [TilePatternProcessorBoundaryCommand]
+    events: [TilePatternProcessorBoundaryEvent]
+    effects: [TilePatternProcessorBoundaryEffect]
+    effect_results: [TilePatternProcessorBoundaryEffectResult]
+    replies: [TilePatternProcessorBoundaryReply]
+    rejections: [TilePatternProcessorBoundaryRejection]
+    transition_function: handleBoundaryTransition
+  roles:
+    representation: [src/representation.mjs]
+    parser: [src/parser.mjs]
+    adapter: [src/adapter.mjs]
+    transition: [src/adapter.mjs]
+    pure_transform: [src/tileMask.mjs]
+    browser_adapter: [public/app.mjs]
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.runnable-surface-bypasses-boundary"
+        }));
+        assert!(audit_blocking_diagnostic(
+            "structure.runnable-surface-bypasses-boundary"
+        ));
     }
 
     #[test]

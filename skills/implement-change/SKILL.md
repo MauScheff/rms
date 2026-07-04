@@ -37,6 +37,10 @@ description: Implement a feature, fix, or refactor in an RMS project while prese
 8. Update the public contract or manifest first when public meaning changes.
 9. Before implementing, decide whether the task requires scope expansion or a module split. If it does, update canonical artifacts before deepening the current module.
 10. Implement inside the owning boundary and inside RMS-declared role files. Small private helpers inside pure role files must stay pure; IO belongs in declared adapter, port, or effect-executor roles as effects plus effect results.
+    - Do not implement real product behavior only in an undeclared UI, browser, CLI, or app surface while the declared machine remains generic.
+    - Public commands in `module.yaml` must be represented in the declared machine, parser, adapter, transition, representation, or semantic functions.
+    - Runnable surfaces such as `public/app.*` or `src/cli.*` must route through the declared public entrypoint, parser, adapter, or boundary machine before reaching pure decisions.
+    - Generic `Accept`/`Reject` scaffold commands are not done when the module publishes product-specific commands.
 11. Preserve or strengthen the module's representation:
    - use algebraic data types, sealed variants, or enums for closed domain alternatives;
    - use opaque types and validated constructors for values with validity rules;
@@ -55,7 +59,7 @@ description: Implement a feature, fix, or refactor in an RMS project while prese
    - impossible variants, invalid constructors, and illegal transitions when applicable;
    - boundary behavior when applicable;
    - transition records, golden timelines, replay bundles, and first-bad-transition diagnostics for stateful or workflow behavior.
-17. Run `rms review <module>` before finalizing when a diff exists. Run `rms validate --root <root>`, `rms spec check <module.yaml|implementation.yaml>`, `rms machine check <implementation.yaml>`, `rms structure <implementation.yaml>` when inner roles changed, and project-native verification from the implementation binding. Use `rms verify <implementation.yaml>` when the binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups. Do not declare implemented modules done while validation reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` for those modules.
+17. Run `rms review <module>` before finalizing when a diff exists. Run `rms validate --root <root>`, `rms spec check <module.yaml|implementation.yaml>`, `rms machine check <implementation.yaml>`, `rms structure <implementation.yaml>` when inner roles changed, and project-native verification from the implementation binding. Use `rms verify <implementation.yaml>` when the binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups. Treat `structure.public-command-not-represented`, `structure.generic-scaffold-command-active`, and `structure.runnable-surface-bypasses-boundary` as architecture-gate failures, not cleanup suggestions. Do not declare implemented modules done while validation reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` for those modules.
 18. Summarize:
     - changed behavior;
     - affected contracts and invariants;

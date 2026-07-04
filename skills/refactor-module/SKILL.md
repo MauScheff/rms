@@ -38,6 +38,8 @@ Use this skill when the requested outcome is better internal shape, clearer boun
    - do not expose private implementation as public contract;
    - do not put context-specific business concepts into the technical kernel;
    - do not introduce undeclared dependencies or effects.
+   - do not move real product behavior into an undeclared runnable surface that bypasses the declared public entrypoint, parser, adapter, or boundary machine.
+   - do not keep generic `Accept`/`Reject` scaffold commands as product semantics when public commands are domain-specific.
 10. If public meaning must change to complete the refactor, stop treating the work as a private refactor. Switch to `evolve-contract` or `implement-change` and make compatibility impact explicit.
 11. Add or adjust focused verification evidence:
    - laws and invariants still hold;
@@ -45,7 +47,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
    - illegal state transitions are rejected or unrepresentable;
    - boundary validation still rejects malformed input;
    - public contract behavior remains compatible.
-12. Run `rms review <module>` before finalizing when a diff exists. Run `rms validate --root <root>`, `rms spec check <module.yaml|implementation.yaml>`, `rms machine check <implementation.yaml>` when implementation structure exists, and the implementation binding's build and verification commands. Use `rms check-compat` when public manifests changed.
+12. Run `rms review <module>` before finalizing when a diff exists. Run `rms validate --root <root>`, `rms spec check <module.yaml|implementation.yaml>`, `rms machine check <implementation.yaml>`, and `rms structure <implementation.yaml>` when implementation structure exists, plus the implementation binding's build and verification commands. Use `rms check-compat` when public manifests changed. Treat public-command representation and runnable-surface bypass diagnostics as refactor blockers unless the canonical artifacts declare a real exception.
 13. Summarize:
     - preserved public semantics;
     - internal representation changes;

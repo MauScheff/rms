@@ -82,6 +82,46 @@ architecture:
       - WritingSemanticChangeRecord
     commands:
       - ApplySemanticChange
+      - validate-rms-artifacts
+      - explain-module
+      - diagnose-rms-environment
+      - render-workbench-prompt
+      - plan-module-change
+      - design-rms-system
+      - compose-rms-system
+      - route-rms-work
+      - review-module-diff
+      - analyze-git-impact
+      - gate-rms-change
+      - audit-rms-project
+      - refactor-module-workbench
+      - implement-module-workbench
+      - capture-intent-workbench
+      - evolve-contract-workbench
+      - evidence-workbench
+      - list-workbench-runs
+      - inspect-workbench-run
+      - inspect-latest-workbench-run
+      - init-workbench-config
+      - configure-agent-integration
+      - init-rms-system
+      - add-rms-module
+      - add-rms-capability
+      - check-release-readiness
+      - build-context-packet
+      - build-module-atlas
+      - inspect-implementation-structure
+      - inspect-trace-bundle
+      - plan-machine-change
+      - apply-machine-change
+      - plan-semantic-change
+      - apply-semantic-change
+      - check-semantic-change
+      - diff-semantic-change
+      - check-machine-structure
+      - diff-machine-structure
+      - package-module
+      - verify-implementation
     events:
       - SemanticChangeRecorded
     effects:

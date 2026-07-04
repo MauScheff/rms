@@ -30,6 +30,9 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - lifecycle/order-dependent behavior has a state model, transition table, or transition function;
    - traceable behavior declares message envelopes, transition output, transition records, replay support, and first-bad-transition evidence where applicable.
    - semantic roles, state variants, commands, events, effects, effect results, public entrypoints, and evidence roles are declared in canonical artifacts rather than invented by direct source edits.
+   - public commands in `module.yaml` are represented by the declared implementation machine, parser, adapter, transition, representation, or semantic functions.
+   - runnable app, browser, UI, and CLI surfaces route through declared public entrypoints, parsers, adapters, or boundary machines instead of importing pure/private decision roles directly.
+   - generated `Accept`/`Reject` scaffolds have been replaced or semantically justified when the module publishes product-specific commands.
 9. Check negative cases. Verification should reject or make unrepresentable impossible variants, invalid constructors, malformed boundary input, and illegal state transitions.
 10. Check all declared profile obligations:
    - Stateful: transitions, concurrency, persistence, migration;
@@ -38,4 +41,4 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - Boundary: validation, trust, limits, compatibility.
 11. Check public compatibility against the previous accepted version with `rms check-compat` when manifests changed.
 12. Confirm manifests, glossary, contracts, and operational docs remain accurate.
-13. Produce an evidence summary with pass, fail, skipped, and not-applicable items. For stateful or workflow behavior, name whether transition records, golden timeline tests, replay bundles, `rms trace` checks, first-bad-transition diagnostics, and strict audit were checked. Do not report success without identifying the checks actually run, and do not treat implemented modules as complete while `rms validate --root <root>` reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` for those modules.
+13. Produce an evidence summary with pass, fail, skipped, and not-applicable items. For stateful or workflow behavior, name whether transition records, golden timeline tests, replay bundles, `rms trace` checks, first-bad-transition diagnostics, and strict audit were checked. Do not report success without identifying the checks actually run, and do not treat implemented modules as complete while `rms validate --root <root>` reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, `evidence.semantic-shape-only`, `structure.public-command-not-represented`, `structure.generic-scaffold-command-active`, or `structure.runnable-surface-bypasses-boundary` for those modules.
