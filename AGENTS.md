@@ -5,9 +5,9 @@ This repository follows the Reliable Modular Systems specification.
 ## Operating model
 
 - RMS owns semantics and architecture; agents fill declared role bodies.
-- Use RMS CLI gates before changing meaning or structure: modules, public commands, contracts, laws, states, events, effects, effect results, transitions, roles, public entrypoints, and evidence obligations.
-- Do not hand-create semantic roles, hidden entrypoints, or parallel architecture in source files. Apply the semantic change first with `rms spec apply` or the focused machine change with `rms machine apply`.
-- Runnable UI, CLI, browser, or app surfaces must call the declared public entrypoint, parser, adapter, or boundary machine. Do not put the real product behavior only in an undeclared runnable file while the declared machine remains a generic scaffold.
+- Use RMS CLI gates before changing meaning or structure: modules, public commands, contracts, laws, states, events, effects, effect results, transitions, roles, runnable surfaces, public entrypoints, and evidence obligations.
+- Do not hand-create semantic roles, hidden entrypoints, runnable surfaces, or parallel architecture in source files. Apply the semantic change first with `rms spec apply`, the focused machine change with `rms machine apply`, or the runnable surface declaration with `rms surface apply`.
+- Runnable surfaces adapt outside input into declared RMS commands. They may render and execute declared boundary effects. They must not reimplement domain decisions or call private module internals.
 - Public commands in `module.yaml` must be represented by the declared implementation surface. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
 - Private helpers inside pure roles must stay pure. IO belongs in declared adapter, port, or effect-executor roles as explicit effects and effect results.
 
@@ -26,7 +26,7 @@ When canonical artifacts contradict one another, report architectural drift and 
 ## Before changing code
 
 1. Run `rms diagnose` when starting from an unfamiliar checkout; use `rms diagnose --json` when structured readiness is useful.
-2. Use `rms explain <module>` to understand the target module. Use `rms design --root <root> --task "<task>"` before choosing the first module tree in a fresh intent-only project. Use `rms route <module> --task "<task>"` when the target may be a composite parent or recursive module tree. Use `rms plan <module> --task "<task>"` when planning would help, `rms implement <module> --task "<task>"` when implementation guidance would help, `rms evolve-contract <module> --task "<task>"` when public meaning changes, `rms evidence <module> --task "<task>"` when proof design would help, and `rms context <module> --task "<task>"` before implementation work.
+2. Use `rms explain <module>` to understand the target module. Use `rms design --root <root> --task "<task>"` before choosing the first module tree in a fresh intent-only project. Use `rms route <module> --task "<task>"` when the target may be a composite parent or recursive module tree. Use `rms plan <module> --task "<task>"` when planning would help, `rms implement <module> --task "<task>"` when implementation guidance would help, `rms evolve-contract <module> --task "<task>"` when public meaning changes, `rms evidence <module> --task "<task>"` when proof design would help, `rms surface apply/check <implementation.yaml>` when app/UI/CLI/browser/HTTP/batch entrypoints are added or changed, and `rms context <module> --task "<task>"` before implementation work.
 3. Identify the system, bounded context, and module that own the requested behavior.
 4. Read the target manifest, public contracts, applicable glossary entries, and direct dependency contracts.
 5. Determine the module's declared profiles.
@@ -45,6 +45,7 @@ Before writing implementation code, make the requested behavior concrete enough 
 - Use traceable machine structure where behavior can enter a bad state: workflows orchestrate; machines execute; commands ask; events report; effects touch the world; projections observe; journals explain; replay reproduces; first-bad-transition evidence points to the fix.
 - When an implementation binding exists, declare or preserve command, event, effect, and effect-result envelopes; transition outputs; transition records; journal, timeline, replay-bundle, and first-bad-transition roles where they apply.
 - Parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
+- Declare runnable surfaces in `architecture.surfaces` with `rms surface apply` or `rms spec apply` before adding app, UI, CLI, browser, HTTP, batch, or executable entrypoints.
 - Resolve edge cases first: invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases.
 - Use domain-named role suffixes where the language allows it so inner roles stay unambiguous: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`.
 - Do not invent module, child, or machine names from role/surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `rust`, `swift`, or `js` unless those words are genuinely domain language. Prefer RMS `add-capability` defaults or user-supplied product/capability names.
@@ -74,7 +75,7 @@ Before writing implementation code, make the requested behavior concrete enough 
 
 ## Verification
 
-Use the repository-native commands declared by the implementation binding or project tooling. Prefer `rms review <module>`, `rms validate --root .`, `rms compose --root .`, `rms structure <implementation.yaml>`, `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, `rms trace diagnose <trace-bundle>`, `rms check-compat`, `rms verify <implementation.yaml|composite-module.yaml>`, `rms conformance`, and `rms audit --root .` where applicable. Before release or sharing generated integrations, run `rms release check --root .`.
+Use the repository-native commands declared by the implementation binding or project tooling. Prefer `rms review <module>`, `rms validate --root .`, `rms compose --root .`, `rms structure <implementation.yaml>`, `rms surface check <implementation.yaml> --strict`, `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, `rms trace diagnose <trace-bundle>`, `rms check-compat`, `rms verify <implementation.yaml|composite-module.yaml>`, `rms conformance`, and `rms audit --root .` where applicable. Before release or sharing generated integrations, run `rms release check --root .`.
 
 Before completion, verify as applicable:
 

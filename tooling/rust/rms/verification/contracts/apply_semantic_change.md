@@ -1,6 +1,6 @@
 # Contract Evidence: apply-semantic-change
 
-Promise: `apply-semantic-change` validates `rms/semantic-change/v0.1` and updates laws, contracts, machine declarations, and evidence obligations together.
+Promise: `apply-semantic-change` validates `rms/semantic-change/v0.1` and updates laws, contracts, machine declarations, runnable surface declarations, and evidence obligations together.
 
 Scenario: valid YAML adds a law, public contract, machine transition, and evidence files; a law without evidence is rejected.
 

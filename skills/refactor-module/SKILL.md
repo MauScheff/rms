@@ -9,7 +9,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
 
 1. Run the `inspect-module` workflow for the owning module.
 2. Build a bounded packet with `rms context <module> --task "<task>"` when the CLI is available. Use `rms refactor <module> --task "<task>"` when a refactor prompt would help before editing.
-3. Treat RMS as the semantic and architecture gate. If the refactor requires new laws, contracts, states, commands, events, effects, effect results, transitions, semantic roles, public entrypoints, or evidence obligations, produce and apply an `rms/semantic-change/v0.1` object with `rms spec apply` before editing role bodies. Use `rms machine apply` only for focused inner-machine changes after semantics are already correct.
+3. Treat RMS as the semantic and architecture gate. If the refactor requires new laws, contracts, states, commands, events, effects, effect results, transitions, semantic roles, runnable surfaces, public entrypoints, or evidence obligations, produce and apply an `rms/semantic-change/v0.1` object with `rms spec apply` before editing role bodies. Use `rms machine apply` only for focused inner-machine changes after semantics are already correct; use `rms surface apply/check` for runnable entrypoint changes.
 4. State the public semantics that must be preserved:
    - public commands, queries, events, APIs, and capabilities;
    - invariants and laws;
@@ -38,7 +38,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
    - do not expose private implementation as public contract;
    - do not put context-specific business concepts into the technical kernel;
    - do not introduce undeclared dependencies or effects.
-   - do not move real product behavior into an undeclared runnable surface that bypasses the declared public entrypoint, parser, adapter, or boundary machine.
+   - do not move real product behavior into an undeclared runnable surface that bypasses the declared public entrypoint, parser, adapter, or boundary machine, and do not duplicate domain decisions inside runnable entrypoints.
    - do not keep generic `Accept`/`Reject` scaffold commands as product semantics when public commands are domain-specific.
 10. If public meaning must change to complete the refactor, stop treating the work as a private refactor. Switch to `evolve-contract` or `implement-change` and make compatibility impact explicit.
 11. Add or adjust focused verification evidence:
@@ -47,7 +47,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
    - illegal state transitions are rejected or unrepresentable;
    - boundary validation still rejects malformed input;
    - public contract behavior remains compatible.
-12. Run `rms review <module>` before finalizing when a diff exists. Run `rms validate --root <root>`, `rms spec check <module.yaml|implementation.yaml>`, `rms machine check <implementation.yaml>`, and `rms structure <implementation.yaml>` when implementation structure exists, plus the implementation binding's build and verification commands. Use `rms check-compat` when public manifests changed. Treat public-command representation and runnable-surface bypass diagnostics as refactor blockers unless the canonical artifacts declare a real exception.
+12. Run `rms review <module>` before finalizing when a diff exists. Run `rms validate --root <root>`, `rms spec check <module.yaml|implementation.yaml>`, `rms machine check <implementation.yaml>`, `rms surface check <implementation.yaml> --strict` when runnable surfaces exist, and `rms structure <implementation.yaml>` when implementation structure exists, plus the implementation binding's build and verification commands. Use `rms check-compat` when public manifests changed. Treat public-command representation and runnable-surface diagnostics as refactor blockers unless the canonical artifacts declare a real exception.
 13. Summarize:
     - preserved public semantics;
     - internal representation changes;

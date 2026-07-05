@@ -37,6 +37,7 @@ owns:
     - RMS capability tree scaffold
     - RMS implementation inner structure report
     - RMS local trace bundle report
+    - RMS runnable surface declaration
   data:
     - embedded RMS schemas
     - embedded RMS prompt templates
@@ -53,6 +54,7 @@ owns:
     - generated module atlas artifacts
     - generated implementation structure reports
     - local trace bundle artifacts
+    - generated runnable surface evidence
     - optional workbench configuration
   decisions:
     - manifest-validation-result
@@ -76,6 +78,8 @@ owns:
     - module-atlas-shape
     - implementation-inner-structure-result
     - local-trace-diagnostic-result
+    - runnable-surface-declaration-result
+    - runnable-surface-wiring-result
     - package-inclusion-set
     - conformance-outcome
 
@@ -157,6 +161,10 @@ provides:
       contract: contracts/check-machine-structure.v1.yaml
     - name: diff-machine-structure
       contract: contracts/diff-machine-structure.v1.yaml
+    - name: apply-runnable-surface
+      contract: contracts/apply-runnable-surface.v1.yaml
+    - name: check-runnable-surface
+      contract: contracts/check-runnable-surface.v1.yaml
     - name: package-module
       contract: contracts/package-module.v1.yaml
     - name: verify-implementation
@@ -199,6 +207,10 @@ invariants:
     statement: Source behavior changes require a committed semantic-change record before strict production audit can pass.
     enforced_by: strict-audit-semantic-drift-check
     verified_by: verification/laws/source_drift_has_semantic_record.md
+  - id: runnable-surfaces-enter-through-boundaries
+    statement: Runnable surfaces adapt outside input into declared RMS commands and must not reimplement domain decisions or call private module internals.
+    enforced_by: runnable-surface-structure-diagnostics
+    verified_by: verification/contracts/check_runnable_surface.md
 
 effects:
   - name: read-repository-files

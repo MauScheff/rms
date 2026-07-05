@@ -12,7 +12,7 @@ postconditions:
   - id: advisory-output
     statement: The command produces a bounded prompt or provider response; it does not mutate canonical artifacts.
   - id: semantic-change-requested
-    statement: The prompt asks for rms/semantic-change/v0.1 when laws, contracts, machine structure, effects, or evidence obligations must change.
+    statement: The prompt asks for rms/semantic-change/v0.1 when laws, contracts, machine structure, runnable surfaces, effects, or evidence obligations must change.
 failure_categories:
   - id: unsupported-target
     statement: The target is not an RMS module or implementation manifest.

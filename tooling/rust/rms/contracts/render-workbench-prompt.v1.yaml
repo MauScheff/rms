@@ -14,7 +14,7 @@ postconditions:
   - id: structure-guidance-is-semantic
     statement: Workbench prompts that discuss implementation structure ask for semantic roles, traceable-machine obligations, and evidence before incidental file layout.
   - id: structure-changes-route-through-machine-gate
-    statement: Workbench prompts tell agents to output an RMS machine-change object when states, commands, events, effects, transition functions, public entrypoints, semantic roles, or evidence roles must change, and to edit only declared role bodies when current structure is sufficient.
+    statement: Workbench prompts tell agents to output an RMS semantic-change or focused machine-change object when states, commands, events, effects, transition functions, runnable surfaces, public entrypoints, semantic roles, or evidence roles must change, and to edit only declared role bodies when current structure is sufficient.
   - id: intent-workflow-is-supported
     statement: The supported workflow templates include intent capture for understanding and accepting semantic context before implementation.
   - id: provider-run-is-recorded

@@ -2,7 +2,7 @@ spec: rms/contract/v0.1
 name: apply-semantic-change
 version: 1
 kind: command
-meaning: Validate and apply an rms/semantic-change/v0.1 object to canonical module, contract, implementation, machine, and evidence artifacts.
+meaning: Validate and apply an rms/semantic-change/v0.1 object to canonical module, contract, implementation, machine, runnable surface, and evidence artifacts.
 preconditions:
   - id: target-readable
     statement: The target module.yaml or implementation.yaml is readable and parseable.
@@ -10,7 +10,7 @@ preconditions:
     statement: Exactly one inline JSON, inline YAML, or change file input is supplied.
 postconditions:
   - id: semantics-before-code
-    statement: Laws, contracts, machine declarations, and evidence obligations are updated before implementation role bodies are changed.
+    statement: Laws, contracts, machine declarations, runnable surface declarations, and evidence obligations are updated before implementation role bodies are changed.
   - id: invalid-change-rejected
     statement: Unsupported specs, laws without evidence, contracts without public command surfaces, unsafe evidence paths, invalid machine changes, and unknown transition references are rejected before writes.
   - id: dry-run-does-not-write

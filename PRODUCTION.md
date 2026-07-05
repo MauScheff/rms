@@ -70,7 +70,7 @@ rms add-capability ./modules/<capability> \
   --boundary-binding js
 ```
 
-For app, tool, CLI, local-first reference app, runnable, or smoke-test intents, the boundary module should expose a declared smoke command or executable surface. Do not leave those intents as library-only unless the product explicitly asks for a library.
+For app, tool, UI, CLI, browser, HTTP, batch, mobile, desktop, executable, local-first, runnable, or smoke-test intents, the boundary module should expose a declared runnable surface in `architecture.surfaces`. Use `rms surface apply` or `rms spec apply` before adding the entrypoint, and do not leave those intents as library-only unless the product explicitly asks for a library.
 
 Use `rms add-module` only when the module is truly standalone or when the semantic shape is already clear:
 

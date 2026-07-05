@@ -672,6 +672,12 @@ enum Commands {
         command: MachineCommands,
     },
 
+    /// Apply and check runnable RMS surface declarations.
+    Surface {
+        #[command(subcommand)]
+        command: SurfaceCommands,
+    },
+
     /// Plan, apply, check, and diff RMS semantic changes before code changes.
     Spec {
         #[command(subcommand)]
@@ -1048,6 +1054,15 @@ struct MachineApplyReport {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct SurfaceApplyReport {
+    result: String,
+    implementation: String,
+    dry_run: bool,
+    writes: Vec<String>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 struct MachineDiffReport {
     implementation: String,
     source_revision: Option<String>,
@@ -1146,6 +1161,8 @@ struct SemanticChange {
     roles: Option<MachineRolesChange>,
     #[serde(default)]
     evidence: Option<SemanticEvidenceChange>,
+    #[serde(default)]
+    surfaces: Option<SemanticSurfacesChange>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1198,6 +1215,36 @@ struct SemanticEvidenceItemChange {
     kind: String,
     proves: String,
     path: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct SemanticSurfacesChange {
+    #[serde(default)]
+    add: Vec<SurfaceDeclaration>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SurfaceDeclaration {
+    name: String,
+    kind: String,
+    surface: String,
+    entrypoint: String,
+    #[serde(default)]
+    delegates_to: Option<SurfaceDelegation>,
+    #[serde(default)]
+    effects: Vec<String>,
+    #[serde(default)]
+    evidence: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct SurfaceDelegation {
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(default)]
+    command: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1597,6 +1644,65 @@ enum MachineCommands {
     Diff {
         /// Path to implementation.yaml.
         implementation: PathBuf,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SurfaceCommands {
+    /// Apply a runnable surface declaration to implementation.yaml.
+    Apply {
+        /// Path to implementation.yaml.
+        implementation: PathBuf,
+
+        /// Semantic surface kind.
+        #[arg(long)]
+        kind: String,
+
+        /// Binding or host surface, such as browser, cli, mobile-ui, http, batch, or executable.
+        #[arg(long)]
+        surface: String,
+
+        /// Runnable entrypoint path relative to the module.
+        #[arg(long)]
+        entrypoint: String,
+
+        /// Role name or symbol that the runnable surface delegates to.
+        #[arg(long = "delegates-to")]
+        delegates_to: String,
+
+        /// Public command represented by this surface.
+        #[arg(long)]
+        command: String,
+
+        /// Stable surface declaration name. Defaults from module and surface.
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Declared boundary effect used by this surface.
+        #[arg(long = "effect")]
+        effects: Vec<String>,
+
+        /// Concrete evidence path proving the surface routes through the boundary.
+        #[arg(long = "evidence")]
+        evidence: Vec<String>,
+
+        /// Validate and report planned artifact changes without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Check runnable surface declarations and wiring.
+    Check {
+        /// Path to implementation.yaml.
+        implementation: PathBuf,
+
+        /// Treat runnable-surface warnings as failures.
+        #[arg(long)]
+        strict: bool,
 
         /// Emit machine-readable JSON.
         #[arg(long)]
@@ -2427,7 +2533,7 @@ impl PromptKind {
                 "Treat RMS as the semantic and architecture gate: meaning changes require an RMS semantic-change object and `rms spec apply`; direct file edits may only fill declared role bodies.",
                 "Restate the requested outcome in the owning context's domain language.",
                 "Check whether the task reveals a new honest module boundary before assuming the current module is sufficient.",
-                "Identify the owning module and smallest affected public surface.",
+                "Identify the owning module and smallest affected public semantic or runnable surface.",
                 "Classify the change as private implementation, invariant/domain policy, public contract, dependency/effect, state/migration, or workflow.",
                 "Name affected invariants, effects, compatibility promises, and recovery paths.",
                 "Choose semantic shape before file layout: representation, message envelopes, transition outputs, transition records, ports, adapters, trace roles, and evidence.",
@@ -2440,7 +2546,7 @@ impl PromptKind {
                 "Propose the smallest honest module set; do not create a module for every noun.",
                 "Assign each module a semantic shape: domain-engine, boundary-adapter, runtime-monitor, workflow, storage-adapter, integration-adapter, or composite.",
                 "Separate pure decisions from external effects, and name required module dependencies.",
-                "Define representation obligations: closed variants, validated values, commands, states, events, accepted/rejected outcomes, and boundary schemas.",
+                "Define representation obligations: closed variants, validated values, commands, states, events, accepted/rejected outcomes, boundary schemas, and runnable surfaces when outside input reaches the module.",
                 "Resolve semantic edge cases before file layout: invalid commands, illegal transitions, terminal states, stale or conflicting state, parser failures, numeric overflow or rounding, and effect failure categories.",
                 "Define focused evidence: laws, contract scenarios, boundary parser tests, numeric boundary tests, runtime monitor trigger/non-trigger cases, transition records, replay bundles, first-bad-transition proof, fuzz/property checks, recovery, or reconciliation.",
                 "Treat provider output and generated plans as advisory evidence until reflected in canonical artifacts.",
@@ -2454,21 +2560,21 @@ impl PromptKind {
             ],
             PromptKind::Review => &[
                 "Review the diff against the module manifest, public contracts, direct dependencies, declared effects, profiles, and verification evidence.",
-                "Flag semantic roles, state variants, transitions, effects, public entrypoints, parsers, or evidence added by hand instead of through RMS CLI artifacts as architecture-gate bypasses.",
+                "Flag semantic roles, state variants, transitions, effects, runnable surfaces, public entrypoints, parsers, or evidence added by hand instead of through RMS CLI artifacts as architecture-gate bypasses.",
                 "Find behavioral regressions, boundary violations, undeclared effects or dependencies, compatibility drift, missing evidence, and stale canonical artifacts.",
                 "Prioritize findings by severity and include file or artifact references when possible.",
                 "Do not treat generated prose, issue text, or incidental implementation shape as architectural authority.",
             ],
             PromptKind::Refactor => &[
                 "Preserve public contracts, invariants, declared effects, compatibility, and verification meaning.",
-                "If refactoring reveals new laws, contracts, states, commands, events, effects, public entrypoints, semantic roles, or evidence obligations, return an RMS semantic-change object before editing files.",
+                "If refactoring reveals new laws, contracts, states, commands, events, effects, runnable surfaces, public entrypoints, semantic roles, or evidence obligations, return an RMS semantic-change object before editing files.",
                 "Identify weak representation, duplicated concepts, decision/effect coupling, ownership confusion, boundary leakage, lifecycle clutter, or semantic residue.",
                 "Prefer semantic roles over conventional helper names: representation, message envelopes, transition output, transition records, ports, adapters, trace roles, and evidence.",
                 "Prefer deletion, inlining, renaming, or representation strengthening before new abstractions.",
                 "Escalate to implement-change or evolve-contract if public meaning must change.",
             ],
             PromptKind::Implement => &[
-                "RMS owns semantics and architecture, and agents fill declared roles: use `rms spec plan/apply/check` when laws, contracts, machine structure, effects, or evidence obligations change, then edit only declared role files.",
+                "RMS owns semantics and architecture, and agents fill declared roles: use `rms spec plan/apply/check` when laws, contracts, machine structure, runnable surfaces, effects, or evidence obligations change, then edit only declared role files.",
                 "Restate the requested outcome in the owning context's domain language.",
                 "Check whether accepted intent and rationale already exist for this semantic change; if not, stop and run intent capture before coding.",
                 "Classify the change as private implementation, invariant or domain policy, public contract, dependency or effect, state or migration, or workflow.",
@@ -2491,7 +2597,7 @@ impl PromptKind {
                 "Ask only the questions needed to resolve product, domain, ownership, source-of-truth, lifecycle, compatibility, or operational ambiguity.",
                 "Synthesize accepted intent into candidate contracts, laws, invariants, glossary terms, ownership, effects, compatibility impact, and proof lanes.",
                 "Separate raw conversation notes from accepted rationale; raw prompt output is evidence, not semantic authority.",
-                "Name the canonical artifacts that must change before implementation: intent notes, decision records, glossary, module manifest, contracts, laws, and verification evidence.",
+                "Name the canonical artifacts that must change before implementation: intent notes, decision records, glossary, module manifest, contracts, laws, runnable surface declarations, and verification evidence.",
                 "Stop at an implementation gate when accepted intent is missing or contradictions exist among canonical artifacts.",
             ],
             PromptKind::EvolveContract => &[
@@ -2507,7 +2613,7 @@ impl PromptKind {
                 "Do not hide a semantic change as pruning.",
             ],
             PromptKind::Evidence => &[
-                "Identify the changed promise and the evidence category it belongs to: law, contract, scenario, boundary, runtime, reconciliation, or migration.",
+                "Identify the changed promise and the evidence category it belongs to: law, contract, scenario, boundary, runnable surface, runtime, reconciliation, or migration.",
                 "For machine-shaped behavior, request transition records, replay bundles, golden timelines, effect-result handling, and first-bad-transition proof where applicable.",
                 "Prefer the smallest evidence that strongly demonstrates the promise.",
                 "Include negative evidence for impossible variants, invalid constructors, malformed boundary input, and illegal transitions when applicable.",
@@ -4976,6 +5082,36 @@ fn main() -> Result<()> {
                 json,
             } => run_machine_diff(&implementation, json),
         },
+        Commands::Surface { command } => match command {
+            SurfaceCommands::Apply {
+                implementation,
+                kind,
+                surface,
+                entrypoint,
+                delegates_to,
+                command,
+                name,
+                effects,
+                evidence,
+                dry_run,
+            } => run_surface_apply(SurfaceApplyRequest {
+                implementation,
+                kind,
+                surface,
+                entrypoint,
+                delegates_to,
+                command,
+                name,
+                effects,
+                evidence,
+                dry_run,
+            }),
+            SurfaceCommands::Check {
+                implementation,
+                strict,
+                json,
+            } => run_surface_check(&implementation, strict, json),
+        },
         Commands::Spec { command } => match command {
             SpecCommands::Plan {
                 target,
@@ -5379,8 +5515,9 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
                 "Use `rms audit --root {}` and `--strict` before claiming production-ready RMS software.",
                 root.display()
             ),
-            "Use `rms spec plan|apply|check <module.yaml|implementation.yaml>` when product meaning needs new laws, contracts, states, transitions, effects, or evidence obligations.".to_string(),
+            "Use `rms spec plan|apply|check <module.yaml|implementation.yaml>` when product meaning needs new laws, contracts, states, transitions, runnable surfaces, effects, or evidence obligations.".to_string(),
             "Use `rms machine plan|apply|check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct.".to_string(),
+            "Use `rms surface apply|check <implementation.yaml>` when app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints are added or changed.".to_string(),
             "Use `rms structure <implementation.yaml>` to inspect declared machine, role, and evidence structure.".to_string(),
             "Use `rms trace check|replay|diagnose <trace-bundle>` to inspect local transition evidence without a runtime.".to_string(),
             "Use `rms verify <implementation.yaml>` when an implementation binding declares verification, or `rms verify <composite-module.yaml>` for composite rollups.".to_string(),
@@ -6005,10 +6142,19 @@ fn append_design_recommendations(
     let mentions_decision = decision_terms.iter().any(|term| lower.contains(term));
     let mentions_monitor = monitor_terms.iter().any(|term| lower.contains(term));
     let mentions_runnable_surface = [
+        "browser",
+        "web",
+        "ui",
         "app",
         "tool",
         "cli",
+        "command-line",
         "command line",
+        "mobile",
+        "desktop",
+        "http",
+        "batch",
+        "executable",
         "local-first reference app",
         "local-first",
         "runnable",
@@ -6055,7 +6201,7 @@ fn append_design_recommendations(
         writeln!(out, "- Keep rendering, input, storage, timers, time, randomness, process, network, and external-service effects outside the pure transition module.")?;
     }
     if mentions_runnable_surface {
-        writeln!(out, "- Because the intent names an app/tool/runnable surface, include a boundary adapter with a declared smoke command or executable surface; do not leave the result as library-only unless the user explicitly requested a library.")?;
+        writeln!(out, "- Because the intent names an app/tool/runnable surface, include a boundary adapter with a declared runnable surface via `rms surface apply` or `rms spec apply`, plus smoke evidence; do not leave the result as library-only unless the user explicitly requested a library.")?;
         writeln!(out, "- Preferred scaffold for a runnable product app is a composite capability with at least one boundary child and one domain/workflow child. A single-module app is acceptable only when `module.yaml` or `implementation.yaml` records the semantic single-module justification.")?;
     }
     writeln!(out, "- Choose `domain-engine` when the module owns pure decisions, invariants, transitions, or traceable rules.")?;
@@ -10374,6 +10520,7 @@ fn validate_machine_gate_structure(
     inspect_effect_executor_coverage(manifest, diagnostics);
     inspect_effect_result_handling(manifest, diagnostics);
     inspect_public_command_representation(manifest, diagnostics);
+    inspect_runnable_surface_declarations(manifest, diagnostics);
     inspect_runnable_surface_boundary_use(manifest, diagnostics);
 }
 
@@ -11165,6 +11312,7 @@ fn inspect_runnable_surface_boundary_use(
     let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
     let boundary_refs = boundary_entrypoint_references(manifest);
     let pure_refs = private_decision_role_references(manifest);
+    let declared_semantic_source = read_declared_semantic_surface_sources(manifest, false);
     for reference in runnable_refs {
         let path = base.join(&reference);
         let Ok(source) = fs::read_to_string(&path) else {
@@ -11184,6 +11332,29 @@ fn inspect_runnable_surface_boundary_use(
         let imports_private_decision_role = pure_refs
             .iter()
             .any(|private_role| source_mentions_path_or_stem(&source, private_role));
+        if !uses_boundary {
+            push_unique_warning(
+                diagnostics,
+                "structure.runnable-surface-not-wired",
+                &manifest.path,
+                format!(
+                    "runnable surface `{reference}` does not reference the declared boundary adapter, parser, transition, or public entrypoint"
+                ),
+            );
+        }
+        if imports_private_decision_role {
+            push_unique_warning(
+                diagnostics,
+                "structure.runnable-surface-private-domain-access",
+                &manifest.path,
+                format!(
+                    "runnable surface `{reference}` imports or references private decision roles instead of a declared boundary entrypoint"
+                ),
+            );
+        }
+        let duplicates_domain_logic =
+            runnable_surface_looks_like_domain_logic(&source, &declared_semantic_source)
+                && !uses_boundary;
         if imports_private_decision_role && !uses_boundary {
             push_unique_warning(
                 diagnostics,
@@ -11194,7 +11365,177 @@ fn inspect_runnable_surface_boundary_use(
                 ),
             );
         }
+        if duplicates_domain_logic {
+            push_unique_warning(
+                diagnostics,
+                "structure.runnable-surface-domain-logic-duplication",
+                &manifest.path,
+                format!(
+                    "runnable surface `{reference}` appears to define core decision logic while disconnected from the declared boundary"
+                ),
+            );
+            push_unique_warning(
+                diagnostics,
+                "structure.runnable-surface-bypasses-boundary",
+                &manifest.path,
+                format!(
+                    "runnable surface `{reference}` appears to reimplement domain decisions instead of routing through the declared boundary adapter or public entrypoint"
+                ),
+            );
+        }
     }
+}
+
+fn inspect_runnable_surface_declarations(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if get_str(&manifest.value, &["architecture", "shape"]) != Some("boundary-adapter") {
+        return;
+    }
+    let declarations = architecture_surface_declarations(manifest);
+    if declarations.is_empty() && module_mentions_runnable_surface_intent(manifest) {
+        push_unique_warning(
+            diagnostics,
+            "structure.runnable-surface-missing",
+            &manifest.path,
+            "boundary implementation appears to own a runnable app/tool/UI surface but does not declare `architecture.surfaces`",
+        );
+    }
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    for declaration in declarations {
+        if declaration.evidence.is_empty()
+            || !declaration
+                .evidence
+                .iter()
+                .any(|path| concrete_evidence_path_exists(&base.join(path)))
+        {
+            push_unique_warning(
+                diagnostics,
+                "structure.runnable-surface-evidence-missing",
+                &manifest.path,
+                format!(
+                    "runnable surface `{}` should reference concrete evidence proving delegation through the boundary",
+                    declaration.name
+                ),
+            );
+        }
+    }
+}
+
+fn architecture_surface_declarations(manifest: &LoadedManifest) -> Vec<SurfaceDeclaration> {
+    let Some(items) =
+        get_path(&manifest.value, &["architecture", "surfaces"]).and_then(YamlValue::as_sequence)
+    else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| serde_yaml::from_value(item.clone()).ok())
+        .collect()
+}
+
+fn module_mentions_runnable_surface_intent(manifest: &LoadedManifest) -> bool {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let Some(module) = load_binding_module_manifest(manifest, base) else {
+        return false;
+    };
+    let mut text = String::new();
+    if let Some(purpose) = get_str(&module.value, &["module", "purpose"]) {
+        text.push_str(purpose);
+        text.push('\n');
+    }
+    for concept in get_string_array(&module.value, &["owns", "concepts"]) {
+        text.push_str(&concept);
+        text.push('\n');
+    }
+    semantic_name_contains_any(
+        &text,
+        &[
+            "app",
+            "tool",
+            "ui",
+            "cli",
+            "browser",
+            "web",
+            "mobile",
+            "desktop",
+            "runnable",
+            "local-first",
+            "smoke",
+        ],
+    )
+}
+
+fn runnable_surface_looks_like_domain_logic(source: &str, declared_semantic_source: &str) -> bool {
+    let runnable_functions = source_function_names(source);
+    if runnable_functions.is_empty() {
+        return false;
+    }
+    let declared_functions = source_function_names(declared_semantic_source);
+    if runnable_functions.iter().any(|name| {
+        declared_functions.contains(name) && semantic_function_name_is_decision_like(name)
+    }) {
+        return true;
+    }
+    runnable_functions
+        .iter()
+        .filter(|name| semantic_function_name_is_decision_like(name))
+        .count()
+        >= 2
+}
+
+fn source_function_names(source: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        for marker in ["function ", "export function "] {
+            if let Some(rest) = trimmed.strip_prefix(marker) {
+                let name = rest
+                    .chars()
+                    .take_while(|character| {
+                        character.is_ascii_alphanumeric() || *character == '_' || *character == '$'
+                    })
+                    .collect::<String>();
+                if !name.is_empty() {
+                    names.insert(name);
+                }
+            }
+        }
+        if let Some((left, _right)) = trimmed.split_once("=>") {
+            if let Some((_, name)) = left.rsplit_once(" ") {
+                let name = name
+                    .trim_matches(|character: char| !character.is_ascii_alphanumeric())
+                    .to_string();
+                if !name.is_empty() {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+    names
+}
+
+fn semantic_function_name_is_decision_like(name: &str) -> bool {
+    semantic_name_contains_any(
+        name,
+        &[
+            "create",
+            "compute",
+            "calculate",
+            "decide",
+            "resolve",
+            "evaluate",
+            "validate",
+            "transition",
+            "apply",
+            "mask",
+            "alpha",
+            "discount",
+            "authorize",
+            "reserve",
+        ],
+    )
 }
 
 fn runnable_surface_role_names() -> &'static [&'static str] {
@@ -11217,6 +11558,9 @@ fn runnable_surface_role_names() -> &'static [&'static str] {
 
 fn runnable_surface_references(manifest: &LoadedManifest) -> Vec<String> {
     let mut references = Vec::new();
+    for declaration in architecture_surface_declarations(manifest) {
+        references.push(declaration.entrypoint);
+    }
     for role in runnable_surface_role_names() {
         references.extend(structure_role_paths(manifest, role));
     }
@@ -11253,6 +11597,22 @@ fn boundary_entrypoint_references(manifest: &LoadedManifest) -> Vec<String> {
     }
     for role in ["adapter", "transition"] {
         references.extend(structure_role_paths(manifest, role));
+    }
+    for declaration in architecture_surface_declarations(manifest) {
+        if let Some(symbol) = declaration
+            .delegates_to
+            .as_ref()
+            .and_then(|delegation| delegation.symbol.as_deref())
+        {
+            references.push(symbol.split('#').next().unwrap_or(symbol).to_string());
+        }
+        if let Some(role) = declaration
+            .delegates_to
+            .as_ref()
+            .and_then(|delegation| delegation.role.as_deref())
+        {
+            references.extend(structure_role_paths(manifest, role));
+        }
     }
     references.sort();
     references.dedup();
@@ -19615,6 +19975,11 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "structure.public-command-not-represented"
                 | "structure.generic-scaffold-command-active"
                 | "structure.runnable-surface-bypasses-boundary"
+                | "structure.runnable-surface-missing"
+                | "structure.runnable-surface-not-wired"
+                | "structure.runnable-surface-domain-logic-duplication"
+                | "structure.runnable-surface-private-domain-access"
+                | "structure.runnable-surface-evidence-missing"
         )
         || check.starts_with("trace.")
 }
@@ -21144,6 +21509,392 @@ fn print_machine_apply_report(report: &MachineApplyReport) {
     }
 }
 
+fn run_surface_apply(request: SurfaceApplyRequest) -> Result<()> {
+    let mut manifest = load_manifest(&request.implementation)?;
+    if get_str(&manifest.value, &["spec"]) != Some("rms/implementation/v0.1") {
+        bail!(
+            "`{}` is not an RMS implementation binding",
+            request.implementation.display()
+        );
+    }
+    let declaration = surface_declaration_from_request(&manifest, &request);
+    let diagnostics = validate_surface_declaration(&manifest, &declaration);
+    let writes = planned_surface_apply_writes(&manifest, &declaration);
+    let has_errors = diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error);
+
+    if !has_errors && !request.dry_run {
+        apply_surface_declaration_to_manifest(&mut manifest.value, &declaration);
+        write_yaml_manifest(&manifest)?;
+        write_surface_evidence_placeholders(&manifest, &declaration)?;
+    }
+
+    let report = SurfaceApplyReport {
+        result: if has_errors { "fail" } else { "pass" }.to_string(),
+        implementation: request.implementation.display().to_string(),
+        dry_run: request.dry_run,
+        writes,
+        diagnostics,
+    };
+    print_surface_apply_report(&report);
+    if report.result == "fail" {
+        bail!("RMS surface declaration rejected");
+    }
+    Ok(())
+}
+
+fn surface_declaration_from_request(
+    manifest: &LoadedManifest,
+    request: &SurfaceApplyRequest,
+) -> SurfaceDeclaration {
+    let module = get_str(&manifest.value, &["module"]).unwrap_or("module");
+    let evidence = if request.evidence.is_empty() {
+        vec!["verification/boundaries/runnable_surface_routes_through_boundary.md".to_string()]
+    } else {
+        request.evidence.clone()
+    };
+    SurfaceDeclaration {
+        name: request.name.clone().unwrap_or_else(|| {
+            format!(
+                "{}-{}",
+                semantic_id_segment(module),
+                semantic_id_segment(&request.surface)
+            )
+        }),
+        kind: request.kind.clone(),
+        surface: request.surface.clone(),
+        entrypoint: request.entrypoint.clone(),
+        delegates_to: Some(surface_delegation_from_input(
+            &request.delegates_to,
+            &request.command,
+        )),
+        effects: request.effects.clone(),
+        evidence,
+    }
+}
+
+fn surface_delegation_from_input(input: &str, command: &str) -> SurfaceDelegation {
+    let mut delegation = SurfaceDelegation {
+        role: None,
+        symbol: None,
+        command: Some(command.to_string()),
+    };
+    if input.contains('#')
+        || input.contains('/')
+        || input.contains('\\')
+        || input.ends_with(".mjs")
+        || input.ends_with(".js")
+        || input.ends_with(".rs")
+        || input.ends_with(".swift")
+    {
+        delegation.symbol = Some(input.to_string());
+        delegation.role = Some(if input.to_ascii_lowercase().contains("parser") {
+            "parser".to_string()
+        } else {
+            "adapter".to_string()
+        });
+    } else {
+        delegation.role = Some(input.to_string());
+    }
+    delegation
+}
+
+fn validate_surface_declaration(
+    manifest: &LoadedManifest,
+    declaration: &SurfaceDeclaration,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    if declaration.kind != "runnable-boundary" {
+        diagnostics.push(error(
+            "surface.kind",
+            &manifest.path,
+            format!(
+                "unsupported surface kind `{}`; expected `runnable-boundary`",
+                declaration.kind
+            ),
+        ));
+    }
+    if !is_supported_surface_binding(&declaration.surface) {
+        diagnostics.push(error(
+            "surface.surface",
+            &manifest.path,
+            format!(
+                "unsupported surface `{}`; expected browser, cli, mobile-ui, desktop-ui, http, batch, or executable",
+                declaration.surface
+            ),
+        ));
+    }
+    if !is_stable_semantic_id(&declaration.name) {
+        diagnostics.push(error(
+            "surface.name",
+            &manifest.path,
+            format!(
+                "surface name `{}` is not a stable semantic id",
+                declaration.name
+            ),
+        ));
+    }
+    if !is_safe_relative_artifact_path(&declaration.entrypoint) {
+        diagnostics.push(error(
+            "surface.entrypoint",
+            &manifest.path,
+            format!(
+                "surface entrypoint `{}` must be relative and stay inside the module",
+                declaration.entrypoint
+            ),
+        ));
+    }
+    let Some(delegation) = &declaration.delegates_to else {
+        diagnostics.push(error(
+            "surface.delegates-to",
+            &manifest.path,
+            "runnable surfaces must declare `delegates_to`",
+        ));
+        return diagnostics;
+    };
+    if delegation
+        .role
+        .as_deref()
+        .is_none_or(|role| role.trim().is_empty())
+        && delegation
+            .symbol
+            .as_deref()
+            .is_none_or(|symbol| symbol.trim().is_empty())
+    {
+        diagnostics.push(error(
+            "surface.delegates-to",
+            &manifest.path,
+            "runnable surfaces must delegate to a declared role or symbol",
+        ));
+    }
+    if delegation
+        .command
+        .as_deref()
+        .is_none_or(|command| command.trim().is_empty())
+    {
+        diagnostics.push(error(
+            "surface.command",
+            &manifest.path,
+            "runnable surfaces must name the public command they represent",
+        ));
+    }
+    if let Some(command) = delegation.command.as_deref() {
+        if let Some(module) = load_binding_module_manifest(
+            manifest,
+            manifest.path.parent().unwrap_or_else(|| Path::new(".")),
+        ) {
+            let public_commands = module_provided_command_names(&module.value);
+            if !public_commands.is_empty() && !public_commands.iter().any(|item| item == command) {
+                diagnostics.push(warning(
+                    "surface.command-not-public",
+                    &manifest.path,
+                    format!(
+                        "surface command `{command}` is not published by the owning module public surface"
+                    ),
+                ));
+            }
+        }
+    }
+    for evidence in &declaration.evidence {
+        if !is_safe_relative_artifact_path(evidence) {
+            diagnostics.push(error(
+                "surface.evidence-path",
+                &manifest.path,
+                format!("surface evidence path `{evidence}` must stay inside the module"),
+            ));
+        }
+    }
+    diagnostics
+}
+
+fn is_supported_surface_binding(surface: &str) -> bool {
+    matches!(
+        surface,
+        "browser" | "cli" | "mobile-ui" | "desktop-ui" | "http" | "batch" | "executable"
+    )
+}
+
+fn planned_surface_apply_writes(
+    manifest: &LoadedManifest,
+    declaration: &SurfaceDeclaration,
+) -> Vec<String> {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let mut writes = vec![manifest.path.display().to_string()];
+    for evidence in &declaration.evidence {
+        writes.push(base.join(evidence).display().to_string());
+    }
+    writes.sort();
+    writes.dedup();
+    writes
+}
+
+fn apply_surface_declaration_to_manifest(value: &mut YamlValue, declaration: &SurfaceDeclaration) {
+    append_unique_surface_declaration(value, declaration);
+    append_unique_yaml_string_path(
+        value,
+        &["architecture", "roles", "runnable_surface"],
+        &declaration.entrypoint,
+    );
+}
+
+fn append_unique_surface_declaration(value: &mut YamlValue, declaration: &SurfaceDeclaration) {
+    let sequence = ensure_yaml_sequence_path(value, &["architecture", "surfaces"]);
+    let rendered = surface_declaration_yaml(declaration);
+    if sequence.iter().any(|existing| {
+        get_str(existing, &["name"]) == Some(declaration.name.as_str())
+            || get_str(existing, &["entrypoint"]) == Some(declaration.entrypoint.as_str())
+    }) {
+        for existing in sequence.iter_mut() {
+            if get_str(existing, &["name"]) == Some(declaration.name.as_str())
+                || get_str(existing, &["entrypoint"]) == Some(declaration.entrypoint.as_str())
+            {
+                *existing = rendered;
+                break;
+            }
+        }
+    } else {
+        sequence.push(rendered);
+    }
+}
+
+fn surface_declaration_yaml(declaration: &SurfaceDeclaration) -> YamlValue {
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(
+        yaml_key("name"),
+        YamlValue::String(declaration.name.clone()),
+    );
+    mapping.insert(
+        yaml_key("kind"),
+        YamlValue::String(declaration.kind.clone()),
+    );
+    mapping.insert(
+        yaml_key("surface"),
+        YamlValue::String(declaration.surface.clone()),
+    );
+    mapping.insert(
+        yaml_key("entrypoint"),
+        YamlValue::String(declaration.entrypoint.clone()),
+    );
+    if let Some(delegation) = &declaration.delegates_to {
+        let mut delegate = serde_yaml::Mapping::new();
+        if let Some(role) = &delegation.role {
+            delegate.insert(yaml_key("role"), YamlValue::String(role.clone()));
+        }
+        if let Some(symbol) = &delegation.symbol {
+            delegate.insert(yaml_key("symbol"), YamlValue::String(symbol.clone()));
+        }
+        if let Some(command) = &delegation.command {
+            delegate.insert(yaml_key("command"), YamlValue::String(command.clone()));
+        }
+        mapping.insert(yaml_key("delegates_to"), YamlValue::Mapping(delegate));
+    }
+    if !declaration.effects.is_empty() {
+        mapping.insert(
+            yaml_key("effects"),
+            yaml_string_sequence(&declaration.effects),
+        );
+    }
+    if !declaration.evidence.is_empty() {
+        mapping.insert(
+            yaml_key("evidence"),
+            yaml_string_sequence(&declaration.evidence),
+        );
+    }
+    YamlValue::Mapping(mapping)
+}
+
+fn write_surface_evidence_placeholders(
+    manifest: &LoadedManifest,
+    declaration: &SurfaceDeclaration,
+) -> Result<()> {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    for evidence in &declaration.evidence {
+        let path = base.join(evidence);
+        if path.exists() {
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create `{}`", parent.display()))?;
+        }
+        fs::write(&path, render_surface_evidence(manifest, declaration))
+            .with_context(|| format!("failed to write `{}`", path.display()))?;
+    }
+    Ok(())
+}
+
+fn render_surface_evidence(manifest: &LoadedManifest, declaration: &SurfaceDeclaration) -> String {
+    let module = get_str(&manifest.value, &["module"]).unwrap_or("<unknown>");
+    let command = declaration
+        .delegates_to
+        .as_ref()
+        .and_then(|delegation| delegation.command.as_deref())
+        .unwrap_or("<unknown>");
+    let delegate = declaration
+        .delegates_to
+        .as_ref()
+        .and_then(|delegation| delegation.symbol.as_deref().or(delegation.role.as_deref()))
+        .unwrap_or("<unknown>");
+    format!(
+        "# Boundary Evidence: runnable surface routes through boundary\n\nPromise:\n\n- Runnable surface `{surface}` enters module `{module}` through declared RMS command `{command}`.\n- Entrypoint `{entrypoint}` delegates to `{delegate}` before pure decisions run.\n- Product behavior is not reimplemented only in the runnable surface.\n\nCommand/tool:\n\n- `rms surface check implementation.yaml --strict`\n- `rms structure implementation.yaml`\n- `rms verify implementation.yaml`\n\nExpected result:\n\n- Surface wiring references the declared boundary adapter, parser, or public entrypoint.\n- Malformed boundary input is parsed/rejected before domain delegation.\n- Declared boundary effects remain behind adapter, port, or effect-executor roles.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        surface = markdown_inline(&declaration.name),
+        module = markdown_inline(module),
+        command = markdown_inline(command),
+        entrypoint = markdown_inline(&declaration.entrypoint),
+        delegate = markdown_inline(delegate),
+    )
+}
+
+fn print_surface_apply_report(report: &SurfaceApplyReport) {
+    println!("RMS surface apply: {}", report.result);
+    println!("implementation: {}", report.implementation);
+    println!("dry_run: {}", report.dry_run);
+    println!("writes:");
+    for write in &report.writes {
+        println!("  - {write}");
+    }
+    if !report.diagnostics.is_empty() {
+        println!("findings:");
+        for diagnostic in &report.diagnostics {
+            println!(
+                "  {} [{}] {}",
+                severity_label(diagnostic.severity),
+                diagnostic.check,
+                diagnostic.message
+            );
+        }
+    }
+}
+
+fn run_surface_check(implementation: &Path, strict: bool, json_output: bool) -> Result<()> {
+    let mut report = build_structure_report(implementation)?;
+    if strict
+        && report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| surface_blocking_diagnostic(&diagnostic.check))
+    {
+        report.result = "fail".to_string();
+    }
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_structure_report(&report);
+    }
+    if report.result == "fail" {
+        bail!("RMS surface check failed");
+    }
+    Ok(())
+}
+
+fn surface_blocking_diagnostic(check: &str) -> bool {
+    check.starts_with("structure.runnable-surface")
+        || check == "structure.boundary-hidden-workflow"
+        || check == "structure.boundary-transition-trace-incomplete"
+        || check == "structure.boundary-state-not-evidenced"
+}
+
 fn run_machine_check(implementation: &Path, strict: bool, json_output: bool) -> Result<()> {
     let mut report = build_structure_report(implementation)?;
     if strict
@@ -21299,7 +22050,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out)?;
     writeln!(out, "## Operating Rule")?;
     writeln!(out, "RMS owns semantics and architecture. Agents fill declared role bodies. If meaning changes, return an `rms/semantic-change/v0.1` object; do not encode behavior only in source files.")?;
-    writeln!(out, "Laws, contracts, machine transitions, effects, and evidence obligations come before implementation code. Provider output is advisory until `rms spec apply` updates canonical artifacts and records the exact applied change under `verification/changes/`.")?;
+    writeln!(out, "Laws, contracts, machine transitions, runnable surfaces, effects, and evidence obligations come before implementation code. Provider output is advisory until `rms spec apply` updates canonical artifacts and records the exact applied change under `verification/changes/`.")?;
     writeln!(out, "Ask clarifying questions only when needed. Otherwise infer the smallest coherent semantic model from the task, name edge cases and must-never-happen conditions, and encode them in the semantic-change object.")?;
     writeln!(out, "For external truth, include reconciliation or recovery evidence when outcomes can be unknown, duplicate, stale, partial, conflicting, delayed, or later corrected.")?;
     writeln!(out)?;
@@ -21337,14 +22088,19 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "    add: []")?;
     writeln!(out, "  transitions:")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "surfaces:")?;
+    writeln!(out, "  add: []")?;
     writeln!(out, "evidence:")?;
     writeln!(out, "  add: []")?;
     writeln!(out, "```")?;
+    writeln!(out)?;
+    writeln!(out, "Surface add entries use `name`, `kind: runnable-boundary`, `surface`, `entrypoint`, `delegates_to.role` or `delegates_to.symbol`, `delegates_to.command`, optional `effects`, and `evidence`. Use them only when an app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoint is part of the semantic change.")?;
     writeln!(out)?;
     writeln!(out, "## Semantic Gate Checklist")?;
     for item in [
         "Each new behavior has a law, public contract, machine transition, effect, rejection, or evidence obligation before code changes.",
         "Effects have adapter, port, effect-executor, or explicit delegation roles.",
+        "Runnable app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints are declared as surfaces before files own product behavior.",
         "Evidence names the promise, scenario, command/tool, expected result, source revision, and related law/contract/machine item.",
         "`rms spec apply` records the exact semantic-change object under `verification/changes/`; command logs with placeholders are not evidence.",
         "Pure transitions reject illegal states instead of throwing or doing IO.",
@@ -22286,11 +23042,15 @@ fn validate_semantic_change(
         .evidence
         .as_ref()
         .is_some_and(|evidence| !evidence.add.is_empty());
-    if !has_laws && !has_contracts && change.machine.is_none() && !has_evidence {
+    let has_surfaces = change
+        .surfaces
+        .as_ref()
+        .is_some_and(|surfaces| !surfaces.add.is_empty());
+    if !has_laws && !has_contracts && change.machine.is_none() && !has_evidence && !has_surfaces {
         diagnostics.push(error(
             "semantic-change.empty",
             &context.target,
-            "semantic change must add a law, contract, machine change, or evidence obligation",
+            "semantic change must add a law, contract, machine change, runnable surface, or evidence obligation",
         ));
     }
 
@@ -22302,6 +23062,7 @@ fn validate_semantic_change(
     validate_semantic_laws(context, change, evidence_items, &mut diagnostics);
     validate_semantic_contracts(context, change, evidence_items, &mut diagnostics);
     validate_semantic_evidence(context, evidence_items, &mut diagnostics);
+    validate_semantic_surfaces(context, change, &mut diagnostics);
     diagnostics
 }
 
@@ -22454,6 +23215,27 @@ fn validate_semantic_evidence(
     }
 }
 
+fn validate_semantic_surfaces(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(surfaces) = &change.surfaces else {
+        return;
+    };
+    let Some(implementation) = context.implementation.as_ref() else {
+        diagnostics.push(error(
+            "surface.implementation-missing",
+            &context.target,
+            "semantic surface changes require an implementation binding",
+        ));
+        return;
+    };
+    for declaration in &surfaces.add {
+        diagnostics.extend(validate_surface_declaration(implementation, declaration));
+    }
+}
+
 fn semantic_machine_change_to_machine_change(
     change: &SemanticChange,
     implementation: Option<&LoadedManifest>,
@@ -22525,6 +23307,13 @@ fn planned_spec_apply_writes(
     {
         writes.extend(planned_machine_apply_writes(implementation, machine_change));
     }
+    if let (Some(implementation), Some(surfaces)) =
+        (context.implementation.as_ref(), change.surfaces.as_ref())
+    {
+        for declaration in &surfaces.add {
+            writes.extend(planned_surface_apply_writes(implementation, declaration));
+        }
+    }
     writes.sort();
     writes.dedup();
     writes
@@ -22535,6 +23324,11 @@ fn apply_semantic_change(
     change: &SemanticChange,
     machine_change: Option<&MachineChange>,
 ) -> Result<()> {
+    let implementation_changed = machine_change.is_some()
+        || change
+            .surfaces
+            .as_ref()
+            .is_some_and(|surfaces| !surfaces.add.is_empty());
     if let Some(module) = &mut context.module {
         apply_semantic_change_to_module(&mut module.value, change);
         write_yaml_manifest(module)?;
@@ -22544,8 +23338,23 @@ fn apply_semantic_change(
         (context.implementation.as_mut(), machine_change)
     {
         apply_machine_change_to_manifest(&mut implementation.value, machine_change);
-        write_machine_manifest(implementation)?;
         write_machine_apply_placeholders(implementation, machine_change)?;
+    }
+    if let (Some(implementation), Some(surfaces)) =
+        (context.implementation.as_mut(), change.surfaces.as_ref())
+    {
+        for declaration in &surfaces.add {
+            apply_surface_declaration_to_manifest(&mut implementation.value, declaration);
+            write_surface_evidence_placeholders(implementation, declaration)?;
+        }
+    }
+    if implementation_changed {
+        let Some(implementation) = context.implementation.as_ref() else {
+            bail!(
+                "semantic change modified implementation structure without implementation binding"
+            );
+        };
+        write_yaml_manifest(implementation)?;
     }
     write_semantic_change_record(context, change)?;
     Ok(())
@@ -26233,6 +27042,19 @@ struct AddCapabilityRequest {
     boundary_binding: Option<String>,
 }
 
+struct SurfaceApplyRequest {
+    implementation: PathBuf,
+    kind: String,
+    surface: String,
+    entrypoint: String,
+    delegates_to: String,
+    command: String,
+    name: Option<String>,
+    effects: Vec<String>,
+    evidence: Vec<String>,
+    dry_run: bool,
+}
+
 fn run_add_module(request: AddModuleRequest, options: &PromptRunOptions) -> Result<()> {
     let path = &request.path;
     fs::create_dir_all(path)
@@ -26355,6 +27177,13 @@ fn run_add_capability(request: AddCapabilityRequest) -> Result<()> {
         &public_command,
         &domain_child,
         &domain_command,
+        request.boundary_binding.as_deref(),
+    )?;
+    scaffold_runnable_surface_if_inferred(
+        &boundary_path,
+        &request.name,
+        &request.purpose,
+        &public_command,
         request.boundary_binding.as_deref(),
     )?;
 
@@ -26570,6 +27399,92 @@ fn scaffold_capability_boundary_child(
         binding,
     )?;
     Ok(())
+}
+
+fn scaffold_runnable_surface_if_inferred(
+    boundary_path: &Path,
+    capability_name: &str,
+    purpose: &str,
+    public_command: &str,
+    binding: Option<&str>,
+) -> Result<()> {
+    let Some(surface) = infer_runnable_surface_from_text(purpose) else {
+        return Ok(());
+    };
+    let implementation_path = boundary_path.join("implementation.yaml");
+    if !implementation_path.exists() {
+        return Ok(());
+    }
+    let mut manifest = load_manifest(&implementation_path)?;
+    let public_entrypoint = get_str(&manifest.value, &["source", "public_entrypoint"])
+        .unwrap_or("scripts/smoke.sh")
+        .to_string();
+    let entrypoint = match (binding, surface.as_str()) {
+        (Some("js"), "browser") => {
+            fs::create_dir_all(boundary_path.join("public"))?;
+            write_new_file(
+                &boundary_path.join("public").join("app.mjs"),
+                &render_js_browser_surface_mjs(public_command),
+            )?;
+            "public/app.mjs".to_string()
+        }
+        _ => public_entrypoint.clone(),
+    };
+    let delegate_symbol = match (binding, surface.as_str()) {
+        (Some("js"), "browser") => "src/adapter.mjs#handleBoundaryInput".to_string(),
+        _ => public_entrypoint,
+    };
+    let declaration = SurfaceDeclaration {
+        name: format!(
+            "{}-{}",
+            semantic_id_segment(capability_name),
+            semantic_id_segment(&surface)
+        ),
+        kind: "runnable-boundary".to_string(),
+        surface,
+        entrypoint,
+        delegates_to: Some(SurfaceDelegation {
+            role: Some("adapter".to_string()),
+            symbol: Some(delegate_symbol),
+            command: Some(public_command.to_string()),
+        }),
+        effects: vec!["local-boundary-io".to_string()],
+        evidence: vec![
+            "verification/boundaries/runnable_surface_routes_through_boundary.md".to_string(),
+        ],
+    };
+    apply_surface_declaration_to_manifest(&mut manifest.value, &declaration);
+    write_yaml_manifest(&manifest)?;
+    write_surface_evidence_placeholders(&manifest, &declaration)?;
+    Ok(())
+}
+
+fn infer_runnable_surface_from_text(text: &str) -> Option<String> {
+    if semantic_name_contains_any(text, &["browser", "web", "html"]) {
+        return Some("browser".to_string());
+    }
+    if semantic_name_contains_any(text, &["cli", "command-line", "terminal"]) {
+        return Some("cli".to_string());
+    }
+    if semantic_name_contains_any(text, &["mobile", "ios", "android"]) {
+        return Some("mobile-ui".to_string());
+    }
+    if semantic_name_contains_any(text, &["desktop"]) {
+        return Some("desktop-ui".to_string());
+    }
+    if semantic_name_contains_any(text, &["http", "api", "server"]) {
+        return Some("http".to_string());
+    }
+    if semantic_name_contains_any(text, &["batch", "job"]) {
+        return Some("batch".to_string());
+    }
+    if semantic_name_contains_any(
+        text,
+        &["app", "tool", "ui", "runnable", "local-first", "smoke"],
+    ) {
+        return Some("executable".to_string());
+    }
+    None
 }
 
 fn default_domain_child_name(capability_name: &str) -> String {
@@ -27274,7 +28189,7 @@ fn render_module_readme(
     };
 
     format!(
-        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Semantic Shape\n\nShape: `{}`: `{}` ({})\n\nRequired roles:\n{}\n\nRepresentation is the RMS-level role for closed variants, validated values, commands, states, events, and result/rejection types. Implement it with language-idiomatic files or modules; do not treat a folder named `domain` or `types` as canonical architecture. Traceable-machine roles make debugging bad states explicit: message envelopes carry identity and causality, transitions return next state plus emitted events, commands, effects, and reply, transition records capture before/after/input/output/source provenance, journals explain, replay bundles reproduce, and first-bad-transition evidence points to the fix. Use domain-named role suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Do not derive inner role names from role or surface suffixes such as rules, engine, adapter, cli, web, rust, swift, or js unless those words are genuine domain language.\n\n## Representation Decisions\n\n- Closed domain alternatives should use ADTs, sealed variants, enums, or tagged constructors.\n- Public values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Validated numeric values should use checked, saturating, bounded, or explicitly proven arithmetic, with evidence for overflow, floors, ceilings, and rounding when arithmetic affects decisions.\n- Expected domain failures should be explicit result or rejection values rather than ambient exceptions.\n- Lifecycle or order-dependent behavior should use a transition model with accepted and rejected outcomes, transition records, replay bundles, and first-bad-transition diagnostics when applicable.\n- Boundary input should be parsed into enveloped domain commands before reaching pure decisions.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Projections observe and derive timelines; they do not emit workflow commands or mutate another module's state.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Runtime Monitor Decisions\n\n- Use this section when the module declares the `monitor` profile or `runtime-monitor` shape.\n- Declare observed inputs, derived facts or streams, trigger conditions, monitor authority, retrigger/idempotency policy, and fail-open/fail-closed/degraded behavior in `module.yaml`.\n- Supervisory outputs must be public commands, events, alarms, findings, or capabilities. Do not mutate controlled module state directly.\n- Add runtime evidence for trigger and non-trigger cases before relying on a monitor for release or operational assurance.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs, illegal transitions, replayed bad states, numeric boundary cases, or passive projections when applicable.\n5. Use `rms spec apply module.yaml --change-yaml '<semantic-change>'` when new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, public entrypoints, or evidence obligations are needed; then fill declared role bodies.\n6. Use `rms machine apply implementation.yaml --change-yaml '<machine-change>'` only for focused inner-machine edits after laws, public contracts, and evidence obligations are already correct.\n7. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms spec check module.yaml`, `rms machine check implementation.yaml`, `rms structure implementation.yaml`, and `rms verify implementation.yaml` when an implementation binding exists.\n8. Replace scaffold placeholder evidence before declaring this module implemented; `rms validate --root <system-root>` should not report placeholder, bootstrap, unpinned, or semantic-shape-only evidence for implemented promises.\n\n## Agent Workflow\n\nUse `rms design --root <system-root> --task \"<task>\"` when module boundaries or semantic shapes are unclear. Use `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms spec plan module.yaml --task \"<task>\"` before changing product meaning, laws, contracts, effects, machine structure, or evidence obligations. Use `rms machine plan implementation.yaml --task \"<task>\"` only for focused inner-machine edits after the semantic layer is correct. Use `rms evolve-contract module.yaml --task \"<task>\"` when public compatibility requires deeper guidance, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
+        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Semantic Shape\n\nShape: `{}`: `{}` ({})\n\nRequired roles:\n{}\n\nRepresentation is the RMS-level role for closed variants, validated values, commands, states, events, and result/rejection types. Implement it with language-idiomatic files or modules; do not treat a folder named `domain` or `types` as canonical architecture. Traceable-machine roles make debugging bad states explicit: message envelopes carry identity and causality, transitions return next state plus emitted events, commands, effects, and reply, transition records capture before/after/input/output/source provenance, journals explain, replay bundles reproduce, and first-bad-transition evidence points to the fix. Use domain-named role suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Do not derive inner role names from role or surface suffixes such as rules, engine, adapter, cli, web, rust, swift, or js unless those words are genuine domain language.\n\n## Representation Decisions\n\n- Closed domain alternatives should use ADTs, sealed variants, enums, or tagged constructors.\n- Public values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Validated numeric values should use checked, saturating, bounded, or explicitly proven arithmetic, with evidence for overflow, floors, ceilings, and rounding when arithmetic affects decisions.\n- Expected domain failures should be explicit result or rejection values rather than ambient exceptions.\n- Lifecycle or order-dependent behavior should use a transition model with accepted and rejected outcomes, transition records, replay bundles, and first-bad-transition diagnostics when applicable.\n- Boundary input should be parsed into enveloped domain commands before reaching pure decisions.\n- Runnable surfaces adapt outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Projections observe and derive timelines; they do not emit workflow commands or mutate another module's state.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Runtime Monitor Decisions\n\n- Use this section when the module declares the `monitor` profile or `runtime-monitor` shape.\n- Declare observed inputs, derived facts or streams, trigger conditions, monitor authority, retrigger/idempotency policy, and fail-open/fail-closed/degraded behavior in `module.yaml`.\n- Supervisory outputs must be public commands, events, alarms, findings, or capabilities. Do not mutate controlled module state directly.\n- Add runtime evidence for trigger and non-trigger cases before relying on a monitor for release or operational assurance.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs, illegal transitions, replayed bad states, numeric boundary cases, or passive projections when applicable.\n5. Use `rms spec apply module.yaml --change-yaml '<semantic-change>'` when new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, runnable surfaces, public entrypoints, or evidence obligations are needed; then fill declared role bodies.\n6. Use `rms surface apply implementation.yaml --kind runnable-boundary --surface <surface> --entrypoint <path> --delegates-to <role-or-symbol> --command <public-command>` before adding or changing app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints.\n7. Use `rms machine apply implementation.yaml --change-yaml '<machine-change>'` only for focused inner-machine edits after laws, public contracts, and evidence obligations are already correct.\n8. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms spec check module.yaml`, `rms machine check implementation.yaml`, `rms surface check implementation.yaml`, `rms structure implementation.yaml`, and `rms verify implementation.yaml` when an implementation binding exists.\n9. Replace scaffold placeholder evidence before declaring this module implemented; `rms validate --root <system-root>` should not report placeholder, bootstrap, unpinned, or semantic-shape-only evidence for implemented promises.\n\n## Agent Workflow\n\nUse `rms design --root <system-root> --task \"<task>\"` when module boundaries or semantic shapes are unclear. Use `rms explain module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms spec plan module.yaml --task \"<task>\"` before changing product meaning, laws, contracts, runnable surfaces, effects, machine structure, or evidence obligations. Use `rms surface apply/check implementation.yaml` before app/UI/CLI/browser/HTTP/batch/mobile/desktop/executable entrypoint changes. Use `rms machine plan implementation.yaml --task \"<task>\"` only for focused inner-machine edits after the semantic layer is correct. Use `rms evolve-contract module.yaml --task \"<task>\"` when public compatibility requires deeper guidance, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
         markdown_inline(name),
         markdown_inline(purpose),
         markdown_inline(kind),
@@ -28614,6 +29529,40 @@ test("{machine} boundary adapter writes parsed commands", () => {{
     )
 }
 
+fn render_js_browser_surface_mjs(public_command: &str) -> String {
+    format!(
+        r#"import {{ handleBoundaryInput }} from "../src/adapter.mjs";
+
+export async function runRmsSurface(input, ports) {{
+  return await handleBoundaryInput(input, ports);
+}}
+
+export function declaredRmsSurface() {{
+  return Object.freeze({{
+    kind: "runnable-boundary",
+    surface: "browser",
+    command: "{public_command}",
+    delegatesTo: "src/adapter.mjs#handleBoundaryInput",
+  }});
+}}
+
+if (typeof document !== "undefined") {{
+  const form = document.querySelector("[data-rms-surface-form]");
+  const output = document.querySelector("[data-rms-surface-output]");
+  form?.addEventListener("submit", async (event) => {{
+    event.preventDefault();
+    const formData = new FormData(form);
+    const input = Object.fromEntries(formData.entries());
+    const reply = await runRmsSurface(input);
+    if (output) {{
+      output.textContent = JSON.stringify(reply, null, 2);
+    }}
+  }});
+}}
+"#
+    )
+}
+
 fn render_executable_implementation_yaml(module_name: &str, shape: ScaffoldShape) -> String {
     format!(
         "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: shell\n\ndependencies:\n  allowed_processes:\n    - sh\n\narchitecture:\n  shape: {}\n  verification_mode: executable-command\n  static_inspection: opaque\n  public_entrypoints:\n    - scripts/smoke.sh\n  semantic_roles:\n{}\n  boundary_inputs: []\n  observable_outputs: []\n  declared_assets: []\n\nsemantic_functions:\n  - id: executable-semantic-smoke\n    symbol: scripts/smoke.sh\n    kind: adapter\n    purity: boundary\n    assumptions:\n      ensures:\n        - command-backed implementation can be invoked through the declared verify command\n        - semantic roles are documented as scaffold obligations rather than statically inferred from opaque executable assets\n        - RMS does not infer internal domain semantics from opaque executable assets\n    evidence:\n      boundaries:\n        - verification/boundaries/executable_smoke.md\n",
@@ -28932,7 +29881,7 @@ const JS_PORTS_MJS: &str = r#"export function createPorts(overrides = {}) {
 }
 "#;
 
-const JS_BUILD_SH: &str = "#!/usr/bin/env sh\nset -eu\nnode --check src/representation.mjs\nif [ -f src/transition.mjs ]; then node --check src/transition.mjs; fi\nif [ -f src/parser.mjs ]; then node --check src/parser.mjs; fi\nif [ -f src/adapter.mjs ]; then node --check src/adapter.mjs; fi\n";
+const JS_BUILD_SH: &str = "#!/usr/bin/env sh\nset -eu\nnode --check src/representation.mjs\nif [ -f src/transition.mjs ]; then node --check src/transition.mjs; fi\nif [ -f src/parser.mjs ]; then node --check src/parser.mjs; fi\nif [ -f src/adapter.mjs ]; then node --check src/adapter.mjs; fi\nif [ -f public/app.mjs ]; then node --check public/app.mjs; fi\n";
 
 const JS_SMOKE_SH: &str = "#!/usr/bin/env sh\nset -eu\nif [ -f tests/trace-smoke.mjs ]; then node tests/trace-smoke.mjs; fi\nif [ -f tests/boundary-smoke.mjs ]; then node tests/boundary-smoke.mjs; fi\nprintf '%s\\n' 'js semantic scaffold smoke passed'\n";
 
@@ -29188,8 +30137,8 @@ You can:
 
 You cannot:
 
-- hand-create laws, contracts, public commands, states, events, effects, effect results, transitions, semantic roles, public entrypoints, or evidence obligations;
-- implement real product behavior only in an undeclared UI, CLI, browser, or app file while the declared machine remains generic;
+- hand-create laws, contracts, public commands, states, events, effects, effect results, transitions, semantic roles, runnable surfaces, public entrypoints, or evidence obligations;
+- implement real product behavior only in an undeclared runnable surface while the declared machine remains generic;
 - bypass another module's public contract or a module's declared public entrypoint;
 - treat provider output, generated reports, or command logs as semantic authority until RMS canonical artifacts reflect them.
 
@@ -29216,6 +30165,7 @@ Use these advisory workbench commands when they match the task:
 - `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics and record the exact applied change under `verification/changes/`; provider output is advisory until this succeeds
 - `rms spec check <module.yaml|implementation.yaml>` after semantic changes
 - `rms machine plan/apply/check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct
+- `rms surface apply/check <implementation.yaml>` when adding or changing app, UI, CLI, browser, HTTP, batch, or executable entrypoints
 - `rms structure <implementation.yaml>` when implementation inner roles, machine declarations, or evidence placeholders are unclear
 - `rms review <module.yaml> --impact`
 
@@ -29235,7 +30185,7 @@ When creating a new capability, choose semantic shape before file layout:
 
 Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a public capability should be scaffolded as a recursive tree with a composite parent, domain child, and boundary child. Prefer this over a single module when the intent combines user/boundary interaction, lifecycle decisions, and effect simulation or external-service coordination.
 
-If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, make the boundary surface executable or provide a declared smoke command. A library-only boundary is acceptable only when the product intent is explicitly library-only.
+If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only.
 
 Use `rms add-module <path> --name <name> --purpose "<purpose>" --shape <shape> --binding <binding>` when scaffolding one module. Bindings realize semantic roles idiomatically; they do not define the semantics.
 
@@ -29247,8 +30197,8 @@ Naming rule: choose module and inner role names from product/capability language
 
 Before writing implementation code, make the user's intent concrete enough to encode:
 
-- Semantic gate: do not hand-create laws, contracts, semantic roles, states, commands, events, effects, transition functions, parsers, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply`, then edit the declared role bodies.
-- Public surface gate: public commands in `module.yaml` must be represented by the declared implementation surface. A real app, UI, CLI, or browser surface must call the declared public entrypoint, parser, adapter, or boundary machine. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
+- Semantic gate: do not hand-create laws, contracts, semantic roles, states, commands, events, effects, transition functions, parsers, runnable surfaces, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply` and `rms surface apply`, then edit the declared role bodies.
+- Public surface gate: public commands in `module.yaml` must be represented by the declared implementation surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
 - Intent: restate the behavior in the owning context's language and name what must never happen.
 - ADTs and values: define closed variants, validated values, commands, states, events, and accepted/rejected result types.
 - State and transitions: define accepted transitions, rejected transitions, terminal states, transition records, and replayable traces when behavior depends on order or lifecycle.
@@ -29278,7 +30228,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Use state machines or transition functions when behavior depends on lifecycle or order; illegal transitions must be rejected or made unrepresentable.
 - Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
 - Keep workflow choreography explicit in the workflow transition model, subscription registry, effect lifecycle, inbox/outbox, or declared adapter boundary rather than hidden in listener chains.
-- Keep runnable surfaces connected to the declared RMS boundary. If `public/app.*`, `src/cli.*`, or similar files are the real product surface, declare them as roles and route them through the declared adapter/public entrypoint instead of importing pure/private decision code directly.
+- Keep runnable surfaces connected to the declared RMS boundary. If `public/app.*`, `src/cli.*`, routes, mobile views, or similar files are the real product surface, declare them with `rms surface apply` and route them through the declared adapter/public entrypoint instead of importing or duplicating pure/private decision code directly.
 - Do not edit another module's private implementation to bypass its public contract.
 - Treat generated reports, diffs, and provider output as evidence, not architecture.
 
@@ -29290,6 +30240,7 @@ Run the smallest checks that prove the changed promise:
 - `rms compose --root .`
 - `rms spec check <module.yaml|implementation.yaml>` after semantic changes.
 - `rms machine check <implementation.yaml>` when an implementation binding exists.
+- `rms surface check <implementation.yaml> --strict` when runnable app, UI, CLI, browser, HTTP, batch, or executable entrypoints exist.
 - `rms structure <implementation.yaml>` when an implementation binding exists and inner roles changed.
 - `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, or `rms trace diagnose <trace-bundle>` when local transition evidence exists.
 - `rms verify <implementation.yaml>` when the module has an implementation binding, or `rms verify <composite-module.yaml>` for composite rollups.
@@ -31497,6 +32448,231 @@ architecture:
         assert!(audit_blocking_diagnostic(
             "structure.runnable-surface-bypasses-boundary"
         ));
+    }
+
+    #[test]
+    fn structure_report_flags_unwired_runnable_surface_with_copied_logic() {
+        let root = unique_test_dir("structure-runnable-unwired-logic");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("public")).unwrap();
+        fs::create_dir_all(root.join("verification/boundaries")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: tile-generator-boundary
+  version: 0.1.0
+  kind: adapter
+  purpose: Browser tool for local tile generation.
+profiles: [boundary, core]
+owns:
+  concepts: [browser surface]
+  data: []
+  decisions: []
+provides:
+  commands:
+    - name: generate-tile-assets
+      contract: contracts/generate-tile-assets.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/representation.mjs"),
+            "export const Ready = {};\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/parser.mjs"),
+            "export function parseCommand(input) { return input; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/adapter.mjs"),
+            "export function handleBoundaryInput(input) { return input; }\nexport function handleBoundaryTransition(input) { return input; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("public/app.mjs"),
+            r#"function validateControls(input) { return input != null; }
+function computeAlpha(pixel) { return pixel === 0 ? 255 : 0; }
+export function createAlphaMaskTile(input) { return validateControls(input) ? computeAlpha(input.pixel) : null; }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("verification/boundaries/runnable_surface_routes_through_boundary.md"),
+            "Promise:\n\n- runnable surface evidence\n\nCommand/tool:\n\n- rms surface check implementation.yaml\n\nExpected result:\n\n- pass\n\nSource revision: test\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: tile-generator-boundary
+binding: js
+source:
+  root: .
+  public_entrypoint: src/adapter.mjs
+commands:
+  build: node --check src/adapter.mjs
+  verify: node --check src/adapter.mjs
+architecture:
+  shape: boundary-adapter
+  surfaces:
+    - name: tile-generator-browser
+      kind: runnable-boundary
+      surface: browser
+      entrypoint: public/app.mjs
+      delegates_to:
+        role: adapter
+        symbol: src/adapter.mjs#handleBoundaryInput
+        command: generate-tile-assets
+      evidence:
+        - verification/boundaries/runnable_surface_routes_through_boundary.md
+  machine:
+    name: TileGeneratorBoundaryMachine
+    mode: boundary-machine
+    states: [AwaitingInput, Completed, Rejected]
+    commands: [TileGeneratorBoundaryCommand, GenerateTileAssets]
+    events: [TileGeneratorBoundaryEvent]
+    effects: [TileGeneratorBoundaryEffect]
+    replies: [TileGeneratorBoundaryReply]
+    rejections: [TileGeneratorBoundaryRejection]
+    transition_function: handleBoundaryTransition
+  roles:
+    representation: [src/representation.mjs]
+    parser: [src/parser.mjs]
+    adapter: [src/adapter.mjs]
+    transition: [src/adapter.mjs]
+    runnable_surface: [public/app.mjs]
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "structure.runnable-surface-not-wired" }));
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.runnable-surface-domain-logic-duplication"
+        }));
+        assert!(audit_blocking_diagnostic(
+            "structure.runnable-surface-domain-logic-duplication"
+        ));
+    }
+
+    #[test]
+    fn surface_apply_records_surface_role_and_evidence() {
+        let root = unique_test_dir("surface-apply");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: checkout-boundary
+  version: 0.1.0
+  kind: adapter
+  purpose: CLI checkout tool boundary.
+profiles: [boundary, core]
+owns:
+  concepts: [cli surface]
+  data: []
+  decisions: []
+provides:
+  commands:
+    - name: run-checkout
+      contract: contracts/run-checkout.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/adapter.mjs"),
+            "export function handleBoundaryInput(input) { return input; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: checkout-boundary
+binding: js
+source:
+  root: .
+  public_entrypoint: src/adapter.mjs
+commands:
+  build: node --check src/adapter.mjs
+  verify: node --check src/adapter.mjs
+architecture:
+  shape: boundary-adapter
+  machine:
+    name: CheckoutBoundaryMachine
+    mode: boundary-machine
+    states: [AwaitingInput, Completed, Rejected]
+    commands: [CheckoutBoundaryCommand, RunCheckout]
+    events: [CheckoutBoundaryEvent]
+    effects: [CheckoutBoundaryEffect]
+    replies: [CheckoutBoundaryReply]
+    rejections: [CheckoutBoundaryRejection]
+    transition_function: handleBoundaryTransition
+  roles:
+    adapter: [src/adapter.mjs]
+"#,
+        )
+        .unwrap();
+
+        run_surface_apply(SurfaceApplyRequest {
+            implementation: root.join("implementation.yaml"),
+            kind: "runnable-boundary".to_string(),
+            surface: "cli".to_string(),
+            entrypoint: "src/adapter.mjs".to_string(),
+            delegates_to: "src/adapter.mjs#handleBoundaryInput".to_string(),
+            command: "run-checkout".to_string(),
+            name: None,
+            effects: vec!["local-stdio".to_string()],
+            evidence: Vec::new(),
+            dry_run: false,
+        })
+        .unwrap();
+
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        assert!(implementation.contains("surfaces:"));
+        assert!(implementation.contains("runnable_surface"));
+        assert!(implementation.contains("run-checkout"));
+        assert!(root
+            .join("verification/boundaries/runnable_surface_routes_through_boundary.md")
+            .exists());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -33972,6 +35148,58 @@ verification:
                 .iter()
                 .all(|diagnostic| diagnostic.check != "semantic.empty-evidence-lane"),
             "{diagnostics:#?}"
+        );
+    }
+
+    #[test]
+    fn add_capability_browser_tool_declares_thin_runnable_surface() {
+        let root = unique_test_dir("add-capability-browser-surface");
+        run_init(
+            &root,
+            "browser-surface-fixture",
+            "Exercise browser runnable surface scaffolding.",
+            "0.1.0",
+            &["fixture".to_string()],
+        )
+        .unwrap();
+
+        run_add_capability(AddCapabilityRequest {
+            path: root.join("modules/tile-generator"),
+            name: "tile-generator".to_string(),
+            purpose: "Local browser tool for generating tile assets.".to_string(),
+            public_command: Some("generate-tile-assets".to_string()),
+            domain_child: None,
+            boundary_child: None,
+            domain_command: Some("create-alpha-mask-tile".to_string()),
+            domain_binding: Some("js".to_string()),
+            boundary_binding: Some("js".to_string()),
+        })
+        .unwrap();
+
+        let implementation =
+            fs::read_to_string(root.join("modules/tile-generator-boundary/implementation.yaml"))
+                .unwrap();
+        let surface =
+            fs::read_to_string(root.join("modules/tile-generator-boundary/public/app.mjs"))
+                .unwrap();
+        let report = build_structure_report(
+            &root.join("modules/tile-generator-boundary/implementation.yaml"),
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(implementation.contains("surfaces:"));
+        assert!(implementation.contains("runnable-boundary"));
+        assert!(implementation.contains("runnable_surface"));
+        assert!(surface.contains("handleBoundaryInput"));
+        assert!(!surface.contains("createAlphaMaskTile"));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|diagnostic| { !diagnostic.check.starts_with("structure.runnable-surface") }),
+            "{:#?}",
+            report.diagnostics
         );
     }
 

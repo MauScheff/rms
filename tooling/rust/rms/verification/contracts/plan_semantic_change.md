@@ -1,6 +1,6 @@
 # Contract Evidence: plan-semantic-change
 
-Promise: `plan-semantic-change` renders an advisory `rms/semantic-change/v0.1` prompt for laws, contracts, machine structure, effects, and evidence obligations.
+Promise: `plan-semantic-change` renders an advisory `rms/semantic-change/v0.1` prompt for laws, contracts, machine structure, runnable surfaces, effects, and evidence obligations.
 
 Scenario: `rms spec plan <module.yaml|implementation.yaml> --task "<intent>"` asks providers to output a semantic-change object, not direct architecture edits.
 

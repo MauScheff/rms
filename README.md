@@ -96,7 +96,7 @@ For a guided first pass, use `QUICKSTART.md`. For a self-hosted RMS walkthrough,
 The golden path is:
 
 ```text
-init -> design -> add-capability -> spec apply -> implement roles -> gate -> audit
+init -> design -> add-capability -> spec/surface apply -> implement declared roles -> gate -> audit
 ```
 
 Create a new RMS system:
@@ -153,12 +153,25 @@ This creates `module.yaml`, a module `README.md`, `contracts/README.md`, concret
 
 Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, message envelopes, transition output, transition records, parser, adapter, journal, timeline projection, replay bundle, first-bad-transition, and trace evidence roles, plus a domain-named machine with an explicit mode and state variants. They also seed local trace bundles under `verification/traces/`, and `rms verify` checks those bundles after native verification. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, `Rejection`, `Transition`, and `TransitionRecord`. Prefer the `add-capability` default child paths unless the user supplied better product/domain names; do not invent `-rules`, `-adapter`, `-cli`, or `-web` child names just to describe RMS roles. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`, and a boundary role should avoid names like `CouponEvaluationAdapterMachine`.
 
-For app, tool, CLI, local-first reference app, runnable, or smoke-test intents, the boundary child should expose a declared smoke command or executable surface. A library-only boundary is appropriate only when the product intent is explicitly library-only.
+For app, tool, CLI, local-first reference app, runnable, or smoke-test intents, the boundary child should expose a declared runnable surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Browser, CLI, mobile UI, desktop UI, HTTP route, batch command, and opaque executable are bindings over that same semantic role.
 
 Inspect those declarations with:
 
 ```bash
 rms structure ./my-system/modules/widget/implementation.yaml
+```
+
+Declare a runnable surface before adding real app/UI/CLI files:
+
+```bash
+rms surface apply ./my-system/modules/tic-tac-toe-boundary/implementation.yaml \
+  --kind runnable-boundary \
+  --surface browser \
+  --entrypoint public/app.mjs \
+  --delegates-to src/adapter.mjs#handleBoundaryInput \
+  --command tic-tac-toe
+
+rms surface check ./my-system/modules/tic-tac-toe-boundary/implementation.yaml --strict
 ```
 
 Change product meaning through the semantic gate:
@@ -526,7 +539,7 @@ Swift is the second binding. It validates Swift package shape, target identity, 
 
 JavaScript scaffolding supports inspectable local bindings for domain engines and boundary adapters, including tagged role constructors, parser/adapter separation, and named `node:test` evidence.
 
-The executable binding is the generic opaque lane. It validates the manifest and declared entrypoint paths, then relies on `commands.build` and `commands.verify` for evidence. RMS does not infer internal domain semantics from executable assets; use it when the implementation surface is web, mobile, CLI, native UI, generated assets, or another project shape without a dedicated static binding.
+The executable binding is the generic opaque lane. It validates the manifest, declared runnable surface entrypoints, and declared commands, then relies on `commands.build` and `commands.verify` for evidence. RMS does not infer internal domain semantics from executable assets; use it when the implementation surface is web, mobile, CLI, native UI, generated assets, or another project shape without a dedicated static binding.
 
 RMS should not be called 1.0 until it has survived a real reference application, a replacement or migration exercise, and at least one codebase primarily maintained through agents.
 

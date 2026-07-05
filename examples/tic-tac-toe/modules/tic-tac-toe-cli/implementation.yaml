@@ -1,74 +1,68 @@
 spec: rms/implementation/v0.1
-
-module: "tic-tac-toe-cli"
+module: tic-tac-toe-cli
 binding: js
-
 source:
   root: .
   public_entrypoint: src/representation.mjs
-
 commands:
   build: sh scripts/build.sh
   verify: sh scripts/smoke.sh
-
 toolchain:
   runner: node
-
 dependencies:
   allowed_processes:
-    - sh
-    - node
-    - cargo
-
+  - sh
+  - node
+  - cargo
 architecture:
-  shape: "boundary-adapter"
+  shape: boundary-adapter
   public_modules:
-    - src/representation.mjs
-    - src/parser.mjs
-    - src/ports.mjs
-    - src/adapter.mjs
+  - src/representation.mjs
+  - src/parser.mjs
+  - src/ports.mjs
+  - src/adapter.mjs
   messages:
     command_envelope:
-      - command_id
-      - target_machine
-      - correlation_id
-      - causation_id
-      - idempotency_key
+    - command_id
+    - target_machine
+    - correlation_id
+    - causation_id
+    - idempotency_key
     event_envelope:
-      - event_id
-      - source_machine
-      - correlation_id
-      - causation_id
-      - sequence
-      - schema_version
-      - occurred_at
+    - event_id
+    - source_machine
+    - correlation_id
+    - causation_id
+    - sequence
+    - schema_version
+    - occurred_at
     effect_envelope:
-      - effect_id
-      - requester
-      - correlation_id
-      - causation_id
-      - idempotency_key
+    - effect_id
+    - requester
+    - correlation_id
+    - causation_id
+    - idempotency_key
     effect_result_envelope:
-      - effect_id
-      - requester
-      - correlation_id
-      - causation_id
-      - status
+    - effect_id
+    - requester
+    - correlation_id
+    - causation_id
+    - status
   transition:
     output:
-      - next_state
-      - events
-      - commands
-      - effects
-      - reply
+    - next_state
+    - events
+    - commands
+    - effects
+    - reply
   effects:
     lifecycle:
-      - Pending
-      - Running
-      - Succeeded
-      - Failed
-      - RetryScheduled
-      - Abandoned
+    - Pending
+    - Running
+    - Succeeded
+    - Failed
+    - RetryScheduled
+    - Abandoned
   trace:
     journal: verification/traces/boundary_parse.yaml
     timeline_projection: verification/traces/boundary_parse.yaml
@@ -79,122 +73,136 @@ architecture:
     mode: boundary-machine
     state: BoundaryState
     states:
-      - AwaitingInput
-      - ParsedCommand
-      - Delegating
-      - Completed
-      - Rejected
+    - AwaitingInput
+    - ParsedCommand
+    - Delegating
+    - Completed
+    - Rejected
     commands:
-      - RawCliInput
+    - RawCliInput
     events:
-      - ParsedMove
+    - ParsedMove
     effects:
-      - InvokeRulesBridge
+    - InvokeRulesBridge
     effect_results:
-      - RulesBridgeResult
+    - RulesBridgeResult
     replies:
-      - BoundaryResult
+    - BoundaryResult
     rejections:
-      - "malformed-input"
-      - "out-of-board"
+    - malformed-input
+    - out-of-board
     transition_function: handleBoundaryTransition
   roles:
     representation:
-      - src/representation.mjs
+    - src/representation.mjs
     message_envelope:
-      - src/representation.mjs
+    - src/representation.mjs
     parser:
-      - src/parser.mjs
+    - src/parser.mjs
     adapter:
-      - src/adapter.mjs
+    - src/adapter.mjs
     effect_lifecycle:
-      - src/ports.mjs
+    - src/ports.mjs
     transition_record:
-      - src/adapter.mjs
+    - src/adapter.mjs
     journal:
-      - verification/traces/boundary_parse.yaml
+    - verification/traces/boundary_parse.yaml
     timeline_projection:
-      - verification/traces/boundary_parse.yaml
+    - verification/traces/boundary_parse.yaml
     replay_bundle:
-      - verification/traces/boundary_parse.yaml
+    - verification/traces/boundary_parse.yaml
     trace_evidence:
-      - verification/boundaries/cli_input.md
-      - verification/traces/boundary_parse.yaml
+    - verification/boundaries/cli_input.md
+    - verification/traces/boundary_parse.yaml
+    runnable_surface:
+    - src/adapter.mjs
   representation:
     closed_variants:
-      - BoundaryState
-      - RawCliInput
-      - ParsedMove
-      - BoundaryResult
-      - InvokeRulesBridge
-      - RulesBridgeResult
+    - BoundaryState
+    - RawCliInput
+    - ParsedMove
+    - BoundaryResult
+    - InvokeRulesBridge
+    - RulesBridgeResult
     validated_values:
-      - makeCell
+    - makeCell
     transition_functions:
-      - handleBoundaryTransition
+    - handleBoundaryTransition
   effect_roles:
-    - "representation"
-    - "parsers"
-    - "ports"
-    - "adapters"
-    - "rules-bridge"
-    - "boundary-evidence"
-
+  - representation
+  - parsers
+  - ports
+  - adapters
+  - rules-bridge
+  - boundary-evidence
+  surfaces:
+  - name: tic-tac-toe-cli-cli
+    kind: runnable-boundary
+    surface: cli
+    entrypoint: src/adapter.mjs
+    delegates_to:
+      role: adapter
+      symbol: src/adapter.mjs#handleBoundaryInput
+      command: play-tic-tac-toe
+    effects:
+    - local-cli-io
+    evidence:
+    - verification/boundaries/runnable_surface_routes_through_boundary.md
 semantic_functions:
-  - id: cell-parser
-    symbol: src/representation.mjs#makeCell
-    kind: constructor
-    purity: pure
-    evidence:
-      boundaries:
-        - verification/boundaries/cli_input.md
-  - id: move-parser
-    symbol: src/parser.mjs#parseMoveText
-    kind: parser
-    purity: pure
-    discharges:
-      contracts:
-        - contracts/play-tic-tac-toe.v1.yaml
-    evidence:
-      contracts:
-        - verification/contracts/play_tic_tac_toe.md
-      boundaries:
-        - verification/boundaries/cli_input.md
-      traces:
-        - verification/traces/boundary_parse.yaml
-  - id: rules-port-adapter
-    symbol: src/adapter.mjs#handleBoundaryTransition
-    kind: transition
-    purity: boundary
-    discharges:
-      contracts:
-        - contracts/play-tic-tac-toe.v1.yaml
-    evidence:
-      contracts:
-        - verification/contracts/play_tic_tac_toe.md
-      boundaries:
-        - verification/boundaries/cli_input.md
-      traces:
-        - verification/traces/boundary_parse.yaml
-  - id: rules-port-adapter-reply
-    symbol: src/adapter.mjs#handleBoundaryInput
-    kind: adapter
-    purity: boundary
-    discharges:
-      contracts:
-        - contracts/play-tic-tac-toe.v1.yaml
-    evidence:
-      contracts:
-        - verification/contracts/play_tic_tac_toe.md
-      boundaries:
-        - verification/boundaries/cli_input.md
-  - id: rust-rules-port
-    symbol: src/ports.mjs#createRustRulesPort
-    kind: adapter
-    purity: boundary
-    discharges:
-      contracts:
-        - contracts/play-tic-tac-toe.v1.yaml
-    evidence:
-      contracts:
-        - verification/contracts/play_tic_tac_toe.md
+- id: cell-parser
+  symbol: src/representation.mjs#makeCell
+  kind: constructor
+  purity: pure
+  evidence:
+    boundaries:
+    - verification/boundaries/cli_input.md
+- id: move-parser
+  symbol: src/parser.mjs#parseMoveText
+  kind: parser
+  purity: pure
+  discharges:
+    contracts:
+    - contracts/play-tic-tac-toe.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/play_tic_tac_toe.md
+    boundaries:
+    - verification/boundaries/cli_input.md
+    traces:
+    - verification/traces/boundary_parse.yaml
+- id: rules-port-adapter
+  symbol: src/adapter.mjs#handleBoundaryTransition
+  kind: transition
+  purity: boundary
+  discharges:
+    contracts:
+    - contracts/play-tic-tac-toe.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/play_tic_tac_toe.md
+    boundaries:
+    - verification/boundaries/cli_input.md
+    traces:
+    - verification/traces/boundary_parse.yaml
+- id: rules-port-adapter-reply
+  symbol: src/adapter.mjs#handleBoundaryInput
+  kind: adapter
+  purity: boundary
+  discharges:
+    contracts:
+    - contracts/play-tic-tac-toe.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/play_tic_tac_toe.md
+    boundaries:
+    - verification/boundaries/cli_input.md
+- id: rust-rules-port
+  symbol: src/ports.mjs#createRustRulesPort
+  kind: adapter
+  purity: boundary
+  discharges:
+    contracts:
+    - contracts/play-tic-tac-toe.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/play_tic_tac_toe.md

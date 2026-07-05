@@ -1,0 +1,20 @@
+spec: rms/contract/v0.1
+name: check-runnable-surface
+version: 1
+kind: command
+meaning: Check that runnable app, UI, CLI, browser, HTTP, batch, or executable surfaces route outside input through declared RMS boundary roles.
+preconditions:
+  - id: implementation-readable
+    statement: "The target `implementation.yaml` is readable and parseable."
+postconditions:
+  - id: surface-report-produced
+    statement: The command reports structure diagnostics for missing declarations, disconnected entrypoints, private role access, duplicated domain logic, and missing evidence.
+  - id: strict-promotes-production-blockers
+    statement: "`--strict` fails when runnable surfaces bypass declared RMS boundary roles."
+failure_categories:
+  - id: invalid-implementation
+    statement: The target file is not an RMS implementation binding.
+  - id: strict-finding
+    statement: Strict mode found a production-blocking runnable surface diagnostic.
+compatibility:
+  policy: backward-compatible-within-major

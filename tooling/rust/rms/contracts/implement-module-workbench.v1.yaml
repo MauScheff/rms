@@ -18,7 +18,7 @@ postconditions:
   - id: semantic-trace-evolves-together
     statement: The prompt asks for linked intent, decision, contract, law, and evidence records to evolve together when accepted semantics change.
   - id: semantic-roles-before-files
-    statement: The prompt asks for representation, commands, message envelopes, transition outputs, transition records, ports, adapters, journals, replay bundles, first-bad-transition evidence, and evidence before incidental file layout.
+    statement: The prompt asks for representation, commands, message envelopes, transition outputs, transition records, ports, adapters, runnable surfaces, journals, replay bundles, first-bad-transition evidence, and evidence before incidental file layout.
   - id: semantic-structure-precedes-code
     statement: The prompt asks for semantic structure before implementation code, including ADTs or closed variants, validated values, commands, states, events, accepted and rejected result types, message envelopes, transition output, transition records, replay support, transition boundaries, parser boundaries, and evidence roles.
   - id: edge-cases-resolved-first
