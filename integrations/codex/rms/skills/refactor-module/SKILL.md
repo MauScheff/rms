@@ -9,7 +9,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
 
 1. Run the `inspect-module` workflow for the owning module.
 2. Build a bounded packet with `rms context <module> --task "<task>"` when the CLI is available. Use `rms refactor <module> --task "<task>"` when a refactor prompt would help before editing.
-3. Treat RMS as the semantic and architecture gate. If the refactor requires new laws, contracts, states, commands, events, effects, effect results, transitions, semantic roles, runnable surfaces, public entrypoints, or evidence obligations, produce and apply an `rms/semantic-change/v0.1` object with `rms spec apply` before editing role bodies. Use `rms machine apply` only for focused inner-machine changes after semantics are already correct; use `rms surface apply/check` for runnable entrypoint changes.
+3. Treat RMS as the semantic and architecture gate. If the refactor requires new laws, contracts, states, commands, events, effects, effect results, transitions, semantic roles, runnable surfaces, public entrypoints, or evidence obligations, produce and apply an `rms/semantic-change/v0.1` object with `rms spec apply` before editing role bodies. Use `set`, `remove`, and `supersedes` to revise RMS semantics instead of hand-editing manifests or rewriting old change records. Use `rms machine apply` only for focused inner-machine changes after semantics are already correct; use `rms surface apply/check` for runnable entrypoint changes.
 4. State the public semantics that must be preserved:
    - public commands, queries, events, APIs, and capabilities;
    - invariants and laws;

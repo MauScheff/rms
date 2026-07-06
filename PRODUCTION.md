@@ -93,7 +93,7 @@ rms spec apply <module.yaml|implementation.yaml> --change-yaml '<semantic-change
 rms spec check <module.yaml|implementation.yaml>
 ```
 
-`rms spec apply` records the exact applied semantic-change object under `verification/changes/`. Use `rms machine plan/apply/check` only for focused inner-machine edits when laws, public contracts, and evidence obligations are already correct. Provider plans are advisory until `rms spec apply` or `rms machine apply` reflects them in canonical artifacts. Agents may edit declared role bodies and private pure helpers inside pure role files. IO belongs in declared adapter, port, or effect-executor roles as effects plus effect results.
+`rms spec apply` records the exact applied semantic-change object under `verification/changes/`. Use `set`, `remove`, and `supersedes` to revise semantics instead of hand-editing manifests or rewriting old change records; strict audit treats superseded records as history and active records as reflection obligations. Use `rms machine plan/apply/check` only for focused inner-machine edits when laws, public contracts, and evidence obligations are already correct. Provider plans are advisory until `rms spec apply` or `rms machine apply` reflects them in canonical artifacts. Agents may edit declared role bodies and private pure helpers inside pure role files. IO belongs in declared adapter, port, or effect-executor roles as effects plus effect results.
 
 ## Existing Project Flow
 

@@ -1050,6 +1050,7 @@ struct MachineApplyReport {
     implementation: String,
     dry_run: bool,
     writes: Vec<String>,
+    final_machine: MachineFinalStateReport,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -1076,7 +1077,22 @@ struct SpecApplyReport {
     target: String,
     dry_run: bool,
     writes: Vec<String>,
+    final_machine: Option<MachineFinalStateReport>,
     diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct MachineFinalStateReport {
+    mode: Option<String>,
+    states: Vec<String>,
+    commands: Vec<String>,
+    events: Vec<String>,
+    effects: Vec<String>,
+    effect_results: Vec<String>,
+    replies: Vec<String>,
+    rejections: Vec<String>,
+    transitions: Vec<String>,
+    roles: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1150,6 +1166,8 @@ struct SemanticChange {
     #[serde(default)]
     module: Option<String>,
     #[serde(default)]
+    supersedes: Vec<String>,
+    #[serde(default)]
     intent: Option<SemanticIntentChange>,
     #[serde(default)]
     laws: Option<SemanticLawsChange>,
@@ -1221,6 +1239,10 @@ struct SemanticEvidenceItemChange {
 struct SemanticSurfacesChange {
     #[serde(default)]
     add: Vec<SurfaceDeclaration>,
+    #[serde(default, rename = "set")]
+    replace: Vec<SurfaceDeclaration>,
+    #[serde(default)]
+    remove: Vec<SurfaceRemoveChange>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1229,6 +1251,8 @@ struct SurfaceDeclaration {
     kind: String,
     surface: String,
     entrypoint: String,
+    #[serde(default)]
+    launch_entrypoint: Option<String>,
     #[serde(default)]
     delegates_to: Option<SurfaceDelegation>,
     #[serde(default)]
@@ -1305,14 +1329,22 @@ struct MachineChangeMachine {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct MachineVariantListChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<String>>,
     #[serde(default)]
     add: Vec<String>,
+    #[serde(default)]
+    remove: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct MachineTransitionsChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<MachineTransitionChange>>,
     #[serde(default)]
     add: Vec<MachineTransitionChange>,
+    #[serde(default)]
+    remove: Vec<MachineTransitionRemoveChange>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1330,12 +1362,26 @@ struct MachineTransitionChange {
     reply: Option<String>,
     #[serde(default)]
     rejection: Option<String>,
+    #[serde(default)]
+    no_reply_justification: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct MachineTransitionRemoveChange {
+    from: String,
+    on: String,
+    #[serde(default)]
+    to: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct MachineRolesChange {
+    #[serde(default, rename = "set")]
+    replace: Vec<MachineRoleChange>,
     #[serde(default)]
     add: Vec<MachineRoleChange>,
+    #[serde(default)]
+    remove: Vec<MachineRoleRemoveChange>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1347,6 +1393,18 @@ struct MachineRoleChange {
     binding_hint: Option<String>,
     #[serde(default)]
     path: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct MachineRoleRemoveChange {
+    kind: String,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SurfaceRemoveChange {
+    name: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1669,6 +1727,10 @@ enum SurfaceCommands {
         /// Runnable entrypoint path relative to the module.
         #[arg(long)]
         entrypoint: String,
+
+        /// Optional launch path for host surfaces such as browser HTML pages.
+        #[arg(long = "launch-entrypoint")]
+        launch_entrypoint: Option<String>,
 
         /// Role name or symbol that the runnable surface delegates to.
         #[arg(long = "delegates-to")]
@@ -2323,6 +2385,7 @@ struct DiagnoseReport {
     root: String,
     repository: Vec<ReadinessItem>,
     config: ConfigReadiness,
+    codex_plugin_cache: CodexPluginCacheReadiness,
     manifest_counts: BTreeMap<String, usize>,
     validation: ValidationReadiness,
     native_tools: Vec<CommandReadiness>,
@@ -2370,8 +2433,17 @@ struct AgentPluginReport {
     plugin_root: String,
     plugin_status: String,
     installed_status: String,
+    cache: CodexPluginCacheReadiness,
     target_tool: CommandReadiness,
     guidance: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CodexPluginCacheReadiness {
+    directory: String,
+    status: String,
+    matching_versions: Vec<String>,
+    stale_versions: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3495,8 +3567,69 @@ fn build_agent_plugin_report(
         plugin_root: paths.plugin_root.display().to_string(),
         plugin_status: plugin_status.to_string(),
         installed_status,
+        cache: codex_plugin_cache_readiness(),
         target_tool: target.target_tool(),
         guidance,
+    })
+}
+
+fn codex_plugin_cache_readiness() -> CodexPluginCacheReadiness {
+    let directory = match home_dir() {
+        Ok(home) => home.join(".codex/plugins/cache/personal/rms"),
+        Err(_) => PathBuf::from("<HOME-unavailable>"),
+    };
+    let mut matching_versions = Vec::new();
+    let mut stale_versions = Vec::new();
+    if !directory.is_dir() {
+        return CodexPluginCacheReadiness {
+            directory: directory.display().to_string(),
+            status: "missing".to_string(),
+            matching_versions,
+            stale_versions,
+        };
+    }
+    let Ok(entries) = fs::read_dir(&directory) else {
+        return CodexPluginCacheReadiness {
+            directory: directory.display().to_string(),
+            status: "unreadable".to_string(),
+            matching_versions,
+            stale_versions,
+        };
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let version = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+        if codex_plugin_cached_skills_match_embedded(&path) {
+            matching_versions.push(version);
+        } else {
+            stale_versions.push(version);
+        }
+    }
+    let status = match (matching_versions.is_empty(), stale_versions.is_empty()) {
+        (true, true) => "missing",
+        (false, true) => "present",
+        (false, false) => "mixed",
+        (true, false) => "stale",
+    };
+    CodexPluginCacheReadiness {
+        directory: directory.display().to_string(),
+        status: status.to_string(),
+        matching_versions,
+        stale_versions,
+    }
+}
+
+fn codex_plugin_cached_skills_match_embedded(cache_version_root: &Path) -> bool {
+    INIT_AGENT_SKILLS.iter().all(|(relative_path, contents)| {
+        fs::read_to_string(cache_version_root.join("skills").join(relative_path))
+            .is_ok_and(|actual| actual == *contents)
     })
 }
 
@@ -3557,6 +3690,15 @@ fn print_agent_plugin_report(report: &AgentPluginReport) {
         report.plugin_status, report.plugin_root
     );
     println!("installed: {}", report.installed_status);
+    println!(
+        "cache: {} ({})",
+        report.cache.status, report.cache.directory
+    );
+    print_string_list("matching cache versions", &report.cache.matching_versions);
+    print_string_list("stale cache versions", &report.cache.stale_versions);
+    if report.cache.status == "stale" || report.cache.status == "mixed" {
+        println!("Fix: run `rms agent plugin sync --target codex`, then start a new Codex thread.");
+    }
     print_command_readiness(&report.target_tool);
     println!();
     println!("## Guidance");
@@ -5088,6 +5230,7 @@ fn main() -> Result<()> {
                 kind,
                 surface,
                 entrypoint,
+                launch_entrypoint,
                 delegates_to,
                 command,
                 name,
@@ -5099,6 +5242,7 @@ fn main() -> Result<()> {
                 kind,
                 surface,
                 entrypoint,
+                launch_entrypoint,
                 delegates_to,
                 command,
                 name,
@@ -5479,6 +5623,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
             file_readiness(WORKBENCH_CONFIG_PATH, &root.join(WORKBENCH_CONFIG_PATH)),
         ],
         config,
+        codex_plugin_cache: codex_plugin_cache_readiness(),
         manifest_counts: counts,
         validation: ValidationReadiness {
             status: if diagnostics.is_empty() {
@@ -5596,6 +5741,21 @@ fn print_diagnose_report(report: &DiagnoseReport) {
             .unwrap_or_else(|| DEFAULT_PROVIDER_TIMEOUT_SECONDS.to_string())
     );
     println!("Run directory: {}", report.config.run_directory);
+    println!();
+
+    println!("## Codex Plugin Cache");
+    println!(
+        "{}: {}",
+        report.codex_plugin_cache.directory, report.codex_plugin_cache.status
+    );
+    print_string_list(
+        "matching versions",
+        &report.codex_plugin_cache.matching_versions,
+    );
+    print_string_list("stale versions", &report.codex_plugin_cache.stale_versions);
+    if report.codex_plugin_cache.status == "stale" || report.codex_plugin_cache.status == "mixed" {
+        println!("Fix: run `rms agent plugin sync --target codex`, then start a new Codex thread.");
+    }
     println!();
 
     println!("## Validation");
@@ -7031,7 +7191,27 @@ fn inspect_trace_record(
     }
 
     validate_trace_output_envelopes(bundle, index, output, diagnostics);
+    inspect_trace_scaffold_reply(bundle, index, output, diagnostics);
     inspect_explicit_trace_diagnostics(bundle, index, record, diagnostics);
+}
+
+fn inspect_trace_scaffold_reply(
+    bundle: &Path,
+    index: usize,
+    output: &YamlValue,
+    diagnostics: &mut Vec<TraceDiagnostic>,
+) {
+    let reply_tag = get_str(output, &["reply", "tag"]).or_else(|| get_str(output, &["reply"]));
+    if reply_tag == Some("NoReplyDeclared") {
+        push_trace_diagnostic(
+            diagnostics,
+            Severity::Warning,
+            "trace.no-reply-declared",
+            bundle,
+            Some(index),
+            "trace output uses scaffold `NoReplyDeclared`; declare a reply, rejection, or explicit no-reply justification through RMS",
+        );
+    }
 }
 
 fn validate_trace_output_envelopes(
@@ -11313,6 +11493,40 @@ fn inspect_runnable_surface_boundary_use(
     let boundary_refs = boundary_entrypoint_references(manifest);
     let pure_refs = private_decision_role_references(manifest);
     let declared_semantic_source = read_declared_semantic_surface_sources(manifest, false);
+    let declared_surfaces = architecture_surface_declarations(manifest);
+    for declaration in &declared_surfaces {
+        let Some(launch_entrypoint) = declaration.launch_entrypoint.as_deref() else {
+            continue;
+        };
+        let path = base.join(launch_entrypoint);
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if !source_mentions_path_or_stem(&source, &declaration.entrypoint) {
+            push_unique_warning(
+                diagnostics,
+                "structure.runnable-surface-not-wired",
+                &manifest.path,
+                format!(
+                    "runnable launch surface `{launch_entrypoint}` does not reference declared entrypoint `{}`",
+                    declaration.entrypoint
+                ),
+            );
+        }
+        if pure_refs
+            .iter()
+            .any(|private_role| source_mentions_path_or_stem(&source, private_role))
+        {
+            push_unique_warning(
+                diagnostics,
+                "structure.runnable-surface-private-domain-access",
+                &manifest.path,
+                format!(
+                    "runnable launch surface `{launch_entrypoint}` imports or references private decision roles instead of the declared entrypoint"
+                ),
+            );
+        }
+    }
     for reference in runnable_refs {
         let path = base.join(&reference);
         let Ok(source) = fs::read_to_string(&path) else {
@@ -15033,6 +15247,7 @@ fn check_evidence_source_quality(
 
     if lower.contains("replace this placeholder")
         || lower.contains("evidence to add")
+        || lower.contains("record the exact command used")
         || lower.contains("replace or extend this script")
     {
         push_unique_warning(
@@ -18938,6 +19153,7 @@ fn append_applied_semantic_change_audit_checks(
                 None
             }
         };
+        let mut records = Vec::new();
         for entry in WalkDir::new(&changes_dir)
             .max_depth(1)
             .follow_links(false)
@@ -18952,28 +19168,32 @@ fn append_applied_semantic_change_audit_checks(
             ) {
                 continue;
             }
-            let source = match fs::read_to_string(path) {
-                Ok(source) => source,
-                Err(error) => {
-                    checks.push(audit_check(
-                        "semantic.applied-change-not-reflected",
-                        "semantic",
-                        if strict { "fail" } else { "review-required" },
-                        path,
-                        format!("could not read semantic-change record: {error}"),
-                    ));
-                    continue;
-                }
-            };
-            let change: SemanticChange = match serde_yaml::from_str(&source) {
+            let record = fs::read_to_string(path)
+                .map_err(|error| format!("could not read semantic-change record: {error}"))
+                .and_then(|source| {
+                    serde_yaml::from_str::<SemanticChange>(&source)
+                        .map_err(|error| format!("could not parse semantic-change record: {error}"))
+                });
+            records.push((path.to_path_buf(), record));
+        }
+        let superseded_records =
+            active_semantic_change_superseded_keys(base, &changes_dir, &records);
+        for (path, record) in records {
+            if semantic_change_path_keys(base, &changes_dir, &path)
+                .iter()
+                .any(|key| superseded_records.contains(key))
+            {
+                continue;
+            }
+            let change = match record {
                 Ok(change) => change,
                 Err(error) => {
                     checks.push(audit_check(
                         "semantic.applied-change-not-reflected",
                         "semantic",
                         if strict { "fail" } else { "review-required" },
-                        path,
-                        format!("could not parse semantic-change record: {error}"),
+                        &path,
+                        error,
                     ));
                     continue;
                 }
@@ -18981,7 +19201,7 @@ fn append_applied_semantic_change_audit_checks(
             append_semantic_change_module_reflection_checks(
                 &module.value,
                 base,
-                path,
+                &path,
                 &change,
                 strict,
                 checks,
@@ -18990,7 +19210,7 @@ fn append_applied_semantic_change_audit_checks(
                 append_semantic_change_implementation_reflection_checks(
                     implementation,
                     &implementation_path,
-                    path,
+                    &path,
                     &change,
                     strict,
                     checks,
@@ -18998,6 +19218,90 @@ fn append_applied_semantic_change_audit_checks(
             }
         }
     }
+}
+
+fn active_semantic_change_superseded_keys(
+    module_base: &Path,
+    changes_dir: &Path,
+    records: &[(PathBuf, Result<SemanticChange, String>)],
+) -> BTreeSet<String> {
+    let mut superseded = BTreeSet::new();
+    for (_path, record) in records {
+        let Ok(change) = record else {
+            continue;
+        };
+        for reference in &change.supersedes {
+            superseded.extend(semantic_change_reference_keys(
+                module_base,
+                changes_dir,
+                reference,
+            ));
+        }
+    }
+    superseded
+}
+
+fn semantic_change_path_keys(
+    module_base: &Path,
+    changes_dir: &Path,
+    path: &Path,
+) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    keys.insert(normalized_path_key(path));
+    if let Ok(relative) = path.strip_prefix(module_base) {
+        keys.insert(normalized_path_key(relative));
+    }
+    if let Ok(relative) = path.strip_prefix(changes_dir) {
+        keys.insert(normalized_path_key(relative));
+    }
+    if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
+        keys.insert(file_name.to_string());
+    }
+    keys
+}
+
+fn semantic_change_reference_keys(
+    module_base: &Path,
+    changes_dir: &Path,
+    reference: &str,
+) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    let trimmed = reference
+        .trim()
+        .trim_start_matches("./")
+        .trim_start_matches(".\\");
+    if trimmed.is_empty() {
+        return keys;
+    }
+    keys.insert(trimmed.replace('\\', "/"));
+    let reference_path = Path::new(trimmed);
+    let candidate = if reference_path.is_absolute() {
+        reference_path.to_path_buf()
+    } else {
+        module_base.join(reference_path)
+    };
+    keys.extend(semantic_change_path_keys(
+        module_base,
+        changes_dir,
+        &candidate,
+    ));
+    if !reference_path.is_absolute() {
+        let changes_candidate = changes_dir.join(reference_path);
+        keys.extend(semantic_change_path_keys(
+            module_base,
+            changes_dir,
+            &changes_candidate,
+        ));
+    }
+    keys
+}
+
+fn normalized_path_key(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string()
 }
 
 fn append_semantic_change_module_reflection_checks(
@@ -19095,35 +19399,53 @@ fn append_semantic_change_implementation_reflection_checks(
     let Some(machine) = &change.machine else {
         return;
     };
-    for (field, additions) in semantic_machine_variant_groups(machine) {
+    for (field, expected_present, expected_absent) in semantic_machine_variant_groups(machine) {
         let declared = get_string_array(implementation, &["architecture", "machine", field])
             .into_iter()
             .collect::<BTreeSet<_>>();
-        let missing = additions
+        let missing = expected_present
             .iter()
             .filter(|value| !declared.contains(*value))
             .cloned()
             .collect::<Vec<_>>();
-        if missing.is_empty() {
-            continue;
+        if !missing.is_empty() {
+            let check_id = if field == "effect_results" {
+                "structure.effect-result-change-not-declared"
+            } else {
+                "semantic.applied-change-not-reflected"
+            };
+            push_applied_change_reflection_failure(
+                checks,
+                strict,
+                check_id,
+                implementation_path,
+                format!(
+                    "semantic-change `{}` declares machine {} {}, but `implementation.yaml` does not declare them",
+                    change_path.display(),
+                    field,
+                    missing.join(", ")
+                ),
+            );
         }
-        let check_id = if field == "effect_results" {
-            "structure.effect-result-change-not-declared"
-        } else {
-            "semantic.applied-change-not-reflected"
-        };
-        push_applied_change_reflection_failure(
-            checks,
-            strict,
-            check_id,
-            implementation_path,
-            format!(
-                "semantic-change `{}` declares machine {} {}, but `implementation.yaml` does not declare them",
-                change_path.display(),
-                field,
-                missing.join(", ")
-            ),
-        );
+        let still_present = expected_absent
+            .iter()
+            .filter(|value| declared.contains(*value))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !still_present.is_empty() {
+            push_applied_change_reflection_failure(
+                checks,
+                strict,
+                "semantic.applied-change-not-reflected",
+                implementation_path,
+                format!(
+                    "semantic-change `{}` removes machine {} {}, but `implementation.yaml` still declares them",
+                    change_path.display(),
+                    field,
+                    still_present.join(", ")
+                ),
+            );
+        }
     }
 
     if let Some(transitions) = &machine.transitions {
@@ -19138,7 +19460,9 @@ fn append_semantic_change_implementation_reflection_checks(
         )
         .into_iter()
         .collect::<BTreeSet<_>>();
-        for transition in &transitions.add {
+        let (expected_transitions, removed_transitions) =
+            semantic_machine_transition_expectations(transitions);
+        for transition in expected_transitions {
             let input = transition_input_variant(&transition.on);
             if !declared_transitions.contains(&(
                 transition.from.clone(),
@@ -19175,6 +19499,34 @@ fn append_semantic_change_implementation_reflection_checks(
                 );
             }
         }
+        for removal in removed_transitions {
+            if declared_transitions.iter().any(|(from, on, to)| {
+                from == &removal.from
+                    && on == &transition_input_variant(&removal.on)
+                    && removal
+                        .to
+                        .as_ref()
+                        .is_none_or(|expected_to| expected_to == to)
+            }) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    implementation_path,
+                    format!(
+                        "semantic-change `{}` removes transition {} --{}-->{}, but implementation still declares it",
+                        change_path.display(),
+                        removal.from,
+                        removal.on,
+                        removal
+                            .to
+                            .as_deref()
+                            .map(|to| format!(" {to}"))
+                            .unwrap_or_default()
+                    ),
+                );
+            }
+        }
     }
 }
 
@@ -19196,16 +19548,47 @@ fn push_applied_change_reflection_failure(
 
 fn semantic_machine_variant_groups(
     machine: &SemanticMachineChange,
-) -> [(&'static str, &Vec<String>); 7] {
+) -> Vec<(&'static str, Vec<String>, Vec<String>)> {
     [
-        ("states", &machine.states.add),
-        ("commands", &machine.commands.add),
-        ("events", &machine.events.add),
-        ("effects", &machine.effects.add),
-        ("effect_results", &machine.effect_results.add),
-        ("replies", &machine.replies.add),
-        ("rejections", &machine.rejections.add),
+        ("states", &machine.states),
+        ("commands", &machine.commands),
+        ("events", &machine.events),
+        ("effects", &machine.effects),
+        ("effect_results", &machine.effect_results),
+        ("replies", &machine.replies),
+        ("rejections", &machine.rejections),
     ]
+    .into_iter()
+    .map(|(field, change)| {
+        let mut expected = change.replace.clone().unwrap_or_default();
+        expected.retain(|value| !change.remove.contains(value));
+        for value in &change.add {
+            if !expected.contains(value) {
+                expected.push(value.clone());
+            }
+        }
+        (field, expected, change.remove.clone())
+    })
+    .collect()
+}
+
+fn semantic_machine_transition_expectations(
+    change: &MachineTransitionsChange,
+) -> (
+    Vec<MachineTransitionChange>,
+    Vec<MachineTransitionRemoveChange>,
+) {
+    let mut expected = change.replace.clone().unwrap_or_default();
+    expected.retain(|transition| {
+        !change
+            .remove
+            .iter()
+            .any(|removal| transition_matches_remove(transition, removal))
+    });
+    for transition in &change.add {
+        expected.push(transition.clone());
+    }
+    (expected, change.remove.clone())
 }
 
 fn module_public_surface_names(module: &YamlValue) -> BTreeSet<String> {
@@ -20583,6 +20966,7 @@ fn run_machine_apply(
     let change = parse_machine_change(change_json, change_yaml, change_file)?;
     let diagnostics = validate_machine_change(&manifest, &change);
     let writes = planned_machine_apply_writes(&manifest, &change);
+    let final_machine = machine_final_state_report(&manifest, &change);
     let has_errors = diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == Severity::Error);
@@ -20606,6 +20990,7 @@ fn run_machine_apply(
         implementation: implementation.display().to_string(),
         dry_run,
         writes,
+        final_machine,
         diagnostics,
     };
     print_machine_apply_report(&report);
@@ -20686,28 +21071,61 @@ fn validate_machine_variant_additions(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for (field, variants) in machine_change_variant_groups(change) {
-        let existing = get_string_array(&manifest.value, &["architecture", "machine", field]);
-        let mut seen = BTreeSet::new();
-        for variant in variants {
-            if !is_stable_identifier(variant) {
-                diagnostics.push(error(
-                    "machine-change.identifier",
-                    &manifest.path,
-                    format!("`machine.{field}.add` contains invalid identifier `{variant}`"),
-                ));
+        let existing = get_string_array(&manifest.value, &["architecture", "machine", field])
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        for (operation, values) in [
+            ("set", variants.replace.as_deref().unwrap_or(&[])),
+            ("add", variants.add.as_slice()),
+            ("remove", variants.remove.as_slice()),
+        ] {
+            let mut seen = BTreeSet::new();
+            for variant in values {
+                if !is_stable_identifier(variant) {
+                    diagnostics.push(error(
+                        "machine-change.identifier",
+                        &manifest.path,
+                        format!(
+                            "`machine.{field}.{operation}` contains invalid identifier `{variant}`"
+                        ),
+                    ));
+                }
+                if !seen.insert(variant.clone()) {
+                    diagnostics.push(error(
+                        "machine-change.duplicate-variant",
+                        &manifest.path,
+                        format!("`machine.{field}.{operation}` mentions duplicate `{variant}`"),
+                    ));
+                }
             }
-            if !seen.insert(variant.clone()) {
+        }
+        let mut final_values = variants
+            .replace
+            .clone()
+            .unwrap_or_else(|| existing.iter().cloned().collect::<Vec<_>>());
+        final_values.retain(|item| !variants.remove.iter().any(|remove| remove == item));
+        final_values.extend(variants.add.iter().cloned());
+        let mut seen_final = BTreeSet::new();
+        for variant in &final_values {
+            if !seen_final.insert(variant.clone()) {
                 diagnostics.push(error(
                     "machine-change.duplicate-variant",
                     &manifest.path,
-                    format!("`machine.{field}.add` contains duplicate `{variant}`"),
+                    format!("`machine.{field}` would contain duplicate `{variant}`"),
                 ));
             }
-            if existing.iter().any(|item| item == variant) {
+        }
+        let base = variants
+            .replace
+            .clone()
+            .unwrap_or_else(|| existing.iter().cloned().collect());
+        let base_set = base.iter().cloned().collect::<BTreeSet<_>>();
+        for variant in &variants.remove {
+            if !base_set.contains(variant) {
                 diagnostics.push(error(
-                    "machine-change.duplicate-variant",
+                    "machine-change.remove-missing-variant",
                     &manifest.path,
-                    format!("`machine.{field}.add` duplicates existing `{variant}`"),
+                    format!("`machine.{field}.remove` targets missing `{variant}`"),
                 ));
             }
         }
@@ -20719,31 +21137,34 @@ fn validate_machine_transition_references(
     change: &MachineChange,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let states = merged_machine_variants(manifest, "states", &change.machine.states.add, true);
-    let commands =
-        merged_machine_variants(manifest, "commands", &change.machine.commands.add, false);
-    let events = merged_machine_variants(manifest, "events", &change.machine.events.add, false);
-    let effects = merged_machine_variants(manifest, "effects", &change.machine.effects.add, false);
-    let effect_results = merged_machine_variants(
+    let states = final_machine_variants(manifest, "states", &change.machine.states, true);
+    let commands = final_machine_variants(manifest, "commands", &change.machine.commands, false);
+    let events = final_machine_variants(manifest, "events", &change.machine.events, false);
+    let effects = final_machine_variants(manifest, "effects", &change.machine.effects, false);
+    let effect_results = final_machine_variants(
         manifest,
         "effect_results",
-        &change.machine.effect_results.add,
+        &change.machine.effect_results,
         false,
     );
-    let replies = merged_machine_variants(manifest, "replies", &change.machine.replies.add, false);
-    let rejections = merged_machine_variants(
-        manifest,
-        "rejections",
-        &change.machine.rejections.add,
-        false,
-    );
-    let transition_changes = change
-        .transitions
-        .as_ref()
-        .map(|transitions| transitions.add.as_slice())
-        .unwrap_or(&[]);
+    let replies = final_machine_variants(manifest, "replies", &change.machine.replies, false);
+    let rejections =
+        final_machine_variants(manifest, "rejections", &change.machine.rejections, false);
+    let transition_changes = final_machine_transitions(manifest, change, diagnostics);
 
-    for transition in transition_changes {
+    let mut seen_transitions = BTreeSet::new();
+    for transition in &transition_changes {
+        let key = format!("{}|{}|{}", transition.from, transition.on, transition.to);
+        if !seen_transitions.insert(key.clone()) {
+            diagnostics.push(error(
+                "machine-change.duplicate-transition",
+                &manifest.path,
+                format!(
+                    "machine transitions contain duplicate `{}` on `{}` to `{}`",
+                    transition.from, transition.on, transition.to
+                ),
+            ));
+        }
         if !states.contains(&transition.from) {
             diagnostics.push(error(
                 "machine-change.unknown-state",
@@ -20771,6 +21192,23 @@ fn validate_machine_transition_references(
                 &manifest.path,
                 format!(
                     "transition input `{}` does not match a declared command or effect result",
+                    transition.on
+                ),
+            ));
+        }
+        if commands.contains(&input)
+            && transition.reply.as_deref().is_none_or(str::is_empty)
+            && transition.rejection.as_deref().is_none_or(str::is_empty)
+            && transition
+                .no_reply_justification
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            diagnostics.push(error(
+                "machine-change.transition-output-missing",
+                &manifest.path,
+                format!(
+                    "command transition `{}` must declare `reply`, `rejection`, or `no_reply_justification`",
                     transition.on
                 ),
             ));
@@ -20822,15 +21260,11 @@ fn validate_machine_transition_references(
         }
     }
 
-    let handled_inputs = existing_transition_inputs(manifest)
-        .into_iter()
-        .chain(
-            transition_changes
-                .iter()
-                .map(|transition| transition_input_variant(&transition.on)),
-        )
+    let handled_inputs = transition_changes
+        .iter()
+        .map(|transition| transition_input_variant(&transition.on))
         .collect::<BTreeSet<_>>();
-    for effect_result in &change.machine.effect_results.add {
+    for effect_result in &effect_results {
         if !handled_inputs.contains(effect_result) {
             diagnostics.push(error(
                 "structure.effect-result-unhandled",
@@ -20848,13 +21282,26 @@ fn validate_machine_role_additions(
     change: &MachineChange,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let effects = merged_machine_variants(manifest, "effects", &change.machine.effects.add, false);
+    let effects = final_machine_variants(manifest, "effects", &change.machine.effects, false);
     let role_changes = change
         .roles
         .as_ref()
         .map(|roles| roles.add.as_slice())
         .unwrap_or(&[]);
-    for role in role_changes {
+    let role_replacements = change
+        .roles
+        .as_ref()
+        .map(|roles| roles.replace.as_slice())
+        .unwrap_or(&[]);
+    let role_removals = change
+        .roles
+        .as_ref()
+        .map(|roles| roles.remove.as_slice())
+        .unwrap_or(&[]);
+    for role in role_replacements.iter().chain(role_changes.iter()) {
+        validate_machine_role_change(manifest, role, &effects, diagnostics);
+    }
+    for role in role_removals {
         if !is_stable_role_identifier(&role.kind) {
             diagnostics.push(error(
                 "machine-change.role-kind",
@@ -20862,30 +21309,41 @@ fn validate_machine_role_additions(
                 format!("role kind `{}` is not a stable role identifier", role.kind),
             ));
         }
-        if role.kind == "effect_executor" {
-            match &role.effect {
-                Some(effect) if effects.contains(effect) => {}
-                Some(effect) => diagnostics.push(error(
-                    "machine-change.unknown-effect",
+        let existing = structure_role_paths(manifest, &role.kind);
+        if let Some(path) = &role.path {
+            if !existing.iter().any(|item| item == path) {
+                diagnostics.push(error(
+                    "machine-change.remove-missing-role",
                     &manifest.path,
-                    format!("effect executor references undeclared effect `{effect}`"),
-                )),
-                None => diagnostics.push(error(
-                    "machine-change.effect-executor-effect",
-                    &manifest.path,
-                    "effect_executor roles must name the effect they execute",
-                )),
+                    format!("role `{}` does not declare path `{path}`", role.kind),
+                ));
             }
+        } else if existing.is_empty() {
+            diagnostics.push(error(
+                "machine-change.remove-missing-role",
+                &manifest.path,
+                format!("role `{}` is not declared", role.kind),
+            ));
         }
     }
-
+    let final_roles = final_machine_role_map(manifest, change);
+    for (role, paths) in &final_roles {
+        if paths.iter().cloned().collect::<BTreeSet<_>>().len() != paths.len() {
+            diagnostics.push(error(
+                "machine-change.duplicate-role",
+                &manifest.path,
+                format!("role `{role}` would contain duplicate paths"),
+            ));
+        }
+    }
     let has_effects = !effects.is_empty();
-    let has_executor_change = role_changes
-        .iter()
-        .any(|role| role.kind == "effect_executor");
-    let has_existing_executor = !structure_role_paths(manifest, "effect_executor").is_empty()
-        || !structure_role_paths(manifest, "adapter").is_empty();
-    if has_effects && !has_executor_change && !has_existing_executor {
+    let has_existing_executor = final_roles
+        .get("effect_executor")
+        .is_some_and(|items| !items.is_empty())
+        || final_roles
+            .get("adapter")
+            .is_some_and(|items| !items.is_empty());
+    if has_effects && !has_existing_executor {
         diagnostics.push(warning(
             "structure.effect-without-executor",
             &manifest.path,
@@ -20894,12 +21352,42 @@ fn validate_machine_role_additions(
     }
 }
 
+fn validate_machine_role_change(
+    manifest: &LoadedManifest,
+    role: &MachineRoleChange,
+    effects: &BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !is_stable_role_identifier(&role.kind) {
+        diagnostics.push(error(
+            "machine-change.role-kind",
+            &manifest.path,
+            format!("role kind `{}` is not a stable role identifier", role.kind),
+        ));
+    }
+    if role.kind == "effect_executor" {
+        match &role.effect {
+            Some(effect) if effects.contains(effect) => {}
+            Some(effect) => diagnostics.push(error(
+                "machine-change.unknown-effect",
+                &manifest.path,
+                format!("effect executor references undeclared effect `{effect}`"),
+            )),
+            None => diagnostics.push(error(
+                "machine-change.effect-executor-effect",
+                &manifest.path,
+                "effect_executor roles must name the effect they execute",
+            )),
+        }
+    }
+}
+
 fn validate_machine_mode_obligations(
     manifest: &LoadedManifest,
     change: &MachineChange,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let states = merged_machine_variants(manifest, "states", &change.machine.states.add, true);
+    let states = final_machine_variants(manifest, "states", &change.machine.states, true);
     if is_stateful_machine_mode(&change.machine.mode)
         && !states.iter().any(|state| !is_ready_like_state(state))
     {
@@ -20933,31 +21421,139 @@ fn validate_machine_mode_obligations(
     }
 }
 
-fn machine_change_variant_groups(change: &MachineChange) -> [(&'static str, &Vec<String>); 7] {
+fn machine_change_variant_groups(
+    change: &MachineChange,
+) -> [(&'static str, &MachineVariantListChange); 7] {
     [
-        ("states", &change.machine.states.add),
-        ("commands", &change.machine.commands.add),
-        ("events", &change.machine.events.add),
-        ("effects", &change.machine.effects.add),
-        ("effect_results", &change.machine.effect_results.add),
-        ("replies", &change.machine.replies.add),
-        ("rejections", &change.machine.rejections.add),
+        ("states", &change.machine.states),
+        ("commands", &change.machine.commands),
+        ("events", &change.machine.events),
+        ("effects", &change.machine.effects),
+        ("effect_results", &change.machine.effect_results),
+        ("replies", &change.machine.replies),
+        ("rejections", &change.machine.rejections),
     ]
 }
 
-fn merged_machine_variants(
+fn final_machine_variants(
     manifest: &LoadedManifest,
     field: &str,
-    additions: &[String],
+    change: &MachineVariantListChange,
     include_ready_fallback: bool,
 ) -> BTreeSet<String> {
-    let mut values = get_string_array(&manifest.value, &["architecture", "machine", field])
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    if include_ready_fallback && values.is_empty() {
+    let existing_values = get_string_array(&manifest.value, &["architecture", "machine", field]);
+    let had_existing_values =
+        get_path(&manifest.value, &["architecture", "machine", field]).is_some();
+    let mut values = change.replace.clone().unwrap_or(existing_values);
+    values.retain(|item| !change.remove.iter().any(|remove| remove == item));
+    values.extend(change.add.iter().cloned());
+    let mut values = values.into_iter().collect::<BTreeSet<_>>();
+    if include_ready_fallback
+        && (values.is_empty() || (!had_existing_values && change.replace.is_none()))
+    {
         values.insert("Ready".to_string());
     }
-    values.extend(additions.iter().cloned());
+    values
+}
+
+fn final_machine_variant_values(
+    manifest: &LoadedManifest,
+    field: &str,
+    change: &MachineVariantListChange,
+    include_ready_fallback: bool,
+) -> Vec<String> {
+    final_machine_variants(manifest, field, change, include_ready_fallback)
+        .into_iter()
+        .collect()
+}
+
+fn existing_machine_transitions(manifest: &LoadedManifest) -> Vec<MachineTransitionChange> {
+    get_path(&manifest.value, &["architecture", "machine", "transitions"])
+        .and_then(YamlValue::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(machine_transition_from_yaml)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn machine_transition_from_yaml(value: &YamlValue) -> Option<MachineTransitionChange> {
+    Some(MachineTransitionChange {
+        from: get_str(value, &["from"])?.to_string(),
+        on: get_str(value, &["on"])?.to_string(),
+        to: get_str(value, &["to"])?.to_string(),
+        events: get_string_array(value, &["events"]),
+        commands: get_string_array(value, &["commands"]),
+        effects: get_string_array(value, &["effects"]),
+        reply: get_str(value, &["reply"]).map(ToString::to_string),
+        rejection: get_str(value, &["rejection"]).map(ToString::to_string),
+        no_reply_justification: get_str(value, &["no_reply_justification"])
+            .map(ToString::to_string),
+    })
+}
+
+fn transition_matches_remove(
+    transition: &MachineTransitionChange,
+    remove: &MachineTransitionRemoveChange,
+) -> bool {
+    transition.from == remove.from
+        && transition.on == remove.on
+        && remove.to.as_deref().is_none_or(|to| transition.to == to)
+}
+
+fn final_machine_transitions(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<MachineTransitionChange> {
+    let Some(transitions) = &change.transitions else {
+        return existing_machine_transitions(manifest);
+    };
+    let mut values = transitions
+        .replace
+        .clone()
+        .unwrap_or_else(|| existing_machine_transitions(manifest));
+    for remove in &transitions.remove {
+        let before = values.len();
+        values.retain(|transition| !transition_matches_remove(transition, remove));
+        if before == values.len() {
+            diagnostics.push(error(
+                "machine-change.remove-missing-transition",
+                &manifest.path,
+                format!(
+                    "no transition matches remove target `{}` on `{}`{}",
+                    remove.from,
+                    remove.on,
+                    remove
+                        .to
+                        .as_deref()
+                        .map(|to| format!(" to `{to}`"))
+                        .unwrap_or_default()
+                ),
+            ));
+        }
+    }
+    values.extend(transitions.add.iter().cloned());
+    values
+}
+
+fn final_machine_transitions_without_diagnostics(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+) -> Vec<MachineTransitionChange> {
+    let Some(transitions) = &change.transitions else {
+        return existing_machine_transitions(manifest);
+    };
+    let mut values = transitions
+        .replace
+        .clone()
+        .unwrap_or_else(|| existing_machine_transitions(manifest));
+    for remove in &transitions.remove {
+        values.retain(|transition| !transition_matches_remove(transition, remove));
+    }
+    values.extend(transitions.add.iter().cloned());
     values
 }
 
@@ -20972,6 +21568,67 @@ fn existing_transition_inputs(manifest: &LoadedManifest) -> BTreeSet<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn final_machine_role_map(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+) -> BTreeMap<String, Vec<String>> {
+    let mut roles = architecture_role_map(manifest);
+    let Some(role_changes) = &change.roles else {
+        return roles;
+    };
+    for role in &role_changes.replace {
+        let path = role
+            .path
+            .clone()
+            .unwrap_or_else(|| machine_role_default_path(manifest, &role.kind));
+        roles.entry(role.kind.clone()).or_default().push(path);
+    }
+    if !role_changes.replace.is_empty() {
+        let mut set_roles = BTreeMap::<String, Vec<String>>::new();
+        for role in &role_changes.replace {
+            let path = role
+                .path
+                .clone()
+                .unwrap_or_else(|| machine_role_default_path(manifest, &role.kind));
+            set_roles.entry(role.kind.clone()).or_default().push(path);
+        }
+        roles = set_roles;
+    }
+    for remove in &role_changes.remove {
+        if let Some(paths) = roles.get_mut(&remove.kind) {
+            if let Some(path) = &remove.path {
+                paths.retain(|item| item != path);
+            } else {
+                paths.clear();
+            }
+        }
+    }
+    for role in &role_changes.add {
+        let path = role
+            .path
+            .clone()
+            .unwrap_or_else(|| machine_role_default_path(manifest, &role.kind));
+        roles.entry(role.kind.clone()).or_default().push(path);
+    }
+    roles.retain(|_, paths| !paths.is_empty());
+    roles
+}
+
+fn architecture_role_map(manifest: &LoadedManifest) -> BTreeMap<String, Vec<String>> {
+    let mut roles = BTreeMap::new();
+    if let Some(mapping) =
+        get_path(&manifest.value, &["architecture", "roles"]).and_then(YamlValue::as_mapping)
+    {
+        for (key, value) in mapping {
+            let Some(role) = key.as_str() else {
+                continue;
+            };
+            roles.insert(role.to_string(), yaml_string_values(value));
+        }
+    }
+    roles
 }
 
 fn transition_input_variant(input: &str) -> String {
@@ -21033,11 +21690,14 @@ fn is_stable_role_identifier(value: &str) -> bool {
 
 fn planned_machine_apply_writes(manifest: &LoadedManifest, change: &MachineChange) -> Vec<String> {
     let mut writes = vec![manifest.path.display().to_string()];
-    if change
-        .transitions
-        .as_ref()
-        .is_some_and(|transitions| !transitions.add.is_empty())
-    {
+    if change.transitions.as_ref().is_some_and(|transitions| {
+        transitions
+            .replace
+            .as_ref()
+            .is_some_and(|items| !items.is_empty())
+            || !transitions.add.is_empty()
+            || !transitions.remove.is_empty()
+    }) {
         writes.push(
             manifest
                 .path
@@ -21049,7 +21709,7 @@ fn planned_machine_apply_writes(manifest: &LoadedManifest, change: &MachineChang
         );
     }
     if let Some(roles) = &change.roles {
-        for role in &roles.add {
+        for role in roles.add.iter().chain(roles.replace.iter()) {
             let path = role
                 .path
                 .clone()
@@ -21099,43 +21759,77 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
         );
     }
 
-    for (field, additions) in machine_change_variant_groups(change) {
-        for item in additions {
-            append_unique_yaml_string_path(value, &["architecture", "machine", field], item);
-        }
+    let manifest_snapshot = LoadedManifest {
+        path: PathBuf::from("implementation.yaml"),
+        value: value.clone(),
+    };
+    for (field, variant_change) in machine_change_variant_groups(change) {
+        let values = final_machine_variant_values(&manifest_snapshot, field, variant_change, false);
+        set_yaml_string_sequence_path(value, &["architecture", "machine", field], &values);
     }
 
     if let Some(transitions) = &change.transitions {
-        for transition in &transitions.add {
-            append_yaml_mapping_path(
-                value,
-                &["architecture", "machine", "transitions"],
-                machine_transition_yaml(transition),
-            );
-        }
+        let transitions = if transitions.replace.is_some()
+            || !transitions.remove.is_empty()
+            || !transitions.add.is_empty()
+        {
+            final_machine_transitions_without_diagnostics(&manifest_snapshot, change)
+        } else {
+            existing_machine_transitions(&manifest_snapshot)
+        };
+        set_yaml_sequence_path(
+            value,
+            &["architecture", "machine", "transitions"],
+            transitions.iter().map(machine_transition_yaml).collect(),
+        );
+    }
+
+    if final_machine_variants(
+        &manifest_snapshot,
+        "effect_results",
+        &change.machine.effect_results,
+        false,
+    )
+    .is_empty()
+    {
+        remove_yaml_path(
+            value,
+            &["architecture", "messages", "effect_result_envelope"],
+        );
     }
 
     ensure_traceable_machine_defaults(value);
+    if get_string_array(value, &["architecture", "machine", "effect_results"]).is_empty() {
+        remove_yaml_path(
+            value,
+            &["architecture", "messages", "effect_result_envelope"],
+        );
+    }
 
     if let Some(roles) = &change.roles {
-        let synthetic_manifest = LoadedManifest {
-            path: PathBuf::from("implementation.yaml"),
-            value: value.clone(),
-        };
-        for role in &roles.add {
-            let path = role
-                .path
-                .clone()
-                .unwrap_or_else(|| machine_role_default_path(&synthetic_manifest, &role.kind));
-            append_unique_yaml_string_path(value, &["architecture", "roles", &role.kind], &path);
+        let final_roles = final_machine_role_map(&manifest_snapshot, change);
+        for (role, paths) in final_roles {
+            set_yaml_string_sequence_path(
+                value,
+                &["architecture", "roles", &role],
+                &dedup_preserve_order(paths),
+            );
+        }
+        for remove in &roles.remove {
+            if !final_machine_role_map(&manifest_snapshot, change).contains_key(&remove.kind) {
+                remove_yaml_path(value, &["architecture", "roles", &remove.kind]);
+            }
         }
     }
 
-    if change
-        .transitions
-        .as_ref()
-        .is_some_and(|transitions| !transitions.add.is_empty())
-    {
+    if change.transitions.as_ref().is_some_and(|transitions| {
+        transitions
+            .replace
+            .as_ref()
+            .is_some_and(|items| !items.is_empty())
+            || !transitions.add.is_empty()
+            || !transitions.remove.is_empty()
+    }) {
         append_unique_yaml_string_path(
             value,
             &["architecture", "roles", "replay_bundle"],
@@ -21175,7 +21869,65 @@ fn machine_transition_yaml(transition: &MachineTransitionChange) -> YamlValue {
     if let Some(rejection) = &transition.rejection {
         mapping.insert(yaml_key("rejection"), YamlValue::String(rejection.clone()));
     }
+    if let Some(justification) = &transition.no_reply_justification {
+        mapping.insert(
+            yaml_key("no_reply_justification"),
+            YamlValue::String(justification.clone()),
+        );
+    }
     YamlValue::Mapping(mapping)
+}
+
+fn machine_final_state_report(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+) -> MachineFinalStateReport {
+    let mut diagnostics = Vec::new();
+    let transitions = final_machine_transitions(manifest, change, &mut diagnostics);
+    let roles = final_machine_role_map(manifest, change)
+        .into_iter()
+        .flat_map(|(role, paths)| {
+            paths
+                .into_iter()
+                .map(move |path| format!("{role}:{path}"))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    MachineFinalStateReport {
+        mode: Some(change.machine.mode.clone()),
+        states: final_machine_variant_values(manifest, "states", &change.machine.states, true),
+        commands: final_machine_variant_values(
+            manifest,
+            "commands",
+            &change.machine.commands,
+            false,
+        ),
+        events: final_machine_variant_values(manifest, "events", &change.machine.events, false),
+        effects: final_machine_variant_values(manifest, "effects", &change.machine.effects, false),
+        effect_results: final_machine_variant_values(
+            manifest,
+            "effect_results",
+            &change.machine.effect_results,
+            false,
+        ),
+        replies: final_machine_variant_values(manifest, "replies", &change.machine.replies, false),
+        rejections: final_machine_variant_values(
+            manifest,
+            "rejections",
+            &change.machine.rejections,
+            false,
+        ),
+        transitions: transitions
+            .into_iter()
+            .map(|transition| {
+                format!(
+                    "{} --{}--> {}",
+                    transition.from, transition.on, transition.to
+                )
+            })
+            .collect(),
+        roles,
+    }
 }
 
 fn ensure_traceable_machine_defaults(value: &mut YamlValue) {
@@ -21413,7 +22165,11 @@ fn render_machine_change_trace_bundle(manifest: &LoadedManifest, change: &Machin
             .reply
             .as_deref()
             .or(transition.rejection.as_deref())
-            .unwrap_or("NoReplyDeclared");
+            .or(transition
+                .no_reply_justification
+                .as_deref()
+                .map(|_| "NoReplyJustified"))
+            .unwrap_or("TransitionOutputMissing");
         let _ = writeln!(out, "        tag: {}", yaml_quote(reply));
         let _ = writeln!(out, "    state_after: {}", yaml_quote(&transition.to));
         let _ = writeln!(out, "    source:");
@@ -21496,6 +22252,7 @@ fn print_machine_apply_report(report: &MachineApplyReport) {
     for write in &report.writes {
         println!("  - {write}");
     }
+    print_machine_final_state(&report.final_machine);
     if !report.diagnostics.is_empty() {
         println!("findings:");
         for diagnostic in &report.diagnostics {
@@ -21505,6 +22262,31 @@ fn print_machine_apply_report(report: &MachineApplyReport) {
                 diagnostic.check,
                 diagnostic.message
             );
+        }
+    }
+}
+
+fn print_machine_final_state(final_machine: &MachineFinalStateReport) {
+    println!("final_machine:");
+    println!(
+        "  mode: {}",
+        final_machine.mode.as_deref().unwrap_or("<not declared>")
+    );
+    for (label, values) in [
+        ("states", &final_machine.states),
+        ("commands", &final_machine.commands),
+        ("events", &final_machine.events),
+        ("effects", &final_machine.effects),
+        ("effect_results", &final_machine.effect_results),
+        ("replies", &final_machine.replies),
+        ("rejections", &final_machine.rejections),
+        ("transitions", &final_machine.transitions),
+        ("roles", &final_machine.roles),
+    ] {
+        if values.is_empty() {
+            println!("  {label}: <none>");
+        } else {
+            println!("  {label}: {}", values.join(", "));
         }
     }
 }
@@ -21565,6 +22347,7 @@ fn surface_declaration_from_request(
         kind: request.kind.clone(),
         surface: request.surface.clone(),
         entrypoint: request.entrypoint.clone(),
+        launch_entrypoint: request.launch_entrypoint.clone(),
         delegates_to: Some(surface_delegation_from_input(
             &request.delegates_to,
             &request.command,
@@ -21645,6 +22428,17 @@ fn validate_surface_declaration(
             ),
         ));
     }
+    if let Some(launch_entrypoint) = &declaration.launch_entrypoint {
+        if !is_safe_relative_artifact_path(launch_entrypoint) {
+            diagnostics.push(error(
+                "surface.launch-entrypoint",
+                &manifest.path,
+                format!(
+                    "surface launch entrypoint `{launch_entrypoint}` must be relative and stay inside the module"
+                ),
+            ));
+        }
+    }
     let Some(delegation) = &declaration.delegates_to else {
         diagnostics.push(error(
             "surface.delegates-to",
@@ -21721,6 +22515,9 @@ fn planned_surface_apply_writes(
 ) -> Vec<String> {
     let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
     let mut writes = vec![manifest.path.display().to_string()];
+    if let Some(launch_entrypoint) = &declaration.launch_entrypoint {
+        writes.push(base.join(launch_entrypoint).display().to_string());
+    }
     for evidence in &declaration.evidence {
         writes.push(base.join(evidence).display().to_string());
     }
@@ -21776,6 +22573,12 @@ fn surface_declaration_yaml(declaration: &SurfaceDeclaration) -> YamlValue {
         yaml_key("entrypoint"),
         YamlValue::String(declaration.entrypoint.clone()),
     );
+    if let Some(launch_entrypoint) = &declaration.launch_entrypoint {
+        mapping.insert(
+            yaml_key("launch_entrypoint"),
+            YamlValue::String(launch_entrypoint.clone()),
+        );
+    }
     if let Some(delegation) = &declaration.delegates_to {
         let mut delegate = serde_yaml::Mapping::new();
         if let Some(role) = &delegation.role {
@@ -21836,13 +22639,15 @@ fn render_surface_evidence(manifest: &LoadedManifest, declaration: &SurfaceDecla
         .as_ref()
         .and_then(|delegation| delegation.symbol.as_deref().or(delegation.role.as_deref()))
         .unwrap_or("<unknown>");
+    let launch = declaration.launch_entrypoint.as_deref().unwrap_or("<none>");
     format!(
-        "# Boundary Evidence: runnable surface routes through boundary\n\nPromise:\n\n- Runnable surface `{surface}` enters module `{module}` through declared RMS command `{command}`.\n- Entrypoint `{entrypoint}` delegates to `{delegate}` before pure decisions run.\n- Product behavior is not reimplemented only in the runnable surface.\n\nCommand/tool:\n\n- `rms surface check implementation.yaml --strict`\n- `rms structure implementation.yaml`\n- `rms verify implementation.yaml`\n\nExpected result:\n\n- Surface wiring references the declared boundary adapter, parser, or public entrypoint.\n- Malformed boundary input is parsed/rejected before domain delegation.\n- Declared boundary effects remain behind adapter, port, or effect-executor roles.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        "# Boundary Evidence: runnable surface routes through boundary\n\nPromise:\n\n- Runnable surface `{surface}` enters module `{module}` through declared RMS command `{command}`.\n- Entrypoint `{entrypoint}` delegates to `{delegate}` before pure decisions run.\n- Launch entrypoint `{launch}` reaches the declared entrypoint when present.\n- Product behavior is not reimplemented only in the runnable surface.\n\nCommand/tool:\n\n- `rms surface check implementation.yaml --strict`\n- `rms structure implementation.yaml`\n- `rms verify implementation.yaml`\n\nExpected result:\n\n- Surface wiring references the declared boundary adapter, parser, or public entrypoint.\n- Malformed boundary input is parsed/rejected before domain delegation.\n- Declared boundary effects remain behind adapter, port, or effect-executor roles.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
         surface = markdown_inline(&declaration.name),
         module = markdown_inline(module),
         command = markdown_inline(command),
         entrypoint = markdown_inline(&declaration.entrypoint),
         delegate = markdown_inline(delegate),
+        launch = markdown_inline(launch),
     )
 }
 
@@ -22137,6 +22942,13 @@ fn run_spec_apply(
     }
 
     let writes = planned_spec_apply_writes(&context, &change, machine_change.as_ref());
+    let final_machine = context
+        .implementation
+        .as_ref()
+        .zip(machine_change.as_ref())
+        .map(|(implementation, machine_change)| {
+            machine_final_state_report(implementation, machine_change)
+        });
     let has_errors = diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == Severity::Error);
@@ -22150,6 +22962,7 @@ fn run_spec_apply(
         target: target.display().to_string(),
         dry_run,
         writes,
+        final_machine,
         diagnostics,
     };
     print_spec_apply_report(&report);
@@ -22894,6 +23707,7 @@ fn dogfood_cleanup_findings(root: &Path) -> JsonValue {
                 lower.contains("evidence to add")
                     || lower.contains("semantic shape only")
                     || lower.contains("not recorded yet")
+                    || lower.contains("record the exact command used")
                     || lower.contains("replace this placeholder")
             }) {
                 placeholder_files.insert(display_relative(root, path));
@@ -23803,9 +24617,7 @@ fn semantic_module_has_evidence_for(module: &LoadedManifest, id: &str) -> bool {
 }
 
 fn module_declares_reconciliation_need(module: &LoadedManifest) -> bool {
-    let rendered = serde_yaml::to_string(&module.value).unwrap_or_default();
-    let normalized = normalize_semantic_identifier(&rendered);
-    [
+    let terms = [
         "reconciliation",
         "reconcile",
         "recovery",
@@ -23818,9 +24630,38 @@ fn module_declares_reconciliation_need(module: &LoadedManifest) -> bool {
         "stale",
         "partial",
         "conflicting",
-    ]
-    .iter()
-    .any(|term| semantic_text_mentions_id(&normalized, term))
+    ];
+    let profile_text = get_string_array(&module.value, &["profiles"]).join("\n");
+    if semantic_name_contains_any(
+        &profile_text,
+        &["distributed", "workflow", "storage", "integration"],
+    ) {
+        let rendered = serde_yaml::to_string(&module.value).unwrap_or_default();
+        let normalized = normalize_semantic_identifier(&rendered);
+        return terms
+            .iter()
+            .any(|term| semantic_text_mentions_id(&normalized, term));
+    }
+
+    let mut scoped_text = String::new();
+    for path in [
+        &["effects"][..],
+        &["operations"][..],
+        &["recovery"][..],
+        &["reconciliation"][..],
+        &["verification", "reconciliation"][..],
+        &["x-rms", "recovery"][..],
+        &["x-rms", "reconciliation"][..],
+    ] {
+        if let Some(value) = get_path(&module.value, path) {
+            scoped_text.push_str(&serde_yaml::to_string(value).unwrap_or_default());
+            scoped_text.push('\n');
+        }
+    }
+    let normalized = normalize_semantic_identifier(&scoped_text);
+    terms
+        .iter()
+        .any(|term| semantic_text_mentions_id(&normalized, term))
 }
 
 fn module_has_concrete_reconciliation_evidence(module: &LoadedManifest) -> bool {
@@ -23989,6 +24830,9 @@ fn print_spec_apply_report(report: &SpecApplyReport) {
     println!("writes:");
     for write in &report.writes {
         println!("  - {write}");
+    }
+    if let Some(final_machine) = &report.final_machine {
+        print_machine_final_state(final_machine);
     }
     if !report.diagnostics.is_empty() {
         println!("findings:");
@@ -27047,6 +27891,7 @@ struct SurfaceApplyRequest {
     kind: String,
     surface: String,
     entrypoint: String,
+    launch_entrypoint: Option<String>,
     delegates_to: String,
     command: String,
     name: Option<String>,
@@ -27426,6 +28271,10 @@ fn scaffold_runnable_surface_if_inferred(
                 &boundary_path.join("public").join("app.mjs"),
                 &render_js_browser_surface_mjs(public_command),
             )?;
+            write_new_file(
+                &boundary_path.join("public").join("index.html"),
+                &render_js_browser_surface_html(),
+            )?;
             "public/app.mjs".to_string()
         }
         _ => public_entrypoint.clone(),
@@ -27433,6 +28282,10 @@ fn scaffold_runnable_surface_if_inferred(
     let delegate_symbol = match (binding, surface.as_str()) {
         (Some("js"), "browser") => "src/adapter.mjs#handleBoundaryInput".to_string(),
         _ => public_entrypoint,
+    };
+    let launch_entrypoint = match (binding, surface.as_str()) {
+        (Some("js"), "browser") => Some("public/index.html".to_string()),
+        _ => None,
     };
     let declaration = SurfaceDeclaration {
         name: format!(
@@ -27443,6 +28296,7 @@ fn scaffold_runnable_surface_if_inferred(
         kind: "runnable-boundary".to_string(),
         surface,
         entrypoint,
+        launch_entrypoint,
         delegates_to: Some(SurfaceDelegation {
             role: Some("adapter".to_string()),
             symbol: Some(delegate_symbol),
@@ -27454,9 +28308,76 @@ fn scaffold_runnable_surface_if_inferred(
         ],
     };
     apply_surface_declaration_to_manifest(&mut manifest.value, &declaration);
+    if simple_runnable_boundary_should_start_stateless(purpose) {
+        normalize_simple_runnable_boundary_machine(&mut manifest.value);
+    }
     write_yaml_manifest(&manifest)?;
     write_surface_evidence_placeholders(&manifest, &declaration)?;
     Ok(())
+}
+
+fn simple_runnable_boundary_should_start_stateless(text: &str) -> bool {
+    !semantic_name_contains_any(
+        text,
+        &[
+            "async",
+            "await",
+            "confirmation",
+            "compensation",
+            "lifecycle",
+            "multi-step",
+            "order",
+            "progress",
+            "queue",
+            "reconciliation",
+            "recovery",
+            "retry",
+            "session",
+            "stateful",
+            "status",
+            "step",
+            "tracking",
+            "wait",
+            "wizard",
+            "workflow",
+        ],
+    )
+}
+
+fn normalize_simple_runnable_boundary_machine(value: &mut YamlValue) {
+    set_yaml_string_path(
+        value,
+        &["architecture", "machine", "mode"],
+        "stateless-decision-machine",
+    );
+    set_yaml_string_path(
+        value,
+        &["architecture", "machine", "stateless_justification"],
+        "generated runnable boundary is a thin parse/delegate/render surface; use `rms spec apply` to introduce lifecycle state when product intent needs order, retry, status, recovery, or workflow",
+    );
+    set_yaml_string_sequence_path(
+        value,
+        &["architecture", "machine", "states"],
+        &["AwaitingInput".to_string()],
+    );
+    let command = get_string_array(value, &["architecture", "machine", "commands"])
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "BoundaryCommand".to_string());
+    let reply = get_string_array(value, &["architecture", "machine", "replies"])
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "BoundaryReply".to_string());
+    set_yaml_sequence_path(
+        value,
+        &["architecture", "machine", "transitions"],
+        vec![yaml_mapping(vec![
+            ("from", YamlValue::String("AwaitingInput".to_string())),
+            ("on", YamlValue::String(command)),
+            ("to", YamlValue::String("AwaitingInput".to_string())),
+            ("reply", YamlValue::String(reply)),
+        ])],
+    );
 }
 
 fn infer_runnable_surface_from_text(text: &str) -> Option<String> {
@@ -27718,6 +28639,11 @@ fn scaffold_rust_module(
         &path.join("implementation.yaml"),
         &render_rust_implementation_yaml(name, &package_name, shape, &names),
     )?;
+    normalize_scaffold_effect_result_declarations(
+        &path.join("implementation.yaml"),
+        shape,
+        &names,
+    )?;
     write_new_file(
         &path.join("Cargo.toml"),
         &render_rust_cargo_toml(&package_name),
@@ -27751,6 +28677,11 @@ fn scaffold_swift_module(
     write_new_file(
         &path.join("implementation.yaml"),
         &render_swift_implementation_yaml(name, &package_name, &target_name, shape, &names),
+    )?;
+    normalize_scaffold_effect_result_declarations(
+        &path.join("implementation.yaml"),
+        shape,
+        &names,
     )?;
     write_new_file(
         &path.join("Package.swift"),
@@ -27800,6 +28731,11 @@ fn scaffold_js_module(
     write_new_file(
         &path.join("implementation.yaml"),
         &render_js_implementation_yaml(name, shape, &names),
+    )?;
+    normalize_scaffold_effect_result_declarations(
+        &path.join("implementation.yaml"),
+        shape,
+        &names,
     )?;
     write_new_file(
         &path.join("src").join("representation.mjs"),
@@ -27855,6 +28791,61 @@ fn scaffold_executable_module(path: &Path, name: &str, shape: ScaffoldShape) -> 
         &render_executable_smoke_evidence(),
     )?;
     Ok(())
+}
+
+fn scaffold_declares_effect_results_by_default(shape: ScaffoldShape) -> bool {
+    matches!(
+        shape,
+        ScaffoldShape::Workflow | ScaffoldShape::StorageAdapter | ScaffoldShape::IntegrationAdapter
+    )
+}
+
+fn normalize_scaffold_effect_result_declarations(
+    implementation_path: &Path,
+    shape: ScaffoldShape,
+    names: &InnerStructureNames,
+) -> Result<()> {
+    if scaffold_declares_effect_results_by_default(shape) {
+        return Ok(());
+    }
+    let source = fs::read_to_string(implementation_path)
+        .with_context(|| format!("failed to read `{}`", implementation_path.display()))?;
+    let mut value: YamlValue = serde_yaml::from_str(&source)
+        .with_context(|| format!("failed to parse `{}`", implementation_path.display()))?;
+    set_yaml_sequence_path(
+        &mut value,
+        &["architecture", "machine", "effect_results"],
+        Vec::new(),
+    );
+    remove_yaml_path(
+        &mut value,
+        &["architecture", "messages", "effect_result_envelope"],
+    );
+    remove_yaml_string_values_path(
+        &mut value,
+        &["architecture", "representation", "closed_variants"],
+        &[
+            names.effect_result.as_str(),
+            names.effect_result_envelope.as_str(),
+            names.effect_lifecycle.as_str(),
+        ],
+    );
+    fs::write(
+        implementation_path,
+        serde_yaml::to_string(&value)
+            .with_context(|| format!("failed to render `{}`", implementation_path.display()))?,
+    )
+    .with_context(|| format!("failed to write `{}`", implementation_path.display()))
+}
+
+fn remove_yaml_string_values_path(value: &mut YamlValue, path: &[&str], remove: &[&str]) {
+    let Some(sequence) = get_path_mut(value, path).and_then(YamlValue::as_sequence_mut) else {
+        return;
+    };
+    sequence.retain(|item| {
+        item.as_str()
+            .is_none_or(|candidate| !remove.iter().any(|removed| removed == &candidate))
+    });
 }
 
 fn normalized_profiles_for_shape(profiles: &[String], shape: ScaffoldShape) -> Vec<String> {
@@ -29563,6 +30554,27 @@ if (typeof document !== "undefined") {{
     )
 }
 
+fn render_js_browser_surface_html() -> String {
+    r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RMS Runnable Surface</title>
+  </head>
+  <body>
+    <form data-rms-surface-form>
+      <input name="value" value="example">
+      <button type="submit">Run</button>
+    </form>
+    <pre data-rms-surface-output></pre>
+    <script type="module" src="./app.mjs"></script>
+  </body>
+</html>
+"#
+    .to_string()
+}
+
 fn render_executable_implementation_yaml(module_name: &str, shape: ScaffoldShape) -> String {
     format!(
         "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: shell\n\ndependencies:\n  allowed_processes:\n    - sh\n\narchitecture:\n  shape: {}\n  verification_mode: executable-command\n  static_inspection: opaque\n  public_entrypoints:\n    - scripts/smoke.sh\n  semantic_roles:\n{}\n  boundary_inputs: []\n  observable_outputs: []\n  declared_assets: []\n\nsemantic_functions:\n  - id: executable-semantic-smoke\n    symbol: scripts/smoke.sh\n    kind: adapter\n    purity: boundary\n    assumptions:\n      ensures:\n        - command-backed implementation can be invoked through the declared verify command\n        - semantic roles are documented as scaffold obligations rather than statically inferred from opaque executable assets\n        - RMS does not infer internal domain semantics from opaque executable assets\n    evidence:\n      boundaries:\n        - verification/boundaries/executable_smoke.md\n",
@@ -30162,10 +31174,10 @@ Use these advisory workbench commands when they match the task:
 - `rms evidence <module.yaml> --task "<task>"`
 - `rms refactor <module.yaml> --task "<task>"`
 - `rms spec plan <module.yaml|implementation.yaml> --task "<task>"` when a change needs new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, public entrypoints, or evidence obligations
-- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics and record the exact applied change under `verification/changes/`; provider output is advisory until this succeeds
+- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics and record the exact applied change under `verification/changes/`; use `set`, `remove`, and `supersedes` to revise semantics instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
 - `rms spec check <module.yaml|implementation.yaml>` after semantic changes
 - `rms machine plan/apply/check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct
-- `rms surface apply/check <implementation.yaml>` when adding or changing app, UI, CLI, browser, HTTP, batch, or executable entrypoints
+- `rms surface apply/check <implementation.yaml>` when adding or changing app, UI, CLI, browser, HTTP, batch, or executable entrypoints; browser-style surfaces should distinguish controller `entrypoint` from host `launch_entrypoint`
 - `rms structure <implementation.yaml>` when implementation inner roles, machine declarations, or evidence placeholders are unclear
 - `rms review <module.yaml> --impact`
 
@@ -30185,7 +31197,7 @@ When creating a new capability, choose semantic shape before file layout:
 
 Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a public capability should be scaffolded as a recursive tree with a composite parent, domain child, and boundary child. Prefer this over a single module when the intent combines user/boundary interaction, lifecycle decisions, and effect simulation or external-service coordination.
 
-If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only.
+If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only. Simple runnable surfaces should stay thin and stateless unless the intent has real lifecycle, order, session, retry, status, recovery, or workflow semantics.
 
 Use `rms add-module <path> --name <name> --purpose "<purpose>" --shape <shape> --binding <binding>` when scaffolding one module. Bindings realize semantic roles idiomatically; they do not define the semantics.
 
@@ -30197,7 +31209,7 @@ Naming rule: choose module and inner role names from product/capability language
 
 Before writing implementation code, make the user's intent concrete enough to encode:
 
-- Semantic gate: do not hand-create laws, contracts, semantic roles, states, commands, events, effects, transition functions, parsers, runnable surfaces, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply` and `rms surface apply`, then edit the declared role bodies.
+- Semantic gate: do not hand-create laws, contracts, semantic roles, states, commands, events, effects, transition functions, parsers, runnable surfaces, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply` and `rms surface apply`, then edit the declared role bodies. Use semantic `set`, `remove`, and `supersedes` operations for revisions instead of manual manifest surgery.
 - Public surface gate: public commands in `module.yaml` must be represented by the declared implementation surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
 - Intent: restate the behavior in the owning context's language and name what must never happen.
 - ADTs and values: define closed variants, validated values, commands, states, events, and accepted/rejected result types.
@@ -30228,7 +31240,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Use state machines or transition functions when behavior depends on lifecycle or order; illegal transitions must be rejected or made unrepresentable.
 - Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
 - Keep workflow choreography explicit in the workflow transition model, subscription registry, effect lifecycle, inbox/outbox, or declared adapter boundary rather than hidden in listener chains.
-- Keep runnable surfaces connected to the declared RMS boundary. If `public/app.*`, `src/cli.*`, routes, mobile views, or similar files are the real product surface, declare them with `rms surface apply` and route them through the declared adapter/public entrypoint instead of importing or duplicating pure/private decision code directly.
+- Keep runnable surfaces connected to the declared RMS boundary. If `public/app.*`, `src/cli.*`, routes, mobile views, or similar files are the real product surface, declare them with `rms surface apply` and route them through the declared adapter/public entrypoint instead of importing or duplicating pure/private decision code directly. Browser launch files should reference the declared controller entrypoint rather than bypassing it.
 - Do not edit another module's private implementation to bypass its public contract.
 - Treat generated reports, diffs, and provider output as evidence, not architecture.
 
@@ -30336,12 +31348,30 @@ fn get_path<'a>(value: &'a YamlValue, path: &[&str]) -> Option<&'a YamlValue> {
     Some(current)
 }
 
+fn get_path_mut<'a>(value: &'a mut YamlValue, path: &[&str]) -> Option<&'a mut YamlValue> {
+    let mut current = value;
+    for segment in path {
+        current = current
+            .as_mapping_mut()?
+            .get_mut(YamlValue::String((*segment).to_string()))?;
+    }
+    Some(current)
+}
+
 fn get_str<'a>(value: &'a YamlValue, path: &[&str]) -> Option<&'a str> {
     get_path(value, path)?.as_str()
 }
 
 fn yaml_key(key: &str) -> YamlValue {
     YamlValue::String(key.to_string())
+}
+
+fn yaml_mapping(items: Vec<(&str, YamlValue)>) -> YamlValue {
+    let mut mapping = serde_yaml::Mapping::new();
+    for (key, value) in items {
+        mapping.insert(yaml_key(key), value);
+    }
+    YamlValue::Mapping(mapping)
 }
 
 fn yaml_string_sequence(values: &[String]) -> YamlValue {
@@ -30408,11 +31438,41 @@ fn set_yaml_string_path(value: &mut YamlValue, path: &[&str], item: &str) {
     mapping.insert(yaml_key(key), YamlValue::String(item.to_string()));
 }
 
+fn set_yaml_sequence_path(value: &mut YamlValue, path: &[&str], items: Vec<YamlValue>) {
+    let (parent_path, key) = path.split_at(path.len().saturating_sub(1));
+    let Some(key) = key.first() else {
+        return;
+    };
+    let mapping = ensure_yaml_mapping_path(value, parent_path);
+    mapping.insert(yaml_key(key), YamlValue::Sequence(items));
+}
+
+fn set_yaml_string_sequence_path(value: &mut YamlValue, path: &[&str], items: &[String]) {
+    set_yaml_sequence_path(
+        value,
+        path,
+        items
+            .iter()
+            .map(|item| YamlValue::String(item.clone()))
+            .collect(),
+    );
+}
+
 fn set_yaml_string_if_missing_path(value: &mut YamlValue, path: &[&str], item: &str) {
     if get_path(value, path).is_some() {
         return;
     }
     set_yaml_string_path(value, path, item);
+}
+
+fn remove_yaml_path(value: &mut YamlValue, path: &[&str]) {
+    let (parent_path, key) = path.split_at(path.len().saturating_sub(1));
+    let Some(key) = key.first() else {
+        return;
+    };
+    if let Some(mapping) = get_path_mut(value, parent_path).and_then(YamlValue::as_mapping_mut) {
+        mapping.remove(yaml_key(key));
+    }
 }
 
 fn append_unique_yaml_string_path(value: &mut YamlValue, path: &[&str], item: &str) {
@@ -30423,6 +31483,14 @@ fn append_unique_yaml_string_path(value: &mut YamlValue, path: &[&str], item: &s
     {
         sequence.push(YamlValue::String(item.to_string()));
     }
+}
+
+fn dedup_preserve_order(values: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    values
+        .into_iter()
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
 }
 
 fn append_yaml_mapping_path(value: &mut YamlValue, path: &[&str], item: YamlValue) {
@@ -31496,12 +32564,24 @@ import struct ExternalKit.Widget
 
         fs::remove_dir_all(&root).unwrap();
         assert_no_error_diagnostics(&diagnostics);
-        assert!(implementation.contains("name: \"ExampleMachine\""));
-        assert!(implementation.contains("mode: \"stateless-decision-machine\""));
+        assert!(
+            implementation.contains("name: \"ExampleMachine\"")
+                || implementation.contains("name: ExampleMachine")
+        );
+        assert!(
+            implementation.contains("mode: \"stateless-decision-machine\"")
+                || implementation.contains("mode: stateless-decision-machine")
+        );
         assert!(implementation.contains("stateless_justification:"));
-        assert!(implementation.contains("- \"Ready\""));
-        assert!(implementation.contains("- \"ExampleCommand\""));
-        assert!(implementation.contains("- \"ExampleState\""));
+        assert!(implementation.contains("- \"Ready\"") || implementation.contains("- Ready"));
+        assert!(
+            implementation.contains("- \"ExampleCommand\"")
+                || implementation.contains("- ExampleCommand")
+        );
+        assert!(
+            implementation.contains("- \"ExampleState\"")
+                || implementation.contains("- ExampleState")
+        );
         assert!(implementation.contains("command_envelope:"));
         assert!(implementation.contains("transition:"));
         assert!(implementation.contains("numeric_safety:"));
@@ -31630,8 +32710,14 @@ import struct ExternalKit.Widget
 
         fs::remove_dir_all(&root).unwrap();
         assert_no_error_diagnostics(&diagnostics);
-        assert!(implementation.contains("name: \"ExampleMachine\""));
-        assert!(implementation.contains("- \"ExampleCommand\""));
+        assert!(
+            implementation.contains("name: \"ExampleMachine\"")
+                || implementation.contains("name: ExampleMachine")
+        );
+        assert!(
+            implementation.contains("- \"ExampleCommand\"")
+                || implementation.contains("- ExampleCommand")
+        );
         assert!(implementation.contains("command_envelope:"));
         assert!(implementation.contains("numeric_safety:"));
         assert!(implementation.contains("first_bad_transition"));
@@ -31741,17 +32827,35 @@ import struct ExternalKit.Widget
         let trace_report =
             build_trace_report(&root.join("verification/traces/boundary_parse.yaml")).unwrap();
         assert!(implementation.contains("binding: js"));
-        assert!(implementation.contains("shape: \"boundary-adapter\""));
-        assert!(implementation.contains("name: \"ExampleBoundaryMachine\""));
-        assert!(implementation.contains("mode: \"boundary-machine\""));
-        assert!(implementation.contains("- \"AwaitingInput\""));
-        assert!(implementation.contains("- \"ExampleBoundaryCommand\""));
+        assert!(
+            implementation.contains("shape: \"boundary-adapter\"")
+                || implementation.contains("shape: boundary-adapter")
+        );
+        assert!(
+            implementation.contains("name: \"ExampleBoundaryMachine\"")
+                || implementation.contains("name: ExampleBoundaryMachine")
+        );
+        assert!(
+            implementation.contains("mode: \"boundary-machine\"")
+                || implementation.contains("mode: boundary-machine")
+        );
+        assert!(
+            implementation.contains("- \"AwaitingInput\"")
+                || implementation.contains("- AwaitingInput")
+        );
+        assert!(
+            implementation.contains("- \"ExampleBoundaryCommand\"")
+                || implementation.contains("- ExampleBoundaryCommand")
+        );
         assert!(implementation.contains("command_envelope:"));
         assert!(implementation.contains("effect_lifecycle:"));
         assert!(implementation.contains("numeric_safety:"));
         assert!(implementation.contains("parser:"));
         assert!(implementation.contains("message_envelope:"));
-        assert!(implementation.contains("transition_function: \"handleBoundaryTransition\""));
+        assert!(
+            implementation.contains("transition_function: \"handleBoundaryTransition\"")
+                || implementation.contains("transition_function: handleBoundaryTransition")
+        );
         assert!(implementation.contains("id: boundary-transition"));
         assert!(representation.contains("export const AwaitingInput"));
         assert!(representation.contains("export const Completed"));
@@ -32656,6 +33760,7 @@ architecture:
             kind: "runnable-boundary".to_string(),
             surface: "cli".to_string(),
             entrypoint: "src/adapter.mjs".to_string(),
+            launch_entrypoint: None,
             delegates_to: "src/adapter.mjs#handleBoundaryInput".to_string(),
             command: "run-checkout".to_string(),
             name: None,
@@ -32847,6 +33952,99 @@ transitions:
 
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn machine_apply_set_remove_and_add_rewrites_final_semantics() {
+        let root = unique_test_dir("machine-apply-set-remove");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/transition.mjs"),
+            "export function transition(state, command) { return { state, command }; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: revision-example
+binding: js
+source:
+  root: .
+  public_entrypoint: src/transition.mjs
+commands:
+  build: node --check src/transition.mjs
+  verify: node --check src/transition.mjs
+architecture:
+  shape: domain-engine
+  machine:
+    name: RevisionMachine
+    mode: stateful-transition-machine
+    states: [Ready, OldState]
+    commands: [OldCommand]
+    events: [OldEvent]
+    effects: []
+    effect_results: []
+    replies: [OldReply]
+    rejections: []
+    transition_function: transition
+    transitions:
+      - from: Ready
+        on: OldCommand
+        to: OldState
+        reply: OldReply
+  roles:
+    transition: [src/transition.mjs]
+"#,
+        )
+        .unwrap();
+
+        run_machine_apply(
+            &root.join("implementation.yaml"),
+            None,
+            Some(
+                r#"spec: rms/machine-change/v0.1
+machine:
+  mode: stateful-transition-machine
+  states:
+    set: [Ready, OldState, Active]
+    remove: [OldState]
+  commands:
+    set: [OldCommand, Start]
+    remove: [OldCommand]
+  events:
+    set: [Started]
+  replies:
+    set: [StartedReply]
+transitions:
+  set:
+    - from: Ready
+      on: OldCommand
+      to: OldState
+      reply: OldReply
+  remove:
+    - from: Ready
+      on: OldCommand
+  add:
+    - from: Ready
+      on: Start
+      to: Active
+      events: [Started]
+      reply: StartedReply
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.machine.states, vec!["Active", "Ready"]);
+        assert_eq!(report.machine.commands, vec!["Start"]);
+        assert!(implementation.contains("on: Start"));
+        assert!(!implementation.contains("OldCommand"));
     }
 
     #[test]
@@ -33500,6 +34698,109 @@ machine:
     }
 
     #[test]
+    fn strict_audit_ignores_superseded_semantic_change_reflection() {
+        let root = unique_test_dir("strict-audit-superseded-semantic-change");
+        let module_root = root.join("modules/nutrition-logging");
+        fs::create_dir_all(module_root.join("verification/changes")).unwrap();
+        fs::create_dir_all(module_root.join("src")).unwrap();
+        fs::write(
+            module_root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: nutrition-logging
+  version: 0.1.0
+  kind: application
+  purpose: Nutrition logging
+profiles: [workflow]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        fs::write(module_root.join("src/lib.rs"), "pub fn transition() {}\n").unwrap();
+        fs::write(
+            module_root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: nutrition-logging
+binding: rust
+source:
+  root: .
+  public_entrypoint: src/lib.rs
+commands:
+  build: cargo check
+  verify: cargo test
+architecture:
+  shape: workflow
+  machine:
+    name: NutritionLoggingWorkflowMachine
+    mode: workflow-effect-machine
+    states: [Ready]
+    commands: [DraftFoodLog]
+    events: []
+    effects: []
+    effect_results: []
+    replies: []
+    rejections: []
+    transition_function: transition
+  roles:
+    transition: [src/lib.rs]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            module_root.join("verification/changes/local-write.yaml"),
+            r#"spec: rms/semantic-change/v0.1
+module: modules/nutrition-logging/module.yaml
+intent:
+  summary: Historical local write result model.
+machine:
+  mode: workflow-effect-machine
+  effect_results:
+    add: [LocalWriteSucceeded]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            module_root.join("verification/changes/local-write-v2.yaml"),
+            r#"spec: rms/semantic-change/v0.1
+module: modules/nutrition-logging/module.yaml
+supersedes:
+  - verification/changes/local-write.yaml
+intent:
+  summary: Supersede the earlier local write result model.
+"#,
+        )
+        .unwrap();
+
+        let report = build_audit_report(&root, true).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report.checks.iter().all(|check| {
+            check.id != "structure.effect-result-change-not-declared"
+                && check.id != "semantic.applied-change-not-reflected"
+        }));
+    }
+
+    #[test]
     fn semantic_module_flags_boundary_profile_without_boundary_evidence() {
         let manifest = loaded_module_manifest(
             "module.yaml",
@@ -33540,6 +34841,52 @@ verification:
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.check == "semantic.boundary-without-evidence"));
+    }
+
+    #[test]
+    fn semantic_module_allows_pure_unknown_command_rejection_without_reconciliation() {
+        let manifest = loaded_module_manifest(
+            "module.yaml",
+            r#"spec: rms/module/v0.1
+module:
+  name: local-command-router
+  version: 0.1.0
+  kind: library
+  purpose: Reject unknown local commands explicitly.
+profiles: [core]
+owns:
+  concepts: [UnknownCommand]
+  data: []
+  decisions:
+    - reject UnknownCommand before state changes
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants:
+  - id: unknown-command-rejected
+    statement: UnknownCommand returns an explicit rejection.
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        );
+        let mut diagnostics = Vec::new();
+
+        validate_semantic_module_completeness(&manifest, &mut diagnostics);
+
+        assert!(diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.check != "semantic.reconciliation-without-evidence"));
     }
 
     #[test]
@@ -35087,9 +36434,15 @@ verification:
         assert!(parent.contains("name: \"play-game-cli\""));
         assert!(parent_scenario_evidence.contains("public-command-is-child-backed"));
         assert!(boundary.contains("name: \"resolve-move\""));
-        assert!(domain_implementation.contains("name: \"PlayGameMachine\""));
+        assert!(
+            domain_implementation.contains("name: \"PlayGameMachine\"")
+                || domain_implementation.contains("name: PlayGameMachine")
+        );
         assert!(!domain_implementation.contains("PlayGameRulesMachine"));
-        assert!(boundary_implementation.contains("name: \"PlayGameBoundaryMachine\""));
+        assert!(
+            boundary_implementation.contains("name: \"PlayGameBoundaryMachine\"")
+                || boundary_implementation.contains("name: PlayGameBoundaryMachine")
+        );
         assert!(has_parent_export_evidence);
         assert!(has_transition_trace_evidence);
         assert!(has_accepted_rejected_evidence);
@@ -35182,6 +36535,9 @@ verification:
         let surface =
             fs::read_to_string(root.join("modules/tile-generator-boundary/public/app.mjs"))
                 .unwrap();
+        let launch =
+            fs::read_to_string(root.join("modules/tile-generator-boundary/public/index.html"))
+                .unwrap();
         let report = build_structure_report(
             &root.join("modules/tile-generator-boundary/implementation.yaml"),
         )
@@ -35191,7 +36547,14 @@ verification:
         assert!(implementation.contains("surfaces:"));
         assert!(implementation.contains("runnable-boundary"));
         assert!(implementation.contains("runnable_surface"));
+        assert!(implementation.contains("launch_entrypoint"));
+        assert_eq!(
+            report.machine.mode.as_deref(),
+            Some("stateless-decision-machine")
+        );
+        assert_eq!(report.machine.states, vec!["AwaitingInput".to_string()]);
         assert!(surface.contains("handleBoundaryInput"));
+        assert!(launch.contains("./app.mjs"));
         assert!(!surface.contains("createAlphaMaskTile"));
         assert!(
             report
@@ -36783,6 +38146,43 @@ records:
         assert_eq!(report.records[1].state_after.as_deref(), Some("CheckedOut"));
         assert!(report.first_bad_transition.is_none());
         assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn trace_bundle_flags_no_reply_declared_scaffold_output() {
+        let root = unique_test_dir("trace-no-reply-declared");
+        fs::create_dir_all(&root).unwrap();
+        let bundle = root.join("trace.yaml");
+        fs::write(
+            &bundle,
+            r#"spec: rms/trace-bundle/v0.1
+machine: CheckoutMachine
+records:
+  - state_before: Ready
+    input:
+      command_id: c1
+      target_machine: CheckoutMachine
+      correlation_id: flow-1
+      causation_id: user-1
+    output:
+      next_state: Ready
+      events: []
+      commands: []
+      effects: []
+      reply:
+        tag: NoReplyDeclared
+    state_after: Ready
+"#,
+        )
+        .unwrap();
+
+        let report = build_trace_report(&bundle).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "trace.no-reply-declared"));
     }
 
     #[test]

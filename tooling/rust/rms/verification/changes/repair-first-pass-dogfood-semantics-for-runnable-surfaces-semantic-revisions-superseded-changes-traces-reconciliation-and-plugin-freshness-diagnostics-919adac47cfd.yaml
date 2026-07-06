@@ -1,0 +1,18 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+intent:
+  summary: Repair first-pass dogfood semantics for runnable surfaces, semantic revisions, superseded changes, traces, reconciliation, and plugin freshness diagnostics.
+laws:
+  add:
+  - id: semantic-revisions-are-applied-canonically
+    statement: Semantic and machine revisions that correct scaffold drift must use canonical set, remove, supersedes, launch entrypoint, and active-record rules instead of hand-edited manifest surgery.
+    kind: invariant
+contracts: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: semantic-revisions-are-applied-canonically
+    path: verification/laws/semantic_revisions_are_applied_canonically.md
+surfaces: null

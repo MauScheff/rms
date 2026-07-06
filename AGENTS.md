@@ -7,7 +7,9 @@ This repository follows the Reliable Modular Systems specification.
 - RMS owns semantics and architecture; agents fill declared role bodies.
 - Use RMS CLI gates before changing meaning or structure: modules, public commands, contracts, laws, states, events, effects, effect results, transitions, roles, runnable surfaces, public entrypoints, and evidence obligations.
 - Do not hand-create semantic roles, hidden entrypoints, runnable surfaces, or parallel architecture in source files. Apply the semantic change first with `rms spec apply`, the focused machine change with `rms machine apply`, or the runnable surface declaration with `rms surface apply`.
+- Use RMS semantic revision operations instead of manifest surgery: `set` replaces a declared list, `remove` deletes stale variants/transitions/roles, and `supersedes` marks older `verification/changes/*.yaml` records as historical.
 - Runnable surfaces adapt outside input into declared RMS commands. They may render and execute declared boundary effects. They must not reimplement domain decisions or call private module internals.
+- Simple runnable app/tool/browser/CLI surfaces should stay thin and stateless unless the product intent has real lifecycle/order/session/retry/status/recovery/workflow semantics.
 - Public commands in `module.yaml` must be represented by the declared implementation surface. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
 - Private helpers inside pure roles must stay pure. IO belongs in declared adapter, port, or effect-executor roles as explicit effects and effect results.
 
@@ -46,6 +48,7 @@ Before writing implementation code, make the requested behavior concrete enough 
 - When an implementation binding exists, declare or preserve command, event, effect, and effect-result envelopes; transition outputs; transition records; journal, timeline, replay-bundle, and first-bad-transition roles where they apply.
 - Parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
 - Declare runnable surfaces in `architecture.surfaces` with `rms surface apply` or `rms spec apply` before adding app, UI, CLI, browser, HTTP, batch, or executable entrypoints.
+- Browser and similar host surfaces should distinguish the inspectable controller `entrypoint` from the launch file `launch_entrypoint`.
 - Resolve edge cases first: invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases.
 - Use domain-named role suffixes where the language allows it so inner roles stay unambiguous: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`.
 - Do not invent module, child, or machine names from role/surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `rust`, `swift`, or `js` unless those words are genuinely domain language. Prefer RMS `add-capability` defaults or user-supplied product/capability names.

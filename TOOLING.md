@@ -134,13 +134,15 @@ rms spec check <module.yaml|implementation.yaml> [--strict] [--json]
 rms spec diff <module.yaml|implementation.yaml> [--json]
 ```
 
-Use this when a change needs new laws, public contracts, machine states, transitions, effects, effect results, rejection types, recovery or reconciliation obligations, or evidence obligations. `rms spec apply` updates canonical semantics first and records the exact applied semantic-change object under `verification/changes/`; then agents fill declared role bodies. Provider planning is advisory until `rms spec apply` succeeds.
+Use this when a change needs new laws, public contracts, machine states, transitions, effects, effect results, rejection types, recovery or reconciliation obligations, or evidence obligations. `rms spec apply` updates canonical semantics first and records the exact applied semantic-change object under `verification/changes/`; then agents fill declared role bodies. Provider planning is advisory until `rms spec apply` succeeds. Use `set`, `remove`, and `supersedes` in semantic changes to revise canonical semantics instead of hand-editing manifests or rewriting old change records.
 
 The semantic-change format is language-neutral and may include a nested machine change:
 
 ```yaml
 spec: rms/semantic-change/v0.1
 module: modules/example/module.yaml
+supersedes:
+  - verification/changes/older-change.yaml
 intent:
   summary: Failed payment after reservation releases inventory.
 laws:
@@ -171,6 +173,7 @@ rms machine diff <implementation.yaml> [--json]
 ```
 
 Use this for focused inner-machine edits when laws, public contracts, and evidence obligations are already correct. For product-meaning changes, prefer `rms spec apply` so laws, contracts, machine structure, and evidence move together.
+Machine changes support `set`, `add`, and `remove` for states, commands, events, effects, effect results, replies, rejections, transitions, and roles. RMS applies them in that order and rejects stale references in the final machine.
 
 The canonical change format is language-neutral:
 
@@ -180,7 +183,7 @@ module: modules/example/implementation.yaml
 machine:
   mode: stateful-transition-machine
   states:
-    add: [NeedsContext, PendingConfirmation]
+    set: [Ready, NeedsContext, PendingConfirmation]
   commands:
     add: [Start, Confirm]
   events:

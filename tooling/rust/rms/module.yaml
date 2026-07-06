@@ -207,6 +207,10 @@ invariants:
     statement: Source behavior changes require a committed semantic-change record before strict production audit can pass.
     enforced_by: strict-audit-semantic-drift-check
     verified_by: verification/laws/source_drift_has_semantic_record.md
+  - id: semantic-revisions-are-applied-canonically
+    statement: Semantic and machine revisions that correct scaffold drift must use canonical set, remove, supersedes, launch entrypoint, and active-record rules instead of hand-edited manifest surgery.
+    enforced_by: semantic-revision-apply-and-audit
+    verified_by: verification/laws/semantic_revisions_are_applied_canonically.md
   - id: runnable-surfaces-enter-through-boundaries
     statement: Runnable surfaces adapt outside input into declared RMS commands and must not reimplement domain decisions or call private module internals.
     enforced_by: runnable-surface-structure-diagnostics

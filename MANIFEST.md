@@ -567,14 +567,15 @@ Product meaning changes move through `rms spec apply` before code. The canonical
 
 | Field | Meaning |
 |---|---|
+| `supersedes` | Historical change records that this semantic change replaces for active reflection checks. |
 | `intent.summary` | Human-readable reason for the semantic delta. |
 | `laws.add` | Invariants, laws, or product promises that must hold. |
 | `contracts.add` | Public commands, queries, events, APIs, or capabilities consumed outside the module. |
 | `machine` | Optional machine section reused from `rms/machine-change/v0.1` for states, inputs, outputs, transitions, and inner roles. |
-| `surfaces.add` | Runnable surface declarations for app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints that adapt outside input into declared RMS commands. |
+| `surfaces.add` | Runnable surface declarations for app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints that adapt outside input into declared RMS commands. Browser-style surfaces may include both a controller `entrypoint` and a host `launch_entrypoint`. |
 | `evidence.add` | Required proof lanes for laws, contracts, transitions, effects, scenarios, traces, or boundary behavior. |
 
-Use `rms spec apply` to add or change laws, contracts, machine structure, runnable surfaces, effects, semantic roles, public entrypoints, and evidence obligations together. Use `rms surface apply/check` for focused runnable entrypoint changes. Agents may edit bodies inside declared role files after the semantic delta is applied. Focused inner-machine edits may use `rms machine apply` when laws, public contracts, and evidence obligations are already correct.
+Use `rms spec apply` to add or change laws, contracts, machine structure, runnable surfaces, effects, semantic roles, public entrypoints, and evidence obligations together. Machine and semantic changes support `set`, `add`, and `remove` for semantic revision; use `supersedes` instead of editing old change records. Use `rms surface apply/check` for focused runnable entrypoint changes. Agents may edit bodies inside declared role files after the semantic delta is applied. Focused inner-machine edits may use `rms machine apply` when laws, public contracts, and evidence obligations are already correct.
 
 ### Semantic Machine Structure
 

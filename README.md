@@ -168,6 +168,7 @@ rms surface apply ./my-system/modules/tic-tac-toe-boundary/implementation.yaml \
   --kind runnable-boundary \
   --surface browser \
   --entrypoint public/app.mjs \
+  --launch-entrypoint public/index.html \
   --delegates-to src/adapter.mjs#handleBoundaryInput \
   --command tic-tac-toe
 
@@ -222,7 +223,9 @@ machine:
 rms machine check ./my-system/modules/widget/implementation.yaml
 ```
 
-`rms spec plan`, `rms machine plan`, and provider output are advisory. `rms spec apply` and `rms machine apply` are the deterministic steps that update canonical declarations and role placeholders. `rms spec apply` also records the exact applied semantic-change object under `verification/changes/`. Agents then fill declared role bodies; pure helpers stay pure, and IO belongs behind declared effects/effect-results in adapter, port, or effect-executor roles.
+`rms spec plan`, `rms machine plan`, and provider output are advisory. `rms spec apply` and `rms machine apply` are the deterministic steps that update canonical declarations and role placeholders. `rms spec apply` also records the exact applied semantic-change object under `verification/changes/`. Use `set`, `remove`, and `supersedes` to revise RMS semantics instead of hand-editing manifests or rewriting old change records. Agents then fill declared role bodies; pure helpers stay pure, and IO belongs behind declared effects/effect-results in adapter, port, or effect-executor roles.
+
+For simple runnable app/tool/browser/CLI surfaces, the boundary should stay thin and stateless unless the product intent has real lifecycle, order, session, retry, status, recovery, or workflow semantics. Browser surfaces normally use `entrypoint: public/app.mjs` for the inspectable controller and `launch_entrypoint: public/index.html` for the host file.
 
 When behavior depends on external truth, model uncertainty before code: unknown, duplicate, stale, partial, conflicting, delayed, or later-corrected outcomes need explicit recovery, retry, compensation, convergence, or reconciliation evidence.
 
