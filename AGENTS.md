@@ -49,6 +49,7 @@ Before writing implementation code, make the requested behavior concrete enough 
 - Parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
 - Declare runnable surfaces in `architecture.surfaces` with `rms surface apply` or `rms spec apply` before adding app, UI, CLI, browser, HTTP, batch, or executable entrypoints.
 - Browser and similar host surfaces should distinguish the inspectable controller `entrypoint` from the launch file `launch_entrypoint`.
+- Any browser script loaded by `launch_entrypoint` is part of the runnable surface. It must import or call the declared controller/adapter, not duplicate parser, generator, transition, or domain decision logic in a second bundle.
 - Resolve edge cases first: invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases.
 - Use domain-named role suffixes where the language allows it so inner roles stay unambiguous: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`.
 - Do not invent module, child, or machine names from role/surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `rust`, `swift`, or `js` unless those words are genuinely domain language. Prefer RMS `add-capability` defaults or user-supplied product/capability names.

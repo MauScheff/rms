@@ -1,0 +1,19 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Treat launch assets reachable from runnable surfaces as checked RMS surface code so one-shot browser apps cannot bypass declared boundaries.
+laws:
+  add:
+  - id: runnable-launch-assets-route-through-boundaries
+    statement: Launch assets reachable from a runnable surface must route through the declared RMS entrypoint or adapter and must not duplicate parser or domain decision logic outside declared roles.
+    kind: invariant
+contracts: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: runnable-launch-assets-route-through-boundaries
+    path: verification/laws/runnable_launch_assets_route_through_boundaries.md
+surfaces: null

@@ -38,7 +38,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
    - do not expose private implementation as public contract;
    - do not put context-specific business concepts into the technical kernel;
    - do not introduce undeclared dependencies or effects.
-   - do not move real product behavior into an undeclared runnable surface that bypasses the declared public entrypoint, parser, adapter, or boundary machine, and do not duplicate domain decisions inside runnable entrypoints.
+   - do not move real product behavior into an undeclared runnable surface that bypasses the declared public entrypoint, parser, adapter, or boundary machine, and do not duplicate parser, generator, transition, or domain decisions inside runnable entrypoints or browser launch scripts.
    - do not keep generic `Accept`/`Reject` scaffold commands as product semantics when public commands are domain-specific.
 10. If public meaning must change to complete the refactor, stop treating the work as a private refactor. Switch to `evolve-contract` or `implement-change` and make compatibility impact explicit.
 11. Add or adjust focused verification evidence:

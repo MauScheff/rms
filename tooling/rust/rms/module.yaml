@@ -215,6 +215,10 @@ invariants:
     statement: Runnable surfaces adapt outside input into declared RMS commands and must not reimplement domain decisions or call private module internals.
     enforced_by: runnable-surface-structure-diagnostics
     verified_by: verification/contracts/check_runnable_surface.md
+  - id: runnable-launch-assets-route-through-boundaries
+    statement: Launch assets reachable from a runnable surface must route through the declared RMS entrypoint or adapter and must not duplicate parser or domain decision logic outside declared roles.
+    enforced_by: runnable-surface-launch-asset-diagnostics
+    verified_by: verification/laws/runnable_launch_assets_route_through_boundaries.md
 
 effects:
   - name: read-repository-files

@@ -1254,6 +1254,10 @@ struct SurfaceDeclaration {
     #[serde(default)]
     launch_entrypoint: Option<String>,
     #[serde(default)]
+    launch_scripts: Vec<String>,
+    #[serde(default)]
+    launch_script: Option<String>,
+    #[serde(default)]
     delegates_to: Option<SurfaceDelegation>,
     #[serde(default)]
     effects: Vec<String>,
@@ -1731,6 +1735,10 @@ enum SurfaceCommands {
         /// Optional launch path for host surfaces such as browser HTML pages.
         #[arg(long = "launch-entrypoint")]
         launch_entrypoint: Option<String>,
+
+        /// Optional local script or asset executed by the launch entrypoint.
+        #[arg(long = "launch-script")]
+        launch_scripts: Vec<String>,
 
         /// Role name or symbol that the runnable surface delegates to.
         #[arg(long = "delegates-to")]
@@ -5231,6 +5239,7 @@ fn main() -> Result<()> {
                 surface,
                 entrypoint,
                 launch_entrypoint,
+                launch_scripts,
                 delegates_to,
                 command,
                 name,
@@ -5243,6 +5252,7 @@ fn main() -> Result<()> {
                 surface,
                 entrypoint,
                 launch_entrypoint,
+                launch_scripts,
                 delegates_to,
                 command,
                 name,
@@ -11526,77 +11536,118 @@ fn inspect_runnable_surface_boundary_use(
                 ),
             );
         }
+        for launch_asset in
+            runnable_launch_asset_references(declaration, launch_entrypoint, &source)
+        {
+            if launch_asset == declaration.entrypoint {
+                continue;
+            }
+            let asset_path = base.join(&launch_asset);
+            let Ok(asset_source) = fs::read_to_string(&asset_path) else {
+                push_unique_warning(
+                    diagnostics,
+                    "structure.runnable-surface-not-wired",
+                    &manifest.path,
+                    format!(
+                        "runnable launch asset `{launch_asset}` referenced by `{launch_entrypoint}` could not be inspected"
+                    ),
+                );
+                continue;
+            };
+            inspect_runnable_surface_source(
+                manifest,
+                diagnostics,
+                &launch_asset,
+                &asset_source,
+                &boundary_refs,
+                &pure_refs,
+                &declared_semantic_source,
+                "runnable launch asset",
+            );
+        }
     }
     for reference in runnable_refs {
         let path = base.join(&reference);
         let Ok(source) = fs::read_to_string(&path) else {
             continue;
         };
-        if boundary_refs
-            .iter()
-            .any(|boundary| same_semantic_path(boundary, &reference))
-        {
-            continue;
-        }
-        let uses_boundary = boundary_refs
-            .iter()
-            .any(|boundary| source_mentions_path_or_stem(&source, boundary))
-            || source.contains("handleBoundaryInput")
-            || source.contains("handleBoundaryTransition");
-        let imports_private_decision_role = pure_refs
-            .iter()
-            .any(|private_role| source_mentions_path_or_stem(&source, private_role));
-        if !uses_boundary {
-            push_unique_warning(
+        inspect_runnable_surface_source(
+            manifest,
+            diagnostics,
+            &reference,
+            &source,
+            &boundary_refs,
+            &pure_refs,
+            &declared_semantic_source,
+            "runnable surface",
+        );
+    }
+}
+
+fn inspect_runnable_surface_source(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    reference: &str,
+    source: &str,
+    boundary_refs: &[String],
+    pure_refs: &[String],
+    declared_semantic_source: &str,
+    label: &str,
+) {
+    if boundary_refs
+        .iter()
+        .any(|boundary| same_semantic_path(boundary, &reference))
+    {
+        return;
+    }
+    let uses_boundary = boundary_refs
+        .iter()
+        .any(|boundary| source_mentions_path_or_stem(&source, boundary))
+        || source.contains("handleBoundaryInput")
+        || source.contains("handleBoundaryTransition");
+    let imports_private_decision_role = pure_refs
+        .iter()
+        .any(|private_role| source_mentions_path_or_stem(&source, private_role));
+    if !uses_boundary {
+        push_unique_warning(
                 diagnostics,
                 "structure.runnable-surface-not-wired",
                 &manifest.path,
-                format!(
-                    "runnable surface `{reference}` does not reference the declared boundary adapter, parser, transition, or public entrypoint"
-                ),
+                format!("{label} `{reference}` does not reference the declared boundary adapter, parser, transition, or public entrypoint"),
             );
-        }
-        if imports_private_decision_role {
-            push_unique_warning(
+    }
+    if imports_private_decision_role {
+        push_unique_warning(
                 diagnostics,
                 "structure.runnable-surface-private-domain-access",
                 &manifest.path,
-                format!(
-                    "runnable surface `{reference}` imports or references private decision roles instead of a declared boundary entrypoint"
-                ),
+                format!("{label} `{reference}` imports or references private decision roles instead of a declared boundary entrypoint"),
             );
-        }
-        let duplicates_domain_logic =
-            runnable_surface_looks_like_domain_logic(&source, &declared_semantic_source)
-                && !uses_boundary;
-        if imports_private_decision_role && !uses_boundary {
-            push_unique_warning(
+    }
+    let duplicates_domain_logic =
+        runnable_surface_looks_like_domain_logic(&source, &declared_semantic_source)
+            && !uses_boundary;
+    if imports_private_decision_role && !uses_boundary {
+        push_unique_warning(
                 diagnostics,
                 "structure.runnable-surface-bypasses-boundary",
                 &manifest.path,
-                format!(
-                    "runnable surface `{reference}` imports declared pure/private role code without going through the declared boundary adapter or public entrypoint"
-                ),
+                format!("{label} `{reference}` imports declared pure/private role code without going through the declared boundary adapter or public entrypoint"),
             );
-        }
-        if duplicates_domain_logic {
-            push_unique_warning(
+    }
+    if duplicates_domain_logic {
+        push_unique_warning(
                 diagnostics,
                 "structure.runnable-surface-domain-logic-duplication",
                 &manifest.path,
-                format!(
-                    "runnable surface `{reference}` appears to define core decision logic while disconnected from the declared boundary"
-                ),
+                format!("{label} `{reference}` appears to define core decision logic while disconnected from the declared boundary"),
             );
-            push_unique_warning(
+        push_unique_warning(
                 diagnostics,
                 "structure.runnable-surface-bypasses-boundary",
                 &manifest.path,
-                format!(
-                    "runnable surface `{reference}` appears to reimplement domain decisions instead of routing through the declared boundary adapter or public entrypoint"
-                ),
+                format!("{label} `{reference}` appears to reimplement domain decisions instead of routing through the declared boundary adapter or public entrypoint"),
             );
-        }
     }
 }
 
@@ -11647,6 +11698,142 @@ fn architecture_surface_declarations(manifest: &LoadedManifest) -> Vec<SurfaceDe
         .iter()
         .filter_map(|item| serde_yaml::from_value(item.clone()).ok())
         .collect()
+}
+
+fn declaration_launch_scripts(declaration: &SurfaceDeclaration) -> Vec<String> {
+    let mut scripts = declaration.launch_scripts.clone();
+    if let Some(script) = declaration.launch_script.as_deref() {
+        if !script.trim().is_empty() {
+            scripts.push(script.to_string());
+        }
+    }
+    scripts.sort();
+    scripts.dedup();
+    scripts
+}
+
+fn runnable_launch_asset_references(
+    declaration: &SurfaceDeclaration,
+    launch_entrypoint: &str,
+    launch_source: &str,
+) -> Vec<String> {
+    let mut references = declaration_launch_scripts(declaration);
+    if declaration.surface == "browser" || launch_entrypoint.ends_with(".html") {
+        for source in html_script_src_references(launch_source) {
+            if let Some(reference) = resolve_launch_asset_reference(launch_entrypoint, &source) {
+                references.push(reference);
+            }
+        }
+    }
+    references.sort();
+    references.dedup();
+    references
+}
+
+fn html_script_src_references(source: &str) -> Vec<String> {
+    let mut references = Vec::new();
+    let lower = source.to_ascii_lowercase();
+    let bytes = source.as_bytes();
+    let mut search_from = 0;
+    while let Some(relative_start) = lower[search_from..].find("<script") {
+        let start = search_from + relative_start;
+        let Some(relative_end) = lower[start..].find('>') else {
+            break;
+        };
+        let end = start + relative_end;
+        let tag = &source[start..end];
+        if let Some(src) = html_attribute_value(tag, "src") {
+            references.push(src);
+        }
+        search_from = end.saturating_add(1).min(bytes.len());
+    }
+    references
+}
+
+fn html_attribute_value(tag: &str, attribute: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let mut search_from = 0;
+    let needle = attribute.to_ascii_lowercase();
+    while let Some(relative_start) = lower[search_from..].find(&needle) {
+        let start = search_from + relative_start;
+        let before = lower[..start].chars().next_back();
+        let after = lower[start + needle.len()..].chars().next();
+        let boundary_before = before.is_none_or(|ch| ch.is_ascii_whitespace() || ch == '<');
+        let boundary_after = after.is_none_or(|ch| ch.is_ascii_whitespace() || ch == '=');
+        if !boundary_before || !boundary_after {
+            search_from = start + needle.len();
+            continue;
+        }
+        let mut rest = tag[start + needle.len()..].trim_start();
+        if !rest.starts_with('=') {
+            search_from = start + needle.len();
+            continue;
+        }
+        rest = rest[1..].trim_start();
+        let Some(first) = rest.chars().next() else {
+            return None;
+        };
+        if first == '"' || first == '\'' {
+            let value_start = first.len_utf8();
+            let value_rest = &rest[value_start..];
+            let end = value_rest.find(first)?;
+            return Some(value_rest[..end].to_string());
+        }
+        let value = rest
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('/')
+            .to_string();
+        if !value.is_empty() {
+            return Some(value);
+        }
+        search_from = start + needle.len();
+    }
+    None
+}
+
+fn resolve_launch_asset_reference(launch_entrypoint: &str, reference: &str) -> Option<String> {
+    let trimmed = reference.trim();
+    if trimmed.is_empty() || is_external_launch_asset_reference(trimmed) {
+        return None;
+    }
+    let path_part = trimmed.split(['?', '#']).next().unwrap_or(trimmed).trim();
+    if path_part.is_empty() || !is_safe_relative_artifact_path(path_part) {
+        return None;
+    }
+    let launch_path = Path::new(launch_entrypoint);
+    let base = launch_path.parent().unwrap_or_else(|| Path::new(""));
+    let resolved = normalize_relative_path(base.join(path_part));
+    let rendered = path_to_manifest_reference(&resolved);
+    if is_safe_relative_artifact_path(&rendered) {
+        Some(rendered)
+    } else {
+        None
+    }
+}
+
+fn is_external_launch_asset_reference(reference: &str) -> bool {
+    let lower = reference.to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("//")
+        || lower.starts_with("data:")
+        || lower.starts_with("blob:")
+        || lower.starts_with("javascript:")
+        || lower.starts_with('#')
+}
+
+fn path_to_manifest_reference(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => part.to_str().map(ToString::to_string),
+            Component::CurDir => None,
+            Component::ParentDir => Some("..".to_string()),
+            Component::RootDir | Component::Prefix(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn module_mentions_runnable_surface_intent(manifest: &LoadedManifest) -> bool {
@@ -11740,6 +11927,9 @@ fn semantic_function_name_is_decision_like(name: &str) -> bool {
             "decide",
             "resolve",
             "evaluate",
+            "generate",
+            "parse",
+            "normalize",
             "validate",
             "transition",
             "apply",
@@ -11860,9 +12050,9 @@ fn source_mentions_path_or_stem(source: &str, reference: &str) -> bool {
         return false;
     };
     source.contains(file_name)
-        || file_name
-            .split_once('.')
-            .is_some_and(|(stem, _)| !stem.is_empty() && source.contains(stem))
+        || file_name.split_once('.').is_some_and(|(stem, _)| {
+            stem.len() >= 4 && !is_low_signal_semantic_token(stem) && source.contains(stem)
+        })
 }
 
 fn inspect_pure_role_effect_markers(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
@@ -22348,6 +22538,8 @@ fn surface_declaration_from_request(
         surface: request.surface.clone(),
         entrypoint: request.entrypoint.clone(),
         launch_entrypoint: request.launch_entrypoint.clone(),
+        launch_scripts: request.launch_scripts.clone(),
+        launch_script: None,
         delegates_to: Some(surface_delegation_from_input(
             &request.delegates_to,
             &request.command,
@@ -22439,6 +22631,17 @@ fn validate_surface_declaration(
             ));
         }
     }
+    for launch_script in declaration_launch_scripts(declaration) {
+        if !is_safe_relative_artifact_path(&launch_script) {
+            diagnostics.push(error(
+                "surface.launch-script",
+                &manifest.path,
+                format!(
+                    "surface launch script `{launch_script}` must be relative and stay inside the module"
+                ),
+            ));
+        }
+    }
     let Some(delegation) = &declaration.delegates_to else {
         diagnostics.push(error(
             "surface.delegates-to",
@@ -22518,6 +22721,9 @@ fn planned_surface_apply_writes(
     if let Some(launch_entrypoint) = &declaration.launch_entrypoint {
         writes.push(base.join(launch_entrypoint).display().to_string());
     }
+    for launch_script in declaration_launch_scripts(declaration) {
+        writes.push(base.join(launch_script).display().to_string());
+    }
     for evidence in &declaration.evidence {
         writes.push(base.join(evidence).display().to_string());
     }
@@ -22577,6 +22783,13 @@ fn surface_declaration_yaml(declaration: &SurfaceDeclaration) -> YamlValue {
         mapping.insert(
             yaml_key("launch_entrypoint"),
             YamlValue::String(launch_entrypoint.clone()),
+        );
+    }
+    let launch_scripts = declaration_launch_scripts(declaration);
+    if !launch_scripts.is_empty() {
+        mapping.insert(
+            yaml_key("launch_scripts"),
+            yaml_string_sequence(&launch_scripts),
         );
     }
     if let Some(delegation) = &declaration.delegates_to {
@@ -22640,14 +22853,21 @@ fn render_surface_evidence(manifest: &LoadedManifest, declaration: &SurfaceDecla
         .and_then(|delegation| delegation.symbol.as_deref().or(delegation.role.as_deref()))
         .unwrap_or("<unknown>");
     let launch = declaration.launch_entrypoint.as_deref().unwrap_or("<none>");
+    let launch_scripts = declaration_launch_scripts(declaration);
+    let launch_assets = if launch_scripts.is_empty() {
+        "local scripts discovered from the launch entrypoint".to_string()
+    } else {
+        launch_scripts.join(", ")
+    };
     format!(
-        "# Boundary Evidence: runnable surface routes through boundary\n\nPromise:\n\n- Runnable surface `{surface}` enters module `{module}` through declared RMS command `{command}`.\n- Entrypoint `{entrypoint}` delegates to `{delegate}` before pure decisions run.\n- Launch entrypoint `{launch}` reaches the declared entrypoint when present.\n- Product behavior is not reimplemented only in the runnable surface.\n\nCommand/tool:\n\n- `rms surface check implementation.yaml --strict`\n- `rms structure implementation.yaml`\n- `rms verify implementation.yaml`\n\nExpected result:\n\n- Surface wiring references the declared boundary adapter, parser, or public entrypoint.\n- Malformed boundary input is parsed/rejected before domain delegation.\n- Declared boundary effects remain behind adapter, port, or effect-executor roles.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        "# Boundary Evidence: runnable surface routes through boundary\n\nPromise:\n\n- Runnable surface `{surface}` enters module `{module}` through declared RMS command `{command}`.\n- Entrypoint `{entrypoint}` delegates to `{delegate}` before pure decisions run.\n- Launch entrypoint `{launch}` reaches the declared entrypoint when present.\n- Launch scripts/assets `{launch_assets}` do not duplicate parser or domain decisions outside declared RMS roles.\n- Product behavior is not reimplemented only in the runnable surface.\n\nCommand/tool:\n\n- `rms surface check implementation.yaml --strict`\n- `rms structure implementation.yaml`\n- `rms verify implementation.yaml`\n\nExpected result:\n\n- Surface wiring references the declared boundary adapter, parser, or public entrypoint.\n- Malformed boundary input is parsed/rejected before domain delegation.\n- Declared boundary effects remain behind adapter, port, or effect-executor roles.\n- Any executable launch asset is either wired through the declared entrypoint or remains non-semantic UI glue.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
         surface = markdown_inline(&declaration.name),
         module = markdown_inline(module),
         command = markdown_inline(command),
         entrypoint = markdown_inline(&declaration.entrypoint),
         delegate = markdown_inline(delegate),
         launch = markdown_inline(launch),
+        launch_assets = markdown_inline(&launch_assets),
     )
 }
 
@@ -27892,6 +28112,7 @@ struct SurfaceApplyRequest {
     surface: String,
     entrypoint: String,
     launch_entrypoint: Option<String>,
+    launch_scripts: Vec<String>,
     delegates_to: String,
     command: String,
     name: Option<String>,
@@ -28297,6 +28518,8 @@ fn scaffold_runnable_surface_if_inferred(
         surface,
         entrypoint,
         launch_entrypoint,
+        launch_scripts: Vec::new(),
+        launch_script: None,
         delegates_to: Some(SurfaceDelegation {
             role: Some("adapter".to_string()),
             symbol: Some(delegate_symbol),
@@ -31177,7 +31400,7 @@ Use these advisory workbench commands when they match the task:
 - `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics and record the exact applied change under `verification/changes/`; use `set`, `remove`, and `supersedes` to revise semantics instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
 - `rms spec check <module.yaml|implementation.yaml>` after semantic changes
 - `rms machine plan/apply/check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct
-- `rms surface apply/check <implementation.yaml>` when adding or changing app, UI, CLI, browser, HTTP, batch, or executable entrypoints; browser-style surfaces should distinguish controller `entrypoint` from host `launch_entrypoint`
+- `rms surface apply/check <implementation.yaml>` when adding or changing app, UI, CLI, browser, HTTP, batch, or executable entrypoints; browser-style surfaces should distinguish controller `entrypoint` from host `launch_entrypoint`, and declare intentional local launch scripts with `--launch-script`
 - `rms structure <implementation.yaml>` when implementation inner roles, machine declarations, or evidence placeholders are unclear
 - `rms review <module.yaml> --impact`
 
@@ -31240,7 +31463,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Use state machines or transition functions when behavior depends on lifecycle or order; illegal transitions must be rejected or made unrepresentable.
 - Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
 - Keep workflow choreography explicit in the workflow transition model, subscription registry, effect lifecycle, inbox/outbox, or declared adapter boundary rather than hidden in listener chains.
-- Keep runnable surfaces connected to the declared RMS boundary. If `public/app.*`, `src/cli.*`, routes, mobile views, or similar files are the real product surface, declare them with `rms surface apply` and route them through the declared adapter/public entrypoint instead of importing or duplicating pure/private decision code directly. Browser launch files should reference the declared controller entrypoint rather than bypassing it.
+- Keep runnable surfaces connected to the declared RMS boundary. If `public/app.*`, `src/cli.*`, routes, mobile views, or similar files are the real product surface, declare them with `rms surface apply` and route them through the declared adapter/public entrypoint instead of importing or duplicating pure/private decision code directly. Browser launch files should reference the declared controller entrypoint rather than bypassing it. Any local browser script loaded by the launch file is part of the surface; it must import/call the declared controller or adapter, not carry a copied parser, generator, transition, or domain decision implementation.
 - Do not edit another module's private implementation to bypass its public contract.
 - Treat generated reports, diffs, and provider output as evidence, not architecture.
 
@@ -33683,6 +33906,161 @@ architecture:
     }
 
     #[test]
+    fn surface_check_flags_launch_script_with_copied_domain_logic() {
+        let root = unique_test_dir("structure-runnable-launch-script-logic");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("public")).unwrap();
+        fs::create_dir_all(root.join("verification/boundaries")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: tile-browser
+  version: 0.1.0
+  kind: adapter
+  purpose: Local browser tile generator.
+profiles: [boundary, core]
+owns:
+  concepts: [browser tile surface]
+  data: []
+  decisions: []
+provides:
+  commands:
+    - name: generate-tile-asset
+      contract: contracts/generate-tile-asset.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/representation.mjs"),
+            "export const AwaitingInput = {};\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/parser.mjs"),
+            "export function parseCommand(input) { return input; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/adapter.mjs"),
+            "export function handleBoundaryInput(input) { return input; }\nexport function handleBoundaryTransition(input) { return input; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("public/app.mjs"),
+            r#"import { handleBoundaryInput } from "../src/adapter.mjs";
+export function runRmsSurface(input) {
+  return handleBoundaryInput(input);
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("public/index.html"),
+            r#"<!doctype html>
+<html>
+  <body>
+    <script type="module" src="./app.mjs"></script>
+    <script src="./app.browser.js"></script>
+  </body>
+</html>
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("public/app.browser.js"),
+            r#"function parseInput(input) { return input && typeof input === "object" ? input : null; }
+function normalizeColor(value) { return String(value || "").trim().toUpperCase(); }
+function generateTileAsset(input) { return parseInput(input) ? normalizeColor(input.foreground) : null; }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("verification/boundaries/runnable_surface_routes_through_boundary.md"),
+            "Promise:\n\n- runnable surface evidence\n\nCommand/tool:\n\n- rms surface check implementation.yaml --strict\n\nExpected result:\n\n- pass\n\nSource revision: test\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: tile-browser
+binding: js
+source:
+  root: .
+  public_entrypoint: src/adapter.mjs
+commands:
+  build: node --check src/adapter.mjs
+  verify: node --check src/adapter.mjs
+architecture:
+  shape: boundary-adapter
+  surfaces:
+    - name: tile-browser-browser
+      kind: runnable-boundary
+      surface: browser
+      entrypoint: public/app.mjs
+      launch_entrypoint: public/index.html
+      delegates_to:
+        role: adapter
+        symbol: src/adapter.mjs#handleBoundaryInput
+        command: generate-tile-asset
+      evidence:
+        - verification/boundaries/runnable_surface_routes_through_boundary.md
+  machine:
+    name: TileBrowserBoundaryMachine
+    mode: boundary-machine
+    states: [AwaitingInput, Completed, Rejected]
+    commands: [TileBrowserBoundaryCommand, GenerateTileAsset]
+    events: [TileBrowserBoundaryEvent]
+    effects: [TileBrowserBoundaryEffect]
+    replies: [TileBrowserBoundaryReply]
+    rejections: [TileBrowserBoundaryRejection]
+    transition_function: handleBoundaryTransition
+  roles:
+    representation: [src/representation.mjs]
+    parser: [src/parser.mjs]
+    adapter: [src/adapter.mjs]
+    transition: [src/adapter.mjs]
+    runnable_surface: [public/app.mjs]
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.check == "structure.runnable-surface-domain-logic-duplication"
+                    && diagnostic.message.contains("public/app.browser.js")
+            }),
+            "{:#?}",
+            report.diagnostics
+        );
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.runnable-surface-bypasses-boundary"
+                && diagnostic.message.contains("public/app.browser.js")
+        }));
+        assert!(audit_blocking_diagnostic(
+            "structure.runnable-surface-domain-logic-duplication"
+        ));
+    }
+
+    #[test]
     fn surface_apply_records_surface_role_and_evidence() {
         let root = unique_test_dir("surface-apply");
         fs::create_dir_all(root.join("src")).unwrap();
@@ -33761,6 +34139,7 @@ architecture:
             surface: "cli".to_string(),
             entrypoint: "src/adapter.mjs".to_string(),
             launch_entrypoint: None,
+            launch_scripts: Vec::new(),
             delegates_to: "src/adapter.mjs#handleBoundaryInput".to_string(),
             command: "run-checkout".to_string(),
             name: None,
