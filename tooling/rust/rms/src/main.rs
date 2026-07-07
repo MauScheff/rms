@@ -10738,14 +10738,17 @@ fn validate_traceable_machine_structure(
                 &["architecture", "messages", "event_envelope"],
             ),
         ),
-        (
+    ];
+    let effects = get_string_array(&manifest.value, &["architecture", "machine", "effects"]);
+    if !effects.is_empty() || represented_effect_envelope_types(manifest) {
+        envelope_declarations.push((
             "effect_envelope",
             get_structure_values(
                 &manifest.value,
                 &["architecture", "messages", "effect_envelope"],
             ),
-        ),
-    ];
+        ));
+    }
     let effect_results = get_string_array(
         &manifest.value,
         &["architecture", "machine", "effect_results"],
@@ -10789,7 +10792,9 @@ fn validate_traceable_machine_structure(
         );
     }
 
-    if effect_lifecycle_expected_for_shape(shape)
+    let effect_lifecycle_required = effect_lifecycle_expected_for_shape(shape)
+        && (shape != "boundary-adapter" || !effects.is_empty());
+    if effect_lifecycle_required
         && get_structure_values(&manifest.value, &["architecture", "effects", "lifecycle"])
             .is_empty()
         && structure_role_paths(manifest, "effect_lifecycle").is_empty()
@@ -11505,6 +11510,13 @@ fn inspect_runnable_surface_boundary_use(
     let declared_semantic_source = read_declared_semantic_surface_sources(manifest, false);
     let declared_surfaces = architecture_surface_declarations(manifest);
     for declaration in &declared_surfaces {
+        let mut declaration_boundary_refs = boundary_refs.clone();
+        if !declaration_boundary_refs
+            .iter()
+            .any(|reference| same_semantic_path(reference, &declaration.entrypoint))
+        {
+            declaration_boundary_refs.push(declaration.entrypoint.clone());
+        }
         let Some(launch_entrypoint) = declaration.launch_entrypoint.as_deref() else {
             continue;
         };
@@ -11559,7 +11571,7 @@ fn inspect_runnable_surface_boundary_use(
                 diagnostics,
                 &launch_asset,
                 &asset_source,
-                &boundary_refs,
+                &declaration_boundary_refs,
                 &pure_refs,
                 &declared_semantic_source,
                 "runnable launch asset",
@@ -12418,6 +12430,15 @@ fn represented_effect_result_envelope_types(manifest: &LoadedManifest) -> bool {
     )
     .into_iter()
     .any(|variant| variant.ends_with("EffectResultEnvelope"))
+}
+
+fn represented_effect_envelope_types(manifest: &LoadedManifest) -> bool {
+    get_string_array(
+        &manifest.value,
+        &["architecture", "representation", "closed_variants"],
+    )
+    .into_iter()
+    .any(|variant| variant.ends_with("EffectEnvelope"))
 }
 
 fn inspect_role_sources_for_markers(
@@ -22499,6 +22520,7 @@ fn run_surface_apply(request: SurfaceApplyRequest) -> Result<()> {
     if !has_errors && !request.dry_run {
         apply_surface_declaration_to_manifest(&mut manifest.value, &declaration);
         write_yaml_manifest(&manifest)?;
+        write_surface_scaffold_files(&manifest, &declaration)?;
         write_surface_evidence_placeholders(&manifest, &declaration)?;
     }
 
@@ -22718,6 +22740,9 @@ fn planned_surface_apply_writes(
 ) -> Vec<String> {
     let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
     let mut writes = vec![manifest.path.display().to_string()];
+    if declaration.surface == "browser" {
+        writes.push(base.join(&declaration.entrypoint).display().to_string());
+    }
     if let Some(launch_entrypoint) = &declaration.launch_entrypoint {
         writes.push(base.join(launch_entrypoint).display().to_string());
     }
@@ -22730,6 +22755,65 @@ fn planned_surface_apply_writes(
     writes.sort();
     writes.dedup();
     writes
+}
+
+fn write_surface_scaffold_files(
+    manifest: &LoadedManifest,
+    declaration: &SurfaceDeclaration,
+) -> Result<()> {
+    if declaration.surface != "browser" {
+        return Ok(());
+    }
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let command = declaration
+        .delegates_to
+        .as_ref()
+        .and_then(|delegation| delegation.command.as_deref())
+        .unwrap_or("rms-command");
+
+    write_file_if_missing(
+        &base.join(&declaration.entrypoint),
+        &render_js_browser_controller_mjs(command),
+    )?;
+
+    let launch_scripts = declaration_launch_scripts(declaration);
+    for launch_script in &launch_scripts {
+        write_file_if_missing(
+            &base.join(launch_script),
+            &render_js_browser_app_mjs(&browser_relative_import(
+                launch_script,
+                &declaration.entrypoint,
+            )),
+        )?;
+    }
+
+    if let Some(launch_entrypoint) = &declaration.launch_entrypoint {
+        let script = launch_scripts
+            .first()
+            .map(|script| browser_relative_import(launch_entrypoint, script))
+            .unwrap_or_else(|| browser_relative_import(launch_entrypoint, &declaration.entrypoint));
+        write_file_if_missing(
+            &base.join(launch_entrypoint),
+            &render_js_browser_surface_html(&script, &declaration.entrypoint),
+        )?;
+    }
+    Ok(())
+}
+
+fn browser_relative_import(from: &str, to: &str) -> String {
+    let from_parent = Path::new(from).parent().unwrap_or_else(|| Path::new(""));
+    let to_path = Path::new(to);
+    match to_path.strip_prefix(from_parent) {
+        Ok(relative) => {
+            let normalized = relative.to_string_lossy().replace('\\', "/");
+            if normalized.starts_with("./") || normalized.starts_with("../") {
+                normalized
+            } else {
+                format!("./{normalized}")
+            }
+        }
+        Err(_) => to.replace('\\', "/"),
+    }
 }
 
 fn apply_surface_declaration_to_manifest(value: &mut YamlValue, declaration: &SurfaceDeclaration) {
@@ -28489,14 +28573,18 @@ fn scaffold_runnable_surface_if_inferred(
         (Some("js"), "browser") => {
             fs::create_dir_all(boundary_path.join("public"))?;
             write_new_file(
+                &boundary_path.join("public").join("controller.mjs"),
+                &render_js_browser_controller_mjs(public_command),
+            )?;
+            write_new_file(
                 &boundary_path.join("public").join("app.mjs"),
-                &render_js_browser_surface_mjs(public_command),
+                &render_js_browser_app_mjs("./controller.mjs"),
             )?;
             write_new_file(
                 &boundary_path.join("public").join("index.html"),
-                &render_js_browser_surface_html(),
+                &render_js_browser_surface_html("./app.mjs", "public/controller.mjs"),
             )?;
-            "public/app.mjs".to_string()
+            "public/controller.mjs".to_string()
         }
         _ => public_entrypoint.clone(),
     };
@@ -28508,6 +28596,10 @@ fn scaffold_runnable_surface_if_inferred(
         (Some("js"), "browser") => Some("public/index.html".to_string()),
         _ => None,
     };
+    let launch_scripts = match (binding, surface.as_str()) {
+        (Some("js"), "browser") => vec!["public/app.mjs".to_string()],
+        _ => Vec::new(),
+    };
     let declaration = SurfaceDeclaration {
         name: format!(
             "{}-{}",
@@ -28518,7 +28610,7 @@ fn scaffold_runnable_surface_if_inferred(
         surface,
         entrypoint,
         launch_entrypoint,
-        launch_scripts: Vec::new(),
+        launch_scripts,
         launch_script: None,
         delegates_to: Some(SurfaceDelegation {
             role: Some("adapter".to_string()),
@@ -29023,35 +29115,63 @@ fn scaffold_declares_effect_results_by_default(shape: ScaffoldShape) -> bool {
     )
 }
 
+fn scaffold_declares_effects_by_default(shape: ScaffoldShape) -> bool {
+    matches!(
+        shape,
+        ScaffoldShape::Workflow | ScaffoldShape::StorageAdapter | ScaffoldShape::IntegrationAdapter
+    )
+}
+
 fn normalize_scaffold_effect_result_declarations(
     implementation_path: &Path,
     shape: ScaffoldShape,
     names: &InnerStructureNames,
 ) -> Result<()> {
-    if scaffold_declares_effect_results_by_default(shape) {
+    if scaffold_declares_effect_results_by_default(shape)
+        && scaffold_declares_effects_by_default(shape)
+    {
         return Ok(());
     }
     let source = fs::read_to_string(implementation_path)
         .with_context(|| format!("failed to read `{}`", implementation_path.display()))?;
     let mut value: YamlValue = serde_yaml::from_str(&source)
         .with_context(|| format!("failed to parse `{}`", implementation_path.display()))?;
-    set_yaml_sequence_path(
-        &mut value,
-        &["architecture", "machine", "effect_results"],
-        Vec::new(),
-    );
-    remove_yaml_path(
-        &mut value,
-        &["architecture", "messages", "effect_result_envelope"],
-    );
-    remove_yaml_string_values_path(
-        &mut value,
-        &["architecture", "representation", "closed_variants"],
-        &[
+    if !scaffold_declares_effects_by_default(shape) {
+        set_yaml_sequence_path(
+            &mut value,
+            &["architecture", "machine", "effects"],
+            Vec::new(),
+        );
+        remove_yaml_path(&mut value, &["architecture", "messages", "effect_envelope"]);
+        remove_yaml_path(&mut value, &["architecture", "effects"]);
+        remove_yaml_path(&mut value, &["architecture", "roles", "effect_lifecycle"]);
+    }
+    if !scaffold_declares_effect_results_by_default(shape) {
+        set_yaml_sequence_path(
+            &mut value,
+            &["architecture", "machine", "effect_results"],
+            Vec::new(),
+        );
+        remove_yaml_path(
+            &mut value,
+            &["architecture", "messages", "effect_result_envelope"],
+        );
+    }
+    let mut closed_variants_to_remove = Vec::new();
+    if !scaffold_declares_effects_by_default(shape) {
+        closed_variants_to_remove.extend([names.effect.as_str(), names.effect_envelope.as_str()]);
+    }
+    if !scaffold_declares_effect_results_by_default(shape) {
+        closed_variants_to_remove.extend([
             names.effect_result.as_str(),
             names.effect_result_envelope.as_str(),
             names.effect_lifecycle.as_str(),
-        ],
+        ]);
+    }
+    remove_yaml_string_values_path(
+        &mut value,
+        &["architecture", "representation", "closed_variants"],
+        &closed_variants_to_remove,
     );
     fs::write(
         implementation_path,
@@ -30322,6 +30442,11 @@ fn render_js_representation_mjs(names: &InnerStructureNames, shape: ScaffoldShap
         })
         .collect::<Vec<_>>()
         .join("");
+    let effect_section = if scaffold_declares_effects_by_default(shape) {
+        render_js_effect_representation_mjs(names)
+    } else {
+        String::new()
+    };
     format!(
         r#"{state_variants}
 export function make{label}(value) {{
@@ -30378,7 +30503,42 @@ export function make{event_envelope}(event, metadata = {{}}) {{
   }});
 }}
 
-export function make{effect}None() {{
+{effect_section}
+
+export function make{rejection}InvalidCommand(reason) {{
+  return Object.freeze({{ tag: "{rejection}.InvalidCommand", reason }});
+}}
+
+export function make{rejection}MalformedInput(reason) {{
+  return Object.freeze({{ tag: "{rejection}.MalformedInput", reason }});
+}}
+
+export function make{reply}Accepted() {{
+  return Object.freeze({{ tag: "{reply}.Accepted" }});
+}}
+
+export function make{reply}Rejected(rejection) {{
+  return Object.freeze({{ tag: "{reply}.Rejected", rejection }});
+}}
+"#,
+        command = names.command,
+        command_envelope = names.command_envelope,
+        effect_section = effect_section,
+        event = names.event,
+        event_envelope = names.event_envelope,
+        label = names.label,
+        machine = names.machine,
+        rejection = names.rejection,
+        reply = names.reply,
+        initial_state = initial_state,
+        state_variants = state_variants,
+        state = names.state,
+    )
+}
+
+fn render_js_effect_representation_mjs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"export function make{effect}None() {{
   return Object.freeze({{ tag: "{effect}.None" }});
 }}
 
@@ -30418,39 +30578,13 @@ export function make{effect_result_envelope}(result, metadata = {{}}) {{
     result,
   }});
 }}
-
-export function make{rejection}InvalidCommand(reason) {{
-  return Object.freeze({{ tag: "{rejection}.InvalidCommand", reason }});
-}}
-
-export function make{rejection}MalformedInput(reason) {{
-  return Object.freeze({{ tag: "{rejection}.MalformedInput", reason }});
-}}
-
-export function make{reply}Accepted() {{
-  return Object.freeze({{ tag: "{reply}.Accepted" }});
-}}
-
-export function make{reply}Rejected(rejection) {{
-  return Object.freeze({{ tag: "{reply}.Rejected", rejection }});
-}}
 "#,
-        command = names.command,
-        command_envelope = names.command_envelope,
         effect = names.effect,
         effect_envelope = names.effect_envelope,
         effect_lifecycle = names.effect_lifecycle,
         effect_result = names.effect_result,
         effect_result_envelope = names.effect_result_envelope,
-        event = names.event,
-        event_envelope = names.event_envelope,
-        label = names.label,
         machine = names.machine,
-        rejection = names.rejection,
-        reply = names.reply,
-        initial_state = initial_state,
-        state_variants = state_variants,
-        state = names.state,
     )
 }
 
@@ -30743,7 +30877,7 @@ test("{machine} boundary adapter writes parsed commands", () => {{
     )
 }
 
-fn render_js_browser_surface_mjs(public_command: &str) -> String {
+fn render_js_browser_controller_mjs(public_command: &str) -> String {
     format!(
         r#"import {{ handleBoundaryInput }} from "../src/adapter.mjs";
 
@@ -30760,29 +30894,45 @@ export function declaredRmsSurface() {{
   }});
 }}
 
-if (typeof document !== "undefined") {{
-  const form = document.querySelector("[data-rms-surface-form]");
-  const output = document.querySelector("[data-rms-surface-output]");
-  form?.addEventListener("submit", async (event) => {{
-    event.preventDefault();
+export function mountRmsSurface(root = document, ports) {{
+  const form = root.querySelector("[data-rms-surface-form]");
+  const output = root.querySelector("[data-rms-surface-output]");
+  const run = async () => {{
     const formData = new FormData(form);
     const input = Object.fromEntries(formData.entries());
-    const reply = await runRmsSurface(input);
+    const reply = await runRmsSurface(input, ports);
     if (output) {{
       output.textContent = JSON.stringify(reply, null, 2);
     }}
+    return reply;
+  }};
+  form?.addEventListener("submit", async (event) => {{
+    event.preventDefault();
+    await run();
   }});
+  return Object.freeze({{ run }});
 }}
 "#
     )
 }
 
-fn render_js_browser_surface_html() -> String {
-    r#"<!doctype html>
+fn render_js_browser_app_mjs(controller_import: &str) -> String {
+    format!(
+        r#"import {{ mountRmsSurface }} from "{controller_import}";
+
+mountRmsSurface(document);
+"#
+    )
+}
+
+fn render_js_browser_surface_html(script_src: &str, entrypoint: &str) -> String {
+    format!(
+        r#"<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="rms-entrypoint" content="{entrypoint}">
     <title>RMS Runnable Surface</title>
   </head>
   <body>
@@ -30791,11 +30941,11 @@ fn render_js_browser_surface_html() -> String {
       <button type="submit">Run</button>
     </form>
     <pre data-rms-surface-output></pre>
-    <script type="module" src="./app.mjs"></script>
+    <script type="module" src="{script_src}"></script>
   </body>
 </html>
 "#
-    .to_string()
+    )
 }
 
 fn render_executable_implementation_yaml(module_name: &str, shape: ScaffoldShape) -> String {
@@ -31116,7 +31266,7 @@ const JS_PORTS_MJS: &str = r#"export function createPorts(overrides = {}) {
 }
 "#;
 
-const JS_BUILD_SH: &str = "#!/usr/bin/env sh\nset -eu\nnode --check src/representation.mjs\nif [ -f src/transition.mjs ]; then node --check src/transition.mjs; fi\nif [ -f src/parser.mjs ]; then node --check src/parser.mjs; fi\nif [ -f src/adapter.mjs ]; then node --check src/adapter.mjs; fi\nif [ -f public/app.mjs ]; then node --check public/app.mjs; fi\n";
+const JS_BUILD_SH: &str = "#!/usr/bin/env sh\nset -eu\nnode --check src/representation.mjs\nif [ -f src/transition.mjs ]; then node --check src/transition.mjs; fi\nif [ -f src/parser.mjs ]; then node --check src/parser.mjs; fi\nif [ -f src/adapter.mjs ]; then node --check src/adapter.mjs; fi\nif [ -f public/controller.mjs ]; then node --check public/controller.mjs; fi\nif [ -f public/app.mjs ]; then node --check public/app.mjs; fi\n";
 
 const JS_SMOKE_SH: &str = "#!/usr/bin/env sh\nset -eu\nif [ -f tests/trace-smoke.mjs ]; then node tests/trace-smoke.mjs; fi\nif [ -f tests/boundary-smoke.mjs ]; then node tests/boundary-smoke.mjs; fi\nprintf '%s\\n' 'js semantic scaffold smoke passed'\n";
 
@@ -31340,6 +31490,16 @@ fn sanitize_swift_target_name(name: &str) -> String {
 fn write_new_file(path: &Path, contents: &str) -> Result<()> {
     if path.exists() {
         bail!("refusing to overwrite existing file `{}`", path.display());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, contents).with_context(|| format!("failed to write `{}`", path.display()))
+}
+
+fn write_file_if_missing(path: &Path, contents: &str) -> Result<()> {
+    if path.exists() {
+        return Ok(());
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -33071,7 +33231,7 @@ import struct ExternalKit.Widget
                 || implementation.contains("- ExampleBoundaryCommand")
         );
         assert!(implementation.contains("command_envelope:"));
-        assert!(implementation.contains("effect_lifecycle:"));
+        assert!(!implementation.contains("effect_lifecycle:"));
         assert!(implementation.contains("numeric_safety:"));
         assert!(implementation.contains("parser:"));
         assert!(implementation.contains("message_envelope:"));
@@ -33085,7 +33245,7 @@ import struct ExternalKit.Widget
         assert!(representation.contains("export const Rejected"));
         assert!(representation.contains("makeExampleBoundaryCommandAccept"));
         assert!(representation.contains("makeExampleBoundaryCommandEnvelope"));
-        assert!(representation.contains("ExampleBoundaryEffectLifecycle"));
+        assert!(!representation.contains("ExampleBoundaryEffectLifecycle"));
         assert!(representation.contains("makeExampleBoundaryReplyRejected"));
         assert!(implementation.contains("verification/traces/boundary_parse.yaml"));
         assert!(trace_bundle.contains("machine: ExampleBoundaryMachine"));
@@ -34157,6 +34317,122 @@ architecture:
             .join("verification/boundaries/runnable_surface_routes_through_boundary.md")
             .exists());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn surface_apply_browser_generates_thin_controller_launch_assets() {
+        let root = unique_test_dir("surface-apply-browser-assets");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: tile-browser
+  version: 0.1.0
+  kind: adapter
+  purpose: Browser tile tool boundary.
+profiles: [boundary, core]
+owns:
+  concepts: [browser surface]
+  data: []
+  decisions: []
+provides:
+  commands:
+    - name: generate-tile
+      contract: contracts/generate-tile.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/adapter.mjs"),
+            "export function handleBoundaryInput(input) { return { tag: 'ok', input }; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: tile-browser
+binding: js
+source:
+  root: .
+  public_entrypoint: src/adapter.mjs
+commands:
+  build: node --check src/adapter.mjs
+  verify: node --check src/adapter.mjs
+architecture:
+  shape: boundary-adapter
+  machine:
+    name: TileBrowserBoundaryMachine
+    mode: stateless-decision-machine
+    stateless_justification: thin browser boundary
+    states: [AwaitingInput]
+    commands: [GenerateTile]
+    events: []
+    effects: []
+    effect_results: []
+    replies: [Rendered]
+    rejections: [MalformedInput]
+    transition_function: handleBoundaryInput
+  roles:
+    adapter: [src/adapter.mjs]
+"#,
+        )
+        .unwrap();
+
+        run_surface_apply(SurfaceApplyRequest {
+            implementation: root.join("implementation.yaml"),
+            kind: "runnable-boundary".to_string(),
+            surface: "browser".to_string(),
+            entrypoint: "public/controller.mjs".to_string(),
+            launch_entrypoint: Some("public/index.html".to_string()),
+            launch_scripts: vec!["public/app.mjs".to_string()],
+            delegates_to: "src/adapter.mjs#handleBoundaryInput".to_string(),
+            command: "generate-tile".to_string(),
+            name: Some("tile-browser-browser".to_string()),
+            effects: Vec::new(),
+            evidence: Vec::new(),
+            dry_run: false,
+        })
+        .unwrap();
+
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        let controller = fs::read_to_string(root.join("public/controller.mjs")).unwrap();
+        let app = fs::read_to_string(root.join("public/app.mjs")).unwrap();
+        let html = fs::read_to_string(root.join("public/index.html")).unwrap();
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(implementation.contains("entrypoint: public/controller.mjs"));
+        assert!(implementation.contains("launch_entrypoint: public/index.html"));
+        assert!(implementation.contains("- public/app.mjs"));
+        assert!(controller.contains("handleBoundaryInput"));
+        assert!(controller.contains("mountRmsSurface"));
+        assert!(app.contains("./controller.mjs"));
+        assert!(html.contains("./app.mjs"));
+        assert!(html.contains("public/controller.mjs"));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|diagnostic| { !diagnostic.check.starts_with("structure.runnable-surface") }),
+            "{:#?}",
+            report.diagnostics
+        );
     }
 
     #[test]
@@ -36911,9 +37187,11 @@ verification:
         let implementation =
             fs::read_to_string(root.join("modules/tile-generator-boundary/implementation.yaml"))
                 .unwrap();
-        let surface =
-            fs::read_to_string(root.join("modules/tile-generator-boundary/public/app.mjs"))
+        let controller =
+            fs::read_to_string(root.join("modules/tile-generator-boundary/public/controller.mjs"))
                 .unwrap();
+        let app = fs::read_to_string(root.join("modules/tile-generator-boundary/public/app.mjs"))
+            .unwrap();
         let launch =
             fs::read_to_string(root.join("modules/tile-generator-boundary/public/index.html"))
                 .unwrap();
@@ -36927,14 +37205,20 @@ verification:
         assert!(implementation.contains("runnable-boundary"));
         assert!(implementation.contains("runnable_surface"));
         assert!(implementation.contains("launch_entrypoint"));
+        assert!(implementation.contains("launch_scripts"));
+        assert!(implementation.contains("public/controller.mjs"));
+        assert!(implementation.contains("public/app.mjs"));
         assert_eq!(
             report.machine.mode.as_deref(),
             Some("stateless-decision-machine")
         );
         assert_eq!(report.machine.states, vec!["AwaitingInput".to_string()]);
-        assert!(surface.contains("handleBoundaryInput"));
+        assert!(controller.contains("handleBoundaryInput"));
+        assert!(controller.contains("mountRmsSurface"));
+        assert!(app.contains("mountRmsSurface"));
+        assert!(app.contains("./controller.mjs"));
         assert!(launch.contains("./app.mjs"));
-        assert!(!surface.contains("createAlphaMaskTile"));
+        assert!(!controller.contains("createAlphaMaskTile"));
         assert!(
             report
                 .diagnostics

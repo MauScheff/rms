@@ -1,275 +1,275 @@
 spec: rms/module/v0.1
-
 module:
   name: rms-cli
   version: 0.1.0-rc.4
   kind: tool
   purpose: Provide the canonical command-line workbench for inspecting, validating, packaging, explaining, structuring, and verifying RMS modules.
-
 profiles:
-  - core
-  - boundary
-
+- core
+- boundary
 owns:
   concepts:
-    - RMS command surface
-    - RMS diagnostic report
-    - RMS module explanation
-    - RMS context packet
-    - RMS conformance report
-    - RMS module package
-    - RMS workbench prompt
-    - RMS advisory plan
-    - RMS advisory system design
-    - RMS composition report
-    - RMS route report
-    - RMS advisory review
-    - RMS advisory intent capture
-    - RMS git impact report
-    - RMS gate report
-    - RMS audit report
-    - RMS advisory contract evolution
-    - RMS advisory evidence plan
-    - RMS workbench run record
-    - RMS workbench configuration
-    - RMS release readiness report
-    - RMS module atlas
-    - RMS capability tree scaffold
-    - RMS implementation inner structure report
-    - RMS local trace bundle report
-    - RMS runnable surface declaration
+  - RMS command surface
+  - RMS diagnostic report
+  - RMS module explanation
+  - RMS context packet
+  - RMS conformance report
+  - RMS module package
+  - RMS workbench prompt
+  - RMS advisory plan
+  - RMS advisory system design
+  - RMS composition report
+  - RMS route report
+  - RMS advisory review
+  - RMS advisory intent capture
+  - RMS git impact report
+  - RMS gate report
+  - RMS audit report
+  - RMS advisory contract evolution
+  - RMS advisory evidence plan
+  - RMS workbench run record
+  - RMS workbench configuration
+  - RMS release readiness report
+  - RMS module atlas
+  - RMS capability tree scaffold
+  - RMS implementation inner structure report
+  - RMS local trace bundle report
+  - RMS runnable surface declaration
   data:
-    - embedded RMS schemas
-    - embedded RMS prompt templates
-    - generated package metadata
-    - generated conformance reports
-    - generated git impact reports
-    - generated gate reports
-    - generated audit reports
-    - generated workbench run records
-    - generated advisory scaffold plans
-    - generated advisory intent-capture prompts
-    - generated route reports
-    - generated capability tree scaffold artifacts
-    - generated module atlas artifacts
-    - generated implementation structure reports
-    - local trace bundle artifacts
-    - generated runnable surface evidence
-    - optional workbench configuration
+  - embedded RMS schemas
+  - embedded RMS prompt templates
+  - generated package metadata
+  - generated conformance reports
+  - generated git impact reports
+  - generated gate reports
+  - generated audit reports
+  - generated workbench run records
+  - generated advisory scaffold plans
+  - generated advisory intent-capture prompts
+  - generated route reports
+  - generated capability tree scaffold artifacts
+  - generated module atlas artifacts
+  - generated implementation structure reports
+  - local trace bundle artifacts
+  - generated runnable surface evidence
+  - optional workbench configuration
   decisions:
-    - manifest-validation-result
-    - module-explanation-shape
-    - diagnostic-readiness-result
-    - prompt-template-selection
-    - semantic-scaffold-shape-selection
-    - capability-tree-scaffold-selection
-    - design-boundary-recommendation
-    - composition-result
-    - recursive-work-route-recommendation
-    - advisory-workflow-shape
-    - intent-capture-gate-result
-    - git-diff-impact-classification
-    - gate-check-selection
-    - provider-execution-request
-    - workbench-config-resolution
-    - workbench-config-initialization
-    - release-readiness-result
-    - production-readiness-audit-result
-    - module-atlas-shape
-    - implementation-inner-structure-result
-    - local-trace-diagnostic-result
-    - runnable-surface-declaration-result
-    - runnable-surface-wiring-result
-    - package-inclusion-set
-    - conformance-outcome
-
+  - manifest-validation-result
+  - module-explanation-shape
+  - diagnostic-readiness-result
+  - prompt-template-selection
+  - semantic-scaffold-shape-selection
+  - capability-tree-scaffold-selection
+  - design-boundary-recommendation
+  - composition-result
+  - recursive-work-route-recommendation
+  - advisory-workflow-shape
+  - intent-capture-gate-result
+  - git-diff-impact-classification
+  - gate-check-selection
+  - provider-execution-request
+  - workbench-config-resolution
+  - workbench-config-initialization
+  - release-readiness-result
+  - production-readiness-audit-result
+  - module-atlas-shape
+  - implementation-inner-structure-result
+  - local-trace-diagnostic-result
+  - runnable-surface-declaration-result
+  - runnable-surface-wiring-result
+  - package-inclusion-set
+  - conformance-outcome
 provides:
   commands:
-    - name: validate-rms-artifacts
-      contract: contracts/validate-rms-artifacts.v1.yaml
-    - name: explain-module
-      contract: contracts/explain-module.v1.yaml
-    - name: diagnose-rms-environment
-      contract: contracts/diagnose-rms-environment.v1.yaml
-    - name: render-workbench-prompt
-      contract: contracts/render-workbench-prompt.v1.yaml
-    - name: plan-module-change
-      contract: contracts/plan-module-change.v1.yaml
-    - name: design-rms-system
-      contract: contracts/design-rms-system.v1.yaml
-    - name: compose-rms-system
-      contract: contracts/compose-rms-system.v1.yaml
-    - name: route-rms-work
-      contract: contracts/route-rms-work.v1.yaml
-    - name: review-module-diff
-      contract: contracts/review-module-diff.v1.yaml
-    - name: analyze-git-impact
-      contract: contracts/analyze-git-impact.v1.yaml
-    - name: gate-rms-change
-      contract: contracts/gate-rms-change.v1.yaml
-    - name: audit-rms-project
-      contract: contracts/audit-rms-project.v1.yaml
-    - name: refactor-module-workbench
-      contract: contracts/refactor-module-workbench.v1.yaml
-    - name: implement-module-workbench
-      contract: contracts/implement-module-workbench.v1.yaml
-    - name: capture-intent-workbench
-      contract: contracts/capture-intent-workbench.v1.yaml
-    - name: evolve-contract-workbench
-      contract: contracts/evolve-contract-workbench.v1.yaml
-    - name: evidence-workbench
-      contract: contracts/evidence-workbench.v1.yaml
-    - name: list-workbench-runs
-      contract: contracts/list-workbench-runs.v1.yaml
-    - name: inspect-workbench-run
-      contract: contracts/inspect-workbench-run.v1.yaml
-    - name: inspect-latest-workbench-run
-      contract: contracts/latest-workbench-run.v1.yaml
-    - name: init-workbench-config
-      contract: contracts/init-workbench-config.v1.yaml
-    - name: configure-agent-integration
-      contract: contracts/configure-agent-integration.v1.yaml
-    - name: init-rms-system
-      contract: contracts/init-rms-system.v1.yaml
-    - name: add-rms-module
-      contract: contracts/add-rms-module.v1.yaml
-    - name: add-rms-capability
-      contract: contracts/add-rms-capability.v1.yaml
-    - name: check-release-readiness
-      contract: contracts/release-check.v1.yaml
-    - name: build-context-packet
-      contract: contracts/build-context-packet.v1.yaml
-    - name: build-module-atlas
-      contract: contracts/build-module-atlas.v1.yaml
-    - name: inspect-implementation-structure
-      contract: contracts/inspect-implementation-structure.v1.yaml
-    - name: inspect-trace-bundle
-      contract: contracts/inspect-trace-bundle.v1.yaml
-    - name: plan-machine-change
-      contract: contracts/plan-machine-change.v1.yaml
-    - name: apply-machine-change
-      contract: contracts/apply-machine-change.v1.yaml
-    - name: plan-semantic-change
-      contract: contracts/plan-semantic-change.v1.yaml
-    - name: apply-semantic-change
-      contract: contracts/apply-semantic-change.v1.yaml
-    - name: check-semantic-change
-      contract: contracts/check-semantic-change.v1.yaml
-    - name: diff-semantic-change
-      contract: contracts/diff-semantic-change.v1.yaml
-    - name: check-machine-structure
-      contract: contracts/check-machine-structure.v1.yaml
-    - name: diff-machine-structure
-      contract: contracts/diff-machine-structure.v1.yaml
-    - name: apply-runnable-surface
-      contract: contracts/apply-runnable-surface.v1.yaml
-    - name: check-runnable-surface
-      contract: contracts/check-runnable-surface.v1.yaml
-    - name: package-module
-      contract: contracts/package-module.v1.yaml
-    - name: verify-implementation
-      contract: contracts/verify-implementation.v1.yaml
+  - name: validate-rms-artifacts
+    contract: contracts/validate-rms-artifacts.v1.yaml
+  - name: explain-module
+    contract: contracts/explain-module.v1.yaml
+  - name: diagnose-rms-environment
+    contract: contracts/diagnose-rms-environment.v1.yaml
+  - name: render-workbench-prompt
+    contract: contracts/render-workbench-prompt.v1.yaml
+  - name: plan-module-change
+    contract: contracts/plan-module-change.v1.yaml
+  - name: design-rms-system
+    contract: contracts/design-rms-system.v1.yaml
+  - name: compose-rms-system
+    contract: contracts/compose-rms-system.v1.yaml
+  - name: route-rms-work
+    contract: contracts/route-rms-work.v1.yaml
+  - name: review-module-diff
+    contract: contracts/review-module-diff.v1.yaml
+  - name: analyze-git-impact
+    contract: contracts/analyze-git-impact.v1.yaml
+  - name: gate-rms-change
+    contract: contracts/gate-rms-change.v1.yaml
+  - name: audit-rms-project
+    contract: contracts/audit-rms-project.v1.yaml
+  - name: refactor-module-workbench
+    contract: contracts/refactor-module-workbench.v1.yaml
+  - name: implement-module-workbench
+    contract: contracts/implement-module-workbench.v1.yaml
+  - name: capture-intent-workbench
+    contract: contracts/capture-intent-workbench.v1.yaml
+  - name: evolve-contract-workbench
+    contract: contracts/evolve-contract-workbench.v1.yaml
+  - name: evidence-workbench
+    contract: contracts/evidence-workbench.v1.yaml
+  - name: list-workbench-runs
+    contract: contracts/list-workbench-runs.v1.yaml
+  - name: inspect-workbench-run
+    contract: contracts/inspect-workbench-run.v1.yaml
+  - name: inspect-latest-workbench-run
+    contract: contracts/latest-workbench-run.v1.yaml
+  - name: init-workbench-config
+    contract: contracts/init-workbench-config.v1.yaml
+  - name: configure-agent-integration
+    contract: contracts/configure-agent-integration.v1.yaml
+  - name: init-rms-system
+    contract: contracts/init-rms-system.v1.yaml
+  - name: add-rms-module
+    contract: contracts/add-rms-module.v1.yaml
+  - name: add-rms-capability
+    contract: contracts/add-rms-capability.v1.yaml
+  - name: check-release-readiness
+    contract: contracts/release-check.v1.yaml
+  - name: build-context-packet
+    contract: contracts/build-context-packet.v1.yaml
+  - name: build-module-atlas
+    contract: contracts/build-module-atlas.v1.yaml
+  - name: inspect-implementation-structure
+    contract: contracts/inspect-implementation-structure.v1.yaml
+  - name: inspect-trace-bundle
+    contract: contracts/inspect-trace-bundle.v1.yaml
+  - name: plan-machine-change
+    contract: contracts/plan-machine-change.v1.yaml
+  - name: apply-machine-change
+    contract: contracts/apply-machine-change.v1.yaml
+  - name: plan-semantic-change
+    contract: contracts/plan-semantic-change.v1.yaml
+  - name: apply-semantic-change
+    contract: contracts/apply-semantic-change.v1.yaml
+  - name: check-semantic-change
+    contract: contracts/check-semantic-change.v1.yaml
+  - name: diff-semantic-change
+    contract: contracts/diff-semantic-change.v1.yaml
+  - name: check-machine-structure
+    contract: contracts/check-machine-structure.v1.yaml
+  - name: diff-machine-structure
+    contract: contracts/diff-machine-structure.v1.yaml
+  - name: apply-runnable-surface
+    contract: contracts/apply-runnable-surface.v1.yaml
+  - name: check-runnable-surface
+    contract: contracts/check-runnable-surface.v1.yaml
+  - name: package-module
+    contract: contracts/package-module.v1.yaml
+  - name: verify-implementation
+    contract: contracts/verify-implementation.v1.yaml
   queries:
-    - name: inspect-module
-      contract: contracts/inspect-module.v1.yaml
+  - name: inspect-module
+    contract: contracts/inspect-module.v1.yaml
   events: []
   capabilities: []
-
 requires:
   modules: []
   capabilities:
-    - name: filesystem
-    - name: process-runner
-    - name: git-revision-provider
-
+  - name: filesystem
+  - name: process-runner
+  - name: git-revision-provider
 invariants:
-  - id: canonical-artifacts-remain-authoritative
-    statement: The CLI may inspect, explain, package, and validate RMS artifacts, but it must not create module semantics outside canonical manifests and contracts.
-    enforced_by: manifest-first-command-handlers
-    verified_by: verification/laws/canonical_artifacts_remain_authoritative.md
-  - id: diagnostics-are-evidence-not-authority
-    statement: Diagnostic, context, package, and conformance outputs must identify their source artifacts and remain derived evidence rather than hidden architectural truth.
-    enforced_by: derived-output-renderers
-    verified_by: verification/laws/diagnostics_are_evidence_not_authority.md
-  - id: composite-evidence-lanes-are-concrete
-    statement: Composite scaffolds must not declare empty evidence lanes for production claims.
-    enforced_by: add-capability-evidence-scaffold
-    verified_by: verification/laws/composite_evidence_lanes_are_concrete.md
-  - id: effect-results-are-canonical-machine-inputs
-    statement: Machine-shaped modules that represent effect-result types or envelopes declare semantic effect results and consume them through transitions.
-    enforced_by: effect-result-structure-diagnostics
-    verified_by: verification/laws/effect_results_are_canonical_machine_inputs.md
-  - id: boundary-lifecycle-is-trace-evidenced
-    statement: Boundary-machine states used for parse, delegation, completion, and rejection are evidenced by replayable transition traces.
-    enforced_by: boundary-trace-coverage-audit
-    verified_by: verification/laws/boundary_lifecycle_is_trace_evidenced.md
-  - id: source-drift-has-semantic-record
-    statement: Source behavior changes require a committed semantic-change record before strict production audit can pass.
-    enforced_by: strict-audit-semantic-drift-check
-    verified_by: verification/laws/source_drift_has_semantic_record.md
-  - id: semantic-revisions-are-applied-canonically
-    statement: Semantic and machine revisions that correct scaffold drift must use canonical set, remove, supersedes, launch entrypoint, and active-record rules instead of hand-edited manifest surgery.
-    enforced_by: semantic-revision-apply-and-audit
-    verified_by: verification/laws/semantic_revisions_are_applied_canonically.md
-  - id: runnable-surfaces-enter-through-boundaries
-    statement: Runnable surfaces adapt outside input into declared RMS commands and must not reimplement domain decisions or call private module internals.
-    enforced_by: runnable-surface-structure-diagnostics
-    verified_by: verification/contracts/check_runnable_surface.md
-  - id: runnable-launch-assets-route-through-boundaries
-    statement: Launch assets reachable from a runnable surface must route through the declared RMS entrypoint or adapter and must not duplicate parser or domain decision logic outside declared roles.
-    enforced_by: runnable-surface-launch-asset-diagnostics
-    verified_by: verification/laws/runnable_launch_assets_route_through_boundaries.md
-
+- id: canonical-artifacts-remain-authoritative
+  statement: The CLI may inspect, explain, package, and validate RMS artifacts, but it must not create module semantics outside canonical manifests and contracts.
+  enforced_by: manifest-first-command-handlers
+  verified_by: verification/laws/canonical_artifacts_remain_authoritative.md
+- id: diagnostics-are-evidence-not-authority
+  statement: Diagnostic, context, package, and conformance outputs must identify their source artifacts and remain derived evidence rather than hidden architectural truth.
+  enforced_by: derived-output-renderers
+  verified_by: verification/laws/diagnostics_are_evidence_not_authority.md
+- id: composite-evidence-lanes-are-concrete
+  statement: Composite scaffolds must not declare empty evidence lanes for production claims.
+  enforced_by: add-capability-evidence-scaffold
+  verified_by: verification/laws/composite_evidence_lanes_are_concrete.md
+- id: effect-results-are-canonical-machine-inputs
+  statement: Machine-shaped modules that represent effect-result types or envelopes declare semantic effect results and consume them through transitions.
+  enforced_by: effect-result-structure-diagnostics
+  verified_by: verification/laws/effect_results_are_canonical_machine_inputs.md
+- id: boundary-lifecycle-is-trace-evidenced
+  statement: Boundary-machine states used for parse, delegation, completion, and rejection are evidenced by replayable transition traces.
+  enforced_by: boundary-trace-coverage-audit
+  verified_by: verification/laws/boundary_lifecycle_is_trace_evidenced.md
+- id: source-drift-has-semantic-record
+  statement: Source behavior changes require a committed semantic-change record before strict production audit can pass.
+  enforced_by: strict-audit-semantic-drift-check
+  verified_by: verification/laws/source_drift_has_semantic_record.md
+- id: semantic-revisions-are-applied-canonically
+  statement: Semantic and machine revisions that correct scaffold drift must use canonical set, remove, supersedes, launch entrypoint, and active-record rules instead of hand-edited manifest surgery.
+  enforced_by: semantic-revision-apply-and-audit
+  verified_by: verification/laws/semantic_revisions_are_applied_canonically.md
+- id: runnable-surfaces-enter-through-boundaries
+  statement: Runnable surfaces adapt outside input into declared RMS commands and must not reimplement domain decisions or call private module internals.
+  enforced_by: runnable-surface-structure-diagnostics
+  verified_by: verification/contracts/check_runnable_surface.md
+- id: runnable-launch-assets-route-through-boundaries
+  statement: Launch assets reachable from a runnable surface must route through the declared RMS entrypoint or adapter and must not duplicate parser or domain decision logic outside declared roles.
+  enforced_by: runnable-surface-launch-asset-diagnostics
+  verified_by: verification/laws/runnable_launch_assets_route_through_boundaries.md
+- id: simple-runnable-boundaries-are-stateless-by-default
+  statement: Simple runnable app, tool, browser, and CLI boundary scaffolds use stateless boundary machines unless product intent declares lifecycle, order, session, retry, status, recovery, or workflow semantics.
+  enforced_by: add-capability-and-surface-scaffold-defaults
+  verified_by: verification/laws/simple_runnable_boundaries_are_stateless_by_default.md
 effects:
-  - name: read-repository-files
-    kind: filesystem-read
-    capability: filesystem
-  - name: write-generated-artifacts
-    kind: filesystem-write
-    capability: filesystem
-  - name: run-declared-verification
-    kind: process-execution
-    capability: process-runner
-  - name: run-optional-ai-provider
-    kind: process-execution
-    capability: process-runner
-  - name: read-source-revision
-    kind: process-execution
-    capability: git-revision-provider
-
+- name: read-repository-files
+  kind: filesystem-read
+  capability: filesystem
+- name: write-generated-artifacts
+  kind: filesystem-write
+  capability: filesystem
+- name: run-declared-verification
+  kind: process-execution
+  capability: process-runner
+- name: run-optional-ai-provider
+  kind: process-execution
+  capability: process-runner
+- name: read-source-revision
+  kind: process-execution
+  capability: git-revision-provider
 boundary:
   inputs:
-    - command-line arguments
-    - git diff output
-    - optional AI-provider command output
-    - YAML manifests
-    - JSON conformance reports
-    - optional RMS workbench config
-    - Codex plugin manifest and packaged skill files
-    - TOML package manifests
-    - Rust and Swift source files
-    - JavaScript source files
+  - command-line arguments
+  - git diff output
+  - optional AI-provider command output
+  - YAML manifests
+  - JSON conformance reports
+  - optional RMS workbench config
+  - Codex plugin manifest and packaged skill files
+  - TOML package manifests
+  - Rust and Swift source files
+  - JavaScript source files
   validation:
-    - embedded JSON Schema validation for RMS manifests
-    - path existence checks for referenced evidence
-    - implementation binding checks for Rust and Swift source boundaries
-    - advisory inner-structure checks for declared implementation shapes and roles
+  - embedded JSON Schema validation for RMS manifests
+  - path existence checks for referenced evidence
+  - implementation binding checks for Rust and Swift source boundaries
+  - advisory inner-structure checks for declared implementation shapes and roles
   trust:
-    - Repository files are treated as untrusted input unless they are canonical RMS artifacts.
-    - Generated reports are evidence and must not override manifests or contracts.
-    - Workbench prompts guide humans and agents but do not perform edits or provider calls.
-    - Provider-backed prompt execution is opt-in and records prompts, checks, provider logs, and responses under `.rms/runs`.
-    - Workbench config supplies defaults for opt-in provider execution and run record discovery; it must not create RMS module semantics.
-
+  - Repository files are treated as untrusted input unless they are canonical RMS artifacts.
+  - Generated reports are evidence and must not override manifests or contracts.
+  - Workbench prompts guide humans and agents but do not perform edits or provider calls.
+  - Provider-backed prompt execution is opt-in and records prompts, checks, provider logs, and responses under `.rms/runs`.
+  - Workbench config supplies defaults for opt-in provider execution and run record discovery; it must not create RMS module semantics.
 compatibility:
   policy: backward-compatible-within-major
-
 verification:
   laws:
-    - verification/laws
+  - verification/laws
+  - verification/laws/simple_runnable_boundaries_are_stateless_by_default.md
   contracts:
-    - verification/contracts
+  - verification/contracts
+  - verification/contracts/add_rms_capability.md
+  - verification/contracts/apply_runnable_surface.md
+  - verification/contracts/check_runnable_surface.md
   scenarios:
-    - verification/scenarios
+  - verification/scenarios
   boundaries:
-    - verification/boundaries
+  - verification/boundaries
+x-rms:
+  last_semantic_intent: Simple runnable browser/tool surfaces should scaffold as thin stateless boundaries with generated launch assets, while non-effectful scaffolds should not claim effect lifecycle semantics.

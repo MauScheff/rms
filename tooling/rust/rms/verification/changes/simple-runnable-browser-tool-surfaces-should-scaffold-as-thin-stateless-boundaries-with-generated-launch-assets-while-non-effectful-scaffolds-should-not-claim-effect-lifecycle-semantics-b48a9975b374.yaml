@@ -1,0 +1,29 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Simple runnable browser/tool surfaces should scaffold as thin stateless boundaries with generated launch assets, while non-effectful scaffolds should not claim effect lifecycle semantics.
+laws:
+  add:
+  - id: simple-runnable-boundaries-are-stateless-by-default
+    statement: Simple runnable app, tool, browser, and CLI boundary scaffolds use stateless boundary machines unless product intent declares lifecycle, order, session, retry, status, recovery, or workflow semantics.
+    kind: null
+contracts:
+  add: []
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: simple-runnable-boundaries-are-stateless-by-default
+    path: verification/laws/simple_runnable_boundaries_are_stateless_by_default.md
+  - kind: contract
+    proves: add-rms-capability
+    path: verification/contracts/add_rms_capability.md
+  - kind: contract
+    proves: apply-runnable-surface
+    path: verification/contracts/apply_runnable_surface.md
+  - kind: contract
+    proves: check-runnable-surface
+    path: verification/contracts/check_runnable_surface.md
+surfaces: null
