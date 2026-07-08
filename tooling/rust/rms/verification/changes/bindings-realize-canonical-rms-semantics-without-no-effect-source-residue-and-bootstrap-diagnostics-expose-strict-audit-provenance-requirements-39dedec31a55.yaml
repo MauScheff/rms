@@ -1,0 +1,50 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Bindings realize canonical RMS semantics without no-effect source residue, and bootstrap diagnostics expose strict-audit provenance requirements.
+laws:
+  add:
+  - id: bindings-realize-canonical-semantics
+    statement: Binding adapters realize canonical module shape, machine roles, runnable surfaces, evidence obligations, public contracts, and dependency links; bindings must not invent semantic roles outside canonical declarations.
+    kind: null
+  - id: no-effect-scaffolds-have-no-effect-residue
+    statement: Scaffolds and source roles for modules with no canonical effects or effect results must not expose effect, effect envelope, effect lifecycle, effect result, or effect-result envelope semantic types.
+    kind: null
+  - id: bootstrap-provenance-is-visible
+    statement: RMS init, diagnose, and gate surfaces must make the git source revision requirement visible before strict audit is treated as production evidence.
+    kind: null
+contracts:
+  add: []
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: bindings-realize-canonical-semantics
+    path: verification/laws/bindings_realize_canonical_semantics.md
+  - kind: law
+    proves: no-effect-scaffolds-have-no-effect-residue
+    path: verification/laws/no_effect_scaffolds_have_no_effect_residue.md
+  - kind: law
+    proves: bootstrap-provenance-is-visible
+    path: verification/laws/bootstrap_provenance_is_visible.md
+  - kind: contract
+    proves: add-rms-module
+    path: verification/contracts/add_rms_module.md
+  - kind: contract
+    proves: add-rms-capability
+    path: verification/contracts/add_rms_capability.md
+  - kind: contract
+    proves: diagnose-rms-environment
+    path: verification/contracts/diagnose_rms_environment.md
+  - kind: contract
+    proves: gate-rms-change
+    path: verification/contracts/gate_rms_change.md
+  - kind: contract
+    proves: inspect-implementation-structure
+    path: verification/contracts/inspect_implementation_structure.md
+  - kind: contract
+    proves: audit-rms-project
+    path: verification/contracts/audit_rms_project.md
+surfaces: null

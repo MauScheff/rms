@@ -1,0 +1,10 @@
+ai:
+  default_provider: codex
+  codex:
+    sandbox: read-only
+    # Provider edits are opt-in; when needed, uncomment both lines below.
+    # sandbox: workspace-write
+    # write_scope: module
+    # timeout_seconds: 900
+runs:
+  directory: ".rms/runs"

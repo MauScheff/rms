@@ -217,6 +217,18 @@ invariants:
   statement: Simple runnable app, tool, browser, and CLI boundary scaffolds use stateless boundary machines unless product intent declares lifecycle, order, session, retry, status, recovery, or workflow semantics.
   enforced_by: add-capability-and-surface-scaffold-defaults
   verified_by: verification/laws/simple_runnable_boundaries_are_stateless_by_default.md
+- id: bindings-realize-canonical-semantics
+  statement: Binding adapters realize canonical module shape, machine roles, runnable surfaces, evidence obligations, public contracts, and dependency links; bindings must not invent semantic roles outside canonical declarations.
+  enforced_by: binding-scaffold-model-and-adapters
+  verified_by: verification/laws/bindings_realize_canonical_semantics.md
+- id: no-effect-scaffolds-have-no-effect-residue
+  statement: Scaffolds and source roles for modules with no canonical effects or effect results must not expose effect, effect envelope, effect lifecycle, effect result, or effect-result envelope semantic types.
+  enforced_by: canonical-scaffold-flags-and-source-residue-diagnostics
+  verified_by: verification/laws/no_effect_scaffolds_have_no_effect_residue.md
+- id: bootstrap-provenance-is-visible
+  statement: RMS init, diagnose, and gate surfaces must make the git source revision requirement visible before strict audit is treated as production evidence.
+  enforced_by: init-diagnose-gate-provenance-guidance
+  verified_by: verification/laws/bootstrap_provenance_is_visible.md
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -262,14 +274,22 @@ verification:
   laws:
   - verification/laws
   - verification/laws/simple_runnable_boundaries_are_stateless_by_default.md
+  - verification/laws/bindings_realize_canonical_semantics.md
+  - verification/laws/no_effect_scaffolds_have_no_effect_residue.md
+  - verification/laws/bootstrap_provenance_is_visible.md
   contracts:
   - verification/contracts
   - verification/contracts/add_rms_capability.md
   - verification/contracts/apply_runnable_surface.md
   - verification/contracts/check_runnable_surface.md
+  - verification/contracts/add_rms_module.md
+  - verification/contracts/diagnose_rms_environment.md
+  - verification/contracts/gate_rms_change.md
+  - verification/contracts/inspect_implementation_structure.md
+  - verification/contracts/audit_rms_project.md
   scenarios:
   - verification/scenarios
   boundaries:
   - verification/boundaries
 x-rms:
-  last_semantic_intent: Simple runnable browser/tool surfaces should scaffold as thin stateless boundaries with generated launch assets, while non-effectful scaffolds should not claim effect lifecycle semantics.
+  last_semantic_intent: Bindings realize canonical RMS semantics without no-effect source residue, and bootstrap diagnostics expose strict-audit provenance requirements.

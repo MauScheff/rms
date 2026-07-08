@@ -5622,6 +5622,35 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
     let config = diagnose_config(root);
     let run_records = diagnose_run_records(root, &config.run_directory);
 
+    let source_revision = source_revision(root);
+    let mut guidance = vec![
+        "Use `rms explain <module>` before asking broad questions about a module.".to_string(),
+        "Use `rms config init` when you want checked-in or local workbench provider defaults.".to_string(),
+        "Use `rms explain --ai` or `--provider codex` only when provider execution is intended.".to_string(),
+        "Use `rms implement`, `rms evolve-contract`, and `rms evidence` for bounded agent guidance.".to_string(),
+        "Use `rms context <module> --task ...` before implementation work.".to_string(),
+        format!("Use `rms validate --root {}` before completion.", root.display()),
+        format!(
+            "Use `rms gate --root {}` to run git-impact-selected RMS checks.",
+            root.display()
+        ),
+        format!(
+            "Use `rms audit --root {}` and `--strict` before claiming production-ready RMS software.",
+            root.display()
+        ),
+        "Use `rms spec plan|apply|check <module.yaml|implementation.yaml>` when product meaning needs new laws, contracts, states, transitions, runnable surfaces, effects, or evidence obligations.".to_string(),
+        "Use `rms machine plan|apply|check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct.".to_string(),
+        "Use `rms surface apply|check <implementation.yaml>` when app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints are added or changed.".to_string(),
+        "Use `rms structure <implementation.yaml>` to inspect declared machine, role, and evidence structure.".to_string(),
+        "Use `rms trace check|replay|diagnose <trace-bundle>` to inspect local transition evidence without a runtime.".to_string(),
+        "Use `rms verify <implementation.yaml>` when an implementation binding declares verification, or `rms verify <composite-module.yaml>` for composite rollups.".to_string(),
+    ];
+    if source_revision.is_none() {
+        guidance.push(
+            "Strict audit cannot pass until the project has a git source revision; run `git init` if needed, then `git add . && git commit -m \"Initial RMS project\"` before the production audit.".to_string(),
+        );
+    }
+
     Ok(DiagnoseReport {
         validator: VALIDATOR_NAME,
         version: VALIDATOR_VERSION,
@@ -5631,6 +5660,11 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
             file_readiness("context-map.yaml", &root.join("context-map.yaml")),
             file_readiness("AGENTS.md", &root.join("AGENTS.md")),
             file_readiness(WORKBENCH_CONFIG_PATH, &root.join(WORKBENCH_CONFIG_PATH)),
+            ReadinessItem {
+                name: "git source revision".to_string(),
+                path: root.display().to_string(),
+                status: source_revision.unwrap_or_else(|| "missing".to_string()),
+            },
         ],
         config,
         codex_plugin_cache: codex_plugin_cache_readiness(),
@@ -5655,28 +5689,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
             command_readiness("claude", &["--version"]),
         ],
         run_records,
-        guidance: vec![
-            "Use `rms explain <module>` before asking broad questions about a module.".to_string(),
-            "Use `rms config init` when you want checked-in or local workbench provider defaults.".to_string(),
-            "Use `rms explain --ai` or `--provider codex` only when provider execution is intended.".to_string(),
-            "Use `rms implement`, `rms evolve-contract`, and `rms evidence` for bounded agent guidance.".to_string(),
-            "Use `rms context <module> --task ...` before implementation work.".to_string(),
-            format!("Use `rms validate --root {}` before completion.", root.display()),
-            format!(
-                "Use `rms gate --root {}` to run git-impact-selected RMS checks.",
-                root.display()
-            ),
-            format!(
-                "Use `rms audit --root {}` and `--strict` before claiming production-ready RMS software.",
-                root.display()
-            ),
-            "Use `rms spec plan|apply|check <module.yaml|implementation.yaml>` when product meaning needs new laws, contracts, states, transitions, runnable surfaces, effects, or evidence obligations.".to_string(),
-            "Use `rms machine plan|apply|check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct.".to_string(),
-            "Use `rms surface apply|check <implementation.yaml>` when app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints are added or changed.".to_string(),
-            "Use `rms structure <implementation.yaml>` to inspect declared machine, role, and evidence structure.".to_string(),
-            "Use `rms trace check|replay|diagnose <trace-bundle>` to inspect local transition evidence without a runtime.".to_string(),
-            "Use `rms verify <implementation.yaml>` when an implementation binding declares verification, or `rms verify <composite-module.yaml>` for composite rollups.".to_string(),
-        ],
+        guidance,
     })
 }
 
@@ -8724,7 +8737,7 @@ fn build_nongit_gate_plan(root: &Path) -> Result<GatePlan> {
     affected_modules.sort();
     affected_modules.dedup();
     manual_checks.insert(
-        "No git repository was detected; gate ran deterministic full-project checks without changed-path impact evidence.".to_string(),
+        "No git repository was detected; gate ran deterministic full-project checks without changed-path impact evidence, and strict audit cannot pass until the project is committed.".to_string(),
     );
 
     Ok(GatePlan {
@@ -8854,6 +8867,11 @@ fn build_gate_plan(root: &Path, diff: Option<&str>, impact: &ImpactReport) -> Ga
     } else {
         GateResult::Pending
     };
+    if impact.source_revision.is_none() && git_worktree_exists(root) {
+        manual_checks.insert(
+            "Strict audit cannot pass until the project has a git source revision; commit the production candidate before running `rms audit --root . --strict`.".to_string(),
+        );
+    }
 
     GatePlan {
         report: GateReport {
@@ -10709,6 +10727,7 @@ fn validate_machine_gate_structure(
     inspect_pure_role_effect_markers(manifest, diagnostics);
     inspect_effect_executor_coverage(manifest, diagnostics);
     inspect_effect_result_handling(manifest, diagnostics);
+    inspect_semantic_role_source_residue(manifest, diagnostics);
     inspect_public_command_representation(manifest, diagnostics);
     inspect_runnable_surface_declarations(manifest, diagnostics);
     inspect_runnable_surface_boundary_use(manifest, diagnostics);
@@ -12439,6 +12458,224 @@ fn represented_effect_envelope_types(manifest: &LoadedManifest) -> bool {
     )
     .into_iter()
     .any(|variant| variant.ends_with("EffectEnvelope"))
+}
+
+fn inspect_semantic_role_source_residue(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let effects = get_string_array(&manifest.value, &["architecture", "machine", "effects"]);
+    let effect_results = get_string_array(
+        &manifest.value,
+        &["architecture", "machine", "effect_results"],
+    );
+    if !effects.is_empty() && !effect_results.is_empty() {
+        return;
+    }
+
+    let source_types = semantic_role_source_types(manifest);
+    if source_types.is_empty() {
+        return;
+    }
+
+    let mut residue_found = false;
+    if effects.is_empty() {
+        let effect_types = source_types
+            .iter()
+            .filter(|(name, _)| is_effect_role_type(name))
+            .cloned()
+            .collect::<Vec<_>>();
+        let effect_envelopes = source_types
+            .iter()
+            .filter(|(name, _)| is_effect_envelope_role_type(name))
+            .cloned()
+            .collect::<Vec<_>>();
+        let effect_lifecycles = source_types
+            .iter()
+            .filter(|(name, _)| is_effect_lifecycle_role_type(name))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !effect_types.is_empty() {
+            residue_found = true;
+            push_unique_warning(
+                diagnostics,
+                "structure.undeclared-effect-type-represented",
+                &manifest.path,
+                format!(
+                    "source exposes effect role type(s) {}, but `architecture.machine.effects` is empty",
+                    format_source_type_locations(&effect_types)
+                ),
+            );
+        }
+        if !effect_envelopes.is_empty() {
+            residue_found = true;
+            push_unique_warning(
+                diagnostics,
+                "structure.effect-envelope-without-effects",
+                &manifest.path,
+                format!(
+                    "source exposes effect envelope type(s) {}, but no machine effects are declared",
+                    format_source_type_locations(&effect_envelopes)
+                ),
+            );
+        }
+        if !effect_lifecycles.is_empty() {
+            residue_found = true;
+            push_unique_warning(
+                diagnostics,
+                "structure.effect-lifecycle-without-effects",
+                &manifest.path,
+                format!(
+                    "source exposes effect lifecycle type(s) {}, but no machine effects are declared",
+                    format_source_type_locations(&effect_lifecycles)
+                ),
+            );
+        }
+    }
+
+    if effect_results.is_empty() {
+        let effect_result_types = source_types
+            .iter()
+            .filter(|(name, _)| is_effect_result_role_type(name))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !effect_result_types.is_empty() {
+            residue_found = true;
+            push_unique_warning(
+                diagnostics,
+                "structure.undeclared-effect-result-type-represented",
+                &manifest.path,
+                format!(
+                    "source exposes effect-result role type(s) {}, but `architecture.machine.effect_results` is empty",
+                    format_source_type_locations(&effect_result_types)
+                ),
+            );
+        }
+    }
+
+    if residue_found {
+        push_unique_warning(
+            diagnostics,
+            "structure.semantic-role-source-residue",
+            &manifest.path,
+            "source exposes semantic role types that are absent from canonical implementation declarations",
+        );
+    }
+}
+
+fn semantic_role_source_types(manifest: &LoadedManifest) -> Vec<(String, String)> {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let binding = get_str(&manifest.value, &["binding"]).unwrap_or("");
+    let mut references = Vec::new();
+    for role in ["representation", "transition", "message_envelope"] {
+        for reference in structure_role_paths(manifest, role) {
+            if !references.contains(&reference) {
+                references.push(reference);
+            }
+        }
+    }
+    if references.is_empty() {
+        if let Some(public_entrypoint) = get_str(&manifest.value, &["source", "public_entrypoint"])
+        {
+            references.push(public_entrypoint.to_string());
+        }
+    }
+
+    let mut types = Vec::new();
+    let mut seen = BTreeSet::new();
+    for reference in references {
+        let path = base.join(&reference);
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for type_name in declared_source_type_names(&source, binding) {
+            if seen.insert((type_name.clone(), reference.clone())) {
+                types.push((type_name, reference.clone()));
+            }
+        }
+    }
+    types
+}
+
+fn declared_source_type_names(source: &str, binding: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let candidates: &[&str] = match binding {
+            "rust" => &["pub enum ", "pub struct ", "pub type "],
+            "swift" => &[
+                "public enum ",
+                "public struct ",
+                "public typealias ",
+                "public final class ",
+                "public class ",
+            ],
+            "js" => &["export function make", "export const ", "export class "],
+            _ => &[],
+        };
+        for prefix in candidates {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                if let Some(name) = leading_identifier(rest) {
+                    let normalized = if binding == "js" && *prefix == "export function make" {
+                        name.to_string()
+                    } else {
+                        name.to_string()
+                    };
+                    names.push(normalized);
+                }
+            }
+        }
+    }
+    names
+}
+
+fn leading_identifier(value: &str) -> Option<&str> {
+    let end = value
+        .char_indices()
+        .find_map(|(index, ch)| {
+            if ch == '_' || ch.is_ascii_alphanumeric() {
+                None
+            } else {
+                Some(index)
+            }
+        })
+        .unwrap_or(value.len());
+    if end == 0 {
+        None
+    } else {
+        Some(&value[..end])
+    }
+}
+
+fn format_source_type_locations(types: &[(String, String)]) -> String {
+    types
+        .iter()
+        .map(|(name, reference)| format!("{name} in `{reference}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn is_effect_role_type(name: &str) -> bool {
+    (name.ends_with("Effect") || name.ends_with("Effects"))
+        && !is_effect_envelope_role_type(name)
+        && !is_effect_lifecycle_role_type(name)
+        && !is_effect_result_role_type(name)
+}
+
+fn is_effect_envelope_role_type(name: &str) -> bool {
+    name.ends_with("EffectEnvelope")
+}
+
+fn is_effect_lifecycle_role_type(name: &str) -> bool {
+    name.ends_with("EffectLifecycle")
+}
+
+fn is_effect_result_role_type(name: &str) -> bool {
+    name.ends_with("EffectResult")
+        || name.ends_with("EffectResults")
+        || name.ends_with("EffectResultEnvelope")
+        || name.ends_with("EffectOutcome")
+        || name.ends_with("EffectOutcomes")
 }
 
 fn inspect_role_sources_for_markers(
@@ -20545,6 +20782,11 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "structure.effectful-helper-in-pure-role"
                 | "structure.effect-without-executor"
                 | "structure.effect-result-unhandled"
+                | "structure.undeclared-effect-type-represented"
+                | "structure.undeclared-effect-result-type-represented"
+                | "structure.effect-envelope-without-effects"
+                | "structure.effect-lifecycle-without-effects"
+                | "structure.semantic-role-source-residue"
                 | "structure.effect-result-type-not-declared"
                 | "structure.effect-result-change-not-declared"
                 | "structure.effect-result-declared-not-consumed"
@@ -28153,6 +28395,9 @@ fn run_init(
     scaffold_agent_skills(path)?;
 
     println!("initialized RMS system at {}", path.display());
+    println!(
+        "strict audit provenance: run `git init && git add . && git commit -m \"Initial RMS project\"` before claiming `rms audit --root . --strict` as production evidence"
+    );
     Ok(())
 }
 
@@ -28253,28 +28498,11 @@ fn run_add_module(request: AddModuleRequest, options: &PromptRunOptions) -> Resu
     )?;
 
     if let Some(binding) = canonical_request.binding.as_deref() {
-        match binding {
-            "rust" => scaffold_rust_module(
-                path,
-                &canonical_request.name,
-                &canonical_request.name,
-                shape,
-            )?,
-            "swift" => scaffold_swift_module(
-                path,
-                &canonical_request.name,
-                &canonical_request.name,
-                shape,
-            )?,
-            "js" => scaffold_js_module(
-                path,
-                &canonical_request.name,
-                &canonical_request.name,
-                shape,
-            )?,
-            "executable" => scaffold_executable_module(path, &canonical_request.name, shape)?,
-            other => bail!("unsupported scaffold binding `{other}`"),
-        }
+        let model =
+            BindingScaffoldModel::new(&canonical_request.name, &canonical_request.name, shape);
+        let adapter = binding_adapter(binding)?;
+        debug_assert_eq!(adapter.id(), binding);
+        adapter.scaffold(path, &model)?;
     }
 
     println!("added RMS module at {}", path.display());
@@ -28747,12 +28975,13 @@ fn scaffold_binding_if_requested(
 ) -> Result<()> {
     validate_scaffold_binding(binding)?;
     match binding {
-        Some("rust") => scaffold_rust_module(path, name, semantic_name, shape),
-        Some("swift") => scaffold_swift_module(path, name, semantic_name, shape),
-        Some("js") => scaffold_js_module(path, name, semantic_name, shape),
-        Some("executable") => scaffold_executable_module(path, name, shape),
+        Some(binding) => {
+            let model = BindingScaffoldModel::new(name, semantic_name, shape);
+            let adapter = binding_adapter(binding)?;
+            debug_assert_eq!(adapter.id(), binding);
+            adapter.scaffold(path, &model)
+        }
         None => Ok(()),
-        Some(_) => unreachable!("validate_scaffold_binding accepted an unsupported binding"),
     }
 }
 
@@ -28760,6 +28989,133 @@ fn validate_scaffold_binding(binding: Option<&str>) -> Result<()> {
     match binding {
         Some("rust" | "swift" | "js" | "executable") | None => Ok(()),
         Some(other) => bail!("unsupported scaffold binding `{other}`"),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BindingScaffoldModel {
+    module_name: String,
+    shape: ScaffoldShape,
+    names: InnerStructureNames,
+    declares_effects: bool,
+    declares_effect_results: bool,
+}
+
+impl BindingScaffoldModel {
+    fn new(module_name: &str, semantic_name: &str, shape: ScaffoldShape) -> Self {
+        Self {
+            module_name: module_name.to_string(),
+            shape,
+            names: inner_structure_names(semantic_name, shape),
+            declares_effects: scaffold_declares_effects_by_default(shape),
+            declares_effect_results: scaffold_declares_effect_results_by_default(shape),
+        }
+    }
+
+    fn declared_effects(&self) -> Vec<String> {
+        if self.declares_effects {
+            vec![self.names.effect.clone()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn declared_effect_results(&self) -> Vec<String> {
+        if self.declares_effect_results {
+            vec![self.names.effect_result.clone()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn closed_variants(&self) -> Vec<String> {
+        let mut variants = vec![
+            self.names.state.clone(),
+            self.names.command.clone(),
+            self.names.command_envelope.clone(),
+            self.names.event.clone(),
+            self.names.event_envelope.clone(),
+            self.names.reply.clone(),
+            self.names.rejection.clone(),
+            self.names.transition.clone(),
+            self.names.transition_record.clone(),
+            self.names.source_provenance.clone(),
+        ];
+        if self.declares_effects {
+            variants.push(self.names.effect.clone());
+            variants.push(self.names.effect_envelope.clone());
+            variants.push(self.names.effect_lifecycle.clone());
+        }
+        if self.declares_effect_results {
+            variants.push(self.names.effect_result.clone());
+            variants.push(self.names.effect_result_envelope.clone());
+        }
+        variants
+    }
+}
+
+trait BindingAdapter {
+    fn id(&self) -> &'static str;
+    fn scaffold(&self, path: &Path, model: &BindingScaffoldModel) -> Result<()>;
+}
+
+struct RustBindingAdapter;
+struct SwiftBindingAdapter;
+struct JsBindingAdapter;
+struct ExecutableBindingAdapter;
+
+impl BindingAdapter for RustBindingAdapter {
+    fn id(&self) -> &'static str {
+        "rust"
+    }
+
+    fn scaffold(&self, path: &Path, model: &BindingScaffoldModel) -> Result<()> {
+        scaffold_rust_module(path, model)
+    }
+}
+
+impl BindingAdapter for SwiftBindingAdapter {
+    fn id(&self) -> &'static str {
+        "swift"
+    }
+
+    fn scaffold(&self, path: &Path, model: &BindingScaffoldModel) -> Result<()> {
+        scaffold_swift_module(path, model)
+    }
+}
+
+impl BindingAdapter for JsBindingAdapter {
+    fn id(&self) -> &'static str {
+        "js"
+    }
+
+    fn scaffold(&self, path: &Path, model: &BindingScaffoldModel) -> Result<()> {
+        scaffold_js_module(path, model)
+    }
+}
+
+impl BindingAdapter for ExecutableBindingAdapter {
+    fn id(&self) -> &'static str {
+        "executable"
+    }
+
+    fn scaffold(&self, path: &Path, model: &BindingScaffoldModel) -> Result<()> {
+        scaffold_executable_module(path, &model.module_name, model.shape)
+    }
+}
+
+static RUST_BINDING_ADAPTER: RustBindingAdapter = RustBindingAdapter;
+static SWIFT_BINDING_ADAPTER: SwiftBindingAdapter = SwiftBindingAdapter;
+static JS_BINDING_ADAPTER: JsBindingAdapter = JsBindingAdapter;
+static EXECUTABLE_BINDING_ADAPTER: ExecutableBindingAdapter = ExecutableBindingAdapter;
+
+fn binding_adapter(binding: &str) -> Result<&'static dyn BindingAdapter> {
+    match binding {
+        "rust" => Ok(&RUST_BINDING_ADAPTER),
+        "swift" => Ok(&SWIFT_BINDING_ADAPTER),
+        "js" => Ok(&JS_BINDING_ADAPTER),
+        "executable" => Ok(&EXECUTABLE_BINDING_ADAPTER),
+        other => bail!("unsupported scaffold binding `{other}`"),
     }
 }
 
@@ -28941,62 +29297,47 @@ fn scaffold_shape_evidence(
     Ok(())
 }
 
-fn scaffold_rust_module(
-    path: &Path,
-    name: &str,
-    semantic_name: &str,
-    shape: ScaffoldShape,
-) -> Result<()> {
-    let package_name = sanitize_rust_package_name(name);
-    let names = inner_structure_names(semantic_name, shape);
+fn scaffold_rust_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
+    let package_name = sanitize_rust_package_name(&model.module_name);
     fs::create_dir_all(path.join("src"))?;
     write_new_file(
         &path.join("implementation.yaml"),
-        &render_rust_implementation_yaml(name, &package_name, shape, &names),
+        &render_rust_implementation_yaml(&model.module_name, &package_name, model),
     )?;
     normalize_scaffold_effect_result_declarations(
         &path.join("implementation.yaml"),
-        shape,
-        &names,
+        model.shape,
+        &model.names,
     )?;
     write_new_file(
         &path.join("Cargo.toml"),
         &render_rust_cargo_toml(&package_name),
     )?;
-    write_new_file(
-        &path.join("src").join("lib.rs"),
-        &render_rust_lib_rs(shape, &names),
-    )?;
+    write_new_file(&path.join("src").join("lib.rs"), &render_rust_lib_rs(model))?;
     write_new_file(
         &path.join("src").join("representation.rs"),
-        &render_rust_representation_rs(&names),
+        &render_rust_representation_rs(model),
     )?;
     write_new_file(
         &path.join("src").join("transition.rs"),
-        &render_rust_transition_rs(&names),
+        &render_rust_transition_rs(model),
     )?;
     Ok(())
 }
 
-fn scaffold_swift_module(
-    path: &Path,
-    name: &str,
-    semantic_name: &str,
-    shape: ScaffoldShape,
-) -> Result<()> {
-    let package_name = sanitize_swift_package_name(name);
-    let target_name = sanitize_swift_target_name(name);
-    let names = inner_structure_names(semantic_name, shape);
+fn scaffold_swift_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
+    let package_name = sanitize_swift_package_name(&model.module_name);
+    let target_name = sanitize_swift_target_name(&model.module_name);
     fs::create_dir_all(path.join("Sources").join(&target_name))?;
     fs::create_dir_all(path.join("Tests").join(format!("{target_name}Tests")))?;
     write_new_file(
         &path.join("implementation.yaml"),
-        &render_swift_implementation_yaml(name, &package_name, &target_name, shape, &names),
+        &render_swift_implementation_yaml(&model.module_name, &package_name, &target_name, model),
     )?;
     normalize_scaffold_effect_result_declarations(
         &path.join("implementation.yaml"),
-        shape,
-        &names,
+        model.shape,
+        &model.names,
     )?;
     write_new_file(
         &path.join("Package.swift"),
@@ -29007,81 +29348,75 @@ fn scaffold_swift_module(
             .join("Sources")
             .join(&target_name)
             .join("Representation.swift"),
-        &render_swift_representation(&names),
+        &render_swift_representation(model),
     )?;
     write_new_file(
         &path
             .join("Sources")
             .join(&target_name)
             .join("Transition.swift"),
-        &render_swift_transition(&names),
+        &render_swift_transition(model),
     )?;
     write_new_file(
         &path
             .join("Sources")
             .join(&target_name)
             .join(format!("{target_name}.swift")),
-        &render_swift_source(&target_name, shape),
+        &render_swift_source(&target_name, model.shape),
     )?;
     write_new_file(
         &path
             .join("Tests")
             .join(format!("{target_name}Tests"))
             .join(format!("{target_name}Tests.swift")),
-        &render_swift_tests(&target_name, &names),
+        &render_swift_tests(&target_name, &model.names),
     )?;
     Ok(())
 }
 
-fn scaffold_js_module(
-    path: &Path,
-    name: &str,
-    semantic_name: &str,
-    shape: ScaffoldShape,
-) -> Result<()> {
-    let names = inner_structure_names(semantic_name, shape);
+fn scaffold_js_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
     fs::create_dir_all(path.join("src"))?;
     fs::create_dir_all(path.join("tests"))?;
     fs::create_dir_all(path.join("scripts"))?;
     write_new_file(
         &path.join("implementation.yaml"),
-        &render_js_implementation_yaml(name, shape, &names),
+        &render_js_implementation_yaml(&model.module_name, model.shape, &model.names),
     )?;
     normalize_scaffold_effect_result_declarations(
         &path.join("implementation.yaml"),
-        shape,
-        &names,
+        model.shape,
+        &model.names,
     )?;
     write_new_file(
         &path.join("src").join("representation.mjs"),
-        &render_js_representation_mjs(&names, shape),
+        &render_js_representation_mjs(&model.names, model.shape),
     )?;
-    match shape {
+    match model.shape {
         ScaffoldShape::BoundaryAdapter
         | ScaffoldShape::StorageAdapter
         | ScaffoldShape::IntegrationAdapter => {
             write_new_file(
                 &path.join("src").join("parser.mjs"),
-                &render_js_parser_mjs(&names),
+                &render_js_parser_mjs(&model.names),
             )?;
             write_new_file(&path.join("src").join("ports.mjs"), JS_PORTS_MJS)?;
             write_new_file(
                 &path.join("src").join("adapter.mjs"),
-                &render_js_adapter_mjs(&names, shape),
+                &render_js_adapter_mjs(&model.names, model.shape),
             )?;
             write_new_file(
                 &path.join("tests").join("boundary-smoke.mjs"),
-                &render_js_boundary_test_mjs(&names),
+                &render_js_boundary_test_mjs(&model.names),
             )?;
         }
         _ => {
             write_new_file(
                 &path.join("src").join("transition.mjs"),
-                &render_js_transition_mjs(&names),
+                &render_js_transition_mjs(&model.names),
             )?;
             write_new_file(
                 &path.join("tests").join("trace-smoke.mjs"),
-                &render_js_trace_test_mjs(&names),
+                &render_js_trace_test_mjs(&model.names),
             )?;
         }
     }
@@ -29171,6 +29506,11 @@ fn normalize_scaffold_effect_result_declarations(
     remove_yaml_string_values_path(
         &mut value,
         &["architecture", "representation", "closed_variants"],
+        &closed_variants_to_remove,
+    );
+    remove_yaml_string_values_path(
+        &mut value,
+        &["architecture", "allowed_public_field_structs"],
         &closed_variants_to_remove,
     );
     fs::write(
@@ -29547,15 +29887,19 @@ fn render_contracts_readme() -> String {
 
 fn render_traceable_architecture_yaml(names: &InnerStructureNames, shape: ScaffoldShape) -> String {
     let mut out = String::new();
-    let public_field_structs = [
+    let mut public_field_structs = vec![
         names.command_envelope.as_str(),
         names.event_envelope.as_str(),
-        names.effect_envelope.as_str(),
-        names.effect_result_envelope.as_str(),
         names.transition.as_str(),
         names.transition_record.as_str(),
         names.source_provenance.as_str(),
     ];
+    if scaffold_declares_effects_by_default(shape) {
+        public_field_structs.push(names.effect_envelope.as_str());
+    }
+    if scaffold_declares_effect_results_by_default(shape) {
+        public_field_structs.push(names.effect_result_envelope.as_str());
+    }
     let _ = writeln!(out, "  allowed_public_field_structs:");
     for item in public_field_structs {
         let _ = writeln!(out, "    - {}", yaml_quote(item));
@@ -29583,25 +29927,29 @@ fn render_traceable_architecture_yaml(names: &InnerStructureNames, shape: Scaffo
     ] {
         let _ = writeln!(out, "      - {field}");
     }
-    let _ = writeln!(out, "    effect_envelope:");
-    for field in [
-        "effect_id",
-        "requester",
-        "correlation_id",
-        "causation_id",
-        "idempotency_key",
-    ] {
-        let _ = writeln!(out, "      - {field}");
+    if scaffold_declares_effects_by_default(shape) {
+        let _ = writeln!(out, "    effect_envelope:");
+        for field in [
+            "effect_id",
+            "requester",
+            "correlation_id",
+            "causation_id",
+            "idempotency_key",
+        ] {
+            let _ = writeln!(out, "      - {field}");
+        }
     }
-    let _ = writeln!(out, "    effect_result_envelope:");
-    for field in [
-        "effect_id",
-        "requester",
-        "correlation_id",
-        "causation_id",
-        "status",
-    ] {
-        let _ = writeln!(out, "      - {field}");
+    if scaffold_declares_effect_results_by_default(shape) {
+        let _ = writeln!(out, "    effect_result_envelope:");
+        for field in [
+            "effect_id",
+            "requester",
+            "correlation_id",
+            "causation_id",
+            "status",
+        ] {
+            let _ = writeln!(out, "      - {field}");
+        }
     }
     if shape == ScaffoldShape::Workflow {
         let _ = writeln!(out, "    subscriptions:");
@@ -29612,21 +29960,23 @@ fn render_traceable_architecture_yaml(names: &InnerStructureNames, shape: Scaffo
     for field in ["next_state", "events", "commands", "effects", "reply"] {
         let _ = writeln!(out, "      - {field}");
     }
-    let _ = writeln!(out, "  effects:");
-    let _ = writeln!(out, "    lifecycle:");
-    for state in [
-        "Pending",
-        "Running",
-        "Succeeded",
-        "Failed",
-        "RetryScheduled",
-        "Abandoned",
-    ] {
-        let _ = writeln!(out, "      - {state}");
-    }
-    if idempotency_expected_for_shape(shape.as_str()) {
-        let _ = writeln!(out, "    idempotency_keys:");
-        let _ = writeln!(out, "      - effect_id");
+    if scaffold_declares_effects_by_default(shape) {
+        let _ = writeln!(out, "  effects:");
+        let _ = writeln!(out, "    lifecycle:");
+        for state in [
+            "Pending",
+            "Running",
+            "Succeeded",
+            "Failed",
+            "RetryScheduled",
+            "Abandoned",
+        ] {
+            let _ = writeln!(out, "      - {state}");
+        }
+        if idempotency_expected_for_shape(shape.as_str()) {
+            let _ = writeln!(out, "    idempotency_keys:");
+            let _ = writeln!(out, "      - effect_id");
+        }
     }
     let _ = writeln!(out, "  numeric_safety:");
     let _ = writeln!(
@@ -29678,10 +30028,13 @@ fn render_traceable_roles_yaml_with_parser(
         ("transition_record", transition_path),
         ("journal", transition_path),
         ("timeline_projection", transition_path),
-        ("effect_lifecycle", representation_path),
     ] {
         let _ = writeln!(out, "    {role}:");
         let _ = writeln!(out, "      - {path}");
+    }
+    if scaffold_declares_effects_by_default(shape) {
+        let _ = writeln!(out, "    effect_lifecycle:");
+        let _ = writeln!(out, "      - {representation_path}");
     }
     if parser_expected_for_shape(shape.as_str()) {
         let _ = writeln!(out, "    parser:");
@@ -29762,14 +30115,31 @@ fn render_representation_constructor_evidence_yaml(shape: ScaffoldShape) -> Stri
     }
 }
 
+fn render_machine_variant_field(field: &str, values: &[String]) -> String {
+    if values.is_empty() {
+        format!("    {field}: []\n")
+    } else {
+        format!("    {field}:\n{}\n", yaml_string_list(values, 6))
+    }
+}
+
+fn render_closed_variants_yaml(model: &BindingScaffoldModel) -> String {
+    format!("{}\n", yaml_string_list(&model.closed_variants(), 6))
+}
+
 fn render_rust_implementation_yaml(
     module_name: &str,
     package_name: &str,
-    shape: ScaffoldShape,
-    names: &InnerStructureNames,
+    model: &BindingScaffoldModel,
 ) -> String {
+    let names = &model.names;
+    let shape = model.shape;
+    let effects_yaml = render_machine_variant_field("effects", &model.declared_effects());
+    let effect_results_yaml =
+        render_machine_variant_field("effect_results", &model.declared_effect_results());
+    let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - representation\n    - transition\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - representation\n    - transition\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n{}{}    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
         yaml_quote(module_name),
         yaml_quote(package_name),
         yaml_quote(shape.as_str()),
@@ -29781,26 +30151,12 @@ fn render_rust_implementation_yaml(
         yaml_string_list(&starter_states_for_shape(shape), 6),
         yaml_quote(&names.command),
         yaml_quote(&names.event),
-        yaml_quote(&names.effect),
-        yaml_quote(&names.effect_result),
+        effects_yaml,
+        effect_results_yaml,
         yaml_quote(&names.reply),
         yaml_quote(&names.rejection),
         render_traceable_roles_yaml(shape, "src/representation.rs", "src/transition.rs"),
-        yaml_quote(&names.state),
-        yaml_quote(&names.command),
-        yaml_quote(&names.command_envelope),
-        yaml_quote(&names.event),
-        yaml_quote(&names.event_envelope),
-        yaml_quote(&names.effect),
-        yaml_quote(&names.effect_envelope),
-        yaml_quote(&names.effect_result),
-        yaml_quote(&names.effect_result_envelope),
-        yaml_quote(&names.effect_lifecycle),
-        yaml_quote(&names.reply),
-        yaml_quote(&names.rejection),
-        yaml_quote(&names.transition),
-        yaml_quote(&names.transition_record),
-        yaml_quote(&names.source_provenance),
+        closed_variants_yaml,
         yaml_quote(&names.label),
         names.label,
         render_representation_constructor_evidence_yaml(shape),
@@ -29808,32 +30164,49 @@ fn render_rust_implementation_yaml(
     )
 }
 
-fn render_rust_lib_rs(shape: ScaffoldShape, names: &InnerStructureNames) -> String {
+fn render_rust_lib_rs(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let mut representation_exports = vec![
+        names.command.as_str(),
+        names.command_envelope.as_str(),
+        names.event.as_str(),
+        names.event_envelope.as_str(),
+        names.label.as_str(),
+        names.rejection.as_str(),
+        names.reply.as_str(),
+        names.state.as_str(),
+    ];
+    if model.declares_effects {
+        representation_exports.push(names.effect.as_str());
+        representation_exports.push(names.effect_envelope.as_str());
+        representation_exports.push(names.effect_lifecycle.as_str());
+    }
+    if model.declares_effect_results {
+        representation_exports.push(names.effect_result.as_str());
+        representation_exports.push(names.effect_result_envelope.as_str());
+    }
+    let representation_exports = representation_exports.join(", ");
     format!(
-        "pub mod representation;\npub mod transition;\n\npub use crate::representation::{{{command}, {command_envelope}, {effect}, {effect_envelope}, {effect_lifecycle}, {effect_result}, {effect_result_envelope}, {event}, {event_envelope}, {label}, {rejection}, {reply}, {state}}};\npub use crate::transition::{{replay_trace, transition, {machine}, {source_provenance}, {transition}, {transition_record}}};\n\npub fn semantic_shape() -> &'static str {{\n    {:?}\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn rejects_invalid_representation() {{\n        assert!({label}::new(\"\").is_none());\n    }}\n\n    #[test]\n    fn transition_returns_traceable_output() {{\n        let label = {label}::new(\"example\").unwrap();\n        let outcome = {machine}::transition({command}::Accept(label));\n        assert!(matches!(outcome.reply, {reply}::Accepted));\n        assert_eq!(outcome.events.len(), 1);\n    }}\n\n    #[test]\n    fn transition_replay_records_source_branch() {{\n        let label = {label}::new(\"example\").unwrap();\n        let records = replay_trace([{command}::Accept(label)]);\n        assert_eq!(records.len(), 1);\n        assert_eq!(records[0].source.branch, \"Accept\");\n    }}\n}}\n",
-        shape.as_str()
-        ,
+        "pub mod representation;\npub mod transition;\n\npub use crate::representation::{{{representation_exports}}};\npub use crate::transition::{{replay_trace, transition, {machine}, {source_provenance}, {transition}, {transition_record}}};\n\npub fn semantic_shape() -> &'static str {{\n    {:?}\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn rejects_invalid_representation() {{\n        assert!({label}::new(\"\").is_none());\n    }}\n\n    #[test]\n    fn transition_returns_traceable_output() {{\n        let label = {label}::new(\"example\").unwrap();\n        let outcome = {machine}::transition({command}::Accept(label));\n        assert!(matches!(outcome.reply, {reply}::Accepted));\n        assert_eq!(outcome.events.len(), 1);\n    }}\n\n    #[test]\n    fn transition_replay_records_source_branch() {{\n        let label = {label}::new(\"example\").unwrap();\n        let records = replay_trace([{command}::Accept(label)]);\n        assert_eq!(records.len(), 1);\n        assert_eq!(records[0].source.branch, \"Accept\");\n    }}\n}}\n",
+        model.shape.as_str(),
         command = names.command,
-        command_envelope = names.command_envelope,
-        effect = names.effect,
-        effect_envelope = names.effect_envelope,
-        effect_lifecycle = names.effect_lifecycle,
-        effect_result = names.effect_result,
-        effect_result_envelope = names.effect_result_envelope,
-        event = names.event,
-        event_envelope = names.event_envelope,
         label = names.label,
         machine = names.machine,
-        rejection = names.rejection,
         reply = names.reply,
         source_provenance = names.source_provenance,
-        state = names.state,
         transition = names.transition,
         transition_record = names.transition_record,
+        representation_exports = representation_exports,
     )
 }
 
-fn render_rust_representation_rs(names: &InnerStructureNames) -> String {
+fn render_rust_representation_rs(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let effect_section = if model.declares_effects {
+        render_rust_effect_representation_rs(names, model.declares_effect_results)
+    } else {
+        String::new()
+    };
     format!(
         r#"#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct {label}(String);
@@ -29893,7 +30266,61 @@ pub struct {event_envelope} {{
     pub event: {event},
 }}
 
+{effect_section}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum {rejection} {{
+    InvalidCommand({label}),
+}}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum {reply} {{
+    Accepted,
+    Rejected({rejection}),
+}}
+"#,
+        command = names.command,
+        command_envelope = names.command_envelope,
+        effect_section = effect_section,
+        event = names.event,
+        event_envelope = names.event_envelope,
+        label = names.label,
+        rejection = names.rejection,
+        reply = names.reply,
+        state = names.state,
+    )
+}
+
+fn render_rust_effect_representation_rs(
+    names: &InnerStructureNames,
+    include_effect_results: bool,
+) -> String {
+    let effect_result_section = if include_effect_results {
+        format!(
+            r#"#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum {effect_result} {{
+    Completed,
+}}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct {effect_result_envelope} {{
+    pub effect_id: String,
+    pub requester: String,
+    pub correlation_id: String,
+    pub causation_id: String,
+    pub status: {effect_lifecycle},
+    pub result: {effect_result},
+}}
+"#,
+            effect_lifecycle = names.effect_lifecycle,
+            effect_result = names.effect_result,
+            effect_result_envelope = names.effect_result_envelope,
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum {effect} {{
     None,
 }}
@@ -29909,11 +30336,6 @@ pub struct {effect_envelope} {{
 }}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum {effect_result} {{
-    Completed,
-}}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum {effect_lifecycle} {{
     Pending,
     Running,
@@ -29923,46 +30345,29 @@ pub enum {effect_lifecycle} {{
     Abandoned,
 }}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct {effect_result_envelope} {{
-    pub effect_id: String,
-    pub requester: String,
-    pub correlation_id: String,
-    pub causation_id: String,
-    pub status: {effect_lifecycle},
-    pub result: {effect_result},
-}}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum {rejection} {{
-    InvalidCommand({label}),
-}}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum {reply} {{
-    Accepted,
-    Rejected({rejection}),
-}}
+{effect_result_section}
 "#,
-        command = names.command,
-        command_envelope = names.command_envelope,
         effect = names.effect,
         effect_envelope = names.effect_envelope,
         effect_lifecycle = names.effect_lifecycle,
-        effect_result = names.effect_result,
-        effect_result_envelope = names.effect_result_envelope,
-        event = names.event,
-        event_envelope = names.event_envelope,
-        label = names.label,
-        rejection = names.rejection,
-        reply = names.reply,
-        state = names.state,
+        effect_result_section = effect_result_section,
     )
 }
 
-fn render_rust_transition_rs(names: &InnerStructureNames) -> String {
+fn render_rust_transition_rs(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let effect_import = if model.declares_effects {
+        format!(", {}", names.effect)
+    } else {
+        String::new()
+    };
+    let effect_type = if model.declares_effects {
+        names.effect.as_str()
+    } else {
+        "()"
+    };
     format!(
-        r#"use crate::representation::{{{command}, {effect}, {event}, {rejection}, {reply}, {state}}};
+        r#"use crate::representation::{{{command}{effect_import}, {event}, {rejection}, {reply}, {state}}};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct {source_provenance} {{
@@ -29976,7 +30381,7 @@ pub struct {transition} {{
     pub next_state: {state},
     pub events: Vec<{event}>,
     pub commands: Vec<{command}>,
-    pub effects: Vec<{effect}>,
+    pub effects: Vec<{effect_type}>,
     pub reply: {reply},
 }}
 
@@ -30037,7 +30442,8 @@ pub fn replay_trace(commands: impl IntoIterator<Item = {command}>) -> Vec<{trans
 }}
 "#,
         command = names.command,
-        effect = names.effect,
+        effect_import = effect_import,
+        effect_type = effect_type,
         event = names.event,
         machine = names.machine,
         rejection = names.rejection,
@@ -30059,13 +30465,18 @@ fn render_swift_implementation_yaml(
     module_name: &str,
     package_name: &str,
     target_name: &str,
-    shape: ScaffoldShape,
-    names: &InnerStructureNames,
+    model: &BindingScaffoldModel,
 ) -> String {
+    let names = &model.names;
+    let shape = model.shape;
     let source_root = format!("Sources/{target_name}");
     let public_entrypoint = format!("Sources/{target_name}/{target_name}.swift");
+    let effects_yaml = render_machine_variant_field("effects", &model.declared_effects());
+    let effect_results_yaml =
+        render_machine_variant_field("effect_results", &model.declared_effect_results());
+    let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n{}{}    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
         yaml_quote(module_name),
         yaml_quote(&source_root),
         yaml_quote(&public_entrypoint),
@@ -30083,8 +30494,8 @@ fn render_swift_implementation_yaml(
         yaml_string_list(&starter_states_for_shape(shape), 6),
         yaml_quote(&names.command),
         yaml_quote(&names.event),
-        yaml_quote(&names.effect),
-        yaml_quote(&names.effect_result),
+        effects_yaml,
+        effect_results_yaml,
         yaml_quote(&names.reply),
         yaml_quote(&names.rejection),
         render_traceable_roles_yaml(
@@ -30092,21 +30503,7 @@ fn render_swift_implementation_yaml(
             &format!("Sources/{target_name}/Representation.swift"),
             &format!("Sources/{target_name}/Transition.swift"),
         ),
-        yaml_quote(&names.state),
-        yaml_quote(&names.command),
-        yaml_quote(&names.command_envelope),
-        yaml_quote(&names.event),
-        yaml_quote(&names.event_envelope),
-        yaml_quote(&names.effect),
-        yaml_quote(&names.effect_envelope),
-        yaml_quote(&names.effect_result),
-        yaml_quote(&names.effect_result_envelope),
-        yaml_quote(&names.effect_lifecycle),
-        yaml_quote(&names.reply),
-        yaml_quote(&names.rejection),
-        yaml_quote(&names.transition),
-        yaml_quote(&names.transition_record),
-        yaml_quote(&names.source_provenance),
+        closed_variants_yaml,
         yaml_quote(&names.label),
         target_name,
         names.label,
@@ -30129,7 +30526,13 @@ fn render_swift_source(target_name: &str, shape: ScaffoldShape) -> String {
     )
 }
 
-fn render_swift_representation(names: &InnerStructureNames) -> String {
+fn render_swift_representation(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let effect_section = if model.declares_effects {
+        render_swift_effect_representation(names, model.declares_effect_results)
+    } else {
+        String::new()
+    };
     format!(
         r#"public struct {label}: Equatable {{
     private let rawValue: String
@@ -30177,40 +30580,7 @@ public struct {event_envelope}: Equatable {{
     public let event: {event}
 }}
 
-public enum {effect}: Equatable {{
-    case none
-}}
-
-public struct {effect_envelope}: Equatable {{
-    public let effectId: String
-    public let requester: String
-    public let correlationId: String
-    public let causationId: String
-    public let idempotencyKey: String?
-    public let effect: {effect}
-}}
-
-public enum {effect_result}: Equatable {{
-    case completed
-}}
-
-public enum {effect_lifecycle}: Equatable {{
-    case pending
-    case running
-    case succeeded
-    case failed
-    case retryScheduled
-    case abandoned
-}}
-
-public struct {effect_result_envelope}: Equatable {{
-    public let effectId: String
-    public let requester: String
-    public let correlationId: String
-    public let causationId: String
-    public let status: {effect_lifecycle}
-    public let result: {effect_result}
-}}
+{effect_section}
 
 public enum {rejection}: Equatable {{
     case invalidCommand({label})
@@ -30223,11 +30593,7 @@ public enum {reply}: Equatable {{
 "#,
         command = names.command,
         command_envelope = names.command_envelope,
-        effect = names.effect,
-        effect_envelope = names.effect_envelope,
-        effect_lifecycle = names.effect_lifecycle,
-        effect_result = names.effect_result,
-        effect_result_envelope = names.effect_result_envelope,
+        effect_section = effect_section,
         event = names.event,
         event_envelope = names.event_envelope,
         label = names.label,
@@ -30237,7 +30603,71 @@ public enum {reply}: Equatable {{
     )
 }
 
-fn render_swift_transition(names: &InnerStructureNames) -> String {
+fn render_swift_effect_representation(
+    names: &InnerStructureNames,
+    include_effect_results: bool,
+) -> String {
+    let effect_result_section = if include_effect_results {
+        format!(
+            r#"public enum {effect_result}: Equatable {{
+    case completed
+}}
+
+public struct {effect_result_envelope}: Equatable {{
+    public let effectId: String
+    public let requester: String
+    public let correlationId: String
+    public let causationId: String
+    public let status: {effect_lifecycle}
+    public let result: {effect_result}
+}}
+"#,
+            effect_lifecycle = names.effect_lifecycle,
+            effect_result = names.effect_result,
+            effect_result_envelope = names.effect_result_envelope,
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"public enum {effect}: Equatable {{
+    case none
+}}
+
+public struct {effect_envelope}: Equatable {{
+    public let effectId: String
+    public let requester: String
+    public let correlationId: String
+    public let causationId: String
+    public let idempotencyKey: String?
+    public let effect: {effect}
+}}
+
+public enum {effect_lifecycle}: Equatable {{
+    case pending
+    case running
+    case succeeded
+    case failed
+    case retryScheduled
+    case abandoned
+}}
+
+{effect_result_section}
+"#,
+        effect = names.effect,
+        effect_envelope = names.effect_envelope,
+        effect_lifecycle = names.effect_lifecycle,
+        effect_result_section = effect_result_section,
+    )
+}
+
+fn render_swift_transition(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let effect_type = if model.declares_effects {
+        names.effect.as_str()
+    } else {
+        "String"
+    };
     format!(
         r#"public struct {source_provenance}: Equatable {{
     public let file: String
@@ -30249,7 +30679,7 @@ public struct {transition}: Equatable {{
     public let nextState: {state}
     public let events: [{event}]
     public let commands: [{command}]
-    public let effects: [{effect}]
+    public let effects: [{effect_type}]
     public let reply: {reply}
 }}
 
@@ -30314,7 +30744,7 @@ public func replayTrace(_ commands: [{command}]) -> [{transition_record}] {{
 }}
 "#,
         command = names.command,
-        effect = names.effect,
+        effect_type = effect_type,
         event = names.event,
         machine = names.machine,
         rejection = names.rejection,
@@ -31642,6 +32072,8 @@ Run the smallest checks that prove the changed promise:
 - `rms gate --root .` when reviewing a working-tree change.
 - `rms audit --root . --strict` before claiming production-ready RMS software.
 
+Strict audit requires a git source revision. Commit the production candidate before treating strict audit as release evidence.
+
 For stateful or workflow behavior, include transition records, golden timeline tests, replay bundles, and first-bad-transition diagnostics when they apply.
 
 Do not declare an implemented module done while `rms validate --root .` reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` for that module. Replace scaffold evidence with concrete law, contract, boundary, scenario, trace, runtime, recovery, or reconciliation evidence.
@@ -32313,6 +32745,14 @@ fn source_revision(root: &Path) -> Option<String> {
     }
 }
 
+fn git_worktree_exists(root: &Path) -> bool {
+    Command::new("git")
+        .current_dir(root)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -32972,7 +33412,13 @@ import struct ExternalKit.Widget
         assert!(readme.contains("Validated numeric values"));
         assert!(representation.contains("pub enum ExampleCommand"));
         assert!(representation.contains("pub struct ExampleCommandEnvelope"));
-        assert!(representation.contains("pub enum ExampleEffectLifecycle"));
+        assert!(!implementation.contains("effect_envelope:"));
+        assert!(!implementation.contains("effect_result_envelope:"));
+        assert!(!implementation.contains("ExampleEffect"));
+        assert!(!representation.contains("pub enum ExampleEffect"));
+        assert!(!representation.contains("pub enum ExampleEffectResult"));
+        assert!(!representation.contains("pub enum ExampleEffectLifecycle"));
+        assert!(!transition.contains("Vec<ExampleEffect>"));
         assert!(representation.contains("pub enum ExampleState"));
         assert!(representation.contains("pub enum ExampleReply"));
         assert!(transition.contains("pub struct ExampleMachine"));
@@ -33054,6 +33500,96 @@ import struct ExternalKit.Widget
     }
 
     #[test]
+    fn structure_report_flags_undeclared_effect_source_residue() {
+        let root = unique_test_dir("effect-source-residue");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/representation.rs"),
+            r#"pub enum ExampleState { Ready }
+pub enum ExampleCommand { Accept }
+pub enum ExampleEvent { Accepted }
+pub enum ExampleReply { Accepted }
+pub enum ExampleRejection { Invalid }
+pub enum ExampleEffect { None }
+pub struct ExampleEffectEnvelope;
+pub enum ExampleEffectLifecycle { Pending }
+pub enum ExampleEffectResult { Completed }
+pub struct ExampleEffectResultEnvelope;
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("src/transition.rs"), "pub fn transition() {}\n").unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: example
+binding: rust
+source:
+  root: .
+  public_entrypoint: src/transition.rs
+commands:
+  build: cargo check
+  verify: cargo test
+architecture:
+  shape: domain-engine
+  machine:
+    name: ExampleMachine
+    mode: stateless-decision-machine
+    stateless_justification: pure no-effect decision
+    state: ExampleState
+    states: [Ready]
+    commands: [ExampleCommand]
+    events: [ExampleEvent]
+    effects: []
+    effect_results: []
+    replies: [ExampleReply]
+    rejections: [ExampleRejection]
+    transition_function: transition
+  transition:
+    output: [next_state, events, commands, effects, reply]
+  roles:
+    representation: [src/representation.rs]
+    transition: [src/transition.rs]
+    message_envelope: [src/representation.rs]
+    transition_record: [src/transition.rs]
+    journal: [src/transition.rs]
+    timeline_projection: [src/transition.rs]
+    replay_bundle: [verification/traces/transition_trace.yaml]
+  representation:
+    closed_variants:
+      - ExampleState
+      - ExampleCommand
+      - ExampleEvent
+      - ExampleReply
+      - ExampleRejection
+    validated_values: []
+    transition_functions: [transition]
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        for expected in [
+            "structure.undeclared-effect-type-represented",
+            "structure.effect-envelope-without-effects",
+            "structure.effect-lifecycle-without-effects",
+            "structure.undeclared-effect-result-type-represented",
+            "structure.semantic-role-source-residue",
+        ] {
+            assert!(
+                report
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.check == expected),
+                "{expected} missing from {:#?}",
+                report.diagnostics
+            );
+        }
+    }
+
+    #[test]
     fn swift_module_scaffold_generates_valid_binding_artifacts() {
         let root = unique_test_dir("swift-module");
 
@@ -33106,7 +33642,13 @@ import struct ExternalKit.Widget
         assert!(implementation.contains("first_bad_transition"));
         assert!(representation.contains("public enum ExampleCommand"));
         assert!(representation.contains("public struct ExampleCommandEnvelope"));
-        assert!(representation.contains("public enum ExampleEffectLifecycle"));
+        assert!(!implementation.contains("effect_envelope:"));
+        assert!(!implementation.contains("effect_result_envelope:"));
+        assert!(!implementation.contains("ExampleEffect"));
+        assert!(!representation.contains("public enum ExampleEffect"));
+        assert!(!representation.contains("public enum ExampleEffectResult"));
+        assert!(!representation.contains("public enum ExampleEffectLifecycle"));
+        assert!(!transition.contains("[ExampleEffect]"));
         assert!(representation.contains("public enum ExampleState"));
         assert!(representation.contains("public enum ExampleReply"));
         assert!(transition.contains("public enum ExampleMachine"));
@@ -39412,6 +39954,11 @@ runs:
             .manual_checks
             .iter()
             .any(|check| { check.contains("No git repository was detected") }));
+        assert!(plan
+            .report
+            .manual_checks
+            .iter()
+            .any(|check| { check.contains("strict audit cannot pass") }));
     }
 
     #[test]
