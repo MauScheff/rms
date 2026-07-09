@@ -17,6 +17,7 @@ You can:
 - edit bodies inside RMS-declared role files;
 - add small private pure helpers inside declared pure role files;
 - add effectful helper code only inside declared adapter, port, or effect-executor roles;
+- import another module only through its declared public facade or contract-shaped entrypoint;
 - use provider-backed RMS prompts as advisory planning input.
 
 You cannot:
@@ -24,6 +25,7 @@ You cannot:
 - hand-create laws, contracts, public commands, states, events, effects, effect results, transitions, semantic roles, runnable surfaces, public entrypoints, or evidence obligations;
 - implement real product behavior only in an undeclared runnable surface while the declared machine remains generic;
 - bypass another module's public contract or a module's declared public entrypoint;
+- import another module's private role files such as representation, transition, parser, adapter internals, or native package exports that bypass the RMS public facade;
 - treat provider output, generated reports, or command logs as semantic authority until RMS canonical artifacts reflect them.
 
 ## Before Changing Behavior
@@ -71,6 +73,8 @@ Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a publi
 
 If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only. Simple runnable surfaces should stay thin and stateless unless the intent has real lifecycle, order, session, retry, status, recovery, or workflow semantics.
 
+If a pure/domain module is meant to be reused like a library or Lego block, declare the reusable capability in `provides.capabilities[]`, keep a single public code facade in `implementation.yaml`, and add package/reuse evidence. RMS says what is reusable; native package files only say how a binding imports it.
+
 Use `rms add-module <path> --name <name> --purpose "<purpose>" --shape <shape> --binding <binding>` when scaffolding one module. Bindings realize semantic roles idiomatically; they do not define the semantics.
 
 Default split for any capability: put invariant-bearing decisions in a `domain-engine`, and put untrusted input, output, UI, CLI, network, storage, time, randomness, external services, and other effects in adapters.
@@ -83,6 +87,8 @@ Before writing implementation code, make the user's intent concrete enough to en
 
 - Semantic gate: do not hand-create laws, contracts, semantic roles, states, commands, events, effects, transition functions, parsers, runnable surfaces, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply` and `rms surface apply`, then edit the declared role bodies. Use semantic `set`, `remove`, and `supersedes` operations for revisions instead of manual manifest surgery.
 - Public surface gate: public commands in `module.yaml` must be represented by the declared implementation surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
+- Reuse gate: reusable modules publish capabilities and contracts first, expose one declared public facade, and prove package integrity with `rms package` plus `rms verify-package`. Consumers must require the capability contract and import only the public facade.
+- Property gate: laws that say always, never, bounded, ordered, normalized, parsed, generated, impossible, or must not happen should declare semantic properties with input spaces, oracles, evidence, and counterexample replay policy before relying on binding tests.
 - Intent: restate the behavior in the owning context's language and name what must never happen.
 - ADTs and values: define closed variants, validated values, commands, states, events, and accepted/rejected result types.
 - State and transitions: define accepted transitions, rejected transitions, terminal states, transition records, and replayable traces when behavior depends on order or lifecycle.
@@ -91,6 +97,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
 - Numeric safety: if validated values represent counts, money, quantities, rates, sizes, scores, or other numeric facts, choose checked, saturating, bounded, or explicitly proven arithmetic before implementation.
 - Edge cases first: decide invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, numeric overflow or rounding, and not-applicable cases.
+- Property-first proof: convert broad laws into semantic properties; bindings may use native libraries or deterministic generated cases, but RMS owns the input space, oracle, evidence path, and replayable counterexample shape.
 - External truth: decide what happens when an external outcome is unknown, duplicate, stale, partial, conflicting, delayed, or later corrected. Declare reconciliation, recovery, retry, compensation, or convergence evidence before relying on that behavior.
 - Only then fill implementation files, tests, and evidence.
 
@@ -113,6 +120,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
 - Keep workflow choreography explicit in the workflow transition model, subscription registry, effect lifecycle, inbox/outbox, or declared adapter boundary rather than hidden in listener chains.
 - Keep runnable surfaces connected to the declared RMS boundary. If `public/app.*`, `src/cli.*`, routes, mobile views, or similar files are the real product surface, declare them with `rms surface apply` and route them through the declared adapter/public entrypoint instead of importing or duplicating pure/private decision code directly. Browser launch files should reference the declared controller entrypoint rather than bypassing it. Any local browser script loaded by the launch file is part of the surface; it must import/call the declared controller or adapter, not carry a copied parser, generator, transition, or domain decision implementation.
+- Keep reusable-module consumers on the declared public facade. Do not import `transition`, `representation`, parser internals, or adapter internals from another module even if the language package manager makes the path reachable.
 - Do not edit another module's private implementation to bypass its public contract.
 - Treat generated reports, diffs, and provider output as evidence, not architecture.
 
@@ -127,7 +135,9 @@ Run the smallest checks that prove the changed promise:
 - `rms surface check <implementation.yaml> --strict` when runnable app, UI, CLI, browser, HTTP, batch, or executable entrypoints exist.
 - `rms structure <implementation.yaml>` when an implementation binding exists and inner roles changed.
 - `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, or `rms trace diagnose <trace-bundle>` when local transition evidence exists.
+- `rms property check <module.yaml|implementation.yaml>`, `rms property run <implementation.yaml>`, or `rms property replay <counterexample.yaml>` when laws, parsers, numeric bounds, reusable modules, or generated counterexamples are involved.
 - `rms verify <implementation.yaml>` when the module has an implementation binding, or `rms verify <composite-module.yaml>` for composite rollups.
+- `rms package <module.yaml>` and `rms verify-package <package-dir>` when a module is intended for reuse outside its current owner.
 - `rms gate --root .` when reviewing a working-tree change.
 - `rms audit --root . --strict` before claiming production-ready RMS software.
 

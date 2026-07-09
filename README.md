@@ -44,6 +44,7 @@ For agents, RMS narrows the job. The agent does not invent architecture directly
 - A canonical specification for modules, bounded contexts, contracts, effects, profiles, compatibility, and conformance.
 - YAML manifests for systems, context maps, modules, contracts, implementations, semantic changes, machine changes, and conformance reports.
 - A semantic gate for changing meaning before code: laws, contracts, commands, states, events, effects, effect results, replies, rejections, transitions, public entrypoints, and evidence obligations.
+- Semantic properties for broad laws: RMS declares input spaces, oracles, evidence, and replayable counterexamples; bindings implement them with native tests, property libraries, fuzzers, or deterministic generated cases.
 - Traceable machine scaffolds that make state, effects, transition outputs, journals, replay bundles, and first-bad-transition diagnostics first-class.
 - A Rust reference CLI that acts as the human and agent workbench for validation, explanation, context packets, semantic planning, structure checks, trace replay, compatibility, audit, packaging, and conformance evidence.
 - Agent skills for inspecting modules, implementing changes, pruning semantic residue, adding modules, evolving contracts, composing modules, and verifying conformance through the shared CLI surface.
@@ -152,6 +153,14 @@ rms add-capability ./my-system/modules/tic-tac-toe \
 This creates `module.yaml`, a module `README.md`, `contracts/README.md`, concrete evidence files referenced by the manifests, and optional implementation bindings. Semantic shapes such as `domain-engine`, `boundary-adapter`, `workflow`, `storage-adapter`, `integration-adapter`, and `composite` define role obligations before file layout. Bindings such as `rust`, `swift`, `js`, and `executable` realize those roles idiomatically. The executable binding remains the opaque command-backed lane for web, mobile, CLI, native UI, generated assets, or integration surfaces when RMS cannot statically inspect internals.
 
 Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, message envelopes, transition output, transition records, parser, adapter, journal, timeline projection, replay bundle, first-bad-transition, and trace evidence roles, plus a domain-named machine with an explicit mode and state variants. They also seed local trace bundles under `verification/traces/`, and `rms verify` checks those bundles after native verification. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, `Rejection`, `Transition`, and `TransitionRecord`. Prefer the `add-capability` default child paths unless the user supplied better product/domain names; do not invent `-rules`, `-adapter`, `-cli`, or `-web` child names just to describe RMS roles. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`, and a boundary role should avoid names like `CouponEvaluationAdapterMachine`.
+
+Semantic properties live above language-specific property-test libraries. A law says what must always hold; a property says which inputs to generate and which oracle judges them; a Rust, JS, Swift, Python, or executable binding decides how to run that property. Inspect and run those obligations with:
+
+```bash
+rms property check ./my-system/modules/widget/module.yaml --strict
+rms property run ./my-system/modules/widget/implementation.yaml --profile smoke
+rms property replay ./my-system/modules/widget/verification/fuzz/counterexamples/failing-case.yaml
+```
 
 For app, tool, CLI, local-first reference app, runnable, or smoke-test intents, the boundary child should expose a declared runnable surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Browser, CLI, mobile UI, desktop UI, HTTP route, batch command, and opaque executable are bindings over that same semantic role.
 
@@ -441,6 +450,8 @@ rms package examples/rust/module.yaml --output dist/rust-example.rms
 rms verify-package dist/rust-example.rms
 ```
 
+Reusable modules are semantic packages first. A reusable domain/library module should publish a domain-neutral `provides.capabilities[]` entry with a contract, expose one RMS-declared public facade from `implementation.yaml`, and include package/reuse evidence. Native package files such as `package.json`, `Cargo.toml`, `Package.swift`, or `pyproject.toml` are binding evidence: they describe how to import the facade, not what is reusable.
+
 ## Adopt RMS In A Project
 
 Start with one boundary. Do not model every folder. Split when pure invariants, external effects, ownership, replaceability, or evidence needs point to different honest boundaries.
@@ -455,6 +466,8 @@ For production-intended projects, use `PRODUCTION.md` as the operating runbook. 
 6. Declare effects, compatibility, assumptions, and the smallest meaningful verification evidence.
 7. Add an `implementation.yaml` that points to native build and verification commands. Use `semantic_functions` for representation constructors, parsers, transitions, adapters, and other symbols that discharge important contracts, invariants, and assumptions.
 8. Run `rms validate`, then use `rms context` before implementation work.
+
+When a module should be reused by another module, encode that meaning before code reuse: provider modules declare `provides.capabilities[]`, consumer modules declare `requires.capabilities[]` with the expected contract, and code imports only the provider's RMS public facade or calls a contract-shaped entrypoint. Private role files such as representation, transition, parser, or adapter internals are not consumer surfaces.
 
 Semantic scaffolds are language-agnostic. RMS names roles such as representation, command/event/effect envelopes, transition output, transition records, ports, adapters, journals, timeline projections, replay bundles, composition exports, visibility boundaries, and evidence; each binding chooses idiomatic files or modules. Closed alternatives should use ADTs, sealed variants, enums, or tagged constructors. Values with validity rules should use validated constructors. Lifecycle/order-dependent behavior should expose accepted and rejected transitions that produce stable records and can be replayed to find the first bad transition.
 

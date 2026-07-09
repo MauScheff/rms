@@ -1,0 +1,16 @@
+spec: rms/contract/v0.1
+name: "replay-property-counterexample"
+version: 1
+kind: command
+meaning: "Public command `rms-property-replay` declared by RMS semantic change."
+preconditions:
+  - id: "accepts-1"
+    statement: "rms/property-counterexample/v0.1 file with replay command or trace reference"
+postconditions:
+  - id: explicit-outcome
+    statement: "The command returns an explicit accepted or rejected outcome."
+failure_categories:
+  - id: "rejects-1"
+    statement: "unreplayable counterexample metadata"
+compatibility:
+  policy: backward-compatible-within-major

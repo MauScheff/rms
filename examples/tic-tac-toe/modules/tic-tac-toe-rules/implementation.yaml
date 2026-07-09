@@ -39,12 +39,6 @@ architecture:
       - sequence
       - schema_version
       - occurred_at
-    effect_envelope:
-      - effect_id
-      - requester
-      - correlation_id
-      - causation_id
-      - idempotency_key
   transition:
     output:
       - next_state

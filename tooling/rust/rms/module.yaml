@@ -165,6 +165,12 @@ provides:
     contract: contracts/package-module.v1.yaml
   - name: verify-implementation
     contract: contracts/verify-implementation.v1.yaml
+  - name: check-semantic-properties
+    contract: contracts/check-semantic-properties.v1.yaml
+  - name: run-semantic-properties
+    contract: contracts/run-semantic-properties.v1.yaml
+  - name: replay-property-counterexample
+    contract: contracts/replay-property-counterexample.v1.yaml
   queries:
   - name: inspect-module
     contract: contracts/inspect-module.v1.yaml
@@ -229,6 +235,15 @@ invariants:
   statement: RMS init, diagnose, and gate surfaces must make the git source revision requirement visible before strict audit is treated as production evidence.
   enforced_by: init-diagnose-gate-provenance-guidance
   verified_by: verification/laws/bootstrap_provenance_is_visible.md
+- id: reusable-module-consumers-use-public-facade
+  statement: Reusable modules declare capabilities and consumers use the RMS public facade instead of private role files.
+  kind: invariant
+- id: rms-package-carries-declared-implementation-surface
+  statement: RMS packages include declared implementation facade and role artifacts needed to verify reuse.
+  kind: invariant
+- id: semantic-properties-are-canonical-reliability-evidence
+  statement: RMS properties define generated input spaces and oracles semantically; language bindings only realize those properties and counterexamples remain replayable evidence.
+  kind: invariant
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -277,6 +292,8 @@ verification:
   - verification/laws/bindings_realize_canonical_semantics.md
   - verification/laws/no_effect_scaffolds_have_no_effect_residue.md
   - verification/laws/bootstrap_provenance_is_visible.md
+  - verification/laws/reusable_module_facade.md
+  - verification/laws/package_declared_surface.md
   contracts:
   - verification/contracts
   - verification/contracts/add_rms_capability.md
@@ -287,9 +304,52 @@ verification:
   - verification/contracts/gate_rms_change.md
   - verification/contracts/inspect_implementation_structure.md
   - verification/contracts/audit_rms_project.md
+  - verification/contracts/check_semantic_properties.md
+  - verification/contracts/run_semantic_properties.md
+  - verification/contracts/replay_property_counterexample.md
   scenarios:
   - verification/scenarios
+  - verification/scenarios/reusable_module_package.md
   boundaries:
   - verification/boundaries
+  properties:
+  - verification/properties/semantic_properties.md
+  fuzz:
+  - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Bindings realize canonical RMS semantics without no-effect source residue, and bootstrap diagnostics expose strict-audit provenance requirements.
+  last_semantic_intent: RMS command and artifact parsing has fuzz-style semantic evidence for malformed inputs.
+properties:
+- id: semantic-property-declarations-have-oracles
+  proves: semantic-properties-are-canonical-reliability-evidence
+  kind: invariant
+  subject: semantic-property-model
+  input_space:
+    semantic_changes: rms/semantic-change/v0.1 objects with properties.add entries
+    implementation_bindings: implementation.yaml files with architecture.reliability properties or fuzz_targets
+  oracle:
+  - every property names what it proves
+  - every property declares an input space
+  - every property declares at least one oracle
+  - property and fuzz targets reference concrete evidence
+  - counterexamples carry replay metadata
+  evidence:
+    path: verification/properties/semantic_properties.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+fuzz_targets:
+- id: rms-cli-malformed-artifacts-produce-diagnostics
+  proves: canonical-artifacts-remain-authoritative
+  kind: fuzz
+  subject: rms-cli-command-and-artifact-boundary
+  input_space:
+    cli_args: generated malformed or incomplete command arguments
+    manifests: generated malformed RMS YAML and schema-violating artifacts
+  operation: parse-and-validate-rms-input
+  oracle:
+  - malformed input produces diagnostics or explicit command errors
+  - rejected input does not create semantic authority outside RMS canonical apply paths
+  - diagnostics remain derived evidence rather than hidden architecture
+  evidence:
+    path: verification/fuzz/malformed_artifacts.md
+  counterexamples:
+    path: verification/fuzz/counterexamples

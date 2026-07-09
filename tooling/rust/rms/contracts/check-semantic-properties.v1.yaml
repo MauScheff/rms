@@ -1,0 +1,16 @@
+spec: rms/contract/v0.1
+name: "check-semantic-properties"
+version: 1
+kind: command
+meaning: "Public command `rms-property-check` declared by RMS semantic change."
+preconditions:
+  - id: "accepts-1"
+    statement: "module or implementation target with semantic property declarations"
+postconditions:
+  - id: explicit-outcome
+    statement: "The command returns an explicit accepted or rejected outcome."
+failure_categories:
+  - id: "rejects-1"
+    statement: "property missing input space, oracle, evidence, command, or replayable counterexample metadata"
+compatibility:
+  policy: backward-compatible-within-major

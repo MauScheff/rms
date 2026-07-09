@@ -108,6 +108,18 @@
         "$ref": "#/$defs/effect"
       }
     },
+    "properties": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "fuzz_targets": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
     "state": {
       "type": "object",
       "additionalProperties": true
@@ -144,6 +156,12 @@
           "type": "array"
         },
         "reconciliation": {
+          "type": "array"
+        },
+        "properties": {
+          "type": "array"
+        },
+        "fuzz": {
           "type": "array"
         }
       },

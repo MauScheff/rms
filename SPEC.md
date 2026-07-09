@@ -346,7 +346,7 @@ The module MUST additionally declare:
 - malformed-input behavior;
 - compatibility and deprecation policy.
 
-Boundary verification SHOULD include fuzzing or generated adversarial cases when parser complexity or security risk justifies it.
+Boundary verification SHOULD include semantic fuzz properties or generated adversarial cases when parser complexity or security risk justifies it. The semantic property SHOULD name the raw input space, parse/delegation oracle, evidence path, and replayable counterexample policy; the binding may realize it with any appropriate test or fuzzing tool.
 
 ### 5.5 Monitor profile
 

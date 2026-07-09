@@ -7,6 +7,7 @@ source:
 commands:
   build: sh scripts/build.sh
   verify: sh scripts/smoke.sh
+  fuzz: node tests/boundary-smoke.mjs
 toolchain:
   runner: node
 dependencies:
@@ -21,6 +22,19 @@ architecture:
   - src/parser.mjs
   - src/ports.mjs
   - src/adapter.mjs
+  reliability:
+    fuzz_targets:
+    - id: tic-tac-toe-cli-malformed-input-stops-before-domain
+      proves: boundary-parse
+      kind: fuzz
+      input_space: generated local CLI coordinate text
+      oracle:
+      - malformed input returns a typed rejection
+      - malformed input does not delegate to the rules module
+      - accepted input delegates only parsed board cells
+      command: fuzz
+      evidence: verification/fuzz/malformed_input_fuzz.md
+      counterexamples: verification/fuzz/counterexamples
   messages:
     command_envelope:
     - command_id

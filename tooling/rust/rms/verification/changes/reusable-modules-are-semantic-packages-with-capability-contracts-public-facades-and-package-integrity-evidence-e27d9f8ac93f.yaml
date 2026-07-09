@@ -1,0 +1,28 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Reusable modules are semantic packages with capability contracts, public facades, and package integrity evidence.
+laws:
+  add:
+  - id: reusable-module-consumers-use-public-facade
+    statement: Reusable modules declare capabilities and consumers use the RMS public facade instead of private role files.
+    kind: invariant
+  - id: rms-package-carries-declared-implementation-surface
+    statement: RMS packages include declared implementation facade and role artifacts needed to verify reuse.
+    kind: invariant
+contracts: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: reusable-module-consumers-use-public-facade
+    path: verification/laws/reusable_module_facade.md
+  - kind: law
+    proves: rms-package-carries-declared-implementation-surface
+    path: verification/laws/package_declared_surface.md
+  - kind: scenario
+    proves: reusable-module-consumers-use-public-facade
+    path: verification/scenarios/reusable_module_package.md
+surfaces: null

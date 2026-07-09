@@ -490,9 +490,23 @@ For example, a task about invalid game rules routes toward a `domain-engine` chi
 
 `rms evidence` also uses the route recommendation. Domain-engine work receives transition, constructor, property, and accepted/rejected evidence guidance. Boundary-adapter work receives malformed-input, parser-to-domain-command, adapter failure, and contract smoke guidance. Public behavior changes name parent/export contract evidence.
 
+### `property`
+
+Checks and runs semantic property/fuzz evidence. RMS properties are language-neutral: they declare what law or contract is proved, what input space is explored, which oracle judges generated cases, where evidence lives, and how counterexamples replay. Bindings decide whether to use deterministic generated cases, native test frameworks, property-testing libraries, fuzzers, or executable commands.
+
+```bash
+rms property check <module.yaml|implementation.yaml> [--strict] [--json]
+rms property run <implementation.yaml> [--profile smoke|ci|nightly] [--json]
+rms property replay <counterexample.yaml> [--json]
+```
+
+`check` reports missing input spaces, oracles, evidence, property/fuzz commands, and unreplayable counterexamples. `run` delegates to `commands.properties` and `commands.fuzz` declared by the implementation binding. `replay` validates `rms/property-counterexample/v0.1` metadata and runs its replay command when present.
+
 ### `package`
 
-Assembles a portable module package directory from the canonical manifest, referenced contracts and evidence, sibling implementation binding when present, generated conformance report, and `PACKAGE.json` metadata with source revision, validator identity, included files, sizes, and SHA-256 checksums. The resulting directory may be archived or used as an input to another registry or artifact system.
+Assembles a portable module package directory from the canonical manifest, referenced contracts and evidence, sibling implementation binding when present, declared implementation role files and public facade, generated conformance report, and `PACKAGE.json` metadata with source revision, validator identity, included files, sizes, and SHA-256 checksums. The resulting directory may be archived or used as an input to another registry or artifact system.
+
+Reusable modules are defined by RMS semantics, not by a language package manager. A reusable provider should declare `provides.capabilities[]` with a contract, expose one public facade in `implementation.yaml`, include package/reuse evidence, and route native package exports to that facade. Consumer modules declare `requires.capabilities[]` with the expected contract and should not import provider `representation`, `transition`, parser, adapter, or port internals.
 
 ### `verify-package`
 

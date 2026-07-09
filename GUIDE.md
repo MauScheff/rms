@@ -528,7 +528,7 @@ Monotonicity or merge laws
 Authorization policies
 ```
 
-Property-based testing, generated state-machine exploration, model checking, or ordinary examples are techniques. Use the smallest technique that strongly demonstrates the law.
+RMS properties are semantic declarations: the input space to explore, the operation to run, and the oracle that judges the result. Property-based testing, generated state-machine exploration, model checking, ordinary examples, or binding-native fuzzers are implementation techniques. Use the smallest technique that strongly demonstrates the law, but keep the property itself in RMS artifacts.
 
 ### Contract verification
 

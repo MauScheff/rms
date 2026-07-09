@@ -29,7 +29,8 @@ const WORKBENCH_CONFIG_PATH: &str = ".rms/config.yaml";
 const CODEX_PLUGIN_PATH: &str = "integrations/codex/rms";
 const REQUIRED_VERIFICATION_CATEGORIES: [&str; 4] =
     ["laws", "contracts", "scenarios", "boundaries"];
-const OPTIONAL_VERIFICATION_CATEGORIES: [&str; 3] = ["traces", "runtime", "reconciliation"];
+const OPTIONAL_VERIFICATION_CATEGORIES: [&str; 5] =
+    ["traces", "runtime", "reconciliation", "properties", "fuzz"];
 const CANONICAL_SKILLS: &[&str] = &[
     "inspect-module",
     "implement-change",
@@ -666,6 +667,12 @@ enum Commands {
         command: TraceCommands,
     },
 
+    /// Check, run, and replay semantic property/fuzz evidence.
+    Property {
+        #[command(subcommand)]
+        command: PropertyCommands,
+    },
+
     /// Plan, apply, check, and diff RMS semantic machine structure.
     Machine {
         #[command(subcommand)]
@@ -1045,6 +1052,75 @@ struct TraceReport {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct PropertyCheckReport {
+    result: String,
+    target: String,
+    module: Option<String>,
+    implementation: Option<String>,
+    properties: Vec<PropertyTargetReport>,
+    fuzz_targets: Vec<PropertyTargetReport>,
+    counterexamples: Vec<PropertyCounterexampleSummary>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PropertyTargetReport {
+    id: String,
+    kind: String,
+    proves: Option<String>,
+    input_space: Option<String>,
+    oracle: Vec<String>,
+    command: Option<String>,
+    evidence: Option<String>,
+    counterexamples: Option<String>,
+    status: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PropertyCounterexampleSummary {
+    path: String,
+    property: Option<String>,
+    proves: Option<String>,
+    replay_command: Option<String>,
+    trace: Option<String>,
+    status: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PropertyRunReport {
+    result: String,
+    implementation: String,
+    profile: String,
+    commands: Vec<PropertyRunCommandReport>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PropertyRunCommandReport {
+    kind: String,
+    command: String,
+    status: String,
+    exit_code: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PropertyProfile {
+    Smoke,
+    Ci,
+    Nightly,
+}
+
+impl PropertyProfile {
+    fn label(self) -> &'static str {
+        match self {
+            PropertyProfile::Smoke => "smoke",
+            PropertyProfile::Ci => "ci",
+            PropertyProfile::Nightly => "nightly",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
 struct MachineApplyReport {
     result: String,
     implementation: String,
@@ -1174,6 +1250,8 @@ struct SemanticChange {
     #[serde(default)]
     contracts: Option<SemanticContractsChange>,
     #[serde(default)]
+    properties: Option<SemanticPropertiesChange>,
+    #[serde(default)]
     machine: Option<SemanticMachineChange>,
     #[serde(default)]
     roles: Option<MachineRolesChange>,
@@ -1220,6 +1298,44 @@ struct SemanticContractChange {
     accepts: Vec<String>,
     #[serde(default)]
     rejects: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct SemanticPropertiesChange {
+    #[serde(default)]
+    add: Vec<SemanticPropertyChange>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SemanticPropertyChange {
+    id: String,
+    proves: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    input_space: Option<YamlValue>,
+    #[serde(default)]
+    preconditions: Vec<String>,
+    #[serde(default)]
+    operation: Option<YamlValue>,
+    #[serde(default)]
+    oracle: Vec<String>,
+    #[serde(default)]
+    evidence: Option<SemanticPropertyEvidenceRef>,
+    #[serde(default)]
+    counterexamples: Option<SemanticPropertyCounterexamplesRef>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SemanticPropertyEvidenceRef {
+    path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SemanticPropertyCounterexamplesRef {
+    path: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1607,6 +1723,47 @@ enum TraceCommands {
     Diagnose {
         /// Path to a local trace bundle.
         bundle: PathBuf,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PropertyCommands {
+    /// Check semantic property and fuzz target declarations.
+    Check {
+        /// Path to module.yaml or implementation.yaml.
+        target: PathBuf,
+
+        /// Treat property/fuzz production warnings as failures.
+        #[arg(long)]
+        strict: bool,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Run declared property and fuzz verification commands for an implementation binding.
+    Run {
+        /// Path to implementation.yaml.
+        implementation: PathBuf,
+
+        /// Evidence profile to run.
+        #[arg(long, value_enum, default_value_t = PropertyProfile::Smoke)]
+        profile: PropertyProfile,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Replay a recorded RMS property/fuzz counterexample.
+    Replay {
+        /// Path to a property counterexample YAML file.
+        counterexample: PathBuf,
 
         /// Emit machine-readable JSON.
         #[arg(long)]
@@ -2626,6 +2783,7 @@ impl PromptKind {
                 "Propose the smallest honest module set; do not create a module for every noun.",
                 "Assign each module a semantic shape: domain-engine, boundary-adapter, runtime-monitor, workflow, storage-adapter, integration-adapter, or composite.",
                 "Separate pure decisions from external effects, and name required module dependencies.",
+                "For reusable domain/library modules, declare provider capabilities and contracts, one public facade, package/reuse evidence, and consumer access through `requires.capabilities[]` rather than private role imports.",
                 "Define representation obligations: closed variants, validated values, commands, states, events, accepted/rejected outcomes, boundary schemas, and runnable surfaces when outside input reaches the module.",
                 "Resolve semantic edge cases before file layout: invalid commands, illegal transitions, terminal states, stale or conflicting state, parser failures, numeric overflow or rounding, and effect failure categories.",
                 "Define focused evidence: laws, contract scenarios, boundary parser tests, numeric boundary tests, runtime monitor trigger/non-trigger cases, transition records, replay bundles, first-bad-transition proof, fuzz/property checks, recovery, or reconciliation.",
@@ -2641,6 +2799,7 @@ impl PromptKind {
             PromptKind::Review => &[
                 "Review the diff against the module manifest, public contracts, direct dependencies, declared effects, profiles, and verification evidence.",
                 "Flag semantic roles, state variants, transitions, effects, runnable surfaces, public entrypoints, parsers, or evidence added by hand instead of through RMS CLI artifacts as architecture-gate bypasses.",
+                "Flag reusable-module consumers that import provider representation, transition, parser, adapter, or port internals instead of the declared public facade or contract-shaped entrypoint.",
                 "Find behavioral regressions, boundary violations, undeclared effects or dependencies, compatibility drift, missing evidence, and stale canonical artifacts.",
                 "Prioritize findings by severity and include file or artifact references when possible.",
                 "Do not treat generated prose, issue text, or incidental implementation shape as architectural authority.",
@@ -2665,6 +2824,7 @@ impl PromptKind {
                 "Name affected invariants, contracts, effects, compatibility promises, and recovery paths.",
                 "Separate domain decisions from external effects where practical.",
                 "Keep private helpers pure inside pure role files; model IO as declared effects/effect-results executed only in adapter, port, or effect-executor roles.",
+                "For reusable modules, keep RMS capabilities/contracts and the declared public facade as the import surface; native package manifests are binding evidence only.",
                 "Use semantic implementation roles before file-level code: representation, message envelopes, transition output, transition records, ports, adapters, trace roles, and evidence.",
                 "Resolve semantic edge cases before implementation: impossible variants, invalid constructors, illegal transitions, malformed boundary input, stale or conflicting state, and terminal-state behavior.",
                 "Use the strongest available representation for invalid states, expected failures, boundary input, and lifecycle transitions.",
@@ -2695,6 +2855,7 @@ impl PromptKind {
             PromptKind::Evidence => &[
                 "Identify the changed promise and the evidence category it belongs to: law, contract, scenario, boundary, runnable surface, runtime, reconciliation, or migration.",
                 "For machine-shaped behavior, request transition records, replay bundles, golden timelines, effect-result handling, and first-bad-transition proof where applicable.",
+                "For reusable modules, request package/reuse evidence that runs `rms package` and `rms verify-package` and proves consumers use the public facade.",
                 "Prefer the smallest evidence that strongly demonstrates the promise.",
                 "Include negative evidence for impossible variants, invalid constructors, malformed boundary input, and illegal transitions when applicable.",
                 "Name the manifest paths or implementation binding entries that should reference the evidence.",
@@ -5179,6 +5340,22 @@ fn main() -> Result<()> {
             TraceCommands::Replay { bundle, json } => run_trace_replay(&bundle, json),
             TraceCommands::Diagnose { bundle, json } => run_trace_diagnose(&bundle, json),
         },
+        Commands::Property { command } => match command {
+            PropertyCommands::Check {
+                target,
+                strict,
+                json,
+            } => run_property_check(&target, strict, json),
+            PropertyCommands::Run {
+                implementation,
+                profile,
+                json,
+            } => run_property_run(&implementation, profile, json),
+            PropertyCommands::Replay {
+                counterexample,
+                json,
+            } => run_property_replay(&counterexample, json),
+        },
         Commands::Machine { command } => match command {
             MachineCommands::Plan {
                 implementation,
@@ -5643,6 +5820,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
         "Use `rms surface apply|check <implementation.yaml>` when app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints are added or changed.".to_string(),
         "Use `rms structure <implementation.yaml>` to inspect declared machine, role, and evidence structure.".to_string(),
         "Use `rms trace check|replay|diagnose <trace-bundle>` to inspect local transition evidence without a runtime.".to_string(),
+        "Use `rms property check|run|replay <target>` to inspect semantic property/fuzz evidence and replay generated counterexamples.".to_string(),
         "Use `rms verify <implementation.yaml>` when an implementation binding declares verification, or `rms verify <composite-module.yaml>` for composite rollups.".to_string(),
     ];
     if source_revision.is_none() {
@@ -6931,6 +7109,664 @@ fn run_trace_diagnose(bundle: &Path, json_output: bool) -> Result<()> {
         print_trace_diagnose_report(&report);
     }
     Ok(())
+}
+
+fn run_property_check(target: &Path, strict: bool, json_output: bool) -> Result<()> {
+    let mut report = build_property_check_report(target)?;
+    if strict
+        && report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| property_blocking_diagnostic(&diagnostic.check))
+    {
+        report.result = "fail".to_string();
+    }
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_property_check_report(&report);
+    }
+    if report.result == "fail" {
+        bail!("RMS property check failed");
+    }
+    Ok(())
+}
+
+fn run_property_run(
+    implementation: &Path,
+    profile: PropertyProfile,
+    json_output: bool,
+) -> Result<()> {
+    let manifest = load_manifest(implementation)?;
+    if get_str(&manifest.value, &["spec"]) != Some("rms/implementation/v0.1") {
+        bail!(
+            "`{}` is not an RMS implementation binding",
+            implementation.display()
+        );
+    }
+    let mut diagnostics = Vec::new();
+    validate_property_implementation(&manifest, &mut diagnostics);
+    let mut commands = Vec::new();
+    for (kind, key) in [
+        ("properties", "properties"),
+        ("fuzz", "fuzz"),
+        ("properties", "property"),
+    ] {
+        if let Some(command) = get_str(&manifest.value, &["commands", key]) {
+            if commands
+                .iter()
+                .any(|existing: &PropertyRunCommandReport| existing.command == command)
+            {
+                continue;
+            }
+            let root = implementation.parent().unwrap_or_else(|| Path::new("."));
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .current_dir(root)
+                .output()
+                .with_context(|| format!("failed to run {kind} command `{command}`"))?;
+            commands.push(PropertyRunCommandReport {
+                kind: kind.to_string(),
+                command: command.to_string(),
+                status: if output.status.success() {
+                    "pass".to_string()
+                } else {
+                    "fail".to_string()
+                },
+                exit_code: output.status.code(),
+            });
+        }
+    }
+    if commands.is_empty() {
+        diagnostics.push(error(
+            "property.command-missing",
+            implementation,
+            "implementation must declare `commands.properties` or `commands.fuzz` to run property evidence",
+        ));
+    }
+    let result = if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+        || commands.iter().any(|command| command.status == "fail")
+    {
+        "fail"
+    } else if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Warning)
+    {
+        "review-required"
+    } else {
+        "pass"
+    }
+    .to_string();
+    let report = PropertyRunReport {
+        result,
+        implementation: implementation.display().to_string(),
+        profile: profile.label().to_string(),
+        commands,
+        diagnostics,
+    };
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_property_run_report(&report);
+    }
+    if report.result == "fail" {
+        bail!("RMS property run failed");
+    }
+    Ok(())
+}
+
+fn run_property_replay(counterexample: &Path, json_output: bool) -> Result<()> {
+    let value = load_yaml_value(counterexample)?;
+    let summary = property_counterexample_summary(counterexample, &value);
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        println!("RMS property replay: {}", summary.status);
+        println!("counterexample: {}", summary.path);
+        if let Some(property) = &summary.property {
+            println!("property: {property}");
+        }
+        if let Some(proves) = &summary.proves {
+            println!("proves: {proves}");
+        }
+        if let Some(trace) = &summary.trace {
+            println!("trace: {trace}");
+        }
+        if let Some(command) = &summary.replay_command {
+            println!("replay command: {command}");
+        }
+    }
+    if summary.status == "fail" {
+        bail!("RMS property counterexample is not replayable");
+    }
+    if let Some(command) = summary.replay_command.as_deref() {
+        let root = counterexample.parent().unwrap_or_else(|| Path::new("."));
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(root)
+            .status()
+            .with_context(|| format!("failed to run replay command `{command}`"))?;
+        if !status.success() {
+            bail!("property replay command failed with status {status}");
+        }
+    }
+    Ok(())
+}
+
+fn build_property_check_report(target: &Path) -> Result<PropertyCheckReport> {
+    let context = load_spec_target(target)?;
+    let mut diagnostics = Vec::new();
+    let mut properties = Vec::new();
+    let mut fuzz_targets = Vec::new();
+    let mut counterexamples = Vec::new();
+
+    if let Some(module) = &context.module {
+        validate_property_module(module, &mut diagnostics);
+        properties.extend(property_targets_from_module(module, "property"));
+        fuzz_targets.extend(fuzz_targets_from_module(module));
+    }
+    if let Some(implementation) = &context.implementation {
+        validate_property_implementation(implementation, &mut diagnostics);
+        properties.extend(property_targets_from_implementation(
+            implementation,
+            &["architecture", "reliability", "properties"],
+            "property",
+        ));
+        fuzz_targets.extend(property_targets_from_implementation(
+            implementation,
+            &["architecture", "reliability", "fuzz_targets"],
+            "fuzz",
+        ));
+    }
+    properties = dedupe_property_targets(properties);
+    fuzz_targets = dedupe_property_targets(fuzz_targets);
+
+    let base = context.target.parent().unwrap_or_else(|| Path::new("."));
+    for target in properties.iter().chain(fuzz_targets.iter()) {
+        if let Some(path) = &target.counterexamples {
+            let candidate = base.join(path);
+            if candidate.is_dir() {
+                for entry in WalkDir::new(&candidate)
+                    .max_depth(2)
+                    .follow_links(false)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_type().is_file())
+                {
+                    if matches!(
+                        entry
+                            .path()
+                            .extension()
+                            .and_then(|extension| extension.to_str()),
+                        Some("yaml") | Some("yml")
+                    ) {
+                        if let Ok(value) = load_yaml_value(entry.path()) {
+                            counterexamples
+                                .push(property_counterexample_summary(entry.path(), &value));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for counterexample in &counterexamples {
+        if counterexample.status == "fail" {
+            diagnostics.push(warning(
+                "semantic.counterexample-unreplayable",
+                &PathBuf::from(&counterexample.path),
+                "property counterexample is missing replay metadata",
+            ));
+        }
+    }
+
+    let result = if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        "fail"
+    } else if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Warning)
+    {
+        "review-required"
+    } else {
+        "pass"
+    }
+    .to_string();
+    Ok(PropertyCheckReport {
+        result,
+        target: target.display().to_string(),
+        module: context
+            .module
+            .as_ref()
+            .and_then(|module| get_str(&module.value, &["module", "name"]))
+            .map(ToString::to_string),
+        implementation: context
+            .implementation
+            .as_ref()
+            .map(|implementation| implementation.path.display().to_string()),
+        properties,
+        fuzz_targets,
+        counterexamples,
+        diagnostics,
+    })
+}
+
+fn dedupe_property_targets(targets: Vec<PropertyTargetReport>) -> Vec<PropertyTargetReport> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for target in targets {
+        let key = (
+            target.kind.clone(),
+            target.id.clone(),
+            target.evidence.clone().unwrap_or_default(),
+        );
+        if seen.insert(key) {
+            deduped.push(target);
+        }
+    }
+    deduped
+}
+
+fn validate_property_module(module: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let properties = property_targets_from_module(module, "property");
+    let fuzz_targets = fuzz_targets_from_module(module);
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    for target in properties.iter().chain(fuzz_targets.iter()) {
+        validate_property_target_report(module, base, target, None, diagnostics);
+    }
+
+    let profiles = get_string_array(&module.value, &["profiles"]);
+    let has_boundary_profile = profiles
+        .iter()
+        .any(|profile| semantic_name_contains_any(profile, &["boundary", "adapter"]));
+    if has_boundary_profile && !module_has_property_or_fuzz_evidence(module) {
+        push_unique_warning(
+            diagnostics,
+            "structure.boundary-parser-without-fuzz-property",
+            &module.path,
+            "boundary modules should declare parser fuzz/property evidence or an explicit no-fuzz justification",
+        );
+    }
+    if module_has_numeric_or_range_semantics(&module.value)
+        && !module_has_property_or_fuzz_evidence(module)
+    {
+        push_unique_warning(
+            diagnostics,
+            "structure.numeric-law-without-property",
+            &module.path,
+            "numeric, bounded, or range semantics should have semantic property/fuzz evidence or an explicit justification",
+        );
+    }
+}
+
+fn validate_property_implementation(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let base = implementation
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let properties = property_targets_from_implementation(
+        implementation,
+        &["architecture", "reliability", "properties"],
+        "property",
+    );
+    let fuzz_targets = property_targets_from_implementation(
+        implementation,
+        &["architecture", "reliability", "fuzz_targets"],
+        "fuzz",
+    );
+    for target in properties.iter().chain(fuzz_targets.iter()) {
+        validate_property_target_report(
+            implementation,
+            base,
+            target,
+            Some(implementation),
+            diagnostics,
+        );
+    }
+
+    let shape = get_str(&implementation.value, &["architecture", "shape"]).unwrap_or("");
+    if parser_expected_for_shape(shape)
+        && fuzz_targets.is_empty()
+        && get_string_array(&implementation.value, &["architecture", "roles", "parser"]).is_empty()
+    {
+        return;
+    }
+    if parser_expected_for_shape(shape) && fuzz_targets.is_empty() {
+        push_unique_warning(
+            diagnostics,
+            "structure.boundary-parser-without-fuzz-property",
+            &implementation.path,
+            "`boundary-adapter`, `storage-adapter`, and `integration-adapter` implementations should declare parser fuzz/property targets",
+        );
+    }
+    if transition_expected_for_shape(shape)
+        && get_path(
+            &implementation.value,
+            &["architecture", "machine", "transitions"],
+        )
+        .and_then(YamlValue::as_sequence)
+        .is_some_and(|items| !items.is_empty())
+        && properties.is_empty()
+    {
+        push_unique_warning(
+            diagnostics,
+            "structure.transition-law-without-property",
+            &implementation.path,
+            "transition-shaped implementations should declare at least one semantic property or justify trace-only evidence",
+        );
+    }
+}
+
+fn validate_property_target_report(
+    manifest: &LoadedManifest,
+    base: &Path,
+    target: &PropertyTargetReport,
+    implementation: Option<&LoadedManifest>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if target.proves.as_deref().is_none_or(str::is_empty) {
+        push_unique_warning(
+            diagnostics,
+            "semantic.property-without-law",
+            &manifest.path,
+            format!("property `{}` should name what it proves", target.id),
+        );
+    }
+    if target.input_space.as_deref().is_none_or(str::is_empty) {
+        push_unique_warning(
+            diagnostics,
+            "semantic.property-without-input-space",
+            &manifest.path,
+            format!("property `{}` should declare an input space", target.id),
+        );
+    }
+    if target.oracle.is_empty() {
+        push_unique_warning(
+            diagnostics,
+            "semantic.property-without-oracle",
+            &manifest.path,
+            format!("property `{}` should declare an oracle", target.id),
+        );
+    }
+    let missing_evidence = target
+        .evidence
+        .as_ref()
+        .is_none_or(|path| !concrete_evidence_path_exists(&base.join(path)));
+    if missing_evidence {
+        push_unique_warning(
+            diagnostics,
+            if target.kind == "fuzz" {
+                "semantic.fuzz-evidence-missing"
+            } else {
+                "semantic.property-evidence-missing"
+            },
+            &manifest.path,
+            format!(
+                "{} `{}` should reference concrete evidence",
+                target.kind, target.id
+            ),
+        );
+    }
+    if let (Some(command), Some(implementation)) = (&target.command, implementation) {
+        if get_str(&implementation.value, &["commands", command]).is_none() {
+            push_unique_warning(
+                diagnostics,
+                "structure.property-target-missing",
+                &implementation.path,
+                format!(
+                    "{} `{}` references command `{command}`, but implementation does not declare `commands.{command}`",
+                    target.kind, target.id
+                ),
+            );
+        }
+    }
+}
+
+fn property_targets_from_module(
+    module: &LoadedManifest,
+    default_kind: &str,
+) -> Vec<PropertyTargetReport> {
+    get_path(&module.value, &["properties"])
+        .and_then(YamlValue::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| property_target_from_yaml(item, default_kind, index))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn fuzz_targets_from_module(module: &LoadedManifest) -> Vec<PropertyTargetReport> {
+    get_path(&module.value, &["fuzz_targets"])
+        .and_then(YamlValue::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| property_target_from_yaml(item, "fuzz", index))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn property_targets_from_implementation(
+    implementation: &LoadedManifest,
+    path: &[&str],
+    default_kind: &str,
+) -> Vec<PropertyTargetReport> {
+    get_path(&implementation.value, path)
+        .and_then(YamlValue::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| property_target_from_yaml(item, default_kind, index))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn property_target_from_yaml(
+    item: &YamlValue,
+    default_kind: &str,
+    index: usize,
+) -> PropertyTargetReport {
+    let id = get_str(item, &["id"])
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("{default_kind}-target-{}", index + 1));
+    let kind = get_str(item, &["kind"]).unwrap_or(default_kind).to_string();
+    let proves = get_str(item, &["proves"]).map(ToString::to_string);
+    let input_space = get_path(item, &["input_space"]).map(yaml_summary);
+    let oracle = get_string_array(item, &["oracle"]);
+    let command = get_str(item, &["command"]).map(ToString::to_string);
+    let evidence = get_str(item, &["evidence", "path"])
+        .or_else(|| get_str(item, &["evidence"]))
+        .map(ToString::to_string);
+    let counterexamples = get_str(item, &["counterexamples", "path"])
+        .or_else(|| get_str(item, &["counterexamples"]))
+        .map(ToString::to_string);
+    let status =
+        if proves.is_some() && input_space.is_some() && !oracle.is_empty() && evidence.is_some() {
+            "declared"
+        } else {
+            "incomplete"
+        }
+        .to_string();
+    PropertyTargetReport {
+        id,
+        kind,
+        proves,
+        input_space,
+        oracle,
+        command,
+        evidence,
+        counterexamples,
+        status,
+    }
+}
+
+fn property_counterexample_summary(
+    path: &Path,
+    value: &YamlValue,
+) -> PropertyCounterexampleSummary {
+    let spec = get_str(value, &["spec"]);
+    let replay_command = get_str(value, &["replay_command"]).map(ToString::to_string);
+    let trace = get_str(value, &["trace"]).map(ToString::to_string);
+    let status = if spec == Some("rms/property-counterexample/v0.1")
+        && get_str(value, &["property"]).is_some()
+        && get_str(value, &["proves"]).is_some()
+        && (replay_command.is_some() || trace.is_some())
+    {
+        "pass"
+    } else {
+        "fail"
+    }
+    .to_string();
+    PropertyCounterexampleSummary {
+        path: path.display().to_string(),
+        property: get_str(value, &["property"]).map(ToString::to_string),
+        proves: get_str(value, &["proves"]).map(ToString::to_string),
+        replay_command,
+        trace,
+        status,
+    }
+}
+
+fn module_has_property_or_fuzz_evidence(module: &LoadedManifest) -> bool {
+    module_has_concrete_property_evidence(module)
+        || module_has_concrete_fuzz_evidence(module)
+        || get_str(&module.value, &["x-rms", "no_fuzz_justification"])
+            .is_some_and(|text| !text.trim().is_empty())
+}
+
+fn module_has_concrete_property_evidence(module: &LoadedManifest) -> bool {
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    get_string_array(&module.value, &["verification", "properties"])
+        .iter()
+        .any(|reference| concrete_evidence_path_exists(&base.join(reference)))
+}
+
+fn module_has_concrete_fuzz_evidence(module: &LoadedManifest) -> bool {
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    get_string_array(&module.value, &["verification", "fuzz"])
+        .iter()
+        .any(|reference| concrete_evidence_path_exists(&base.join(reference)))
+}
+
+fn module_has_numeric_or_range_semantics(value: &YamlValue) -> bool {
+    let rendered = serde_yaml::to_string(value).unwrap_or_default();
+    semantic_name_contains_any(
+        &rendered,
+        &[
+            "numeric", "number", "integer", "money", "price", "quantity", "count", "rate",
+            "percent", "range", "bound", "limit", "overflow", "rounding",
+        ],
+    )
+}
+
+fn property_blocking_diagnostic(check: &str) -> bool {
+    matches!(
+        check,
+        "semantic.property-without-law"
+            | "semantic.property-without-input-space"
+            | "semantic.property-without-oracle"
+            | "semantic.property-evidence-missing"
+            | "semantic.fuzz-evidence-missing"
+            | "semantic.counterexample-unreplayable"
+            | "structure.boundary-parser-without-fuzz-property"
+            | "structure.numeric-law-without-property"
+            | "structure.transition-law-without-property"
+            | "structure.property-target-missing"
+    )
+}
+
+fn print_property_check_report(report: &PropertyCheckReport) {
+    println!("RMS property check: {}", report.result);
+    println!("target: {}", report.target);
+    if let Some(module) = &report.module {
+        println!("module: {module}");
+    }
+    if let Some(implementation) = &report.implementation {
+        println!("implementation: {implementation}");
+    }
+    print_property_targets("properties", &report.properties);
+    print_property_targets("fuzz targets", &report.fuzz_targets);
+    if !report.counterexamples.is_empty() {
+        println!("counterexamples:");
+        for counterexample in &report.counterexamples {
+            println!("  - {} ({})", counterexample.path, counterexample.status);
+        }
+    }
+    if !report.diagnostics.is_empty() {
+        println!("findings:");
+        for diagnostic in &report.diagnostics {
+            println!(
+                "  {} [{}] {}",
+                severity_label(diagnostic.severity),
+                diagnostic.check,
+                diagnostic.message
+            );
+        }
+    }
+}
+
+fn print_property_targets(label: &str, targets: &[PropertyTargetReport]) {
+    println!("{label}:");
+    if targets.is_empty() {
+        println!("  - <none>");
+        return;
+    }
+    for target in targets {
+        println!(
+            "  - {} ({}, proves: {})",
+            target.id,
+            target.status,
+            target.proves.as_deref().unwrap_or("<missing>")
+        );
+    }
+}
+
+fn print_property_run_report(report: &PropertyRunReport) {
+    println!("RMS property run: {}", report.result);
+    println!("implementation: {}", report.implementation);
+    println!("profile: {}", report.profile);
+    println!("commands:");
+    if report.commands.is_empty() {
+        println!("  - <none>");
+    }
+    for command in &report.commands {
+        println!(
+            "  - {}: {} ({})",
+            command.kind, command.command, command.status
+        );
+    }
+    if !report.diagnostics.is_empty() {
+        println!("findings:");
+        for diagnostic in &report.diagnostics {
+            println!(
+                "  {} [{}] {}",
+                severity_label(diagnostic.severity),
+                diagnostic.check,
+                diagnostic.message
+            );
+        }
+    }
+}
+
+fn load_yaml_value(path: &Path) -> Result<YamlValue> {
+    let source =
+        fs::read_to_string(path).with_context(|| format!("failed to read `{}`", path.display()))?;
+    serde_yaml::from_str(&source).with_context(|| format!("failed to parse `{}`", path.display()))
 }
 
 fn build_trace_report(bundle: &Path) -> Result<TraceReport> {
@@ -10515,6 +11351,7 @@ fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diag
     check_optional_path(manifest, diagnostics, &["source", "public_entrypoint"]);
     validate_semantic_function_declarations(manifest, diagnostics);
     validate_inner_structure(manifest, diagnostics);
+    validate_property_implementation(manifest, diagnostics);
 
     match get_str(&manifest.value, &["binding"]) {
         Some("rust") => validate_rust_implementation(manifest, diagnostics),
@@ -10728,9 +11565,122 @@ fn validate_machine_gate_structure(
     inspect_effect_executor_coverage(manifest, diagnostics);
     inspect_effect_result_handling(manifest, diagnostics);
     inspect_semantic_role_source_residue(manifest, diagnostics);
+    inspect_reusable_distribution(manifest, diagnostics);
     inspect_public_command_representation(manifest, diagnostics);
     inspect_runnable_surface_declarations(manifest, diagnostics);
     inspect_runnable_surface_boundary_use(manifest, diagnostics);
+}
+
+fn inspect_reusable_distribution(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let module_manifest = load_binding_module_manifest(manifest, base);
+    let reusable = get_bool(&manifest.value, &["distribution", "reusable"]) == Some(true)
+        || get_str(&manifest.value, &["distribution", "public_facade"]).is_some()
+        || get_path(&manifest.value, &["distribution", "native_package"]).is_some()
+        || module_manifest
+            .as_ref()
+            .is_some_and(module_declares_reusable_intent);
+    if !reusable {
+        return;
+    }
+
+    let public_facade = get_str(&manifest.value, &["distribution", "public_facade"])
+        .or_else(|| get_str(&manifest.value, &["source", "public_entrypoint"]));
+    let Some(public_facade) = public_facade else {
+        push_unique_warning(
+            diagnostics,
+            "structure.public-facade-missing",
+            &manifest.path,
+            "reusable implementation should declare one RMS public facade as `distribution.public_facade` or `source.public_entrypoint`",
+        );
+        return;
+    };
+
+    if let Some(source_entrypoint) = get_str(&manifest.value, &["source", "public_entrypoint"]) {
+        if !same_semantic_path(source_entrypoint, public_facade) {
+            push_unique_warning(
+                diagnostics,
+                "structure.public-facade-missing",
+                &manifest.path,
+                format!(
+                    "reusable implementation declares facade `{public_facade}` but source public entrypoint `{source_entrypoint}` points elsewhere"
+                ),
+            );
+        }
+    }
+
+    if !base.join(public_facade).exists() {
+        push_unique_warning(
+            diagnostics,
+            "structure.public-facade-missing",
+            &manifest.path,
+            format!("declared reusable public facade `{public_facade}` does not exist"),
+        );
+    }
+
+    let exports = get_string_array(
+        &manifest.value,
+        &["distribution", "native_package", "exports"],
+    );
+    if !exports.is_empty()
+        && !exports
+            .iter()
+            .any(|export| same_semantic_path(export, public_facade))
+    {
+        push_unique_warning(
+            diagnostics,
+            "structure.native-package-export-mismatch",
+            &manifest.path,
+            format!(
+                "declared native package exports should include RMS public facade `{public_facade}` instead of only private role files"
+            ),
+        );
+    }
+
+    inspect_reusable_private_role_exposure(manifest, diagnostics, base);
+}
+
+fn inspect_reusable_private_role_exposure(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    base: &Path,
+) {
+    let Some(binding) = get_str(&manifest.value, &["binding"]) else {
+        return;
+    };
+    if binding != "rust" {
+        return;
+    }
+    let Some(public_entrypoint_ref) = get_str(&manifest.value, &["source", "public_entrypoint"])
+    else {
+        return;
+    };
+    let public_entrypoint = base.join(public_entrypoint_ref);
+    let Ok(source) = fs::read_to_string(&public_entrypoint) else {
+        return;
+    };
+    let public_role_modules = public_modules_declared_in_source(&source)
+        .into_iter()
+        .filter(|module| is_private_semantic_role_module_name(module))
+        .collect::<Vec<_>>();
+    if !public_role_modules.is_empty() {
+        push_unique_warning(
+            diagnostics,
+            "structure.public-facade-private-role-exposed",
+            &manifest.path,
+            format!(
+                "reusable Rust facade exposes private semantic role module(s) {}; make role modules private and re-export only the declared facade API",
+                public_role_modules.join(", ")
+            ),
+        );
+    }
+}
+
+fn is_private_semantic_role_module_name(module: &str) -> bool {
+    matches!(
+        module,
+        "representation" | "transition" | "parser" | "adapter" | "ports" | "port"
+    )
 }
 
 fn validate_traceable_machine_structure(
@@ -10759,6 +11709,20 @@ fn validate_traceable_machine_structure(
         ),
     ];
     let effects = get_string_array(&manifest.value, &["architecture", "machine", "effects"]);
+    if effects.is_empty()
+        && !get_structure_values(
+            &manifest.value,
+            &["architecture", "messages", "effect_envelope"],
+        )
+        .is_empty()
+    {
+        push_unique_warning(
+            diagnostics,
+            "structure.effect-envelope-without-effects",
+            &manifest.path,
+            "effect envelope structure is declared, but no machine effects are declared",
+        );
+    }
     if !effects.is_empty() || represented_effect_envelope_types(manifest) {
         envelope_declarations.push((
             "effect_envelope",
@@ -10970,6 +11934,19 @@ fn subscription_registry_expected_for_shape(shape: &str) -> bool {
 
 fn idempotency_expected_for_shape(shape: &str) -> bool {
     matches!(shape, "storage-adapter" | "integration-adapter")
+}
+
+fn property_evidence_expected_for_shape(shape: ScaffoldShape) -> bool {
+    matches!(shape, ScaffoldShape::DomainEngine | ScaffoldShape::Workflow)
+}
+
+fn fuzz_evidence_expected_for_shape(shape: ScaffoldShape) -> bool {
+    matches!(
+        shape,
+        ScaffoldShape::BoundaryAdapter
+            | ScaffoldShape::StorageAdapter
+            | ScaffoldShape::IntegrationAdapter
+    )
 }
 
 fn warn_on_role_suffix_machine_name(
@@ -19806,6 +20783,73 @@ fn append_semantic_change_module_reflection_checks(
         }
     }
 
+    if let Some(properties) = &change.properties {
+        let property_ids = get_path(module, &["properties"])
+            .and_then(YamlValue::as_sequence)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| get_str(item, &["id"]))
+                    .map(ToString::to_string)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let fuzz_target_ids = get_path(module, &["fuzz_targets"])
+            .and_then(YamlValue::as_sequence)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| get_str(item, &["id"]))
+                    .map(ToString::to_string)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let verification_refs = module_verification_references(module);
+        for property in &properties.add {
+            let target_ids = if semantic_property_is_fuzz(property) {
+                &fuzz_target_ids
+            } else {
+                &property_ids
+            };
+            let target_section = if semantic_property_is_fuzz(property) {
+                "fuzz_targets"
+            } else {
+                "properties"
+            };
+            if !target_ids.contains(&property.id) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    change_path,
+                    format!(
+                        "semantic-change declares property `{}`, but `module.yaml` does not contain a matching `{target_section}` id",
+                        property.id,
+                    ),
+                );
+            }
+            let Some(evidence) = property.evidence.as_ref() else {
+                continue;
+            };
+            let path = evidence.path.trim();
+            if path.is_empty()
+                || !verification_reference_covers_path(&verification_refs, path)
+                || !concrete_evidence_path_exists(&module_base.join(path))
+            {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    change_path,
+                    format!(
+                        "semantic-change declares property evidence `{}` for `{}`, but module verification does not reference a concrete evidence file",
+                        evidence.path, property.id
+                    ),
+                );
+            }
+        }
+    }
+
     if let Some(evidence) = &change.evidence {
         let verification_refs = module_verification_references(module);
         for item in &evidence.add {
@@ -20787,6 +21831,9 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "structure.effect-envelope-without-effects"
                 | "structure.effect-lifecycle-without-effects"
                 | "structure.semantic-role-source-residue"
+                | "structure.public-facade-missing"
+                | "structure.public-facade-private-role-exposed"
+                | "structure.native-package-export-mismatch"
                 | "structure.effect-result-type-not-declared"
                 | "structure.effect-result-change-not-declared"
                 | "structure.effect-result-declared-not-consumed"
@@ -20816,6 +21863,10 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "structure.runnable-surface-domain-logic-duplication"
                 | "structure.runnable-surface-private-domain-access"
                 | "structure.runnable-surface-evidence-missing"
+                | "structure.boundary-parser-without-fuzz-property"
+                | "structure.numeric-law-without-property"
+                | "structure.transition-law-without-property"
+                | "structure.property-target-missing"
         )
         || check.starts_with("trace.")
 }
@@ -23402,6 +24453,8 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "## Operating Rule")?;
     writeln!(out, "RMS owns semantics and architecture. Agents fill declared role bodies. If meaning changes, return an `rms/semantic-change/v0.1` object; do not encode behavior only in source files.")?;
     writeln!(out, "Laws, contracts, machine transitions, runnable surfaces, effects, and evidence obligations come before implementation code. Provider output is advisory until `rms spec apply` updates canonical artifacts and records the exact applied change under `verification/changes/`.")?;
+    writeln!(out, "When a promise says always, never, bounded, ordered, normalized, parsed, generated, or impossible, declare semantic properties with input spaces and oracles before relying on binding tests.")?;
+    writeln!(out, "Reusable modules must declare capabilities/contracts, one public facade, and package/reuse evidence before consumers import them; native package files only describe how to import the RMS facade.")?;
     writeln!(out, "Ask clarifying questions only when needed. Otherwise infer the smallest coherent semantic model from the task, name edge cases and must-never-happen conditions, and encode them in the semantic-change object.")?;
     writeln!(out, "For external truth, include reconciliation or recovery evidence when outcomes can be unknown, duplicate, stale, partial, conflicting, delayed, or later corrected.")?;
     writeln!(out)?;
@@ -23420,6 +24473,8 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "laws:")?;
     writeln!(out, "  add: []")?;
     writeln!(out, "contracts:")?;
+    writeln!(out, "  add: []")?;
+    writeln!(out, "properties:")?;
     writeln!(out, "  add: []")?;
     writeln!(out, "machine:")?;
     writeln!(out, "  mode: stateful-transition-machine")?;
@@ -23450,12 +24505,14 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "## Semantic Gate Checklist")?;
     for item in [
         "Each new behavior has a law, public contract, machine transition, effect, rejection, or evidence obligation before code changes.",
+        "Each always/never/bounded/parser/normalization/numeric/reusable/state-machine law has a semantic property with input_space, oracle, evidence, and counterexample replay policy.",
         "Effects have adapter, port, effect-executor, or explicit delegation roles.",
         "Runnable app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints are declared as surfaces before files own product behavior.",
         "Evidence names the promise, scenario, command/tool, expected result, source revision, and related law/contract/machine item.",
         "`rms spec apply` records the exact semantic-change object under `verification/changes/`; command logs with placeholders are not evidence.",
         "Pure transitions reject illegal states instead of throwing or doing IO.",
         "Boundary adapters parse raw input into command envelopes or typed rejections before delegation.",
+        "Boundary parsers and runnable surfaces have fuzz-style semantic targets or a concrete no-fuzz justification.",
         "Unknown, duplicate, stale, partial, conflicting, delayed, or corrected external outcomes have reconciliation or recovery evidence when they affect correctness.",
     ] {
         writeln!(out, "- {item}")?;
@@ -24398,6 +25455,10 @@ fn validate_semantic_change(
         .contracts
         .as_ref()
         .is_some_and(|contracts| !contracts.add.is_empty());
+    let has_properties = change
+        .properties
+        .as_ref()
+        .is_some_and(|properties| !properties.add.is_empty());
     let has_evidence = change
         .evidence
         .as_ref()
@@ -24406,11 +25467,17 @@ fn validate_semantic_change(
         .surfaces
         .as_ref()
         .is_some_and(|surfaces| !surfaces.add.is_empty());
-    if !has_laws && !has_contracts && change.machine.is_none() && !has_evidence && !has_surfaces {
+    if !has_laws
+        && !has_contracts
+        && !has_properties
+        && change.machine.is_none()
+        && !has_evidence
+        && !has_surfaces
+    {
         diagnostics.push(error(
             "semantic-change.empty",
             &context.target,
-            "semantic change must add a law, contract, machine change, runnable surface, or evidence obligation",
+            "semantic change must add a law, contract, property, machine change, runnable surface, or evidence obligation",
         ));
     }
 
@@ -24421,6 +25488,7 @@ fn validate_semantic_change(
         .unwrap_or(&[]);
     validate_semantic_laws(context, change, evidence_items, &mut diagnostics);
     validate_semantic_contracts(context, change, evidence_items, &mut diagnostics);
+    validate_semantic_properties(context, change, evidence_items, &mut diagnostics);
     validate_semantic_evidence(context, evidence_items, &mut diagnostics);
     validate_semantic_surfaces(context, change, &mut diagnostics);
     diagnostics
@@ -24524,6 +25592,91 @@ fn validate_semantic_contracts(
                     contract.name
                 ),
             ));
+        }
+    }
+}
+
+fn validate_semantic_properties(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    evidence_items: &[SemanticEvidenceItemChange],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(properties) = &change.properties else {
+        return;
+    };
+    let mut seen = BTreeSet::new();
+    for property in &properties.add {
+        if !is_stable_semantic_id(&property.id) {
+            diagnostics.push(error(
+                "semantic.property-id",
+                &context.target,
+                format!("property id `{}` is not a stable semantic id", property.id),
+            ));
+        }
+        if !seen.insert(property.id.clone()) {
+            diagnostics.push(error(
+                "semantic.duplicate-property",
+                &context.target,
+                format!("semantic change adds duplicate property `{}`", property.id),
+            ));
+        }
+        if property.proves.trim().is_empty() {
+            diagnostics.push(error(
+                "semantic.property-without-law",
+                &context.target,
+                format!("property `{}` must name the law, contract, transition, or boundary promise it proves", property.id),
+            ));
+        }
+        if property.input_space.is_none() {
+            diagnostics.push(error(
+                "semantic.property-without-input-space",
+                &context.target,
+                format!("property `{}` must declare an input_space", property.id),
+            ));
+        }
+        if property.oracle.is_empty() {
+            diagnostics.push(error(
+                "semantic.property-without-oracle",
+                &context.target,
+                format!(
+                    "property `{}` must declare at least one oracle",
+                    property.id
+                ),
+            ));
+        }
+        if let Some(evidence) = &property.evidence {
+            if !is_safe_relative_artifact_path(&evidence.path) {
+                diagnostics.push(error(
+                    "semantic.property-evidence-path",
+                    &context.target,
+                    format!(
+                        "property evidence path `{}` must be relative and stay inside the module",
+                        evidence.path
+                    ),
+                ));
+            }
+        } else if !evidence_items
+            .iter()
+            .any(|evidence| evidence.proves == property.id || evidence.proves == property.proves)
+        {
+            diagnostics.push(error(
+                "semantic.property-evidence-missing",
+                &context.target,
+                format!("property `{}` must declare property evidence", property.id),
+            ));
+        }
+        if let Some(counterexamples) = &property.counterexamples {
+            if !is_safe_relative_artifact_path(&counterexamples.path) {
+                diagnostics.push(error(
+                    "semantic.counterexample-path",
+                    &context.target,
+                    format!(
+                        "counterexample path `{}` must be relative and stay inside the module",
+                        counterexamples.path
+                    ),
+                ));
+            }
         }
     }
 }
@@ -24661,6 +25814,21 @@ fn planned_spec_apply_writes(
                 );
             }
         }
+        if let Some(properties) = &change.properties {
+            for property in &properties.add {
+                if let Some(evidence) = &property.evidence {
+                    writes.push(
+                        module
+                            .path
+                            .parent()
+                            .unwrap_or_else(|| Path::new("."))
+                            .join(&evidence.path)
+                            .display()
+                            .to_string(),
+                    );
+                }
+            }
+        }
     }
     if let (Some(implementation), Some(machine_change)) =
         (context.implementation.as_ref(), machine_change)
@@ -24793,6 +25961,28 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
             );
         }
     }
+    if let Some(properties) = &change.properties {
+        for property in &properties.add {
+            let target_section = if semantic_property_is_fuzz(property) {
+                "fuzz_targets"
+            } else {
+                "properties"
+            };
+            let verification_section = if semantic_property_is_fuzz(property) {
+                "fuzz"
+            } else {
+                "properties"
+            };
+            append_yaml_mapping_path(value, &[target_section], semantic_property_yaml(property));
+            if let Some(evidence) = &property.evidence {
+                append_unique_yaml_string_path(
+                    value,
+                    &["verification", verification_section],
+                    &evidence.path,
+                );
+            }
+        }
+    }
     if let Some(evidence) = &change.evidence {
         for item in &evidence.add {
             append_unique_yaml_string_path(
@@ -24802,6 +25992,15 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
             );
         }
     }
+}
+
+fn semantic_property_is_fuzz(property: &SemanticPropertyChange) -> bool {
+    property.kind.as_deref().is_some_and(|kind| {
+        matches!(
+            kind.trim().to_ascii_lowercase().as_str(),
+            "fuzz" | "fuzzer" | "fuzzing" | "counterexample" | "counterexamples"
+        )
+    })
 }
 
 fn semantic_law_yaml(law: &SemanticLawChange) -> YamlValue {
@@ -24824,6 +26023,53 @@ fn semantic_contract_command_yaml(contract: &SemanticContractChange) -> YamlValu
         yaml_key("contract"),
         YamlValue::String(semantic_contract_path(contract)),
     );
+    YamlValue::Mapping(mapping)
+}
+
+fn semantic_property_yaml(property: &SemanticPropertyChange) -> YamlValue {
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(yaml_key("id"), YamlValue::String(property.id.clone()));
+    mapping.insert(
+        yaml_key("proves"),
+        YamlValue::String(property.proves.clone()),
+    );
+    if let Some(kind) = &property.kind {
+        mapping.insert(yaml_key("kind"), YamlValue::String(kind.clone()));
+    }
+    if let Some(subject) = &property.subject {
+        mapping.insert(yaml_key("subject"), YamlValue::String(subject.clone()));
+    }
+    if let Some(input_space) = &property.input_space {
+        mapping.insert(yaml_key("input_space"), input_space.clone());
+    }
+    if !property.preconditions.is_empty() {
+        mapping.insert(
+            yaml_key("preconditions"),
+            yaml_string_sequence(&property.preconditions),
+        );
+    }
+    if let Some(operation) = &property.operation {
+        mapping.insert(yaml_key("operation"), operation.clone());
+    }
+    if !property.oracle.is_empty() {
+        mapping.insert(yaml_key("oracle"), yaml_string_sequence(&property.oracle));
+    }
+    if let Some(evidence) = &property.evidence {
+        let mut evidence_mapping = serde_yaml::Mapping::new();
+        evidence_mapping.insert(yaml_key("path"), YamlValue::String(evidence.path.clone()));
+        mapping.insert(yaml_key("evidence"), YamlValue::Mapping(evidence_mapping));
+    }
+    if let Some(counterexamples) = &property.counterexamples {
+        let mut counterexample_mapping = serde_yaml::Mapping::new();
+        counterexample_mapping.insert(
+            yaml_key("path"),
+            YamlValue::String(counterexamples.path.clone()),
+        );
+        mapping.insert(
+            yaml_key("counterexamples"),
+            YamlValue::Mapping(counterexample_mapping),
+        );
+    }
     YamlValue::Mapping(mapping)
 }
 
@@ -24860,6 +26106,22 @@ fn write_semantic_contracts_and_evidence(
             }
             if !path.exists() {
                 fs::write(&path, render_semantic_evidence(item))
+                    .with_context(|| format!("failed to write `{}`", path.display()))?;
+            }
+        }
+    }
+    if let Some(properties) = &change.properties {
+        for property in &properties.add {
+            let Some(evidence) = property.evidence.as_ref() else {
+                continue;
+            };
+            let path = base.join(&evidence.path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create `{}`", parent.display()))?;
+            }
+            if !path.exists() {
+                fs::write(&path, render_semantic_property_evidence(property))
                     .with_context(|| format!("failed to write `{}`", path.display()))?;
             }
         }
@@ -24934,6 +26196,49 @@ fn render_semantic_evidence(item: &SemanticEvidenceItemChange) -> String {
         "# Evidence: {kind} proves {proves}\n\nPromise:\n\n- {proves}\n\nScenario:\n\n- Exercise the semantic change that owns `{proves}`.\n\nCommand/tool:\n\n- Record the exact command used to verify this evidence before a production claim.\n\nExpected result:\n\n- The declared law, contract, transition, effect, or rejection is satisfied and any rejected path is explicit.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
         kind = item.kind,
         proves = item.proves
+    )
+}
+
+fn render_semantic_property_evidence(property: &SemanticPropertyChange) -> String {
+    let label = if semantic_property_is_fuzz(property) {
+        "Fuzz Evidence"
+    } else {
+        "Property Evidence"
+    };
+    let kind = if semantic_property_is_fuzz(property) {
+        "Fuzz target"
+    } else {
+        "Property"
+    };
+    let input_space = property
+        .input_space
+        .as_ref()
+        .map(|value| yaml_summary(value))
+        .unwrap_or_else(|| "<declared input space>".to_string());
+    let oracle = if property.oracle.is_empty() {
+        "- <declared oracle>".to_string()
+    } else {
+        property
+            .oracle
+            .iter()
+            .map(|item| format!("- {item}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let counterexamples = property
+        .counterexamples
+        .as_ref()
+        .map(|counterexamples| counterexamples.path.as_str())
+        .unwrap_or("verification/fuzz/counterexamples");
+    format!(
+        "# {label}: {id}\n\nPromise:\n\n- {kind} `{id}` proves `{proves}`.\n\nInput space:\n\n```yaml\n{input_space}\n```\n\nOracle:\n\n{oracle}\n\nCommand/tool:\n\n- Run the binding command declared for this property, for example `rms property run implementation.yaml --profile smoke`.\n\nExpected result:\n\n- Generated or enumerated inputs either satisfy the oracle or produce a replayable counterexample.\n- Counterexamples are recorded under `{counterexamples}` with `spec: rms/property-counterexample/v0.1`.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        label = label,
+        kind = kind,
+        id = property.id,
+        proves = property.proves,
+        input_space = input_space.trim(),
+        oracle = oracle,
+        counterexamples = counterexamples,
     )
 }
 
@@ -25015,6 +26320,29 @@ fn validate_semantic_module_completeness(
             );
         }
     }
+    if module_declares_reusable_intent(module) {
+        let command_count = commands.len();
+        let capability_count = get_path(&module.value, &["provides", "capabilities"])
+            .and_then(YamlValue::as_sequence)
+            .map(Vec::len)
+            .unwrap_or(0);
+        if command_count > 0 && capability_count == 0 {
+            push_unique_warning(
+                diagnostics,
+                "semantic.reusable-capability-missing",
+                &module.path,
+                "reusable modules with public commands should declare a domain-neutral `provides.capabilities[]` entry with a contract",
+            );
+        }
+        if !module_has_reusable_package_evidence(module) {
+            push_unique_warning(
+                diagnostics,
+                "semantic.reusable-package-evidence-missing",
+                &module.path,
+                "reusable modules should include package/reuse evidence naming `rms package` and `rms verify-package`",
+            );
+        }
+    }
     let external_dependencies = nearest_system_external_dependencies(module);
     for capability in get_path(&module.value, &["requires", "capabilities"])
         .and_then(YamlValue::as_sequence)
@@ -25083,7 +26411,65 @@ fn validate_semantic_module_completeness(
             "module combines boundary, workflow, and effects; record a single-module justification or split the runnable surface from domain/workflow behavior",
         );
     }
+    validate_property_module(module, diagnostics);
     inspect_empty_evidence_lanes(module, diagnostics);
+}
+
+fn module_declares_reusable_intent(module: &LoadedManifest) -> bool {
+    get_bool(&module.value, &["x-rms", "reusable"]) == Some(true)
+        || get_str(&module.value, &["x-rms", "reuse", "public_facade"]).is_some()
+        || semantic_name_contains_any(
+            &serde_yaml::to_string(
+                &get_path(&module.value, &["x-rms"]).unwrap_or(&YamlValue::Null),
+            )
+            .unwrap_or_default(),
+            &["reusable", "reuse", "package"],
+        )
+}
+
+fn module_has_reusable_package_evidence(module: &LoadedManifest) -> bool {
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    for category in verification_reference_categories() {
+        for reference in get_string_array(&module.value, &["verification", category]) {
+            let path = base.join(reference);
+            if path.is_file()
+                && fs::read_to_string(&path)
+                    .is_ok_and(|source| is_completed_reusable_package_evidence(&source))
+            {
+                return true;
+            }
+            if path.is_dir()
+                && WalkDir::new(&path)
+                    .follow_links(false)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_type().is_file())
+                    .any(|entry| {
+                        fs::read_to_string(entry.path())
+                            .is_ok_and(|source| is_completed_reusable_package_evidence(&source))
+                    })
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_completed_reusable_package_evidence(source: &str) -> bool {
+    source.contains("rms package")
+        && source.contains("rms verify-package")
+        && !source.contains("<package-dir>")
+        && !source.contains("<package")
+        && [
+            "pass: RMS package verified",
+            "package.files.integrity",
+            "packaged RMS module at",
+            "verify-package passed",
+            "verify-package: pass",
+        ]
+        .iter()
+        .any(|needle| source.contains(needle))
 }
 
 fn nearest_system_external_dependencies(module: &LoadedManifest) -> BTreeSet<String> {
@@ -25341,6 +26727,8 @@ fn semantic_evidence_category(kind: &str) -> &'static str {
         "scenario" | "scenarios" => "scenarios",
         "boundary" | "boundaries" => "boundaries",
         "trace" | "traces" => "traces",
+        "property" | "properties" => "properties",
+        "fuzz" | "fuzzer" | "fuzzing" | "counterexample" | "counterexamples" => "fuzz",
         "runtime" => "runtime",
         "reconciliation" => "reconciliation",
         _ => "laws",
@@ -25811,6 +27199,9 @@ fn package_module(
             );
         }
         sources.insert(implementation.path.clone());
+        for reference in package_implementation_referenced_paths(&implementation.value) {
+            sources.insert(module_base.join(reference));
+        }
     }
 
     for source in &sources {
@@ -25944,6 +27335,86 @@ fn package_referenced_paths(value: &YamlValue) -> BTreeSet<String> {
     }
 
     paths
+}
+
+fn package_implementation_referenced_paths(value: &YamlValue) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+
+    for path in [
+        get_str(value, &["source", "public_entrypoint"]),
+        get_str(value, &["source", "executable_entrypoint"]),
+        get_str(value, &["distribution", "public_facade"]),
+        get_str(value, &["distribution", "native_package", "manifest"]),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if looks_like_path(path) {
+            paths.insert(path.to_string());
+        }
+    }
+
+    for path in [
+        &["source", "public_entrypoints"][..],
+        &["architecture", "public_modules"][..],
+        &["architecture", "roles", "representation"][..],
+        &["architecture", "roles", "transition"][..],
+        &["architecture", "roles", "parser"][..],
+        &["architecture", "roles", "adapter"][..],
+        &["architecture", "roles", "effect_executor"][..],
+        &["architecture", "roles", "ports"][..],
+        &["architecture", "roles", "port"][..],
+        &["architecture", "roles", "runnable_surface"][..],
+        &["architecture", "roles", "trace_evidence"][..],
+        &["architecture", "roles", "replay_bundle"][..],
+        &["architecture", "roles", "journal"][..],
+        &["architecture", "roles", "timeline_projection"][..],
+        &["distribution", "native_package", "exports"][..],
+    ] {
+        paths.extend(package_string_array_refs(value, path));
+    }
+
+    if let Some(functions) =
+        get_path(value, &["semantic_functions"]).and_then(YamlValue::as_sequence)
+    {
+        for function in functions {
+            if let Some(symbol) = get_str(function, &["symbol"]) {
+                if let Some(path) = source_path_from_symbol(symbol) {
+                    paths.insert(path);
+                }
+            }
+        }
+    }
+
+    for command in [
+        get_str(value, &["commands", "build"]),
+        get_str(value, &["commands", "verify"]),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        paths.extend(package_command_path_refs(command));
+    }
+
+    paths
+}
+
+fn source_path_from_symbol(symbol: &str) -> Option<String> {
+    let path = symbol.split('#').next().unwrap_or(symbol).trim();
+    if symbol_source_path_like(path) || looks_like_path(path) {
+        Some(path.to_string())
+    } else {
+        None
+    }
+}
+
+fn package_command_path_refs(command: &str) -> BTreeSet<String> {
+    command
+        .split_whitespace()
+        .map(|token| token.trim_matches(|c: char| matches!(c, '\'' | '"' | ',' | ';')))
+        .filter(|token| looks_like_path(token))
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn package_string_array_refs(value: &YamlValue, path: &[&str]) -> Vec<String> {
@@ -26960,6 +28431,7 @@ fn compose_system(root: &Path) -> Result<ComposeReport> {
         compose_required_modules(module, &modules, context_map, &mut findings);
         compose_required_capabilities(
             module,
+            &modules,
             &provided_requirements,
             &external_dependencies,
             &mut findings,
@@ -27071,6 +28543,7 @@ fn compose_required_modules(
 
 fn compose_required_capabilities(
     module: &ModuleIndexEntry,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
     provided_requirements: &BTreeMap<String, Vec<ProvidedRequirement>>,
     external_dependencies: &BTreeSet<String>,
     findings: &mut Vec<ComposeFinding>,
@@ -27091,10 +28564,31 @@ fn compose_required_capabilities(
 
     for (required_name, required_contract) in required_capabilities {
         if let Some(providers) = provided_requirements.get(&required_name) {
-            let compatible = providers.iter().find(|provider| {
-                required_contract.is_none() || provider.contract == required_contract
-            });
+            let compatible = providers
+                .iter()
+                .filter(|provider| {
+                    required_contract.is_none() || provider.contract == required_contract
+                })
+                .collect::<Vec<_>>();
+            let required_module_names =
+                named_contract_map(get_path(&module.value, &["requires", "modules"]));
+            let preferred_required_module = compatible
+                .iter()
+                .copied()
+                .find(|provider| required_module_names.contains_key(&provider.module));
+            let compatible = preferred_required_module
+                .or_else(|| {
+                    compatible
+                        .iter()
+                        .copied()
+                        .find(|provider| provider.module != module.name)
+                })
+                .or_else(|| compatible.first().copied());
             if let Some(provider) = compatible {
+                let provider_kind = modules
+                    .get(&provider.module)
+                    .and_then(|module| get_str(&module.value, &["module", "kind"]))
+                    .unwrap_or("module");
                 findings.push(compose_finding(
                     ComposeStatus::Satisfied,
                     "requires.capabilities.provider",
@@ -27102,7 +28596,7 @@ fn compose_required_capabilities(
                     Some(provider.module.clone()),
                     Some(required_name.clone()),
                     format!(
-                        "required capability `{required_name}` is satisfied by module `{}` public {}",
+                        "required capability `{required_name}` is satisfied by {provider_kind} `{}` public {}",
                         provider.module, provider.group
                     ),
                 ));
@@ -28681,6 +30175,13 @@ fn scaffold_capability_domain_child(
             None,
         ),
     )?;
+    write_new_file(
+        &path
+            .join("verification")
+            .join("scenarios")
+            .join("reusable_package.md"),
+        &render_reusable_package_evidence(name, domain_command),
+    )?;
     scaffold_shape_evidence(
         path,
         ScaffoldShape::DomainEngine,
@@ -29219,6 +30720,13 @@ fn scaffold_shape_evidence(
                     .join("accepted_rejected.md"),
                 &render_accepted_rejected_evidence(names),
             )?;
+            write_new_file(
+                &path
+                    .join("verification")
+                    .join("properties")
+                    .join("transition_properties.md"),
+                &render_transition_property_evidence(names),
+            )?;
         }
         ScaffoldShape::BoundaryAdapter
         | ScaffoldShape::StorageAdapter
@@ -29251,6 +30759,13 @@ fn scaffold_shape_evidence(
                     .join("malformed_input_trace.yaml"),
                 &render_malformed_input_trace_bundle(names),
             )?;
+            write_new_file(
+                &path
+                    .join("verification")
+                    .join("fuzz")
+                    .join("malformed_input_fuzz.md"),
+                &render_malformed_input_fuzz_evidence(names),
+            )?;
         }
         ScaffoldShape::Composite => {
             write_new_file(
@@ -29282,6 +30797,13 @@ fn scaffold_shape_evidence(
                     .join("scenarios")
                     .join("accepted_rejected.md"),
                 &render_accepted_rejected_evidence(names),
+            )?;
+            write_new_file(
+                &path
+                    .join("verification")
+                    .join("properties")
+                    .join("transition_properties.md"),
+                &render_transition_property_evidence(names),
             )?;
         }
         ScaffoldShape::RuntimeMonitor => {
@@ -29413,6 +30935,10 @@ fn scaffold_js_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
             write_new_file(
                 &path.join("src").join("transition.mjs"),
                 &render_js_transition_mjs(&model.names),
+            )?;
+            write_new_file(
+                &path.join("src").join("public.mjs"),
+                &render_js_public_mjs(&model.names),
             )?;
             write_new_file(
                 &path.join("tests").join("trace-smoke.mjs"),
@@ -29637,6 +31163,20 @@ fn render_module_yaml(
     } else {
         ""
     };
+    let verification_properties = match shape {
+        Some(ScaffoldShape::DomainEngine | ScaffoldShape::Workflow) => {
+            "  properties:\n    - verification/properties/transition_properties.md\n".to_string()
+        }
+        _ => String::new(),
+    };
+    let verification_fuzz = match shape {
+        Some(
+            ScaffoldShape::BoundaryAdapter
+            | ScaffoldShape::StorageAdapter
+            | ScaffoldShape::IntegrationAdapter,
+        ) => "  fuzz:\n    - verification/fuzz/malformed_input_fuzz.md\n".to_string(),
+        _ => String::new(),
+    };
     let verification_traces = match shape.and_then(scaffold_trace_bundle_file) {
         Some(file) => format!("  traces:\n    - verification/traces/{file}\n"),
         None => String::new(),
@@ -29662,7 +31202,7 @@ fn render_module_yaml(
         })
         .unwrap_or_default();
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n{}{}{}{}{}{}{}",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n{}{}{}{}{}{}{}{}{}",
         yaml_quote(name),
         yaml_quote(kind),
         yaml_quote(purpose),
@@ -29675,6 +31215,8 @@ fn render_module_yaml(
         verification_boundaries,
         verification_traces,
         verification_runtime,
+        verification_properties,
+        verification_fuzz,
         scaffold
     )
 }
@@ -29712,8 +31254,10 @@ fn render_capability_parent_module_yaml(
 
 fn render_capability_domain_module_yaml(name: &str, domain_command: &str) -> String {
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"library\"\n  purpose: \"Own pure capability decisions, validated values, and transition evidence.\"\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - domain command\n    - transition outcome\n  data: []\n  decisions:\n    - command acceptance\n    - command rejection\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws/transition_trace.md\n  contracts:\n    - verification/contracts/{}.md\n  scenarios:\n    - verification/scenarios/accepted_rejected.md\n  boundaries: []\n  traces:\n    - verification/traces/transition_trace.yaml\n\nx-scaffold:\n  shape: \"domain-engine\"\n  roles:\n{}\n",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"library\"\n  purpose: \"Own pure capability decisions, validated values, and transition evidence.\"\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - domain command\n    - transition outcome\n  data: []\n  decisions:\n    - command acceptance\n    - command rejection\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws/transition_trace.md\n  contracts:\n    - verification/contracts/{}.md\n  scenarios:\n    - verification/scenarios/accepted_rejected.md\n    - verification/scenarios/reusable_package.md\n  boundaries: []\n  traces:\n    - verification/traces/transition_trace.yaml\n  properties:\n    - verification/properties/transition_properties.md\n\nx-rms:\n  reusable: true\n\nx-scaffold:\n  shape: \"domain-engine\"\n  roles:\n{}\n",
         yaml_quote(name),
+        yaml_quote(domain_command),
+        contract_file_stem(domain_command),
         yaml_quote(domain_command),
         contract_file_stem(domain_command),
         contract_file_stem(domain_command),
@@ -29735,7 +31279,7 @@ fn render_capability_boundary_module_yaml(
     domain_command: &str,
 ) -> String {
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"adapter\"\n  purpose: \"Adapt untrusted input and effects to the pure domain child.\"\n\nprofiles:\n  - \"boundary\"\n  - \"core\"\n\nowns:\n  concepts:\n    - boundary input\n    - parsed domain command\n    - domain child port\n  data: []\n  decisions:\n    - boundary input parsing\n    - malformed input rejection\n    - domain command delegation\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules:\n    - name: {}\n  capabilities:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n\ninvariants: []\n\neffects:\n  - name: local-boundary-io\n    kind: local-ui\n\nboundary:\n  trust_boundary: generated-boundary-adapter\n  inputs: []\n  outputs: []\n  validation:\n    - Reject malformed input before domain delegation.\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts:\n    - verification/contracts/{}.md\n    - verification/contracts/{}-dependency.md\n    - verification/contracts/parser_to_domain_command.md\n  scenarios: []\n  boundaries:\n    - verification/boundaries/malformed_input.md\n  traces:\n    - verification/traces/boundary_parse.yaml\n    - verification/traces/malformed_input_trace.yaml\n\nx-scaffold:\n  shape: \"boundary-adapter\"\n  roles:\n{}\n",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"adapter\"\n  purpose: \"Adapt untrusted input and effects to the pure domain child.\"\n\nprofiles:\n  - \"boundary\"\n  - \"core\"\n\nowns:\n  concepts:\n    - boundary input\n    - parsed domain command\n    - domain child port\n  data: []\n  decisions:\n    - boundary input parsing\n    - malformed input rejection\n    - domain command delegation\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules:\n    - name: {}\n  capabilities:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n\ninvariants: []\n\neffects:\n  - name: local-boundary-io\n    kind: local-ui\n\nboundary:\n  trust_boundary: generated-boundary-adapter\n  inputs: []\n  outputs: []\n  validation:\n    - Reject malformed input before domain delegation.\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts:\n    - verification/contracts/{}.md\n    - verification/contracts/{}-dependency.md\n    - verification/contracts/parser_to_domain_command.md\n  scenarios: []\n  boundaries:\n    - verification/boundaries/malformed_input.md\n  traces:\n    - verification/traces/boundary_parse.yaml\n    - verification/traces/malformed_input_trace.yaml\n  fuzz:\n    - verification/fuzz/malformed_input_fuzz.md\n\nx-scaffold:\n  shape: \"boundary-adapter\"\n  roles:\n{}\n",
         yaml_quote(name),
         yaml_quote(public_command),
         contract_file_stem(public_command),
@@ -29784,6 +31328,14 @@ fn render_capability_contract_evidence(
         module = markdown_inline(module_name),
         contract_path = markdown_inline(contract_path),
         backing_line = backing_line,
+    )
+}
+
+fn render_reusable_package_evidence(module_name: &str, capability: &str) -> String {
+    format!(
+        "# Scenario Evidence: reusable package\n\nPromise:\n\n- Module `{module}` is reusable through RMS capability `{capability}` and its declared public facade.\n- Consumers depend on `provides.capabilities[]` and the public contract, not private representation, parser, adapter, or transition role files.\n- RMS semantic packages are the portable reuse artifact; native package files are optional binding evidence only.\n\nCommand/tool:\n\n- `rms package module.yaml --output <package-dir>` assembles the canonical RMS package.\n- `rms verify-package <package-dir>` verifies package metadata, checksums, manifests, implementation binding, and conformance report.\n- `rms compose --root <system-root>` verifies consumer `requires.capabilities[]` compatibility against this provider capability.\n\nExpected result:\n\n- The package contains `module.yaml`, contracts, implementation binding when present, declared public facade, evidence, conformance report, source revision, and checksums.\n- Consumer modules import only the declared public facade or call through contract-shaped entrypoints.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        module = markdown_inline(module_name),
+        capability = markdown_inline(capability),
     )
 }
 
@@ -29991,6 +31543,62 @@ fn render_traceable_architecture_yaml(names: &InnerStructureNames, shape: Scaffo
         out,
         "    first_bad_transition: source-provenance-from-transition-record"
     );
+    if property_evidence_expected_for_shape(shape) || fuzz_evidence_expected_for_shape(shape) {
+        let _ = writeln!(out, "  reliability:");
+        if property_evidence_expected_for_shape(shape) {
+            let _ = writeln!(out, "    properties:");
+            let _ = writeln!(
+                out,
+                "      - id: {}-transition-output-is-declared",
+                names.prefix
+            );
+            let _ = writeln!(out, "        proves: transition-trace");
+            let _ = writeln!(
+                out,
+                "        input_space: generated valid and rejected commands"
+            );
+            let _ = writeln!(out, "        oracle:");
+            let _ = writeln!(out, "          - transition outputs use declared variants");
+            let _ = writeln!(
+                out,
+                "          - replay records preserve source branch and state movement"
+            );
+            let _ = writeln!(out, "        command: properties");
+            let _ = writeln!(
+                out,
+                "        evidence: verification/properties/transition_properties.md"
+            );
+            let _ = writeln!(
+                out,
+                "        counterexamples: verification/fuzz/counterexamples"
+            );
+        }
+        if fuzz_evidence_expected_for_shape(shape) {
+            let _ = writeln!(out, "    fuzz_targets:");
+            let _ = writeln!(
+                out,
+                "      - id: {}-malformed-input-stops-before-domain",
+                names.prefix
+            );
+            let _ = writeln!(out, "        proves: malformed-input-stops-before-domain");
+            let _ = writeln!(out, "        input_space: generated raw boundary inputs");
+            let _ = writeln!(out, "        oracle:");
+            let _ = writeln!(out, "          - malformed input returns typed rejection");
+            let _ = writeln!(
+                out,
+                "          - rejected input emits no delegated domain command"
+            );
+            let _ = writeln!(out, "        command: fuzz");
+            let _ = writeln!(
+                out,
+                "        evidence: verification/fuzz/malformed_input_fuzz.md"
+            );
+            let _ = writeln!(
+                out,
+                "        counterexamples: verification/fuzz/counterexamples"
+            );
+        }
+    }
     out
 }
 
@@ -30067,6 +31675,22 @@ fn render_traceable_roles_yaml_with_parser(
         let _ = writeln!(out, "    subscription_registry:");
         let _ = writeln!(out, "      - {transition_path}");
     }
+    if property_evidence_expected_for_shape(shape) {
+        let _ = writeln!(out, "    property_generator:");
+        let _ = writeln!(out, "      - {transition_path}");
+        let _ = writeln!(out, "    property_oracle:");
+        let _ = writeln!(out, "      - {transition_path}");
+        let _ = writeln!(out, "    counterexample_replay:");
+        let _ = writeln!(out, "      - {transition_path}");
+    }
+    if fuzz_evidence_expected_for_shape(shape) {
+        let _ = writeln!(out, "    fuzz_target:");
+        let _ = writeln!(out, "      - {parser_path}");
+        let _ = writeln!(out, "    seed_corpus:");
+        let _ = writeln!(out, "      - verification/fuzz");
+        let _ = writeln!(out, "    counterexample_replay:");
+        let _ = writeln!(out, "      - {parser_path}");
+    }
     if matches!(
         shape,
         ScaffoldShape::StorageAdapter | ScaffoldShape::IntegrationAdapter
@@ -30080,12 +31704,12 @@ fn render_traceable_roles_yaml_with_parser(
 fn render_transition_semantic_evidence_yaml(shape: ScaffoldShape) -> String {
     match shape {
         ScaffoldShape::DomainEngine | ScaffoldShape::Workflow => {
-            "      laws:\n        - verification/laws/transition_trace.md\n      traces:\n        - verification/traces/transition_trace.yaml\n".to_string()
+            "      laws:\n        - verification/laws/transition_trace.md\n      properties:\n        - verification/properties/transition_properties.md\n      traces:\n        - verification/traces/transition_trace.yaml\n".to_string()
         }
         ScaffoldShape::BoundaryAdapter
         | ScaffoldShape::StorageAdapter
         | ScaffoldShape::IntegrationAdapter => {
-            "      boundaries:\n        - verification/boundaries/malformed_input.md\n      traces:\n        - verification/traces/boundary_parse.yaml\n".to_string()
+            "      boundaries:\n        - verification/boundaries/malformed_input.md\n      fuzz:\n        - verification/fuzz/malformed_input_fuzz.md\n      traces:\n        - verification/traces/boundary_parse.yaml\n".to_string()
         }
         ScaffoldShape::RuntimeMonitor => {
             "      runtime:\n        - verification/runtime/trigger_cases.md\n".to_string()
@@ -30099,12 +31723,12 @@ fn render_transition_semantic_evidence_yaml(shape: ScaffoldShape) -> String {
 fn render_representation_constructor_evidence_yaml(shape: ScaffoldShape) -> String {
     match shape {
         ScaffoldShape::DomainEngine | ScaffoldShape::Workflow => {
-            "      laws:\n        - verification/laws/transition_trace.md\n".to_string()
+            "      laws:\n        - verification/laws/transition_trace.md\n      properties:\n        - verification/properties/transition_properties.md\n".to_string()
         }
         ScaffoldShape::BoundaryAdapter
         | ScaffoldShape::StorageAdapter
         | ScaffoldShape::IntegrationAdapter => {
-            "      contracts:\n        - verification/contracts/parser_to_domain_command.md\n      boundaries:\n        - verification/boundaries/malformed_input.md\n".to_string()
+            "      contracts:\n        - verification/contracts/parser_to_domain_command.md\n      boundaries:\n        - verification/boundaries/malformed_input.md\n      fuzz:\n        - verification/fuzz/malformed_input_fuzz.md\n".to_string()
         }
         ScaffoldShape::RuntimeMonitor => {
             "      runtime:\n        - verification/runtime/trigger_cases.md\n".to_string()
@@ -30127,6 +31751,33 @@ fn render_closed_variants_yaml(model: &BindingScaffoldModel) -> String {
     format!("{}\n", yaml_string_list(&model.closed_variants(), 6))
 }
 
+fn render_property_commands_yaml(shape: ScaffoldShape, binding: &str) -> String {
+    let mut out = String::new();
+    if property_evidence_expected_for_shape(shape) {
+        let command = match binding {
+            "rust" => "cargo test --manifest-path Cargo.toml property_",
+            "swift" => "swift test --package-path . --filter Property",
+            "js" => "node tests/trace-smoke.mjs",
+            _ => "",
+        };
+        if !command.is_empty() {
+            let _ = writeln!(out, "  properties: {command}");
+        }
+    }
+    if fuzz_evidence_expected_for_shape(shape) {
+        let command = match binding {
+            "rust" => "cargo test --manifest-path Cargo.toml fuzz_",
+            "swift" => "swift test --package-path . --filter Fuzz",
+            "js" => "node tests/boundary-smoke.mjs",
+            _ => "",
+        };
+        if !command.is_empty() {
+            let _ = writeln!(out, "  fuzz: {command}");
+        }
+    }
+    out
+}
+
 fn render_rust_implementation_yaml(
     module_name: &str,
     package_name: &str,
@@ -30139,8 +31790,9 @@ fn render_rust_implementation_yaml(
         render_machine_variant_field("effect_results", &model.declared_effect_results());
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - representation\n    - transition\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n{}{}    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n{}  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules: []\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n{}{}    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
         yaml_quote(module_name),
+        render_property_commands_yaml(shape, "rust"),
         yaml_quote(package_name),
         yaml_quote(shape.as_str()),
         render_traceable_architecture_yaml(names, shape),
@@ -30187,13 +31839,14 @@ fn render_rust_lib_rs(model: &BindingScaffoldModel) -> String {
     }
     let representation_exports = representation_exports.join(", ");
     format!(
-        "pub mod representation;\npub mod transition;\n\npub use crate::representation::{{{representation_exports}}};\npub use crate::transition::{{replay_trace, transition, {machine}, {source_provenance}, {transition}, {transition_record}}};\n\npub fn semantic_shape() -> &'static str {{\n    {:?}\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn rejects_invalid_representation() {{\n        assert!({label}::new(\"\").is_none());\n    }}\n\n    #[test]\n    fn transition_returns_traceable_output() {{\n        let label = {label}::new(\"example\").unwrap();\n        let outcome = {machine}::transition({command}::Accept(label));\n        assert!(matches!(outcome.reply, {reply}::Accepted));\n        assert_eq!(outcome.events.len(), 1);\n    }}\n\n    #[test]\n    fn transition_replay_records_source_branch() {{\n        let label = {label}::new(\"example\").unwrap();\n        let records = replay_trace([{command}::Accept(label)]);\n        assert_eq!(records.len(), 1);\n        assert_eq!(records[0].source.branch, \"Accept\");\n    }}\n}}\n",
+        "mod representation;\nmod transition;\n\npub use crate::representation::{{{representation_exports}}};\npub use crate::transition::{{replay_trace, transition, {machine}, {source_provenance}, {transition}, {transition_record}}};\n\npub fn semantic_shape() -> &'static str {{\n    {:?}\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn rejects_invalid_representation() {{\n        assert!({label}::new(\"\").is_none());\n    }}\n\n    #[test]\n    fn transition_returns_traceable_output() {{\n        let label = {label}::new(\"example\").unwrap();\n        let outcome = {machine}::transition({command}::Accept(label));\n        assert!(matches!(outcome.reply, {reply}::Accepted));\n        assert_eq!(outcome.events.len(), 1);\n    }}\n\n    #[test]\n    fn transition_replay_records_source_branch() {{\n        let label = {label}::new(\"example\").unwrap();\n        let records = replay_trace([{command}::Accept(label)]);\n        assert_eq!(records.len(), 1);\n        assert_eq!(records[0].source.branch, \"Accept\");\n    }}\n\n    #[test]\n    fn property_transition_outputs_use_declared_variants() {{\n        for raw in [\"a\", \"example\", \"generated-case-1\", \"with punctuation !?\"] {{\n            let label = {label}::new(raw).unwrap();\n            let outcome = {machine}::transition({command}::Accept(label));\n            assert!(matches!(outcome.next_state, {state}::Ready));\n            assert!(matches!(outcome.reply, {reply}::Accepted));\n            assert_eq!(outcome.events.len(), 1);\n        }}\n    }}\n\n    #[test]\n    fn fuzz_malformed_generated_values_are_rejected_by_constructor() {{\n        for raw in [\"\", \" \", \"\\n\", \"\\t\"] {{\n            assert!({label}::new(raw).is_none());\n        }}\n    }}\n}}\n",
         model.shape.as_str(),
         command = names.command,
         label = names.label,
         machine = names.machine,
         reply = names.reply,
         source_provenance = names.source_provenance,
+        state = names.state,
         transition = names.transition,
         transition_record = names.transition_record,
         representation_exports = representation_exports,
@@ -30476,10 +32129,11 @@ fn render_swift_implementation_yaml(
         render_machine_variant_field("effect_results", &model.declared_effect_results());
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n{}{}    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n{}\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n{}{}    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
         yaml_quote(module_name),
         yaml_quote(&source_root),
         yaml_quote(&public_entrypoint),
+        render_property_commands_yaml(shape, "swift"),
         yaml_quote(package_name),
         yaml_quote(target_name),
         yaml_quote(shape.as_str()),
@@ -30758,7 +32412,7 @@ public func replayTrace(_ commands: [{command}]) -> [{transition_record}] {{
 
 fn render_swift_tests(target_name: &str, names: &InnerStructureNames) -> String {
     format!(
-        "import XCTest\n@testable import {target_name}\n\nfinal class {target_name}Tests: XCTestCase {{\n    func testRejectsEmptyValue() {{\n        XCTAssertNil({label}(\"\"))\n    }}\n\n    func testTransitionReturnsTraceableOutput() {{\n        let label = {label}(\"example\")!\n        let output = {machine}.transition(.accept(label))\n        XCTAssertEqual(output.reply, .accepted)\n        XCTAssertEqual(output.events.count, 1)\n    }}\n\n    func testTransitionReplayRecordsSourceBranch() {{\n        let label = {label}(\"example\")!\n        let records = replayTrace([.accept(label)])\n        XCTAssertEqual(records.count, 1)\n        XCTAssertEqual(records[0].source.branch, \"accept\")\n    }}\n}}\n",
+        "import XCTest\n@testable import {target_name}\n\nfinal class {target_name}Tests: XCTestCase {{\n    func testRejectsEmptyValue() {{\n        XCTAssertNil({label}(\"\"))\n    }}\n\n    func testTransitionReturnsTraceableOutput() {{\n        let label = {label}(\"example\")!\n        let output = {machine}.transition(.accept(label))\n        XCTAssertEqual(output.reply, .accepted)\n        XCTAssertEqual(output.events.count, 1)\n    }}\n\n    func testTransitionReplayRecordsSourceBranch() {{\n        let label = {label}(\"example\")!\n        let records = replayTrace([.accept(label)])\n        XCTAssertEqual(records.count, 1)\n        XCTAssertEqual(records[0].source.branch, \"accept\")\n    }}\n\n    func testPropertyTransitionOutputsUseDeclaredVariants() {{\n        for raw in [\"a\", \"example\", \"generated-case-1\", \"with punctuation !?\"] {{\n            let label = {label}(raw)!\n            let output = {machine}.transition(.accept(label))\n            XCTAssertEqual(output.reply, .accepted)\n            XCTAssertEqual(output.events.count, 1)\n        }}\n    }}\n\n    func testFuzzMalformedGeneratedValuesAreRejectedByConstructor() {{\n        for raw in [\"\", \" \", \"\\n\", \"\\t\"] {{\n            XCTAssertNil({label}(raw))\n        }}\n    }}\n}}\n",
         label = names.label,
         machine = names.machine,
     )
@@ -30778,12 +32432,12 @@ fn render_js_implementation_yaml(
     let public_entrypoint = if boundary_shape {
         "src/adapter.mjs"
     } else {
-        "src/transition.mjs"
+        "src/public.mjs"
     };
     let public_modules = if boundary_shape {
         "    - src/representation.mjs\n    - src/parser.mjs\n    - src/ports.mjs\n    - src/adapter.mjs"
     } else {
-        "    - src/representation.mjs\n    - src/transition.mjs"
+        "    - src/public.mjs\n    - src/representation.mjs\n    - src/transition.mjs"
     };
     let transition_function = if boundary_shape {
         "handleBoundaryTransition"
@@ -30814,9 +32468,11 @@ fn render_js_implementation_yaml(
         ""
     };
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\narchitecture:\n  shape: {}\n  public_modules:\n{}\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: {}\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - make{}\n    transition_functions:\n      - {}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n{}{}{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n{}\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\n{}architecture:\n  shape: {}\n  public_modules:\n{}\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: {}\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - make{}\n    transition_functions:\n      - {}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n{}{}{}",
         yaml_quote(module_name),
         yaml_quote(public_entrypoint),
+        render_property_commands_yaml(shape, "js"),
+        render_js_distribution_yaml(shape, module_name, public_entrypoint),
         yaml_quote(shape.as_str()),
         public_modules,
         render_traceable_architecture_yaml(names, shape),
@@ -30854,6 +32510,24 @@ fn render_js_implementation_yaml(
         render_representation_constructor_evidence_yaml(shape),
         transition_semantic_function,
         boundary_semantic_function,
+    )
+}
+
+fn render_js_distribution_yaml(
+    shape: ScaffoldShape,
+    module_name: &str,
+    public_entrypoint: &str,
+) -> String {
+    if shape != ScaffoldShape::DomainEngine {
+        return String::new();
+    }
+    format!(
+        "distribution:\n  reusable: true\n  public_facade: {}\n  semantic_package:\n    output: {}\n\n",
+        yaml_quote(public_entrypoint),
+        yaml_quote(&format!(
+            "dist/{}-0.1.0.rms",
+            sanitize_package_component(module_name)
+        )),
     )
 }
 
@@ -31106,6 +32780,25 @@ export const {machine} = Object.freeze({{
     )
 }
 
+fn render_js_public_mjs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"export * from "./representation.mjs";
+export {{
+  transition,
+  transitionRecord,
+  replayTrace,
+  {machine},
+}} from "./transition.mjs";
+
+export const rmsPublicFacade = Object.freeze({{
+  machine: "{machine}",
+  entrypoint: "src/public.mjs",
+}});
+"#,
+        machine = names.machine,
+    )
+}
+
 fn render_js_parser_mjs(names: &InnerStructureNames) -> String {
     format!(
         r#"import {{
@@ -31271,6 +32964,15 @@ test("{machine} replays accepted commands", () => {{
   assert.equal(replayTrace([make{command}Accept(label)])[0].source.branch, "Accept");
   assert.equal({machine}.transition(make{command}Accept(label)).reply.tag, "{reply}.Accepted");
 }});
+
+test("{machine} property generated labels use declared variants", () => {{
+  for (const raw of ["a", "example", "generated-case-1", "with punctuation !?"]) {{
+    const label = make{label}(raw);
+    const output = {machine}.transition(make{command}Accept(label));
+    assert.equal(output.reply.tag, "{reply}.Accepted");
+    assert.equal(output.events.length, 1);
+  }}
+}});
 "#,
         command = names.command,
         label = names.label,
@@ -31298,6 +33000,15 @@ test("{machine} boundary adapter writes parsed commands", () => {{
   assert.equal(written.length, 1);
   assert.equal(written[0].tag, "{command_envelope}");
   assert.equal(written[0].command.tag, "{command}.Accept");
+}});
+
+test("{machine} fuzz generated malformed inputs stop before delegation", () => {{
+  for (const raw of ["", " ", null, undefined, {{}}, {{ label: "" }}, {{ unexpected: true }}]) {{
+    const written = [];
+    const ports = createPorts({{ write: (command) => written.push(command) }});
+    assert.equal(handleBoundaryInput(raw, ports).tag, "{reply}.Rejected");
+    assert.equal(written.length, 0);
+  }}
 }});
 "#,
         command = names.command,
@@ -31652,6 +33363,18 @@ fn render_accepted_rejected_evidence(names: &InnerStructureNames) -> String {
     )
 }
 
+fn render_transition_property_evidence(names: &InnerStructureNames) -> String {
+    format!(
+        "# Property Evidence: transition properties\n\nPromise:\n\n- Property `{prefix}-transition-output-is-declared` proves the transition model returns declared state, event, reply, effect, and rejection variants for generated starter commands.\n\nInput space:\n\n```yaml\ncommands:\n  - valid {command}.Accept values generated from non-empty labels\n  - rejected {command}.Reject or invalid constructor paths\n```\n\nOracle:\n\n- every transition output has a declared `{state}` next state\n- accepted commands emit declared `{event}` and `{reply}` variants\n- rejected commands return declared `{rejection}` variants instead of throwing\n- replay records keep state before, state after, input, output, and source branch consistent\n\nCommand/tool:\n\n- `rms property run implementation.yaml --profile smoke`\n- `rms verify implementation.yaml`\n\nExpected result:\n\n- Deterministic generated cases pass in the binding's native test framework.\n- Any failing generated case can be recorded as `rms/property-counterexample/v0.1` and replayed.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        prefix = names.prefix,
+        command = names.command,
+        state = names.state,
+        event = names.event,
+        reply = names.reply,
+        rejection = names.rejection,
+    )
+}
+
 fn render_monitor_trigger_evidence(names: &InnerStructureNames) -> String {
     format!(
         "# Runtime Monitor Evidence: trigger cases\n\nPromise:\n\n- `{machine}` accepts observed inputs through declared monitor roles.\n- Derived facts or streams are computed without mutating controlled module state directly.\n- Trigger decisions produce only declared findings, events, alarms, commands, or capabilities.\n\nCommand/tool:\n\n- `rms verify implementation.yaml` runs the generated monitor binding checks when present.\n\nExpected result:\n\n- Trigger and non-trigger cases are represented through `{event}` and `{reply}` variants.\n- Stale, duplicate, or out-of-order observations are handled by explicit state or rejection paths before production use.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
@@ -31666,6 +33389,15 @@ fn render_malformed_input_evidence(names: &InnerStructureNames) -> String {
         "# Boundary Evidence: malformed input\n\nPromise:\n\n- `{machine}` parses and validates untrusted input before pure decisions run.\n- Malformed input is rejected with an explicit failure path.\n\nCommand/tool:\n\n- `rms verify implementation.yaml` runs generated boundary tests.\n- `rms trace check verification/traces/malformed_input_trace.yaml` validates the malformed-input trace.\n\nExpected result:\n\n- Valid input progresses through parsed/delegated/completed boundary states.\n- Malformed input produces `{reply}.Rejected` and does not delegate a domain command.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
         machine = names.machine,
         reply = names.reply,
+    )
+}
+
+fn render_malformed_input_fuzz_evidence(names: &InnerStructureNames) -> String {
+    format!(
+        "# Fuzz Evidence: malformed boundary input\n\nPromise:\n\n- Fuzz target `{prefix}-malformed-input-stops-before-domain` proves raw boundary input becomes an enveloped command or typed rejection before delegation.\n\nInput space:\n\n```yaml\nraw_boundary_input:\n  - empty objects\n  - missing labels\n  - wrong field types\n  - unknown command tags\n  - long strings and punctuation-heavy strings\n```\n\nOracle:\n\n- malformed input returns `{reply}.Rejected`\n- malformed input does not emit delegated domain commands\n- accepted input produces only declared `{command}` values\n- no parser case bypasses boundary validation or throws an ambient expected failure\n\nCommand/tool:\n\n- `rms property run implementation.yaml --profile smoke`\n- `rms verify implementation.yaml`\n\nExpected result:\n\n- Deterministic generated malformed inputs stop at the boundary.\n- Any failing generated case can be recorded as `rms/property-counterexample/v0.1` and replayed.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        prefix = names.prefix,
+        reply = names.reply,
+        command = names.command,
     )
 }
 
@@ -31696,7 +33428,7 @@ const JS_PORTS_MJS: &str = r#"export function createPorts(overrides = {}) {
 }
 "#;
 
-const JS_BUILD_SH: &str = "#!/usr/bin/env sh\nset -eu\nnode --check src/representation.mjs\nif [ -f src/transition.mjs ]; then node --check src/transition.mjs; fi\nif [ -f src/parser.mjs ]; then node --check src/parser.mjs; fi\nif [ -f src/adapter.mjs ]; then node --check src/adapter.mjs; fi\nif [ -f public/controller.mjs ]; then node --check public/controller.mjs; fi\nif [ -f public/app.mjs ]; then node --check public/app.mjs; fi\n";
+const JS_BUILD_SH: &str = "#!/usr/bin/env sh\nset -eu\nnode --check src/representation.mjs\nif [ -f src/transition.mjs ]; then node --check src/transition.mjs; fi\nif [ -f src/public.mjs ]; then node --check src/public.mjs; fi\nif [ -f src/parser.mjs ]; then node --check src/parser.mjs; fi\nif [ -f src/adapter.mjs ]; then node --check src/adapter.mjs; fi\nif [ -f public/controller.mjs ]; then node --check public/controller.mjs; fi\nif [ -f public/app.mjs ]; then node --check public/app.mjs; fi\n";
 
 const JS_SMOKE_SH: &str = "#!/usr/bin/env sh\nset -eu\nif [ -f tests/trace-smoke.mjs ]; then node tests/trace-smoke.mjs; fi\nif [ -f tests/boundary-smoke.mjs ]; then node tests/boundary-smoke.mjs; fi\nprintf '%s\\n' 'js semantic scaffold smoke passed'\n";
 
@@ -31711,6 +33443,13 @@ fn yaml_string_list(values: &[String], indent: usize) -> String {
 
 fn yaml_quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn yaml_summary(value: &YamlValue) -> String {
+    serde_yaml::to_string(value)
+        .unwrap_or_else(|_| format!("{value:?}"))
+        .trim()
+        .to_string()
 }
 
 fn markdown_inline(value: &str) -> String {
@@ -31958,6 +33697,7 @@ You can:
 - edit bodies inside RMS-declared role files;
 - add small private pure helpers inside declared pure role files;
 - add effectful helper code only inside declared adapter, port, or effect-executor roles;
+- import another module only through its declared public facade or contract-shaped entrypoint;
 - use provider-backed RMS prompts as advisory planning input.
 
 You cannot:
@@ -31965,6 +33705,7 @@ You cannot:
 - hand-create laws, contracts, public commands, states, events, effects, effect results, transitions, semantic roles, runnable surfaces, public entrypoints, or evidence obligations;
 - implement real product behavior only in an undeclared runnable surface while the declared machine remains generic;
 - bypass another module's public contract or a module's declared public entrypoint;
+- import another module's private role files such as representation, transition, parser, adapter internals, or native package exports that bypass the RMS public facade;
 - treat provider output, generated reports, or command logs as semantic authority until RMS canonical artifacts reflect them.
 
 ## Before Changing Behavior
@@ -32012,6 +33753,8 @@ Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a publi
 
 If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only. Simple runnable surfaces should stay thin and stateless unless the intent has real lifecycle, order, session, retry, status, recovery, or workflow semantics.
 
+If a pure/domain module is meant to be reused like a library or Lego block, declare the reusable capability in `provides.capabilities[]`, keep a single public code facade in `implementation.yaml`, and add package/reuse evidence. RMS says what is reusable; native package files only say how a binding imports it.
+
 Use `rms add-module <path> --name <name> --purpose "<purpose>" --shape <shape> --binding <binding>` when scaffolding one module. Bindings realize semantic roles idiomatically; they do not define the semantics.
 
 Default split for any capability: put invariant-bearing decisions in a `domain-engine`, and put untrusted input, output, UI, CLI, network, storage, time, randomness, external services, and other effects in adapters.
@@ -32024,6 +33767,8 @@ Before writing implementation code, make the user's intent concrete enough to en
 
 - Semantic gate: do not hand-create laws, contracts, semantic roles, states, commands, events, effects, transition functions, parsers, runnable surfaces, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply` and `rms surface apply`, then edit the declared role bodies. Use semantic `set`, `remove`, and `supersedes` operations for revisions instead of manual manifest surgery.
 - Public surface gate: public commands in `module.yaml` must be represented by the declared implementation surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
+- Reuse gate: reusable modules publish capabilities and contracts first, expose one declared public facade, and prove package integrity with `rms package` plus `rms verify-package`. Consumers must require the capability contract and import only the public facade.
+- Property gate: laws that say always, never, bounded, ordered, normalized, parsed, generated, impossible, or must not happen should declare semantic properties with input spaces, oracles, evidence, and counterexample replay policy before relying on binding tests.
 - Intent: restate the behavior in the owning context's language and name what must never happen.
 - ADTs and values: define closed variants, validated values, commands, states, events, and accepted/rejected result types.
 - State and transitions: define accepted transitions, rejected transitions, terminal states, transition records, and replayable traces when behavior depends on order or lifecycle.
@@ -32032,6 +33777,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
 - Numeric safety: if validated values represent counts, money, quantities, rates, sizes, scores, or other numeric facts, choose checked, saturating, bounded, or explicitly proven arithmetic before implementation.
 - Edge cases first: decide invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, numeric overflow or rounding, and not-applicable cases.
+- Property-first proof: convert broad laws into semantic properties; bindings may use native libraries or deterministic generated cases, but RMS owns the input space, oracle, evidence path, and replayable counterexample shape.
 - External truth: decide what happens when an external outcome is unknown, duplicate, stale, partial, conflicting, delayed, or later corrected. Declare reconciliation, recovery, retry, compensation, or convergence evidence before relying on that behavior.
 - Only then fill implementation files, tests, and evidence.
 
@@ -32054,6 +33800,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
 - Keep workflow choreography explicit in the workflow transition model, subscription registry, effect lifecycle, inbox/outbox, or declared adapter boundary rather than hidden in listener chains.
 - Keep runnable surfaces connected to the declared RMS boundary. If `public/app.*`, `src/cli.*`, routes, mobile views, or similar files are the real product surface, declare them with `rms surface apply` and route them through the declared adapter/public entrypoint instead of importing or duplicating pure/private decision code directly. Browser launch files should reference the declared controller entrypoint rather than bypassing it. Any local browser script loaded by the launch file is part of the surface; it must import/call the declared controller or adapter, not carry a copied parser, generator, transition, or domain decision implementation.
+- Keep reusable-module consumers on the declared public facade. Do not import `transition`, `representation`, parser internals, or adapter internals from another module even if the language package manager makes the path reachable.
 - Do not edit another module's private implementation to bypass its public contract.
 - Treat generated reports, diffs, and provider output as evidence, not architecture.
 
@@ -32068,7 +33815,9 @@ Run the smallest checks that prove the changed promise:
 - `rms surface check <implementation.yaml> --strict` when runnable app, UI, CLI, browser, HTTP, batch, or executable entrypoints exist.
 - `rms structure <implementation.yaml>` when an implementation binding exists and inner roles changed.
 - `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, or `rms trace diagnose <trace-bundle>` when local transition evidence exists.
+- `rms property check <module.yaml|implementation.yaml>`, `rms property run <implementation.yaml>`, or `rms property replay <counterexample.yaml>` when laws, parsers, numeric bounds, reusable modules, or generated counterexamples are involved.
 - `rms verify <implementation.yaml>` when the module has an implementation binding, or `rms verify <composite-module.yaml>` for composite rollups.
+- `rms package <module.yaml>` and `rms verify-package <package-dir>` when a module is intended for reuse outside its current owner.
 - `rms gate --root .` when reviewing a working-tree change.
 - `rms audit --root . --strict` before claiming production-ready RMS software.
 
@@ -33375,6 +35124,7 @@ import struct ExternalKit.Widget
         );
         let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
         let readme = fs::read_to_string(root.join("README.md")).unwrap();
+        let lib = fs::read_to_string(root.join("src/lib.rs")).unwrap();
         let representation = fs::read_to_string(root.join("src/representation.rs")).unwrap();
         let transition = fs::read_to_string(root.join("src/transition.rs")).unwrap();
         let trace_bundle =
@@ -33406,9 +35156,16 @@ import struct ExternalKit.Widget
                 || implementation.contains("- ExampleState")
         );
         assert!(implementation.contains("command_envelope:"));
+        assert!(implementation.contains("public_modules: []"));
         assert!(implementation.contains("transition:"));
         assert!(implementation.contains("numeric_safety:"));
         assert!(implementation.contains("first_bad_transition"));
+        assert!(lib.contains("mod representation;"));
+        assert!(lib.contains("mod transition;"));
+        assert!(!lib.contains("pub mod representation;"));
+        assert!(!lib.contains("pub mod transition;"));
+        assert!(lib.contains("pub use crate::representation::"));
+        assert!(lib.contains("pub use crate::transition::"));
         assert!(readme.contains("Validated numeric values"));
         assert!(representation.contains("pub enum ExampleCommand"));
         assert!(representation.contains("pub struct ExampleCommandEnvelope"));
@@ -33587,6 +35344,62 @@ architecture:
                 report.diagnostics
             );
         }
+    }
+
+    #[test]
+    fn structure_report_flags_declared_effect_envelope_without_effects() {
+        let root = unique_test_dir("effect-envelope-manifest-residue");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn transition() {}\n").unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: example
+binding: rust
+source:
+  root: .
+  public_entrypoint: src/lib.rs
+commands:
+  build: cargo check
+  verify: cargo test
+architecture:
+  shape: domain-engine
+  messages:
+    command_envelope: [command_id, target_machine, correlation_id, causation_id]
+    event_envelope: [event_id, source_machine, correlation_id, causation_id]
+    effect_envelope: [effect_id, requester, correlation_id, causation_id]
+  transition:
+    output: [next_state, events, commands, effects, reply]
+  trace:
+    journal: transition-records
+    timeline_projection: transition-records
+    replay_bundle: transition-records
+    first_bad_transition: source-provenance-from-transition-record
+  machine:
+    name: ExampleMachine
+    mode: stateless-decision-machine
+    stateless_justification: pure no-effect decision
+    states: [Ready]
+    commands: [ExampleCommand]
+    events: [ExampleEvent]
+    effects: []
+    effect_results: []
+    replies: [ExampleReply]
+    rejections: [ExampleRejection]
+    transition_function: transition
+  roles:
+    transition: [src/lib.rs]
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "structure.effect-envelope-without-effects" }));
     }
 
     #[test]
@@ -35449,6 +37262,92 @@ evidence:
     }
 
     #[test]
+    fn spec_apply_change_yaml_adds_semantic_property_and_evidence() {
+        let root = unique_test_dir("spec-apply-property-yaml");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: line-selection
+  version: 0.1.0
+  kind: library
+  purpose: Select lines deterministically.
+profiles: [core]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification: {}
+"#,
+        )
+        .unwrap();
+
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent:
+  summary: Line selection output remains sorted for generated line sets.
+properties:
+  add:
+    - id: selected-lines-are-monotonic
+      proves: line-selection-order
+      kind: property
+      subject: line-selection
+      input_space:
+        lines: generated newline-delimited text
+        selectors: generated line ranges
+      operation: select-lines
+      oracle:
+        - selected line numbers are monotonically increasing
+        - selected lines are always copied from the original input
+      evidence:
+        kind: property
+        path: verification/properties/selected_lines_are_monotonic.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let module = fs::read_to_string(root.join("module.yaml")).unwrap();
+        let evidence = fs::read_to_string(
+            root.join("verification/properties/selected_lines_are_monotonic.md"),
+        )
+        .unwrap();
+        let report = build_property_check_report(&root.join("module.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(module.contains("selected-lines-are-monotonic"));
+        assert!(module.contains("verification/properties/selected_lines_are_monotonic.md"));
+        assert!(evidence.contains("Property `selected-lines-are-monotonic`"));
+        assert_eq!(report.properties.len(), 1);
+        assert_eq!(report.properties[0].status, "declared");
+        assert!(report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !property_blocking_diagnostic(&diagnostic.check)));
+    }
+
+    #[test]
     fn spec_apply_rejects_law_without_evidence() {
         let root = unique_test_dir("spec-apply-law-without-evidence");
         fs::create_dir_all(&root).unwrap();
@@ -35891,6 +37790,78 @@ machine:
         }));
         assert!(report.checks.iter().any(|check| {
             check.id == "structure.transition-input-not-classified" && check.result == "fail"
+        }));
+    }
+
+    #[test]
+    fn strict_audit_flags_applied_semantic_property_not_reflected() {
+        let root = unique_test_dir("strict-audit-semantic-property-reflection");
+        let module_root = root.join("modules/line-selection");
+        fs::create_dir_all(module_root.join("verification/changes")).unwrap();
+        fs::create_dir_all(module_root.join("verification/properties")).unwrap();
+        fs::write(
+            module_root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: line-selection
+  version: 0.1.0
+  kind: library
+  purpose: Select lines deterministically.
+profiles: [core]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  properties:
+    - verification/properties/selected_lines_are_monotonic.md
+"#,
+        )
+        .unwrap();
+        fs::write(
+            module_root.join("verification/properties/selected_lines_are_monotonic.md"),
+            "Promise:\n\n- Generated selected lines stay monotonic.\n\nCommand/tool:\n\n- cargo test property_selected_lines_are_monotonic\n\nExpected result:\n\n- pass\n\nSource revision: recorded by git commit before production use.\n",
+        )
+        .unwrap();
+        fs::write(
+            module_root.join("verification/changes/property.yaml"),
+            r#"spec: rms/semantic-change/v0.1
+module: modules/line-selection/module.yaml
+intent:
+  summary: Generated selected line sets stay monotonic.
+properties:
+  add:
+    - id: selected-lines-are-monotonic
+      proves: line-selection-order
+      input_space:
+        lines: generated newline-delimited text
+      operation: select-lines
+      oracle:
+        - selected line numbers are monotonically increasing
+      evidence:
+        kind: property
+        path: verification/properties/selected_lines_are_monotonic.md
+"#,
+        )
+        .unwrap();
+
+        let report = build_audit_report(&root, true).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report.checks.iter().any(|check| {
+            check.id == "semantic.applied-change-not-reflected" && check.result == "fail"
         }));
     }
 
@@ -37280,6 +39251,44 @@ verification:
     }
 
     #[test]
+    fn compose_prefers_required_module_as_capability_provider() {
+        let root = unique_test_dir("compose-required-module-capability-provider");
+        fs::create_dir_all(&root).unwrap();
+        write_compose_module(
+            &root.join("parent.module.yaml"),
+            "rename-plan",
+            "  capabilities:\n    - name: plan-renames\n      contract: contracts/plan-renames.v1.yaml\n",
+            "  modules: []\n",
+            "  capabilities: []\n",
+        );
+        write_compose_module(
+            &root.join("domain.module.yaml"),
+            "rename-plan-domain",
+            "  capabilities:\n    - name: plan-renames\n      contract: contracts/plan-renames.v1.yaml\n",
+            "  modules: []\n",
+            "  capabilities: []\n",
+        );
+        write_compose_module(
+            &root.join("boundary.module.yaml"),
+            "rename-plan-boundary",
+            "  capabilities: []\n",
+            "  modules:\n    - rename-plan-domain\n",
+            "  capabilities:\n    - name: plan-renames\n      contract: contracts/plan-renames.v1.yaml\n",
+        );
+
+        let report = compose_system(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, ComposeResult::Pass, "{:#?}", report.findings);
+        assert!(report.findings.iter().any(|finding| {
+            finding.status == ComposeStatus::Satisfied
+                && finding.check == "requires.capabilities.provider"
+                && finding.consumer.as_deref() == Some("rename-plan-boundary")
+                && finding.provider.as_deref() == Some("rename-plan-domain")
+        }));
+    }
+
+    #[test]
     fn compose_reports_capability_contract_mismatch() {
         let root = unique_test_dir("compose-capability-contract-mismatch");
         fs::create_dir_all(&root).unwrap();
@@ -37586,6 +39595,7 @@ verification:
         .unwrap();
 
         let parent = fs::read_to_string(root.join("modules/play-game/module.yaml")).unwrap();
+        let domain = fs::read_to_string(root.join("modules/play-game-rules/module.yaml")).unwrap();
         let parent_scenario_evidence = fs::read_to_string(
             root.join("modules/play-game/verification/scenarios/composed_capability.md"),
         )
@@ -37603,6 +39613,9 @@ verification:
             .exists();
         let has_accepted_rejected_evidence = root
             .join("modules/play-game-rules/verification/scenarios/accepted_rejected.md")
+            .exists();
+        let has_reusable_package_evidence = root
+            .join("modules/play-game-rules/verification/scenarios/reusable_package.md")
             .exists();
         let has_malformed_input_evidence = root
             .join("modules/play-game-cli/verification/boundaries/malformed_input.md")
@@ -37629,6 +39642,11 @@ verification:
         assert!(parent.contains("composition:"));
         assert!(parent.contains("name: \"play-game-rules\""));
         assert!(parent.contains("name: \"play-game-cli\""));
+        assert!(domain.contains("capabilities:"));
+        assert!(domain.contains("name: \"resolve-move\""));
+        assert!(domain.contains("x-rms:"));
+        assert!(domain.contains("reusable: true"));
+        assert!(domain.contains("verification/scenarios/reusable_package.md"));
         assert!(parent_scenario_evidence.contains("public-command-is-child-backed"));
         assert!(boundary.contains("name: \"resolve-move\""));
         assert!(
@@ -37643,6 +39661,7 @@ verification:
         assert!(has_parent_export_evidence);
         assert!(has_transition_trace_evidence);
         assert!(has_accepted_rejected_evidence);
+        assert!(has_reusable_package_evidence);
         assert!(has_malformed_input_evidence);
         assert!(has_parser_contract_evidence);
         assert_eq!(report.result, ComposeResult::Pass, "{:#?}", report.findings);
@@ -37729,6 +39748,12 @@ verification:
         let implementation =
             fs::read_to_string(root.join("modules/tile-generator-boundary/implementation.yaml"))
                 .unwrap();
+        let domain_implementation =
+            fs::read_to_string(root.join("modules/tile-generator-domain/implementation.yaml"))
+                .unwrap();
+        let domain_public_facade = root
+            .join("modules/tile-generator-domain/src/public.mjs")
+            .exists();
         let controller =
             fs::read_to_string(root.join("modules/tile-generator-boundary/public/controller.mjs"))
                 .unwrap();
@@ -37750,6 +39775,9 @@ verification:
         assert!(implementation.contains("launch_scripts"));
         assert!(implementation.contains("public/controller.mjs"));
         assert!(implementation.contains("public/app.mjs"));
+        assert!(domain_implementation.contains("distribution:"));
+        assert!(domain_implementation.contains("public_facade: src/public.mjs"));
+        assert!(domain_public_facade);
         assert_eq!(
             report.machine.mode.as_deref(),
             Some("stateless-decision-machine")
@@ -38013,6 +40041,336 @@ verification:
     }
 
     #[test]
+    fn semantic_completeness_flags_reusable_domain_without_capability() {
+        let root = unique_test_dir("semantic-reusable-capability");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: line-selection-domain
+  version: 0.1.0
+  kind: library
+  purpose: Reusable line selection.
+profiles: [core]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands:
+    - name: select-lines
+      contract: contracts/select-lines.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+x-rms:
+  reusable: true
+"#,
+        )
+        .unwrap();
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_semantic_module_completeness(&manifest, &mut diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "semantic.reusable-capability-missing"));
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "semantic.reusable-package-evidence-missing"));
+    }
+
+    #[test]
+    fn semantic_completeness_rejects_template_only_reusable_package_evidence() {
+        let root = unique_test_dir("semantic-reusable-package-template");
+        fs::create_dir_all(root.join("verification/scenarios")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: line-selection-domain
+  version: 0.1.0
+  kind: library
+  purpose: Reusable line selection.
+profiles: [core]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands:
+    - name: select-lines
+      contract: contracts/select-lines.v1.yaml
+  queries: []
+  events: []
+  capabilities:
+    - name: line-selection
+      contract: contracts/select-lines.v1.yaml
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios:
+    - verification/scenarios/reusable_package.md
+  boundaries: []
+x-rms:
+  reusable: true
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("verification/scenarios/reusable_package.md"),
+            "# Reusable Package\n\nCommand/tool:\n\n- `rms package module.yaml --output <package-dir>`\n- `rms verify-package <package-dir>`\n\nExpected result:\n\n- Package verification passes.\n",
+        )
+        .unwrap();
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_semantic_module_completeness(&manifest, &mut diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "semantic.reusable-package-evidence-missing"));
+    }
+
+    #[test]
+    fn semantic_completeness_accepts_recorded_reusable_package_evidence() {
+        let root = unique_test_dir("semantic-reusable-package-recorded");
+        fs::create_dir_all(root.join("verification/scenarios")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: line-selection-domain
+  version: 0.1.0
+  kind: library
+  purpose: Reusable line selection.
+profiles: [core]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands:
+    - name: select-lines
+      contract: contracts/select-lines.v1.yaml
+  queries: []
+  events: []
+  capabilities:
+    - name: line-selection
+      contract: contracts/select-lines.v1.yaml
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios:
+    - verification/scenarios/reusable_package.md
+  boundaries: []
+x-rms:
+  reusable: true
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("verification/scenarios/reusable_package.md"),
+            "# Reusable Package\n\nCommand/tool:\n\n- `rms package module.yaml --output dist/line-selection`\n- `rms verify-package dist/line-selection`\n\nRecorded result:\n\n- packaged RMS module at dist/line-selection\n- pass: RMS package verified dist/line-selection\n- pass [package.files.integrity] PACKAGE.json\n",
+        )
+        .unwrap();
+        let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_semantic_module_completeness(&manifest, &mut diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().all(|diagnostic| {
+            diagnostic.check != "semantic.reusable-package-evidence-missing"
+        }));
+    }
+
+    #[test]
+    fn structure_report_flags_reusable_rust_public_role_modules() {
+        let root = unique_test_dir("reusable-rust-public-role-modules");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: line-selection-domain
+  version: 0.1.0
+  kind: library
+  purpose: Reusable line selection.
+profiles: [core]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+x-rms:
+  reusable: true
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub mod representation;\npub mod transition;\npub use crate::transition::transition;\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/representation.rs"), "").unwrap();
+        fs::write(root.join("src/transition.rs"), "pub fn transition() {}\n").unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: line-selection-domain
+binding: rust
+source:
+  root: .
+  public_entrypoint: src/lib.rs
+commands:
+  build: cargo check
+  verify: cargo test
+toolchain:
+  cargo_manifest: Cargo.toml
+  package: line-selection-domain
+dependencies:
+  allowed_external_crates: []
+architecture:
+  shape: domain-engine
+  public_modules:
+    - representation
+    - transition
+  machine:
+    name: LineSelectionMachine
+    mode: stateless-decision-machine
+    stateless_justification: pure line selection has no lifecycle state
+    states: [Ready]
+    commands: [SelectLinesCommand]
+    events: [SelectLinesEvent]
+    effects: []
+    effect_results: []
+    replies: [SelectLinesReply]
+    rejections: [SelectLinesRejection]
+    transition_function: transition
+  roles:
+    representation: [src/representation.rs]
+    transition: [src/transition.rs]
+"#,
+        )
+        .unwrap();
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.public-facade-private-role-exposed"
+        }));
+    }
+
+    #[test]
+    fn structure_report_flags_native_package_export_bypassing_public_facade() {
+        let root = unique_test_dir("native-export-facade");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/public.mjs"),
+            "export const publicApi = true;\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/transition.mjs"),
+            "export const privateRole = true;\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: line-selection-domain
+binding: js
+source:
+  root: .
+  public_entrypoint: src/public.mjs
+commands:
+  build: node --check src/public.mjs
+  verify: node --check src/public.mjs
+distribution:
+  reusable: true
+  public_facade: src/public.mjs
+  native_package:
+    ecosystem: js
+    exports:
+      - src/transition.mjs
+architecture:
+  shape: domain-engine
+  public_modules:
+    - src/public.mjs
+  machine:
+    name: LineSelectionMachine
+    mode: stateless-decision-machine
+    stateless_justification: pure line selection has no lifecycle state
+    states: [Ready]
+    commands: [SelectLinesCommand]
+    events: [SelectLinesEvent]
+    effects: []
+    effect_results: []
+    replies: [SelectLinesReply]
+    rejections: [SelectLinesRejection]
+    transition_function: transition
+  roles:
+    representation: [src/public.mjs]
+    transition: [src/transition.mjs]
+semantic_functions: []
+"#,
+        )
+        .unwrap();
+        let manifest = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_loaded_manifest(&manifest, &mut diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "structure.native-package-export-mismatch"));
+    }
+
+    #[test]
     fn shape_direction_accepts_generated_capability_tree() {
         let root = route_capability_fixture("shape-direction-valid");
 
@@ -38230,6 +40588,12 @@ verification:
         assert!(output
             .join("verification/traces/transition_trace.yaml")
             .exists());
+        assert!(output.join("implementation.yaml").exists());
+        assert!(output.join("src/public.mjs").exists());
+        assert!(output.join("src/transition.mjs").exists());
+        assert!(output.join("src/representation.mjs").exists());
+        assert!(output.join("scripts/build.sh").exists());
+        assert!(output.join("scripts/smoke.sh").exists());
         assert!(output.join("conformance-report.json").exists());
         let package_manifest = fs::read_to_string(output.join("PACKAGE.json")).unwrap();
         assert!(package_manifest.contains("\"spec\": \"rms/package/v0.1\""));
@@ -38260,6 +40624,8 @@ verification:
 
     fn write_package_fixture(root: &Path) {
         fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join("verification/laws")).unwrap();
         fs::create_dir_all(root.join("verification/traces")).unwrap();
         fs::write(
@@ -38271,6 +40637,96 @@ verification:
         fs::write(
             root.join("verification/traces/transition_trace.yaml"),
             "spec: rms/trace-bundle/v0.1\nmachine: PackageFixtureMachine\nrecords: []\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("scripts/build.sh"),
+            "#!/usr/bin/env sh\nset -eu\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("scripts/smoke.sh"),
+            "#!/usr/bin/env sh\nset -eu\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/public.mjs"), "export * from './representation.mjs';\nexport { transition, transitionRecord, PackageFixtureMachine } from './transition.mjs';\n").unwrap();
+        fs::write(
+            root.join("src/representation.mjs"),
+            r#"export const Ready = Object.freeze({ tag: "PackageFixtureState.Ready" });
+export const PackageFixtureState = Object.freeze({ Ready });
+export const PackageFixtureCommand = Object.freeze({ Accept: "PackageFixtureCommand.Accept" });
+export const PackageFixtureEvent = Object.freeze({ Accepted: "PackageFixtureEvent.Accepted" });
+export const PackageFixtureReply = Object.freeze({ Accepted: "PackageFixtureReply.Accepted" });
+export const PackageFixtureRejection = Object.freeze({ InvalidCommand: "PackageFixtureRejection.InvalidCommand" });
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/transition.mjs"),
+            r#"export function transition(command) {
+  return {
+    next_state: { tag: "PackageFixtureState.Ready" },
+    events: [{ tag: "PackageFixtureEvent.Accepted" }],
+    commands: [],
+    effects: [],
+    reply: { tag: "PackageFixtureReply.Accepted", command },
+  };
+}
+export function transitionRecord(command) {
+  return {
+    state_before: { tag: "PackageFixtureState.Ready" },
+    state_after: { tag: "PackageFixtureState.Ready" },
+    input: command,
+    output: transition(command),
+  };
+}
+export const PackageFixtureMachine = Object.freeze({ transition, transitionRecord });
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: package-fixture
+binding: js
+source:
+  root: .
+  public_entrypoint: src/public.mjs
+commands:
+  build: sh scripts/build.sh
+  verify: sh scripts/smoke.sh
+distribution:
+  reusable: true
+  public_facade: src/public.mjs
+architecture:
+  shape: domain-engine
+  public_modules:
+    - src/public.mjs
+    - src/representation.mjs
+    - src/transition.mjs
+  machine:
+    name: PackageFixtureMachine
+    mode: stateless-decision-machine
+    stateless_justification: fixture has no lifecycle state
+    states: [Ready]
+    commands: [PackageFixtureCommand]
+    events: [PackageFixtureEvent]
+    effects: []
+    effect_results: []
+    replies: [PackageFixtureReply]
+    rejections: [PackageFixtureRejection]
+    transition_function: transition
+  roles:
+    representation: [src/representation.mjs]
+    transition: [src/transition.mjs]
+    replay_bundle: [verification/traces/transition_trace.yaml]
+    trace_evidence: [verification/traces/transition_trace.yaml]
+semantic_functions:
+  - id: transition-model
+    symbol: src/transition.mjs#transition
+    kind: transition
+    purity: pure
+"#,
         )
         .unwrap();
         fs::write(

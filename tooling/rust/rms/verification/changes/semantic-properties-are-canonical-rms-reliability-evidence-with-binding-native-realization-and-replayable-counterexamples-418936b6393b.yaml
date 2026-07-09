@@ -1,0 +1,71 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Semantic properties are canonical RMS reliability evidence with binding-native realization and replayable counterexamples.
+laws:
+  add:
+  - id: semantic-properties-are-canonical-reliability-evidence
+    statement: RMS properties define generated input spaces and oracles semantically; language bindings only realize those properties and counterexamples remain replayable evidence.
+    kind: invariant
+contracts:
+  add:
+  - name: check-semantic-properties
+    version: v1
+    command: rms-property-check
+    accepts:
+    - module or implementation target with semantic property declarations
+    rejects:
+    - property missing input space, oracle, evidence, command, or replayable counterexample metadata
+  - name: run-semantic-properties
+    version: v1
+    command: rms-property-run
+    accepts:
+    - implementation target with commands.properties or commands.fuzz
+    rejects:
+    - missing declared property or fuzz verification command
+  - name: replay-property-counterexample
+    version: v1
+    command: rms-property-replay
+    accepts:
+    - rms/property-counterexample/v0.1 file with replay command or trace reference
+    rejects:
+    - unreplayable counterexample metadata
+properties:
+  add:
+  - id: semantic-property-declarations-have-oracles
+    proves: semantic-properties-are-canonical-reliability-evidence
+    kind: invariant
+    subject: semantic-property-model
+    input_space:
+      semantic_changes: rms/semantic-change/v0.1 objects with properties.add entries
+      implementation_bindings: implementation.yaml files with architecture.reliability properties or fuzz_targets
+    preconditions: []
+    operation: null
+    oracle:
+    - every property names what it proves
+    - every property declares an input space
+    - every property declares at least one oracle
+    - property and fuzz targets reference concrete evidence
+    - counterexamples carry replay metadata
+    evidence:
+      path: verification/properties/semantic_properties.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: property
+    proves: semantic-properties-are-canonical-reliability-evidence
+    path: verification/properties/semantic_properties.md
+  - kind: contract
+    proves: check-semantic-properties
+    path: verification/contracts/check_semantic_properties.md
+  - kind: contract
+    proves: run-semantic-properties
+    path: verification/contracts/run_semantic_properties.md
+  - kind: contract
+    proves: replay-property-counterexample
+    path: verification/contracts/replay_property_counterexample.md
+surfaces: null

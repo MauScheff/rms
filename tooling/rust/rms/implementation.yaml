@@ -8,6 +8,7 @@ commands:
   build: cargo build --manifest-path Cargo.toml
   verify: cargo test --manifest-path Cargo.toml
   format: cargo fmt --manifest-path Cargo.toml --check
+  fuzz: cargo test --manifest-path Cargo.toml schema_validation_reports_shape_errors
 toolchain:
   cargo_manifest: Cargo.toml
   package: rms
@@ -26,6 +27,19 @@ dependencies:
 architecture:
   shape: boundary-adapter
   public_modules: []
+  reliability:
+    fuzz_targets:
+    - id: rms-cli-malformed-artifacts-produce-diagnostics
+      proves: canonical-artifacts-remain-authoritative
+      kind: fuzz
+      input_space: generated malformed RMS command arguments and malformed RMS YAML artifacts
+      oracle:
+      - malformed input produces diagnostics or explicit command errors
+      - rejected input does not create semantic authority outside RMS canonical apply paths
+      - diagnostics remain derived evidence rather than hidden architecture
+      command: fuzz
+      evidence: verification/fuzz/malformed_artifacts.md
+      counterexamples: verification/fuzz/counterexamples
   messages:
     command_envelope:
     - command_id

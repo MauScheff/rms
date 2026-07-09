@@ -80,6 +80,25 @@ verification:
     - verification/boundaries
   traces:
     - verification/traces
+  fuzz:
+    - verification/fuzz/malformed_input_fuzz.md
+
+fuzz_targets:
+  - id: tic-tac-toe-cli-malformed-input-stops-before-domain
+    proves: boundary-parse
+    kind: fuzz
+    input_space:
+      raw_cli_input:
+        - empty string
+        - out-of-board coordinates
+        - valid mixed-case board coordinates
+    operation: handleBoundaryInput
+    oracle:
+      - malformed input returns a typed rejection
+      - malformed input does not delegate to the rules module
+      - accepted input delegates only parsed board cells
+    evidence: verification/fuzz/malformed_input_fuzz.md
+    counterexamples: verification/fuzz/counterexamples
 
 x-scaffold:
   shape: "boundary-adapter"
