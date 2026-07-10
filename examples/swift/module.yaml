@@ -1,53 +1,49 @@
 spec: rms/module/v0.1
-
 module:
   name: swift-example
   version: 0.1.0
   kind: library
   purpose: Accept and expose validated Swift widgets
-
 profiles:
-  - core
-
+- core
 owns:
   concepts:
-    - SwiftWidget
+  - SwiftWidget
   data: []
   decisions:
-    - swift-widget-acceptance
-
+  - swift-widget-acceptance
 provides:
   commands: []
   queries:
-    - name: describe-swift-widget
-      contract: contracts/describe-swift-widget.v1.yaml
+  - name: describe-swift-widget
+    contract: contracts/describe-swift-widget.v1.yaml
   events: []
   capabilities: []
-
 requires:
   modules: []
   capabilities: []
-
 invariants:
-  - id: accepted-swift-widget-has-name
-    statement: Every accepted Swift widget has a non-empty name.
-    authority: constructor
-    enforced_by: swift-widget-constructor
-    verified_by: verification/laws/accepted_swift_widget_has_name
-
+- id: accepted-swift-widget-has-name
+  statement: Every accepted Swift widget has a non-empty name.
+  authority: constructor
+  enforced_by: swift-widget-constructor
+  verified_by: verification/laws/accepted_swift_widget_has_name
 effects: []
-
 compatibility:
   policy: backward-compatible-within-major
-
 verification:
   laws:
-    - verification/laws
+  - verification/laws
   contracts:
-    - verification/contracts
+  - verification/contracts
   scenarios:
-    - verification/scenarios
+  - verification/scenarios
   boundaries:
-    - verification/boundaries
+  - verification/boundaries
   traces:
-    - verification/traces
+  - verification/traces
+x-rms:
+  semantic_revision:
+    digest: sha256:35218e93b6e6af7c53f3d4cd80a19967ae5660b27723d8c876b1194109f0d81b
+    change_record: verification/machine-changes/machine-change-d094fb0cc605.yaml
+    applied_by: rms machine apply

@@ -44,8 +44,9 @@ For agents, RMS narrows the job. The agent does not invent architecture directly
 - A canonical specification for modules, bounded contexts, contracts, effects, profiles, compatibility, and conformance.
 - YAML manifests for systems, context maps, modules, contracts, implementations, semantic changes, machine changes, and conformance reports.
 - A semantic gate for changing meaning before code: laws, contracts, commands, states, events, effects, effect results, replies, rejections, transitions, public entrypoints, and evidence obligations.
+- A semantic revision seal: strict audit recomputes canonical module, contract, and implementation semantics and rejects direct manifest edits made after RMS apply.
 - Semantic properties for broad laws: RMS declares input spaces, oracles, evidence, replayable counterexamples, and the realization claim. Fixed corpora, finite exhaustive checks, generated properties, and coverage fuzzers remain distinct.
-- Traceable machine scaffolds that make state, effects, transition outputs, journals, replay bundles, and first-bad-transition diagnostics first-class.
+- Traceable machine scaffolds with named transition cases, state, effects, transition outputs, journals, replay bundles, and first-bad-transition diagnostics.
 - Atomic effect protocols: executors perform one request and return one typed result; the machine transition owns what happens next.
 - A Rust reference CLI that acts as the human and agent workbench for validation, explanation, context packets, semantic planning, structure checks, trace replay, compatibility, audit, packaging, and conformance evidence.
 - Agent skills for inspecting modules, implementing changes, pruning semantic residue, adding modules, evolving contracts, composing modules, and verifying conformance through the shared CLI surface.
@@ -180,7 +181,8 @@ rms surface apply ./my-system/modules/tic-tac-toe-boundary/implementation.yaml \
   --entrypoint public/app.mjs \
   --launch-entrypoint public/index.html \
   --delegates-to src/adapter.mjs#handleBoundaryInput \
-  --command tic-tac-toe
+  --command tic-tac-toe \
+  --effect local-browser-io
 
 rms surface check ./my-system/modules/tic-tac-toe-boundary/implementation.yaml --strict
 ```
@@ -237,12 +239,19 @@ machine:
   commands:
     add: [Confirm]
   replies:
-    add: [Confirmed]'
+    add: [Confirmed]
+transitions:
+  add:
+    - from: PendingConfirmation
+      on: Confirm
+      to: Ready
+      case: ConfirmPendingDraft
+      reply: Confirmed'
 
 rms machine check ./my-system/modules/widget/implementation.yaml
 ```
 
-`rms spec plan`, `rms machine plan`, and provider output are advisory. `rms spec apply` and `rms machine apply` are the deterministic steps that update canonical declarations and role placeholders. `rms spec apply` also records the exact applied semantic-change object under `verification/changes/`. Generated capability contracts are visibly incomplete scaffolds; replace them through `contracts.set` with product-specific meaning, accepted inputs, guaranteed outcomes, and rejection categories before implementation. Use `set`, `remove`, and `supersedes` to revise RMS semantics instead of hand-editing manifests or rewriting old change records. Agents then fill declared role bodies; pure helpers stay pure, and IO belongs behind declared effects/effect-results in adapter, port, or effect-executor roles.
+`rms spec plan`, `rms machine plan`, and provider output are advisory. Apply first with `--dry-run` and inspect the complete `final_machine`; do not write product code while generic scaffold cases remain. Spec, machine, and surface apply record the exact change and seal the resulting canonical semantic revision. Strict audit recomputes that revision, so a clean commit cannot hide direct manifest surgery. Every transition has a stable `case`, and replay source provenance uses the same case name. Machine apply preserves evidence roles but never generates passing replay evidence from its own declarations; implementation and replay must provide that proof. Generated capability contracts remain incomplete until `contracts.set` supplies product meaning, inputs, outcomes, and rejections.
 
 Runnable app/tool/browser/CLI surfaces stay thin, but their boundary machines still use explicit `state + input -> transition` structure. A boundary command parses or rejects outside input, emitted effects are executed once by declared adapters, and typed effect results return through the same transition. Product lifecycle belongs in a workflow or domain machine rather than hidden in the surface. Browser surfaces normally use `entrypoint: public/app.mjs` for the inspectable controller and `launch_entrypoint: public/index.html` for the host file. Any script loaded by the host file is part of the RMS surface: it should import or call the declared controller/adapter, not duplicate parser, generator, transition, or domain logic in a second browser bundle. Use `--launch-script` when an extra local launch script is intentional and should be checked explicitly.
 
@@ -321,7 +330,7 @@ rms audit --root . --strict
 rms audit --root . --strict --include-examples
 ```
 
-`rms audit` aggregates validation, composition, implementation structure, trace bundle, verification-target, compatibility, and provenance findings. Non-strict audit is a review surface. Strict audit treats production blockers such as placeholder evidence, unpinned evidence, unchecked numeric arithmetic, private-role imports, and missing trace bundles as failures. Repository-root audits skip illustrative `examples/` modules by default; use `--include-examples` when examples are part of the production claim.
+`rms audit` aggregates validation, composition, semantic revision integrity, implementation structure, trace coverage, compatibility, and provenance. Strict audit rejects direct canonical drift, unnamed or unreplayed transition cases, unlinked risk-bearing laws, invalid public domain representation, unresolved runnable delegation, placeholder evidence, and missing trace bundles. Repository-root audits skip illustrative `examples/` modules by default; use `--include-examples` when examples are part of the production claim.
 
 Run repeatable blind-agent dogfood from a clean project root:
 

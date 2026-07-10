@@ -26,7 +26,7 @@ records:
     source:
       file: Sources/RmsSwiftExample/RmsSwiftExample.swift
       function: describeWidget
-      branch: accepted-widget
+      branch: DescribeWidget
   - id: swift-widget-constructor-rejected-empty-name
     state_before: Ready
     input:
@@ -52,4 +52,4 @@ records:
     source:
       file: Sources/RmsSwiftExample/RmsSwiftExample.swift
       function: SwiftWidget.init
-      branch: rejected-empty-name
+      branch: RejectEmptyWidgetName

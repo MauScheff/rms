@@ -490,7 +490,18 @@ architecture:
   machine:
     name: PaymentsMachine
     mode: workflow-effect-machine
-    state: PaymentsState
+    transition_signature: state-and-input
+    types:
+      state: PaymentsState
+      input: PaymentsInput
+      command: PaymentsCommand
+      event: PaymentsEvent
+      effect: PaymentsEffect
+      effect_result: PaymentsEffectResult
+      reply: PaymentsReply
+      rejection: PaymentsRejection
+      transition: PaymentsTransition
+      transition_record: PaymentsTransitionRecord
     states:
       - NotStarted
       - WaitingForEffect
@@ -498,6 +509,7 @@ architecture:
       - Failed
     commands:
       - AuthorizePayment
+    observed_events: []
     events:
       - PaymentAuthorized
       - PaymentDeclined
@@ -511,7 +523,29 @@ architecture:
       - AuthorizationRejected
     rejections:
       - InvalidPaymentRequest
+    effect_protocols:
+      - effect: CallPaymentProvider
+        results:
+          - PaymentProviderAuthorized
+          - PaymentProviderUnknown
+        executor_role: effect_executor
+        atomicity: one-request-one-result
     transition_function: transition
+    transitions:
+      - from: NotStarted
+        on: AuthorizePayment
+        to: WaitingForEffect
+        case: RequestPaymentAuthorization
+        effects:
+          - CallPaymentProvider
+        no_reply_justification: Payment provider outcome is pending.
+      - from: WaitingForEffect
+        on: PaymentProviderAuthorized
+        to: Completed
+        case: CompleteAuthorizedPayment
+        events:
+          - PaymentAuthorized
+        reply: AuthorizationAccepted
   roles:
     representation:
       - src/representation.ts
@@ -590,14 +624,26 @@ Every implemented module should declare a domain-named machine. The canonical fi
 | `architecture.machine.states` | Closed state variants. Stateless machines usually contain `Ready` and must justify why lifecycle state is not meaningful. |
 | `architecture.machine.commands/observed_events/events/effects/effect_results/replies/rejections` | Semantic cases that define what the machine accepts, observes, emits, asks the world to do, receives back, returns, and rejects. A case belongs to exactly one input category. |
 | `architecture.machine.effect_protocols` | Effect-to-result mapping, executor role, and atomicity. One-request-one-result is the default when an individual outcome can affect later decisions. |
-| `architecture.machine.transitions` | Accepted and rejected state/input/output transitions when order or lifecycle matters. |
+| `architecture.machine.transitions` | Accepted and rejected state/input/output transitions. Every branch has a stable `case` used by trace provenance and replay coverage. |
 | `architecture.roles.*` | Binding files or artifacts that realize representation, transition, parser, adapter, effect executor, journal, replay, trace evidence, and related roles. |
 
-Use `rms machine apply` to add or change these architecture fields only when the semantic layer is already correct. If laws, public contracts, effects, or evidence obligations change, use `rms spec apply` instead.
+Use `rms machine apply` to add or change these architecture fields only when the semantic layer is already correct. RMS validates the complete final candidate and records the focused change, but it does not synthesize active trace evidence from transition declarations. Implemented transition paths must populate and replay the declared evidence roles. If laws, public contracts, effects, or evidence obligations change, use `rms spec apply` instead.
 
 This is the only accepted implementation-machine model. Collapsed declarations such as `architecture.machine.state`, top-level `architecture.state_type`, or semantic lists containing container type names are invalid rather than compatibility aliases.
 
 Invariant entries declare `authority` as `representation`, `constructor`, `parser`, `transition`, `effect-executor`, or `composition`. State progression, sequencing, retry, compensation, and stop/continue laws belong to `transition`; effect executors may enforce only the mechanics of the external request.
+
+Ordering, safety, bounded, normalization, parser, and numeric laws also declare semantic properties with input spaces and oracles. A fixed example corpus does not satisfy an open-ended generated-property or coverage-fuzzer claim.
+
+### Applied Semantic Revision
+
+`rms spec apply`, `rms machine apply`, and `rms surface apply` record the exact accepted change and write an `x-rms.semantic_revision` seal into the owning module and implementation manifests. The seal covers canonical module semantics, local referenced contracts, and implementation semantics while excluding the seal metadata itself.
+
+Strict audit recomputes this digest. A clean Git commit is necessary provenance, but it is not proof that semantic changes passed through RMS: direct edits after apply produce `semantic.revision-drift`. Apply commands should be run with `--dry-run` first, and agents should inspect the final semantic state before editing source.
+
+Runnable surface declarations resolve delegation to an existing semantic role or to a concrete implementation symbol. Each surface declares its boundary effects or a precise `no_effects_justification`; a surface cannot use an undeclared role name as architectural evidence.
+
+Public domain values with validity rules use private fields and validated constructors. `architecture.allowed_public_field_structs` is reserved for structural envelopes, transition outputs, transition records, and source-provenance records; it cannot waive validity for arbitrary domain values.
 
 ### `semantic_functions`
 

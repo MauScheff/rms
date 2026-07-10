@@ -14,6 +14,8 @@ Evidence:
 - `structure_report_flags_undeclared_effect_source_residue` verifies strict structure diagnostics flag effect/effect-result source roles that are absent from canonical machine declarations.
 - Canonical machine fixtures verify strict audit rejects collapsed semantic variants, stateful transitions without state and classified input, incomplete effect protocols, and uncovered effect-result branches.
 - Property fixtures verify strict audit rejects open-ended fuzz claims backed only by deterministic example corpora.
+- `semantic_revision_detects_direct_canonical_manifest_drift` verifies a clean commit cannot hide direct canonical edits after RMS apply.
+- `strict_trace_coverage_requires_each_named_case_and_workflow_event` verifies strict audit requires every named transition branch and declared workflow event in replay evidence.
 - Existing validation, composition, structure, trace, and gate tests cover the deterministic checks reused by audit reports.
 
 The command is provider-independent. It derives production-readiness findings from RMS artifacts and local evidence, lists verification targets, and does not mutate project files.

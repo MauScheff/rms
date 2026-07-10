@@ -1,0 +1,114 @@
+spec: rms/machine-change/v0.1
+module: null
+machine:
+  mode: stateful-transition-machine
+  justification: null
+  transition_signature: state-and-input
+  types: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+transitions:
+  set:
+  - from: InProgress
+    on: PlaceMark
+    to: InProgress
+    case: PlaceMarkContinues
+    events:
+    - MarkPlaced
+    commands: []
+    effects: []
+    reply: Accepted
+    rejection: null
+    no_reply_justification: null
+  - from: InProgress
+    on: PlaceMark
+    to: Won
+    case: PlaceMarkWins
+    events:
+    - MarkPlaced
+    commands: []
+    effects: []
+    reply: Accepted
+    rejection: null
+    no_reply_justification: null
+  - from: InProgress
+    on: PlaceMark
+    to: Draw
+    case: PlaceMarkDraws
+    events:
+    - MarkPlaced
+    commands: []
+    effects: []
+    reply: Accepted
+    rejection: null
+    no_reply_justification: null
+  - from: InProgress
+    on: PlaceMark
+    to: InProgress
+    case: RejectOccupiedCell
+    events:
+    - MoveRejected
+    commands: []
+    effects: []
+    reply: null
+    rejection: CellOccupied
+    no_reply_justification: null
+  - from: Won
+    on: PlaceMark
+    to: Won
+    case: RejectMoveAfterWin
+    events:
+    - MoveRejected
+    commands: []
+    effects: []
+    reply: null
+    rejection: GameAlreadyTerminal
+    no_reply_justification: null
+  - from: Draw
+    on: PlaceMark
+    to: Draw
+    case: RejectMoveAfterDraw
+    events:
+    - MoveRejected
+    commands: []
+    effects: []
+    reply: null
+    rejection: GameAlreadyTerminal
+    no_reply_justification: null
+  add: []
+  remove: []
+roles: null

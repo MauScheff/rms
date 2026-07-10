@@ -121,7 +121,7 @@ Generated module guidance is an adapter over canonical artifacts. It tells human
 
 When Stateful, Distributed, Workflow, or Boundary profiles are requested, the scaffold includes the required empty profile section so the manifest validates. Fill those sections with real lifecycle, reconciliation, workflow, or boundary semantics before relying on the profile.
 
-Inspectable bindings also scaffold inner structure declarations under `architecture.machine`, `architecture.messages`, `architecture.transition`, `architecture.trace`, and `architecture.roles`. `architecture.machine.types` contains binding-native container names; `states`, `commands`, `observed_events`, `events`, `effects`, `effect_results`, `replies`, and `rejections` contain semantic alternatives only. Generated role types use semantic domain-prefixed suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Input`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Stateful bindings expose one `transition(state, input)` path, and replay folds each record's `state_after` into the next input. Role, binding, and surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped from generated inner names so module slugs do not become domain types. Traceable scaffolds also seed `verification/traces/*.yaml`; `rms verify` checks declared JSON/YAML trace bundles after the native verify command.
+Inspectable bindings scaffold one canonical machine model. Container names live under `architecture.machine.types`; semantic lists contain alternatives only; every transition has a stable `case`; and replay source provenance uses the same case name. Multiple outcomes for one state/input are separate cases. Stateful bindings expose one `transition(state, input)` path, and replay folds `state_after` into the next input.
 
 ### `spec`
 
@@ -134,7 +134,7 @@ rms spec check <module.yaml|implementation.yaml> [--strict] [--json]
 rms spec diff <module.yaml|implementation.yaml> [--json]
 ```
 
-Use this when a change needs new laws, public contracts, machine states, transitions, effects, effect results, rejection types, recovery or reconciliation obligations, or evidence obligations. `rms spec apply` updates canonical semantics first and records the exact applied semantic-change object under `verification/changes/`; then agents fill declared role bodies. Generated capability contracts are marked as scaffold obligations and block strict audit until `contracts.set` replaces them with product-specific meaning, accepted inputs, guaranteed outcomes, and rejection categories. Provider planning is advisory until `rms spec apply` succeeds. Use `set`, `remove`, and `supersedes` in semantic changes to revise canonical semantics instead of hand-editing manifests or rewriting old change records.
+Use this when meaning changes. Run `--dry-run`, inspect the complete `final_machine`, and stop if product variants or branches are missing. Apply records the exact semantic change and seals a normalized digest of `module.yaml`, local contracts, and `implementation.yaml`. Strict audit recomputes that digest, so direct canonical edits fail even after commit.
 
 The semantic-change format is language-neutral and may include a nested machine change:
 
@@ -175,7 +175,7 @@ rms machine diff <implementation.yaml> [--json]
 ```
 
 Use this for focused inner-machine edits when laws, public contracts, and evidence obligations are already correct. For product-meaning changes, prefer `rms spec apply` so laws, contracts, machine structure, and evidence move together.
-Machine changes support `set`, `add`, and `remove` for states, commands, events, effects, effect results, replies, rejections, transitions, and roles. RMS applies them in that order and rejects stale references in the final machine.
+Machine changes support `set`, `add`, and `remove`. RMS computes and validates the complete final candidate, records the focused change, reseals canonical semantics, and rejects stale references or unnamed transition cases. Apply preserves declared evidence roles but does not generate a passing trace from the declarations it is meant to prove; agents fill and replay those roles after implementation.
 
 The canonical change format is language-neutral:
 
@@ -223,6 +223,7 @@ transitions:
     - from: Ready
       on: Start
       to: NeedsContext
+      case: StartNeedsContext
       events: [ContextRequested]
       reply: AskForContext
 roles:
@@ -269,7 +270,7 @@ The first composition checker is manifest-level. It checks required module prese
 
 ### `audit`
 
-Aggregates project-readiness findings from validation, composition, implementation structure, trace bundles, verification declarations, compatibility evidence, and RMS run provenance. Non-strict audit is a review surface. `--strict` promotes production-readiness blockers such as scaffold evidence, unpinned evidence, unchecked numeric arithmetic, private role imports, missing trace bundles, dirty or untracked production-relevant files, scaffold-named trace bundles, hidden effects in pure roles, lifecycle-without-state, and missing verification commands to failures. Repository-root audits skip illustrative `examples/` modules by default; pass `--include-examples` or audit an examples subdirectory directly when examples are the target. The command does not invoke optional AI providers or mutate project artifacts.
+Aggregates project-readiness findings from validation, composition, semantic revision integrity, implementation structure, trace coverage, compatibility, and provenance. Strict mode rejects direct canonical drift, missing revision records, unnamed or unreplayed transition cases, uncovered workflow events, risk-bearing laws without properties, public domain-field bypasses, unresolved runnable delegation, and existing evidence/provenance blockers.
 
 ### `structure`
 

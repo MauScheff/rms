@@ -27,6 +27,7 @@ Machine rules:
 - `architecture.machine.types` names binding containers; semantic lists name actual cases.
 - Stateful, boundary, workflow, storage, integration, and projection machines use `transition(state, input)`.
 - The input ADT closes over commands, observed events, and effect results; each case belongs to exactly one category.
+- Every canonical transition declares a stable `case`; distinct outcomes for the same state/input are separate named cases and replay evidence names the same source branch.
 - An effect executor performs one declared request and returns one declared result. Transitions own sequencing, retry, compensation, stop/continue policy, and state progression.
 - Fixed examples are a deterministic corpus, not an open-ended fuzz realization.
 
@@ -66,7 +67,7 @@ Use these advisory workbench commands when they match the task:
 - `rms evidence <module.yaml> --task "<task>"`
 - `rms refactor <module.yaml> --task "<task>"`
 - `rms spec plan <module.yaml|implementation.yaml> --task "<task>"` when a change needs new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, public entrypoints, or evidence obligations
-- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics and record the exact applied change under `verification/changes/`; use `contracts.set` to replace generated contract scaffolds with product-specific meaning, accepted inputs, guaranteed outcomes, and rejection categories; use `set`, `remove`, and `supersedes` to revise semantics instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
+- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics, record the exact applied change, and seal the resulting semantic revision; use `contracts.set` to replace generated contract scaffolds with product-specific meaning, accepted inputs, guaranteed outcomes, and rejection categories; use `set`, `remove`, and `supersedes` to revise semantics instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
 - `rms spec check <module.yaml|implementation.yaml>` after semantic changes
 - `rms machine plan/apply/check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct
 - `rms surface apply/check <implementation.yaml>` when adding or changing app, UI, CLI, browser, HTTP, batch, or executable entrypoints; browser-style surfaces should distinguish controller `entrypoint` from host `launch_entrypoint`, and declare intentional local launch scripts with `--launch-script`
@@ -87,7 +88,7 @@ When creating a new capability, choose semantic shape before file layout:
 - `integration-adapter`: external service boundary, retries, idempotency, reconciliation evidence.
 - `composite`: contained submodules, public exports, visibility boundaries, composition evidence.
 
-Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a public capability should be scaffolded as a recursive tree with a composite parent, domain child, and boundary child. Prefer this over a single module when the intent combines user/boundary interaction, lifecycle decisions, and effect simulation or external-service coordination.
+Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a public capability should be scaffolded as a recursive tree with a composite parent, domain child, and boundary child. Prefer this over a single module when the intent combines a runnable surface or untrusted input with invariant-bearing planning, ordering, batching, filtering, policy, lifecycle decisions, or external effects.
 
 If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only. Runnable surfaces stay thin, but boundary machines still use explicit state-plus-input transitions; product lifecycle belongs in the owning domain or workflow machine.
 
@@ -104,6 +105,7 @@ Naming rule: choose module and inner role names from product/capability language
 Before writing implementation code, make the user's intent concrete enough to encode:
 
 - Semantic gate: do not hand-create laws, contracts, semantic roles, states, commands, events, effects, transition functions, parsers, runnable surfaces, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply` and `rms surface apply`, then edit the declared role bodies. Use semantic `set`, `remove`, and `supersedes` operations for revisions instead of manual manifest surgery.
+- Apply gate: run semantic or machine apply with `--dry-run` first. Do not write product code while `final_machine` still contains generic scaffold variants or omits real branches. Machine apply preserves evidence roles but does not generate replay proof; update and replay them from implemented paths. Direct edits after apply invalidate the semantic revision and strict audit.
 - Public surface gate: generated capability contracts are scaffold obligations, not production semantics. Replace them through `rms spec apply` with `contracts.set` before implementation. Public commands in `module.yaml` must be represented by the declared implementation surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
 - Reuse gate: reusable modules publish capabilities and contracts first, expose one declared public facade, and prove package integrity with `rms package` plus `rms verify-package`. Consumers must require the capability contract and import only the public facade.
 - Property gate: laws that say always, never, bounded, ordered, normalized, parsed, generated, impossible, or must not happen should declare semantic properties with input spaces, oracles, evidence, and counterexample replay policy before relying on binding tests.
@@ -134,10 +136,12 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Replace generated role files incrementally. Do not delete a declared role file and leave the project invalid while hand-building a replacement; add the replacement first or keep the old file until `rms structure <implementation.yaml>` and the binding's syntax check can run.
 - When replacing generated role code, update `implementation.yaml` in the same change so `architecture.roles`, `architecture.machine`, `architecture.representation`, and `semantic_functions` name the actual files and symbols.
 - Prefer ADTs, sealed variants, enums, opaque values, validated constructors, explicit result/rejection types, schemas at untrusted boundaries, and focused tests.
+- Do not add domain structs to `allowed_public_field_structs` to silence constructor diagnostics. That exemption is only for declared envelopes, transition outputs, transition records, and source-provenance records; domain values keep private fields and validated constructors.
 - Use state machines or transition functions when behavior depends on lifecycle or order; illegal transitions must be rejected or made unrepresentable.
 - Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
 - Keep workflow choreography explicit in the workflow transition model, subscription registry, effect lifecycle, inbox/outbox, or declared adapter boundary rather than hidden in listener chains.
 - Keep runnable surfaces connected to the declared RMS boundary. If `public/app.*`, `src/cli.*`, routes, mobile views, or similar files are the real product surface, declare them with `rms surface apply` and route them through the declared adapter/public entrypoint instead of importing or duplicating pure/private decision code directly. Browser launch files should reference the declared controller entrypoint rather than bypassing it. Any local browser script loaded by the launch file is part of the surface; it must import/call the declared controller or adapter, not carry a copied parser, generator, transition, or domain decision implementation.
+- Runnable surface delegation names an existing `architecture.roles` role or a concrete source symbol, and the surface declares boundary effects or a precise no-effect justification.
 - Keep reusable-module consumers on the declared public facade. Do not import `transition`, `representation`, parser internals, or adapter internals from another module even if the language package manager makes the path reachable.
 - Do not edit another module's private implementation to bypass its public contract.
 - Treat generated reports, diffs, and provider output as evidence, not architecture.

@@ -1,66 +1,61 @@
 spec: rms/implementation/v0.1
-
-module: "tic-tac-toe-rules"
+module: tic-tac-toe-rules
 binding: rust
-
 source:
   root: .
   public_entrypoint: src/lib.rs
-
 commands:
   build: cargo build --manifest-path Cargo.toml
   verify: cargo test --manifest-path Cargo.toml
   format: cargo fmt --manifest-path Cargo.toml --check
-
 toolchain:
   cargo_manifest: Cargo.toml
-  package: "tic-tac-toe-rules"
-
+  package: tic-tac-toe-rules
 dependencies:
   allowed_external_crates: []
-
 architecture:
-  shape: "domain-engine"
+  shape: domain-engine
   reliability:
     properties:
-      - id: legal-moves-preserve-game-laws
-        proves: marks-never-overwrite
-        kind: property
-        input_space: finite boards and validated place-mark commands
-        oracle:
-          - accepted moves fill exactly one empty cell
-          - rejected moves preserve state
-          - terminal games reject further moves
-        command: verify
-        evidence: verification/laws/transition_trace.md
+    - id: legal-moves-preserve-game-laws
+      proves: marks-never-overwrite
+      kind: property
+      input_space: finite boards and validated place-mark commands
+      oracle:
+      - accepted moves fill exactly one empty cell
+      - rejected moves preserve state
+      - terminal games reject further moves
+      command: verify
+      evidence: verification/laws/transition_trace.md
   allowed_public_field_structs:
-    - TicTacToeTransition
-    - TicTacToeTransitionRecord
+  - TicTacToeTransition
+  - TicTacToeTransitionRecord
   public_modules:
-    - representation
-    - transition
+  - representation
+  - transition
   messages:
     command_envelope:
-      - command_id
-      - target_machine
-      - correlation_id
-      - causation_id
-      - idempotency_key
+    - command_id
+    - target_machine
+    - correlation_id
+    - causation_id
+    - idempotency_key
     event_envelope:
-      - event_id
-      - source_machine
-      - correlation_id
-      - causation_id
-      - sequence
-      - schema_version
-      - occurred_at
+    - event_id
+    - source_machine
+    - correlation_id
+    - causation_id
+    - sequence
+    - schema_version
+    - occurred_at
   transition:
     output:
-      - next_state
-      - events
-      - commands
-      - effects
-      - reply
+    - next_state
+    - events
+    - commands
+    - effects
+    - reply
+    - rejection
   trace:
     journal: verification/traces/transition_trace.yaml
     timeline_projection: verification/traces/transition_trace.yaml
@@ -80,122 +75,138 @@ architecture:
       transition: TicTacToeTransition
       transition_record: TicTacToeTransitionRecord
     states:
-      - InProgress
-      - Won
-      - Draw
+    - InProgress
+    - Won
+    - Draw
     commands:
-      - PlaceMark
+    - PlaceMark
     observed_events: []
     events:
-      - MarkPlaced
-      - MoveRejected
+    - MarkPlaced
+    - MoveRejected
     effects: []
     effect_results: []
     replies:
-      - Accepted
-      - Rejected
+    - Accepted
+    - Rejected
     rejections:
-      - CellOccupied
-      - GameAlreadyTerminal
+    - CellOccupied
+    - GameAlreadyTerminal
     effect_protocols: []
     transition_function: transition
     transitions:
-      - from: InProgress
-        on: PlaceMark
-        to: InProgress
-        events: [MarkPlaced]
-        reply: Accepted
-      - from: InProgress
-        on: PlaceMark
-        to: Won
-        events: [MarkPlaced]
-        reply: Accepted
-      - from: InProgress
-        on: PlaceMark
-        to: Draw
-        events: [MarkPlaced]
-        reply: Accepted
-      - from: InProgress
-        on: PlaceMark
-        to: InProgress
-        events: [MoveRejected]
-        rejection: CellOccupied
-      - from: Won
-        on: PlaceMark
-        to: Won
-        events: [MoveRejected]
-        rejection: GameAlreadyTerminal
-      - from: Draw
-        on: PlaceMark
-        to: Draw
-        events: [MoveRejected]
-        rejection: GameAlreadyTerminal
+    - from: InProgress
+      on: PlaceMark
+      to: InProgress
+      case: PlaceMarkContinues
+      events:
+      - MarkPlaced
+      reply: Accepted
+    - from: InProgress
+      on: PlaceMark
+      to: Won
+      case: PlaceMarkWins
+      events:
+      - MarkPlaced
+      reply: Accepted
+    - from: InProgress
+      on: PlaceMark
+      to: Draw
+      case: PlaceMarkDraws
+      events:
+      - MarkPlaced
+      reply: Accepted
+    - from: InProgress
+      on: PlaceMark
+      to: InProgress
+      case: RejectOccupiedCell
+      events:
+      - MoveRejected
+      rejection: CellOccupied
+    - from: Won
+      on: PlaceMark
+      to: Won
+      case: RejectMoveAfterWin
+      events:
+      - MoveRejected
+      rejection: GameAlreadyTerminal
+    - from: Draw
+      on: PlaceMark
+      to: Draw
+      case: RejectMoveAfterDraw
+      events:
+      - MoveRejected
+      rejection: GameAlreadyTerminal
   roles:
     representation:
-      - src/representation.rs
+    - src/representation.rs
     transition:
-      - src/transition.rs
+    - src/transition.rs
     message_envelope:
-      - src/representation.rs
+    - src/representation.rs
     transition_record:
-      - src/transition.rs
+    - src/transition.rs
     journal:
-      - verification/traces/transition_trace.yaml
+    - verification/traces/transition_trace.yaml
     timeline_projection:
-      - verification/traces/transition_trace.yaml
+    - verification/traces/transition_trace.yaml
     replay_bundle:
-      - verification/traces/transition_trace.yaml
+    - verification/traces/transition_trace.yaml
     trace_evidence:
-      - verification/laws/transition_trace.md
-      - verification/traces/transition_trace.yaml
+    - verification/laws/transition_trace.md
+    - verification/traces/transition_trace.yaml
   representation:
     closed_variants:
-      - Command
-      - GameStatus
-      - TicTacToeInput
-      - TicTacToeEvent
-      - Mark
-      - MoveRejection
-      - TransitionOutcome
+    - Command
+    - GameStatus
+    - TicTacToeInput
+    - TicTacToeEvent
+    - Mark
+    - MoveRejection
+    - TransitionOutcome
     validated_values:
-      - Cell
+    - Cell
     transition_functions:
-      - transition
-
+    - transition
 semantic_functions:
-  - id: cell-constructor
-    symbol: Cell::new
-    kind: constructor
-    purity: pure
-    evidence:
-      laws:
-        - verification/laws/transition_trace.md
-  - id: transition-model
-    symbol: transition
-    kind: transition
-    purity: pure
-    discharges:
-      contracts:
-        - contracts/apply-move.v1.yaml
-      invariants:
-        - marks-never-overwrite
-        - turns-alternate
-        - terminal-games-reject-moves
-    evidence:
-      laws:
-        - verification/laws/transition_trace.md
-      contracts:
-        - verification/contracts/apply_move.md
-      scenarios:
-        - verification/scenarios/game_lifecycle.md
-      traces:
-        - verification/traces/transition_trace.yaml
-  - id: trace-replay
-    symbol: replay
-    kind: interpreter
-    purity: pure
-    evidence:
-      laws:
-        - verification/laws/transition_trace.md
-      traces:
-        - verification/traces/transition_trace.yaml
+- id: cell-constructor
+  symbol: Cell::new
+  kind: constructor
+  purity: pure
+  evidence:
+    laws:
+    - verification/laws/transition_trace.md
+- id: transition-model
+  symbol: transition
+  kind: transition
+  purity: pure
+  discharges:
+    contracts:
+    - contracts/apply-move.v1.yaml
+    invariants:
+    - marks-never-overwrite
+    - turns-alternate
+    - terminal-games-reject-moves
+  evidence:
+    laws:
+    - verification/laws/transition_trace.md
+    contracts:
+    - verification/contracts/apply_move.md
+    scenarios:
+    - verification/scenarios/game_lifecycle.md
+    traces:
+    - verification/traces/transition_trace.yaml
+- id: trace-replay
+  symbol: replay
+  kind: interpreter
+  purity: pure
+  evidence:
+    laws:
+    - verification/laws/transition_trace.md
+    traces:
+    - verification/traces/transition_trace.yaml
+x-rms:
+  semantic_revision:
+    digest: sha256:7354d31154a67a6b360e0f3e249ddec837f315cd6986ce867ce04384b25d6579
+    change_record: verification/machine-changes/machine-change-9c6d0cec5af5.yaml
+    applied_by: rms machine apply

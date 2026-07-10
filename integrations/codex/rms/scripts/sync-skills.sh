@@ -6,6 +6,7 @@ repo_root="$(CDPATH= cd -- "$plugin_root/../../.." && pwd)"
 
 rm -rf "$plugin_root/skills"
 mkdir -p "$plugin_root/skills"
+cp "$repo_root/skills/README.md" "$plugin_root/skills/README.md"
 
 for skill in \
   inspect-module \

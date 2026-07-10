@@ -9,7 +9,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
 
 1. Run the `inspect-module` workflow for the owning module.
 2. Build a bounded packet with `rms context <module> --task "<task>"` when the CLI is available. Use `rms refactor <module> --task "<task>"` when a refactor prompt would help before editing.
-3. Treat RMS as the semantic and architecture gate. If the refactor requires new laws, contracts, states, commands, events, effects, effect results, transitions, semantic roles, runnable surfaces, public entrypoints, or evidence obligations, produce and apply an `rms/semantic-change/v0.1` object with `rms spec apply` before editing role bodies. Use `set`, `remove`, and `supersedes` to revise RMS semantics instead of hand-editing manifests or rewriting old change records. Use `rms machine apply` only for focused inner-machine changes after semantics are already correct; use `rms surface apply/check` for runnable entrypoint changes.
+3. Treat RMS as the semantic and architecture gate. Apply structural revisions through `rms spec apply --dry-run` or focused machine/surface apply, inspect the complete final model, and let RMS seal the semantic revision. Never repair scaffold drift by hand-editing canonical manifests.
 4. State the public semantics that must be preserved:
    - public commands, queries, events, APIs, and capabilities;
    - invariants and laws;
@@ -35,6 +35,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
 8. Keep domain decisions separate from effects where practical. Move IO, clocks, randomness, storage, network, and vendor calls behind declared effects or capabilities. Private helpers inside pure role files must stay pure.
    - Keep type mappings separate from semantic alternatives.
    - Stateful machines use one input ADT and one `transition(state, input)` path for commands, observed events, and effect results.
+   - Every transition branch has a stable semantic case mirrored by replay source provenance.
    - Effect executors perform one request and return one result; move iteration, retry, compensation, and stop/continue policy into transitions.
 9. Preserve module boundaries:
    - do not move private state across ownership boundaries;

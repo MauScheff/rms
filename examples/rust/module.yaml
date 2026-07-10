@@ -1,53 +1,49 @@
 spec: rms/module/v0.1
-
 module:
   name: rust-example
   version: 0.1.0
   kind: library
   purpose: Accept and expose validated widgets
-
 profiles:
-  - core
-
+- core
 owns:
   concepts:
-    - Widget
+  - Widget
   data: []
   decisions:
-    - widget-acceptance
-
+  - widget-acceptance
 provides:
   commands: []
   queries:
-    - name: describe-widget
-      contract: contracts/describe-widget.v1.yaml
+  - name: describe-widget
+    contract: contracts/describe-widget.v1.yaml
   events: []
   capabilities: []
-
 requires:
   modules: []
   capabilities: []
-
 invariants:
-  - id: accepted-widget-has-name
-    statement: Every accepted widget has a non-empty name.
-    authority: constructor
-    enforced_by: widget-constructor
-    verified_by: verification/laws/accepted_widget_has_name
-
+- id: accepted-widget-has-name
+  statement: Every accepted widget has a non-empty name.
+  authority: constructor
+  enforced_by: widget-constructor
+  verified_by: verification/laws/accepted_widget_has_name
 effects: []
-
 compatibility:
   policy: backward-compatible-within-major
-
 verification:
   laws:
-    - verification/laws
+  - verification/laws
   contracts:
-    - verification/contracts
+  - verification/contracts
   scenarios:
-    - verification/scenarios
+  - verification/scenarios
   boundaries:
-    - verification/boundaries
+  - verification/boundaries
   traces:
-    - verification/traces
+  - verification/traces
+x-rms:
+  semantic_revision:
+    digest: sha256:22f5b4fbd69ece0ec89ac217ce37ba4c2ac10d49b96124ac8cc6adf21ad23e03
+    change_record: verification/machine-changes/machine-change-d094fb0cc605.yaml
+    applied_by: rms machine apply

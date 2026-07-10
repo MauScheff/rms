@@ -1,63 +1,58 @@
 spec: rms/implementation/v0.1
-
 module: swift-example
 binding: swift
-
 source:
   root: Sources/RmsSwiftExample
   public_entrypoint: Sources/RmsSwiftExample/RmsSwiftExample.swift
-
 commands:
   build: swift build --package-path .
   verify: if [ "$(sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ]; then arch -arm64 swift test --package-path . --disable-swift-testing; else swift test --package-path . --disable-swift-testing; fi
-
 toolchain:
   package_manifest: Package.swift
   package: rms-swift-example
   target: RmsSwiftExample
-
 dependencies:
   allowed_external_modules: []
-
 architecture:
   shape: domain-engine
   reliability:
     properties:
-      - id: accepted-swift-widget-name-is-non-empty
-        proves: accepted-swift-widget-has-name
-        kind: property
-        input_space: arbitrary local widget names
-        oracle:
-          - accepted widget names are non-empty after trimming
-          - rejected empty names remain explicit
-        command: verify
-        evidence: verification/scenarios/accept_non_empty_widget
+    - id: accepted-swift-widget-name-is-non-empty
+      proves: accepted-swift-widget-has-name
+      kind: property
+      input_space: arbitrary local widget names
+      oracle:
+      - accepted widget names are non-empty after trimming
+      - rejected empty names remain explicit
+      command: verify
+      evidence: verification/scenarios/accept_non_empty_widget
   allowed_public_field_structs:
-    - SwiftExampleTransition
-    - SwiftExampleTransitionRecord
+  - SwiftExampleTransition
+  - SwiftExampleTransitionRecord
   public_modules: []
   messages:
     command_envelope:
-      - command_id
-      - target_machine
-      - correlation_id
-      - causation_id
-      - idempotency_key
+    - command_id
+    - target_machine
+    - correlation_id
+    - causation_id
+    - idempotency_key
     event_envelope:
-      - event_id
-      - source_machine
-      - correlation_id
-      - causation_id
-      - sequence
-      - schema_version
-      - occurred_at
+    - event_id
+    - source_machine
+    - correlation_id
+    - causation_id
+    - sequence
+    - schema_version
+    - occurred_at
   transition:
     output:
-      - next_state
-      - events
-      - commands
-      - effects
-      - reply
+    - next_state
+    - events
+    - commands
+    - effects
+    - reply
+    - rejection
   trace:
     journal: verification/traces/transition_trace.yaml
     timeline_projection: verification/traces/transition_trace.yaml
@@ -67,7 +62,7 @@ architecture:
     name: SwiftExampleMachine
     mode: stateless-decision-machine
     transition_signature: input-only
-    stateless_justification: "describeWidget is a pure query over already validated input; no lifecycle or ordering state is owned by this example"
+    stateless_justification: This example is a pure query over validated input with no lifecycle.
     types:
       state: SwiftExampleState
       command: DescribeSwiftWidgetCommand
@@ -77,50 +72,59 @@ architecture:
       transition: SwiftExampleTransition
       transition_record: SwiftExampleTransitionRecord
     states:
-      - Ready
+    - Ready
     commands:
-      - Describe
-      - RejectEmptyName
+    - Describe
+    - RejectEmptyName
     observed_events: []
     events:
-      - WidgetDescribed
-      - WidgetRejected
+    - WidgetDescribed
+    - WidgetRejected
     effects: []
     effect_results: []
     replies:
-      - Description
-      - Rejected
+    - Description
+    - Rejected
     rejections:
-      - EmptyWidgetName
-      - ExpectedEmptyName
+    - EmptyWidgetName
+    - ExpectedEmptyName
     effect_protocols: []
     transition_function: transition
     transitions:
-      - from: Ready
-        on: Describe
-        to: Ready
-        events: [WidgetDescribed]
-        reply: Description
-      - from: Ready
-        on: RejectEmptyName
-        to: Ready
-        events: [WidgetRejected]
-        rejection: EmptyWidgetName
+    - from: Ready
+      on: Describe
+      to: Ready
+      case: DescribeWidget
+      events:
+      - WidgetDescribed
+      reply: Description
+    - from: Ready
+      on: RejectEmptyName
+      to: Ready
+      case: RejectEmptyWidgetName
+      events:
+      - WidgetRejected
+      rejection: EmptyWidgetName
   roles:
     representation:
-      - Sources/RmsSwiftExample/RmsSwiftExample.swift
+    - Sources/RmsSwiftExample/RmsSwiftExample.swift
     transition:
-      - Sources/RmsSwiftExample/RmsSwiftExample.swift
+    - Sources/RmsSwiftExample/RmsSwiftExample.swift
     message_envelope:
-      - Sources/RmsSwiftExample/RmsSwiftExample.swift
+    - Sources/RmsSwiftExample/RmsSwiftExample.swift
     transition_record:
-      - Sources/RmsSwiftExample/RmsSwiftExample.swift
+    - Sources/RmsSwiftExample/RmsSwiftExample.swift
     journal:
-      - verification/traces/transition_trace.yaml
+    - verification/traces/transition_trace.yaml
     timeline_projection:
-      - verification/traces/transition_trace.yaml
+    - verification/traces/transition_trace.yaml
     replay_bundle:
-      - verification/traces/transition_trace.yaml
+    - verification/traces/transition_trace.yaml
     trace_evidence:
-      - verification/scenarios/accept_non_empty_widget
-      - verification/traces/transition_trace.yaml
+    - verification/scenarios/accept_non_empty_widget
+    - verification/traces/transition_trace.yaml
+x-rms:
+  semantic_revision:
+    digest: sha256:35218e93b6e6af7c53f3d4cd80a19967ae5660b27723d8c876b1194109f0d81b
+    change_record: verification/machine-changes/machine-change-d094fb0cc605.yaml
+    applied_by: rms machine apply

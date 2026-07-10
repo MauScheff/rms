@@ -1,0 +1,87 @@
+spec: rms/machine-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+machine:
+  mode: boundary-machine
+  justification: null
+  transition_signature: state-and-input
+  types: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+transitions:
+  set:
+  - from: Ready
+    on: ApplySemanticChange
+    to: WritingSemanticChangeRecord
+    case: ApplySemanticChange
+    events: []
+    commands: []
+    effects:
+    - WriteSemanticChangeRecord
+    reply: null
+    rejection: null
+    no_reply_justification: semantic change record write is pending
+  - from: WritingSemanticChangeRecord
+    on: SemanticChangeRecordWritten
+    to: Ready
+    case: SemanticChangeRecordWritten
+    events:
+    - SemanticChangeRecorded
+    commands: []
+    effects: []
+    reply: SemanticChangeApplied
+    rejection: null
+    no_reply_justification: null
+  - from: WritingSemanticChangeRecord
+    on: SemanticChangeRecordWriteRejected
+    to: Ready
+    case: SemanticChangeRecordWriteRejected
+    events: []
+    commands: []
+    effects: []
+    reply: null
+    rejection: SemanticChangeRecordWriteFailed
+    no_reply_justification: null
+  add: []
+  remove: []
+roles:
+  set: []
+  add: []
+  remove:
+  - kind: replay_bundle
+    path: verification/traces/machine_change.yaml
+  - kind: trace_evidence
+    path: verification/traces/machine_change.yaml

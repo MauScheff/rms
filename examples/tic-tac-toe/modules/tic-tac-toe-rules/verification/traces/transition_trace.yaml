@@ -52,7 +52,7 @@ records:
     source:
       file: src/transition.rs
       function: transition
-      branch: accepted-place-mark
+      branch: PlaceMarkContinues
   - id: reject-occupied-cell
     state_before:
       board: [X, null, null, null, null, null, null, null, null]
@@ -100,7 +100,7 @@ records:
     source:
       file: src/transition.rs
       function: transition
-      branch: rejected-cell-occupied
+      branch: RejectOccupiedCell
   - id: accept-winning-move
     scenario_start: true
     state_before: InProgress
@@ -132,7 +132,7 @@ records:
     source:
       file: src/transition.rs
       function: transition
-      branch: accepted-winning-move
+      branch: PlaceMarkWins
   - id: accept-drawing-move
     scenario_start: true
     state_before: InProgress
@@ -164,7 +164,7 @@ records:
     source:
       file: src/transition.rs
       function: transition
-      branch: accepted-drawing-move
+      branch: PlaceMarkDraws
   - id: reject-move-after-win
     scenario_start: true
     state_before: Won
@@ -197,7 +197,7 @@ records:
     source:
       file: src/transition.rs
       function: transition
-      branch: rejected-terminal-win
+      branch: RejectMoveAfterWin
   - id: reject-move-after-draw
     scenario_start: true
     state_before: Draw
@@ -230,4 +230,4 @@ records:
     source:
       file: src/transition.rs
       function: transition
-      branch: rejected-terminal-draw
+      branch: RejectMoveAfterDraw

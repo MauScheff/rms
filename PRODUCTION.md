@@ -34,6 +34,8 @@ A project is ready for production pilot use when all requirements hold:
 | Public compatibility is explicit | Contract or manifest changes include `rms check-compat` evidence or an explicit compatibility decision. |
 | Agents can start cold | `AGENTS.md`, `.rms/config.yaml`, and local agent skills are generated or synced from the pinned RMS CLI. |
 | Semantic changes are gated | New laws, contracts, states, commands, events, effects, transitions, semantic roles, public entrypoints, and evidence obligations are introduced through `rms spec apply`, then checked with `rms spec check`. |
+| Canonical revision is intact | Strict audit reports `semantic.revision-integrity`; a clean commit does not hide direct manifest edits after RMS apply. |
+| Transition branches are replayed | Every transition has a stable `case`, and strict audit finds matching state/input/destination/source-branch evidence plus declared workflow events. |
 
 ## New Project Flow
 
@@ -70,7 +72,7 @@ rms add-capability ./modules/<capability> \
   --boundary-binding js
 ```
 
-For app, tool, UI, CLI, browser, HTTP, batch, mobile, desktop, executable, local-first, runnable, or smoke-test intents, the boundary module should expose a declared runnable surface in `architecture.surfaces`. Use `rms surface apply` or `rms spec apply` before adding the entrypoint, and do not leave those intents as library-only unless the product explicitly asks for a library. Browser launch files and any local scripts they load are part of the runnable surface; they must route through the declared controller or adapter instead of carrying a copied parser, generator, transition, or domain decision implementation.
+For app, tool, UI, CLI, browser, HTTP, batch, mobile, desktop, executable, local-first, runnable, or smoke-test intents, the boundary module exposes a declared runnable surface. Delegation resolves to an existing role or concrete symbol, and the surface declares boundary effects or a precise no-effect justification.
 
 Use `rms add-module` only when the module is truly standalone or when the semantic shape is already clear:
 
@@ -89,11 +91,12 @@ When product meaning changes, do not ask the agent to hand-create laws, contract
 
 ```bash
 rms spec plan <module.yaml|implementation.yaml> --task "<task>"
+rms spec apply <module.yaml|implementation.yaml> --change-yaml '<semantic-change>' --dry-run
 rms spec apply <module.yaml|implementation.yaml> --change-yaml '<semantic-change>'
 rms spec check <module.yaml|implementation.yaml>
 ```
 
-`rms spec apply` records the exact applied semantic-change object under `verification/changes/`. Generated capability contracts are scaffold obligations and must be replaced through `contracts.set` with product-specific meaning, accepted inputs, guaranteed outcomes, and rejection categories before implementation or release. Use `set`, `remove`, and `supersedes` to revise semantics instead of hand-editing manifests or rewriting old change records; strict audit treats superseded records as history and active records as reflection obligations. Use `rms machine plan/apply/check` only for focused inner-machine edits when laws, public contracts, and evidence obligations are already correct. Provider plans are advisory until `rms spec apply` or `rms machine apply` reflects them in canonical artifacts. Agents may edit declared role bodies and private pure helpers inside pure role files. IO belongs in declared adapter, port, or effect-executor roles as effects plus effect results. Stateful machines must use one state-plus-input transition over commands, observed events, and effect results. Effect executors perform one request and return one result; transitions own sequencing and progress policy. Evidence used for release must not describe its source as an uncommitted filesystem snapshot or a repository without a Git revision; strict audit resolves the clean committed candidate revision.
+Inspect `final_machine` before source edits. Product variants must replace generic scaffold cases, every transition must name its semantic case, and every ordering/safety/bounded/parser/numeric law must have a matching property. Spec, machine, and surface apply record their change and reseal canonical semantics. Machine apply does not manufacture replay evidence; traces must come from implemented transition paths. Direct changes to module, local contract, or implementation semantics invalidate the seal and fail strict audit. Public domain values keep private fields and validated constructors; `allowed_public_field_structs` is limited to declared envelopes and transition/provenance records.
 
 ## Existing Project Flow
 

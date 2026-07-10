@@ -26,7 +26,7 @@ records:
     source:
       file: src/lib.rs
       function: describe_widget
-      branch: accepted-widget
+      branch: DescribeWidget
   - id: widget-constructor-rejected-empty-name
     state_before: Ready
     input:
@@ -52,4 +52,4 @@ records:
     source:
       file: src/widget.rs
       function: Widget::new
-      branch: rejected-empty-name
+      branch: RejectEmptyWidgetName

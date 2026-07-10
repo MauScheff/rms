@@ -298,6 +298,31 @@ invariants:
   kind: invariant
   authority: effect-executor
   enforced_by: apply_semantic_change
+- id: canonical-semantics-match-cli-applied-revision
+  statement: Production canonical semantics must match the latest RMS-applied semantic revision; direct manifest surgery cannot satisfy strict audit.
+  kind: safety
+  authority: effect-executor
+  enforced_by: semantic-change-apply-command
+- id: transition-cases-are-declared-and-replayed
+  statement: Every state and input branch that changes destination or outputs is declared as a named transition case and covered by replay evidence.
+  kind: traceability
+  authority: parser
+  enforced_by: audit-rms-project-command
+- id: public-domain-values-preserve-validity
+  statement: Public domain values with validity rules cannot bypass validated construction through exposed mutable fields or an unrestricted allowlist.
+  kind: safety
+  authority: parser
+  enforced_by: inspect-implementation-structure-command
+- id: risk-bearing-laws-have-semantic-properties
+  statement: Ordering, safety, bounded, normalization, parser, and numeric laws are linked to semantic properties with input spaces and oracles.
+  kind: reliability
+  authority: parser
+  enforced_by: semantic-property-check-command
+- id: runnable-delegation-has-semantic-owner
+  statement: Every runnable surface delegates to a declared role or symbol and declares its boundary effects or an explicit no-effect justification.
+  kind: boundary
+  authority: parser
+  enforced_by: check-runnable-surface-command
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -370,6 +395,7 @@ verification:
   - verification/contracts/replay_property_counterexample.md
   - verification/contracts/validate_rms_artifacts.md
   - verification/contracts/apply_semantic_change.md
+  - verification/contracts/apply_machine_change.md
   scenarios:
   - verification/scenarios
   - verification/scenarios/reusable_module_package.md
@@ -379,10 +405,19 @@ verification:
   - verification/traces/semantic_change_record.yaml
   properties:
   - verification/properties/semantic_properties.md
+  - verification/properties/canonical_semantic_revision.md
+  - verification/properties/transition_case_replay.md
+  - verification/properties/public_domain_validity.md
+  - verification/properties/risk_law_property_link.md
+  - verification/properties/runnable_delegation_owner.md
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Replace the remaining generic property-counterexample replay contract with executable semantic meaning.
+  last_semantic_intent: Make focused machine apply validate the final canonical candidate without manufacturing active replay evidence from declarations.
+  semantic_revision:
+    digest: sha256:258bc91db556b0229aa35cd8516320abbca347e4dda8732fa33183486293fb50
+    change_record: verification/changes/make-focused-machine-apply-validate-the-final-canonical-candidate-without-manufacturing-active-replay-evidence-from-declarations-2e202d62eef3.yaml
+    applied_by: rms spec apply
 properties:
 - id: semantic-property-declarations-have-oracles
   proves: semantic-properties-are-canonical-reliability-evidence
@@ -405,6 +440,96 @@ properties:
   - profile: smoke
     strategy: generated-property
     command: properties
+- id: canonical-semantic-revision-drift-is-rejected
+  proves: canonical-semantics-match-cli-applied-revision
+  kind: property
+  input_space: RMS-applied module and implementation manifests followed by one canonical semantic mutation
+  preconditions:
+  - the semantic revision was produced by RMS apply
+  operation: run strict audit before and after the mutation
+  oracle:
+  - the applied revision passes
+  - the directly mutated canonical artifact fails semantic revision integrity
+  evidence:
+    path: verification/properties/canonical_semantic_revision.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: verify
+- id: declared-transition-cases-have-replay
+  proves: transition-cases-are-declared-and-replayed
+  kind: property
+  input_space: machines with unique and conditional state/input transition cases
+  preconditions:
+  - each conditional branch has a stable case name
+  operation: compare canonical transition cases with trace state, input, destination, and source branch
+  oracle:
+  - every declared case has one matching replay record
+  - missing or collapsed cases fail strict audit
+  evidence:
+    path: verification/properties/transition_case_replay.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: verify
+- id: public-domain-field-bypass-is-rejected
+  proves: public-domain-values-preserve-validity
+  kind: property
+  input_space: inspectable binding structs with public fields, generated transport records, and validated domain values
+  preconditions:
+  - the implementation declares its machine and representation roles
+  operation: run binding structure inspection
+  oracle:
+  - generated envelopes and transition records remain allowed
+  - arbitrary domain structs with public fields fail even when added to the legacy allowlist
+  evidence:
+    path: verification/properties/public_domain_validity.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: verify
+- id: risk-law-property-link-is-required
+  proves: risk-bearing-laws-have-semantic-properties
+  kind: property
+  input_space: module invariants classified as ordering, safety, bounded, normalization, parser, or numeric
+  preconditions:
+  - the module is implemented rather than scaffold-only
+  operation: resolve semantic property targets and their proves links
+  oracle:
+  - each risk-bearing law has a property target with input space, oracle, evidence, and realization
+  - evidence prose alone does not satisfy the property obligation
+  evidence:
+    path: verification/properties/risk_law_property_link.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: verify
+- id: runnable-delegation-resolves-to-declared-role
+  proves: runnable-delegation-has-semantic-owner
+  kind: property
+  input_space: runnable surface declarations with role, symbol, effect, and no-effect combinations
+  preconditions:
+  - the surface entrypoint exists
+  operation: resolve the delegation target and boundary effect declaration
+  oracle:
+  - declared roles or symbols pass
+  - unknown role targets and effectless surfaces without justification fail
+  evidence:
+    path: verification/properties/runnable_delegation_owner.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: verify
 fuzz_targets:
 - id: rms-cli-malformed-artifacts-produce-diagnostics
   proves: canonical-artifacts-remain-authoritative

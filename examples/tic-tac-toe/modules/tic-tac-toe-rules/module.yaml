@@ -1,63 +1,55 @@
 spec: rms/module/v0.1
-
 module:
-  name: "tic-tac-toe-rules"
+  name: tic-tac-toe-rules
   version: 0.1.0
-  kind: "library"
-  purpose: "Own Tic-Tac-Toe board rules, legal moves, turn order, and terminal outcomes"
-
+  kind: library
+  purpose: Own Tic-Tac-Toe board rules, legal moves, turn order, and terminal outcomes
 profiles:
-  - "core"
-  - "stateful"
-
+- core
+- stateful
 owns:
   concepts:
-    - Board
-    - Cell
-    - Mark
-    - Move command
-    - Game status
-    - Transition outcome
+  - Board
+  - Cell
+  - Mark
+  - Move command
+  - Game status
+  - Transition outcome
   data:
-    - Game state
+  - Game state
   decisions:
-    - move acceptance
-    - turn advancement
-    - win detection
-    - draw detection
-    - illegal move rejection
-
+  - move acceptance
+  - turn advancement
+  - win detection
+  - draw detection
+  - illegal move rejection
 provides:
   commands:
-    - name: apply-move
-      contract: contracts/apply-move.v1.yaml
+  - name: apply-move
+    contract: contracts/apply-move.v1.yaml
   queries: []
   events: []
   capabilities: []
-
 requires:
   modules: []
   capabilities: []
-
 invariants:
-  - id: marks-never-overwrite
-    statement: An accepted move never replaces an occupied cell.
-    authority: transition
-    enforced_by: transition
-    verified_by: verification/laws/transition_trace.md
-  - id: turns-alternate
-    statement: Accepted moves alternate between X and O until a terminal status is reached.
-    authority: transition
-    enforced_by: transition
-    verified_by: verification/laws/transition_trace.md
-  - id: terminal-games-reject-moves
-    statement: A won or drawn game rejects further moves.
-    authority: transition
-    enforced_by: transition
-    verified_by: verification/laws/transition_trace.md
-
+- id: marks-never-overwrite
+  statement: An accepted move never replaces an occupied cell.
+  authority: transition
+  enforced_by: transition
+  verified_by: verification/laws/transition_trace.md
+- id: turns-alternate
+  statement: Accepted moves alternate between X and O until a terminal status is reached.
+  authority: transition
+  enforced_by: transition
+  verified_by: verification/laws/transition_trace.md
+- id: terminal-games-reject-moves
+  statement: A won or drawn game rejects further moves.
+  authority: transition
+  enforced_by: transition
+  verified_by: verification/laws/transition_trace.md
 effects: []
-
 state:
   model: verification/scenarios/game_lifecycle.md
   consistency_boundary: one-game
@@ -66,24 +58,27 @@ state:
   migration_policy: none
 compatibility:
   policy: backward-compatible-within-major
-
 verification:
   laws:
-    - verification/laws/transition_trace.md
+  - verification/laws/transition_trace.md
   contracts:
-    - verification/contracts
+  - verification/contracts
   scenarios:
-    - verification/scenarios
+  - verification/scenarios
   boundaries:
-    - verification/boundaries
+  - verification/boundaries
   traces:
-    - verification/traces
-
+  - verification/traces
 x-scaffold:
-  shape: "domain-engine"
+  shape: domain-engine
   roles:
-    - "representation"
-    - "commands"
-    - "transitions"
-    - "trace-replay"
-    - "law-evidence"
+  - representation
+  - commands
+  - transitions
+  - trace-replay
+  - law-evidence
+x-rms:
+  semantic_revision:
+    digest: sha256:7354d31154a67a6b360e0f3e249ddec837f315cd6986ce867ce04384b25d6579
+    change_record: verification/machine-changes/machine-change-9c6d0cec5af5.yaml
+    applied_by: rms machine apply

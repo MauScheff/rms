@@ -1,0 +1,37 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Make focused machine apply validate the final canonical candidate without manufacturing active replay evidence from declarations.
+laws: null
+contracts:
+  add: []
+  set:
+  - name: apply-machine-change
+    version: '1'
+    command: ApplyMachineChange
+    meaning: Validate and apply a language-neutral machine change to canonical implementation structure, record the exact change, and seal the resulting semantic revision without treating generated declarations as replay evidence.
+    accepts:
+    - One complete rms/machine-change/v0.1 object supplied as inline JSON, inline YAML, or a change file.
+    - Set, add, and remove operations over machine variants, effect protocols, transitions, and declared roles.
+    - A candidate that repairs invalid optional serialization or replaces noncanonical fields, provided the final candidate is valid.
+    ensures:
+    - The complete post-change candidate is validated before any write.
+    - Successful apply updates canonical machine declarations and requested role placeholders, records the exact change, and reseals module and implementation semantics.
+    - Apply preserves declared trace roles but does not generate active replay evidence from its own transition declarations.
+    - Dry-run reports the complete final machine and planned writes without mutation.
+    rejects:
+    - Unsupported change specifications or invalid stable identifiers.
+    - Unknown or multiply classified transition inputs, stale removal targets, duplicate variants or cases, and invalid state or output references.
+    - Effects without typed result protocols or declared executors.
+    - Aggregate protocols without justification and independent evidence.
+  remove: []
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: apply-machine-change
+    path: verification/contracts/apply_machine_change.md
+surfaces: null

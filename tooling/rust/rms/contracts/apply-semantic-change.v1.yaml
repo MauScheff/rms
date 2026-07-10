@@ -2,19 +2,21 @@ spec: rms/contract/v0.1
 name: "apply-semantic-change"
 version: 1
 kind: command
-meaning: "Validate and atomically apply language-neutral semantic additions, replacements, and removals to canonical RMS artifacts."
+meaning: "Validate and atomically apply language-neutral semantic additions, replacements, and removals while sealing the resulting canonical semantic revision."
 preconditions:
   - id: "accepts-1"
-    statement: "one rms/semantic-change/v0.1 object targeting a readable module or implementation"
+    statement: "one complete rms/semantic-change/v0.1 object targeting a readable module or implementation"
+  - id: "accepts-2"
+    statement: "named transition cases when one state and input can produce different destinations or outputs"
 postconditions:
   - id: "ensures-1"
-    statement: "contracts.set rewrites one existing public contract and preserves one matching public command"
+    statement: "canonical module and implementation semantics are updated together with the exact committed change record"
   - id: "ensures-2"
-    statement: "contracts.remove removes the matching public command and conventional contract file"
+    statement: "the resulting semantic projection carries a deterministic revision digest that changes after direct canonical edits"
   - id: "ensures-3"
-    statement: "dry-run reports the final intended writes without mutation"
+    statement: "dry-run reports the complete final intended machine and planned writes without mutation"
 failure_categories:
   - id: "rejects-1"
-    statement: "missing contract replacement targets, duplicate operations, incomplete contract meaning or outcomes, unsafe paths, and invalid machine or surface references"
+    statement: "empty or incomplete machine changes, unknown references, duplicate transition cases, invalid removal targets, and incomplete law, contract, property, surface, or evidence declarations"
 compatibility:
   policy: backward-compatible-within-major

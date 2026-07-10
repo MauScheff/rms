@@ -78,6 +78,7 @@ architecture:
     - commands
     - effects
     - reply
+    - rejection
   trace:
     journal: verification/traces/semantic_change_record.yaml
     timeline_projection: verification/traces/semantic_change_record.yaml
@@ -102,52 +103,52 @@ architecture:
     - Ready
     - WritingSemanticChangeRecord
     commands:
-    - ApplySemanticChange
-    - ValidateRmsArtifacts
-    - ExplainModule
-    - DiagnoseRmsEnvironment
-    - RenderWorkbenchPrompt
-    - PlanModuleChange
-    - DesignRmsSystem
-    - ComposeRmsSystem
-    - RouteRmsWork
-    - ReviewModuleDiff
-    - AnalyzeGitImpact
-    - GateRmsChange
-    - AuditRmsProject
-    - RefactorModuleWorkbench
-    - ImplementModuleWorkbench
-    - CaptureIntentWorkbench
-    - EvolveContractWorkbench
-    - EvidenceWorkbench
-    - ListWorkbenchRuns
-    - InspectWorkbenchRun
-    - InspectLatestWorkbenchRun
-    - InitWorkbenchConfig
-    - ConfigureAgentIntegration
-    - InitRmsSystem
-    - AddRmsModule
     - AddRmsCapability
-    - CheckReleaseReadiness
+    - AddRmsModule
+    - AnalyzeGitImpact
+    - ApplyMachineChange
+    - ApplyRunnableSurface
+    - ApplySemanticChange
+    - AuditRmsProject
     - BuildContextPacket
     - BuildModuleAtlas
-    - InspectImplementationStructure
-    - InspectTraceBundle
-    - PlanMachineChange
-    - ApplyMachineChange
-    - PlanSemanticChange
-    - CheckSemanticChange
-    - DiffSemanticChange
+    - CaptureIntentWorkbench
     - CheckMachineStructure
-    - DiffMachineStructure
-    - ApplyRunnableSurface
+    - CheckReleaseReadiness
     - CheckRunnableSurface
-    - PackageModule
-    - VerifyImplementation
+    - CheckSemanticChange
     - CheckSemanticProperties
-    - RunSemanticProperties
-    - ReplayPropertyCounterexample
+    - ComposeRmsSystem
+    - ConfigureAgentIntegration
+    - DesignRmsSystem
+    - DiagnoseRmsEnvironment
+    - DiffMachineStructure
+    - DiffSemanticChange
+    - EvidenceWorkbench
+    - EvolveContractWorkbench
+    - ExplainModule
+    - GateRmsChange
+    - ImplementModuleWorkbench
+    - InitRmsSystem
+    - InitWorkbenchConfig
+    - InspectImplementationStructure
+    - InspectLatestWorkbenchRun
     - InspectModule
+    - InspectTraceBundle
+    - InspectWorkbenchRun
+    - ListWorkbenchRuns
+    - PackageModule
+    - PlanMachineChange
+    - PlanModuleChange
+    - PlanSemanticChange
+    - RefactorModuleWorkbench
+    - RenderWorkbenchPrompt
+    - ReplayPropertyCounterexample
+    - ReviewModuleDiff
+    - RouteRmsWork
+    - RunSemanticProperties
+    - ValidateRmsArtifacts
+    - VerifyImplementation
     observed_events: []
     events:
     - CommandCompleted
@@ -155,8 +156,8 @@ architecture:
     effects:
     - WriteSemanticChangeRecord
     effect_results:
-    - SemanticChangeRecordWritten
     - SemanticChangeRecordWriteRejected
+    - SemanticChangeRecordWritten
     replies:
     - CommandCompleted
     - SemanticChangeApplied
@@ -176,18 +177,21 @@ architecture:
     - from: Ready
       on: ApplySemanticChange
       to: WritingSemanticChangeRecord
+      case: ApplySemanticChange
       effects:
       - WriteSemanticChangeRecord
       no_reply_justification: semantic change record write is pending
     - from: WritingSemanticChangeRecord
       on: SemanticChangeRecordWritten
       to: Ready
+      case: SemanticChangeRecordWritten
       events:
       - SemanticChangeRecorded
       reply: SemanticChangeApplied
     - from: WritingSemanticChangeRecord
       on: SemanticChangeRecordWriteRejected
       to: Ready
+      case: SemanticChangeRecordWriteRejected
       rejection: SemanticChangeRecordWriteFailed
   roles:
     representation:
@@ -697,6 +701,7 @@ semantic_functions:
     - diagnostics-are-evidence-not-authority
     - production-contracts-are-semantically-specific
     - release-evidence-does-not-disclaim-provenance
+    - transition-cases-are-declared-and-replayed
   assumptions:
     ensures:
     - audit reports are derived from validation diagnostics, composition findings, implementation structure reports, trace bundles, verification declarations, compatibility evidence, and RMS run provenance
@@ -749,6 +754,7 @@ semantic_functions:
     - contracts/inspect-implementation-structure.v1.yaml
     invariants:
     - diagnostics-are-evidence-not-authority
+    - public-domain-values-preserve-validity
   assumptions:
     ensures:
     - structure reports are derived from the target implementation binding and validator diagnostics
@@ -834,6 +840,7 @@ semantic_functions:
     invariants:
     - runnable-surfaces-enter-through-boundaries
     - diagnostics-are-evidence-not-authority
+    - runnable-delegation-has-semantic-owner
   assumptions:
     ensures:
     - runnable surface diagnostics are derived from implementation declarations and declared source roles
@@ -941,6 +948,7 @@ semantic_functions:
     - contracts/apply-semantic-change.v1.yaml
     invariants:
     - semantic-contract-revisions-are-cli-applied
+    - canonical-semantics-match-cli-applied-revision
   assumptions:
     ensures:
     - contract add, set, and remove operations update canonical module references, files, and semantic-change records together
@@ -986,6 +994,7 @@ semantic_functions:
     invariants:
     - semantic-properties-are-canonical-reliability-evidence
     - fuzz-realization-matches-semantic-claim
+    - risk-bearing-laws-have-semantic-properties
   evidence:
     contracts:
     - verification/contracts/check_semantic_properties.md
@@ -1009,3 +1018,8 @@ semantic_functions:
   evidence:
     contracts:
     - verification/contracts/replay_property_counterexample.md
+x-rms:
+  semantic_revision:
+    digest: sha256:258bc91db556b0229aa35cd8516320abbca347e4dda8732fa33183486293fb50
+    change_record: verification/changes/make-focused-machine-apply-validate-the-final-canonical-candidate-without-manufacturing-active-replay-evidence-from-declarations-2e202d62eef3.yaml
+    applied_by: rms spec apply

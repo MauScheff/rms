@@ -1,22 +1,20 @@
 spec: rms/contract/v0.1
-name: inspect-implementation-structure
+name: "inspect-implementation-structure"
 version: 1
 kind: command
-meaning: Print a focused inner-structure report for an RMS implementation binding.
+meaning: "Print and validate the canonical inner structure realized by an RMS implementation binding."
 preconditions:
-  - id: readable-implementation-binding
-    statement: The target path is a readable RMS implementation binding.
+  - id: "accepts-1"
+    statement: "a readable RMS implementation binding with inspectable or explicitly opaque source"
 postconditions:
-  - id: report-derived-from-binding
-    statement: The report identifies the target implementation, module, binding, semantic shape, declared machine roles, message envelopes, transition output, trace roles, declared role files, and focused structure, source-symbol, or evidence diagnostics derived from the implementation binding.
-  - id: advisory-findings-preserved
-    statement: Missing or stale inner-structure declarations, placeholder evidence, hidden-effect findings, projection command emission, hidden choreography, unchecked numeric arithmetic, cross-module private-role imports, and traceability gaps are reported as advisory diagnostics unless another validation error makes the implementation invalid.
-  - id: role-aliases-normalized
-    statement: Canonical structure checks treat parser, boundary_parser, boundary-parser, and parsers as equivalent parser role declarations while preserving the original role names in reports.
-  - id: declared-symbol-findings-preserved
-    statement: If an implementation binding declares machine/state/command/event/effect/reply/rejection or transition-function symbols that cannot be found in inspectable source, the report marks the implementation invalid with source-symbol diagnostics.
+  - id: "ensures-1"
+    statement: "the report distinguishes binding container types from semantic variants and named transition cases"
+  - id: "ensures-2"
+    statement: "public domain values cannot silence validated-construction checks through a generic public-field allowlist"
+  - id: "ensures-3"
+    statement: "runnable delegation targets and role ownership are checked against canonical declarations"
 failure_categories:
-  - id: invalid-implementation-binding
-    statement: The target path cannot be read, cannot be parsed, or is not an RMS implementation binding.
+  - id: "rejects-1"
+    statement: "missing declared symbols or roles, undeclared semantic source ownership, invalid public domain representation, undeclared effects, and malformed machine or surface structure"
 compatibility:
   policy: backward-compatible-within-major

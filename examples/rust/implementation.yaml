@@ -1,65 +1,60 @@
 spec: rms/implementation/v0.1
-
 module: rust-example
 binding: rust
-
 source:
   root: .
   public_entrypoint: src/lib.rs
-
 commands:
   build: cargo build --manifest-path Cargo.toml
   verify: cargo test --manifest-path Cargo.toml
   format: cargo fmt --manifest-path Cargo.toml --check
-
 toolchain:
   cargo_manifest: Cargo.toml
   package: rms-rust-example
-
 dependencies:
   allowed_external_crates:
-    - serde
-
+  - serde
 architecture:
   shape: domain-engine
   reliability:
     properties:
-      - id: accepted-widget-name-is-non-empty
-        proves: accepted-widget-has-name
-        kind: property
-        input_space: arbitrary local widget names
-        oracle:
-          - accepted widget names are non-empty after trimming
-          - rejected empty names remain explicit
-        command: verify
-        evidence: verification/laws/accepted_widget_has_name
+    - id: accepted-widget-name-is-non-empty
+      proves: accepted-widget-has-name
+      kind: property
+      input_space: arbitrary local widget names
+      oracle:
+      - accepted widget names are non-empty after trimming
+      - rejected empty names remain explicit
+      command: verify
+      evidence: verification/laws/accepted_widget_has_name
   allowed_public_field_structs:
-    - RustExampleTransition
-    - RustExampleTransitionRecord
+  - RustExampleTransition
+  - RustExampleTransitionRecord
   public_modules:
-    - widget
+  - widget
   messages:
     command_envelope:
-      - command_id
-      - target_machine
-      - correlation_id
-      - causation_id
-      - idempotency_key
+    - command_id
+    - target_machine
+    - correlation_id
+    - causation_id
+    - idempotency_key
     event_envelope:
-      - event_id
-      - source_machine
-      - correlation_id
-      - causation_id
-      - sequence
-      - schema_version
-      - occurred_at
+    - event_id
+    - source_machine
+    - correlation_id
+    - causation_id
+    - sequence
+    - schema_version
+    - occurred_at
   transition:
     output:
-      - next_state
-      - events
-      - commands
-      - effects
-      - reply
+    - next_state
+    - events
+    - commands
+    - effects
+    - reply
+    - rejection
   trace:
     journal: verification/traces/transition_trace.yaml
     timeline_projection: verification/traces/transition_trace.yaml
@@ -69,7 +64,7 @@ architecture:
     name: RustExampleMachine
     mode: stateless-decision-machine
     transition_signature: input-only
-    stateless_justification: "describe-widget is a pure query over already validated input; no lifecycle or ordering state is owned by this example"
+    stateless_justification: This example is a pure query over validated input with no lifecycle.
     types:
       state: RustExampleState
       command: DescribeWidgetCommand
@@ -79,84 +74,92 @@ architecture:
       transition: RustExampleTransition
       transition_record: RustExampleTransitionRecord
     states:
-      - Ready
+    - Ready
     commands:
-      - Describe
-      - RejectEmptyName
+    - Describe
+    - RejectEmptyName
     observed_events: []
     events:
-      - WidgetDescribed
-      - WidgetRejected
+    - WidgetDescribed
+    - WidgetRejected
     effects: []
     effect_results: []
     replies:
-      - Description
-      - Rejected
+    - Description
+    - Rejected
     rejections:
-      - EmptyWidgetName
-      - ExpectedEmptyName
+    - EmptyWidgetName
+    - ExpectedEmptyName
     effect_protocols: []
     transition_function: transition
     transitions:
-      - from: Ready
-        on: Describe
-        to: Ready
-        events: [WidgetDescribed]
-        reply: Description
-      - from: Ready
-        on: RejectEmptyName
-        to: Ready
-        events: [WidgetRejected]
-        rejection: EmptyWidgetName
+    - from: Ready
+      on: Describe
+      to: Ready
+      case: DescribeWidget
+      events:
+      - WidgetDescribed
+      reply: Description
+    - from: Ready
+      on: RejectEmptyName
+      to: Ready
+      case: RejectEmptyWidgetName
+      events:
+      - WidgetRejected
+      rejection: EmptyWidgetName
   roles:
     representation:
-      - src/widget.rs
+    - src/widget.rs
     transition:
-      - src/lib.rs
+    - src/lib.rs
     message_envelope:
-      - src/widget.rs
+    - src/widget.rs
     transition_record:
-      - src/lib.rs
+    - src/lib.rs
     journal:
-      - verification/traces/transition_trace.yaml
+    - verification/traces/transition_trace.yaml
     timeline_projection:
-      - verification/traces/transition_trace.yaml
+    - verification/traces/transition_trace.yaml
     replay_bundle:
-      - verification/traces/transition_trace.yaml
+    - verification/traces/transition_trace.yaml
     trace_evidence:
-      - verification/scenarios/widget_acceptance
-      - verification/traces/transition_trace.yaml
-
+    - verification/scenarios/widget_acceptance
+    - verification/traces/transition_trace.yaml
 semantic_functions:
-  - id: widget-constructor
-    symbol: Widget::new
-    kind: constructor
-    purity: pure
-    discharges:
-      invariants:
-        - accepted-widget-has-name
-    assumptions:
-      ensures:
-        - when output is Some, output.name().trim() is not empty
-    evidence:
-      laws:
-        - verification/laws/accepted_widget_has_name
-      scenarios:
-        - verification/scenarios/widget_acceptance
-  - id: describe-widget-query
-    symbol: describe_widget
-    kind: projector
-    purity: pure
-    discharges:
-      contracts:
-        - contracts/describe-widget.v1.yaml
-      invariants:
-        - accepted-widget-has-name
-    assumptions:
-      requires:
-        - widget was constructed through Widget::new
-      ensures:
-        - output == widget.name()
-    evidence:
-      contracts:
-        - verification/contracts/describe_widget_contract
+- id: widget-constructor
+  symbol: Widget::new
+  kind: constructor
+  purity: pure
+  discharges:
+    invariants:
+    - accepted-widget-has-name
+  assumptions:
+    ensures:
+    - when output is Some, output.name().trim() is not empty
+  evidence:
+    laws:
+    - verification/laws/accepted_widget_has_name
+    scenarios:
+    - verification/scenarios/widget_acceptance
+- id: describe-widget-query
+  symbol: describe_widget
+  kind: projector
+  purity: pure
+  discharges:
+    contracts:
+    - contracts/describe-widget.v1.yaml
+    invariants:
+    - accepted-widget-has-name
+  assumptions:
+    requires:
+    - widget was constructed through Widget::new
+    ensures:
+    - output == widget.name()
+  evidence:
+    contracts:
+    - verification/contracts/describe_widget_contract
+x-rms:
+  semantic_revision:
+    digest: sha256:22f5b4fbd69ece0ec89ac217ce37ba4c2ac10d49b96124ac8cc6adf21ad23e03
+    change_record: verification/machine-changes/machine-change-d094fb0cc605.yaml
+    applied_by: rms machine apply
