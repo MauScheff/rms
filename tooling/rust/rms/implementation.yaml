@@ -254,10 +254,13 @@ semantic_functions:
     - contracts/validate-rms-artifacts.v1.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
+    - production-contracts-are-semantically-specific
+    - release-evidence-does-not-disclaim-provenance
   assumptions:
     ensures:
     - validation diagnostics are derived from manifest schemas and semantic reference checks
     - structure diagnostics normalize canonical role aliases and surface numeric-safety risks as advisory findings
+    - generated public contracts and explicitly unpinned evidence remain visible production blockers
   evidence:
     contracts:
     - verification/contracts/validate_rms_artifacts.md
@@ -692,10 +695,13 @@ semantic_functions:
     invariants:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
+    - production-contracts-are-semantically-specific
+    - release-evidence-does-not-disclaim-provenance
   assumptions:
     ensures:
     - audit reports are derived from validation diagnostics, composition findings, implementation structure reports, trace bundles, verification declarations, compatibility evidence, and RMS run provenance
     - strict mode promotes production-readiness blockers to failures without invoking optional AI providers or mutating project artifacts
+    - strict mode rejects active scaffold contracts and evidence that disclaims committed source provenance
     - audit reports list verification targets but leave native execution to `rms verify`, `rms gate`, or release checks
   evidence:
     contracts:
@@ -933,6 +939,11 @@ semantic_functions:
   discharges:
     contracts:
     - contracts/apply-semantic-change.v1.yaml
+    invariants:
+    - semantic-contract-revisions-are-cli-applied
+  assumptions:
+    ensures:
+    - contract add, set, and remove operations update canonical module references, files, and semantic-change records together
   evidence:
     contracts:
     - verification/contracts/apply_semantic_change.md

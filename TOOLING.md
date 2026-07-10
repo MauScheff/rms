@@ -134,7 +134,7 @@ rms spec check <module.yaml|implementation.yaml> [--strict] [--json]
 rms spec diff <module.yaml|implementation.yaml> [--json]
 ```
 
-Use this when a change needs new laws, public contracts, machine states, transitions, effects, effect results, rejection types, recovery or reconciliation obligations, or evidence obligations. `rms spec apply` updates canonical semantics first and records the exact applied semantic-change object under `verification/changes/`; then agents fill declared role bodies. Provider planning is advisory until `rms spec apply` succeeds. Use `set`, `remove`, and `supersedes` in semantic changes to revise canonical semantics instead of hand-editing manifests or rewriting old change records.
+Use this when a change needs new laws, public contracts, machine states, transitions, effects, effect results, rejection types, recovery or reconciliation obligations, or evidence obligations. `rms spec apply` updates canonical semantics first and records the exact applied semantic-change object under `verification/changes/`; then agents fill declared role bodies. Generated capability contracts are marked as scaffold obligations and block strict audit until `contracts.set` replaces them with product-specific meaning, accepted inputs, guaranteed outcomes, and rejection categories. Provider planning is advisory until `rms spec apply` succeeds. Use `set`, `remove`, and `supersedes` in semantic changes to revise canonical semantics instead of hand-editing manifests or rewriting old change records.
 
 The semantic-change format is language-neutral and may include a nested machine change:
 

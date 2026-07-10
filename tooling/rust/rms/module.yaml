@@ -283,6 +283,21 @@ invariants:
   kind: invariant
   authority: parser
   enforced_by: semantic-property-check-command
+- id: production-contracts-are-semantically-specific
+  statement: An implemented production module cannot satisfy validation with scaffold-generic contract meaning, assumptions, outcomes, or failure categories.
+  kind: invariant
+  authority: parser
+  enforced_by: validate_contract
+- id: release-evidence-does-not-disclaim-provenance
+  statement: Evidence used by a production claim must not describe its source as an uncommitted workspace, current filesystem snapshot, or repository without a Git revision.
+  kind: invariant
+  authority: parser
+  enforced_by: check_evidence_source_quality
+- id: semantic-contract-revisions-are-cli-applied
+  statement: Existing public contracts are revised or removed through rms spec apply so canonical contract files and module references change together.
+  kind: invariant
+  authority: effect-executor
+  enforced_by: apply_semantic_change
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -337,6 +352,9 @@ verification:
   - verification/laws/atomic_effect_protocols.md
   - verification/laws/complete_provenance.md
   - verification/laws/fuzz_realization.md
+  - verification/laws/production_contracts_are_semantically_specific.md
+  - verification/laws/release_evidence_does_not_disclaim_provenance.md
+  - verification/laws/semantic_contract_revisions_are_cli_applied.md
   contracts:
   - verification/contracts
   - verification/contracts/add_rms_capability.md
@@ -350,6 +368,8 @@ verification:
   - verification/contracts/check_semantic_properties.md
   - verification/contracts/run_semantic_properties.md
   - verification/contracts/replay_property_counterexample.md
+  - verification/contracts/validate_rms_artifacts.md
+  - verification/contracts/apply_semantic_change.md
   scenarios:
   - verification/scenarios
   - verification/scenarios/reusable_module_package.md
@@ -362,7 +382,7 @@ verification:
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Enforce semantic variants, stateful input transitions, atomic effect protocols, complete provenance, and truthful property realization.
+  last_semantic_intent: Replace the remaining generic property-counterexample replay contract with executable semantic meaning.
 properties:
 - id: semantic-property-declarations-have-oracles
   proves: semantic-properties-are-canonical-reliability-evidence

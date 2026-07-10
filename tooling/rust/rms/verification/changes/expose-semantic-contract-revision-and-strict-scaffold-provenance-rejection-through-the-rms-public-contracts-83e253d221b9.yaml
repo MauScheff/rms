@@ -1,0 +1,59 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Expose semantic contract revision and strict scaffold/provenance rejection through the RMS public contracts.
+laws: null
+contracts:
+  add: []
+  set:
+  - name: validate-rms-artifacts
+    version: v1
+    command: validate-rms-artifacts
+    meaning: Validate RMS manifests, public contracts, referenced evidence, and implementation bindings against canonical schemas and semantic production rules.
+    accepts:
+    - readable RMS roots or explicit manifest paths
+    ensures:
+    - diagnostics identify scaffold-generic public contracts and evidence that disclaims committed provenance
+    - all reported findings remain derived from canonical artifacts and deterministic checks
+    rejects:
+    - unparseable artifacts, invalid references, semantic contract scaffolds, unpinned evidence, and binding conformance failures
+  - name: apply-semantic-change
+    version: v1
+    command: apply-semantic-change
+    meaning: Validate and atomically apply language-neutral semantic additions, replacements, and removals to canonical RMS artifacts.
+    accepts:
+    - one rms/semantic-change/v0.1 object targeting a readable module or implementation
+    ensures:
+    - contracts.set rewrites one existing public contract and preserves one matching public command
+    - contracts.remove removes the matching public command and conventional contract file
+    - dry-run reports the final intended writes without mutation
+    rejects:
+    - missing contract replacement targets, duplicate operations, incomplete contract meaning or outcomes, unsafe paths, and invalid machine or surface references
+  - name: audit-rms-project
+    version: v1
+    command: audit-rms-project
+    meaning: Audit a committed RMS project for production blockers across semantics, composition, implementation structure, evidence, traces, and provenance.
+    accepts:
+    - a readable RMS project root and optional strict production mode
+    ensures:
+    - strict mode rejects active scaffold contracts and evidence that claims an uncommitted or missing source revision
+    - the report remains provider-independent and identifies every deterministic blocker
+    rejects:
+    - unknown source revision, dirty production artifacts, semantic or structural drift, invalid trace evidence, scaffold contracts, unpinned evidence, and missing verification commands
+  remove: []
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: validate-rms-artifacts
+    path: verification/contracts/validate_rms_artifacts.md
+  - kind: contract
+    proves: apply-semantic-change
+    path: verification/contracts/apply_semantic_change.md
+  - kind: contract
+    proves: audit-rms-project
+    path: verification/contracts/audit_rms_project.md
+surfaces: null

@@ -1,20 +1,18 @@
 spec: rms/contract/v0.1
-name: validate-rms-artifacts
+name: "validate-rms-artifacts"
 version: 1
 kind: command
-meaning: Validate RMS manifests and referenced artifacts against embedded schemas and semantic reference checks.
+meaning: "Validate RMS manifests, public contracts, referenced evidence, and implementation bindings against canonical schemas and semantic production rules."
 preconditions:
-  - id: readable-root-or-explicit-manifests
-    statement: The requested root or explicit manifest paths are readable by the process.
+  - id: "accepts-1"
+    statement: "readable RMS roots or explicit manifest paths"
 postconditions:
-  - id: diagnostics-reflect-artifacts
-    statement: Reported diagnostics are derived from parsed RMS artifacts and embedded validation rules.
-  - id: structure-diagnostics-include-inner-shape
-    statement: Implementation structure diagnostics recognize canonical role aliases such as parser/boundary_parser/parsers, report numeric-safety risks when modules with numeric validated values perform unchecked arithmetic in declared roles, and flag apparent cross-module imports of private representation or transition roles.
+  - id: "ensures-1"
+    statement: "diagnostics identify scaffold-generic public contracts and evidence that disclaims committed provenance"
+  - id: "ensures-2"
+    statement: "all reported findings remain derived from canonical artifacts and deterministic checks"
 failure_categories:
-  - id: parse-failure
-    statement: An input artifact cannot be parsed as the expected format.
-  - id: validation-failure
-    statement: One or more RMS artifacts violate schema, reference, binding, or semantic checks.
+  - id: "rejects-1"
+    statement: "unparseable artifacts, invalid references, semantic contract scaffolds, unpinned evidence, and binding conformance failures"
 compatibility:
   policy: backward-compatible-within-major

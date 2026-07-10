@@ -1,0 +1,38 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Require production contracts to replace scaffold semantics, reject evidence that disclaims committed provenance, and let semantic revisions update existing contracts through RMS.
+laws:
+  add:
+  - id: production-contracts-are-semantically-specific
+    statement: An implemented production module cannot satisfy validation with scaffold-generic contract meaning, assumptions, outcomes, or failure categories.
+    kind: invariant
+    authority: parser
+    enforced_by: validate_contract
+  - id: release-evidence-does-not-disclaim-provenance
+    statement: Evidence used by a production claim must not describe its source as an uncommitted workspace, current filesystem snapshot, or repository without a Git revision.
+    kind: invariant
+    authority: parser
+    enforced_by: check_evidence_source_quality
+  - id: semantic-contract-revisions-are-cli-applied
+    statement: Existing public contracts are revised or removed through rms spec apply so canonical contract files and module references change together.
+    kind: invariant
+    authority: transition
+    enforced_by: apply_semantic_change
+contracts: null
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: production-contracts-are-semantically-specific
+    path: verification/laws/production_contracts_are_semantically_specific.md
+  - kind: law
+    proves: release-evidence-does-not-disclaim-provenance
+    path: verification/laws/release_evidence_does_not_disclaim_provenance.md
+  - kind: law
+    proves: semantic-contract-revisions-are-cli-applied
+    path: verification/laws/semantic_contract_revisions_are_cli_applied.md
+surfaces: null

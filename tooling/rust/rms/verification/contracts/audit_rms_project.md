@@ -9,6 +9,7 @@ Evidence:
 - `git_changed_paths_include_nested_untracked_module_files` verifies provenance and semantic-drift analysis include files beneath wholly untracked module directories.
 - `audit_scope_excludes_examples_from_repo_root_by_default` verifies repository-root production audits skip illustrative `examples/` modules unless `--include-examples` is requested or the audit root is inside `examples`.
 - `local_workspace_evidence_is_source_unpinned_without_git_revision` verifies local-workspace evidence without a git revision is reported as unpinned evidence.
+- `generated_contract_semantics_are_visible_scaffold_obligations` verifies generated public contracts remain strict-audit blockers until their product meaning replaces scaffold semantics.
 - `structure_report_flags_cross_module_private_imports` verifies implementation structure diagnostics flag boundary/source role files that import another module's private `transition` or `representation` internals.
 - `structure_report_flags_undeclared_effect_source_residue` verifies strict structure diagnostics flag effect/effect-result source roles that are absent from canonical machine declarations.
 - Canonical machine fixtures verify strict audit rejects collapsed semantic variants, stateful transitions without state and classified input, incomplete effect protocols, and uncovered effect-result branches.

@@ -1431,6 +1431,10 @@ struct SemanticIntentChange {
 struct SemanticLawsChange {
     #[serde(default)]
     add: Vec<SemanticLawChange>,
+    #[serde(default, rename = "set")]
+    replace: Vec<SemanticLawChange>,
+    #[serde(default)]
+    remove: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1451,6 +1455,10 @@ struct SemanticLawChange {
 struct SemanticContractsChange {
     #[serde(default)]
     add: Vec<SemanticContractChange>,
+    #[serde(default, rename = "set")]
+    replace: Vec<SemanticContractChange>,
+    #[serde(default)]
+    remove: Vec<SemanticContractRemoveChange>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1462,9 +1470,21 @@ struct SemanticContractChange {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
+    meaning: Option<String>,
+    #[serde(default)]
     accepts: Vec<String>,
     #[serde(default)]
+    ensures: Vec<String>,
+    #[serde(default)]
     rejects: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticContractRemoveChange {
+    name: String,
+    #[serde(default)]
+    version: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -11672,6 +11692,36 @@ fn validate_contract(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic
         validate_contract_assumptions(manifest, diagnostics, field);
     }
     validate_contract_named_statements(manifest, diagnostics, "failure_categories");
+    check_contract_semantic_specificity(manifest, diagnostics);
+}
+
+fn check_contract_semantic_specificity(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let rendered = serde_yaml::to_string(&manifest.value).unwrap_or_default();
+    let lower = rendered.to_ascii_lowercase();
+    let scaffold_marker = get_bool(&manifest.value, &["x-rms", "scaffold"]).unwrap_or(false);
+    let scaffold_phrases = [
+        "meaning: domain decision command",
+        "meaning: boundary adapter public command",
+        "meaning: required domain decision command",
+        "meaning: composite parent public command",
+        "the caller supplies input accepted by this command boundary",
+        "the command returns an accepted result or an explicit rejection",
+        "the request is rejected by boundary validation or domain rules",
+    ];
+    if scaffold_marker
+        || (lower.contains("public command `") && lower.contains("declared by rms semantic change"))
+        || scaffold_phrases.iter().any(|phrase| lower.contains(phrase))
+    {
+        push_unique_warning(
+            diagnostics,
+            "semantic.contract-scaffold-active",
+            &manifest.path,
+            "public contract still contains scaffold-generic semantics; replace it through `rms spec apply` with `contracts.set` before a production claim",
+        );
+    }
 }
 
 fn validate_contract_assumptions(
@@ -17650,6 +17700,11 @@ fn check_evidence_source_quality(
     if lower.contains("source revision: not recorded")
         || lower.contains("source revision: unknown")
         || lower.contains("before first git commit")
+        || lower.contains("source provenance: current filesystem snapshot")
+        || lower.contains("source revision: current filesystem snapshot")
+        || lower.contains("this checkout has no git source revision")
+        || lower.contains("repository has no git revision")
+        || lower.contains("repository has no git source revision")
         || (lower.contains("local workspace") && !lower.contains("git:"))
     {
         push_unique_warning(
@@ -21700,7 +21755,7 @@ fn append_semantic_change_module_reflection_checks(
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
-        for law in &laws.add {
+        for law in laws.add.iter().chain(&laws.replace) {
             if !invariant_ids.contains(&law.id) {
                 push_applied_change_reflection_failure(
                     checks,
@@ -21714,11 +21769,24 @@ fn append_semantic_change_module_reflection_checks(
                 );
             }
         }
+        for law in &laws.remove {
+            if invariant_ids.contains(law) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    change_path,
+                    format!(
+                        "semantic-change removes law `{law}`, but `module.yaml` still contains it"
+                    ),
+                );
+            }
+        }
     }
 
     if let Some(contracts) = &change.contracts {
         let public_surface = module_public_surface_names(module);
-        for contract in &contracts.add {
+        for contract in contracts.add.iter().chain(&contracts.replace) {
             let expected = contract.command.as_deref().unwrap_or(&contract.name);
             if !public_surface.contains(expected) && !public_surface.contains(&contract.name) {
                 push_applied_change_reflection_failure(
@@ -21728,6 +21796,20 @@ fn append_semantic_change_module_reflection_checks(
                     change_path,
                     format!(
                         "semantic-change declares contract `{}`, but `module.yaml` does not expose `{expected}` in the public surface",
+                        contract.name
+                    ),
+                );
+            }
+        }
+        for contract in &contracts.remove {
+            if public_surface.contains(&contract.name) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    change_path,
+                    format!(
+                        "semantic-change removes contract `{}`, but `module.yaml` still exposes it in the public surface",
                         contract.name
                     ),
                 );
@@ -26058,8 +26140,12 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  summary: {}", yaml_quote(task))?;
     writeln!(out, "laws:")?;
     writeln!(out, "  add: []")?;
+    writeln!(out, "  set: []")?;
+    writeln!(out, "  remove: []")?;
     writeln!(out, "contracts:")?;
     writeln!(out, "  add: []")?;
+    writeln!(out, "  set: []")?;
+    writeln!(out, "  remove: []")?;
     writeln!(out, "properties:")?;
     writeln!(out, "  add: []")?;
     writeln!(out, "machine:")?;
@@ -26091,18 +26177,21 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
+    writeln!(out, "Contract add/set entries use `name`, `version`, `command`, product-specific `meaning`, `accepts`, `ensures`, and `rejects`. Generated capability contracts are scaffold obligations: replace them with `contracts.set` before implementation or production audit. Contract remove entries use `name` and optional `version`.")?;
+    writeln!(out)?;
     writeln!(out, "Surface add entries use `name`, `kind: runnable-boundary`, `surface`, `entrypoint`, `delegates_to.role` or `delegates_to.symbol`, `delegates_to.command`, optional `effects`, and `evidence`. Use them only when an app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoint is part of the semantic change.")?;
     writeln!(out)?;
     writeln!(out, "## Semantic Gate Checklist")?;
     for item in [
         "Each new behavior has a law, public contract, machine transition, effect, rejection, or evidence obligation before code changes.",
+        "Every public contract replaces scaffold meaning with product-specific accepted inputs, guaranteed outcomes, and explicit rejection categories through contracts.set.",
         "Law entries declare `authority` and `enforced_by`; transition-authority laws are discharged by the pure canonical transition, not an effect executor.",
         "Semantic lists contain case names, never binding container names; bindings generate idiomatic enums, sealed cases, or tagged constructors from those cases.",
         "Each always/never/bounded/parser/normalization/numeric/reusable/state-machine law has a semantic property with input_space, oracle, evidence, and counterexample replay policy.",
         "Every stateful input is exactly one command, observed event, or effect result, and every illegal state/input combination is rejected explicitly.",
         "Effects have one-request-one-result protocols and adapter, port, effect-executor, or explicit delegation roles; executors do not own business sequencing.",
         "Runnable app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints are declared as surfaces before files own product behavior.",
-        "Evidence names the promise, scenario, command/tool, expected result, source revision, and related law/contract/machine item.",
+        "Evidence names the promise, scenario, command/tool, expected result, source revision, and related law/contract/machine item; it never claims a current filesystem snapshot or missing Git revision.",
         "`rms spec apply` records the exact semantic-change object under `verification/changes/`; command logs with placeholders are not evidence.",
         "Pure transitions reject illegal states instead of throwing or doing IO.",
         "Boundary adapters parse raw input into command envelopes or typed rejections before delegation.",
@@ -27049,14 +27138,12 @@ fn validate_semantic_change(
         }
     }
 
-    let has_laws = change
-        .laws
-        .as_ref()
-        .is_some_and(|laws| !laws.add.is_empty());
-    let has_contracts = change
-        .contracts
-        .as_ref()
-        .is_some_and(|contracts| !contracts.add.is_empty());
+    let has_laws = change.laws.as_ref().is_some_and(|laws| {
+        !laws.add.is_empty() || !laws.replace.is_empty() || !laws.remove.is_empty()
+    });
+    let has_contracts = change.contracts.as_ref().is_some_and(|contracts| {
+        !contracts.add.is_empty() || !contracts.replace.is_empty() || !contracts.remove.is_empty()
+    });
     let has_properties = change
         .properties
         .as_ref()
@@ -27105,8 +27192,21 @@ fn validate_semantic_laws(
     let Some(laws) = &change.laws else {
         return;
     };
-    let mut seen = BTreeSet::new();
-    for law in &laws.add {
+    let existing = context
+        .module
+        .as_ref()
+        .and_then(|module| get_path(&module.value, &["invariants"]))
+        .and_then(YamlValue::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| get_str(item, &["id"]))
+                .map(ToString::to_string)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let mut changed = BTreeSet::new();
+    for law in laws.add.iter().chain(&laws.replace) {
         if !is_stable_semantic_id(&law.id) {
             diagnostics.push(error(
                 "semantic.law-id",
@@ -27114,11 +27214,11 @@ fn validate_semantic_laws(
                 format!("law id `{}` is not a stable semantic id", law.id),
             ));
         }
-        if !seen.insert(law.id.clone()) {
+        if !changed.insert(law.id.clone()) {
             diagnostics.push(error(
                 "semantic.duplicate-law",
                 &context.target,
-                format!("semantic change adds duplicate law `{}`", law.id),
+                format!("semantic change modifies law `{}` more than once", law.id),
             ));
         }
         if law.statement.trim().is_empty() {
@@ -27159,6 +27259,53 @@ fn validate_semantic_laws(
             ));
         }
     }
+    for law in &laws.add {
+        if existing.contains(&law.id) {
+            diagnostics.push(error(
+                "semantic.law-add-exists",
+                &context.target,
+                format!(
+                    "law `{}` already exists; revise it through `laws.set`",
+                    law.id
+                ),
+            ));
+        }
+    }
+    for law in &laws.replace {
+        if !existing.contains(&law.id) {
+            diagnostics.push(error(
+                "semantic.law-set-missing",
+                &context.target,
+                format!(
+                    "law `{}` does not exist; create it through `laws.add`",
+                    law.id
+                ),
+            ));
+        }
+    }
+    for law in &laws.remove {
+        if !is_stable_semantic_id(law) {
+            diagnostics.push(error(
+                "semantic.law-id",
+                &context.target,
+                format!("law id `{law}` is not a stable semantic id"),
+            ));
+        }
+        if !changed.insert(law.clone()) {
+            diagnostics.push(error(
+                "semantic.duplicate-law",
+                &context.target,
+                format!("semantic change modifies law `{law}` more than once"),
+            ));
+        }
+        if !existing.contains(law) {
+            diagnostics.push(error(
+                "semantic.law-remove-missing",
+                &context.target,
+                format!("law `{law}` does not exist"),
+            ));
+        }
+    }
 }
 
 fn validate_semantic_contracts(
@@ -27170,8 +27317,22 @@ fn validate_semantic_contracts(
     let Some(contracts) = &change.contracts else {
         return;
     };
-    let mut seen = BTreeSet::new();
-    for contract in &contracts.add {
+    let existing = context
+        .module
+        .as_ref()
+        .and_then(|module| get_path(&module.value, &["provides", "commands"]))
+        .and_then(YamlValue::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| get_str(item, &["name"]))
+                .map(ToString::to_string)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let mut changed = BTreeSet::new();
+
+    for contract in contracts.add.iter().chain(&contracts.replace) {
         if !is_stable_semantic_id(&contract.name) {
             diagnostics.push(error(
                 "semantic.contract-name",
@@ -27182,12 +27343,12 @@ fn validate_semantic_contracts(
                 ),
             ));
         }
-        if !seen.insert(contract.name.clone()) {
+        if !changed.insert(contract.name.clone()) {
             diagnostics.push(error(
                 "semantic.duplicate-contract",
                 &context.target,
                 format!(
-                    "semantic change adds duplicate contract `{}`",
+                    "semantic change modifies contract `{}` more than once",
                     contract.name
                 ),
             ));
@@ -27198,6 +27359,32 @@ fn validate_semantic_contracts(
                 &context.target,
                 format!("contract `{}` must declare a public command", contract.name),
             ));
+        }
+        if contract.meaning.as_deref().unwrap_or("").trim().is_empty() {
+            diagnostics.push(error(
+                "semantic.contract-meaning-missing",
+                &context.target,
+                format!(
+                    "contract `{}` must declare product-specific meaning",
+                    contract.name
+                ),
+            ));
+        }
+        for (field, items) in [
+            ("accepts", &contract.accepts),
+            ("ensures", &contract.ensures),
+            ("rejects", &contract.rejects),
+        ] {
+            if items.is_empty() || items.iter().any(|item| item.trim().is_empty()) {
+                diagnostics.push(error(
+                    format!("semantic.contract-{field}-missing"),
+                    &context.target,
+                    format!(
+                        "contract `{}` must declare at least one product-specific `{field}` statement",
+                        contract.name
+                    ),
+                ));
+            }
         }
         if !evidence_items.iter().any(|evidence| {
             evidence.proves == contract.name
@@ -27213,6 +27400,60 @@ fn validate_semantic_contracts(
                     "contract `{}` must have evidence that proves it",
                     contract.name
                 ),
+            ));
+        }
+    }
+
+    for contract in &contracts.add {
+        if existing.contains(&contract.name) {
+            diagnostics.push(error(
+                "semantic.contract-add-exists",
+                &context.target,
+                format!(
+                    "contract `{}` already exists; revise it through `contracts.set`",
+                    contract.name
+                ),
+            ));
+        }
+    }
+    for contract in &contracts.replace {
+        if !existing.contains(&contract.name) {
+            diagnostics.push(error(
+                "semantic.contract-set-missing",
+                &context.target,
+                format!(
+                    "contract `{}` does not exist; create it through `contracts.add`",
+                    contract.name
+                ),
+            ));
+        }
+    }
+    for contract in &contracts.remove {
+        if !is_stable_semantic_id(&contract.name) {
+            diagnostics.push(error(
+                "semantic.contract-name",
+                &context.target,
+                format!(
+                    "contract name `{}` is not a stable semantic id",
+                    contract.name
+                ),
+            ));
+        }
+        if !changed.insert(contract.name.clone()) {
+            diagnostics.push(error(
+                "semantic.duplicate-contract",
+                &context.target,
+                format!(
+                    "semantic change modifies contract `{}` more than once",
+                    contract.name
+                ),
+            ));
+        }
+        if !existing.contains(&contract.name) {
+            diagnostics.push(error(
+                "semantic.contract-remove-missing",
+                &context.target,
+                format!("contract `{}` does not exist", contract.name),
             ));
         }
     }
@@ -27479,13 +27720,24 @@ fn planned_spec_apply_writes(
     if let Some(module) = &context.module {
         writes.push(module.path.display().to_string());
         if let Some(contracts) = &change.contracts {
-            for contract in &contracts.add {
+            for contract in contracts.add.iter().chain(&contracts.replace) {
                 writes.push(
                     module
                         .path
                         .parent()
                         .unwrap_or_else(|| Path::new("."))
                         .join(semantic_contract_path(contract))
+                        .display()
+                        .to_string(),
+                );
+            }
+            for contract in &contracts.remove {
+                writes.push(
+                    module
+                        .path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(semantic_contract_remove_path(contract))
                         .display()
                         .to_string(),
                 );
@@ -27590,14 +27842,28 @@ fn semantic_change_record_path(context: &SpecTargetContext, change: &SemanticCha
             change
                 .laws
                 .as_ref()
-                .and_then(|laws| laws.add.first())
+                .and_then(|laws| laws.add.first().or_else(|| laws.replace.first()))
                 .map(|law| law.id.as_str())
+        })
+        .or_else(|| {
+            change
+                .laws
+                .as_ref()
+                .and_then(|laws| laws.remove.first())
+                .map(String::as_str)
         })
         .or_else(|| {
             change
                 .contracts
                 .as_ref()
-                .and_then(|contracts| contracts.add.first())
+                .and_then(|contracts| contracts.add.first().or_else(|| contracts.replace.first()))
+                .map(|contract| contract.name.as_str())
+        })
+        .or_else(|| {
+            change
+                .contracts
+                .as_ref()
+                .and_then(|contracts| contracts.remove.first())
                 .map(|contract| contract.name.as_str())
         })
         .unwrap_or("semantic-change");
@@ -27628,18 +27894,10 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
         set_yaml_string_path(value, &["x-rms", "last_semantic_intent"], summary);
     }
     if let Some(laws) = &change.laws {
-        for law in &laws.add {
-            append_yaml_mapping_path(value, &["invariants"], semantic_law_yaml(law));
-        }
+        apply_semantic_law_changes_to_module(value, laws);
     }
     if let Some(contracts) = &change.contracts {
-        for contract in &contracts.add {
-            append_yaml_mapping_path(
-                value,
-                &["provides", "commands"],
-                semantic_contract_command_yaml(contract),
-            );
-        }
+        apply_semantic_contract_changes_to_module(value, contracts);
     }
     if let Some(properties) = &change.properties {
         for property in &properties.add {
@@ -27705,6 +27963,25 @@ fn semantic_law_yaml(law: &SemanticLawChange) -> YamlValue {
     YamlValue::Mapping(mapping)
 }
 
+fn apply_semantic_law_changes_to_module(value: &mut YamlValue, laws: &SemanticLawsChange) {
+    let invariants = ensure_yaml_sequence_path(value, &["invariants"]);
+    for law in &laws.replace {
+        if let Some(index) = invariants
+            .iter()
+            .position(|item| get_str(item, &["id"]) == Some(law.id.as_str()))
+        {
+            invariants[index] = semantic_law_yaml(law);
+        }
+    }
+    invariants.retain(|item| {
+        let Some(id) = get_str(item, &["id"]) else {
+            return true;
+        };
+        !laws.remove.iter().any(|law| law == id)
+    });
+    invariants.extend(laws.add.iter().map(semantic_law_yaml));
+}
+
 fn semantic_contract_command_yaml(contract: &SemanticContractChange) -> YamlValue {
     let mut mapping = serde_yaml::Mapping::new();
     mapping.insert(yaml_key("name"), YamlValue::String(contract.name.clone()));
@@ -27713,6 +27990,31 @@ fn semantic_contract_command_yaml(contract: &SemanticContractChange) -> YamlValu
         YamlValue::String(semantic_contract_path(contract)),
     );
     YamlValue::Mapping(mapping)
+}
+
+fn apply_semantic_contract_changes_to_module(
+    value: &mut YamlValue,
+    contracts: &SemanticContractsChange,
+) {
+    let commands = ensure_yaml_sequence_path(value, &["provides", "commands"]);
+    for contract in &contracts.replace {
+        if let Some(index) = commands
+            .iter()
+            .position(|item| get_str(item, &["name"]) == Some(contract.name.as_str()))
+        {
+            commands[index] = semantic_contract_command_yaml(contract);
+        }
+    }
+    commands.retain(|item| {
+        let Some(name) = get_str(item, &["name"]) else {
+            return true;
+        };
+        !contracts
+            .remove
+            .iter()
+            .any(|contract| contract.name == name)
+    });
+    commands.extend(contracts.add.iter().map(semantic_contract_command_yaml));
 }
 
 fn semantic_property_yaml(property: &SemanticPropertyChange) -> YamlValue {
@@ -27795,9 +28097,17 @@ fn property_realization_yaml(realization: &PropertyRealization) -> YamlValue {
 }
 
 fn semantic_contract_path(contract: &SemanticContractChange) -> String {
-    let version = contract.version.as_deref().unwrap_or("v1");
+    semantic_contract_path_parts(&contract.name, contract.version.as_deref())
+}
+
+fn semantic_contract_remove_path(contract: &SemanticContractRemoveChange) -> String {
+    semantic_contract_path_parts(&contract.name, contract.version.as_deref())
+}
+
+fn semantic_contract_path_parts(name: &str, version: Option<&str>) -> String {
+    let version = version.unwrap_or("v1");
     let version = version.strip_prefix('v').unwrap_or(version);
-    format!("contracts/{}.v{version}.yaml", contract.name)
+    format!("contracts/{name}.v{version}.yaml")
 }
 
 fn write_semantic_contracts_and_evidence(
@@ -27812,9 +28122,23 @@ fn write_semantic_contracts_and_evidence(
                 fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create `{}`", parent.display()))?;
             }
-            if !path.exists() {
-                fs::write(&path, render_semantic_contract(contract))
-                    .with_context(|| format!("failed to write `{}`", path.display()))?;
+            fs::write(&path, render_semantic_contract(contract))
+                .with_context(|| format!("failed to write `{}`", path.display()))?;
+        }
+        for contract in &contracts.replace {
+            let path = base.join(semantic_contract_path(contract));
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create `{}`", parent.display()))?;
+            }
+            fs::write(&path, render_semantic_contract(contract))
+                .with_context(|| format!("failed to write `{}`", path.display()))?;
+        }
+        for contract in &contracts.remove {
+            let path = base.join(semantic_contract_remove_path(contract));
+            if path.exists() {
+                fs::remove_file(&path)
+                    .with_context(|| format!("failed to remove `{}`", path.display()))?;
             }
         }
     }
@@ -27861,10 +28185,7 @@ fn render_semantic_contract(contract: &SemanticContractChange) -> String {
     let _ = writeln!(
         out,
         "meaning: {}",
-        yaml_quote(&format!(
-            "Public command `{}` declared by RMS semantic change.",
-            contract.command.as_deref().unwrap_or(&contract.name)
-        ))
+        yaml_quote(contract.meaning.as_deref().unwrap_or_default())
     );
     let _ = writeln!(out, "preconditions:");
     for (index, item) in contract.accepts.iter().enumerate() {
@@ -27875,21 +28196,15 @@ fn render_semantic_contract(contract: &SemanticContractChange) -> String {
         );
         let _ = writeln!(out, "    statement: {}", yaml_quote(item));
     }
-    if contract.accepts.is_empty() {
-        let _ = writeln!(out, "  - id: declared-input");
+    let _ = writeln!(out, "postconditions:");
+    for (index, item) in contract.ensures.iter().enumerate() {
         let _ = writeln!(
             out,
-            "    statement: {}",
-            yaml_quote("Input satisfies the published command schema.")
+            "  - id: {}",
+            yaml_quote(&format!("ensures-{}", index + 1))
         );
+        let _ = writeln!(out, "    statement: {}", yaml_quote(item));
     }
-    let _ = writeln!(out, "postconditions:");
-    let _ = writeln!(out, "  - id: explicit-outcome");
-    let _ = writeln!(
-        out,
-        "    statement: {}",
-        yaml_quote("The command returns an explicit accepted or rejected outcome.")
-    );
     let _ = writeln!(out, "failure_categories:");
     for (index, item) in contract.rejects.iter().enumerate() {
         let _ = writeln!(
@@ -27898,14 +28213,6 @@ fn render_semantic_contract(contract: &SemanticContractChange) -> String {
             yaml_quote(&format!("rejects-{}", index + 1))
         );
         let _ = writeln!(out, "    statement: {}", yaml_quote(item));
-    }
-    if contract.rejects.is_empty() {
-        let _ = writeln!(out, "  - id: rejected");
-        let _ = writeln!(
-            out,
-            "    statement: {}",
-            yaml_quote("Expected failures are returned as explicit rejections.")
-        );
     }
     let _ = writeln!(out, "compatibility:");
     let _ = writeln!(out, "  policy: backward-compatible-within-major");
@@ -33162,7 +33469,7 @@ fn render_capability_boundary_module_yaml(
 
 fn render_capability_contract(name: &str, meaning: &str) -> String {
     format!(
-        "spec: rms/contract/v0.1\nname: {}\nversion: 1\nkind: command\nmeaning: {}\npreconditions:\n  - id: valid-request\n    statement: The caller supplies input accepted by this command boundary.\npostconditions:\n  - id: explicit-outcome\n    statement: The command returns an accepted result or an explicit rejection.\nfailure_categories:\n  - id: rejected-request\n    statement: The request is rejected by boundary validation or domain rules.\ncompatibility:\n  policy: backward-compatible-within-major\n",
+        "spec: rms/contract/v0.1\nname: {}\nversion: 1\nkind: command\nmeaning: {}\npreconditions:\n  - id: valid-request\n    statement: The caller supplies input accepted by this command boundary.\npostconditions:\n  - id: explicit-outcome\n    statement: The command returns an accepted result or an explicit rejection.\nfailure_categories:\n  - id: rejected-request\n    statement: The request is rejected by boundary validation or domain rules.\ncompatibility:\n  policy: backward-compatible-within-major\nx-rms:\n  scaffold: true\n",
         yaml_quote(name),
         yaml_quote(meaning),
     )
@@ -36347,7 +36654,7 @@ Use these advisory workbench commands when they match the task:
 - `rms evidence <module.yaml> --task "<task>"`
 - `rms refactor <module.yaml> --task "<task>"`
 - `rms spec plan <module.yaml|implementation.yaml> --task "<task>"` when a change needs new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, public entrypoints, or evidence obligations
-- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics and record the exact applied change under `verification/changes/`; use `set`, `remove`, and `supersedes` to revise semantics instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
+- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics and record the exact applied change under `verification/changes/`; use `contracts.set` to replace generated contract scaffolds with product-specific meaning, accepted inputs, guaranteed outcomes, and rejection categories; use `set`, `remove`, and `supersedes` to revise semantics instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
 - `rms spec check <module.yaml|implementation.yaml>` after semantic changes
 - `rms machine plan/apply/check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct
 - `rms surface apply/check <implementation.yaml>` when adding or changing app, UI, CLI, browser, HTTP, batch, or executable entrypoints; browser-style surfaces should distinguish controller `entrypoint` from host `launch_entrypoint`, and declare intentional local launch scripts with `--launch-script`
@@ -36385,7 +36692,7 @@ Naming rule: choose module and inner role names from product/capability language
 Before writing implementation code, make the user's intent concrete enough to encode:
 
 - Semantic gate: do not hand-create laws, contracts, semantic roles, states, commands, events, effects, transition functions, parsers, runnable surfaces, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply` and `rms surface apply`, then edit the declared role bodies. Use semantic `set`, `remove`, and `supersedes` operations for revisions instead of manual manifest surgery.
-- Public surface gate: public commands in `module.yaml` must be represented by the declared implementation surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
+- Public surface gate: generated capability contracts are scaffold obligations, not production semantics. Replace them through `rms spec apply` with `contracts.set` before implementation. Public commands in `module.yaml` must be represented by the declared implementation surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
 - Reuse gate: reusable modules publish capabilities and contracts first, expose one declared public facade, and prove package integrity with `rms package` plus `rms verify-package`. Consumers must require the capability contract and import only the public facade.
 - Property gate: laws that say always, never, bounded, ordered, normalized, parsed, generated, impossible, or must not happen should declare semantic properties with input spaces, oracles, evidence, and counterexample replay policy before relying on binding tests.
 - Intent: restate the behavior in the owning context's language and name what must never happen.
@@ -36444,7 +36751,7 @@ Strict audit requires a git source revision. Commit the production candidate bef
 
 For stateful or workflow behavior, include transition records, golden timeline tests, replay bundles, and first-bad-transition diagnostics when they apply.
 
-Do not declare an implemented module done while `rms validate --root .` reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` for that module. Replace scaffold evidence with concrete law, contract, boundary, scenario, trace, runtime, recovery, or reconciliation evidence.
+Do not declare an implemented module done while `rms validate --root .` reports `semantic.contract-scaffold-active`, `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` for that module. Replace scaffold contracts through `contracts.set` and replace scaffold evidence with concrete law, contract, boundary, scenario, trace, runtime, recovery, or reconciliation evidence. Evidence must not describe its source as a current filesystem snapshot or a repository without a Git revision; strict audit resolves the committed candidate revision.
 
 Report remaining manual obligations explicitly, especially compatibility review, missing evidence, undeclared effects, or partial conformance.
 "#;
@@ -40209,7 +40516,9 @@ contracts:
     - name: resolve-checkout
       version: v1
       command: ResolveCheckout
+      meaning: Resolve checkout state after inventory and payment outcomes.
       accepts: [valid checkout input]
+      ensures: [checkout progress is returned as an explicit status]
       rejects: [illegal transition]
 machine:
   mode: stateful-transition-machine
@@ -40288,6 +40597,201 @@ evidence:
             .and_then(|name| name.to_str())
             .unwrap_or("")
             .starts_with("failed-payment-releases-inventory"));
+    }
+
+    #[test]
+    fn spec_apply_law_set_revises_existing_authority() {
+        let root = unique_test_dir("spec-apply-law-set");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: semantic-workbench
+  version: 0.1.0
+  kind: tool
+  purpose: Exercise law revision.
+profiles: [core]
+owns: { concepts: [], data: [], decisions: [] }
+provides: { commands: [], queries: [], events: [], capabilities: [] }
+requires: { modules: [], capabilities: [] }
+invariants:
+  - id: writes-are-explicit
+    statement: Writes are explicit.
+    authority: transition
+    enforced_by: transition
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+laws:
+  set:
+    - id: writes-are-explicit
+      statement: Canonical writes are performed only by the declared effect executor.
+      kind: invariant
+      authority: effect-executor
+      enforced_by: write_if_changed
+evidence:
+  add:
+    - kind: law
+      proves: writes-are-explicit
+      path: verification/laws/writes_are_explicit.md
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let module = fs::read_to_string(root.join("module.yaml")).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(module.matches("id: writes-are-explicit").count(), 1);
+        assert!(module.contains("authority: effect-executor"));
+        assert!(module.contains("enforced_by: write_if_changed"));
+    }
+
+    #[test]
+    fn spec_apply_contract_set_replaces_scaffold_without_duplicate_surface() {
+        let root = unique_test_dir("spec-apply-contract-set");
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: line-selection
+  version: 0.1.0
+  kind: library
+  purpose: Plan ordered bounded line selections.
+profiles: [core]
+owns: { concepts: [], data: [], decisions: [] }
+provides:
+  commands:
+    - name: select-lines
+      contract: contracts/select-lines.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires: { modules: [], capabilities: [] }
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("contracts/select-lines.v1.yaml"),
+            render_capability_contract("select-lines", "domain decision command"),
+        )
+        .unwrap();
+
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+contracts:
+  set:
+    - name: select-lines
+      version: v1
+      command: select-lines
+      meaning: Select requested input lines once while preserving source order.
+      accepts: [validated selectors and an ordered input line sequence]
+      ensures: [selected lines appear once in source order]
+      rejects: [malformed selectors and out-of-range line references]
+evidence:
+  add:
+    - kind: contract
+      proves: select-lines
+      path: verification/contracts/select_lines.md
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let module = fs::read_to_string(root.join("module.yaml")).unwrap();
+        let contract_path = root.join("contracts/select-lines.v1.yaml");
+        let contract = fs::read_to_string(&contract_path).unwrap();
+        let manifest = load_manifest(&contract_path).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_loaded_manifest(&manifest, &mut diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(module.matches("name: select-lines").count(), 1);
+        assert!(contract.contains("Select requested input lines once"));
+        assert!(contract.contains("selected lines appear once in source order"));
+        assert!(!contract.contains("scaffold: true"));
+        assert!(diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.check != "semantic.contract-scaffold-active"));
+    }
+
+    #[test]
+    fn spec_apply_contract_remove_deletes_surface_and_file() {
+        let root = unique_test_dir("spec-apply-contract-remove");
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: obsolete-command
+  version: 0.1.0
+  kind: library
+  purpose: Exercise contract removal.
+profiles: [core]
+owns: { concepts: [], data: [], decisions: [] }
+provides:
+  commands:
+    - name: old-command
+      contract: contracts/old-command.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires: { modules: [], capabilities: [] }
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("contracts/old-command.v1.yaml"),
+            render_capability_contract("old-command", "domain decision command"),
+        )
+        .unwrap();
+
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+contracts:
+  remove:
+    - name: old-command
+      version: v1
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let module = fs::read_to_string(root.join("module.yaml")).unwrap();
+        let contract_exists = root.join("contracts/old-command.v1.yaml").exists();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(!module.contains("name: old-command"));
+        assert!(!contract_exists);
     }
 
     #[test]
@@ -41381,25 +41885,47 @@ architecture:
                 .unwrap(),
         };
         let evidence = root.join("evidence.md");
-        fs::write(
-            &evidence,
+        for source in [
             "Source revision: local workspace 2026-06-29 before first git commit\n",
+            "Source provenance: current filesystem snapshot; the repository has no Git revision yet.\n",
+            "Observed today. This checkout has no git source revision.\n",
+        ] {
+            fs::write(&evidence, source).unwrap();
+            let mut diagnostics = Vec::new();
+            check_evidence_source_quality(
+                &manifest,
+                &mut diagnostics,
+                "evidence.md",
+                &fs::read_to_string(&evidence).unwrap(),
+                &evidence,
+            );
+            assert!(diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.check == "evidence.source-unpinned"));
+        }
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn generated_contract_semantics_are_visible_scaffold_obligations() {
+        let root = unique_test_dir("contract-scaffold-obligation");
+        fs::create_dir_all(&root).unwrap();
+        let contract = root.join("contract.yaml");
+        fs::write(
+            &contract,
+            render_capability_contract("plan-batches", "domain decision command"),
         )
         .unwrap();
+        let manifest = load_manifest(&contract).unwrap();
         let mut diagnostics = Vec::new();
 
-        check_evidence_source_quality(
-            &manifest,
-            &mut diagnostics,
-            "evidence.md",
-            &fs::read_to_string(&evidence).unwrap(),
-            &evidence,
-        );
+        validate_loaded_manifest(&manifest, &mut diagnostics);
 
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.check == "evidence.source-unpinned"));
+            .any(|diagnostic| diagnostic.check == "semantic.contract-scaffold-active"));
     }
 
     #[test]

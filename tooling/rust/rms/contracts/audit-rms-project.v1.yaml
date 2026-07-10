@@ -1,24 +1,18 @@
 spec: rms/contract/v0.1
-name: audit-rms-project
+name: "audit-rms-project"
 version: 1
 kind: command
-meaning: Audit an RMS project for production-readiness blockers derived from canonical artifacts, implementation bindings, trace evidence, and local provenance.
+meaning: "Audit a committed RMS project for production blockers across semantics, composition, implementation structure, evidence, traces, and provenance."
 preconditions:
-  - id: readable-project-root
-    statement: The requested root is readable by the process.
+  - id: "accepts-1"
+    statement: "a readable RMS project root and optional strict production mode"
 postconditions:
-  - id: report-derived-from-artifacts
-    statement: The report identifies validation, composition, structure, trace, verification-target, compatibility, and provenance findings derived from RMS artifacts and local evidence.
-  - id: strict-mode-promotes-blockers
-    statement: In strict mode, production-readiness blockers such as unknown source revision, untracked production files, collapsed semantic variants, missing state/input signatures, unclassified inputs, incomplete effect protocols or replay, executor-owned orchestration, false fuzz claims, placeholder evidence, private-role imports, and missing verification commands are failures.
-  - id: examples-are-opt-in-from-repository-root
-    statement: Repository-root audits treat checked-in examples as illustrative by default; examples are included when requested with include-examples or when the audit root is inside the examples tree.
-  - id: provider-independent
-    statement: The audit command does not invoke optional AI providers or mutate project artifacts.
+  - id: "ensures-1"
+    statement: "strict mode rejects active scaffold contracts and evidence that claims an uncommitted or missing source revision"
+  - id: "ensures-2"
+    statement: "the report remains provider-independent and identifies every deterministic blocker"
 failure_categories:
-  - id: audit-failed
-    statement: One or more production-readiness checks failed.
-  - id: unreadable-artifact
-    statement: A referenced RMS artifact or evidence file could not be read or parsed.
+  - id: "rejects-1"
+    statement: "unknown source revision, dirty production artifacts, semantic or structural drift, invalid trace evidence, scaffold contracts, unpinned evidence, and missing verification commands"
 compatibility:
   policy: backward-compatible-within-major

@@ -199,16 +199,25 @@ laws:
   add:
     - id: confirmation-before-local-log
       statement: A local log write is requested only after confirmation.
+      authority: transition
+      enforced_by: transition
 contracts:
   add:
     - name: confirm-log
       version: v1
       command: ConfirmLog
+      meaning: Confirm a pending local log draft before requesting persistence.
+      accepts: [a pending draft with matching confirmation]
+      ensures: [the confirmed draft produces one declared local-write effect]
+      rejects: [no pending draft, stale confirmation, malformed draft]
 evidence:
   add:
     - kind: trace
       proves: confirmation-before-local-log
-      path: verification/traces/confirmation_before_log.yaml'
+      path: verification/traces/confirmation_before_log.yaml
+    - kind: scenario
+      proves: confirm-log
+      path: verification/scenarios/confirm_log.md'
 
 rms spec check ./my-system/modules/widget/module.yaml
 ```
@@ -233,7 +242,7 @@ machine:
 rms machine check ./my-system/modules/widget/implementation.yaml
 ```
 
-`rms spec plan`, `rms machine plan`, and provider output are advisory. `rms spec apply` and `rms machine apply` are the deterministic steps that update canonical declarations and role placeholders. `rms spec apply` also records the exact applied semantic-change object under `verification/changes/`. Use `set`, `remove`, and `supersedes` to revise RMS semantics instead of hand-editing manifests or rewriting old change records. Agents then fill declared role bodies; pure helpers stay pure, and IO belongs behind declared effects/effect-results in adapter, port, or effect-executor roles.
+`rms spec plan`, `rms machine plan`, and provider output are advisory. `rms spec apply` and `rms machine apply` are the deterministic steps that update canonical declarations and role placeholders. `rms spec apply` also records the exact applied semantic-change object under `verification/changes/`. Generated capability contracts are visibly incomplete scaffolds; replace them through `contracts.set` with product-specific meaning, accepted inputs, guaranteed outcomes, and rejection categories before implementation. Use `set`, `remove`, and `supersedes` to revise RMS semantics instead of hand-editing manifests or rewriting old change records. Agents then fill declared role bodies; pure helpers stay pure, and IO belongs behind declared effects/effect-results in adapter, port, or effect-executor roles.
 
 Runnable app/tool/browser/CLI surfaces stay thin, but their boundary machines still use explicit `state + input -> transition` structure. A boundary command parses or rejects outside input, emitted effects are executed once by declared adapters, and typed effect results return through the same transition. Product lifecycle belongs in a workflow or domain machine rather than hidden in the surface. Browser surfaces normally use `entrypoint: public/app.mjs` for the inspectable controller and `launch_entrypoint: public/index.html` for the host file. Any script loaded by the host file is part of the RMS surface: it should import or call the declared controller/adapter, not duplicate parser, generator, transition, or domain logic in a second browser bundle. Use `--launch-script` when an extra local launch script is intentional and should be checked explicitly.
 

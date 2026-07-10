@@ -1,0 +1,24 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Correct semantic contract revision authority to the RMS canonical artifact writer.
+laws:
+  add: []
+  set:
+  - id: semantic-contract-revisions-are-cli-applied
+    statement: Existing public contracts are revised or removed through rms spec apply so canonical contract files and module references change together.
+    kind: invariant
+    authority: effect-executor
+    enforced_by: apply_semantic_change
+  remove: []
+contracts: null
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: semantic-contract-revisions-are-cli-applied
+    path: verification/laws/semantic_contract_revisions_are_cli_applied.md
+surfaces: null

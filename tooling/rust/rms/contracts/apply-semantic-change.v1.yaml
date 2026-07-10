@@ -1,24 +1,20 @@
 spec: rms/contract/v0.1
-name: apply-semantic-change
+name: "apply-semantic-change"
 version: 1
 kind: command
-meaning: Validate and apply an rms/semantic-change/v0.1 object to canonical module, contract, implementation, machine, runnable surface, and evidence artifacts.
+meaning: "Validate and atomically apply language-neutral semantic additions, replacements, and removals to canonical RMS artifacts."
 preconditions:
-  - id: target-readable
-    statement: The target module.yaml or implementation.yaml is readable and parseable.
-  - id: exactly-one-change-source
-    statement: Exactly one inline JSON, inline YAML, or change file input is supplied.
+  - id: "accepts-1"
+    statement: "one rms/semantic-change/v0.1 object targeting a readable module or implementation"
 postconditions:
-  - id: semantics-before-code
-    statement: Laws, contracts, machine declarations, runnable surface declarations, and evidence obligations are updated before implementation role bodies are changed.
-  - id: invalid-change-rejected
-    statement: Unsupported specs, laws without evidence, contracts without public command surfaces, unsafe evidence paths, invalid machine changes, and unknown transition references are rejected before writes.
-  - id: dry-run-does-not-write
-    statement: --dry-run reports planned writes and diagnostics without mutating artifacts.
+  - id: "ensures-1"
+    statement: "contracts.set rewrites one existing public contract and preserves one matching public command"
+  - id: "ensures-2"
+    statement: "contracts.remove removes the matching public command and conventional contract file"
+  - id: "ensures-3"
+    statement: "dry-run reports the final intended writes without mutation"
 failure_categories:
-  - id: invalid-semantic-change
-    statement: The semantic change is malformed, incomplete, or inconsistent with the target artifacts.
-  - id: invalid-machine-change
-    statement: The embedded machine change violates machine-gate validation.
+  - id: "rejects-1"
+    statement: "missing contract replacement targets, duplicate operations, incomplete contract meaning or outcomes, unsafe paths, and invalid machine or surface references"
 compatibility:
   policy: backward-compatible-within-major

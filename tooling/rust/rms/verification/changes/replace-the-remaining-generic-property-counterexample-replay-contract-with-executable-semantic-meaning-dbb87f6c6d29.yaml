@@ -1,0 +1,30 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Replace the remaining generic property-counterexample replay contract with executable semantic meaning.
+laws: null
+contracts:
+  add: []
+  set:
+  - name: replay-property-counterexample
+    version: v1
+    command: replay-property-counterexample
+    meaning: Replay one recorded semantic property counterexample through its declared binding command or trace and report whether the failure reproduces.
+    accepts:
+    - a readable rms/property-counterexample/v0.1 artifact naming a replay command or trace reference
+    ensures:
+    - the declared counterexample input and provenance are passed to the recorded replay path
+    - the result reports reproduced or not reproduced without changing canonical semantics
+    rejects:
+    - malformed counterexample metadata, missing replay command or trace, unreadable artifacts, and failed replay execution
+  remove: []
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: replay-property-counterexample
+    path: verification/contracts/replay_property_counterexample.md
+surfaces: null

@@ -28,7 +28,7 @@ description: Change an RMS public contract safely; use for commands, queries, ev
 6. Preserve the existing version when compatibility can be maintained cleanly.
 7. Introduce a new version for breaking changes.
 8. Define migration, coexistence, translation, and deprecation behavior.
-9. Apply the semantic change before implementation when the public surface changes. Public commands, command variants, parser behavior, adapters, entrypoints, effects, effect results, and evidence obligations must be reflected in `module.yaml`, contracts, and `implementation.yaml`; do not change them only in source.
+9. Apply the semantic change before implementation when the public surface changes. Use `contracts.set` to revise an existing contract, `contracts.add` for a new version or command, and `contracts.remove` only when its public surface is intentionally removed. Contract entries must state product-specific meaning, accepted inputs, guaranteed outcomes, and explicit rejection categories. Public commands, command variants, parser behavior, adapters, entrypoints, effects, effect results, and evidence obligations must be reflected in `module.yaml`, contracts, and `implementation.yaml`; do not change them only in source.
    - Keep binding type names under `architecture.machine.types` and public semantic alternatives in the machine lists.
    - When a changed effect outcome can alter subsequent behavior, add the typed result and follow-up transition to the contract change; do not encode the policy in the executor.
 10. Update provider and consumer contract evidence.
