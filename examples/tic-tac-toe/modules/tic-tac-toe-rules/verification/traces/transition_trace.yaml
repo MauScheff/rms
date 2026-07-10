@@ -25,7 +25,16 @@ records:
         status:
           tag: InProgress
           next: O
-      events: []
+      events:
+        - event_id: mark-placed-1
+          source_machine: TicTacToeMachine
+          correlation_id: tic-tac-toe-rules-correlation-1
+          causation_id: place-mark-1
+          sequence: 1
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event:
+            tag: MarkPlaced
       commands: []
       effects: []
       reply:
@@ -68,7 +77,16 @@ records:
         status:
           tag: InProgress
           next: O
-      events: []
+      events:
+        - event_id: move-rejected-1
+          source_machine: TicTacToeMachine
+          correlation_id: tic-tac-toe-rules-correlation-1
+          causation_id: place-mark-2
+          sequence: 2
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event:
+            tag: MoveRejected
       commands: []
       effects: []
       reply:
@@ -83,3 +101,133 @@ records:
       file: src/transition.rs
       function: transition
       branch: rejected-cell-occupied
+  - id: accept-winning-move
+    scenario_start: true
+    state_before: InProgress
+    input:
+      command_id: place-mark-win
+      target_machine: TicTacToeMachine
+      correlation_id: tic-tac-toe-win
+      causation_id: prior-move
+      idempotency_key: game-win-cell-2
+      command:
+        tag: PlaceMark
+    output:
+      next_state: Won
+      events:
+        - event_id: mark-placed-win
+          source_machine: TicTacToeMachine
+          correlation_id: tic-tac-toe-win
+          causation_id: place-mark-win
+          sequence: 1
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event:
+            tag: MarkPlaced
+      commands: []
+      effects: []
+      reply:
+        tag: Accepted
+    state_after: Won
+    source:
+      file: src/transition.rs
+      function: transition
+      branch: accepted-winning-move
+  - id: accept-drawing-move
+    scenario_start: true
+    state_before: InProgress
+    input:
+      command_id: place-mark-draw
+      target_machine: TicTacToeMachine
+      correlation_id: tic-tac-toe-draw
+      causation_id: prior-move
+      idempotency_key: game-draw-cell-8
+      command:
+        tag: PlaceMark
+    output:
+      next_state: Draw
+      events:
+        - event_id: mark-placed-draw
+          source_machine: TicTacToeMachine
+          correlation_id: tic-tac-toe-draw
+          causation_id: place-mark-draw
+          sequence: 1
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event:
+            tag: MarkPlaced
+      commands: []
+      effects: []
+      reply:
+        tag: Accepted
+    state_after: Draw
+    source:
+      file: src/transition.rs
+      function: transition
+      branch: accepted-drawing-move
+  - id: reject-move-after-win
+    scenario_start: true
+    state_before: Won
+    input:
+      command_id: place-mark-after-win
+      target_machine: TicTacToeMachine
+      correlation_id: tic-tac-toe-terminal-win
+      causation_id: winning-move
+      idempotency_key: game-win-cell-3
+      command:
+        tag: PlaceMark
+    output:
+      next_state: Won
+      events:
+        - event_id: move-rejected-win
+          source_machine: TicTacToeMachine
+          correlation_id: tic-tac-toe-terminal-win
+          causation_id: place-mark-after-win
+          sequence: 1
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event:
+            tag: MoveRejected
+      commands: []
+      effects: []
+      reply:
+        tag: Rejected
+        reason: GameAlreadyTerminal
+    state_after: Won
+    source:
+      file: src/transition.rs
+      function: transition
+      branch: rejected-terminal-win
+  - id: reject-move-after-draw
+    scenario_start: true
+    state_before: Draw
+    input:
+      command_id: place-mark-after-draw
+      target_machine: TicTacToeMachine
+      correlation_id: tic-tac-toe-terminal-draw
+      causation_id: drawing-move
+      idempotency_key: game-draw-cell-0
+      command:
+        tag: PlaceMark
+    output:
+      next_state: Draw
+      events:
+        - event_id: move-rejected-draw
+          source_machine: TicTacToeMachine
+          correlation_id: tic-tac-toe-terminal-draw
+          causation_id: place-mark-after-draw
+          sequence: 1
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event:
+            tag: MoveRejected
+      commands: []
+      effects: []
+      reply:
+        tag: Rejected
+        reason: GameAlreadyTerminal
+    state_after: Draw
+    source:
+      file: src/transition.rs
+      function: transition
+      branch: rejected-terminal-draw

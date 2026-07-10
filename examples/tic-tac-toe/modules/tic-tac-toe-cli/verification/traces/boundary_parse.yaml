@@ -1,87 +1,135 @@
 spec: rms/trace-bundle/v0.1
-machine: TicTacToeCliBoundary
+machine: TicTacToeBoundaryMachine
 records:
-  - id: parse-valid-coordinate
-    state_before: Ready
+  - id: request-valid-move
+    state_before: AwaitingInput
     input:
-      command_id: raw-input-1
-      target_machine: TicTacToeCliBoundary
-      correlation_id: tic-tac-toe-cli-correlation-1
-      causation_id: user-request-1
-      idempotency_key: null
+      command_id: run-move-1
+      target_machine: TicTacToeBoundaryMachine
+      correlation_id: game-1
+      causation_id: user-1
+      idempotency_key: game-1-move-1
       command:
-        tag: RawCliInput
+        tag: RunMove
         text: A1
     output:
-      next_state: Ready
+      next_state: AwaitingRulesResult
       events:
-        - event_id: parsed-move-1
-          source_machine: TicTacToeCliBoundary
-          correlation_id: tic-tac-toe-cli-correlation-1
-          causation_id: raw-input-1
+        - event_id: move-parsed-1
+          source_machine: TicTacToeBoundaryMachine
+          correlation_id: game-1
+          causation_id: run-move-1
           sequence: 1
           schema_version: 1
           occurred_at: explicit-clock-not-recorded
-          event:
-            tag: ParsedMove
-            cell:
-              row: 0
-              column: 0
-              index: 0
-      commands:
-        - command_id: apply-move-1
-          target_machine: TicTacToeMachine
-          correlation_id: tic-tac-toe-cli-correlation-1
-          causation_id: raw-input-1
-          idempotency_key: game-1-cell-0
-          command:
-            tag: PlaceMark
-            cell:
-              row: 0
-              column: 0
-              index: 0
+          event: { tag: MoveParsed }
+        - event_id: rules-requested-1
+          source_machine: TicTacToeBoundaryMachine
+          correlation_id: game-1
+          causation_id: run-move-1
+          sequence: 2
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event: { tag: RulesInvocationRequested }
+      commands: []
       effects:
         - effect_id: rules-bridge-1
-          requester: TicTacToeCliBoundary
-          correlation_id: tic-tac-toe-cli-correlation-1
-          causation_id: raw-input-1
-          idempotency_key: game-1-cell-0
-          effect:
-            tag: InvokeRulesBridge
-      reply:
-        tag: Accepted
-        value:
-          tag: ParsedMove
-          cell:
-            row: 0
-            column: 0
-            index: 0
-    state_after: Ready
+          requester: TicTacToeBoundaryMachine
+          correlation_id: game-1
+          causation_id: run-move-1
+          idempotency_key: game-1-move-1
+          effect: { tag: InvokeRulesBridge }
+      reply: null
+    state_after: AwaitingRulesResult
     source:
-      file: src/adapter.mjs
-      function: handleBoundaryInput
-      branch: parsed-and-delegated
-  - id: reject-malformed-coordinate
-    state_before: Ready
+      file: src/transition.mjs
+      function: transition
+      branch: RunMove
+  - id: complete-valid-move
+    state_before: AwaitingRulesResult
     input:
-      command_id: raw-input-2
-      target_machine: TicTacToeCliBoundary
-      correlation_id: tic-tac-toe-cli-correlation-2
-      causation_id: user-request-2
-      idempotency_key: null
-      command:
-        tag: RawCliInput
-        text: ""
+      effect_id: rules-bridge-1
+      requester: TicTacToeBoundaryMachine
+      correlation_id: game-1
+      causation_id: run-move-1
+      status: succeeded
+      effect_result: { tag: RulesBridgeSucceeded }
     output:
-      next_state: Ready
-      events: []
+      next_state: AwaitingInput
+      events:
+        - event_id: rules-completed-1
+          source_machine: TicTacToeBoundaryMachine
+          correlation_id: game-1
+          causation_id: rules-bridge-1
+          sequence: 3
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event: { tag: RulesInvocationCompleted }
       commands: []
       effects: []
-      reply:
-        tag: Rejected
-        reason: malformed-input
-    state_after: Ready
+      reply: { tag: Accepted }
+    state_after: AwaitingInput
     source:
-      file: src/parser.mjs
-      function: parseMoveText
-      branch: rejected-malformed-input
+      file: src/transition.mjs
+      function: transition
+      branch: RulesBridgeSucceeded
+  - id: reject-malformed-coordinate
+    scenario_start: true
+    state_before: AwaitingInput
+    input:
+      command_id: run-move-malformed
+      target_machine: TicTacToeBoundaryMachine
+      correlation_id: malformed-1
+      causation_id: user-2
+      idempotency_key: null
+      command:
+        tag: RunMove
+        text: ""
+    output:
+      next_state: AwaitingInput
+      events:
+        - event_id: run-rejected-1
+          source_machine: TicTacToeBoundaryMachine
+          correlation_id: malformed-1
+          causation_id: run-move-malformed
+          sequence: 1
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event: { tag: RunRejected }
+      commands: []
+      effects: []
+      reply: { tag: Rejected, reason: MalformedInput }
+    state_after: AwaitingInput
+    source:
+      file: src/transition.mjs
+      function: transition
+      branch: RunRejected
+  - id: reject-rules-bridge-failure
+    scenario_start: true
+    state_before: AwaitingRulesResult
+    input:
+      effect_id: rules-bridge-failed-1
+      requester: TicTacToeBoundaryMachine
+      correlation_id: game-failed
+      causation_id: run-move-failed
+      status: failed
+      effect_result: { tag: RulesBridgeFailed }
+    output:
+      next_state: AwaitingInput
+      events:
+        - event_id: run-rejected-failed
+          source_machine: TicTacToeBoundaryMachine
+          correlation_id: game-failed
+          causation_id: rules-bridge-failed-1
+          sequence: 1
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event: { tag: RunRejected }
+      commands: []
+      effects: []
+      reply: { tag: Rejected, reason: RulesBridgeFailure }
+    state_after: AwaitingInput
+    source:
+      file: src/transition.mjs
+      function: transition
+      branch: RulesBridgeFailed

@@ -326,7 +326,8 @@
       "type": "object",
       "required": [
         "id",
-        "statement"
+        "statement",
+        "authority"
       ],
       "properties": {
         "id": {
@@ -336,6 +337,16 @@
         "statement": {
           "type": "string",
           "minLength": 1
+        },
+        "authority": {
+          "enum": [
+            "representation",
+            "constructor",
+            "parser",
+            "transition",
+            "effect-executor",
+            "composition"
+          ]
         },
         "enforced_by": {
           "type": "string"

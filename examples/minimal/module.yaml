@@ -28,6 +28,7 @@ requires:
 invariants:
   - id: example-is-valid
     statement: Every accepted Example satisfies its constructor rules.
+    authority: constructor
     enforced_by: example-constructor
     verified_by: verification/laws/example_is_valid
 

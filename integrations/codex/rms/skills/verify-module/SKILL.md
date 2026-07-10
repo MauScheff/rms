@@ -32,8 +32,11 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - public read models or result structs without public constructors are declared in `architecture.allowed_missing_constructors` only when they are produced by a named query/projector with evidence;
    - lifecycle/order-dependent behavior has a state model, transition table, or transition function;
    - traceable behavior declares message envelopes, transition output, transition records, replay support, and first-bad-transition evidence where applicable.
+   - machine semantic lists contain actual alternatives while binding container names appear only under `architecture.machine.types`.
+   - stateful machines have one state-plus-input transition; every transition input is exactly one command, observed event, or effect result.
+   - every effect declares request/result atomicity, every result returns through transition, and executors contain no business sequencing or state progression.
    - broad laws that say always, never, bounded, ordered, normalized, parsed, generated, impossible, or must not happen have semantic properties with input spaces, operations, oracles, evidence, and replayable counterexample policy.
-   - boundary, storage, integration, and runnable parser surfaces have fuzz-style semantic targets or a concrete no-fuzz justification.
+   - boundary, storage, integration, and runnable parser surfaces have fuzz-style semantic targets or a concrete no-fuzz justification; fixed corpora do not satisfy open-ended fuzz claims.
    - semantic roles, state variants, commands, events, effects, effect results, public entrypoints, and evidence roles are declared in canonical artifacts rather than invented by direct source edits.
    - public commands in `module.yaml` are represented by the declared implementation machine, parser, adapter, transition, representation, or semantic functions.
    - runnable app, browser, UI, CLI, HTTP, batch, and executable surfaces are declared and route through declared public entrypoints, parsers, adapters, or boundary machines instead of importing or duplicating pure/private decision roles directly.

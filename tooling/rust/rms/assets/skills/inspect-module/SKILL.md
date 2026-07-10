@@ -28,10 +28,14 @@ description: Inspect an RMS module before planning or changing it; use when owne
    - verification evidence;
    - representation obligations for closed variants, validated values, boundary schemas, and lifecycle state;
    - suspected gaps or drift.
+   - binding type mappings versus actual semantic alternatives;
+   - canonical input categories and effect request/result protocols;
+   - whether any executor hides sequencing, retry, compensation, or state progression.
 8. For a proposed task, identify the owning module and the smallest affected contract surface.
 9. Identify whether the task should use:
    - an ADT, sealed variant, or enum for closed alternatives;
    - a validated constructor or opaque type for invalid raw values;
    - a schema or validator for boundary input;
    - a state model only when legal behavior depends on lifecycle or order.
+   - a typed effect result and follow-up transition when an external outcome changes what happens next.
 10. Flag any need to cross a private boundary rather than silently doing so.

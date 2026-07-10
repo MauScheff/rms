@@ -42,14 +42,17 @@ requires:
 invariants:
   - id: marks-never-overwrite
     statement: An accepted move never replaces an occupied cell.
+    authority: transition
     enforced_by: transition
     verified_by: verification/laws/transition_trace.md
   - id: turns-alternate
     statement: Accepted moves alternate between X and O until a terminal status is reached.
+    authority: transition
     enforced_by: transition
     verified_by: verification/laws/transition_trace.md
   - id: terminal-games-reject-moves
     statement: A won or drawn game rejects further moves.
+    authority: transition
     enforced_by: transition
     verified_by: verification/laws/transition_trace.md
 

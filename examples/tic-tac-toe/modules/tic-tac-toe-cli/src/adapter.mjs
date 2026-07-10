@@ -1,61 +1,38 @@
-import { parseMoveText } from "./parser.mjs";
 import {
-  AwaitingInput,
-  Completed,
-  Rejected,
-  accepted,
+  awaitingInput,
+  commandInput,
+  effectResultInput,
+  runMove,
 } from "./representation.mjs";
+import { transitionRecord } from "./transition.mjs";
 
-function transitionOutput(nextState, events, reply) {
+export function createBoundarySession(effectExecutor) {
+  let state = awaitingInput();
   return Object.freeze({
-    tag: "BoundaryTransition",
-    next_state: nextState,
-    events: Object.freeze(events),
-    commands: Object.freeze([]),
-    effects: Object.freeze([]),
-    reply,
+    handle(inputText) {
+      const commandRecord = transitionRecord(state, commandInput(runMove(inputText)));
+      state = commandRecord.state_after;
+      const effect = commandRecord.output.effects[0];
+      if (!effect) return commandRecord.output.reply;
+
+      const resultRecord = transitionRecord(
+        state,
+        effectResultInput(effectExecutor.execute(effect)),
+      );
+      state = resultRecord.state_after;
+      return resultRecord.output.reply;
+    },
+    state() {
+      return state;
+    },
   });
 }
 
-export function handleBoundaryTransition(input, rulesPort) {
-  const stateBefore = AwaitingInput;
-  const parsed = parseMoveText(input);
-  if (parsed.tag === "Rejected") {
-    const output = transitionOutput(Rejected, [parsed], parsed);
-    return Object.freeze({
-      tag: "BoundaryTransitionRecord",
-      state_before: stateBefore,
-      state_after: Rejected,
-      input,
-      output,
-      source: Object.freeze({
-        file: "src/adapter.mjs",
-        function: "handleBoundaryTransition",
-        branch: "Rejected",
-      }),
-    });
-  }
-  const reply = accepted(rulesPort.applyMove(parsed));
-  const output = transitionOutput(Completed, [parsed], reply);
-  return Object.freeze({
-    tag: "BoundaryTransitionRecord",
-    state_before: stateBefore,
-    state_after: Completed,
-    input: parsed,
-    output,
-    source: Object.freeze({
-      file: "src/adapter.mjs",
-      function: "handleBoundaryTransition",
-      branch: "ParsedMove",
-    }),
-  });
+export function handleBoundaryInput(inputText, effectExecutor) {
+  return createBoundarySession(effectExecutor).handle(inputText);
 }
 
-export function handleBoundaryInput(input, rulesPort) {
-  return handleBoundaryTransition(input, rulesPort).output.reply;
-}
-
-export const TicTacToeCliBoundary = Object.freeze({
-  handleBoundaryTransition,
+export const TicTacToeBoundaryAdapter = Object.freeze({
+  createBoundarySession,
   handleBoundaryInput,
 });

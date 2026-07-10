@@ -1,5 +1,6 @@
 use crate::representation::{
-    Board, Cell, Command, Game, GameStatus, Mark, MoveRejection, TransitionOutcome,
+    Board, Cell, Command, Game, GameStatus, Mark, MoveRejection, TicTacToeEvent, TicTacToeInput,
+    TransitionOutcome,
 };
 
 const WINNING_LINES: [[u8; 3]; 8] = [
@@ -13,7 +14,51 @@ const WINNING_LINES: [[u8; 3]; 8] = [
     [2, 4, 6],
 ];
 
-pub fn transition(state: Game, command: Command) -> TransitionOutcome {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicTacToeTransition {
+    pub next_state: Game,
+    pub events: Vec<TicTacToeEvent>,
+    pub commands: Vec<Command>,
+    pub effects: Vec<()>,
+    pub reply: TransitionOutcome,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicTacToeTransitionRecord {
+    pub state_before: Game,
+    pub state_after: Game,
+    pub input: TicTacToeInput,
+    pub output: TicTacToeTransition,
+}
+
+pub fn transition(state: Game, input: TicTacToeInput) -> TicTacToeTransition {
+    transition_record(state, input).output
+}
+
+pub fn transition_record(state: Game, input: TicTacToeInput) -> TicTacToeTransitionRecord {
+    let state_before = state;
+    let TicTacToeInput::Command(command) = input;
+    let reply = apply_command(state, command);
+    let (next_state, event) = match reply {
+        TransitionOutcome::Accepted { state } => (state, TicTacToeEvent::MarkPlaced),
+        TransitionOutcome::Rejected { state, .. } => (state, TicTacToeEvent::MoveRejected),
+    };
+    let output = TicTacToeTransition {
+        next_state,
+        events: vec![event],
+        commands: Vec::new(),
+        effects: Vec::new(),
+        reply,
+    };
+    TicTacToeTransitionRecord {
+        state_before,
+        state_after: next_state,
+        input,
+        output,
+    }
+}
+
+fn apply_command(state: Game, command: Command) -> TransitionOutcome {
     let GameStatus::InProgress { next } = state.status() else {
         return TransitionOutcome::Rejected {
             state,
@@ -39,8 +84,8 @@ pub fn transition(state: Game, command: Command) -> TransitionOutcome {
 pub struct TicTacToeMachine;
 
 impl TicTacToeMachine {
-    pub fn transition(state: Game, command: Command) -> TransitionOutcome {
-        transition(state, command)
+    pub fn transition(state: Game, input: TicTacToeInput) -> TicTacToeTransition {
+        transition(state, input)
     }
 }
 
@@ -49,7 +94,7 @@ pub fn replay(commands: impl IntoIterator<Item = Command>) -> Trace {
     let mut outcomes = Vec::new();
 
     for command in commands {
-        let outcome = transition(state, command);
+        let outcome = transition(state, TicTacToeInput::Command(command)).reply;
         if let TransitionOutcome::Accepted { state: next } = outcome {
             state = next;
         }
@@ -116,7 +161,11 @@ mod tests {
 
     #[test]
     fn accepts_first_move_as_x_and_advances_to_o() {
-        let outcome = transition(Game::new(), Command::PlaceMark { cell: cell(0) });
+        let outcome = transition(
+            Game::new(),
+            TicTacToeInput::Command(Command::PlaceMark { cell: cell(0) }),
+        )
+        .reply;
 
         let TransitionOutcome::Accepted { state } = outcome else {
             panic!("first move should be accepted");
@@ -127,12 +176,20 @@ mod tests {
 
     #[test]
     fn rejects_occupied_cell_without_changing_state() {
-        let first = transition(Game::new(), Command::PlaceMark { cell: cell(0) });
+        let first = transition(
+            Game::new(),
+            TicTacToeInput::Command(Command::PlaceMark { cell: cell(0) }),
+        )
+        .reply;
         let TransitionOutcome::Accepted { state } = first else {
             panic!("first move should be accepted");
         };
 
-        let second = transition(state, Command::PlaceMark { cell: cell(0) });
+        let second = transition(
+            state,
+            TicTacToeInput::Command(Command::PlaceMark { cell: cell(0) }),
+        )
+        .reply;
 
         assert_eq!(
             second,

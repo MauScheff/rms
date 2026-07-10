@@ -21,6 +21,20 @@ dependencies:
 
 architecture:
   shape: domain-engine
+  reliability:
+    properties:
+      - id: accepted-swift-widget-name-is-non-empty
+        proves: accepted-swift-widget-has-name
+        kind: property
+        input_space: arbitrary local widget names
+        oracle:
+          - accepted widget names are non-empty after trimming
+          - rejected empty names remain explicit
+        command: verify
+        evidence: verification/scenarios/accept_non_empty_widget
+  allowed_public_field_structs:
+    - SwiftExampleTransition
+    - SwiftExampleTransitionRecord
   public_modules: []
   messages:
     command_envelope:
@@ -52,19 +66,46 @@ architecture:
   machine:
     name: SwiftExampleMachine
     mode: stateless-decision-machine
+    transition_signature: input-only
     stateless_justification: "describeWidget is a pure query over already validated input; no lifecycle or ordering state is owned by this example"
-    state: SwiftExampleState
+    types:
+      state: SwiftExampleState
+      command: DescribeSwiftWidgetCommand
+      event: SwiftExampleEvent
+      reply: DescribeSwiftWidgetReply
+      rejection: SwiftExampleRejection
+      transition: SwiftExampleTransition
+      transition_record: SwiftExampleTransitionRecord
     states:
       - Ready
     commands:
-      - DescribeSwiftWidgetCommand
-    events: []
+      - Describe
+      - RejectEmptyName
+    observed_events: []
+    events:
+      - WidgetDescribed
+      - WidgetRejected
     effects: []
     effect_results: []
     replies:
-      - DescribeSwiftWidgetReply
-    rejections: []
-    transition_function: describeWidget
+      - Description
+      - Rejected
+    rejections:
+      - EmptyWidgetName
+      - ExpectedEmptyName
+    effect_protocols: []
+    transition_function: transition
+    transitions:
+      - from: Ready
+        on: Describe
+        to: Ready
+        events: [WidgetDescribed]
+        reply: Description
+      - from: Ready
+        on: RejectEmptyName
+        to: Ready
+        events: [WidgetRejected]
+        rejection: EmptyWidgetName
   roles:
     representation:
       - Sources/RmsSwiftExample/RmsSwiftExample.swift

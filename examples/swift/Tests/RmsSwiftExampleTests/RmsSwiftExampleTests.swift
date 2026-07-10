@@ -17,7 +17,13 @@ final class RmsSwiftExampleTests: XCTestCase {
 
         XCTAssertEqual(
             SwiftExampleMachine.transition(.describe(widget)),
-            .description("example")
+            SwiftExampleTransition(
+                nextState: .ready,
+                events: [.widgetDescribed],
+                commands: [],
+                effects: [],
+                reply: .description("example")
+            )
         )
     }
 }

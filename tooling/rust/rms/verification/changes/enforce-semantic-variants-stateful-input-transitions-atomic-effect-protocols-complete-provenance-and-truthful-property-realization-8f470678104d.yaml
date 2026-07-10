@@ -1,0 +1,56 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/simple-runnable-browser-tool-surfaces-should-scaffold-as-thin-stateless-boundaries-with-generated-launch-assets-while-non-effectful-scaffolds-should-not-claim-effect-lifecycle-semantics-b48a9975b374.yaml
+- verification/changes/semantic-first-dogfood-followups.yaml
+intent:
+  summary: Enforce semantic variants, stateful input transitions, atomic effect protocols, complete provenance, and truthful property realization.
+laws:
+  add:
+  - id: semantic-variants-are-distinct-from-binding-types
+    statement: Machine semantic lists contain domain alternatives while implementation type mappings contain binding-native container names.
+    kind: invariant
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  - id: stateful-machines-consume-state-and-classified-input
+    statement: Every stateful machine transition consumes current state plus a command, observed event, or effect result through one canonical transition path.
+    kind: invariant
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  - id: effect-executors-do-not-own-orchestration
+    statement: Effect executors perform declared effect requests and return declared results while transition functions own sequencing, retry, compensation, and progress policy.
+    kind: invariant
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  - id: strict-audit-observes-all-production-files
+    statement: Strict production audit includes every tracked, modified, and untracked production artifact in provenance and semantic-drift checks.
+    kind: invariant
+    authority: parser
+    enforced_by: audit-rms-project-command
+  - id: fuzz-realization-matches-semantic-claim
+    statement: Open-ended fuzz claims use generated or coverage-guided realization while deterministic corpora are reported only as corpus evidence.
+    kind: invariant
+    authority: parser
+    enforced_by: semantic-property-check-command
+contracts: null
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: semantic-variants-are-distinct-from-binding-types
+    path: verification/laws/semantic_variants_are_cases.md
+  - kind: law
+    proves: stateful-machines-consume-state-and-classified-input
+    path: verification/laws/stateful_machine_inputs.md
+  - kind: law
+    proves: effect-executors-do-not-own-orchestration
+    path: verification/laws/atomic_effect_protocols.md
+  - kind: law
+    proves: strict-audit-observes-all-production-files
+    path: verification/laws/complete_provenance.md
+  - kind: law
+    proves: fuzz-realization-matches-semantic-claim
+    path: verification/laws/fuzz_realization.md
+surfaces: null

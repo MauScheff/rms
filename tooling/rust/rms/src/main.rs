@@ -20,6 +20,8 @@ use syn::{
 use toml::Value as TomlValue;
 use walkdir::WalkDir;
 
+mod effect_executor;
+
 const VALIDATOR_NAME: &str = "rms";
 const VALIDATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_RUN_ROOT: &str = ".rms/runs";
@@ -1073,7 +1075,18 @@ struct PropertyTargetReport {
     command: Option<String>,
     evidence: Option<String>,
     counterexamples: Option<String>,
+    realizations: Vec<PropertyRealization>,
     status: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PropertyRealization {
+    profile: String,
+    strategy: String,
+    command: String,
+    #[serde(default)]
+    exhaustive: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1160,13 +1173,17 @@ struct SpecApplyReport {
 #[derive(Clone, Debug, Default, Serialize)]
 struct MachineFinalStateReport {
     mode: Option<String>,
+    transition_signature: Option<String>,
+    types: MachineTypeNames,
     states: Vec<String>,
     commands: Vec<String>,
+    observed_events: Vec<String>,
     events: Vec<String>,
     effects: Vec<String>,
     effect_results: Vec<String>,
     replies: Vec<String>,
     rejections: Vec<String>,
+    effect_protocols: Vec<MachineEffectProtocol>,
     transitions: Vec<String>,
     roles: Vec<String>,
 }
@@ -1190,53 +1207,194 @@ struct SpecDiffReport {
 }
 
 #[allow(dead_code)]
-struct RmsWorkbenchMachine;
-
-#[allow(dead_code)]
-enum RmsWorkbenchCommand {
-    ApplySemanticChange,
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RmsWorkbenchState {
+    Ready,
+    WritingSemanticChangeRecord,
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RmsWorkbenchCommand {
+    ValidateRmsArtifacts,
+    ExplainModule,
+    DiagnoseRmsEnvironment,
+    RenderWorkbenchPrompt,
+    PlanModuleChange,
+    DesignRmsSystem,
+    ComposeRmsSystem,
+    RouteRmsWork,
+    ReviewModuleDiff,
+    AnalyzeGitImpact,
+    GateRmsChange,
+    AuditRmsProject,
+    RefactorModuleWorkbench,
+    ImplementModuleWorkbench,
+    CaptureIntentWorkbench,
+    EvolveContractWorkbench,
+    EvidenceWorkbench,
+    ListWorkbenchRuns,
+    InspectWorkbenchRun,
+    InspectLatestWorkbenchRun,
+    InitWorkbenchConfig,
+    ConfigureAgentIntegration,
+    InitRmsSystem,
+    AddRmsModule,
+    AddRmsCapability,
+    CheckReleaseReadiness,
+    BuildContextPacket,
+    BuildModuleAtlas,
+    InspectImplementationStructure,
+    InspectTraceBundle,
+    PlanMachineChange,
+    ApplyMachineChange,
+    PlanSemanticChange,
+    ApplySemanticChange,
+    CheckSemanticChange,
+    DiffSemanticChange,
+    CheckMachineStructure,
+    DiffMachineStructure,
+    ApplyRunnableSurface,
+    CheckRunnableSurface,
+    PackageModule,
+    VerifyImplementation,
+    CheckSemanticProperties,
+    RunSemanticProperties,
+    ReplayPropertyCounterexample,
+    InspectModule,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum RmsWorkbenchEvent {
+    CommandCompleted,
     SemanticChangeRecorded,
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum RmsWorkbenchEffect {
     WriteSemanticChangeRecord,
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum RmsWorkbenchEffectResult {
     SemanticChangeRecordWritten,
     SemanticChangeRecordWriteRejected,
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum RmsWorkbenchReply {
+    CommandCompleted,
     SemanticChangeApplied,
+    SemanticChangeRejected,
 }
 
 #[allow(dead_code)]
-struct ApplySemanticChange;
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RmsWorkbenchRejection {
+    IllegalTransition,
+    SemanticChangeRecordWriteFailed,
+}
 
 #[allow(dead_code)]
-struct SemanticChangeRecorded;
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RmsWorkbenchInput {
+    Command(RmsWorkbenchCommand),
+    EffectResult(RmsWorkbenchEffectResult),
+}
 
 #[allow(dead_code)]
-struct WriteSemanticChangeRecord;
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RmsWorkbenchTransition {
+    next_state: RmsWorkbenchState,
+    events: Vec<RmsWorkbenchEvent>,
+    commands: Vec<RmsWorkbenchCommand>,
+    effects: Vec<RmsWorkbenchEffect>,
+    reply: Option<RmsWorkbenchReply>,
+    rejection: Option<RmsWorkbenchRejection>,
+}
 
 #[allow(dead_code)]
-struct SemanticChangeRecordWritten;
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RmsWorkbenchTransitionRecord {
+    state_before: RmsWorkbenchState,
+    state_after: RmsWorkbenchState,
+    input: RmsWorkbenchInput,
+    output: RmsWorkbenchTransition,
+}
 
 #[allow(dead_code)]
-struct SemanticChangeRecordWriteRejected;
+struct RmsWorkbenchMachine;
 
 #[allow(dead_code)]
-struct SemanticChangeApplied;
+impl RmsWorkbenchMachine {
+    fn transition(state: RmsWorkbenchState, input: RmsWorkbenchInput) -> RmsWorkbenchTransition {
+        transition(state, input)
+    }
+}
+
+#[allow(dead_code)]
+fn transition(state: RmsWorkbenchState, input: RmsWorkbenchInput) -> RmsWorkbenchTransition {
+    match (&state, &input) {
+        (
+            RmsWorkbenchState::Ready,
+            RmsWorkbenchInput::Command(RmsWorkbenchCommand::ApplySemanticChange),
+        ) => RmsWorkbenchTransition {
+            next_state: RmsWorkbenchState::WritingSemanticChangeRecord,
+            events: Vec::new(),
+            commands: Vec::new(),
+            effects: vec![RmsWorkbenchEffect::WriteSemanticChangeRecord],
+            reply: None,
+            rejection: None,
+        },
+        (
+            RmsWorkbenchState::WritingSemanticChangeRecord,
+            RmsWorkbenchInput::EffectResult(RmsWorkbenchEffectResult::SemanticChangeRecordWritten),
+        ) => RmsWorkbenchTransition {
+            next_state: RmsWorkbenchState::Ready,
+            events: vec![RmsWorkbenchEvent::SemanticChangeRecorded],
+            commands: Vec::new(),
+            effects: Vec::new(),
+            reply: Some(RmsWorkbenchReply::SemanticChangeApplied),
+            rejection: None,
+        },
+        (
+            RmsWorkbenchState::WritingSemanticChangeRecord,
+            RmsWorkbenchInput::EffectResult(
+                RmsWorkbenchEffectResult::SemanticChangeRecordWriteRejected,
+            ),
+        ) => RmsWorkbenchTransition {
+            next_state: RmsWorkbenchState::Ready,
+            events: Vec::new(),
+            commands: Vec::new(),
+            effects: Vec::new(),
+            reply: Some(RmsWorkbenchReply::SemanticChangeRejected),
+            rejection: Some(RmsWorkbenchRejection::SemanticChangeRecordWriteFailed),
+        },
+        (RmsWorkbenchState::Ready, RmsWorkbenchInput::Command(_)) => RmsWorkbenchTransition {
+            next_state: RmsWorkbenchState::Ready,
+            events: vec![RmsWorkbenchEvent::CommandCompleted],
+            commands: Vec::new(),
+            effects: Vec::new(),
+            reply: Some(RmsWorkbenchReply::CommandCompleted),
+            rejection: None,
+        },
+        _ => RmsWorkbenchTransition {
+            next_state: state,
+            events: Vec::new(),
+            commands: Vec::new(),
+            effects: Vec::new(),
+            reply: None,
+            rejection: Some(RmsWorkbenchRejection::IllegalTransition),
+        },
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticChange {
     spec: String,
     #[serde(default)]
@@ -1262,32 +1420,41 @@ struct SemanticChange {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticIntentChange {
     #[serde(default)]
     summary: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticLawsChange {
     #[serde(default)]
     add: Vec<SemanticLawChange>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticLawChange {
     id: String,
     statement: String,
     #[serde(default)]
     kind: Option<String>,
+    #[serde(default)]
+    authority: Option<String>,
+    #[serde(default)]
+    enforced_by: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticContractsChange {
     #[serde(default)]
     add: Vec<SemanticContractChange>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticContractChange {
     name: String,
     #[serde(default)]
@@ -1301,12 +1468,14 @@ struct SemanticContractChange {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticPropertiesChange {
     #[serde(default)]
     add: Vec<SemanticPropertyChange>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticPropertyChange {
     id: String,
     proves: String,
@@ -1326,25 +1495,32 @@ struct SemanticPropertyChange {
     evidence: Option<SemanticPropertyEvidenceRef>,
     #[serde(default)]
     counterexamples: Option<SemanticPropertyCounterexamplesRef>,
+    #[serde(default)]
+    realizations: Vec<PropertyRealization>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticPropertyEvidenceRef {
+    kind: String,
     path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticPropertyCounterexamplesRef {
     path: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticEvidenceChange {
     #[serde(default)]
     add: Vec<SemanticEvidenceItemChange>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticEvidenceItemChange {
     kind: String,
     proves: String,
@@ -1352,6 +1528,7 @@ struct SemanticEvidenceItemChange {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticSurfacesChange {
     #[serde(default)]
     add: Vec<SurfaceDeclaration>,
@@ -1362,6 +1539,7 @@ struct SemanticSurfacesChange {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SurfaceDeclaration {
     name: String,
     kind: String,
@@ -1382,6 +1560,7 @@ struct SurfaceDeclaration {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SurfaceDelegation {
     #[serde(default)]
     role: Option<String>,
@@ -1392,14 +1571,19 @@ struct SurfaceDelegation {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SemanticMachineChange {
     mode: String,
     #[serde(default)]
     justification: Option<String>,
     #[serde(default)]
+    transition_signature: Option<String>,
+    #[serde(default)]
     states: MachineVariantListChange,
     #[serde(default)]
     commands: MachineVariantListChange,
+    #[serde(default)]
+    observed_events: MachineVariantListChange,
     #[serde(default)]
     events: MachineVariantListChange,
     #[serde(default)]
@@ -1411,10 +1595,13 @@ struct SemanticMachineChange {
     #[serde(default)]
     rejections: MachineVariantListChange,
     #[serde(default)]
+    effect_protocols: MachineEffectProtocolsChange,
+    #[serde(default)]
     transitions: Option<MachineTransitionsChange>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct MachineChange {
     spec: String,
     #[serde(default)]
@@ -1427,14 +1614,21 @@ struct MachineChange {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct MachineChangeMachine {
     mode: String,
     #[serde(default)]
     justification: Option<String>,
     #[serde(default)]
+    transition_signature: Option<String>,
+    #[serde(default)]
+    types: Option<MachineTypeNames>,
+    #[serde(default)]
     states: MachineVariantListChange,
     #[serde(default)]
     commands: MachineVariantListChange,
+    #[serde(default)]
+    observed_events: MachineVariantListChange,
     #[serde(default)]
     events: MachineVariantListChange,
     #[serde(default)]
@@ -1445,9 +1639,69 @@ struct MachineChangeMachine {
     replies: MachineVariantListChange,
     #[serde(default)]
     rejections: MachineVariantListChange,
+    #[serde(default)]
+    effect_protocols: MachineEffectProtocolsChange,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MachineTypeNames {
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    input: Option<String>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    event: Option<String>,
+    #[serde(default)]
+    effect: Option<String>,
+    #[serde(default)]
+    effect_result: Option<String>,
+    #[serde(default)]
+    reply: Option<String>,
+    #[serde(default)]
+    rejection: Option<String>,
+    #[serde(default)]
+    transition: Option<String>,
+    #[serde(default)]
+    transition_record: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MachineEffectProtocolsChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<MachineEffectProtocol>>,
+    #[serde(default)]
+    add: Vec<MachineEffectProtocol>,
+    #[serde(default)]
+    remove: Vec<MachineEffectProtocolRemove>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MachineEffectProtocol {
+    effect: String,
+    #[serde(default)]
+    results: Vec<String>,
+    #[serde(default)]
+    executor_role: Option<String>,
+    atomicity: String,
+    #[serde(default)]
+    aggregate_justification: Option<String>,
+    #[serde(default)]
+    evidence: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MachineEffectProtocolRemove {
+    effect: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct MachineVariantListChange {
     #[serde(default, rename = "set")]
     replace: Option<Vec<String>>,
@@ -1458,6 +1712,7 @@ struct MachineVariantListChange {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct MachineTransitionsChange {
     #[serde(default, rename = "set")]
     replace: Option<Vec<MachineTransitionChange>>,
@@ -1468,6 +1723,7 @@ struct MachineTransitionsChange {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct MachineTransitionChange {
     from: String,
     on: String,
@@ -1487,6 +1743,7 @@ struct MachineTransitionChange {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct MachineTransitionRemoveChange {
     from: String,
     on: String,
@@ -1495,6 +1752,7 @@ struct MachineTransitionRemoveChange {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct MachineRolesChange {
     #[serde(default, rename = "set")]
     replace: Vec<MachineRoleChange>,
@@ -1505,6 +1763,7 @@ struct MachineRolesChange {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct MachineRoleChange {
     kind: String,
     #[serde(default)]
@@ -1516,6 +1775,7 @@ struct MachineRoleChange {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct MachineRoleRemoveChange {
     kind: String,
     #[serde(default)]
@@ -1523,6 +1783,7 @@ struct MachineRoleRemoveChange {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct SurfaceRemoveChange {
     name: String,
 }
@@ -1561,14 +1822,17 @@ struct TraceDiagnostic {
 struct StructureMachineReport {
     name: Option<String>,
     mode: Option<String>,
-    state: Option<String>,
+    transition_signature: Option<String>,
+    types: MachineTypeNames,
     states: Vec<String>,
     commands: Vec<String>,
+    observed_events: Vec<String>,
     events: Vec<String>,
     effects: Vec<String>,
     effect_results: Vec<String>,
     replies: Vec<String>,
     rejections: Vec<String>,
+    effect_protocols: Vec<MachineEffectProtocol>,
     transition_function: Option<String>,
 }
 
@@ -1604,6 +1868,7 @@ struct InnerStructureNames {
     prefix: String,
     machine: String,
     state: String,
+    input: String,
     command: String,
     command_envelope: String,
     event: String,
@@ -2427,48 +2692,17 @@ fn machine_mode_for_shape(shape: ScaffoldShape) -> &'static str {
 fn starter_states_for_shape(shape: ScaffoldShape) -> Vec<String> {
     match shape {
         ScaffoldShape::DomainEngine => vec!["Ready"],
-        ScaffoldShape::BoundaryAdapter => {
-            vec![
-                "AwaitingInput",
-                "ParsedCommand",
-                "Delegating",
-                "Completed",
-                "Rejected",
-            ]
+        ScaffoldShape::BoundaryAdapter => vec!["AwaitingInput", "Completed", "Rejected"],
+        ScaffoldShape::Workflow => vec!["NotStarted", "WaitingForEffect", "Completed", "Failed"],
+        ScaffoldShape::StorageAdapter | ScaffoldShape::IntegrationAdapter => {
+            vec!["Ready", "WaitingForEffect", "Completed", "Failed"]
         }
-        ScaffoldShape::Workflow => vec![
-            "NotStarted",
-            "Running",
-            "WaitingForEffect",
-            "Compensating",
-            "Completed",
-            "Failed",
-        ],
-        ScaffoldShape::StorageAdapter => vec!["Ready", "Writing", "Recovering", "Failed"],
-        ScaffoldShape::IntegrationAdapter => {
-            vec![
-                "Ready",
-                "CallingProvider",
-                "RetryScheduled",
-                "Reconciling",
-                "Failed",
-            ]
-        }
-        ScaffoldShape::RuntimeMonitor => vec!["Observing", "Projected", "Triggered", "Suppressed"],
+        ScaffoldShape::RuntimeMonitor => vec!["Observing", "Projected", "Rejected"],
         ScaffoldShape::Composite => vec!["Ready"],
     }
     .into_iter()
     .map(str::to_string)
     .collect()
-}
-
-fn machine_mode_extra_yaml(shape: ScaffoldShape) -> &'static str {
-    match shape {
-        ScaffoldShape::DomainEngine => {
-            "    stateless_justification: \"generated domain-engine starts as a pure decision machine; use rms spec apply when lifecycle state changes product meaning, or rms machine apply for focused inner-machine edits after laws/contracts/evidence are correct\"\n"
-        }
-        _ => "",
-    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -2775,6 +3009,9 @@ impl PromptKind {
                 "Name affected invariants, effects, compatibility promises, and recovery paths.",
                 "Choose semantic shape before file layout: representation, message envelopes, transition outputs, transition records, ports, adapters, trace roles, and evidence.",
                 "Choose representation obligations: closed variants, validated constructors, explicit results, boundary schemas, or lifecycle state when behavior depends on order.",
+                "Keep binding container names separate from semantic alternatives: `types.state` names the ADT; `states` names its cases.",
+                "Classify every machine input as exactly one command, observed event, or effect result, and name illegal state/input combinations.",
+                "When an effect outcome can change what happens next, plan one atomic request, one typed result, and a follow-up transition; do not hide sequencing in the executor.",
                 "Propose the smallest implementation and verification path.",
             ],
             PromptKind::Design => &[
@@ -2786,6 +3023,8 @@ impl PromptKind {
                 "For reusable domain/library modules, declare provider capabilities and contracts, one public facade, package/reuse evidence, and consumer access through `requires.capabilities[]` rather than private role imports.",
                 "Define representation obligations: closed variants, validated values, commands, states, events, accepted/rejected outcomes, boundary schemas, and runnable surfaces when outside input reaches the module.",
                 "Resolve semantic edge cases before file layout: invalid commands, illegal transitions, terminal states, stale or conflicting state, parser failures, numeric overflow or rounding, and effect failure categories.",
+                "Name semantic cases rather than Rust, Swift, JS, Python, or other binding type names; bindings realize the cases later.",
+                "For each effect, decide whether individual outcomes alter later decisions; if they do, use one-request-one-result protocols and transition-owned orchestration.",
                 "Define focused evidence: laws, contract scenarios, boundary parser tests, numeric boundary tests, runtime monitor trigger/non-trigger cases, transition records, replay bundles, first-bad-transition proof, fuzz/property checks, recovery, or reconciliation.",
                 "Treat provider output and generated plans as advisory evidence until reflected in canonical artifacts.",
             ],
@@ -2801,6 +3040,7 @@ impl PromptKind {
                 "Flag semantic roles, state variants, transitions, effects, runnable surfaces, public entrypoints, parsers, or evidence added by hand instead of through RMS CLI artifacts as architecture-gate bypasses.",
                 "Flag reusable-module consumers that import provider representation, transition, parser, adapter, or port internals instead of the declared public facade or contract-shaped entrypoint.",
                 "Find behavioral regressions, boundary violations, undeclared effects or dependencies, compatibility drift, missing evidence, and stale canonical artifacts.",
+                "Flag collapsed semantic variants, stateful transitions that omit state or classified input, effect results that bypass transition, executor-owned retry or sequencing, and corpus-only evidence presented as fuzzing.",
                 "Prioritize findings by severity and include file or artifact references when possible.",
                 "Do not treat generated prose, issue text, or incidental implementation shape as architectural authority.",
             ],
@@ -2808,6 +3048,7 @@ impl PromptKind {
                 "Preserve public contracts, invariants, declared effects, compatibility, and verification meaning.",
                 "If refactoring reveals new laws, contracts, states, commands, events, effects, runnable surfaces, public entrypoints, semantic roles, or evidence obligations, return an RMS semantic-change object before editing files.",
                 "Identify weak representation, duplicated concepts, decision/effect coupling, ownership confusion, boundary leakage, lifecycle clutter, or semantic residue.",
+                "Preserve one canonical transition path for commands, observed events, and effect results; move sequencing policy out of executors and into transitions.",
                 "Prefer semantic roles over conventional helper names: representation, message envelopes, transition output, transition records, ports, adapters, trace roles, and evidence.",
                 "Prefer deletion, inlining, renaming, or representation strengthening before new abstractions.",
                 "Escalate to implement-change or evolve-contract if public meaning must change.",
@@ -2827,6 +3068,9 @@ impl PromptKind {
                 "For reusable modules, keep RMS capabilities/contracts and the declared public facade as the import surface; native package manifests are binding evidence only.",
                 "Use semantic implementation roles before file-level code: representation, message envelopes, transition output, transition records, ports, adapters, trace roles, and evidence.",
                 "Resolve semantic edge cases before implementation: impossible variants, invalid constructors, illegal transitions, malformed boundary input, stale or conflicting state, and terminal-state behavior.",
+                "Test whether public constructors can create contradictory values, and replace boolean/nullable combinations with closed states when they can.",
+                "Keep semantic case names separate from binding type names and dispatch every command, observed event, and effect result through the canonical transition.",
+                "Effect executors perform one declared request and return one declared result; transitions own sequencing, retry, compensation, stop/continue policy, and progress.",
                 "Use the strongest available representation for invalid states, expected failures, boundary input, and lifecycle transitions.",
                 "Add the smallest evidence that demonstrates the changed promise.",
                 "Return concrete implementation instructions; do not claim edits were made unless the executing agent actually made them.",
@@ -2836,6 +3080,8 @@ impl PromptKind {
                 "Normalize the human request into atomic stories with actors, state, actions, success results, failure results, and stale or conflicting-state behavior.",
                 "Ask only the questions needed to resolve product, domain, ownership, source-of-truth, lifecycle, compatibility, or operational ambiguity.",
                 "Synthesize accepted intent into candidate contracts, laws, invariants, glossary terms, ownership, effects, compatibility impact, and proof lanes.",
+                "Enumerate accepted command, observed-event, and effect-result cases plus illegal transitions before proposing code.",
+                "Ask whether each external outcome can change the next decision; model such outcomes as typed effect results rather than executor control flow.",
                 "Separate raw conversation notes from accepted rationale; raw prompt output is evidence, not semantic authority.",
                 "Name the canonical artifacts that must change before implementation: intent notes, decision records, glossary, module manifest, contracts, laws, runnable surface declarations, and verification evidence.",
                 "Stop at an implementation gate when accepted intent is missing or contradictions exist among canonical artifacts.",
@@ -2855,6 +3101,8 @@ impl PromptKind {
             PromptKind::Evidence => &[
                 "Identify the changed promise and the evidence category it belongs to: law, contract, scenario, boundary, runnable surface, runtime, reconciliation, or migration.",
                 "For machine-shaped behavior, request transition records, replay bundles, golden timelines, effect-result handling, and first-bad-transition proof where applicable.",
+                "Require stateful traces to cover every declared transition and effect-result branch, with each record's state_after feeding the next state_before.",
+                "Distinguish deterministic corpus, deterministic exhaustive, generated-property, and coverage-fuzzer evidence; a fixed corpus does not prove an open-ended fuzz claim.",
                 "For reusable modules, request package/reuse evidence that runs `rms package` and `rms verify-package` and proves consumers use the public facade.",
                 "Prefer the smallest evidence that strongly demonstrates the promise.",
                 "Include negative evidence for impossible variants, invalid constructors, malformed boundary input, and illegal transitions when applicable.",
@@ -7147,12 +7395,40 @@ fn run_property_run(
     let mut diagnostics = Vec::new();
     validate_property_implementation(&manifest, &mut diagnostics);
     let mut commands = Vec::new();
-    for (kind, key) in [
-        ("properties", "properties"),
-        ("fuzz", "fuzz"),
-        ("properties", "property"),
-    ] {
-        if let Some(command) = get_str(&manifest.value, &["commands", key]) {
+    let targets = property_targets_from_implementation(
+        &manifest,
+        &["architecture", "reliability", "properties"],
+        "property",
+    )
+    .into_iter()
+    .chain(property_targets_from_implementation(
+        &manifest,
+        &["architecture", "reliability", "fuzz_targets"],
+        "fuzz",
+    ));
+    for target in targets {
+        let matching = target
+            .realizations
+            .iter()
+            .filter(|realization| realization.profile == profile.label())
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            diagnostics.push(error(
+                "property.realization-missing",
+                implementation,
+                format!(
+                    "{} `{}` has no `{}` realization",
+                    target.kind,
+                    target.id,
+                    profile.label()
+                ),
+            ));
+        }
+        for realization in matching {
+            let Some(command) = get_str(&manifest.value, &["commands", &realization.command])
+            else {
+                continue;
+            };
             if commands
                 .iter()
                 .any(|existing: &PropertyRunCommandReport| existing.command == command)
@@ -7165,9 +7441,14 @@ fn run_property_run(
                 .arg(command)
                 .current_dir(root)
                 .output()
-                .with_context(|| format!("failed to run {kind} command `{command}`"))?;
+                .with_context(|| {
+                    format!(
+                        "failed to run {} realization `{}` command `{command}`",
+                        target.kind, realization.strategy
+                    )
+                })?;
             commands.push(PropertyRunCommandReport {
-                kind: kind.to_string(),
+                kind: format!("{}:{}", target.kind, realization.strategy),
                 command: command.to_string(),
                 status: if output.status.success() {
                     "pass".to_string()
@@ -7182,7 +7463,7 @@ fn run_property_run(
         diagnostics.push(error(
             "property.command-missing",
             implementation,
-            "implementation must declare `commands.properties` or `commands.fuzz` to run property evidence",
+            "implementation has no property/fuzz realization command for the requested profile",
         ));
     }
     let result = if diagnostics
@@ -7528,6 +7809,68 @@ fn validate_property_target_report(
             );
         }
     }
+    for realization in &target.realizations {
+        if !matches!(realization.profile.as_str(), "smoke" | "ci" | "nightly") {
+            push_unique_warning(
+                diagnostics,
+                "evidence.property-realization-profile",
+                &manifest.path,
+                format!(
+                    "{} `{}` has unknown realization profile `{}`",
+                    target.kind, target.id, realization.profile
+                ),
+            );
+        }
+        if !matches!(
+            realization.strategy.as_str(),
+            "deterministic-corpus"
+                | "deterministic-exhaustive"
+                | "generated-property"
+                | "coverage-fuzzer"
+                | "model-checker"
+        ) {
+            push_unique_warning(
+                diagnostics,
+                "evidence.property-realization-strategy",
+                &manifest.path,
+                format!(
+                    "{} `{}` has unknown realization strategy `{}`",
+                    target.kind, target.id, realization.strategy
+                ),
+            );
+        }
+        if let Some(implementation) = implementation {
+            if get_str(&implementation.value, &["commands", &realization.command]).is_none() {
+                push_unique_warning(
+                    diagnostics,
+                    "structure.property-target-missing",
+                    &implementation.path,
+                    format!(
+                        "{} `{}` realization references missing command `{}`",
+                        target.kind, target.id, realization.command
+                    ),
+                );
+            }
+        }
+    }
+    if target.kind == "fuzz"
+        && !target.realizations.iter().any(|realization| {
+            matches!(
+                realization.strategy.as_str(),
+                "generated-property" | "coverage-fuzzer" | "model-checker"
+            ) || (realization.strategy == "deterministic-exhaustive" && realization.exhaustive)
+        })
+    {
+        push_unique_warning(
+            diagnostics,
+            "evidence.fuzz-realization-mismatch",
+            &manifest.path,
+            format!(
+                "fuzz target `{}` needs generated, coverage-guided, model-checker, or explicitly exhaustive realization; a fixed corpus is smoke evidence only",
+                target.id
+            ),
+        );
+    }
 }
 
 fn property_targets_from_module(
@@ -7595,6 +7938,15 @@ fn property_target_from_yaml(
     let counterexamples = get_str(item, &["counterexamples", "path"])
         .or_else(|| get_str(item, &["counterexamples"]))
         .map(ToString::to_string);
+    let realizations = get_path(item, &["realizations"])
+        .and_then(YamlValue::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| serde_yaml::from_value(item.clone()).ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let status =
         if proves.is_some() && input_space.is_some() && !oracle.is_empty() && evidence.is_some() {
             "declared"
@@ -7611,6 +7963,7 @@ fn property_target_from_yaml(
         command,
         evidence,
         counterexamples,
+        realizations,
         status,
     }
 }
@@ -7687,6 +8040,7 @@ fn property_blocking_diagnostic(check: &str) -> bool {
             | "structure.numeric-law-without-property"
             | "structure.transition-law-without-property"
             | "structure.property-target-missing"
+            | "evidence.fuzz-realization-mismatch"
     )
 }
 
@@ -7733,6 +8087,19 @@ fn print_property_targets(label: &str, targets: &[PropertyTargetReport]) {
             target.status,
             target.proves.as_deref().unwrap_or("<missing>")
         );
+        for realization in &target.realizations {
+            println!(
+                "      {}: {} via commands.{}{}",
+                realization.profile,
+                realization.strategy,
+                realization.command,
+                if realization.exhaustive {
+                    " (exhaustive)"
+                } else {
+                    ""
+                }
+            );
+        }
     }
 }
 
@@ -7822,7 +8189,14 @@ fn build_trace_report(bundle: &Path) -> Result<TraceReport> {
 
     let mut previous_after: Option<&YamlValue> = None;
     for (index, record) in record_values.iter().enumerate() {
-        inspect_trace_record(bundle, index, record, previous_after, &mut diagnostics);
+        let scenario_start = get_bool(record, &["scenario_start"]).unwrap_or(false);
+        inspect_trace_record(
+            bundle,
+            index,
+            record,
+            if scenario_start { None } else { previous_after },
+            &mut diagnostics,
+        );
         records.push(trace_record_summary(index, record));
         previous_after = trace_record_state_after(record);
     }
@@ -7946,20 +8320,61 @@ fn inspect_trace_record(
         );
     }
     if let Some(input) = input {
-        validate_trace_envelope(
-            bundle,
-            index,
-            "trace.command-envelope-incomplete",
-            "command",
-            input,
-            &[
-                "command_id",
-                "target_machine",
-                "correlation_id",
-                "causation_id",
-            ],
-            diagnostics,
-        );
+        if yaml_mapping_get(input, "effect_id").is_some()
+            || yaml_mapping_get(input, "effect_result").is_some()
+            || yaml_mapping_get(input, "result").is_some()
+        {
+            validate_trace_envelope(
+                bundle,
+                index,
+                "trace.effect-result-envelope-incomplete",
+                "effect result",
+                input,
+                &[
+                    "effect_id",
+                    "requester",
+                    "correlation_id",
+                    "causation_id",
+                    "status",
+                ],
+                diagnostics,
+            );
+        } else if yaml_mapping_get(input, "event_id").is_some()
+            || yaml_mapping_get(input, "event").is_some()
+        {
+            validate_trace_envelope(
+                bundle,
+                index,
+                "trace.event-envelope-incomplete",
+                "event",
+                input,
+                &[
+                    "event_id",
+                    "source_machine",
+                    "correlation_id",
+                    "causation_id",
+                    "sequence",
+                    "schema_version",
+                    "occurred_at",
+                ],
+                diagnostics,
+            );
+        } else {
+            validate_trace_envelope(
+                bundle,
+                index,
+                "trace.command-envelope-incomplete",
+                "command",
+                input,
+                &[
+                    "command_id",
+                    "target_machine",
+                    "correlation_id",
+                    "causation_id",
+                ],
+                diagnostics,
+            );
+        }
     }
 
     let Some(output) = get_path(record, &["output"]) else {
@@ -8849,13 +9264,18 @@ fn append_semantic_structure_checklist(out: &mut String, kind: PromptKind) -> Re
         "- Intent: restate the behavior, the owning context language, and what must never happen."
     )?;
     writeln!(out, "- ADTs and values: name closed variants, validated values, commands, states, events, and accepted/rejected result types.")?;
+    writeln!(out, "- Types versus cases: binding type names belong under `architecture.machine.types`; semantic lists contain alternatives such as `Pending`, `Authorize`, or `TimedOut`, never names like `PaymentState` or `PaymentCommand`.")?;
     writeln!(out, "- Role names: use domain-named suffixes where the language allows it, such as `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`. Do not derive these names from role or surface suffixes like rules, engine, adapter, cli, web, rust, swift, or js.")?;
     writeln!(out, "- Traceable machine rule: workflows orchestrate, machines execute, commands ask, events report, effects touch the world, projections observe, the journal explains, replay reproduces, and the first bad transition points to the fix.")?;
     writeln!(out, "- Messages: commands, events, effects, and effect results should use explicit envelopes with target/source, correlation, causation, schema/version, sequence, and idempotency metadata where applicable.")?;
     writeln!(out, "- Transitions: name accepted transitions, rejected transitions, terminal states, transition outputs, transition records, replay bundles, and first-bad-transition evidence when behavior depends on order or lifecycle.")?;
+    writeln!(out, "- Canonical input: stateful machines use `transition(state, input)` and one input ADT over commands, observed events, and effect results; every input case is classified exactly once.")?;
+    writeln!(out, "- Atomic effects: when an outcome can alter the next decision, emit one effect request, execute it once, return one typed result, and consume that result in a follow-up transition. Executors never own retry, iteration, compensation, or stop/continue policy.")?;
+    writeln!(out, "- Constructor audit: check whether public constructors can create contradictory values or impossible state combinations.")?;
     writeln!(out, "- Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.")?;
     writeln!(out, "- Numeric safety: if validated values represent counts, money, quantities, rates, sizes, scores, or other numeric facts, choose checked, saturating, bounded, or explicitly proven arithmetic before implementation.")?;
     writeln!(out, "- Edge cases first: invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, numeric overflow or rounding, and not-applicable cases.")?;
+    writeln!(out, "- Fuzz truth: call fixed examples a deterministic corpus, finite enumeration deterministic exhaustive, generated cases a generated property, and coverage-guided execution a fuzzer; do not substitute one claim for another.")?;
     writeln!(out, "- Implementation comes after the structure is clear enough to encode in manifests, contracts, representation, transitions, adapters, tests, and evidence.")?;
     writeln!(out)?;
     Ok(())
@@ -11411,6 +11831,32 @@ fn validate_semantic_function_declarations(
                         "semantic function references undeclared module invariant `{invariant}`"
                     ),
                 ));
+            } else if let Some(module_manifest) = &module_manifest {
+                let declared = get_path(&module_manifest.value, &["invariants"])
+                    .and_then(YamlValue::as_sequence)
+                    .and_then(|items| {
+                        items
+                            .iter()
+                            .find(|item| get_str(item, &["id"]) == Some(invariant.as_str()))
+                    });
+                if let Some(authority) = declared.and_then(|item| get_str(item, &["authority"])) {
+                    let kind = get_str(function, &["kind"]).unwrap_or("");
+                    let purity = get_str(function, &["purity"]).unwrap_or("");
+                    if authority == "transition"
+                        && matches!(kind, "adapter" | "interpreter")
+                        && matches!(purity, "effectful" | "boundary")
+                    {
+                        push_unique_warning(
+                            diagnostics,
+                            "semantic.invariant-authority-mismatch",
+                            &implementation.path,
+                            format!(
+                                "effectful semantic function `{}` cannot discharge transition-authority invariant `{invariant}`",
+                                get_str(function, &["id"]).unwrap_or("<unnamed>")
+                            ),
+                        );
+                    }
+                }
             }
         }
 
@@ -11559,16 +12005,265 @@ fn validate_machine_gate_structure(
         }
     }
 
+    validate_canonical_machine_model(manifest, diagnostics, shape);
+
     inspect_scaffold_trace_sources(manifest, diagnostics);
     inspect_parser_role_drift(manifest, diagnostics);
     inspect_pure_role_effect_markers(manifest, diagnostics);
     inspect_effect_executor_coverage(manifest, diagnostics);
+    inspect_effect_executor_orchestration(manifest, diagnostics);
     inspect_effect_result_handling(manifest, diagnostics);
     inspect_semantic_role_source_residue(manifest, diagnostics);
     inspect_reusable_distribution(manifest, diagnostics);
     inspect_public_command_representation(manifest, diagnostics);
     inspect_runnable_surface_declarations(manifest, diagnostics);
     inspect_runnable_surface_boundary_use(manifest, diagnostics);
+}
+
+fn validate_canonical_machine_model(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    shape: &str,
+) {
+    if !machine_expected_for_shape(shape) {
+        return;
+    }
+    let Some(mode) = get_str(&manifest.value, &["architecture", "machine", "mode"]) else {
+        return;
+    };
+    let signature = get_str(
+        &manifest.value,
+        &["architecture", "machine", "transition_signature"],
+    );
+    let expected_signature = if is_stateful_machine_mode(mode) {
+        "state-and-input"
+    } else {
+        "input-only"
+    };
+    if signature != Some(expected_signature) {
+        push_unique_warning(
+            diagnostics,
+            "structure.stateful-transition-state-input-missing",
+            &manifest.path,
+            format!("machine mode `{mode}` requires `transition_signature: {expected_signature}`"),
+        );
+    }
+
+    let types = machine_types_from_value(&manifest.value);
+    for (field, value) in [
+        ("state", types.state.as_deref()),
+        ("command", types.command.as_deref()),
+        ("event", types.event.as_deref()),
+        ("reply", types.reply.as_deref()),
+        ("rejection", types.rejection.as_deref()),
+        ("transition", types.transition.as_deref()),
+        ("transition_record", types.transition_record.as_deref()),
+    ] {
+        if value.is_none_or(str::is_empty) {
+            push_unique_warning(
+                diagnostics,
+                "structure.machine-type-missing",
+                &manifest.path,
+                format!("machine types must declare `{field}`"),
+            );
+        }
+    }
+    if is_stateful_machine_mode(mode) && types.input.as_deref().is_none_or(str::is_empty) {
+        push_unique_warning(
+            diagnostics,
+            "structure.machine-input-type-missing",
+            &manifest.path,
+            "stateful machines must declare a binding-native input ADT under `architecture.machine.types.input`",
+        );
+    }
+
+    let effects = get_string_array(&manifest.value, &["architecture", "machine", "effects"]);
+    let effect_results = get_string_array(
+        &manifest.value,
+        &["architecture", "machine", "effect_results"],
+    );
+    if !effects.is_empty() && types.effect.as_deref().is_none_or(str::is_empty) {
+        push_unique_warning(
+            diagnostics,
+            "structure.machine-type-missing",
+            &manifest.path,
+            "machines with effects must declare `architecture.machine.types.effect`",
+        );
+    }
+    if !effect_results.is_empty() && types.effect_result.as_deref().is_none_or(str::is_empty) {
+        push_unique_warning(
+            diagnostics,
+            "structure.machine-type-missing",
+            &manifest.path,
+            "machines with effect results must declare `architecture.machine.types.effect_result`",
+        );
+    }
+
+    let type_names = [
+        types.state.as_deref(),
+        types.input.as_deref(),
+        types.command.as_deref(),
+        types.event.as_deref(),
+        types.effect.as_deref(),
+        types.effect_result.as_deref(),
+        types.reply.as_deref(),
+        types.rejection.as_deref(),
+        types.transition.as_deref(),
+        types.transition_record.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<BTreeSet<_>>();
+    for field in [
+        "states",
+        "commands",
+        "observed_events",
+        "events",
+        "effects",
+        "effect_results",
+        "replies",
+        "rejections",
+    ] {
+        for variant in get_string_array(&manifest.value, &["architecture", "machine", field]) {
+            if type_names.contains(variant.as_str()) {
+                push_unique_warning(
+                    diagnostics,
+                    "structure.semantic-variants-collapsed-to-type",
+                    &manifest.path,
+                    format!(
+                        "machine `{field}` contains binding type `{variant}`; semantic lists must contain case names"
+                    ),
+                );
+            }
+        }
+    }
+
+    let commands = get_string_array(&manifest.value, &["architecture", "machine", "commands"])
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let observed_events = get_string_array(
+        &manifest.value,
+        &["architecture", "machine", "observed_events"],
+    )
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    let effect_result_set = effect_results.iter().cloned().collect::<BTreeSet<_>>();
+    let transitions = existing_machine_transitions(manifest);
+    let mut handled_effect_results = BTreeSet::new();
+    for transition in &transitions {
+        let input = transition_input_variant(&transition.on);
+        let categories = [
+            commands.contains(&input),
+            observed_events.contains(&input),
+            effect_result_set.contains(&input),
+        ]
+        .into_iter()
+        .filter(|matched| *matched)
+        .count();
+        if categories != 1 {
+            push_unique_warning(
+                diagnostics,
+                "structure.transition-input-not-classified",
+                &manifest.path,
+                format!(
+                    "transition input `{input}` must belong to exactly one of commands, observed_events, or effect_results"
+                ),
+            );
+        }
+        if effect_result_set.contains(&input) {
+            handled_effect_results.insert(input);
+        }
+    }
+    for effect_result in &effect_result_set {
+        if !handled_effect_results.contains(effect_result) {
+            push_unique_warning(
+                diagnostics,
+                "structure.effect-result-bypasses-transition",
+                &manifest.path,
+                format!(
+                    "effect result `{effect_result}` must enter the canonical transition function"
+                ),
+            );
+        }
+    }
+
+    let protocols = existing_effect_protocols(manifest);
+    let protocol_effects = protocols
+        .iter()
+        .map(|protocol| protocol.effect.as_str())
+        .collect::<BTreeSet<_>>();
+    for effect in &effects {
+        if !protocol_effects.contains(effect.as_str()) {
+            push_unique_warning(
+                diagnostics,
+                "structure.effect-protocol-missing",
+                &manifest.path,
+                format!("effect `{effect}` must declare request/result protocol semantics"),
+            );
+        }
+    }
+    for protocol in protocols {
+        if protocol.atomicity == "aggregate"
+            && (protocol
+                .aggregate_justification
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+                || protocol.evidence.is_empty())
+        {
+            push_unique_warning(
+                diagnostics,
+                "structure.aggregate-effect-policy-hidden",
+                &manifest.path,
+                format!(
+                    "aggregate effect `{}` requires justification and evidence that item outcomes cannot alter later decisions",
+                    protocol.effect
+                ),
+            );
+        }
+        for result in protocol.results {
+            if !effect_result_set.contains(&result) {
+                push_unique_warning(
+                    diagnostics,
+                    "structure.effect-protocol-unknown-result",
+                    &manifest.path,
+                    format!(
+                        "effect protocol `{}` references undeclared result `{result}`",
+                        protocol.effect
+                    ),
+                );
+            }
+        }
+        if protocol
+            .executor_role
+            .as_deref()
+            .is_none_or(|role| structure_role_paths(manifest, role).is_empty())
+        {
+            push_unique_warning(
+                diagnostics,
+                "structure.effect-protocol-executor-missing",
+                &manifest.path,
+                format!(
+                    "effect protocol `{}` must reference a declared executor role",
+                    protocol.effect
+                ),
+            );
+        }
+    }
+
+    if !structure_role_paths(manifest, "effect_lifecycle").is_empty()
+        && get_path(
+            &manifest.value,
+            &["architecture", "machine", "effect_lifecycle"],
+        )
+        .is_none()
+    {
+        push_unique_warning(
+            diagnostics,
+            "structure.effect-lifecycle-unused",
+            &manifest.path,
+            "effect_lifecycle role is declared without canonical lifecycle semantics; use machine state plus effect results or declare the lifecycle explicitly",
+        );
+    }
 }
 
 fn inspect_reusable_distribution(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
@@ -11775,21 +12470,6 @@ fn validate_traceable_machine_structure(
         );
     }
 
-    let effect_lifecycle_required = effect_lifecycle_expected_for_shape(shape)
-        && (shape != "boundary-adapter" || !effects.is_empty());
-    if effect_lifecycle_required
-        && get_structure_values(&manifest.value, &["architecture", "effects", "lifecycle"])
-            .is_empty()
-        && structure_role_paths(manifest, "effect_lifecycle").is_empty()
-    {
-        push_unique_warning(
-            diagnostics,
-            "structure.effect-lifecycle-missing",
-            &manifest.path,
-            format!("`{shape}` implementations should declare an effect lifecycle"),
-        );
-    }
-
     if journal_expected_for_shape(shape)
         && get_structure_scalar(&manifest.value, &["architecture", "trace", "journal"]).is_none()
         && structure_role_paths(manifest, "journal").is_empty()
@@ -11894,13 +12574,6 @@ fn traceable_structure_expected_for_shape(shape: &str) -> bool {
 
 fn transition_output_expected_for_shape(shape: &str) -> bool {
     matches!(shape, "domain-engine" | "workflow" | "runtime-monitor")
-}
-
-fn effect_lifecycle_expected_for_shape(shape: &str) -> bool {
-    matches!(
-        shape,
-        "boundary-adapter" | "workflow" | "storage-adapter" | "integration-adapter"
-    )
 }
 
 fn journal_expected_for_shape(shape: &str) -> bool {
@@ -13118,10 +13791,6 @@ fn symbol_source_path_like(path: &str) -> bool {
 }
 
 fn inspect_effect_executor_coverage(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
-    let shape = get_str(&manifest.value, &["architecture", "shape"]).unwrap_or("");
-    if !effect_lifecycle_expected_for_shape(shape) {
-        return;
-    }
     let effects = get_string_array(&manifest.value, &["architecture", "machine", "effects"]);
     if effects.is_empty() {
         return;
@@ -13138,6 +13807,109 @@ fn inspect_effect_executor_coverage(manifest: &LoadedManifest, diagnostics: &mut
             "declared effects should be executed by a declared effect_executor, adapter, port, or explicit delegation role",
         );
     }
+}
+
+fn inspect_effect_executor_orchestration(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if get_str(&manifest.value, &["binding"]) == Some("executable") {
+        return;
+    }
+    let executor_paths = structure_role_paths(manifest, "effect_executor");
+    if executor_paths.is_empty() {
+        return;
+    }
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let state_type = get_str(
+        &manifest.value,
+        &["architecture", "machine", "types", "state"],
+    )
+    .unwrap_or("");
+    let transition_type = get_str(
+        &manifest.value,
+        &["architecture", "machine", "types", "transition"],
+    )
+    .unwrap_or("");
+    let transition_record_type = get_str(
+        &manifest.value,
+        &["architecture", "machine", "types", "transition_record"],
+    )
+    .unwrap_or("");
+    let one_request_protocol = existing_effect_protocols(manifest)
+        .iter()
+        .any(|protocol| protocol.atomicity == "one-request-one-result");
+    for reference in executor_paths {
+        let path = base.join(&reference);
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let constructs_machine_output = [
+            "next_state",
+            "nextState",
+            "state_after",
+            "stateAfter",
+            "transition_record",
+            "transitionRecord",
+        ]
+        .iter()
+        .any(|marker| source.contains(marker))
+            || (!state_type.is_empty() && source.contains(&format!("{state_type}::")))
+            || (!transition_type.is_empty() && source.contains(transition_type))
+            || (!transition_record_type.is_empty() && source.contains(transition_record_type));
+        if constructs_machine_output {
+            push_unique_warning(
+                diagnostics,
+                "structure.effect-result-bypasses-transition",
+                &manifest.path,
+                format!(
+                    "effect executor `{reference}` appears to construct machine state or transition output; executors must return one declared effect result to the canonical transition"
+                ),
+            );
+        }
+        if one_request_protocol && source_contains_control_loop(&source) {
+            push_unique_warning(
+                diagnostics,
+                "structure.effect-protocol-not-atomic",
+                &manifest.path,
+                format!(
+                    "effect executor `{reference}` contains iteration while its protocol is `one-request-one-result`; move sequencing and stop/continue policy into transitions or declare a justified aggregate protocol"
+                ),
+            );
+        }
+    }
+
+    let transition_sources = structure_role_paths(manifest, "transition")
+        .into_iter()
+        .filter_map(|reference| fs::read_to_string(base.join(reference)).ok())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for effect_result in get_string_array(
+        &manifest.value,
+        &["architecture", "machine", "effect_results"],
+    ) {
+        if !semantic_text_mentions_id(&transition_sources, &effect_result) {
+            push_unique_warning(
+                diagnostics,
+                "structure.effect-result-bypasses-transition",
+                &manifest.path,
+                format!(
+                    "effect result `{effect_result}` is not dispatched by any declared transition role source"
+                ),
+            );
+        }
+    }
+}
+
+fn source_contains_control_loop(source: &str) -> bool {
+    source.lines().any(|line| {
+        let trimmed = line.split("//").next().unwrap_or_default().trim_start();
+        trimmed.starts_with("for ")
+            || trimmed.starts_with("while ")
+            || trimmed.starts_with("loop {")
+            || trimmed.starts_with("for(")
+            || trimmed.starts_with("while(")
+    })
 }
 
 fn inspect_effect_result_handling(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
@@ -13593,12 +14365,7 @@ fn declared_source_type_names(source: &str, binding: &str) -> Vec<String> {
         for prefix in candidates {
             if let Some(rest) = trimmed.strip_prefix(prefix) {
                 if let Some(name) = leading_identifier(rest) {
-                    let normalized = if binding == "js" && *prefix == "export function make" {
-                        name.to_string()
-                    } else {
-                        name.to_string()
-                    };
-                    names.push(normalized);
+                    names.push(name.to_string());
                 }
             }
         }
@@ -14091,42 +14858,23 @@ fn declared_architecture_symbols(value: &YamlValue) -> Vec<DeclaredArchitectureS
             DeclaredSymbolKind::Type,
         );
     }
-    if let Some(symbol) = get_str(value, &["architecture", "machine", "state"]) {
-        push_declared_architecture_symbol(
-            &mut symbols,
-            "machine.state",
-            symbol,
-            DeclaredSymbolKind::Type,
-        );
-    }
-    for (role, path) in [
-        (
-            "machine.commands",
-            &["architecture", "machine", "commands"][..],
-        ),
-        ("machine.events", &["architecture", "machine", "events"][..]),
-        (
-            "machine.effects",
-            &["architecture", "machine", "effects"][..],
-        ),
-        (
-            "machine.effect_results",
-            &["architecture", "machine", "effect_results"][..],
-        ),
-        (
-            "machine.replies",
-            &["architecture", "machine", "replies"][..],
-        ),
-        (
-            "machine.rejections",
-            &["architecture", "machine", "rejections"][..],
-        ),
+    for field in [
+        "state",
+        "input",
+        "command",
+        "event",
+        "effect",
+        "effect_result",
+        "reply",
+        "rejection",
+        "transition",
+        "transition_record",
     ] {
-        for symbol in get_string_array(value, path) {
+        if let Some(symbol) = get_str(value, &["architecture", "machine", "types", field]) {
             push_declared_architecture_symbol(
                 &mut symbols,
-                role,
-                &symbol,
+                "machine.types",
+                symbol,
                 DeclaredSymbolKind::Type,
             );
         }
@@ -14573,14 +15321,13 @@ fn validate_swift_source_boundaries(
 fn validate_swift_typing(
     implementation: &LoadedManifest,
     diagnostics: &mut Vec<Diagnostic>,
-    base: &Path,
+    _base: &Path,
     source_root: &Path,
 ) {
     if !source_root.exists() {
         return;
     }
 
-    let module_manifest = load_binding_module_manifest(implementation, base);
     let mut summary = SwiftTypingSummary::default();
 
     for path in swift_source_files(source_root) {
@@ -14603,13 +15350,9 @@ fn validate_swift_typing(
     }
 
     validate_swift_constructor_evidence(implementation, diagnostics, &summary);
-    validate_swift_stateful_representation(
-        implementation,
-        diagnostics,
-        module_manifest.as_ref(),
-        &summary,
-    );
+    validate_swift_stateful_representation(implementation, diagnostics, &summary);
     validate_swift_declared_architecture_symbols(implementation, diagnostics, &summary);
+    validate_swift_machine_variants_and_signature(implementation, diagnostics, source_root);
 }
 
 fn rust_cargo_manifest_path(manifest: &LoadedManifest, base: &Path, source_root: &Path) -> PathBuf {
@@ -14887,14 +15630,13 @@ fn validate_rust_source_boundaries(
 fn validate_rust_typing(
     implementation: &LoadedManifest,
     diagnostics: &mut Vec<Diagnostic>,
-    base: &Path,
+    _base: &Path,
     source_root: &Path,
 ) {
     if !source_root.exists() {
         return;
     }
 
-    let module_manifest = load_binding_module_manifest(implementation, base);
     let mut summary = RustTypingSummary::default();
 
     for path in rust_source_files(source_root) {
@@ -14931,13 +15673,9 @@ fn validate_rust_typing(
     }
 
     validate_rust_constructor_evidence(implementation, diagnostics, &summary);
-    validate_rust_stateful_representation(
-        implementation,
-        diagnostics,
-        module_manifest.as_ref(),
-        &summary,
-    );
+    validate_rust_stateful_representation(implementation, diagnostics, &summary);
     validate_rust_declared_architecture_symbols(implementation, diagnostics, &summary);
+    validate_rust_machine_variants_and_signature(implementation, diagnostics, &summary);
     validate_rust_semantic_function_symbols(implementation, diagnostics, &summary);
 }
 
@@ -14980,6 +15718,14 @@ fn inspect_rust_typing_file(
                 );
             }
             Item::Enum(item_enum) => {
+                summary.enum_variants.insert(
+                    item_enum.ident.to_string(),
+                    item_enum
+                        .variants
+                        .iter()
+                        .map(|variant| variant.ident.to_string())
+                        .collect(),
+                );
                 if matches!(item_enum.vis, Visibility::Public(_)) {
                     summary.public_types.insert(item_enum.ident.to_string());
                 } else {
@@ -15009,6 +15755,9 @@ fn inspect_rust_typing_file(
             Item::Impl(item_impl) => collect_rust_impl_methods(item_impl, summary),
             Item::Fn(item_fn) => {
                 summary.functions.insert(item_fn.sig.ident.to_string());
+                summary
+                    .function_parameter_counts
+                    .insert(item_fn.sig.ident.to_string(), item_fn.sig.inputs.len());
             }
             _ => {}
         }
@@ -15108,28 +15857,29 @@ fn validate_rust_constructor_evidence(
 fn validate_rust_stateful_representation(
     implementation: &LoadedManifest,
     diagnostics: &mut Vec<Diagnostic>,
-    module_manifest: Option<&LoadedManifest>,
     summary: &RustTypingSummary,
 ) {
-    let Some(module_manifest) = module_manifest else {
+    let Some(mode) = get_str(&implementation.value, &["architecture", "machine", "mode"]) else {
         return;
     };
-    let profiles = get_string_array(&module_manifest.value, &["profiles"]);
-    if !profiles.iter().any(|profile| profile == "stateful") {
+    if !is_stateful_machine_mode(mode) {
         return;
     }
 
-    let state_type = get_str(&implementation.value, &["architecture", "state_type"]);
+    let state_type = get_str(
+        &implementation.value,
+        &["architecture", "machine", "types", "state"],
+    );
     let transition_function = get_str(
         &implementation.value,
-        &["architecture", "transition_function"],
+        &["architecture", "machine", "transition_function"],
     );
 
     if state_type.is_none() && transition_function.is_none() {
         diagnostics.push(error(
             "implementation.rust.typing.stateful-representation",
             &implementation.path,
-            "stateful Rust bindings must declare `architecture.state_type` or `architecture.transition_function`",
+            "stateful Rust bindings must declare canonical machine state and transition types",
         ));
         return;
     }
@@ -15140,7 +15890,7 @@ fn validate_rust_stateful_representation(
             diagnostics.push(error(
                 "implementation.rust.typing.state-type",
                 &implementation.path,
-                format!("declared `architecture.state_type` `{state_type}` was not found in Rust source"),
+                format!("declared `architecture.machine.types.state` `{state_type}` was not found in Rust source"),
             ));
         }
     }
@@ -15150,7 +15900,7 @@ fn validate_rust_stateful_representation(
             diagnostics.push(error(
                 "implementation.rust.typing.transition-function",
                 &implementation.path,
-                format!("declared `architecture.transition_function` `{transition_function}` was not found in Rust source"),
+                format!("declared `architecture.machine.transition_function` `{transition_function}` was not found in Rust source"),
             ));
         }
     }
@@ -15200,6 +15950,87 @@ fn validate_rust_declared_architecture_symbols(
                 ),
             ));
         }
+    }
+}
+
+fn validate_rust_machine_variants_and_signature(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    summary: &RustTypingSummary,
+) {
+    for (field, type_field) in machine_semantic_variant_fields() {
+        let variants = get_string_array(&implementation.value, &["architecture", "machine", field]);
+        if variants.is_empty() {
+            continue;
+        }
+        let Some(type_name) = get_str(
+            &implementation.value,
+            &["architecture", "machine", "types", type_field],
+        ) else {
+            continue;
+        };
+        let represented = summary.enum_variants.get(type_name);
+        for variant in variants {
+            if !represented.is_some_and(|items| items.contains(&variant)) {
+                diagnostics.push(error(
+                    variant_not_represented_check(field),
+                    &implementation.path,
+                    format!(
+                        "declared semantic {field} variant `{variant}` is not represented by Rust enum `{type_name}`"
+                    ),
+                ));
+            }
+        }
+    }
+
+    let Some(function) = get_str(
+        &implementation.value,
+        &["architecture", "machine", "transition_function"],
+    ) else {
+        return;
+    };
+    let expected = match get_str(
+        &implementation.value,
+        &["architecture", "machine", "transition_signature"],
+    ) {
+        Some("state-and-input") => 2,
+        Some("input-only") => 1,
+        _ => return,
+    };
+    if summary
+        .function_parameter_counts
+        .get(function)
+        .is_some_and(|count| *count != expected)
+    {
+        diagnostics.push(error(
+            "structure.stateful-transition-state-input-missing",
+            &implementation.path,
+            format!(
+                "Rust transition `{function}` must accept {expected} canonical parameter(s) for the declared transition signature"
+            ),
+        ));
+    }
+}
+
+fn machine_semantic_variant_fields() -> [(&'static str, &'static str); 8] {
+    [
+        ("states", "state"),
+        ("commands", "command"),
+        ("observed_events", "event"),
+        ("events", "event"),
+        ("effects", "effect"),
+        ("effect_results", "effect_result"),
+        ("replies", "reply"),
+        ("rejections", "rejection"),
+    ]
+}
+
+fn variant_not_represented_check(field: &str) -> &'static str {
+    match field {
+        "states" => "structure.declared-state-not-represented",
+        "commands" => "structure.declared-command-not-represented",
+        "effect_results" => "structure.declared-effect-result-not-represented",
+        _ => "structure.declared-variant-not-represented",
     }
 }
 
@@ -15343,6 +16174,8 @@ struct RustTypingSummary {
     public_structs_with_private_fields: BTreeSet<String>,
     impl_methods: std::collections::BTreeMap<String, BTreeSet<String>>,
     functions: BTreeSet<String>,
+    enum_variants: std::collections::BTreeMap<String, BTreeSet<String>>,
+    function_parameter_counts: std::collections::BTreeMap<String, usize>,
 }
 
 #[derive(Default)]
@@ -16013,28 +16846,29 @@ fn validate_swift_constructor_evidence(
 fn validate_swift_stateful_representation(
     implementation: &LoadedManifest,
     diagnostics: &mut Vec<Diagnostic>,
-    module_manifest: Option<&LoadedManifest>,
     summary: &SwiftTypingSummary,
 ) {
-    let Some(module_manifest) = module_manifest else {
+    let Some(mode) = get_str(&implementation.value, &["architecture", "machine", "mode"]) else {
         return;
     };
-    let profiles = get_string_array(&module_manifest.value, &["profiles"]);
-    if !profiles.iter().any(|profile| profile == "stateful") {
+    if !is_stateful_machine_mode(mode) {
         return;
     }
 
-    let state_type = get_str(&implementation.value, &["architecture", "state_type"]);
+    let state_type = get_str(
+        &implementation.value,
+        &["architecture", "machine", "types", "state"],
+    );
     let transition_function = get_str(
         &implementation.value,
-        &["architecture", "transition_function"],
+        &["architecture", "machine", "transition_function"],
     );
 
     if state_type.is_none() && transition_function.is_none() {
         diagnostics.push(error(
             "implementation.swift.typing.stateful-representation",
             &implementation.path,
-            "stateful Swift bindings must declare `architecture.state_type` or `architecture.transition_function`",
+            "stateful Swift bindings must declare canonical machine state and transition types",
         ));
         return;
     }
@@ -16046,7 +16880,7 @@ fn validate_swift_stateful_representation(
                 "implementation.swift.typing.state-type",
                 &implementation.path,
                 format!(
-                    "declared `architecture.state_type` `{state_type}` was not found in Swift source"
+                    "declared `architecture.machine.types.state` `{state_type}` was not found in Swift source"
                 ),
             ));
         }
@@ -16057,7 +16891,7 @@ fn validate_swift_stateful_representation(
             diagnostics.push(error(
                 "implementation.swift.typing.transition-function",
                 &implementation.path,
-                format!("declared `architecture.transition_function` `{transition_function}` was not found in Swift source"),
+                format!("declared `architecture.machine.transition_function` `{transition_function}` was not found in Swift source"),
             ));
         }
     }
@@ -16084,6 +16918,98 @@ fn validate_swift_declared_architecture_symbols(
             ));
         }
     }
+}
+
+fn validate_swift_machine_variants_and_signature(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    source_root: &Path,
+) {
+    let source = swift_source_files(source_root)
+        .into_iter()
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (field, type_field) in machine_semantic_variant_fields() {
+        let variants = get_string_array(&implementation.value, &["architecture", "machine", field]);
+        if variants.is_empty() {
+            continue;
+        }
+        let Some(type_name) = get_str(
+            &implementation.value,
+            &["architecture", "machine", "types", type_field],
+        ) else {
+            continue;
+        };
+        let body = swift_enum_body(&source, type_name).unwrap_or_default();
+        for variant in variants {
+            let case = swift_case_name(&variant);
+            if !body.contains(&format!("case {case}")) && !body.contains(&format!(", {case}")) {
+                diagnostics.push(error(
+                    variant_not_represented_check(field),
+                    &implementation.path,
+                    format!(
+                        "declared semantic {field} variant `{variant}` is not represented by Swift enum `{type_name}`"
+                    ),
+                ));
+            }
+        }
+    }
+
+    let expected = match get_str(
+        &implementation.value,
+        &["architecture", "machine", "transition_signature"],
+    ) {
+        Some("state-and-input") => 2,
+        Some("input-only") => 1,
+        _ => return,
+    };
+    if let Some(parameters) = source_function_parameter_count(&source, "transition") {
+        if parameters != expected {
+            diagnostics.push(error(
+                "structure.stateful-transition-state-input-missing",
+                &implementation.path,
+                format!(
+                    "Swift transition must accept {expected} canonical parameter(s) for the declared transition signature"
+                ),
+            ));
+        }
+    }
+}
+
+fn swift_enum_body<'a>(source: &'a str, type_name: &str) -> Option<&'a str> {
+    let marker = format!("enum {type_name}");
+    let start = source.find(&marker)?;
+    let after = &source[start..];
+    let open = after.find('{')?;
+    let body = &after[open + 1..];
+    let mut depth = 1_i32;
+    for (index, character) in body.char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&body[..index]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn source_function_parameter_count(source: &str, function: &str) -> Option<usize> {
+    let marker = format!("func {function}(");
+    let start = source.find(&marker)? + marker.len();
+    let rest = &source[start..];
+    let end = rest.find(')')?;
+    let parameters = rest[..end].trim();
+    Some(if parameters.is_empty() {
+        0
+    } else {
+        parameters.split(',').count()
+    })
 }
 
 fn swift_type_exists(summary: &SwiftTypingSummary, symbol: &str) -> bool {
@@ -16146,34 +17072,19 @@ fn validate_js_machine_shape(
         return;
     }
 
-    for state in get_string_array(
-        &implementation.value,
-        &["architecture", "machine", "states"],
-    ) {
-        if !js_variant_represented(&source, &state) {
-            push_unique_warning(
-                diagnostics,
-                "structure.declared-state-not-represented",
-                &implementation.path,
-                format!(
-                    "declared state `{state}` is not represented by a JS tagged constructor, phase/tag variant, or exported symbol"
-                ),
-            );
-        }
-    }
-    for command in get_string_array(
-        &implementation.value,
-        &["architecture", "machine", "commands"],
-    ) {
-        if !js_variant_represented(&source, &command) {
-            push_unique_warning(
-                diagnostics,
-                "structure.declared-command-not-represented",
-                &implementation.path,
-                format!(
-                    "declared command `{command}` is not represented by a JS tagged constructor, tag variant, or exported symbol"
-                ),
-            );
+    for (field, _) in machine_semantic_variant_fields() {
+        for variant in get_string_array(&implementation.value, &["architecture", "machine", field])
+        {
+            if !js_variant_represented(&source, &variant) {
+                push_unique_warning(
+                    diagnostics,
+                    variant_not_represented_check(field),
+                    &implementation.path,
+                    format!(
+                        "declared semantic {field} variant `{variant}` is not represented by a JS tagged constructor, tag variant, or exported symbol"
+                    ),
+                );
+            }
         }
     }
 
@@ -16186,6 +17097,29 @@ fn validate_js_machine_shape(
     let Some(function_source) = js_function_source(&source, transition_function) else {
         return;
     };
+    let expected_parameters = match get_str(
+        &implementation.value,
+        &["architecture", "machine", "transition_signature"],
+    ) {
+        Some("state-and-input") => Some(2),
+        Some("input-only") => Some(1),
+        _ => None,
+    };
+    if let (Some(expected), Some(actual)) = (
+        expected_parameters,
+        js_function_parameter_count(function_source, transition_function),
+    ) {
+        if actual != expected {
+            push_unique_warning(
+                diagnostics,
+                "structure.stateful-transition-state-input-missing",
+                &implementation.path,
+                format!(
+                    "JavaScript transition `{transition_function}` must accept {expected} canonical parameter(s), found {actual}"
+                ),
+            );
+        }
+    }
     let transition_shaped = function_source.contains("next_state")
         && function_source.contains("events")
         && function_source.contains("effects")
@@ -16221,6 +17155,19 @@ fn validate_js_machine_shape(
     }
 }
 
+fn js_function_parameter_count(source: &str, function_name: &str) -> Option<usize> {
+    let function_position = source.find(function_name)? + function_name.len();
+    let after = &source[function_position..];
+    let open = after.find('(')?;
+    let parameters = &after[open + 1..after[open + 1..].find(')')? + open + 1];
+    let parameters = parameters.trim();
+    Some(if parameters.is_empty() {
+        0
+    } else {
+        parameters.split(',').count()
+    })
+}
+
 fn read_js_sources_concatenated(source_root: &Path) -> String {
     let mut out = String::new();
     for path in js_source_files(source_root) {
@@ -16243,17 +17190,22 @@ fn js_variant_represented(source: &str, variant: &str) -> bool {
         || source.contains(&phase)
         || source.contains(&make_prefix)
         || source.contains(&exported_const)
+        || source.contains(&format!("{variant}: {quoted}"))
+        || source.contains(&format!("{variant}: {single_quoted}"))
+        || source.contains(&format!(".{variant}\""))
+        || source.contains(&format!(".{variant}'"))
         || source.contains(&format!("tag: {quoted}"))
         || source.contains(&format!("tag: {single_quoted}"))
 }
 
 fn js_function_source<'a>(source: &'a str, function_name: &str) -> Option<&'a str> {
     let patterns = [
-        format!("function {function_name}"),
-        format!("function* {function_name}"),
+        format!("function {function_name}("),
+        format!("function {function_name} ("),
+        format!("function* {function_name}("),
+        format!("function* {function_name} ("),
         format!("const {function_name} ="),
         format!("let {function_name} ="),
-        format!("export function {function_name}"),
         format!("export const {function_name} ="),
     ];
     let start = patterns
@@ -20413,7 +21365,7 @@ fn append_worktree_audit_checks(
 ) {
     let output = match Command::new("git")
         .current_dir(root)
-        .args(["status", "--porcelain"])
+        .args(["status", "--porcelain", "--untracked-files=all"])
         .output()
     {
         Ok(output) if output.status.success() => output,
@@ -20491,7 +21443,7 @@ fn append_semantic_drift_audit_checks(
 ) {
     let output = match Command::new("git")
         .current_dir(root)
-        .args(["status", "--porcelain"])
+        .args(["status", "--porcelain", "--untracked-files=all"])
         .output()
     {
         Ok(output) if output.status.success() => output,
@@ -21144,6 +22096,16 @@ fn is_production_claim_path(path: &str) -> bool {
         || path.starts_with("verification/")
         || path.contains("/src/")
         || path.starts_with("src/")
+        || path.contains("/Sources/")
+        || path.starts_with("Sources/")
+        || path.ends_with("Cargo.toml")
+        || path.ends_with("Cargo.lock")
+        || path.ends_with("Package.swift")
+        || path.ends_with("package.json")
+        || path.ends_with("pyproject.toml")
+        || path.contains("/scripts/")
+        || path.starts_with("scripts/")
+        || path.ends_with("GLOSSARY.md")
         || path.ends_with("AGENTS.md")
         || path.ends_with("CLAUDE.md")
         || path.starts_with(".rms/")
@@ -21176,6 +22138,10 @@ fn is_source_drift_path(path: &str) -> bool {
         || path.starts_with("src/")
         || path.contains("/Sources/")
         || path.starts_with("Sources/")
+        || path.contains("/scripts/")
+        || path.starts_with("scripts/")
+        || path.contains("/public/")
+        || path.starts_with("public/")
 }
 
 fn is_semantic_artifact_path(path: &str) -> bool {
@@ -21507,6 +22473,62 @@ fn append_trace_audit_checks(
     }
     append_boundary_machine_trace_coverage_checks(manifest, strict, &trace_reports, checks);
     append_workflow_trace_coverage_checks(manifest, strict, &trace_reports, checks);
+    append_machine_transition_trace_coverage_checks(manifest, strict, &trace_reports, checks);
+}
+
+fn append_machine_transition_trace_coverage_checks(
+    manifest: &LoadedManifest,
+    strict: bool,
+    reports: &[TraceReport],
+    checks: &mut Vec<AuditCheck>,
+) {
+    let transitions = existing_machine_transitions(manifest);
+    if transitions.is_empty() || reports.is_empty() {
+        return;
+    }
+    let records = reports
+        .iter()
+        .flat_map(|report| report.records.iter())
+        .collect::<Vec<_>>();
+    let effect_results = get_string_array(
+        &manifest.value,
+        &["architecture", "machine", "effect_results"],
+    )
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    for transition in transitions {
+        let input = transition_input_variant(&transition.on);
+        let covered = records.iter().any(|record| {
+            record
+                .state_before
+                .as_deref()
+                .is_some_and(|state| trace_state_mentions(state, &transition.from))
+                && record
+                    .state_after
+                    .as_deref()
+                    .is_some_and(|state| trace_state_mentions(state, &transition.to))
+                && record
+                    .input
+                    .as_deref()
+                    .is_some_and(|observed| semantic_text_mentions_id(observed, &input))
+        });
+        if !covered {
+            checks.push(audit_check(
+                if effect_results.contains(&input) {
+                    "structure.replay-effect-result-gap"
+                } else {
+                    "trace.transition-coverage-gap"
+                },
+                "traces",
+                if strict { "fail" } else { "review-required" },
+                &manifest.path,
+                format!(
+                    "declared transition {} --{}--> {} is absent from replay evidence",
+                    transition.from, input, transition.to
+                ),
+            ));
+        }
+    }
 }
 
 fn append_boundary_machine_trace_coverage_checks(
@@ -21536,6 +22558,10 @@ fn append_boundary_machine_trace_coverage_checks(
         })
         .flatten()
         .collect::<Vec<_>>();
+    let intermediate_states = declared_states
+        .iter()
+        .filter(|state| !["AwaitingInput", "Completed", "Rejected"].contains(&state.as_str()))
+        .collect::<Vec<_>>();
     let missing = declared_states
         .iter()
         .filter(|state| {
@@ -21562,7 +22588,7 @@ fn append_boundary_machine_trace_coverage_checks(
         .map(|report| report.records.len())
         .max()
         .unwrap_or(0);
-    if longest_trace <= 1 && declared_states.len() > 2 {
+    if longest_trace <= 1 && !intermediate_states.is_empty() {
         checks.push(audit_check(
             "structure.boundary-transition-trace-incomplete",
             "structure",
@@ -21585,13 +22611,12 @@ fn append_boundary_machine_trace_coverage_checks(
                             || trace_state_mentions(state, "Rejected")
                     })
             });
-    let has_intermediate_state = declared_states.iter().any(|state| {
-        !["AwaitingInput", "Completed", "Rejected"].contains(&state.as_str())
-            && observed_states
-                .iter()
-                .any(|observed| trace_state_mentions(observed, state))
+    let has_intermediate_state = intermediate_states.iter().any(|state| {
+        observed_states
+            .iter()
+            .any(|observed| trace_state_mentions(observed, state))
     });
-    if has_direct_input_to_terminal && !has_intermediate_state && declared_states.len() > 2 {
+    if has_direct_input_to_terminal && !intermediate_states.is_empty() && !has_intermediate_state {
         checks.push(audit_check(
             "structure.boundary-hidden-workflow",
             "structure",
@@ -21850,6 +22875,8 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "structure.boundary-transition-trace-incomplete"
                 | "structure.declared-state-not-represented"
                 | "structure.declared-command-not-represented"
+                | "structure.declared-effect-result-not-represented"
+                | "structure.declared-variant-not-represented"
                 | "structure.transition-function-not-transition-shaped"
                 | "structure.boundary-machine-reply-only"
                 | "structure.role-symbol-missing"
@@ -21867,6 +22894,19 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "structure.numeric-law-without-property"
                 | "structure.transition-law-without-property"
                 | "structure.property-target-missing"
+                | "structure.semantic-variants-collapsed-to-type"
+                | "structure.machine-type-missing"
+                | "structure.machine-input-type-missing"
+                | "structure.stateful-transition-state-input-missing"
+                | "structure.effect-protocol-missing"
+                | "structure.effect-protocol-unknown-result"
+                | "structure.effect-protocol-result-missing"
+                | "structure.effect-protocol-executor-missing"
+                | "structure.effect-result-bypasses-transition"
+                | "structure.effect-protocol-not-atomic"
+                | "structure.replay-effect-result-gap"
+                | "structure.effect-lifecycle-unused"
+                | "structure.aggregate-effect-policy-hidden"
         )
         || check.starts_with("trace.")
 }
@@ -22104,14 +23144,26 @@ fn structure_machine_report(value: &YamlValue) -> StructureMachineReport {
     StructureMachineReport {
         name: get_str(value, &["architecture", "machine", "name"]).map(str::to_string),
         mode: get_str(value, &["architecture", "machine", "mode"]).map(str::to_string),
-        state: get_str(value, &["architecture", "machine", "state"]).map(str::to_string),
+        transition_signature: get_str(value, &["architecture", "machine", "transition_signature"])
+            .map(str::to_string),
+        types: machine_types_from_value(value),
         states: get_string_array(value, &["architecture", "machine", "states"]),
         commands: get_string_array(value, &["architecture", "machine", "commands"]),
+        observed_events: get_string_array(value, &["architecture", "machine", "observed_events"]),
         events: get_string_array(value, &["architecture", "machine", "events"]),
         effects: get_string_array(value, &["architecture", "machine", "effects"]),
         effect_results: get_string_array(value, &["architecture", "machine", "effect_results"]),
         replies: get_string_array(value, &["architecture", "machine", "replies"]),
         rejections: get_string_array(value, &["architecture", "machine", "rejections"]),
+        effect_protocols: get_path(value, &["architecture", "machine", "effect_protocols"])
+            .and_then(YamlValue::as_sequence)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| serde_yaml::from_value(item.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default(),
         transition_function: get_str(value, &["architecture", "machine", "transition_function"])
             .map(str::to_string),
     }
@@ -22195,16 +23247,59 @@ fn print_structure_report(report: &StructureReport) {
         report.machine.mode.as_deref().unwrap_or("<not declared>")
     );
     println!(
-        "  state: {}",
-        report.machine.state.as_deref().unwrap_or("<not declared>")
+        "  transition_signature: {}",
+        report
+            .machine
+            .transition_signature
+            .as_deref()
+            .unwrap_or("<not declared>")
     );
+    println!("  types:");
+    for (field, value) in [
+        ("state", report.machine.types.state.as_deref()),
+        ("input", report.machine.types.input.as_deref()),
+        ("command", report.machine.types.command.as_deref()),
+        ("event", report.machine.types.event.as_deref()),
+        ("effect", report.machine.types.effect.as_deref()),
+        (
+            "effect_result",
+            report.machine.types.effect_result.as_deref(),
+        ),
+        ("reply", report.machine.types.reply.as_deref()),
+        ("rejection", report.machine.types.rejection.as_deref()),
+        ("transition", report.machine.types.transition.as_deref()),
+        (
+            "transition_record",
+            report.machine.types.transition_record.as_deref(),
+        ),
+    ] {
+        println!("    {field}: {}", value.unwrap_or("<not declared>"));
+    }
     print_structure_values("  states", &report.machine.states);
     print_structure_values("  commands", &report.machine.commands);
+    print_structure_values("  observed_events", &report.machine.observed_events);
     print_structure_values("  events", &report.machine.events);
     print_structure_values("  effects", &report.machine.effects);
     print_structure_values("  effect_results", &report.machine.effect_results);
     print_structure_values("  replies", &report.machine.replies);
     print_structure_values("  rejections", &report.machine.rejections);
+    println!("  effect_protocols:");
+    if report.machine.effect_protocols.is_empty() {
+        println!("    <not declared>");
+    } else {
+        for protocol in &report.machine.effect_protocols {
+            println!(
+                "    {} -> {} [{}]",
+                protocol.effect,
+                if protocol.results.is_empty() {
+                    "<no results>".to_string()
+                } else {
+                    protocol.results.join(", ")
+                },
+                protocol.atomicity
+            );
+        }
+    }
     println!(
         "  transition_function: {}",
         report
@@ -22389,8 +23484,30 @@ fn render_machine_plan_prompt(
         "- mode: {}",
         report.machine.mode.as_deref().unwrap_or("<missing>")
     )?;
+    writeln!(
+        out,
+        "- transition_signature: {}",
+        report
+            .machine
+            .transition_signature
+            .as_deref()
+            .unwrap_or("<missing>")
+    )?;
+    writeln!(out, "- binding types: state={}, input={}, command={}, event={}, effect={}, effect_result={}, reply={}, rejection={}, transition={}, transition_record={}",
+        report.machine.types.state.as_deref().unwrap_or("<missing>"),
+        report.machine.types.input.as_deref().unwrap_or("<not applicable>"),
+        report.machine.types.command.as_deref().unwrap_or("<missing>"),
+        report.machine.types.event.as_deref().unwrap_or("<missing>"),
+        report.machine.types.effect.as_deref().unwrap_or("<not applicable>"),
+        report.machine.types.effect_result.as_deref().unwrap_or("<not applicable>"),
+        report.machine.types.reply.as_deref().unwrap_or("<missing>"),
+        report.machine.types.rejection.as_deref().unwrap_or("<missing>"),
+        report.machine.types.transition.as_deref().unwrap_or("<missing>"),
+        report.machine.types.transition_record.as_deref().unwrap_or("<missing>"),
+    )?;
     print_machine_plan_list(&mut out, "states", &report.machine.states)?;
     print_machine_plan_list(&mut out, "commands", &report.machine.commands)?;
+    print_machine_plan_list(&mut out, "observed_events", &report.machine.observed_events)?;
     print_machine_plan_list(&mut out, "events", &report.machine.events)?;
     print_machine_plan_list(&mut out, "effects", &report.machine.effects)?;
     print_machine_plan_list(&mut out, "effect_results", &report.machine.effect_results)?;
@@ -22409,9 +23526,23 @@ fn render_machine_plan_prompt(
     )?;
     writeln!(out, "machine:")?;
     writeln!(out, "  mode: stateful-transition-machine")?;
+    writeln!(out, "  transition_signature: state-and-input")?;
+    writeln!(out, "  types:")?;
+    writeln!(out, "    state: DomainState")?;
+    writeln!(out, "    input: DomainInput")?;
+    writeln!(out, "    command: DomainCommand")?;
+    writeln!(out, "    event: DomainEvent")?;
+    writeln!(out, "    effect: DomainEffect")?;
+    writeln!(out, "    effect_result: DomainEffectResult")?;
+    writeln!(out, "    reply: DomainReply")?;
+    writeln!(out, "    rejection: DomainRejection")?;
+    writeln!(out, "    transition: DomainTransition")?;
+    writeln!(out, "    transition_record: DomainTransitionRecord")?;
     writeln!(out, "  states:")?;
     writeln!(out, "    add: []")?;
     writeln!(out, "  commands:")?;
+    writeln!(out, "    add: []")?;
+    writeln!(out, "  observed_events:")?;
     writeln!(out, "    add: []")?;
     writeln!(out, "  events:")?;
     writeln!(out, "    add: []")?;
@@ -22423,6 +23554,8 @@ fn render_machine_plan_prompt(
     writeln!(out, "    add: []")?;
     writeln!(out, "  rejections:")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "  effect_protocols:")?;
+    writeln!(out, "    add: []")?;
     writeln!(out, "transitions:")?;
     writeln!(out, "  add: []")?;
     writeln!(out, "roles:")?;
@@ -22432,11 +23565,14 @@ fn render_machine_plan_prompt(
     writeln!(out, "## Machine-Gate Checklist")?;
     for item in [
         "Every implemented module has a domain-named machine; stateless modules declare `stateless-decision-machine` and justify why lifecycle state is not meaningful.",
+        "Binding container names are declared under `types`; states, commands, events, effects, results, replies, and rejections contain semantic case names only.",
         "Lifecycle, missing context, confirmation, retry, reconciliation, persistence, or external truth requires meaningful state variants.",
-        "Transitions accept state plus input and return next state, events, commands, effects, and reply.",
+        "Stateful transitions accept state plus one input ADT over commands, observed events, and effect results, then return next state, events, commands, effects, and reply.",
+        "Every transition input belongs to exactly one category and every effect-result case returns through the canonical transition.",
         "Expected failures are explicit rejections, not ambient throws.",
         "Boundary input parses into domain commands before delegation.",
-        "Effects have executors or declared delegation evidence, and effect results are handled.",
+        "Effects declare atomic request/result protocols. Executors perform one request and return one result; transitions own sequencing, retry, compensation, and stop/continue policy.",
+        "Public constructors cannot create contradictory values without a validated rejection path.",
         "Bad behavior should be diagnosable as invalid command, illegal transition, stale state, unexpected effect result, bad projection, or missing evidence.",
     ] {
         writeln!(out, "- {item}")?;
@@ -22468,7 +23604,9 @@ fn run_machine_apply(
         );
     }
     let change = parse_machine_change(change_json, change_yaml, change_file)?;
-    let diagnostics = validate_machine_change(&manifest, &change);
+    let mut diagnostics = Vec::new();
+    validate_against_embedded_schema(&manifest, &mut diagnostics);
+    diagnostics.extend(validate_machine_change(&manifest, &change));
     let writes = planned_machine_apply_writes(&manifest, &change);
     let final_machine = machine_final_state_report(&manifest, &change);
     let has_errors = diagnostics
@@ -22564,6 +23702,8 @@ fn validate_machine_change(manifest: &LoadedManifest, change: &MachineChange) ->
 
     validate_machine_variant_additions(manifest, change, &mut diagnostics);
     validate_machine_transition_references(manifest, change, &mut diagnostics);
+    validate_machine_signature_and_types(manifest, change, &mut diagnostics);
+    validate_machine_effect_protocols(manifest, change, &mut diagnostics);
     validate_machine_role_additions(manifest, change, &mut diagnostics);
     validate_machine_mode_obligations(manifest, change, &mut diagnostics);
     diagnostics
@@ -22643,6 +23783,12 @@ fn validate_machine_transition_references(
 ) {
     let states = final_machine_variants(manifest, "states", &change.machine.states, true);
     let commands = final_machine_variants(manifest, "commands", &change.machine.commands, false);
+    let observed_events = final_machine_variants(
+        manifest,
+        "observed_events",
+        &change.machine.observed_events,
+        false,
+    );
     let events = final_machine_variants(manifest, "events", &change.machine.events, false);
     let effects = final_machine_variants(manifest, "effects", &change.machine.effects, false);
     let effect_results = final_machine_variants(
@@ -22690,12 +23836,29 @@ fn validate_machine_transition_references(
             ));
         }
         let input = transition_input_variant(&transition.on);
-        if !commands.contains(&input) && !effect_results.contains(&input) {
+        let input_categories = [
+            commands.contains(&input),
+            observed_events.contains(&input),
+            effect_results.contains(&input),
+        ]
+        .into_iter()
+        .filter(|matches| *matches)
+        .count();
+        if input_categories == 0 {
             diagnostics.push(error(
                 "machine-change.unknown-input",
                 &manifest.path,
                 format!(
-                    "transition input `{}` does not match a declared command or effect result",
+                    "transition input `{}` does not match a declared command, observed event, or effect result",
+                    transition.on
+                ),
+            ));
+        } else if input_categories > 1 {
+            diagnostics.push(error(
+                "structure.transition-input-not-classified",
+                &manifest.path,
+                format!(
+                    "transition input `{}` belongs to more than one input category",
                     transition.on
                 ),
             ));
@@ -22927,16 +24090,324 @@ fn validate_machine_mode_obligations(
 
 fn machine_change_variant_groups(
     change: &MachineChange,
-) -> [(&'static str, &MachineVariantListChange); 7] {
+) -> [(&'static str, &MachineVariantListChange); 8] {
     [
         ("states", &change.machine.states),
         ("commands", &change.machine.commands),
+        ("observed_events", &change.machine.observed_events),
         ("events", &change.machine.events),
         ("effects", &change.machine.effects),
         ("effect_results", &change.machine.effect_results),
         ("replies", &change.machine.replies),
         ("rejections", &change.machine.rejections),
     ]
+}
+
+fn machine_types_from_value(value: &YamlValue) -> MachineTypeNames {
+    get_path(value, &["architecture", "machine", "types"])
+        .cloned()
+        .and_then(|value| serde_yaml::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+fn final_machine_types(manifest: &LoadedManifest, change: &MachineChange) -> MachineTypeNames {
+    let mut types = machine_types_from_value(&manifest.value);
+    if let Some(changed) = &change.machine.types {
+        overlay_machine_types(&mut types, changed);
+    }
+    let module_name = get_str(&manifest.value, &["module"]).unwrap_or("machine");
+    let shape = get_str(&manifest.value, &["architecture", "shape"])
+        .and_then(ScaffoldShape::from_str)
+        .unwrap_or(ScaffoldShape::DomainEngine);
+    let names = inner_structure_names(module_name, shape);
+    let effects = final_machine_variants(manifest, "effects", &change.machine.effects, false);
+    let effect_results = final_machine_variants(
+        manifest,
+        "effect_results",
+        &change.machine.effect_results,
+        false,
+    );
+    types.state.get_or_insert(names.state);
+    types.command.get_or_insert(names.command);
+    types.event.get_or_insert(names.event);
+    types.reply.get_or_insert(names.reply);
+    types.rejection.get_or_insert(names.rejection);
+    types.transition.get_or_insert(names.transition);
+    types
+        .transition_record
+        .get_or_insert(names.transition_record);
+    if is_stateful_machine_mode(&change.machine.mode) {
+        types.input.get_or_insert(names.input);
+    } else {
+        types.input = None;
+    }
+    if effects.is_empty() {
+        types.effect = None;
+    } else {
+        types.effect.get_or_insert(names.effect);
+    }
+    if effect_results.is_empty() {
+        types.effect_result = None;
+    } else {
+        types.effect_result.get_or_insert(names.effect_result);
+    }
+    types
+}
+
+fn overlay_machine_types(base: &mut MachineTypeNames, changed: &MachineTypeNames) {
+    macro_rules! overlay {
+        ($field:ident) => {
+            if changed.$field.is_some() {
+                base.$field = changed.$field.clone();
+            }
+        };
+    }
+    overlay!(state);
+    overlay!(input);
+    overlay!(command);
+    overlay!(event);
+    overlay!(effect);
+    overlay!(effect_result);
+    overlay!(reply);
+    overlay!(rejection);
+    overlay!(transition);
+    overlay!(transition_record);
+}
+
+fn existing_effect_protocols(manifest: &LoadedManifest) -> Vec<MachineEffectProtocol> {
+    get_path(
+        &manifest.value,
+        &["architecture", "machine", "effect_protocols"],
+    )
+    .and_then(YamlValue::as_sequence)
+    .map(|items| {
+        items
+            .iter()
+            .filter_map(|item| serde_yaml::from_value(item.clone()).ok())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+fn final_effect_protocols(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+) -> Vec<MachineEffectProtocol> {
+    let mut protocols = change
+        .machine
+        .effect_protocols
+        .replace
+        .clone()
+        .unwrap_or_else(|| existing_effect_protocols(manifest));
+    protocols.retain(|protocol| {
+        !change
+            .machine
+            .effect_protocols
+            .remove
+            .iter()
+            .any(|remove| remove.effect == protocol.effect)
+    });
+    for protocol in &change.machine.effect_protocols.add {
+        if let Some(existing) = protocols
+            .iter_mut()
+            .find(|existing| existing.effect == protocol.effect)
+        {
+            *existing = protocol.clone();
+        } else {
+            protocols.push(protocol.clone());
+        }
+    }
+    protocols
+}
+
+fn validate_machine_signature_and_types(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let signature = change
+        .machine
+        .transition_signature
+        .as_deref()
+        .or_else(|| {
+            get_str(
+                &manifest.value,
+                &["architecture", "machine", "transition_signature"],
+            )
+        })
+        .unwrap_or_else(|| {
+            if is_stateful_machine_mode(&change.machine.mode) {
+                "state-and-input"
+            } else {
+                "input-only"
+            }
+        });
+    if !matches!(signature, "state-and-input" | "input-only") {
+        diagnostics.push(error(
+            "machine-change.transition-signature",
+            &manifest.path,
+            format!("unknown transition signature `{signature}`"),
+        ));
+    }
+    let types = final_machine_types(manifest, change);
+    for (field, value) in [
+        ("state", types.state.as_deref()),
+        ("command", types.command.as_deref()),
+        ("event", types.event.as_deref()),
+        ("reply", types.reply.as_deref()),
+        ("rejection", types.rejection.as_deref()),
+        ("transition", types.transition.as_deref()),
+        ("transition_record", types.transition_record.as_deref()),
+    ] {
+        if value.is_none_or(str::is_empty) {
+            diagnostics.push(error(
+                "structure.machine-type-missing",
+                &manifest.path,
+                format!("machine types must declare `{field}`"),
+            ));
+        }
+    }
+    if is_stateful_machine_mode(&change.machine.mode) {
+        if signature != "state-and-input" {
+            diagnostics.push(error(
+                "structure.stateful-transition-state-input-missing",
+                &manifest.path,
+                "stateful machine modes require `transition_signature: state-and-input`",
+            ));
+        }
+        if types.input.as_deref().is_none_or(str::is_empty) {
+            diagnostics.push(error(
+                "structure.machine-input-type-missing",
+                &manifest.path,
+                "stateful machines must declare `architecture.machine.types.input`",
+            ));
+        }
+    }
+    let effects = final_machine_variants(manifest, "effects", &change.machine.effects, false);
+    if !effects.is_empty() && types.effect.as_deref().is_none_or(str::is_empty) {
+        diagnostics.push(error(
+            "structure.machine-type-missing",
+            &manifest.path,
+            "machines with effects must declare an effect type",
+        ));
+    }
+    let effect_results = final_machine_variants(
+        manifest,
+        "effect_results",
+        &change.machine.effect_results,
+        false,
+    );
+    if !effect_results.is_empty() && types.effect_result.as_deref().is_none_or(str::is_empty) {
+        diagnostics.push(error(
+            "structure.machine-type-missing",
+            &manifest.path,
+            "machines with effect results must declare an effect-result type",
+        ));
+    }
+}
+
+fn validate_machine_effect_protocols(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let effects = final_machine_variants(manifest, "effects", &change.machine.effects, false);
+    let effect_results = final_machine_variants(
+        manifest,
+        "effect_results",
+        &change.machine.effect_results,
+        false,
+    );
+    let protocols = final_effect_protocols(manifest, change);
+    let mut seen = BTreeSet::new();
+    for protocol in &protocols {
+        if !seen.insert(protocol.effect.clone()) {
+            diagnostics.push(error(
+                "structure.effect-protocol-duplicate",
+                &manifest.path,
+                format!("effect `{}` has more than one protocol", protocol.effect),
+            ));
+        }
+        if !effects.contains(&protocol.effect) {
+            diagnostics.push(error(
+                "structure.effect-protocol-unknown-effect",
+                &manifest.path,
+                format!(
+                    "effect protocol references undeclared effect `{}`",
+                    protocol.effect
+                ),
+            ));
+        }
+        if protocol.results.is_empty() {
+            diagnostics.push(error(
+                "structure.effect-protocol-result-missing",
+                &manifest.path,
+                format!(
+                    "effect protocol `{}` must declare at least one typed result",
+                    protocol.effect
+                ),
+            ));
+        }
+        for result in &protocol.results {
+            if !effect_results.contains(result) {
+                diagnostics.push(error(
+                    "structure.effect-protocol-unknown-result",
+                    &manifest.path,
+                    format!(
+                        "effect protocol `{}` references undeclared result `{result}`",
+                        protocol.effect
+                    ),
+                ));
+            }
+        }
+        if protocol.executor_role.as_deref().is_none_or(str::is_empty) {
+            diagnostics.push(error(
+                "structure.effect-protocol-executor-missing",
+                &manifest.path,
+                format!(
+                    "effect protocol `{}` must name `executor_role`",
+                    protocol.effect
+                ),
+            ));
+        }
+        match protocol.atomicity.as_str() {
+            "one-request-one-result" => {}
+            "aggregate" => {
+                if protocol
+                    .aggregate_justification
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                    || protocol.evidence.is_empty()
+                {
+                    diagnostics.push(error(
+                        "structure.aggregate-effect-policy-hidden",
+                        &manifest.path,
+                        format!(
+                            "aggregate effect `{}` requires `aggregate_justification` and evidence",
+                            protocol.effect
+                        ),
+                    ));
+                }
+            }
+            other => diagnostics.push(error(
+                "structure.effect-protocol-atomicity",
+                &manifest.path,
+                format!(
+                    "effect protocol `{}` has unknown atomicity `{other}`",
+                    protocol.effect
+                ),
+            )),
+        }
+    }
+    for effect in effects {
+        if !seen.contains(&effect) {
+            diagnostics.push(error(
+                "structure.effect-protocol-missing",
+                &manifest.path,
+                format!("declared effect `{effect}` requires an effect protocol"),
+            ));
+        }
+    }
 }
 
 fn final_machine_variants(
@@ -23249,18 +24720,35 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
         &change.machine.mode,
     );
     set_yaml_string_if_missing_path(value, &["architecture", "machine", "name"], &names.machine);
-    set_yaml_string_if_missing_path(value, &["architecture", "machine", "state"], &names.state);
+    remove_yaml_path(value, &["architecture", "machine", "state"]);
+    let transition_signature = change
+        .machine
+        .transition_signature
+        .as_deref()
+        .unwrap_or_else(|| {
+            if is_stateful_machine_mode(&change.machine.mode) {
+                "state-and-input"
+            } else {
+                "input-only"
+            }
+        });
+    set_yaml_string_path(
+        value,
+        &["architecture", "machine", "transition_signature"],
+        transition_signature,
+    );
     set_yaml_string_if_missing_path(
         value,
         &["architecture", "machine", "transition_function"],
         "transition",
     );
     if let Some(justification) = change.machine.justification.as_deref() {
-        set_yaml_string_path(
-            value,
-            &["architecture", "machine", "stateless_justification"],
-            justification,
-        );
+        let field = if change.machine.mode == "stateless-decision-machine" {
+            "stateless_justification"
+        } else {
+            "lifecycle_justification"
+        };
+        set_yaml_string_path(value, &["architecture", "machine", field], justification);
     }
 
     let manifest_snapshot = LoadedManifest {
@@ -23271,6 +24759,35 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
         let values = final_machine_variant_values(&manifest_snapshot, field, variant_change, false);
         set_yaml_string_sequence_path(value, &["architecture", "machine", field], &values);
     }
+
+    let types = final_machine_types(&manifest_snapshot, change);
+    for (field, item) in [
+        ("state", types.state.as_deref()),
+        ("input", types.input.as_deref()),
+        ("command", types.command.as_deref()),
+        ("event", types.event.as_deref()),
+        ("effect", types.effect.as_deref()),
+        ("effect_result", types.effect_result.as_deref()),
+        ("reply", types.reply.as_deref()),
+        ("rejection", types.rejection.as_deref()),
+        ("transition", types.transition.as_deref()),
+        ("transition_record", types.transition_record.as_deref()),
+    ] {
+        if let Some(item) = item.filter(|item| !item.is_empty()) {
+            set_yaml_string_path(value, &["architecture", "machine", "types", field], item);
+        } else {
+            remove_yaml_path(value, &["architecture", "machine", "types", field]);
+        }
+    }
+
+    set_yaml_sequence_path(
+        value,
+        &["architecture", "machine", "effect_protocols"],
+        final_effect_protocols(&manifest_snapshot, change)
+            .iter()
+            .filter_map(|protocol| serde_yaml::to_value(protocol).ok())
+            .collect(),
+    );
 
     if let Some(transitions) = &change.transitions {
         let transitions = if transitions.replace.is_some()
@@ -23399,11 +24916,27 @@ fn machine_final_state_report(
         .collect::<Vec<_>>();
     MachineFinalStateReport {
         mode: Some(change.machine.mode.clone()),
+        transition_signature: Some(change.machine.transition_signature.clone().unwrap_or_else(
+            || {
+                if is_stateful_machine_mode(&change.machine.mode) {
+                    "state-and-input".to_string()
+                } else {
+                    "input-only".to_string()
+                }
+            },
+        )),
+        types: final_machine_types(manifest, change),
         states: final_machine_variant_values(manifest, "states", &change.machine.states, true),
         commands: final_machine_variant_values(
             manifest,
             "commands",
             &change.machine.commands,
+            false,
+        ),
+        observed_events: final_machine_variant_values(
+            manifest,
+            "observed_events",
+            &change.machine.observed_events,
             false,
         ),
         events: final_machine_variant_values(manifest, "events", &change.machine.events, false),
@@ -23421,6 +24954,7 @@ fn machine_final_state_report(
             &change.machine.rejections,
             false,
         ),
+        effect_protocols: final_effect_protocols(manifest, change),
         transitions: transitions
             .into_iter()
             .map(|transition| {
@@ -23489,7 +25023,14 @@ fn ensure_traceable_machine_defaults(value: &mut YamlValue) {
             field,
         );
     }
-    for field in ["next_state", "events", "commands", "effects", "reply"] {
+    for field in [
+        "next_state",
+        "events",
+        "commands",
+        "effects",
+        "reply",
+        "rejection",
+    ] {
         append_unique_yaml_string_path(value, &["architecture", "transition", "output"], field);
     }
     set_yaml_string_if_missing_path(
@@ -23776,9 +25317,38 @@ fn print_machine_final_state(final_machine: &MachineFinalStateReport) {
         "  mode: {}",
         final_machine.mode.as_deref().unwrap_or("<not declared>")
     );
+    println!(
+        "  transition_signature: {}",
+        final_machine
+            .transition_signature
+            .as_deref()
+            .unwrap_or("<not declared>")
+    );
+    println!("  types:");
+    for (label, value) in [
+        ("state", final_machine.types.state.as_deref()),
+        ("input", final_machine.types.input.as_deref()),
+        ("command", final_machine.types.command.as_deref()),
+        ("event", final_machine.types.event.as_deref()),
+        ("effect", final_machine.types.effect.as_deref()),
+        (
+            "effect_result",
+            final_machine.types.effect_result.as_deref(),
+        ),
+        ("reply", final_machine.types.reply.as_deref()),
+        ("rejection", final_machine.types.rejection.as_deref()),
+        ("transition", final_machine.types.transition.as_deref()),
+        (
+            "transition_record",
+            final_machine.types.transition_record.as_deref(),
+        ),
+    ] {
+        println!("    {label}: {}", value.unwrap_or("<not declared>"));
+    }
     for (label, values) in [
         ("states", &final_machine.states),
         ("commands", &final_machine.commands),
+        ("observed_events", &final_machine.observed_events),
         ("events", &final_machine.events),
         ("effects", &final_machine.effects),
         ("effect_results", &final_machine.effect_results),
@@ -23793,6 +25363,19 @@ fn print_machine_final_state(final_machine: &MachineFinalStateReport) {
             println!("  {label}: {}", values.join(", "));
         }
     }
+    if final_machine.effect_protocols.is_empty() {
+        println!("  effect_protocols: <none>");
+    } else {
+        println!("  effect_protocols:");
+        for protocol in &final_machine.effect_protocols {
+            println!(
+                "    - {} -> {} [{}]",
+                protocol.effect,
+                protocol.results.join(", "),
+                protocol.atomicity
+            );
+        }
+    }
 }
 
 fn run_surface_apply(request: SurfaceApplyRequest) -> Result<()> {
@@ -23804,7 +25387,9 @@ fn run_surface_apply(request: SurfaceApplyRequest) -> Result<()> {
         );
     }
     let declaration = surface_declaration_from_request(&manifest, &request);
-    let diagnostics = validate_surface_declaration(&manifest, &declaration);
+    let mut diagnostics = Vec::new();
+    validate_against_embedded_schema(&manifest, &mut diagnostics);
+    diagnostics.extend(validate_surface_declaration(&manifest, &declaration));
     let writes = planned_surface_apply_writes(&manifest, &declaration);
     let has_errors = diagnostics
         .iter()
@@ -24468,6 +26053,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         "module: {}",
         yaml_quote(&context.target.display().to_string())
     )?;
+    writeln!(out, "supersedes: []")?;
     writeln!(out, "intent:")?;
     writeln!(out, "  summary: {}", yaml_quote(task))?;
     writeln!(out, "laws:")?;
@@ -24478,9 +26064,12 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "machine:")?;
     writeln!(out, "  mode: stateful-transition-machine")?;
+    writeln!(out, "  transition_signature: state-and-input")?;
     writeln!(out, "  states:")?;
     writeln!(out, "    add: []")?;
     writeln!(out, "  commands:")?;
+    writeln!(out, "    add: []")?;
+    writeln!(out, "  observed_events:")?;
     writeln!(out, "    add: []")?;
     writeln!(out, "  events:")?;
     writeln!(out, "    add: []")?;
@@ -24491,6 +26080,8 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  replies:")?;
     writeln!(out, "    add: []")?;
     writeln!(out, "  rejections:")?;
+    writeln!(out, "    add: []")?;
+    writeln!(out, "  effect_protocols:")?;
     writeln!(out, "    add: []")?;
     writeln!(out, "  transitions:")?;
     writeln!(out, "    add: []")?;
@@ -24505,14 +26096,18 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "## Semantic Gate Checklist")?;
     for item in [
         "Each new behavior has a law, public contract, machine transition, effect, rejection, or evidence obligation before code changes.",
+        "Law entries declare `authority` and `enforced_by`; transition-authority laws are discharged by the pure canonical transition, not an effect executor.",
+        "Semantic lists contain case names, never binding container names; bindings generate idiomatic enums, sealed cases, or tagged constructors from those cases.",
         "Each always/never/bounded/parser/normalization/numeric/reusable/state-machine law has a semantic property with input_space, oracle, evidence, and counterexample replay policy.",
-        "Effects have adapter, port, effect-executor, or explicit delegation roles.",
+        "Every stateful input is exactly one command, observed event, or effect result, and every illegal state/input combination is rejected explicitly.",
+        "Effects have one-request-one-result protocols and adapter, port, effect-executor, or explicit delegation roles; executors do not own business sequencing.",
         "Runnable app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints are declared as surfaces before files own product behavior.",
         "Evidence names the promise, scenario, command/tool, expected result, source revision, and related law/contract/machine item.",
         "`rms spec apply` records the exact semantic-change object under `verification/changes/`; command logs with placeholders are not evidence.",
         "Pure transitions reject illegal states instead of throwing or doing IO.",
         "Boundary adapters parse raw input into command envelopes or typed rejections before delegation.",
         "Boundary parsers and runnable surfaces have fuzz-style semantic targets or a concrete no-fuzz justification.",
+        "Open-ended fuzz targets use generated-property or coverage-fuzzer realization; fixed corpora are labeled deterministic-corpus and finite complete spaces deterministic-exhaustive.",
         "Unknown, duplicate, stale, partial, conflicting, delayed, or corrected external outcomes have reconciliation or recovery evidence when they affect correctness.",
     ] {
         writeln!(out, "- {item}")?;
@@ -24529,7 +26124,14 @@ fn run_spec_apply(
 ) -> Result<()> {
     let mut context = load_spec_target(target)?;
     let change = parse_semantic_change(change_json, change_yaml, change_file)?;
-    let mut diagnostics = validate_semantic_change(&context, &change);
+    let mut diagnostics = Vec::new();
+    if let Some(module) = &context.module {
+        validate_against_embedded_schema(module, &mut diagnostics);
+    }
+    if let Some(implementation) = &context.implementation {
+        validate_against_embedded_schema(implementation, &mut diagnostics);
+    }
+    diagnostics.extend(validate_semantic_change(&context, &change));
     let machine_change =
         semantic_machine_change_to_machine_change(&change, context.implementation.as_ref());
     if let (Some(implementation), Some(machine_change)) =
@@ -25219,7 +26821,7 @@ fn dogfood_git_commit(root: &Path, message: &str) -> Result<Option<String>> {
     run_git(root, &["add", "-A"])?;
     let status = Command::new("git")
         .current_dir(root)
-        .args(["status", "--porcelain"])
+        .args(["status", "--porcelain", "--untracked-files=all"])
         .output()
         .with_context(|| "failed to inspect dogfood git status")?;
     if !status.status.success() {
@@ -25526,6 +27128,26 @@ fn validate_semantic_laws(
                 format!("law `{}` has an empty statement", law.id),
             ));
         }
+        if !matches!(
+            law.authority.as_deref(),
+            Some(
+                "representation"
+                    | "constructor"
+                    | "parser"
+                    | "transition"
+                    | "effect-executor"
+                    | "composition"
+            )
+        ) {
+            diagnostics.push(error(
+                "semantic.invariant-authority-missing",
+                &context.target,
+                format!(
+                    "law `{}` must declare a canonical enforcement authority",
+                    law.id
+                ),
+            ));
+        }
         if !evidence_items
             .iter()
             .any(|evidence| evidence.proves == law.id)
@@ -25645,7 +27267,71 @@ fn validate_semantic_properties(
                 ),
             ));
         }
+        if property.realizations.is_empty() {
+            diagnostics.push(error(
+                "evidence.property-realization-missing",
+                &context.target,
+                format!(
+                    "property `{}` must declare at least one binding realization",
+                    property.id
+                ),
+            ));
+        }
+        for realization in &property.realizations {
+            if !matches!(realization.profile.as_str(), "smoke" | "ci" | "nightly")
+                || !matches!(
+                    realization.strategy.as_str(),
+                    "deterministic-corpus"
+                        | "deterministic-exhaustive"
+                        | "generated-property"
+                        | "coverage-fuzzer"
+                        | "model-checker"
+                )
+                || realization.command.trim().is_empty()
+            {
+                diagnostics.push(error(
+                    "evidence.property-realization-invalid",
+                    &context.target,
+                    format!(
+                        "property `{}` has an invalid realization profile, strategy, or command",
+                        property.id
+                    ),
+                ));
+            }
+        }
+        if semantic_property_is_fuzz(property)
+            && !property.realizations.iter().any(|realization| {
+                matches!(
+                    realization.strategy.as_str(),
+                    "generated-property" | "coverage-fuzzer" | "model-checker"
+                ) || (realization.strategy == "deterministic-exhaustive" && realization.exhaustive)
+            })
+        {
+            diagnostics.push(error(
+                "evidence.fuzz-realization-mismatch",
+                &context.target,
+                format!(
+                    "fuzz property `{}` is not backed by generated, coverage-guided, model-checker, or exhaustive realization",
+                    property.id
+                ),
+            ));
+        }
         if let Some(evidence) = &property.evidence {
+            let expected_kind = if semantic_property_is_fuzz(property) {
+                "fuzz"
+            } else {
+                "property"
+            };
+            if evidence.kind != expected_kind {
+                diagnostics.push(error(
+                    "semantic.property-evidence-kind",
+                    &context.target,
+                    format!(
+                        "property `{}` requires evidence kind `{expected_kind}`, found `{}`",
+                        property.id, evidence.kind
+                    ),
+                ));
+            }
             if !is_safe_relative_artifact_path(&evidence.path) {
                 diagnostics.push(error(
                     "semantic.property-evidence-path",
@@ -25762,13 +27448,17 @@ fn semantic_machine_change_to_machine_change(
         machine: MachineChangeMachine {
             mode: machine.mode.clone(),
             justification: machine.justification.clone(),
+            transition_signature: machine.transition_signature.clone(),
+            types: None,
             states: machine.states.clone(),
             commands: machine.commands.clone(),
+            observed_events: machine.observed_events.clone(),
             events: machine.events.clone(),
             effects: machine.effects.clone(),
             effect_results: machine.effect_results.clone(),
             replies: machine.replies.clone(),
             rejections: machine.rejections.clone(),
+            effect_protocols: machine.effect_protocols.clone(),
         },
         transitions: machine.transitions.clone(),
         roles: change.roles.clone(),
@@ -25923,20 +27613,10 @@ fn write_semantic_change_record(
     change: &SemanticChange,
 ) -> Result<()> {
     let path = semantic_change_record_path(context, change);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create `{}`", parent.display()))?;
-    }
     let rendered =
         serde_yaml::to_string(change).with_context(|| "failed to render semantic-change record")?;
-    if path.exists() {
-        let current = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read `{}`", path.display()))?;
-        if current == rendered {
-            return Ok(());
-        }
-    }
-    fs::write(&path, rendered).with_context(|| format!("failed to write `{}`", path.display()))
+    effect_executor::write_if_changed(&path, &rendered)
+        .with_context(|| format!("failed to write `{}`", path.display()))
 }
 
 fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChange) {
@@ -26013,6 +27693,15 @@ fn semantic_law_yaml(law: &SemanticLawChange) -> YamlValue {
     if let Some(kind) = &law.kind {
         mapping.insert(yaml_key("kind"), YamlValue::String(kind.clone()));
     }
+    if let Some(authority) = &law.authority {
+        mapping.insert(yaml_key("authority"), YamlValue::String(authority.clone()));
+    }
+    if let Some(enforced_by) = &law.enforced_by {
+        mapping.insert(
+            yaml_key("enforced_by"),
+            YamlValue::String(enforced_by.clone()),
+        );
+    }
     YamlValue::Mapping(mapping)
 }
 
@@ -26069,6 +27758,38 @@ fn semantic_property_yaml(property: &SemanticPropertyChange) -> YamlValue {
             yaml_key("counterexamples"),
             YamlValue::Mapping(counterexample_mapping),
         );
+    }
+    if !property.realizations.is_empty() {
+        mapping.insert(
+            yaml_key("realizations"),
+            YamlValue::Sequence(
+                property
+                    .realizations
+                    .iter()
+                    .map(property_realization_yaml)
+                    .collect(),
+            ),
+        );
+    }
+    YamlValue::Mapping(mapping)
+}
+
+fn property_realization_yaml(realization: &PropertyRealization) -> YamlValue {
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(
+        yaml_key("profile"),
+        YamlValue::String(realization.profile.clone()),
+    );
+    mapping.insert(
+        yaml_key("strategy"),
+        YamlValue::String(realization.strategy.clone()),
+    );
+    mapping.insert(
+        yaml_key("command"),
+        YamlValue::String(realization.command.clone()),
+    );
+    if realization.exhaustive {
+        mapping.insert(yaml_key("exhaustive"), YamlValue::Bool(true));
     }
     YamlValue::Mapping(mapping)
 }
@@ -26213,7 +27934,7 @@ fn render_semantic_property_evidence(property: &SemanticPropertyChange) -> Strin
     let input_space = property
         .input_space
         .as_ref()
-        .map(|value| yaml_summary(value))
+        .map(yaml_summary)
         .unwrap_or_else(|| "<declared input space>".to_string());
     let oracle = if property.oracle.is_empty() {
         "- <declared oracle>".to_string()
@@ -26261,6 +27982,53 @@ fn validate_semantic_module_completeness(
         let Some(id) = get_str(invariant, &["id"]) else {
             continue;
         };
+        let authority = get_str(invariant, &["authority"]);
+        if authority.is_none() {
+            push_unique_warning(
+                diagnostics,
+                "semantic.invariant-authority-missing",
+                &module.path,
+                format!(
+                    "invariant `{id}` must declare whether representation, parser, transition, effect-executor, or composition owns enforcement"
+                ),
+            );
+        } else if !matches!(
+            authority,
+            Some(
+                "representation"
+                    | "constructor"
+                    | "parser"
+                    | "transition"
+                    | "effect-executor"
+                    | "composition"
+            )
+        ) {
+            push_unique_warning(
+                diagnostics,
+                "semantic.invariant-authority-mismatch",
+                &module.path,
+                format!(
+                    "invariant `{id}` declares unknown authority `{}`",
+                    authority.unwrap_or_default()
+                ),
+            );
+        } else if authority != Some("composition")
+            && module
+                .path
+                .parent()
+                .is_some_and(|base| base.join("implementation.yaml").is_file())
+            && !invariant_authority_matches_semantic_function(module, invariant, id)
+        {
+            push_unique_warning(
+                diagnostics,
+                "semantic.invariant-authority-mismatch",
+                &module.path,
+                format!(
+                    "invariant `{id}` is not discharged by a semantic function matching authority `{}`",
+                    authority.unwrap_or_default()
+                ),
+            );
+        }
         if !semantic_invariant_has_evidence(module, invariant, id) {
             push_unique_warning(
                 diagnostics,
@@ -26415,6 +28183,52 @@ fn validate_semantic_module_completeness(
     inspect_empty_evidence_lanes(module, diagnostics);
 }
 
+fn invariant_authority_matches_semantic_function(
+    module: &LoadedManifest,
+    invariant: &YamlValue,
+    id: &str,
+) -> bool {
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    let implementation_path = base.join("implementation.yaml");
+    let Ok(implementation) = load_manifest(&implementation_path) else {
+        return false;
+    };
+    let authority = get_str(invariant, &["authority"]).unwrap_or("");
+    let enforced_by = get_str(invariant, &["enforced_by"]);
+    semantic_function_items(&implementation).is_some_and(|functions| {
+        functions.iter().any(|function| {
+            let discharges = get_string_array(function, &["discharges", "invariants"]);
+            let function_matches = discharges.iter().any(|invariant| invariant == id)
+                || enforced_by.is_some_and(|enforced_by| {
+                    get_str(function, &["id"]) == Some(enforced_by)
+                        || get_str(function, &["symbol"]) == Some(enforced_by)
+                });
+            if !function_matches {
+                return false;
+            }
+            semantic_function_matches_authority(function, authority)
+        })
+    })
+}
+
+fn semantic_function_matches_authority(function: &YamlValue, authority: &str) -> bool {
+    let kind = get_str(function, &["kind"]).unwrap_or("");
+    let purity = get_str(function, &["purity"]).unwrap_or("");
+    match authority {
+        "representation" | "constructor" => kind == "constructor" && purity == "pure",
+        "parser" => {
+            matches!(kind, "parser" | "projector" | "decision")
+                && matches!(purity, "pure" | "boundary" | "effectful")
+        }
+        "transition" => kind == "transition" && purity == "pure",
+        "effect-executor" => {
+            matches!(kind, "interpreter" | "adapter") && matches!(purity, "effectful" | "boundary")
+        }
+        "composition" => false,
+        _ => false,
+    }
+}
+
 fn module_declares_reusable_intent(module: &LoadedManifest) -> bool {
     get_bool(&module.value, &["x-rms", "reusable"]) == Some(true)
         || get_str(&module.value, &["x-rms", "reuse", "public_facade"]).is_some()
@@ -26563,22 +28377,12 @@ fn module_declares_reconciliation_need(module: &LoadedManifest) -> bool {
         "partial",
         "conflicting",
     ];
-    let profile_text = get_string_array(&module.value, &["profiles"]).join("\n");
-    if semantic_name_contains_any(
-        &profile_text,
-        &["distributed", "workflow", "storage", "integration"],
-    ) {
-        let rendered = serde_yaml::to_string(&module.value).unwrap_or_default();
-        let normalized = normalize_semantic_identifier(&rendered);
-        return terms
-            .iter()
-            .any(|term| semantic_text_mentions_id(&normalized, term));
-    }
-
     let mut scoped_text = String::new();
     for path in [
         &["effects"][..],
         &["operations"][..],
+        &["workflow"][..],
+        &["state"][..],
         &["recovery"][..],
         &["reconciliation"][..],
         &["verification", "reconciliation"][..],
@@ -26591,8 +28395,23 @@ fn module_declares_reconciliation_need(module: &LoadedManifest) -> bool {
         }
     }
     let normalized = normalize_semantic_identifier(&scoped_text);
+    let profiles = get_string_array(&module.value, &["profiles"]);
+    let external_truth = module_declares_local_or_external_effects(module)
+        || profiles.iter().any(|profile| {
+            semantic_name_contains_any(
+                profile,
+                &["distributed", "workflow", "storage", "integration"],
+            )
+        });
     terms
         .iter()
+        .filter(|term| {
+            external_truth
+                || !matches!(
+                    **term,
+                    "unknown" | "uncertain" | "stale" | "partial" | "conflicting"
+                )
+        })
         .any(|term| semantic_text_mentions_id(&normalized, term))
 }
 
@@ -30352,76 +32171,9 @@ fn scaffold_runnable_surface_if_inferred(
         ],
     };
     apply_surface_declaration_to_manifest(&mut manifest.value, &declaration);
-    if simple_runnable_boundary_should_start_stateless(purpose) {
-        normalize_simple_runnable_boundary_machine(&mut manifest.value);
-    }
     write_yaml_manifest(&manifest)?;
     write_surface_evidence_placeholders(&manifest, &declaration)?;
     Ok(())
-}
-
-fn simple_runnable_boundary_should_start_stateless(text: &str) -> bool {
-    !semantic_name_contains_any(
-        text,
-        &[
-            "async",
-            "await",
-            "confirmation",
-            "compensation",
-            "lifecycle",
-            "multi-step",
-            "order",
-            "progress",
-            "queue",
-            "reconciliation",
-            "recovery",
-            "retry",
-            "session",
-            "stateful",
-            "status",
-            "step",
-            "tracking",
-            "wait",
-            "wizard",
-            "workflow",
-        ],
-    )
-}
-
-fn normalize_simple_runnable_boundary_machine(value: &mut YamlValue) {
-    set_yaml_string_path(
-        value,
-        &["architecture", "machine", "mode"],
-        "stateless-decision-machine",
-    );
-    set_yaml_string_path(
-        value,
-        &["architecture", "machine", "stateless_justification"],
-        "generated runnable boundary is a thin parse/delegate/render surface; use `rms spec apply` to introduce lifecycle state when product intent needs order, retry, status, recovery, or workflow",
-    );
-    set_yaml_string_sequence_path(
-        value,
-        &["architecture", "machine", "states"],
-        &["AwaitingInput".to_string()],
-    );
-    let command = get_string_array(value, &["architecture", "machine", "commands"])
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| "BoundaryCommand".to_string());
-    let reply = get_string_array(value, &["architecture", "machine", "replies"])
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| "BoundaryReply".to_string());
-    set_yaml_sequence_path(
-        value,
-        &["architecture", "machine", "transitions"],
-        vec![yaml_mapping(vec![
-            ("from", YamlValue::String("AwaitingInput".to_string())),
-            ("on", YamlValue::String(command)),
-            ("to", YamlValue::String("AwaitingInput".to_string())),
-            ("reply", YamlValue::String(reply)),
-        ])],
-    );
 }
 
 fn infer_runnable_surface_from_text(text: &str) -> Option<String> {
@@ -30515,7 +32267,7 @@ impl BindingScaffoldModel {
 
     fn declared_effects(&self) -> Vec<String> {
         if self.declares_effects {
-            vec![self.names.effect.clone()]
+            vec!["Execute".to_string()]
         } else {
             Vec::new()
         }
@@ -30523,10 +32275,88 @@ impl BindingScaffoldModel {
 
     fn declared_effect_results(&self) -> Vec<String> {
         if self.declares_effect_results {
-            vec![self.names.effect_result.clone()]
+            vec!["Succeeded".to_string(), "Failed".to_string()]
         } else {
             Vec::new()
         }
+    }
+
+    fn stateful(&self) -> bool {
+        is_stateful_machine_mode(machine_mode_for_shape(self.shape))
+    }
+
+    fn transition_signature(&self) -> &'static str {
+        if self.stateful() {
+            "state-and-input"
+        } else {
+            "input-only"
+        }
+    }
+
+    fn declared_commands(&self) -> Vec<String> {
+        vec!["Accept".to_string(), "Reject".to_string()]
+    }
+
+    fn declared_observed_events(&self) -> Vec<String> {
+        if self.shape == ScaffoldShape::RuntimeMonitor {
+            vec!["Observed".to_string()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn declared_events(&self) -> Vec<String> {
+        let mut events = vec!["Accepted".to_string(), "Rejected".to_string()];
+        if self.declares_effects {
+            events.extend(["EffectRequested".to_string(), "EffectCompleted".to_string()]);
+        }
+        events
+    }
+
+    fn declared_replies(&self) -> Vec<String> {
+        vec!["Accepted".to_string(), "Rejected".to_string()]
+    }
+
+    fn declared_rejections(&self) -> Vec<String> {
+        let mut rejections = vec![
+            "InvalidCommand".to_string(),
+            "IllegalTransition".to_string(),
+        ];
+        if parser_expected_for_shape(self.shape.as_str()) {
+            rejections.push("MalformedInput".to_string());
+        }
+        rejections
+    }
+
+    fn machine_types(&self) -> MachineTypeNames {
+        MachineTypeNames {
+            state: Some(self.names.state.clone()),
+            input: self.stateful().then_some(self.names.input.clone()),
+            command: Some(self.names.command.clone()),
+            event: Some(self.names.event.clone()),
+            effect: self.declares_effects.then_some(self.names.effect.clone()),
+            effect_result: self
+                .declares_effect_results
+                .then_some(self.names.effect_result.clone()),
+            reply: Some(self.names.reply.clone()),
+            rejection: Some(self.names.rejection.clone()),
+            transition: Some(self.names.transition.clone()),
+            transition_record: Some(self.names.transition_record.clone()),
+        }
+    }
+
+    fn effect_protocols(&self) -> Vec<MachineEffectProtocol> {
+        if !self.declares_effects {
+            return Vec::new();
+        }
+        vec![MachineEffectProtocol {
+            effect: "Execute".to_string(),
+            results: self.declared_effect_results(),
+            executor_role: Some("effect_executor".to_string()),
+            atomicity: "one-request-one-result".to_string(),
+            aggregate_justification: None,
+            evidence: Vec::new(),
+        }]
     }
 
     fn closed_variants(&self) -> Vec<String> {
@@ -30542,10 +32372,12 @@ impl BindingScaffoldModel {
             self.names.transition_record.clone(),
             self.names.source_provenance.clone(),
         ];
+        if self.stateful() {
+            variants.push(self.names.input.clone());
+        }
         if self.declares_effects {
             variants.push(self.names.effect.clone());
             variants.push(self.names.effect_envelope.clone());
-            variants.push(self.names.effect_lifecycle.clone());
         }
         if self.declares_effect_results {
             variants.push(self.names.effect_result.clone());
@@ -30601,7 +32433,7 @@ impl BindingAdapter for ExecutableBindingAdapter {
     }
 
     fn scaffold(&self, path: &Path, model: &BindingScaffoldModel) -> Result<()> {
-        scaffold_executable_module(path, &model.module_name, model.shape)
+        scaffold_executable_module(path, model)
     }
 }
 
@@ -30711,7 +32543,7 @@ fn scaffold_shape_evidence(
                     .join("verification")
                     .join("traces")
                     .join("transition_trace.yaml"),
-                &render_transition_trace_bundle(names),
+                &render_transition_trace_bundle(names, shape),
             )?;
             write_new_file(
                 &path
@@ -30750,7 +32582,7 @@ fn scaffold_shape_evidence(
                     .join("verification")
                     .join("traces")
                     .join("boundary_parse.yaml"),
-                &render_boundary_parse_trace_bundle(names),
+                &render_transition_trace_bundle(names, shape),
             )?;
             write_new_file(
                 &path
@@ -30789,7 +32621,7 @@ fn scaffold_shape_evidence(
                     .join("verification")
                     .join("traces")
                     .join("transition_trace.yaml"),
-                &render_transition_trace_bundle(names),
+                &render_transition_trace_bundle(names, shape),
             )?;
             write_new_file(
                 &path
@@ -30844,6 +32676,12 @@ fn scaffold_rust_module(path: &Path, model: &BindingScaffoldModel) -> Result<()>
         &path.join("src").join("transition.rs"),
         &render_rust_transition_rs(model),
     )?;
+    if model.declares_effects {
+        write_new_file(
+            &path.join("src").join("effect_executor.rs"),
+            &render_rust_effect_executor_rs(&model.names),
+        )?;
+    }
     Ok(())
 }
 
@@ -30879,6 +32717,15 @@ fn scaffold_swift_module(path: &Path, model: &BindingScaffoldModel) -> Result<()
             .join("Transition.swift"),
         &render_swift_transition(model),
     )?;
+    if model.declares_effects {
+        write_new_file(
+            &path
+                .join("Sources")
+                .join(&target_name)
+                .join("EffectExecutor.swift"),
+            &render_swift_effect_executor(&model.names),
+        )?;
+    }
     write_new_file(
         &path
             .join("Sources")
@@ -30891,7 +32738,7 @@ fn scaffold_swift_module(path: &Path, model: &BindingScaffoldModel) -> Result<()
             .join("Tests")
             .join(format!("{target_name}Tests"))
             .join(format!("{target_name}Tests.swift")),
-        &render_swift_tests(&target_name, &model.names),
+        &render_swift_tests(&target_name, model),
     )?;
     Ok(())
 }
@@ -30902,7 +32749,7 @@ fn scaffold_js_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
     fs::create_dir_all(path.join("scripts"))?;
     write_new_file(
         &path.join("implementation.yaml"),
-        &render_js_implementation_yaml(&model.module_name, model.shape, &model.names),
+        &render_js_implementation_yaml(&model.module_name, model),
     )?;
     normalize_scaffold_effect_result_declarations(
         &path.join("implementation.yaml"),
@@ -30911,8 +32758,14 @@ fn scaffold_js_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
     )?;
     write_new_file(
         &path.join("src").join("representation.mjs"),
-        &render_js_representation_mjs(&model.names, model.shape),
+        &render_js_representation_mjs(model),
     )?;
+    if model.declares_effects {
+        write_new_file(
+            &path.join("src").join("effect_executor.mjs"),
+            &render_js_effect_executor_mjs(&model.names),
+        )?;
+    }
     match model.shape {
         ScaffoldShape::BoundaryAdapter
         | ScaffoldShape::StorageAdapter
@@ -30927,6 +32780,10 @@ fn scaffold_js_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
                 &render_js_adapter_mjs(&model.names, model.shape),
             )?;
             write_new_file(
+                &path.join("src").join("transition.mjs"),
+                &render_js_transition_mjs(model),
+            )?;
+            write_new_file(
                 &path.join("tests").join("boundary-smoke.mjs"),
                 &render_js_boundary_test_mjs(&model.names),
             )?;
@@ -30934,7 +32791,7 @@ fn scaffold_js_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
         _ => {
             write_new_file(
                 &path.join("src").join("transition.mjs"),
-                &render_js_transition_mjs(&model.names),
+                &render_js_transition_mjs(model),
             )?;
             write_new_file(
                 &path.join("src").join("public.mjs"),
@@ -30942,7 +32799,7 @@ fn scaffold_js_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
             )?;
             write_new_file(
                 &path.join("tests").join("trace-smoke.mjs"),
-                &render_js_trace_test_mjs(&model.names),
+                &render_js_trace_test_mjs(model),
             )?;
         }
     }
@@ -30951,11 +32808,11 @@ fn scaffold_js_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
     Ok(())
 }
 
-fn scaffold_executable_module(path: &Path, name: &str, shape: ScaffoldShape) -> Result<()> {
+fn scaffold_executable_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
     fs::create_dir_all(path.join("scripts"))?;
     write_new_file(
         &path.join("implementation.yaml"),
-        &render_executable_implementation_yaml(name, shape),
+        &render_executable_implementation_yaml(model),
     )?;
     write_new_file(&path.join("scripts").join("build.sh"), EXECUTABLE_BUILD_SH)?;
     write_new_file(&path.join("scripts").join("smoke.sh"), EXECUTABLE_SMOKE_SH)?;
@@ -31250,6 +33107,10 @@ fn render_capability_parent_module_yaml(
             4,
         )
     )
+    .replace(
+        "    enforced_by: composition\n",
+        "    authority: composition\n    enforced_by: composition\n",
+    )
 }
 
 fn render_capability_domain_module_yaml(name: &str, domain_command: &str) -> String {
@@ -31375,13 +33236,14 @@ fn contract_file_stem(name: &str) -> String {
 
 fn render_profile_sections(profiles: &[String]) -> String {
     let mut sections = String::new();
-    if profiles.iter().any(|profile| profile == "stateful") {
+    let workflow = profiles.iter().any(|profile| profile == "workflow");
+    if workflow || profiles.iter().any(|profile| profile == "stateful") {
         sections.push_str("\nstate: {}\n");
     }
-    if profiles.iter().any(|profile| profile == "distributed") {
+    if workflow || profiles.iter().any(|profile| profile == "distributed") {
         sections.push_str("\noperations:\n  reconciliation: []\n");
     }
-    if profiles.iter().any(|profile| profile == "workflow") {
+    if workflow {
         sections.push_str("\nworkflow: {}\n");
     }
     if profiles.iter().any(|profile| profile == "boundary") {
@@ -31512,23 +33374,11 @@ fn render_traceable_architecture_yaml(names: &InnerStructureNames, shape: Scaffo
     for field in ["next_state", "events", "commands", "effects", "reply"] {
         let _ = writeln!(out, "      - {field}");
     }
-    if scaffold_declares_effects_by_default(shape) {
+    if scaffold_declares_effects_by_default(shape) && idempotency_expected_for_shape(shape.as_str())
+    {
         let _ = writeln!(out, "  effects:");
-        let _ = writeln!(out, "    lifecycle:");
-        for state in [
-            "Pending",
-            "Running",
-            "Succeeded",
-            "Failed",
-            "RetryScheduled",
-            "Abandoned",
-        ] {
-            let _ = writeln!(out, "      - {state}");
-        }
-        if idempotency_expected_for_shape(shape.as_str()) {
-            let _ = writeln!(out, "    idempotency_keys:");
-            let _ = writeln!(out, "      - effect_id");
-        }
+        let _ = writeln!(out, "    idempotency_keys:");
+        let _ = writeln!(out, "      - effect_id");
     }
     let _ = writeln!(out, "  numeric_safety:");
     let _ = writeln!(
@@ -31572,6 +33422,10 @@ fn render_traceable_architecture_yaml(names: &InnerStructureNames, shape: Scaffo
                 out,
                 "        counterexamples: verification/fuzz/counterexamples"
             );
+            let _ = writeln!(out, "        realizations:");
+            let _ = writeln!(out, "          - profile: smoke");
+            let _ = writeln!(out, "            strategy: generated-property");
+            let _ = writeln!(out, "            command: properties");
         }
         if fuzz_evidence_expected_for_shape(shape) {
             let _ = writeln!(out, "    fuzz_targets:");
@@ -31597,6 +33451,10 @@ fn render_traceable_architecture_yaml(names: &InnerStructureNames, shape: Scaffo
                 out,
                 "        counterexamples: verification/fuzz/counterexamples"
             );
+            let _ = writeln!(out, "        realizations:");
+            let _ = writeln!(out, "          - profile: smoke");
+            let _ = writeln!(out, "            strategy: generated-property");
+            let _ = writeln!(out, "            command: fuzz");
         }
     }
     out
@@ -31640,13 +33498,14 @@ fn render_traceable_roles_yaml_with_parser(
         let _ = writeln!(out, "    {role}:");
         let _ = writeln!(out, "      - {path}");
     }
-    if scaffold_declares_effects_by_default(shape) {
-        let _ = writeln!(out, "    effect_lifecycle:");
-        let _ = writeln!(out, "      - {representation_path}");
-    }
     if parser_expected_for_shape(shape.as_str()) {
         let _ = writeln!(out, "    parser:");
         let _ = writeln!(out, "      - {parser_path}");
+    }
+    if scaffold_declares_effects_by_default(shape) {
+        let executor_path = binding_sibling_role_path(transition_path, "effect_executor");
+        let _ = writeln!(out, "    effect_executor:");
+        let _ = writeln!(out, "      - {executor_path}");
     }
     let _ = writeln!(out, "    replay_bundle:");
     let _ = writeln!(
@@ -31701,6 +33560,19 @@ fn render_traceable_roles_yaml_with_parser(
     out
 }
 
+fn binding_sibling_role_path(source_path: &str, stem: &str) -> String {
+    let path = Path::new(source_path);
+    let extension = path.extension().and_then(|value| value.to_str());
+    let file_name = match extension {
+        Some("swift") => "EffectExecutor.swift".to_string(),
+        Some(extension) => format!("{stem}.{extension}"),
+        None => stem.to_string(),
+    };
+    path.parent()
+        .map(|parent| parent.join(&file_name).display().to_string())
+        .unwrap_or(file_name)
+}
+
 fn render_transition_semantic_evidence_yaml(shape: ScaffoldShape) -> String {
     match shape {
         ScaffoldShape::DomainEngine | ScaffoldShape::Workflow => {
@@ -31751,6 +33623,153 @@ fn render_closed_variants_yaml(model: &BindingScaffoldModel) -> String {
     format!("{}\n", yaml_string_list(&model.closed_variants(), 6))
 }
 
+fn render_machine_architecture_yaml(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let states = starter_states_for_shape(model.shape);
+    let initial = states
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Ready".to_string());
+    let completed = states
+        .iter()
+        .find(|state| state.as_str() == "Completed")
+        .cloned()
+        .unwrap_or_else(|| initial.clone());
+    let rejected = states
+        .iter()
+        .find(|state| matches!(state.as_str(), "Rejected" | "Failed"))
+        .cloned()
+        .unwrap_or_else(|| initial.clone());
+    let waiting = states
+        .iter()
+        .find(|state| matches!(state.as_str(), "WaitingForEffect" | "Delegating"))
+        .cloned()
+        .unwrap_or_else(|| completed.clone());
+    let types = model.machine_types();
+    let mut out = String::new();
+    let _ = writeln!(out, "  machine:");
+    let _ = writeln!(out, "    name: {}", yaml_quote(&names.machine));
+    let _ = writeln!(
+        out,
+        "    mode: {}",
+        yaml_quote(machine_mode_for_shape(model.shape))
+    );
+    let _ = writeln!(
+        out,
+        "    transition_signature: {}",
+        model.transition_signature()
+    );
+    if model.shape == ScaffoldShape::DomainEngine {
+        let _ = writeln!(out, "    stateless_justification: {}", yaml_quote("generated domain-engine starts as a pure decision machine; use rms spec apply when lifecycle state changes product meaning"));
+    }
+    let _ = writeln!(out, "    types:");
+    for (field, value) in [
+        ("state", types.state.as_deref()),
+        ("input", types.input.as_deref()),
+        ("command", types.command.as_deref()),
+        ("event", types.event.as_deref()),
+        ("effect", types.effect.as_deref()),
+        ("effect_result", types.effect_result.as_deref()),
+        ("reply", types.reply.as_deref()),
+        ("rejection", types.rejection.as_deref()),
+        ("transition", types.transition.as_deref()),
+        ("transition_record", types.transition_record.as_deref()),
+    ] {
+        if let Some(value) = value {
+            let _ = writeln!(out, "      {field}: {}", yaml_quote(value));
+        }
+    }
+    let _ = writeln!(out, "    states:");
+    let _ = write!(out, "{}", yaml_string_list(&states, 6));
+    let _ = writeln!(out);
+    let _ = writeln!(out, "    commands:");
+    let _ = write!(out, "{}", yaml_string_list(&model.declared_commands(), 6));
+    let _ = writeln!(out);
+    if model.declared_observed_events().is_empty() {
+        let _ = writeln!(out, "    observed_events: []");
+    } else {
+        let _ = writeln!(out, "    observed_events:");
+        let _ = write!(
+            out,
+            "{}",
+            yaml_string_list(&model.declared_observed_events(), 6)
+        );
+        let _ = writeln!(out);
+    }
+    let _ = writeln!(out, "    events:");
+    let _ = write!(out, "{}", yaml_string_list(&model.declared_events(), 6));
+    let _ = writeln!(out);
+    let _ = write!(
+        out,
+        "{}",
+        render_machine_variant_field("effects", &model.declared_effects())
+    );
+    let _ = write!(
+        out,
+        "{}",
+        render_machine_variant_field("effect_results", &model.declared_effect_results())
+    );
+    let _ = writeln!(out, "    replies:");
+    let _ = write!(out, "{}", yaml_string_list(&model.declared_replies(), 6));
+    let _ = writeln!(out);
+    let _ = writeln!(out, "    rejections:");
+    let _ = write!(out, "{}", yaml_string_list(&model.declared_rejections(), 6));
+    let _ = writeln!(out);
+    if model.effect_protocols().is_empty() {
+        let _ = writeln!(out, "    effect_protocols: []");
+    } else {
+        let _ = writeln!(out, "    effect_protocols:");
+        for protocol in model.effect_protocols() {
+            let _ = writeln!(out, "      - effect: {}", protocol.effect);
+            let _ = writeln!(out, "        results:");
+            let _ = write!(out, "{}", yaml_string_list(&protocol.results, 10));
+            let _ = writeln!(out);
+            let _ = writeln!(out, "        executor_role: effect_executor");
+            let _ = writeln!(out, "        atomicity: one-request-one-result");
+        }
+    }
+    let _ = writeln!(out, "    transition_function: transition");
+    let _ = writeln!(out, "    transitions:");
+    if model.declares_effects {
+        let _ = writeln!(out, "      - from: {initial}");
+        let _ = writeln!(out, "        on: Accept");
+        let _ = writeln!(out, "        to: {waiting}");
+        let _ = writeln!(out, "        events: [EffectRequested]");
+        let _ = writeln!(out, "        effects: [Execute]");
+        let _ = writeln!(
+            out,
+            "        no_reply_justification: effect result is pending"
+        );
+        let _ = writeln!(out, "      - from: {waiting}");
+        let _ = writeln!(out, "        on: Succeeded");
+        let _ = writeln!(out, "        to: {completed}");
+        let _ = writeln!(out, "        events: [EffectCompleted]");
+        let _ = writeln!(out, "        reply: Accepted");
+        let _ = writeln!(out, "      - from: {waiting}");
+        let _ = writeln!(out, "        on: Failed");
+        let _ = writeln!(out, "        to: {rejected}");
+        let _ = writeln!(out, "        events: [Rejected]");
+        let _ = writeln!(out, "        rejection: InvalidCommand");
+        let _ = writeln!(out, "      - from: {initial}");
+        let _ = writeln!(out, "        on: Reject");
+        let _ = writeln!(out, "        to: {rejected}");
+        let _ = writeln!(out, "        events: [Rejected]");
+        let _ = writeln!(out, "        rejection: InvalidCommand");
+    } else {
+        let _ = writeln!(out, "      - from: {initial}");
+        let _ = writeln!(out, "        on: Accept");
+        let _ = writeln!(out, "        to: {completed}");
+        let _ = writeln!(out, "        events: [Accepted]");
+        let _ = writeln!(out, "        reply: Accepted");
+        let _ = writeln!(out, "      - from: {initial}");
+        let _ = writeln!(out, "        on: Reject");
+        let _ = writeln!(out, "        to: {rejected}");
+        let _ = writeln!(out, "        events: [Rejected]");
+        let _ = writeln!(out, "        rejection: InvalidCommand");
+    }
+    out
+}
+
 fn render_property_commands_yaml(shape: ScaffoldShape, binding: &str) -> String {
     let mut out = String::new();
     if property_evidence_expected_for_shape(shape) {
@@ -31785,28 +33804,16 @@ fn render_rust_implementation_yaml(
 ) -> String {
     let names = &model.names;
     let shape = model.shape;
-    let effects_yaml = render_machine_variant_field("effects", &model.declared_effects());
-    let effect_results_yaml =
-        render_machine_variant_field("effect_results", &model.declared_effect_results());
+    let machine_yaml = render_machine_architecture_yaml(model);
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n{}  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules: []\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n{}{}    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n{}  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules: []\n{}{}  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
         yaml_quote(module_name),
         render_property_commands_yaml(shape, "rust"),
         yaml_quote(package_name),
         yaml_quote(shape.as_str()),
         render_traceable_architecture_yaml(names, shape),
-        yaml_quote(&names.machine),
-        yaml_quote(machine_mode_for_shape(shape)),
-        machine_mode_extra_yaml(shape),
-        yaml_quote(&names.state),
-        yaml_string_list(&starter_states_for_shape(shape), 6),
-        yaml_quote(&names.command),
-        yaml_quote(&names.event),
-        effects_yaml,
-        effect_results_yaml,
-        yaml_quote(&names.reply),
-        yaml_quote(&names.rejection),
+        machine_yaml,
         render_traceable_roles_yaml(shape, "src/representation.rs", "src/transition.rs"),
         closed_variants_yaml,
         yaml_quote(&names.label),
@@ -31831,32 +33838,98 @@ fn render_rust_lib_rs(model: &BindingScaffoldModel) -> String {
     if model.declares_effects {
         representation_exports.push(names.effect.as_str());
         representation_exports.push(names.effect_envelope.as_str());
-        representation_exports.push(names.effect_lifecycle.as_str());
     }
     if model.declares_effect_results {
         representation_exports.push(names.effect_result.as_str());
         representation_exports.push(names.effect_result_envelope.as_str());
     }
+    if model.stateful() {
+        representation_exports.push(names.input.as_str());
+    }
     let representation_exports = representation_exports.join(", ");
+    let transition_call = if model.stateful() {
+        format!(
+            "{machine}::transition({state}::{initial}, {input}::Command({command}::Accept(label)))",
+            machine = names.machine,
+            state = names.state,
+            initial = starter_states_for_shape(model.shape)[0],
+            input = names.input,
+            command = names.command,
+        )
+    } else {
+        format!(
+            "{}::transition({}::Accept(label))",
+            names.machine, names.command
+        )
+    };
+    let replay_call = if model.stateful() {
+        format!(
+            "replay_trace({state}::{initial}, [{input}::Command({command}::Accept(label))])",
+            state = names.state,
+            initial = starter_states_for_shape(model.shape)[0],
+            input = names.input,
+            command = names.command,
+        )
+    } else {
+        format!("replay_trace([{}::Accept(label)])", names.command)
+    };
     format!(
-        "mod representation;\nmod transition;\n\npub use crate::representation::{{{representation_exports}}};\npub use crate::transition::{{replay_trace, transition, {machine}, {source_provenance}, {transition}, {transition_record}}};\n\npub fn semantic_shape() -> &'static str {{\n    {:?}\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn rejects_invalid_representation() {{\n        assert!({label}::new(\"\").is_none());\n    }}\n\n    #[test]\n    fn transition_returns_traceable_output() {{\n        let label = {label}::new(\"example\").unwrap();\n        let outcome = {machine}::transition({command}::Accept(label));\n        assert!(matches!(outcome.reply, {reply}::Accepted));\n        assert_eq!(outcome.events.len(), 1);\n    }}\n\n    #[test]\n    fn transition_replay_records_source_branch() {{\n        let label = {label}::new(\"example\").unwrap();\n        let records = replay_trace([{command}::Accept(label)]);\n        assert_eq!(records.len(), 1);\n        assert_eq!(records[0].source.branch, \"Accept\");\n    }}\n\n    #[test]\n    fn property_transition_outputs_use_declared_variants() {{\n        for raw in [\"a\", \"example\", \"generated-case-1\", \"with punctuation !?\"] {{\n            let label = {label}::new(raw).unwrap();\n            let outcome = {machine}::transition({command}::Accept(label));\n            assert!(matches!(outcome.next_state, {state}::Ready));\n            assert!(matches!(outcome.reply, {reply}::Accepted));\n            assert_eq!(outcome.events.len(), 1);\n        }}\n    }}\n\n    #[test]\n    fn fuzz_malformed_generated_values_are_rejected_by_constructor() {{\n        for raw in [\"\", \" \", \"\\n\", \"\\t\"] {{\n            assert!({label}::new(raw).is_none());\n        }}\n    }}\n}}\n",
+        "mod representation;\nmod transition;\n\npub use crate::representation::{{{representation_exports}}};\npub use crate::transition::{{replay_trace, transition, {machine}, {source_provenance}, {transition}, {transition_record}}};\n\npub fn semantic_shape() -> &'static str {{\n    {:?}\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn rejects_invalid_representation() {{\n        assert!({label}::new(\"\").is_none());\n    }}\n\n    #[test]\n    fn transition_returns_traceable_output() {{\n        let label = {label}::new(\"example\").unwrap();\n        let outcome = {transition_call};\n        assert!(matches!(outcome.reply, Some({reply}::Accepted) | None));\n        assert_eq!(outcome.events.len(), 1);\n    }}\n\n    #[test]\n    fn transition_replay_records_source_branch() {{\n        let label = {label}::new(\"example\").unwrap();\n        let records = {replay_call};\n        assert_eq!(records.len(), 1);\n        assert_eq!(records[0].source.branch, \"Accept\");\n    }}\n\n    #[test]\n    fn property_transition_outputs_use_declared_variants() {{\n        for raw in [\"a\", \"example\", \"generated-case-1\", \"with punctuation !?\"] {{\n            let label = {label}::new(raw).unwrap();\n            let outcome = {transition_call};\n            assert_eq!(outcome.events.len(), 1);\n        }}\n    }}\n\n    #[test]\n    fn fuzz_malformed_generated_values_are_rejected_by_constructor() {{\n        for raw in [\"\", \" \", \"\\n\", \"\\t\"] {{\n            assert!({label}::new(raw).is_none());\n        }}\n    }}\n}}\n",
         model.shape.as_str(),
-        command = names.command,
         label = names.label,
         machine = names.machine,
         reply = names.reply,
         source_provenance = names.source_provenance,
-        state = names.state,
         transition = names.transition,
         transition_record = names.transition_record,
         representation_exports = representation_exports,
+        replay_call = replay_call,
+        transition_call = transition_call,
     )
 }
 
 fn render_rust_representation_rs(model: &BindingScaffoldModel) -> String {
     let names = &model.names;
+    let state_variants = starter_states_for_shape(model.shape)
+        .iter()
+        .map(|variant| format!("    {variant},"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let effect_section = if model.declares_effects {
         render_rust_effect_representation_rs(names, model.declares_effect_results)
+    } else {
+        String::new()
+    };
+    let mut input_variants = vec![format!("    Command({}),", names.command)];
+    if !model.declared_observed_events().is_empty() {
+        input_variants.push(format!("    ObservedEvent({}),", names.event));
+    }
+    if model.declares_effect_results {
+        input_variants.push(format!("    EffectResult({}),", names.effect_result));
+    }
+    let input_section = if model.stateful() {
+        format!(
+            "#[derive(Clone, Debug, Eq, PartialEq)]\npub enum {} {{\n{}\n}}\n",
+            names.input,
+            input_variants.join("\n")
+        )
+    } else {
+        String::new()
+    };
+    let event_variants = model
+        .declared_events()
+        .iter()
+        .map(|variant| {
+            if variant == "Rejected" {
+                format!("    Rejected({}),", names.rejection)
+            } else {
+                format!("    {variant},")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let malformed_rejection = if parser_expected_for_shape(model.shape.as_str()) {
+        format!("    MalformedInput({}),", names.label)
     } else {
         String::new()
     };
@@ -31882,7 +33955,7 @@ impl {label} {{
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum {state} {{
-    Ready,
+{state_variants}
 }}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31903,8 +33976,7 @@ pub struct {command_envelope} {{
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum {event} {{
-    Accepted,
-    Rejected({rejection}),
+{event_variants}
 }}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31921,9 +33993,13 @@ pub struct {event_envelope} {{
 
 {effect_section}
 
+{input_section}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum {rejection} {{
     InvalidCommand({label}),
+    IllegalTransition,
+{malformed_rejection}
 }}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31936,11 +34012,15 @@ pub enum {reply} {{
         command_envelope = names.command_envelope,
         effect_section = effect_section,
         event = names.event,
+        event_variants = event_variants,
         event_envelope = names.event_envelope,
         label = names.label,
         rejection = names.rejection,
         reply = names.reply,
         state = names.state,
+        state_variants = state_variants,
+        input_section = input_section,
+        malformed_rejection = malformed_rejection,
     )
 }
 
@@ -31952,7 +34032,8 @@ fn render_rust_effect_representation_rs(
         format!(
             r#"#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum {effect_result} {{
-    Completed,
+    Succeeded,
+    Failed({label}),
 }}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31961,13 +34042,13 @@ pub struct {effect_result_envelope} {{
     pub requester: String,
     pub correlation_id: String,
     pub causation_id: String,
-    pub status: {effect_lifecycle},
+    pub status: String,
     pub result: {effect_result},
 }}
 "#,
-            effect_lifecycle = names.effect_lifecycle,
             effect_result = names.effect_result,
             effect_result_envelope = names.effect_result_envelope,
+            label = names.label,
         )
     } else {
         String::new()
@@ -31975,7 +34056,7 @@ pub struct {effect_result_envelope} {{
     format!(
         r#"#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum {effect} {{
-    None,
+    Execute({label}),
 }}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31988,39 +34069,63 @@ pub struct {effect_envelope} {{
     pub effect: {effect},
 }}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum {effect_lifecycle} {{
-    Pending,
-    Running,
-    Succeeded,
-    Failed,
-    RetryScheduled,
-    Abandoned,
-}}
-
 {effect_result_section}
 "#,
         effect = names.effect,
         effect_envelope = names.effect_envelope,
-        effect_lifecycle = names.effect_lifecycle,
         effect_result_section = effect_result_section,
+        label = names.label,
     )
 }
 
 fn render_rust_transition_rs(model: &BindingScaffoldModel) -> String {
     let names = &model.names;
-    let effect_import = if model.declares_effects {
-        format!(", {}", names.effect)
-    } else {
-        String::new()
-    };
+    let states = starter_states_for_shape(model.shape);
+    let initial = states.first().map(String::as_str).unwrap_or("Ready");
+    let completed = states
+        .iter()
+        .find(|state| state.as_str() == "Completed")
+        .map(String::as_str)
+        .unwrap_or(initial);
+    let rejected = states
+        .iter()
+        .find(|state| matches!(state.as_str(), "Rejected" | "Failed"))
+        .map(String::as_str)
+        .unwrap_or(initial);
+    let waiting = states
+        .iter()
+        .find(|state| state.as_str() == "WaitingForEffect")
+        .map(String::as_str)
+        .unwrap_or(completed);
+    let mut imports = vec![
+        names.command.as_str(),
+        names.event.as_str(),
+        names.rejection.as_str(),
+        names.reply.as_str(),
+        names.state.as_str(),
+    ];
     let effect_type = if model.declares_effects {
+        imports.push(names.effect.as_str());
         names.effect.as_str()
     } else {
         "()"
     };
-    format!(
-        r#"use crate::representation::{{{command}{effect_import}, {event}, {rejection}, {reply}, {state}}};
+    if model.stateful() {
+        imports.push(names.input.as_str());
+        if model.declares_effect_results {
+            imports.push(names.effect_result.as_str());
+        }
+    }
+    let imports = imports.join(", ");
+    let effect_executor_module = if model.declares_effects {
+        "#[path = \"effect_executor.rs\"]\npub mod effect_executor;\n\n"
+    } else {
+        ""
+    };
+    let common = format!(
+        r#"use crate::representation::{{{imports}}};
+
+{effect_executor_module}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct {source_provenance} {{
@@ -32035,18 +34140,39 @@ pub struct {transition} {{
     pub events: Vec<{event}>,
     pub commands: Vec<{command}>,
     pub effects: Vec<{effect_type}>,
-    pub reply: {reply},
+    pub reply: Option<{reply}>,
 }}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct {transition_record} {{
     pub state_before: {state},
     pub state_after: {state},
-    pub input: {command},
+    pub input: {input_type},
     pub output: {transition},
     pub source: {source_provenance},
 }}
 
+"#,
+        imports = imports,
+        command = names.command,
+        effect_type = effect_type,
+        event = names.event,
+        reply = names.reply,
+        source_provenance = names.source_provenance,
+        state = names.state,
+        transition = names.transition,
+        transition_record = names.transition_record,
+        input_type = if model.stateful() {
+            names.input.as_str()
+        } else {
+            names.command.as_str()
+        },
+        effect_executor_module = effect_executor_module,
+    );
+
+    if !model.stateful() {
+        return format!(
+            r#"{common}
 pub struct {machine};
 
 impl {machine} {{
@@ -32060,16 +34186,15 @@ pub fn transition(command: {command}) -> {transition} {{
 }}
 
 pub fn transition_record(command: {command}) -> {transition_record} {{
-    let state_before = {state}::Ready;
+    let state_before = {state}::{initial};
     let (reply, event, branch) = match &command {{
-        {command}::Accept(_) => ({reply}::Accepted, {event}::Accepted, "Accept"),
-        {command}::Reject(reason) => (
-            {reply}::Rejected({rejection}::InvalidCommand(reason.clone())),
-            {event}::Rejected({rejection}::InvalidCommand(reason.clone())),
-            "Reject",
-        ),
+        {command}::Accept(_) => (Some({reply}::Accepted), {event}::Accepted, "Accept"),
+        {command}::Reject(reason) => {{
+            let rejection = {rejection}::InvalidCommand(reason.clone());
+            (Some({reply}::Rejected(rejection.clone())), {event}::Rejected(rejection), "Reject")
+        }}
     }};
-    let next_state = {state}::Ready;
+    let next_state = {state}::{initial};
     let output = {transition} {{
         next_state: next_state.clone(),
         events: vec![event],
@@ -32082,11 +34207,7 @@ pub fn transition_record(command: {command}) -> {transition_record} {{
         state_after: next_state,
         input: command,
         output,
-        source: {source_provenance} {{
-            file: "src/transition.rs",
-            function: "transition_record",
-            branch,
-        }},
+        source: {source_provenance} {{ file: "src/transition.rs", function: "transition_record", branch }},
     }}
 }}
 
@@ -32094,17 +34215,155 @@ pub fn replay_trace(commands: impl IntoIterator<Item = {command}>) -> Vec<{trans
     commands.into_iter().map(transition_record).collect()
 }}
 "#,
-        command = names.command,
-        effect_import = effect_import,
-        effect_type = effect_type,
-        event = names.event,
+            common = common,
+            machine = names.machine,
+            command = names.command,
+            transition = names.transition,
+            transition_record = names.transition_record,
+            state = names.state,
+            initial = initial,
+            reply = names.reply,
+            event = names.event,
+            rejection = names.rejection,
+            source_provenance = names.source_provenance,
+        );
+    }
+
+    let command_accept = if model.declares_effects {
+        format!(
+            "({state}::{waiting}, vec![{event}::EffectRequested], vec![{effect}::Execute(label.clone())], None, \"Accept\")",
+            state = names.state,
+            waiting = waiting,
+            event = names.event,
+            effect = names.effect,
+        )
+    } else {
+        format!(
+            "({state}::{completed}, vec![{event}::Accepted], Vec::new(), Some({reply}::Accepted), \"Accept\")",
+            state = names.state,
+            completed = completed,
+            event = names.event,
+            reply = names.reply,
+        )
+    };
+    let effect_result_arms = if model.declares_effect_results {
+        format!(
+            r#"
+        ({state}::{waiting}, {input}::EffectResult({effect_result}::Succeeded)) =>
+            ({state}::{completed}, vec![{event}::EffectCompleted], Vec::new(), Some({reply}::Accepted), "Succeeded"),
+        ({state}::{waiting}, {input}::EffectResult({effect_result}::Failed(reason))) => {{
+            let rejection = {rejection}::InvalidCommand(reason.clone());
+            ({state}::{rejected}, vec![{event}::Rejected(rejection.clone())], Vec::new(), Some({reply}::Rejected(rejection)), "Failed")
+        }}"#,
+            state = names.state,
+            waiting = waiting,
+            input = names.input,
+            effect_result = names.effect_result,
+            completed = completed,
+            event = names.event,
+            reply = names.reply,
+            rejection = names.rejection,
+            rejected = rejected,
+        )
+    } else {
+        String::new()
+    };
+    let observed_event_arm = if !model.declared_observed_events().is_empty() {
+        format!(
+            "\n        (_, {input}::ObservedEvent(_)) => ({state}::{completed}, vec![{event}::Accepted], Vec::new(), Some({reply}::Accepted), \"Observed\"),",
+            input = names.input,
+            state = names.state,
+            completed = completed,
+            event = names.event,
+            reply = names.reply,
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"{common}
+pub struct {machine};
+
+impl {machine} {{
+    pub fn transition(state: {state}, input: {input}) -> {transition} {{
+        transition(state, input)
+    }}
+}}
+
+pub fn transition(state: {state}, input: {input}) -> {transition} {{
+    transition_record(state, input).output
+}}
+
+pub fn transition_record(state: {state}, input: {input}) -> {transition_record} {{
+    let state_before = state.clone();
+    let (next_state, events, effects, reply, branch) = match (&state, &input) {{
+        (_, {input}::Command({command}::Accept(label))) => {command_accept},
+        (_, {input}::Command({command}::Reject(reason))) => {{
+            let rejection = {rejection}::InvalidCommand(reason.clone());
+            ({state}::{rejected}, vec![{event}::Rejected(rejection.clone())], Vec::new(), Some({reply}::Rejected(rejection)), "Reject")
+        }},{effect_result_arms}{observed_event_arm}
+        _ => {{
+            let rejection = {rejection}::IllegalTransition;
+            (state.clone(), vec![{event}::Rejected(rejection.clone())], Vec::new(), Some({reply}::Rejected(rejection)), "IllegalTransition")
+        }}
+    }};
+    let output = {transition} {{
+        next_state: next_state.clone(),
+        events,
+        commands: Vec::new(),
+        effects,
+        reply,
+    }};
+    {transition_record} {{
+        state_before,
+        state_after: next_state,
+        input,
+        output,
+        source: {source_provenance} {{ file: "src/transition.rs", function: "transition_record", branch }},
+    }}
+}}
+
+pub fn replay_trace(initial_state: {state}, inputs: impl IntoIterator<Item = {input}>) -> Vec<{transition_record}> {{
+    let mut state = initial_state;
+    let mut records = Vec::new();
+    for input in inputs {{
+        let record = transition_record(state, input);
+        state = record.state_after.clone();
+        records.push(record);
+    }}
+    records
+}}
+"#,
+        common = common,
         machine = names.machine,
-        rejection = names.rejection,
-        reply = names.reply,
-        source_provenance = names.source_provenance,
         state = names.state,
+        input = names.input,
         transition = names.transition,
         transition_record = names.transition_record,
+        command = names.command,
+        command_accept = command_accept,
+        rejection = names.rejection,
+        rejected = rejected,
+        event = names.event,
+        reply = names.reply,
+        effect_result_arms = effect_result_arms,
+        observed_event_arm = observed_event_arm,
+        source_provenance = names.source_provenance,
+    )
+}
+
+fn render_rust_effect_executor_rs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"use crate::representation::{{{effect}, {effect_result}}};
+
+pub fn execute_effect(effect: {effect}) -> {effect_result} {{
+    match effect {{
+        {effect}::Execute(_) => {effect_result}::Succeeded,
+    }}
+}}
+"#,
+        effect = names.effect,
+        effect_result = names.effect_result,
     )
 }
 
@@ -32124,12 +34383,10 @@ fn render_swift_implementation_yaml(
     let shape = model.shape;
     let source_root = format!("Sources/{target_name}");
     let public_entrypoint = format!("Sources/{target_name}/{target_name}.swift");
-    let effects_yaml = render_machine_variant_field("effects", &model.declared_effects());
-    let effect_results_yaml =
-        render_machine_variant_field("effect_results", &model.declared_effect_results());
+    let machine_yaml = render_machine_architecture_yaml(model);
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n{}\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n{}{}    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: transition\n  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n{}\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}{}  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
         yaml_quote(module_name),
         yaml_quote(&source_root),
         yaml_quote(&public_entrypoint),
@@ -32141,17 +34398,7 @@ fn render_swift_implementation_yaml(
         target_name,
         target_name,
         render_traceable_architecture_yaml(names, shape),
-        yaml_quote(&names.machine),
-        yaml_quote(machine_mode_for_shape(shape)),
-        machine_mode_extra_yaml(shape),
-        yaml_quote(&names.state),
-        yaml_string_list(&starter_states_for_shape(shape), 6),
-        yaml_quote(&names.command),
-        yaml_quote(&names.event),
-        effects_yaml,
-        effect_results_yaml,
-        yaml_quote(&names.reply),
-        yaml_quote(&names.rejection),
+        machine_yaml,
         render_traceable_roles_yaml(
             shape,
             &format!("Sources/{target_name}/Representation.swift"),
@@ -32182,13 +34429,53 @@ fn render_swift_source(target_name: &str, shape: ScaffoldShape) -> String {
 
 fn render_swift_representation(model: &BindingScaffoldModel) -> String {
     let names = &model.names;
+    let state_variants = starter_states_for_shape(model.shape)
+        .iter()
+        .map(|variant| format!("    case {}", swift_case_name(variant)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let event_variants = model
+        .declared_events()
+        .iter()
+        .map(|variant| {
+            if variant == "Rejected" {
+                format!("    case rejected({})", names.rejection)
+            } else {
+                format!("    case {}", swift_case_name(variant))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let effect_section = if model.declares_effects {
         render_swift_effect_representation(names, model.declares_effect_results)
     } else {
         String::new()
     };
+    let mut input_variants = vec![format!("    case command({})", names.command)];
+    if !model.declared_observed_events().is_empty() {
+        input_variants.push(format!("    case observedEvent({})", names.event));
+    }
+    if model.declares_effect_results {
+        input_variants.push(format!("    case effectResult({})", names.effect_result));
+    }
+    let input_section = if model.stateful() {
+        format!(
+            "public enum {}: Equatable {{\n{}\n}}\n",
+            names.input,
+            input_variants.join("\n")
+        )
+    } else {
+        String::new()
+    };
+    let malformed_rejection = if parser_expected_for_shape(model.shape.as_str()) {
+        format!("    case malformedInput({})", names.label)
+    } else {
+        String::new()
+    };
     format!(
-        r#"public struct {label}: Equatable {{
+        r#"import Foundation
+
+public struct {label}: Equatable {{
     private let rawValue: String
 
     public init?(_ rawValue: String) {{
@@ -32201,7 +34488,7 @@ fn render_swift_representation(model: &BindingScaffoldModel) -> String {
 }}
 
 public enum {state}: Equatable {{
-    case ready
+{state_variants}
 }}
 
 public enum {command}: Equatable {{
@@ -32219,8 +34506,7 @@ public struct {command_envelope}: Equatable {{
 }}
 
 public enum {event}: Equatable {{
-    case accepted
-    case rejected({rejection})
+{event_variants}
 }}
 
 public struct {event_envelope}: Equatable {{
@@ -32236,8 +34522,12 @@ public struct {event_envelope}: Equatable {{
 
 {effect_section}
 
+{input_section}
+
 public enum {rejection}: Equatable {{
     case invalidCommand({label})
+    case illegalTransition
+{malformed_rejection}
 }}
 
 public enum {reply}: Equatable {{
@@ -32250,10 +34540,14 @@ public enum {reply}: Equatable {{
         effect_section = effect_section,
         event = names.event,
         event_envelope = names.event_envelope,
+        event_variants = event_variants,
+        input_section = input_section,
         label = names.label,
+        malformed_rejection = malformed_rejection,
         rejection = names.rejection,
         reply = names.reply,
         state = names.state,
+        state_variants = state_variants,
     )
 }
 
@@ -32264,7 +34558,8 @@ fn render_swift_effect_representation(
     let effect_result_section = if include_effect_results {
         format!(
             r#"public enum {effect_result}: Equatable {{
-    case completed
+    case succeeded
+    case failed({label})
 }}
 
 public struct {effect_result_envelope}: Equatable {{
@@ -32272,20 +34567,20 @@ public struct {effect_result_envelope}: Equatable {{
     public let requester: String
     public let correlationId: String
     public let causationId: String
-    public let status: {effect_lifecycle}
+    public let status: String
     public let result: {effect_result}
 }}
 "#,
-            effect_lifecycle = names.effect_lifecycle,
             effect_result = names.effect_result,
             effect_result_envelope = names.effect_result_envelope,
+            label = names.label,
         )
     } else {
         String::new()
     };
     format!(
         r#"public enum {effect}: Equatable {{
-    case none
+    case execute({label})
 }}
 
 public struct {effect_envelope}: Equatable {{
@@ -32297,32 +34592,50 @@ public struct {effect_envelope}: Equatable {{
     public let effect: {effect}
 }}
 
-public enum {effect_lifecycle}: Equatable {{
-    case pending
-    case running
-    case succeeded
-    case failed
-    case retryScheduled
-    case abandoned
-}}
-
 {effect_result_section}
 "#,
         effect = names.effect,
         effect_envelope = names.effect_envelope,
-        effect_lifecycle = names.effect_lifecycle,
         effect_result_section = effect_result_section,
+        label = names.label,
     )
+}
+
+fn swift_case_name(value: &str) -> String {
+    lower_camel_identifier(value).unwrap_or_else(|| value.to_string())
 }
 
 fn render_swift_transition(model: &BindingScaffoldModel) -> String {
     let names = &model.names;
+    let states = starter_states_for_shape(model.shape);
+    let initial = swift_case_name(states.first().map(String::as_str).unwrap_or("Ready"));
+    let completed = swift_case_name(
+        states
+            .iter()
+            .find(|state| state.as_str() == "Completed")
+            .map(String::as_str)
+            .unwrap_or(states[0].as_str()),
+    );
+    let rejected = swift_case_name(
+        states
+            .iter()
+            .find(|state| matches!(state.as_str(), "Rejected" | "Failed"))
+            .map(String::as_str)
+            .unwrap_or(states[0].as_str()),
+    );
+    let waiting = swift_case_name(
+        states
+            .iter()
+            .find(|state| state.as_str() == "WaitingForEffect")
+            .map(String::as_str)
+            .unwrap_or(completed.as_str()),
+    );
     let effect_type = if model.declares_effects {
         names.effect.as_str()
     } else {
         "String"
     };
-    format!(
+    let common = format!(
         r#"public struct {source_provenance}: Equatable {{
     public let file: String
     public let function: String
@@ -32334,20 +34647,37 @@ public struct {transition}: Equatable {{
     public let events: [{event}]
     public let commands: [{command}]
     public let effects: [{effect_type}]
-    public let reply: {reply}
+    public let reply: {reply}?
 }}
 
 public struct {transition_record}: Equatable {{
     public let stateBefore: {state}
     public let stateAfter: {state}
-    public let input: {command}
+    public let input: {input_type}
     public let output: {transition}
     public let source: {source_provenance}
 }}
-
+"#,
+        command = names.command,
+        effect_type = effect_type,
+        event = names.event,
+        reply = names.reply,
+        source_provenance = names.source_provenance,
+        state = names.state,
+        transition = names.transition,
+        transition_record = names.transition_record,
+        input_type = if model.stateful() {
+            names.input.as_str()
+        } else {
+            names.command.as_str()
+        },
+    );
+    if !model.stateful() {
+        return format!(
+            r#"{common}
 public enum {machine} {{
     public static func transition(_ command: {command}) -> {transition} {{
-        return transition(command)
+        transitionRecord(command).output
     }}
 }}
 
@@ -32356,73 +34686,181 @@ public func transition(_ command: {command}) -> {transition} {{
 }}
 
 public func transitionRecord(_ command: {command}) -> {transition_record} {{
+    let stateBefore = {state}.{initial}
+    let nextState = {state}.{initial}
+    let event: {event}
+    let reply: {reply}
+    let branch: String
     switch command {{
     case .accept:
-        let nextState = {state}.ready
-        let output = {transition}(
-            nextState: nextState,
-            events: [.accepted],
-            commands: [],
-            effects: [],
-            reply: .accepted
-        )
-        return {transition_record}(
-            stateBefore: .ready,
-            stateAfter: nextState,
-            input: command,
-            output: output,
-            source: {source_provenance}(file: "Transition.swift", function: "transitionRecord", branch: "accept")
-        )
+        event = .accepted
+        reply = .accepted
+        branch = "Accept"
     case .reject(let reason):
-        let nextState = {state}.ready
         let rejection = {rejection}.invalidCommand(reason)
-        let output = {transition}(
-            nextState: nextState,
-            events: [.rejected(rejection)],
-            commands: [],
-            effects: [],
-            reply: .rejected(rejection)
-        )
-        return {transition_record}(
-            stateBefore: .ready,
-            stateAfter: nextState,
-            input: command,
-            output: output,
-            source: {source_provenance}(file: "Transition.swift", function: "transitionRecord", branch: "reject")
-        )
+        event = .rejected(rejection)
+        reply = .rejected(rejection)
+        branch = "Reject"
     }}
+    let output = {transition}(nextState: nextState, events: [event], commands: [], effects: [], reply: reply)
+    return {transition_record}(
+        stateBefore: stateBefore,
+        stateAfter: nextState,
+        input: command,
+        output: output,
+        source: {source_provenance}(file: "Transition.swift", function: "transitionRecord", branch: branch)
+    )
 }}
 
 public func replayTrace(_ commands: [{command}]) -> [{transition_record}] {{
     commands.map(transitionRecord)
 }}
 "#,
-        command = names.command,
-        effect_type = effect_type,
-        event = names.event,
+            common = common,
+            machine = names.machine,
+            command = names.command,
+            transition = names.transition,
+            transition_record = names.transition_record,
+            state = names.state,
+            initial = initial,
+            event = names.event,
+            reply = names.reply,
+            rejection = names.rejection,
+            source_provenance = names.source_provenance,
+        );
+    }
+
+    let accept_tuple = if model.declares_effects {
+        format!("(.{waiting}, [.effectRequested], [.execute(label)], nil, \"Accept\")")
+    } else {
+        format!("(.{completed}, [.accepted], [], .accepted, \"Accept\")")
+    };
+    let effect_arms = if model.declares_effect_results {
+        format!(
+            r#"
+    case (.{waiting}, .effectResult(.succeeded)):
+        result = (.{completed}, [.effectCompleted], [], .accepted, "Succeeded")
+    case (.{waiting}, .effectResult(.failed(let reason))):
+        let rejection = {rejection}.invalidCommand(reason)
+        result = (.{rejected}, [.rejected(rejection)], [], .rejected(rejection), "Failed")"#,
+            waiting = waiting,
+            completed = completed,
+            rejected = rejected,
+            rejection = names.rejection,
+        )
+    } else {
+        String::new()
+    };
+    let observed_arm = if !model.declared_observed_events().is_empty() {
+        format!(
+            "\n    case (_, .observedEvent):\n        result = (.{completed}, [.accepted], [], .accepted, \"Observed\")"
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"{common}
+public enum {machine} {{
+    public static func transition(_ state: {state}, _ input: {input}) -> {transition} {{
+        transitionRecord(state, input).output
+    }}
+}}
+
+public func transition(_ state: {state}, _ input: {input}) -> {transition} {{
+    transitionRecord(state, input).output
+}}
+
+public func transitionRecord(_ state: {state}, _ input: {input}) -> {transition_record} {{
+    let result: ({state}, [{event}], [{effect_type}], {reply}?, String)
+    switch (state, input) {{
+    case (_, .command(.accept(let label))):
+        result = {accept_tuple}
+    case (_, .command(.reject(let reason))):
+        let rejection = {rejection}.invalidCommand(reason)
+        result = (.{rejected}, [.rejected(rejection)], [], .rejected(rejection), "Reject"){effect_arms}{observed_arm}
+    default:
+        let rejection = {rejection}.illegalTransition
+        result = (state, [.rejected(rejection)], [], .rejected(rejection), "IllegalTransition")
+    }}
+    let (nextState, events, effects, reply, branch) = result
+    let output = {transition}(nextState: nextState, events: events, commands: [], effects: effects, reply: reply)
+    return {transition_record}(
+        stateBefore: state,
+        stateAfter: nextState,
+        input: input,
+        output: output,
+        source: {source_provenance}(file: "Transition.swift", function: "transitionRecord", branch: branch)
+    )
+}}
+
+public func replayTrace(_ initialState: {state}, _ inputs: [{input}]) -> [{transition_record}] {{
+    var state = initialState
+    return inputs.map {{ input in
+        let record = transitionRecord(state, input)
+        state = record.stateAfter
+        return record
+    }}
+}}
+"#,
+        common = common,
         machine = names.machine,
-        rejection = names.rejection,
-        reply = names.reply,
-        source_provenance = names.source_provenance,
         state = names.state,
+        input = names.input,
         transition = names.transition,
         transition_record = names.transition_record,
+        event = names.event,
+        effect_type = effect_type,
+        reply = names.reply,
+        accept_tuple = accept_tuple,
+        rejection = names.rejection,
+        rejected = rejected,
+        effect_arms = effect_arms,
+        observed_arm = observed_arm,
+        source_provenance = names.source_provenance,
     )
 }
 
-fn render_swift_tests(target_name: &str, names: &InnerStructureNames) -> String {
+fn render_swift_effect_executor(names: &InnerStructureNames) -> String {
     format!(
-        "import XCTest\n@testable import {target_name}\n\nfinal class {target_name}Tests: XCTestCase {{\n    func testRejectsEmptyValue() {{\n        XCTAssertNil({label}(\"\"))\n    }}\n\n    func testTransitionReturnsTraceableOutput() {{\n        let label = {label}(\"example\")!\n        let output = {machine}.transition(.accept(label))\n        XCTAssertEqual(output.reply, .accepted)\n        XCTAssertEqual(output.events.count, 1)\n    }}\n\n    func testTransitionReplayRecordsSourceBranch() {{\n        let label = {label}(\"example\")!\n        let records = replayTrace([.accept(label)])\n        XCTAssertEqual(records.count, 1)\n        XCTAssertEqual(records[0].source.branch, \"accept\")\n    }}\n\n    func testPropertyTransitionOutputsUseDeclaredVariants() {{\n        for raw in [\"a\", \"example\", \"generated-case-1\", \"with punctuation !?\"] {{\n            let label = {label}(raw)!\n            let output = {machine}.transition(.accept(label))\n            XCTAssertEqual(output.reply, .accepted)\n            XCTAssertEqual(output.events.count, 1)\n        }}\n    }}\n\n    func testFuzzMalformedGeneratedValuesAreRejectedByConstructor() {{\n        for raw in [\"\", \" \", \"\\n\", \"\\t\"] {{\n            XCTAssertNil({label}(raw))\n        }}\n    }}\n}}\n",
-        label = names.label,
-        machine = names.machine,
+        "public func executeEffect(_ effect: {effect}) -> {effect_result} {{\n    switch effect {{\n    case .execute(_):\n        return .succeeded\n    }}\n}}\n",
+        effect = names.effect,
+        effect_result = names.effect_result,
     )
 }
 
-fn render_js_implementation_yaml(
-    module_name: &str,
-    shape: ScaffoldShape,
-    names: &InnerStructureNames,
-) -> String {
+fn render_swift_tests(target_name: &str, model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let initial = swift_case_name(
+        starter_states_for_shape(model.shape)
+            .first()
+            .map(String::as_str)
+            .unwrap_or("Ready"),
+    );
+    let transition_call = if model.stateful() {
+        format!(
+            "{machine}.transition(.{initial}, .command(.accept(label)))",
+            machine = names.machine,
+            initial = initial,
+        )
+    } else {
+        format!("{}.transition(.accept(label))", names.machine)
+    };
+    let replay_call = if model.stateful() {
+        format!("replayTrace(.{initial}, [.command(.accept(label))])")
+    } else {
+        "replayTrace([.accept(label)])".to_string()
+    };
+    format!(
+        "import XCTest\n@testable import {target_name}\n\nfinal class {target_name}Tests: XCTestCase {{\n    func testRejectsEmptyValue() {{\n        XCTAssertNil({label}(\"\"))\n    }}\n\n    func testTransitionReturnsTraceableOutput() {{\n        let label = {label}(\"example\")!\n        let output = {transition_call}\n        XCTAssertEqual(output.events.count, 1)\n    }}\n\n    func testTransitionReplayRecordsSourceBranch() {{\n        let label = {label}(\"example\")!\n        let records = {replay_call}\n        XCTAssertEqual(records.count, 1)\n        XCTAssertEqual(records[0].source.branch, \"Accept\")\n    }}\n\n    func testPropertyTransitionOutputsUseDeclaredVariants() {{\n        for raw in [\"a\", \"example\", \"generated-case-1\", \"with punctuation !?\"] {{\n            let label = {label}(raw)!\n            let output = {transition_call}\n            XCTAssertEqual(output.events.count, 1)\n        }}\n    }}\n\n    func testFuzzMalformedGeneratedValuesAreRejectedByConstructor() {{\n        for raw in [\"\", \" \", \"\\n\", \"\\t\"] {{\n            XCTAssertNil({label}(raw))\n        }}\n    }}\n}}\n",
+        label = names.label,
+        replay_call = replay_call,
+        transition_call = transition_call,
+    )
+}
+
+fn render_js_implementation_yaml(module_name: &str, model: &BindingScaffoldModel) -> String {
+    let shape = model.shape;
+    let names = &model.names;
     let boundary_shape = matches!(
         shape,
         ScaffoldShape::BoundaryAdapter
@@ -32435,22 +34873,18 @@ fn render_js_implementation_yaml(
         "src/public.mjs"
     };
     let public_modules = if boundary_shape {
-        "    - src/representation.mjs\n    - src/parser.mjs\n    - src/ports.mjs\n    - src/adapter.mjs"
+        "    - src/representation.mjs\n    - src/transition.mjs\n    - src/parser.mjs\n    - src/ports.mjs\n    - src/adapter.mjs"
     } else {
         "    - src/public.mjs\n    - src/representation.mjs\n    - src/transition.mjs"
     };
-    let transition_function = if boundary_shape {
-        "handleBoundaryTransition"
-    } else {
-        "transition"
-    };
+    let transition_function = "transition";
     let roles = if boundary_shape {
         format!(
             "{}    adapter:\n      - src/adapter.mjs\n",
             render_traceable_roles_yaml_with_parser(
                 shape,
                 "src/representation.mjs",
-                "src/adapter.mjs",
+                "src/transition.mjs",
                 "src/parser.mjs",
             )
         )
@@ -32458,7 +34892,7 @@ fn render_js_implementation_yaml(
         render_traceable_roles_yaml(shape, "src/representation.mjs", "src/transition.mjs")
     };
     let transition_semantic_function = if boundary_shape {
-        ""
+        "  - id: transition-model\n    symbol: src/transition.mjs#transition\n    kind: transition\n    purity: pure\n    evidence:\n      boundaries:\n        - verification/boundaries/malformed_input.md\n      traces:\n        - verification/traces/boundary_parse.yaml\n"
     } else {
         "  - id: transition-model\n    symbol: src/transition.mjs#transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n      traces:\n        - verification/traces/transition_trace.yaml\n"
     };
@@ -32467,8 +34901,10 @@ fn render_js_implementation_yaml(
     } else {
         ""
     };
+    let machine_yaml = render_machine_architecture_yaml(model);
+    let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n{}\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\n{}architecture:\n  shape: {}\n  public_modules:\n{}\n{}  machine:\n    name: {}\n    mode: {}\n{}    state: {}\n    states:\n{}\n    commands:\n      - {}\n    events:\n      - {}\n    effects:\n      - {}\n    effect_results:\n      - {}\n    replies:\n      - {}\n    rejections:\n      - {}\n    transition_function: {}\n  roles:\n{}  representation:\n    closed_variants:\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n      - {}\n    validated_values:\n      - make{}\n    transition_functions:\n      - {}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n{}{}{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n{}\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\n{}architecture:\n  shape: {}\n  public_modules:\n{}\n{}{}  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - make{}\n    transition_functions:\n      - {}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n{}{}{}",
         yaml_quote(module_name),
         yaml_quote(public_entrypoint),
         render_property_commands_yaml(shape, "js"),
@@ -32476,34 +34912,9 @@ fn render_js_implementation_yaml(
         yaml_quote(shape.as_str()),
         public_modules,
         render_traceable_architecture_yaml(names, shape),
-        yaml_quote(&names.machine),
-        yaml_quote(machine_mode_for_shape(shape)),
-        machine_mode_extra_yaml(shape),
-        yaml_quote(&names.state),
-        yaml_string_list(&starter_states_for_shape(shape), 6),
-        yaml_quote(&names.command),
-        yaml_quote(&names.event),
-        yaml_quote(&names.effect),
-        yaml_quote(&names.effect_result),
-        yaml_quote(&names.reply),
-        yaml_quote(&names.rejection),
-        yaml_quote(transition_function),
+        machine_yaml,
         roles,
-        yaml_quote(&names.state),
-        yaml_quote(&names.command),
-        yaml_quote(&names.command_envelope),
-        yaml_quote(&names.event),
-        yaml_quote(&names.event_envelope),
-        yaml_quote(&names.effect),
-        yaml_quote(&names.effect_envelope),
-        yaml_quote(&names.effect_result),
-        yaml_quote(&names.effect_result_envelope),
-        yaml_quote(&names.effect_lifecycle),
-        yaml_quote(&names.reply),
-        yaml_quote(&names.rejection),
-        yaml_quote(&names.transition),
-        yaml_quote(&names.transition_record),
-        yaml_quote(&names.source_provenance),
+        closed_variants_yaml,
         names.label,
         transition_function,
         names.label,
@@ -32531,7 +34942,9 @@ fn render_js_distribution_yaml(
     )
 }
 
-fn render_js_representation_mjs(names: &InnerStructureNames, shape: ScaffoldShape) -> String {
+fn render_js_representation_mjs(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let shape = model.shape;
     let initial_state = starter_states_for_shape(shape)
         .first()
         .cloned()
@@ -32548,6 +34961,39 @@ fn render_js_representation_mjs(names: &InnerStructureNames, shape: ScaffoldShap
         .join("");
     let effect_section = if scaffold_declares_effects_by_default(shape) {
         render_js_effect_representation_mjs(names)
+    } else {
+        String::new()
+    };
+    let extra_event_makers = model
+        .declared_events()
+        .iter()
+        .filter(|variant| !matches!(variant.as_str(), "Accepted" | "Rejected"))
+        .map(|variant| {
+            format!(
+                "export function make{event}{variant}() {{\n  return Object.freeze({{ tag: \"{event}.{variant}\" }});\n}}\n",
+                event = names.event,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut input_makers = vec![format!(
+        "export function make{input}Command(command) {{\n  return Object.freeze({{ tag: \"{input}.Command\", command }});\n}}",
+        input = names.input,
+    )];
+    if !model.declared_observed_events().is_empty() {
+        input_makers.push(format!(
+            "export function make{input}ObservedEvent(event) {{\n  return Object.freeze({{ tag: \"{input}.ObservedEvent\", event }});\n}}",
+            input = names.input,
+        ));
+    }
+    if model.declares_effect_results {
+        input_makers.push(format!(
+            "export function make{input}EffectResult(effectResult) {{\n  return Object.freeze({{ tag: \"{input}.EffectResult\", effect_result: effectResult }});\n}}",
+            input = names.input,
+        ));
+    }
+    let input_section = if model.stateful() {
+        input_makers.join("\n\n")
     } else {
         String::new()
     };
@@ -32593,6 +35039,8 @@ export function make{event}Rejected(rejection) {{
   return Object.freeze({{ tag: "{event}.Rejected", rejection }});
 }}
 
+{extra_event_makers}
+
 export function make{event_envelope}(event, metadata = {{}}) {{
   return Object.freeze({{
     tag: "{event_envelope}",
@@ -32609,12 +35057,18 @@ export function make{event_envelope}(event, metadata = {{}}) {{
 
 {effect_section}
 
+{input_section}
+
 export function make{rejection}InvalidCommand(reason) {{
   return Object.freeze({{ tag: "{rejection}.InvalidCommand", reason }});
 }}
 
 export function make{rejection}MalformedInput(reason) {{
   return Object.freeze({{ tag: "{rejection}.MalformedInput", reason }});
+}}
+
+export function make{rejection}IllegalTransition() {{
+  return Object.freeze({{ tag: "{rejection}.IllegalTransition" }});
 }}
 
 export function make{reply}Accepted() {{
@@ -32624,12 +35078,22 @@ export function make{reply}Accepted() {{
 export function make{reply}Rejected(rejection) {{
   return Object.freeze({{ tag: "{reply}.Rejected", rejection }});
 }}
+
+export function make{transition}(fields) {{
+  return Object.freeze({{ tag: "{transition}", ...fields }});
+}}
+
+export function make{transition_record}(fields) {{
+  return Object.freeze({{ tag: "{transition_record}", ...fields }});
+}}
 "#,
         command = names.command,
         command_envelope = names.command_envelope,
         effect_section = effect_section,
         event = names.event,
         event_envelope = names.event_envelope,
+        extra_event_makers = extra_event_makers,
+        input_section = input_section,
         label = names.label,
         machine = names.machine,
         rejection = names.rejection,
@@ -32637,13 +35101,15 @@ export function make{reply}Rejected(rejection) {{
         initial_state = initial_state,
         state_variants = state_variants,
         state = names.state,
+        transition = names.transition,
+        transition_record = names.transition_record,
     )
 }
 
 fn render_js_effect_representation_mjs(names: &InnerStructureNames) -> String {
     format!(
-        r#"export function make{effect}None() {{
-  return Object.freeze({{ tag: "{effect}.None" }});
+        r#"export function make{effect}Execute(label) {{
+  return Object.freeze({{ tag: "{effect}.Execute", label }});
 }}
 
 export function make{effect_envelope}(effect, metadata = {{}}) {{
@@ -32658,18 +35124,13 @@ export function make{effect_envelope}(effect, metadata = {{}}) {{
   }});
 }}
 
-export function make{effect_result}Completed() {{
-  return Object.freeze({{ tag: "{effect_result}.Completed" }});
+export function make{effect_result}Succeeded() {{
+  return Object.freeze({{ tag: "{effect_result}.Succeeded" }});
 }}
 
-export const {effect_lifecycle} = Object.freeze({{
-  Pending: "{effect_lifecycle}.Pending",
-  Running: "{effect_lifecycle}.Running",
-  Succeeded: "{effect_lifecycle}.Succeeded",
-  Failed: "{effect_lifecycle}.Failed",
-  RetryScheduled: "{effect_lifecycle}.RetryScheduled",
-  Abandoned: "{effect_lifecycle}.Abandoned",
-}});
+export function make{effect_result}Failed(reason) {{
+  return Object.freeze({{ tag: "{effect_result}.Failed", reason }});
+}}
 
 export function make{effect_result_envelope}(result, metadata = {{}}) {{
   return Object.freeze({{
@@ -32678,29 +35139,85 @@ export function make{effect_result_envelope}(result, metadata = {{}}) {{
     requester: metadata.requester ?? "{machine}",
     correlation_id: metadata.correlation_id ?? "correlation-1",
     causation_id: metadata.causation_id ?? "command-1",
-    status: metadata.status ?? {effect_lifecycle}.Succeeded,
+    status: metadata.status ?? "succeeded",
     result,
   }});
 }}
 "#,
         effect = names.effect,
         effect_envelope = names.effect_envelope,
-        effect_lifecycle = names.effect_lifecycle,
         effect_result = names.effect_result,
         effect_result_envelope = names.effect_result_envelope,
         machine = names.machine,
     )
 }
 
-fn render_js_transition_mjs(names: &InnerStructureNames) -> String {
+fn render_js_effect_executor_mjs(names: &InnerStructureNames) -> String {
     format!(
-        r#"import {{
-  initial{state},
-  make{event}Accepted,
-  make{event}Rejected,
-  make{rejection}InvalidCommand,
-  make{reply}Accepted,
-  make{reply}Rejected,
+        r#"import {{ make{effect_result}Failed, make{effect_result}Succeeded }} from "./representation.mjs";
+
+export function executeEffect(effect) {{
+  if (effect?.tag === "{effect}.Execute") {{
+    return make{effect_result}Succeeded();
+  }}
+  return make{effect_result}Failed("unknown-effect");
+}}
+"#,
+        effect = names.effect,
+        effect_result = names.effect_result,
+    )
+}
+
+fn render_js_transition_mjs(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let states = starter_states_for_shape(model.shape);
+    let initial = states.first().map(String::as_str).unwrap_or("Ready");
+    let completed = states
+        .iter()
+        .find(|state| state.as_str() == "Completed")
+        .map(String::as_str)
+        .unwrap_or(initial);
+    let rejected = states
+        .iter()
+        .find(|state| matches!(state.as_str(), "Rejected" | "Failed"))
+        .map(String::as_str)
+        .unwrap_or(initial);
+    let waiting = states
+        .iter()
+        .find(|state| state.as_str() == "WaitingForEffect")
+        .map(String::as_str)
+        .unwrap_or(completed);
+    let mut imports = vec![
+        initial.to_string(),
+        completed.to_string(),
+        rejected.to_string(),
+        format!("make{}Accepted", names.event),
+        format!("make{}Rejected", names.event),
+        format!("make{}InvalidCommand", names.rejection),
+        format!("make{}IllegalTransition", names.rejection),
+        format!("make{}Accepted", names.reply),
+        format!("make{}Rejected", names.reply),
+    ];
+    if model.declares_effects {
+        imports.extend([
+            waiting.to_string(),
+            format!("make{}EffectRequested", names.event),
+            format!("make{}EffectCompleted", names.event),
+            format!("make{}Execute", names.effect),
+        ]);
+    }
+    imports.sort();
+    imports.dedup();
+    let imports = imports
+        .iter()
+        .map(|name| format!("  {name},"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if !model.stateful() {
+        return format!(
+            r#"import {{
+{imports}
 }} from "./representation.mjs";
 
 export function transition(command) {{
@@ -32708,75 +35225,173 @@ export function transition(command) {{
 }}
 
 export function transitionRecord(command) {{
-  const stateBefore = initial{state}();
+  const stateBefore = {initial};
   let reply;
   let event;
   let branch;
-  switch (command?.tag) {{
-    case "{command}.Accept":
-      reply = make{reply}Accepted();
-      event = make{event}Accepted();
-      branch = "Accept";
-      break;
-    case "{command}.Reject":
-      {{
-        const rejection = make{rejection}InvalidCommand(command.reason);
-        reply = make{reply}Rejected(rejection);
-        event = make{event}Rejected(rejection);
-        branch = "Reject";
-      }}
-      break;
-    default:
-      {{
-        const rejection = make{rejection}InvalidCommand("unknown-command");
-        reply = make{reply}Rejected(rejection);
-        event = make{event}Rejected(rejection);
-        branch = "Unknown";
-      }}
+  if (command?.tag === "{command}.Accept") {{
+    reply = make{reply}Accepted();
+    event = make{event}Accepted();
+    branch = "Accept";
+  }} else {{
+    const rejection = make{rejection}InvalidCommand(command?.reason);
+    reply = make{reply}Rejected(rejection);
+    event = make{event}Rejected(rejection);
+    branch = "Reject";
   }}
-  const nextState = initial{state}();
   const output = Object.freeze({{
-    tag: "{transition}",
-    next_state: nextState,
-    events: Object.freeze([event]),
-    commands: Object.freeze([]),
-    effects: Object.freeze([]),
-    reply,
+    tag: "{transition}", next_state: {initial}, events: Object.freeze([event]),
+    commands: Object.freeze([]), effects: Object.freeze([]), reply,
   }});
   return Object.freeze({{
-    tag: "{transition_record}",
-    state_before: stateBefore,
-    state_after: nextState,
-    input: command,
-    output,
-    source: Object.freeze({{
-      tag: "{source_provenance}",
-      file: "src/transition.mjs",
-      function: "transitionRecord",
-      branch,
-    }}),
+    tag: "{transition_record}", state_before: stateBefore, state_after: {initial}, input: command, output,
+    source: Object.freeze({{ tag: "{source_provenance}", file: "src/transition.mjs", function: "transitionRecord", branch }}),
   }});
 }}
 
-export function replayTrace(commands) {{
-  return commands.map(transitionRecord);
+export function replayTrace(commands) {{ return commands.map(transitionRecord); }}
+export const {machine} = Object.freeze({{ transition, transitionRecord, replayTrace }});
+"#,
+            imports = imports,
+            initial = initial,
+            command = names.command,
+            reply = names.reply,
+            event = names.event,
+            rejection = names.rejection,
+            transition = names.transition,
+            transition_record = names.transition_record,
+            source_provenance = names.source_provenance,
+            machine = names.machine,
+        );
+    }
+
+    let accept_body = if model.declares_effects {
+        format!(
+            "nextState = {waiting};\n      events = [make{event}EffectRequested()];\n      effects = [make{effect}Execute(command.label)];\n      reply = null;",
+            event = names.event,
+            effect = names.effect,
+        )
+    } else {
+        format!(
+            "nextState = {completed};\n      events = [make{event}Accepted()];\n      effects = [];\n      reply = make{reply}Accepted();",
+            event = names.event,
+            reply = names.reply,
+        )
+    };
+    let result_branches = if model.declares_effect_results {
+        format!(
+            r#" else if (state?.tag === "{state}.{waiting}" && input?.tag === "{input}.EffectResult" && input.effect_result?.tag === "{effect_result}.Succeeded") {{
+    nextState = {waiting_success};
+    events = [make{event}EffectCompleted()];
+    effects = [];
+    reply = make{reply}Accepted();
+    branch = "Succeeded";
+  }} else if (state?.tag === "{state}.{waiting}" && input?.tag === "{input}.EffectResult" && input.effect_result?.tag === "{effect_result}.Failed") {{
+    const rejection = make{rejection}InvalidCommand(input.effect_result.reason);
+    nextState = {rejected};
+    events = [make{event}Rejected(rejection)];
+    effects = [];
+    reply = make{reply}Rejected(rejection);
+    branch = "Failed";
+  }}"#,
+            state = names.state,
+            waiting = waiting,
+            input = names.input,
+            effect_result = names.effect_result,
+            waiting_success = completed,
+            event = names.event,
+            reply = names.reply,
+            rejection = names.rejection,
+            rejected = rejected,
+        )
+    } else {
+        String::new()
+    };
+    let observed_branch = if !model.declared_observed_events().is_empty() {
+        format!(
+            r#" else if (input?.tag === "{input}.ObservedEvent") {{
+    nextState = {completed};
+    events = [make{event}Accepted()];
+    effects = [];
+    reply = make{reply}Accepted();
+    branch = "Observed";
+  }}"#,
+            input = names.input,
+            event = names.event,
+            reply = names.reply,
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"import {{
+{imports}
+}} from "./representation.mjs";
+
+export function transition(state, input) {{
+  return transitionRecord(state, input).output;
 }}
 
-export const {machine} = Object.freeze({{
-  transition,
-  transitionRecord,
-  replayTrace,
-}});
+export function transitionRecord(state, input) {{
+  let nextState;
+  let events;
+  let effects;
+  let reply;
+  let branch;
+  if (input?.tag === "{input}.Command" && input.command?.tag === "{command}.Accept") {{
+    const command = input.command;
+    {accept_body}
+    branch = "Accept";
+  }} else if (input?.tag === "{input}.Command" && input.command?.tag === "{command}.Reject") {{
+    const rejection = make{rejection}InvalidCommand(input.command.reason);
+    nextState = {rejected};
+    events = [make{event}Rejected(rejection)];
+    effects = [];
+    reply = make{reply}Rejected(rejection);
+    branch = "Reject";
+  }}{result_branches}{observed_branch} else {{
+    const rejection = make{rejection}IllegalTransition();
+    nextState = state;
+    events = [make{event}Rejected(rejection)];
+    effects = [];
+    reply = make{reply}Rejected(rejection);
+    branch = "IllegalTransition";
+  }}
+  const output = Object.freeze({{
+    tag: "{transition}", next_state: nextState, events: Object.freeze(events),
+    commands: Object.freeze([]), effects: Object.freeze(effects), reply,
+  }});
+  return Object.freeze({{
+    tag: "{transition_record}", state_before: state, state_after: nextState, input, output,
+    source: Object.freeze({{ tag: "{source_provenance}", file: "src/transition.mjs", function: "transitionRecord", branch }}),
+  }});
+}}
+
+export function replayTrace(initialState, inputs) {{
+  let state = initialState;
+  return inputs.map((input) => {{
+    const record = transitionRecord(state, input);
+    state = record.state_after;
+    return record;
+  }});
+}}
+
+export const {machine} = Object.freeze({{ transition, transitionRecord, replayTrace }});
 "#,
+        imports = imports,
+        input = names.input,
         command = names.command,
-        event = names.event,
-        machine = names.machine,
+        accept_body = accept_body,
         rejection = names.rejection,
+        rejected = rejected,
+        event = names.event,
         reply = names.reply,
-        source_provenance = names.source_provenance,
-        state = names.state,
+        result_branches = result_branches,
+        observed_branch = observed_branch,
         transition = names.transition,
         transition_record = names.transition_record,
+        source_provenance = names.source_provenance,
+        machine = names.machine,
     )
 }
 
@@ -32838,85 +35453,29 @@ export function parseCommand(input) {{
 fn render_js_adapter_mjs(names: &InnerStructureNames, shape: ScaffoldShape) -> String {
     let states = starter_states_for_shape(shape);
     let state_before = states.first().map(String::as_str).unwrap_or("Ready");
-    let accepted_state = states
-        .iter()
-        .find(|state| state.as_str() == "Completed")
-        .or_else(|| states.iter().find(|state| state.as_str() == "Ready"))
-        .map(String::as_str)
-        .unwrap_or(state_before);
-    let rejected_state = states
-        .iter()
-        .find(|state| state.as_str() == "Rejected")
-        .or_else(|| states.iter().find(|state| state.as_str() == "Failed"))
-        .map(String::as_str)
-        .unwrap_or(state_before);
-    let mut state_imports = Vec::<&str>::new();
-    for state in [state_before, accepted_state, rejected_state] {
-        if !state_imports.contains(&state) {
-            state_imports.push(state);
-        }
-    }
-    let state_imports = state_imports.join(",\n  ");
     format!(
         r#"import {{
-  {state_imports},
-  make{event}Accepted,
-  make{event}Rejected,
-  make{reply}Accepted,
-  make{reply}Rejected,
+  {state_before},
+  make{command}Reject,
+  make{input}Command,
+  make{label},
 }} from "./representation.mjs";
 import {{ parseCommand }} from "./parser.mjs";
-
-function boundaryOutput(nextState, event, reply) {{
-  return Object.freeze({{
-    tag: "{transition}",
-    next_state: nextState,
-    events: Object.freeze([event]),
-    commands: Object.freeze([]),
-    effects: Object.freeze([]),
-    reply,
-  }});
-}}
+import {{ transitionRecord }} from "./transition.mjs";
 
 export function handleBoundaryTransition(input, ports) {{
-  const stateBefore = {state_before};
   const parsed = parseCommand(input);
   if (parsed.tag === "{prefix}ParseRejected") {{
-    const reply = make{reply}Rejected(parsed.rejection);
-    const event = make{event}Rejected(parsed.rejection);
-    const output = boundaryOutput({rejected_state}, event, reply);
-    return Object.freeze({{
-      tag: "{transition_record}",
-      state_before: stateBefore,
-      state_after: {rejected_state},
-      input,
-      output,
-      source: Object.freeze({{
-        tag: "{source_provenance}",
-        file: "src/adapter.mjs",
-        function: "handleBoundaryTransition",
-        branch: "ParseRejected",
-      }}),
-    }});
+    const reason = make{label}(parsed.rejection?.reason ?? "malformed-input");
+    return transitionRecord({state_before}, make{input}Command(make{command}Reject(reason)));
   }}
 
+  const record = transitionRecord(
+    {state_before},
+    make{input}Command(parsed.command_envelope.command),
+  );
   ports?.write?.(parsed.command_envelope);
-  const reply = make{reply}Accepted();
-  const event = make{event}Accepted();
-  const output = boundaryOutput({accepted_state}, event, reply);
-  return Object.freeze({{
-    tag: "{transition_record}",
-    state_before: stateBefore,
-    state_after: {accepted_state},
-    input: parsed.command_envelope,
-    output,
-    source: Object.freeze({{
-      tag: "{source_provenance}",
-      file: "src/adapter.mjs",
-      function: "handleBoundaryTransition",
-      branch: "ParsedCommand",
-    }}),
-  }});
+  return record;
 }}
 
 export function handleBoundaryInput(input, ports) {{
@@ -32928,25 +35487,52 @@ export const {machine} = Object.freeze({{
   handleBoundaryInput,
 }});
 "#,
-        accepted_state = accepted_state,
-        event = names.event,
+        command = names.command,
+        input = names.input,
+        label = names.label,
         machine = names.machine,
         prefix = names.prefix,
-        rejected_state = rejected_state,
-        reply = names.reply,
-        source_provenance = names.source_provenance,
         state_before = state_before,
-        state_imports = state_imports,
-        transition = names.transition,
-        transition_record = names.transition_record,
     )
 }
 
-fn render_js_trace_test_mjs(names: &InnerStructureNames) -> String {
+fn render_js_trace_test_mjs(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let states = starter_states_for_shape(model.shape);
+    let initial = states.first().map(String::as_str).unwrap_or("Ready");
+    let input_import = if model.stateful() {
+        format!("  make{}Command,\n", names.input)
+    } else {
+        String::new()
+    };
+    let transition_call = if model.stateful() {
+        format!(
+            "{machine}.transition({initial}, make{input}Command(make{command}Accept(label)))",
+            machine = names.machine,
+            input = names.input,
+            command = names.command,
+        )
+    } else {
+        format!(
+            "{machine}.transition(make{command}Accept(label))",
+            machine = names.machine,
+            command = names.command,
+        )
+    };
+    let replay_call = if model.stateful() {
+        format!(
+            "replayTrace({initial}, [make{input}Command(make{command}Accept(label))])",
+            input = names.input,
+            command = names.command,
+        )
+    } else {
+        format!("replayTrace([make{}Accept(label)])", names.command)
+    };
     format!(
         r#"import assert from "node:assert/strict";
 import test from "node:test";
 import {{
+{input_import}  {initial},
   make{command}Accept,
   make{label},
 }} from "../src/representation.mjs";
@@ -32958,26 +35544,25 @@ test("{machine} rejects invalid representation", () => {{
 
 test("{machine} replays accepted commands", () => {{
   const label = make{label}("example");
-  assert.deepEqual(replayTrace([make{command}Accept(label)]).map((item) => item.output.reply.tag), [
-    "{reply}.Accepted",
-  ]);
-  assert.equal(replayTrace([make{command}Accept(label)])[0].source.branch, "Accept");
-  assert.equal({machine}.transition(make{command}Accept(label)).reply.tag, "{reply}.Accepted");
+  assert.equal({replay_call}[0].source.branch, "Accept");
+  assert.equal({transition_call}.events.length, 1);
 }});
 
 test("{machine} property generated labels use declared variants", () => {{
   for (const raw of ["a", "example", "generated-case-1", "with punctuation !?"]) {{
     const label = make{label}(raw);
-    const output = {machine}.transition(make{command}Accept(label));
-    assert.equal(output.reply.tag, "{reply}.Accepted");
+    const output = {transition_call};
     assert.equal(output.events.length, 1);
   }}
 }});
 "#,
         command = names.command,
+        initial = initial,
+        input_import = input_import,
         label = names.label,
         machine = names.machine,
-        reply = names.reply,
+        replay_call = replay_call,
+        transition_call = transition_call,
     )
 }
 
@@ -33089,15 +35674,24 @@ fn render_js_browser_surface_html(script_src: &str, entrypoint: &str) -> String 
     )
 }
 
-fn render_executable_implementation_yaml(module_name: &str, shape: ScaffoldShape) -> String {
+fn render_executable_implementation_yaml(model: &BindingScaffoldModel) -> String {
+    let module_name = &model.module_name;
+    let shape = model.shape;
+    let machine_yaml = render_machine_architecture_yaml(model);
+    let effect_role = if model.declares_effects {
+        "    effect_executor:\n      - scripts/smoke.sh\n"
+    } else {
+        ""
+    };
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: shell\n\ndependencies:\n  allowed_processes:\n    - sh\n\narchitecture:\n  shape: {}\n  verification_mode: executable-command\n  static_inspection: opaque\n  public_entrypoints:\n    - scripts/smoke.sh\n  semantic_roles:\n{}\n  boundary_inputs: []\n  observable_outputs: []\n  declared_assets: []\n\nsemantic_functions:\n  - id: executable-semantic-smoke\n    symbol: scripts/smoke.sh\n    kind: adapter\n    purity: boundary\n    assumptions:\n      ensures:\n        - command-backed implementation can be invoked through the declared verify command\n        - semantic roles are documented as scaffold obligations rather than statically inferred from opaque executable assets\n        - RMS does not infer internal domain semantics from opaque executable assets\n    evidence:\n      boundaries:\n        - verification/boundaries/executable_smoke.md\n",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n\ntoolchain:\n  runner: shell\n\ndependencies:\n  allowed_processes:\n    - sh\n\narchitecture:\n  shape: {}\n  verification_mode: executable-command\n  static_inspection: opaque\n  public_entrypoints:\n    - scripts/smoke.sh\n{}  roles:\n    representation:\n      - implementation.yaml\n    transition:\n      - scripts/smoke.sh\n    adapter:\n      - scripts/smoke.sh\n  boundary_inputs: []\n  observable_outputs: []\n  declared_assets: []\n\nsemantic_functions:\n  - id: executable-semantic-smoke\n    symbol: scripts/smoke.sh\n    kind: adapter\n    purity: boundary\n    assumptions:\n      ensures:\n        - command-backed implementation can be invoked through the declared verify command\n        - semantic roles are declared canonically and proved through commands and traces\n        - RMS does not infer internal domain semantics from opaque executable assets\n    evidence:\n      boundaries:\n        - verification/boundaries/executable_smoke.md\n",
         yaml_quote(module_name),
         yaml_quote(shape.as_str()),
-        yaml_string_list(
-            &shape.roles().iter().map(|role| (*role).to_string()).collect::<Vec<_>>(),
-            4
-        )
+        machine_yaml,
+    )
+    .replace(
+        "  boundary_inputs: []",
+        &format!("{effect_role}  boundary_inputs: []"),
     )
 }
 
@@ -33116,198 +35710,204 @@ fn render_transition_trace_evidence(names: &InnerStructureNames) -> String {
     )
 }
 
-fn render_transition_trace_bundle(names: &InnerStructureNames) -> String {
-    format!(
-        r#"spec: rms/trace-bundle/v0.1
-machine: {machine}
-records:
-  - id: accepted-1
-    state_before: Ready
-    input:
-      command_id: command-accepted-1
-      target_machine: {machine}
-      correlation_id: correlation-accepted-1
-      causation_id: user-request-1
-      idempotency_key: null
-      command:
-        tag: {command}.Accept
-    output:
-      next_state: Ready
-      events:
-        - event_id: event-accepted-1
-          source_machine: {machine}
-          correlation_id: correlation-accepted-1
-          causation_id: command-accepted-1
-          sequence: 1
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event:
-            tag: {event}.Accepted
-      commands: []
-      effects: []
-      reply:
-        tag: {reply}.Accepted
-    state_after: Ready
-    source:
-      file: verification/traces/transition_trace.yaml
-      function: transition
-      branch: accepted
-  - id: rejected-1
-    state_before: Ready
-    input:
-      command_id: command-rejected-1
-      target_machine: {machine}
-      correlation_id: correlation-rejected-1
-      causation_id: user-request-2
-      idempotency_key: null
-      command:
-        tag: {command}.Reject
-    output:
-      next_state: Ready
-      events:
-        - event_id: event-rejected-1
-          source_machine: {machine}
-          correlation_id: correlation-rejected-1
-          causation_id: command-rejected-1
-          sequence: 2
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event:
-            tag: {event}.Rejected
-      commands: []
-      effects: []
-      reply:
-        tag: {reply}.Rejected
-    state_after: Ready
-    source:
-      file: verification/traces/transition_trace.yaml
-      function: transition
-      branch: rejected
-"#,
-        machine = names.machine,
-        command = names.command,
-        event = names.event,
-        reply = names.reply,
-    )
+fn render_transition_trace_bundle(names: &InnerStructureNames, shape: ScaffoldShape) -> String {
+    let states = starter_states_for_shape(shape);
+    let initial = states.first().map(String::as_str).unwrap_or("Ready");
+    let completed = states
+        .iter()
+        .find(|state| state.as_str() == "Completed")
+        .map(String::as_str)
+        .unwrap_or(initial);
+    let rejected = states
+        .iter()
+        .find(|state| matches!(state.as_str(), "Rejected" | "Failed"))
+        .map(String::as_str)
+        .unwrap_or(initial);
+    let waiting = states
+        .iter()
+        .find(|state| state.as_str() == "WaitingForEffect")
+        .map(String::as_str)
+        .unwrap_or(completed);
+    let mut out = format!(
+        "spec: rms/trace-bundle/v0.1\nmachine: {}\nrecords:\n",
+        names.machine
+    );
+    let mut sequence = 1;
+    if scaffold_declares_effects_by_default(shape) {
+        append_generated_trace_record(
+            &mut out,
+            names,
+            sequence,
+            true,
+            initial,
+            "command",
+            "Accept",
+            waiting,
+            "EffectRequested",
+            Some("Execute"),
+            None,
+        );
+        sequence += 1;
+        append_generated_trace_record(
+            &mut out,
+            names,
+            sequence,
+            false,
+            waiting,
+            "effect_result",
+            "Succeeded",
+            completed,
+            "EffectCompleted",
+            None,
+            Some("Accepted"),
+        );
+        sequence += 1;
+        append_generated_trace_record(
+            &mut out,
+            names,
+            sequence,
+            true,
+            initial,
+            "command",
+            "Accept",
+            waiting,
+            "EffectRequested",
+            Some("Execute"),
+            None,
+        );
+        sequence += 1;
+        append_generated_trace_record(
+            &mut out,
+            names,
+            sequence,
+            false,
+            waiting,
+            "effect_result",
+            "Failed",
+            rejected,
+            "Rejected",
+            None,
+            Some("Rejected"),
+        );
+        sequence += 1;
+        append_generated_trace_record(
+            &mut out,
+            names,
+            sequence,
+            true,
+            initial,
+            "command",
+            "Reject",
+            rejected,
+            "Rejected",
+            None,
+            Some("Rejected"),
+        );
+    } else {
+        append_generated_trace_record(
+            &mut out,
+            names,
+            sequence,
+            true,
+            initial,
+            "command",
+            "Accept",
+            completed,
+            "Accepted",
+            None,
+            Some("Accepted"),
+        );
+        append_generated_trace_record(
+            &mut out,
+            names,
+            sequence + 1,
+            true,
+            initial,
+            "command",
+            "Reject",
+            rejected,
+            "Rejected",
+            None,
+            Some("Rejected"),
+        );
+    }
+    out
 }
 
-fn render_boundary_parse_trace_bundle(names: &InnerStructureNames) -> String {
-    let domain_machine = names
-        .machine
-        .strip_suffix("BoundaryMachine")
-        .map(|prefix| format!("{prefix}Machine"))
-        .unwrap_or_else(|| names.machine.clone());
-    format!(
-        r#"spec: rms/trace-bundle/v0.1
-machine: {machine}
-records:
-  - id: parsed-1
-    state_before: AwaitingInput
-    input:
-      command_id: boundary-input-1
-      target_machine: {machine}
-      correlation_id: boundary-correlation-1
-      causation_id: user-request-1
-      idempotency_key: null
-      command:
-        tag: {command}.RawInputReceived
-    output:
-      next_state: ParsedCommand
-      events:
-        - event_id: boundary-event-1
-          source_machine: {machine}
-          correlation_id: boundary-correlation-1
-          causation_id: boundary-input-1
-          sequence: 1
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event:
-            tag: {event}.DomainCommandParsed
-      commands: []
-      effects: []
-      reply:
-        tag: {reply}.Parsed
-    state_after: ParsedCommand
-    source:
-      file: verification/traces/boundary_parse.yaml
-      function: parse-and-adapt
-      branch: parsed
-  - id: delegated-1
-    state_before: ParsedCommand
-    input:
-      command_id: boundary-delegate-1
-      target_machine: {machine}
-      correlation_id: boundary-correlation-1
-      causation_id: boundary-input-1
-      idempotency_key: null
-      command:
-        tag: {command}.DelegateDomainCommand
-    output:
-      next_state: Delegating
-      events:
-        - event_id: boundary-event-2
-          source_machine: {machine}
-          correlation_id: boundary-correlation-1
-          causation_id: boundary-delegate-1
-          sequence: 2
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event:
-            tag: {event}.DomainCommandDelegated
-      commands:
-        - command_id: domain-command-1
-          target_machine: {domain_machine}
-          correlation_id: boundary-correlation-1
-          causation_id: boundary-delegate-1
-          idempotency_key: null
-          command:
-            tag: {command}.Accept
-      effects: []
-      reply:
-        tag: {reply}.Delegated
-    state_after: Delegating
-    source:
-      file: verification/traces/boundary_parse.yaml
-      function: parse-and-adapt
-      branch: delegated
-  - id: completed-1
-    state_before: Delegating
-    input:
-      command_id: boundary-complete-1
-      target_machine: {machine}
-      correlation_id: boundary-correlation-1
-      causation_id: domain-command-1
-      idempotency_key: null
-      command:
-        tag: {command}.DomainReplyReceived
-    output:
-      next_state: Completed
-      events:
-        - event_id: boundary-event-3
-          source_machine: {machine}
-          correlation_id: boundary-correlation-1
-          causation_id: boundary-complete-1
-          sequence: 3
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event:
-            tag: {event}.BoundaryCompleted
-      commands: []
-      effects: []
-      reply:
-        tag: {reply}.Accepted
-    state_after: Completed
-    source:
-      file: verification/traces/boundary_parse.yaml
-      function: parse-and-adapt
-      branch: completed
-"#,
-        machine = names.machine,
-        domain_machine = domain_machine,
-        command = names.command,
-        event = names.event,
-        reply = names.reply,
-    )
+#[allow(clippy::too_many_arguments)]
+fn append_generated_trace_record(
+    out: &mut String,
+    names: &InnerStructureNames,
+    sequence: usize,
+    scenario_start: bool,
+    state_before: &str,
+    input_kind: &str,
+    input_variant: &str,
+    state_after: &str,
+    event_variant: &str,
+    effect_variant: Option<&str>,
+    reply_variant: Option<&str>,
+) {
+    let id = format!("{}-{}", input_variant.to_ascii_lowercase(), sequence);
+    let _ = writeln!(out, "  - id: {id}");
+    if scenario_start {
+        let _ = writeln!(out, "    scenario_start: true");
+    }
+    let _ = writeln!(out, "    state_before: {state_before}");
+    let _ = writeln!(out, "    input:");
+    if input_kind == "effect_result" {
+        let _ = writeln!(out, "      effect_id: effect-{sequence}");
+        let _ = writeln!(out, "      requester: {}", names.machine);
+        let _ = writeln!(out, "      correlation_id: correlation-1");
+        let _ = writeln!(out, "      causation_id: effect-request-{sequence}");
+        let _ = writeln!(out, "      status: {}", input_variant.to_ascii_lowercase());
+        let _ = writeln!(out, "      effect_result:");
+        let _ = writeln!(out, "        tag: {}.{input_variant}", names.effect_result);
+    } else {
+        let _ = writeln!(out, "      command_id: command-{sequence}");
+        let _ = writeln!(out, "      target_machine: {}", names.machine);
+        let _ = writeln!(out, "      correlation_id: correlation-1");
+        let _ = writeln!(out, "      causation_id: user-request-{sequence}");
+        let _ = writeln!(out, "      idempotency_key: null");
+        let _ = writeln!(out, "      command:");
+        let _ = writeln!(out, "        tag: {}.{input_variant}", names.command);
+    }
+    let _ = writeln!(out, "    output:");
+    let _ = writeln!(out, "      next_state: {state_after}");
+    let _ = writeln!(out, "      events:");
+    let _ = writeln!(out, "        - event_id: event-{sequence}");
+    let _ = writeln!(out, "          source_machine: {}", names.machine);
+    let _ = writeln!(out, "          correlation_id: correlation-1");
+    let _ = writeln!(out, "          causation_id: input-{sequence}");
+    let _ = writeln!(out, "          sequence: {sequence}");
+    let _ = writeln!(out, "          schema_version: 1");
+    let _ = writeln!(out, "          occurred_at: explicit-clock-not-recorded");
+    let _ = writeln!(out, "          event:");
+    let _ = writeln!(out, "            tag: {}.{event_variant}", names.event);
+    let _ = writeln!(out, "      commands: []");
+    if let Some(effect_variant) = effect_variant {
+        let _ = writeln!(out, "      effects:");
+        let _ = writeln!(out, "        - effect_id: effect-{sequence}");
+        let _ = writeln!(out, "          requester: {}", names.machine);
+        let _ = writeln!(out, "          correlation_id: correlation-1");
+        let _ = writeln!(out, "          causation_id: input-{sequence}");
+        let _ = writeln!(out, "          idempotency_key: effect-{sequence}");
+        let _ = writeln!(out, "          effect:");
+        let _ = writeln!(out, "            tag: {}.{effect_variant}", names.effect);
+    } else {
+        let _ = writeln!(out, "      effects: []");
+    }
+    if let Some(reply_variant) = reply_variant {
+        let _ = writeln!(out, "      reply:");
+        let _ = writeln!(out, "        tag: {}.{reply_variant}", names.reply);
+    } else {
+        let _ = writeln!(out, "      reply: null");
+    }
+    let _ = writeln!(out, "    state_after: {state_after}");
+    let _ = writeln!(out, "    source:");
+    let _ = writeln!(out, "      file: verification/traces/transition_trace.yaml");
+    let _ = writeln!(out, "      function: transition");
+    let _ = writeln!(out, "      branch: {input_variant}");
 }
 
 fn render_malformed_input_trace_bundle(names: &InnerStructureNames) -> String {
@@ -33428,7 +36028,7 @@ const JS_PORTS_MJS: &str = r#"export function createPorts(overrides = {}) {
 }
 "#;
 
-const JS_BUILD_SH: &str = "#!/usr/bin/env sh\nset -eu\nnode --check src/representation.mjs\nif [ -f src/transition.mjs ]; then node --check src/transition.mjs; fi\nif [ -f src/public.mjs ]; then node --check src/public.mjs; fi\nif [ -f src/parser.mjs ]; then node --check src/parser.mjs; fi\nif [ -f src/adapter.mjs ]; then node --check src/adapter.mjs; fi\nif [ -f public/controller.mjs ]; then node --check public/controller.mjs; fi\nif [ -f public/app.mjs ]; then node --check public/app.mjs; fi\n";
+const JS_BUILD_SH: &str = "#!/usr/bin/env sh\nset -eu\nnode --check src/representation.mjs\nif [ -f src/transition.mjs ]; then node --check src/transition.mjs; fi\nif [ -f src/effect_executor.mjs ]; then node --check src/effect_executor.mjs; fi\nif [ -f src/public.mjs ]; then node --check src/public.mjs; fi\nif [ -f src/parser.mjs ]; then node --check src/parser.mjs; fi\nif [ -f src/adapter.mjs ]; then node --check src/adapter.mjs; fi\nif [ -f public/controller.mjs ]; then node --check public/controller.mjs; fi\nif [ -f public/app.mjs ]; then node --check public/app.mjs; fi\n";
 
 const JS_SMOKE_SH: &str = "#!/usr/bin/env sh\nset -eu\nif [ -f tests/trace-smoke.mjs ]; then node tests/trace-smoke.mjs; fi\nif [ -f tests/boundary-smoke.mjs ]; then node tests/boundary-smoke.mjs; fi\nprintf '%s\\n' 'js semantic scaffold smoke passed'\n";
 
@@ -33473,6 +36073,7 @@ fn inner_structure_names(semantic_name: &str, shape: ScaffoldShape) -> InnerStru
         prefix: prefix.clone(),
         machine: format!("{prefix}Machine"),
         state: format!("{prefix}State"),
+        input: format!("{prefix}Input"),
         command: format!("{prefix}Command"),
         command_envelope: format!("{prefix}CommandEnvelope"),
         event: format!("{prefix}Event"),
@@ -33692,6 +36293,24 @@ Core rule:
 - Agents fill declared roles.
 - Bugs should become diagnosable bad states.
 
+## Change Gate
+
+| Change | Required RMS gate before source edits |
+| --- | --- |
+| Meaning, law, contract, property, effect, evidence | `rms spec plan/apply/check` |
+| State, command, observed event, effect result, transition | `rms spec apply` or focused `rms machine apply/check` |
+| App, CLI, UI, HTTP, batch, executable entrypoint | `rms surface apply/check` |
+| Module boundary or public capability | `rms design` then `rms add-module` or `rms add-capability` |
+| Declared role body only | Edit the role body, then verify |
+
+Machine rules:
+
+- `architecture.machine.types` names binding containers; semantic lists name actual cases.
+- Stateful, boundary, workflow, storage, integration, and projection machines use `transition(state, input)`.
+- The input ADT closes over commands, observed events, and effect results; each case belongs to exactly one category.
+- An effect executor performs one declared request and returns one declared result. Transitions own sequencing, retry, compensation, stop/continue policy, and state progression.
+- Fixed examples are a deterministic corpus, not an open-ended fuzz realization.
+
 You can:
 
 - edit bodies inside RMS-declared role files;
@@ -33751,7 +36370,7 @@ When creating a new capability, choose semantic shape before file layout:
 
 Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a public capability should be scaffolded as a recursive tree with a composite parent, domain child, and boundary child. Prefer this over a single module when the intent combines user/boundary interaction, lifecycle decisions, and effect simulation or external-service coordination.
 
-If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only. Simple runnable surfaces should stay thin and stateless unless the intent has real lifecycle, order, session, retry, status, recovery, or workflow semantics.
+If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only. Runnable surfaces stay thin, but boundary machines still use explicit state-plus-input transitions; product lifecycle belongs in the owning domain or workflow machine.
 
 If a pure/domain module is meant to be reused like a library or Lego block, declare the reusable capability in `provides.capabilities[]`, keep a single public code facade in `implementation.yaml`, and add package/reuse evidence. RMS says what is reusable; native package files only say how a binding imports it.
 
@@ -33928,14 +36547,6 @@ fn get_str<'a>(value: &'a YamlValue, path: &[&str]) -> Option<&'a str> {
 
 fn yaml_key(key: &str) -> YamlValue {
     YamlValue::String(key.to_string())
-}
-
-fn yaml_mapping(items: Vec<(&str, YamlValue)>) -> YamlValue {
-    let mut mapping = serde_yaml::Mapping::new();
-    for (key, value) in items {
-        mapping.insert(yaml_key(key), value);
-    }
-    YamlValue::Mapping(mapping)
 }
 
 fn yaml_string_sequence(values: &[String]) -> YamlValue {
@@ -34671,7 +37282,11 @@ requires: {}
 invariants: []
 effects: []
 compatibility: {}
-verification: {}
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
 "#,
         )
         .unwrap();
@@ -34686,6 +37301,124 @@ verification: {}
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.check == "schema.validate"));
+    }
+
+    #[test]
+    fn implementation_schema_rejects_legacy_machine_fields() {
+        let canonical = r#"
+spec: rms/implementation/v0.1
+module: example
+binding: js
+source:
+  root: .
+  public_entrypoint: src/transition.mjs
+commands:
+  build: node --check src/transition.mjs
+  verify: node --check src/transition.mjs
+architecture:
+  shape: domain-engine
+  machine:
+    name: ExampleMachine
+    mode: stateless-decision-machine
+    transition_signature: input-only
+    stateless_justification: The decision has no lifecycle.
+    types:
+      state: ExampleState
+      command: ExampleCommand
+      event: ExampleEvent
+      reply: ExampleReply
+      rejection: ExampleRejection
+      transition: ExampleTransition
+      transition_record: ExampleTransitionRecord
+    states: [Ready]
+    commands: [Accept]
+    observed_events: []
+    events: [Accepted]
+    effects: []
+    effect_results: []
+    replies: [Accepted]
+    rejections: [Rejected]
+    effect_protocols: []
+    transition_function: transition
+    transitions:
+      - from: Ready
+        on: Accept
+        to: Ready
+        events: [Accepted]
+        reply: Accepted
+  roles:
+    representation: [src/representation.mjs]
+    transition: [src/transition.mjs]
+"#;
+
+        let canonical_manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(canonical).unwrap(),
+        };
+        let mut canonical_diagnostics = Vec::new();
+        validate_against_embedded_schema(&canonical_manifest, &mut canonical_diagnostics);
+        assert!(
+            canonical_diagnostics.is_empty(),
+            "{canonical_diagnostics:#?}"
+        );
+
+        for source in [
+            canonical.replace(
+                "    states: [Ready]",
+                "    state: ExampleState\n    states: [Ready]",
+            ),
+            canonical.replace("  machine:\n", "  state_type: ExampleState\n  machine:\n"),
+        ] {
+            let manifest = LoadedManifest {
+                path: PathBuf::from("implementation.yaml"),
+                value: serde_yaml::from_str(&source).unwrap(),
+            };
+            let mut diagnostics = Vec::new();
+            validate_against_embedded_schema(&manifest, &mut diagnostics);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.check == "schema.validate"),
+                "legacy machine declaration unexpectedly validated"
+            );
+        }
+    }
+
+    #[test]
+    fn change_parsers_reject_unknown_legacy_fields() {
+        let machine_error = format!(
+            "{:#}",
+            parse_machine_change(
+                None,
+                Some(
+                    r#"spec: rms/machine-change/v0.1
+machine:
+  mode: stateless-decision-machine
+  state: LegacyState
+"#,
+                ),
+                None,
+            )
+            .unwrap_err()
+        );
+        assert!(machine_error.contains("unknown field `state`"));
+
+        let semantic_error = format!(
+            "{:#}",
+            parse_semantic_change(
+                None,
+                Some(
+                    r#"spec: rms/semantic-change/v0.1
+machine:
+  mode: stateless-decision-machine
+  state_type: LegacyState
+"#,
+                ),
+                None,
+            )
+            .unwrap_err()
+        );
+        assert!(semantic_error.contains("unknown field `state_type`"));
     }
 
     #[test]
@@ -34826,7 +37559,29 @@ path = "src/lib.rs"
 "#,
         )
         .unwrap();
-        fs::write(root.join("src/lib.rs"), "pub fn run() {}\n").unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            r#"pub enum CheckoutBoundaryState { AwaitingInput, Completed }
+pub enum CheckoutBoundaryCommand { Run }
+pub enum CheckoutBoundaryInput { Command(CheckoutBoundaryCommand) }
+pub enum CheckoutBoundaryEvent { Completed }
+pub enum CheckoutBoundaryReply { Accepted }
+pub enum CheckoutBoundaryRejection { Rejected }
+pub enum CheckoutBoundaryTransition { Accepted }
+pub enum CheckoutBoundaryTransitionRecord { Accepted }
+pub struct CheckoutBoundaryMachine;
+
+pub fn transition(
+    _state: CheckoutBoundaryState,
+    _input: CheckoutBoundaryInput,
+) -> CheckoutBoundaryTransition {
+    CheckoutBoundaryTransition::Accepted
+}
+
+pub fn run() {}
+"#,
+        )
+        .unwrap();
         fs::write(
             root.join("src/main.rs"),
             "use checkout_boundary::run;\nfn main() { run(); }\n",
@@ -34851,6 +37606,40 @@ dependencies:
 architecture:
   shape: boundary-adapter
   public_modules: []
+  machine:
+    name: CheckoutBoundaryMachine
+    mode: boundary-machine
+    transition_signature: state-and-input
+    types:
+      state: CheckoutBoundaryState
+      input: CheckoutBoundaryInput
+      command: CheckoutBoundaryCommand
+      event: CheckoutBoundaryEvent
+      reply: CheckoutBoundaryReply
+      rejection: CheckoutBoundaryRejection
+      transition: CheckoutBoundaryTransition
+      transition_record: CheckoutBoundaryTransitionRecord
+    states: [AwaitingInput, Completed]
+    commands: [Run]
+    observed_events: []
+    events: [Completed]
+    effects: []
+    effect_results: []
+    replies: [Accepted]
+    rejections: [Rejected]
+    effect_protocols: []
+    transition_function: transition
+    transitions:
+      - from: AwaitingInput
+        on: Run
+        to: Completed
+        events: [Completed]
+        reply: Accepted
+  roles:
+    representation: [src/lib.rs]
+    parser: [src/lib.rs]
+    transition: [src/lib.rs]
+    adapter: [src/lib.rs]
 "#,
         )
         .unwrap();
@@ -35591,8 +38380,8 @@ architecture:
         assert!(implementation.contains("parser:"));
         assert!(implementation.contains("message_envelope:"));
         assert!(
-            implementation.contains("transition_function: \"handleBoundaryTransition\"")
-                || implementation.contains("transition_function: handleBoundaryTransition")
+            implementation.contains("transition_function: \"transition\"")
+                || implementation.contains("transition_function: transition")
         );
         assert!(implementation.contains("id: boundary-transition"));
         assert!(representation.contains("export const AwaitingInput"));
@@ -35744,7 +38533,7 @@ architecture:
         let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
 
         fs::remove_dir_all(&root).unwrap();
-        assert_eq!(report.result, "review-required");
+        assert_eq!(report.result, "fail");
         assert!(report
             .diagnostics
             .iter()
@@ -36635,13 +39424,32 @@ architecture:
   machine:
     name: CheckoutBoundaryMachine
     mode: boundary-machine
+    transition_signature: state-and-input
+    types:
+      state: CheckoutBoundaryState
+      input: CheckoutBoundaryInput
+      command: CheckoutBoundaryCommand
+      event: CheckoutBoundaryEvent
+      reply: CheckoutBoundaryReply
+      rejection: CheckoutBoundaryRejection
+      transition: CheckoutBoundaryTransition
+      transition_record: CheckoutBoundaryTransitionRecord
     states: [AwaitingInput, Completed, Rejected]
-    commands: [CheckoutBoundaryCommand, RunCheckout]
-    events: [CheckoutBoundaryEvent]
-    effects: [CheckoutBoundaryEffect]
-    replies: [CheckoutBoundaryReply]
-    rejections: [CheckoutBoundaryRejection]
+    commands: [RunCheckout]
+    observed_events: []
+    events: [CheckoutDelegated]
+    effects: []
+    effect_results: []
+    replies: [CheckoutCompleted]
+    rejections: [MalformedCheckoutInput]
+    effect_protocols: []
     transition_function: handleBoundaryTransition
+    transitions:
+      - from: AwaitingInput
+        on: RunCheckout
+        to: Completed
+        events: [CheckoutDelegated]
+        reply: CheckoutCompleted
   roles:
     adapter: [src/adapter.mjs]
 "#,
@@ -36733,16 +39541,33 @@ architecture:
   shape: boundary-adapter
   machine:
     name: TileBrowserBoundaryMachine
-    mode: stateless-decision-machine
-    stateless_justification: thin browser boundary
-    states: [AwaitingInput]
+    mode: boundary-machine
+    transition_signature: state-and-input
+    types:
+      state: TileBrowserBoundaryState
+      input: TileBrowserBoundaryInput
+      command: TileBrowserBoundaryCommand
+      event: TileBrowserBoundaryEvent
+      reply: TileBrowserBoundaryReply
+      rejection: TileBrowserBoundaryRejection
+      transition: TileBrowserBoundaryTransition
+      transition_record: TileBrowserBoundaryTransitionRecord
+    states: [AwaitingInput, Completed, Rejected]
     commands: [GenerateTile]
-    events: []
+    observed_events: []
+    events: [TileGenerationDelegated]
     effects: []
     effect_results: []
     replies: [Rendered]
     rejections: [MalformedInput]
+    effect_protocols: []
     transition_function: handleBoundaryInput
+    transitions:
+      - from: AwaitingInput
+        on: GenerateTile
+        to: Completed
+        events: [TileGenerationDelegated]
+        reply: Rendered
   roles:
     adapter: [src/adapter.mjs]
 "#,
@@ -36814,16 +39639,29 @@ architecture:
   shape: domain-engine
   machine:
     name: NutritionAssistantMachine
-    state: NutritionAssistantState
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    types:
+      state: NutritionAssistantState
+      input: NutritionAssistantInput
+      command: NutritionAssistantCommand
+      event: NutritionAssistantEvent
+      reply: NutritionAssistantReply
+      rejection: NutritionAssistantRejection
+      transition: NutritionAssistantTransition
+      transition_record: NutritionAssistantTransitionRecord
     states:
       - Ready
     commands: []
+    observed_events: []
     events: []
     effects: []
     effect_results: []
     replies: []
     rejections: []
+    effect_protocols: []
     transition_function: transition
+    transitions: []
   roles:
     transition:
       - src/transition.mjs
@@ -36849,6 +39687,12 @@ machine:
     add: [AppendMarkdownDayLog]
   effect_results:
     add: [MarkdownDayLogAppended]
+  effect_protocols:
+    add:
+      - effect: AppendMarkdownDayLog
+        results: [MarkdownDayLogAppended]
+        executor_role: effect_executor
+        atomicity: one-request-one-result
   replies:
     add: [AskForContext, LogConfirmed]
   rejections:
@@ -36924,6 +39768,32 @@ commands:
   verify: node --check src/transition.mjs
 architecture:
   shape: domain-engine
+  machine:
+    name: DryRunMachine
+    mode: stateless-decision-machine
+    transition_signature: input-only
+    stateless_justification: The fixture has no lifecycle before the proposed change.
+    types:
+      state: DryRunState
+      command: DryRunCommand
+      event: DryRunEvent
+      reply: DryRunReply
+      rejection: DryRunRejection
+      transition: DryRunTransition
+      transition_record: DryRunTransitionRecord
+    states: [Ready]
+    commands: []
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: []
+    replies: []
+    rejections: []
+    effect_protocols: []
+    transition_function: transition
+    transitions: []
+  roles:
+    transition: [src/transition.mjs]
 "#,
         )
         .unwrap();
@@ -36936,6 +39806,9 @@ architecture:
                 r#"spec: rms/machine-change/v0.1
 machine:
   mode: stateful-transition-machine
+  transition_signature: state-and-input
+  types:
+    input: DryRunInput
   states:
     add: [NeedsContext]
   commands:
@@ -36989,13 +39862,25 @@ architecture:
   machine:
     name: RevisionMachine
     mode: stateful-transition-machine
+    transition_signature: state-and-input
+    types:
+      state: RevisionState
+      input: RevisionInput
+      command: RevisionCommand
+      event: RevisionEvent
+      reply: RevisionReply
+      rejection: RevisionRejection
+      transition: RevisionTransition
+      transition_record: RevisionTransitionRecord
     states: [Ready, OldState]
     commands: [OldCommand]
+    observed_events: []
     events: [OldEvent]
     effects: []
     effect_results: []
     replies: [OldReply]
     rejections: []
+    effect_protocols: []
     transition_function: transition
     transitions:
       - from: Ready
@@ -37079,6 +39964,32 @@ commands:
   verify: node --check src/transition.mjs
 architecture:
   shape: domain-engine
+  machine:
+    name: UnknownStateMachine
+    mode: stateless-decision-machine
+    transition_signature: input-only
+    stateless_justification: The fixture has no lifecycle before the proposed change.
+    types:
+      state: UnknownState
+      command: UnknownCommand
+      event: UnknownEvent
+      reply: UnknownReply
+      rejection: UnknownRejection
+      transition: UnknownTransition
+      transition_record: UnknownTransitionRecord
+    states: [Ready]
+    commands: []
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: []
+    replies: []
+    rejections: []
+    effect_protocols: []
+    transition_function: transition
+    transitions: []
+  roles:
+    transition: [src/transition.mjs]
 "#,
         )
         .unwrap();
@@ -37090,6 +40001,9 @@ architecture:
                 r#"spec: rms/machine-change/v0.1
 machine:
   mode: stateful-transition-machine
+  transition_signature: state-and-input
+  types:
+    input: UnknownInput
   states:
     add: [NeedsContext]
   commands:
@@ -37112,6 +40026,82 @@ transitions:
 
         fs::remove_dir_all(&root).unwrap();
         assert!(error.contains("RMS machine change rejected"));
+    }
+
+    #[test]
+    fn machine_apply_rejects_legacy_target_before_mutation() {
+        let root = unique_test_dir("machine-apply-legacy-target");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/transition.mjs"),
+            "export function transition(command) { return command; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: legacy-target
+binding: js
+source:
+  root: .
+  public_entrypoint: src/transition.mjs
+commands:
+  build: node --check src/transition.mjs
+  verify: node --check src/transition.mjs
+architecture:
+  shape: domain-engine
+  machine:
+    name: LegacyTargetMachine
+    mode: stateless-decision-machine
+    transition_signature: input-only
+    stateless_justification: This fixture has no lifecycle.
+    state: LegacyTargetState
+    types:
+      state: LegacyTargetState
+      command: LegacyTargetCommand
+      event: LegacyTargetEvent
+      reply: LegacyTargetReply
+      rejection: LegacyTargetRejection
+      transition: LegacyTargetTransition
+      transition_record: LegacyTargetTransitionRecord
+    states: [Ready]
+    commands: []
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: []
+    replies: []
+    rejections: []
+    effect_protocols: []
+    transition_function: transition
+    transitions: []
+  roles:
+    transition: [src/transition.mjs]
+"#,
+        )
+        .unwrap();
+        let before = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+
+        let error = run_machine_apply(
+            &root.join("implementation.yaml"),
+            None,
+            Some(
+                r#"spec: rms/machine-change/v0.1
+machine:
+  mode: stateless-decision-machine
+  justification: This fixture remains stateless.
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        let after = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(error.contains("RMS machine change rejected"));
+        assert_eq!(before, after);
     }
 
     #[test]
@@ -37148,7 +40138,11 @@ invariants: []
 effects: []
 compatibility:
   policy: backward-compatible-within-major
-verification: {}
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
 "#,
         )
         .unwrap();
@@ -37167,15 +40161,28 @@ architecture:
   shape: domain-engine
   machine:
     name: CheckoutMachine
-    state: CheckoutState
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    types:
+      state: CheckoutState
+      input: CheckoutInput
+      command: CheckoutCommand
+      event: CheckoutEvent
+      reply: CheckoutReply
+      rejection: CheckoutRejection
+      transition: CheckoutTransition
+      transition_record: CheckoutTransitionRecord
     states: [Ready]
     commands: []
+    observed_events: []
     events: []
     effects: []
     effect_results: []
     replies: []
     rejections: []
+    effect_protocols: []
     transition_function: transition
+    transitions: []
   roles:
     transition: [src/transition.mjs]
 "#,
@@ -37195,6 +40202,8 @@ laws:
     - id: payment-failure-releases-inventory
       statement: Failed payment after reservation emits ReleaseInventory before final status.
       kind: invariant
+      authority: transition
+      enforced_by: transition
 contracts:
   add:
     - name: resolve-checkout
@@ -37205,13 +40214,21 @@ contracts:
 machine:
   mode: stateful-transition-machine
   states:
-    add: [InventoryReserved, PaymentFailed]
+    add: [InventoryReserved, PaymentFailed, InventoryReleased, ReleaseFailed]
   commands:
     add: [StartCheckout]
   events:
     add: [PaymentFailed]
   effects:
     add: [ReleaseInventory]
+  effect_results:
+    add: [InventoryReleased, InventoryReleaseFailed]
+  effect_protocols:
+    add:
+      - effect: ReleaseInventory
+        results: [InventoryReleased, InventoryReleaseFailed]
+        executor_role: effect_executor
+        atomicity: one-request-one-result
   replies:
     add: [CheckoutStatus]
   rejections:
@@ -37224,6 +40241,18 @@ machine:
         events: [PaymentFailed]
         effects: [ReleaseInventory]
         reply: CheckoutStatus
+      - from: PaymentFailed
+        on: InventoryReleased
+        to: InventoryReleased
+        reply: CheckoutStatus
+      - from: PaymentFailed
+        on: InventoryReleaseFailed
+        to: ReleaseFailed
+        rejection: IllegalTransition
+roles:
+  add:
+    - kind: effect_executor
+      effect: ReleaseInventory
 evidence:
   add:
     - kind: trace
@@ -37290,7 +40319,11 @@ invariants: []
 effects: []
 compatibility:
   policy: backward-compatible-within-major
-verification: {}
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
 "#,
         )
         .unwrap();
@@ -37321,6 +40354,10 @@ properties:
         path: verification/properties/selected_lines_are_monotonic.md
       counterexamples:
         path: verification/fuzz/counterexamples
+      realizations:
+        - profile: smoke
+          strategy: generated-property
+          command: properties
 "#,
             ),
             None,
@@ -37359,6 +40396,28 @@ module:
   version: 0.1.0
   kind: library
   purpose: Own checkout decisions.
+profiles: [core]
+owns:
+  concepts: []
+  data: []
+  decisions: []
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
 "#,
         )
         .unwrap();
@@ -38058,6 +41117,237 @@ verification:
     }
 
     #[test]
+    fn canonical_machine_rejects_binding_type_names_as_semantic_variants() {
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"architecture:
+  machine:
+    name: CollapsedMachine
+    mode: stateless-decision-machine
+    transition_signature: input-only
+    types:
+      state: CollapsedState
+      command: CollapsedCommand
+      event: CollapsedEvent
+      reply: CollapsedReply
+      rejection: CollapsedRejection
+      transition: CollapsedTransition
+      transition_record: CollapsedTransitionRecord
+    states: [Ready]
+    commands: [CollapsedCommand]
+    observed_events: []
+    events: [Completed]
+    effects: []
+    effect_results: []
+    replies: [Accepted]
+    rejections: [Rejected]
+    effect_protocols: []
+    transitions: []
+"#,
+            )
+            .unwrap(),
+        };
+        let mut diagnostics = Vec::new();
+
+        validate_canonical_machine_model(&manifest, &mut diagnostics, "domain-engine");
+
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.semantic-variants-collapsed-to-type"
+                && diagnostic.message.contains("CollapsedCommand")
+        }));
+    }
+
+    #[test]
+    fn canonical_stateful_machine_requires_classified_state_and_input() {
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"architecture:
+  machine:
+    name: StatefulMachine
+    mode: workflow-effect-machine
+    transition_signature: input-only
+    types:
+      state: StatefulState
+      command: StatefulCommand
+      event: StatefulEvent
+      reply: StatefulReply
+      rejection: StatefulRejection
+      transition: StatefulTransition
+      transition_record: StatefulTransitionRecord
+    states: [NotStarted, Running]
+    commands: [Start]
+    observed_events: []
+    events: [Started]
+    effects: []
+    effect_results: []
+    replies: [Accepted]
+    rejections: [Rejected]
+    effect_protocols: []
+    transitions:
+      - from: NotStarted
+        on: UnclassifiedInput
+        to: Running
+        reply: Accepted
+"#,
+            )
+            .unwrap(),
+        };
+        let mut diagnostics = Vec::new();
+
+        validate_canonical_machine_model(&manifest, &mut diagnostics, "workflow");
+
+        for check in [
+            "structure.stateful-transition-state-input-missing",
+            "structure.machine-input-type-missing",
+            "structure.transition-input-not-classified",
+        ] {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.check == check),
+                "missing {check}: {diagnostics:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_effect_protocol_requires_atomicity_results_and_evidence() {
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"architecture:
+  machine:
+    name: EffectMachine
+    mode: workflow-effect-machine
+    transition_signature: state-and-input
+    types:
+      state: EffectState
+      input: EffectInput
+      command: EffectCommand
+      event: EffectEvent
+      effect: EffectRequest
+      effect_result: EffectResult
+      reply: EffectReply
+      rejection: EffectRejection
+      transition: EffectTransition
+      transition_record: EffectTransitionRecord
+    states: [Ready, WaitingForEffect]
+    commands: [Start]
+    observed_events: []
+    events: [Requested]
+    effects: [Execute]
+    effect_results: [Succeeded]
+    replies: [Accepted]
+    rejections: [Rejected]
+    effect_protocols:
+      - effect: Execute
+        results: [Succeeded]
+        executor_role: effect_executor
+        atomicity: aggregate
+    transitions:
+      - from: Ready
+        on: Start
+        to: WaitingForEffect
+        effects: [Execute]
+        no_reply_justification: result pending
+      - from: WaitingForEffect
+        on: Succeeded
+        to: Ready
+        reply: Accepted
+  roles:
+    effect_executor: [src/effect_executor.rs]
+"#,
+            )
+            .unwrap(),
+        };
+        let mut diagnostics = Vec::new();
+
+        validate_canonical_machine_model(&manifest, &mut diagnostics, "workflow");
+
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "structure.aggregate-effect-policy-hidden"));
+        assert!(!semantic_function_matches_authority(
+            &serde_yaml::from_str::<YamlValue>("kind: adapter\npurity: effectful\n").unwrap(),
+            "transition"
+        ));
+    }
+
+    #[test]
+    fn open_fuzz_claim_rejects_fixed_corpus_realization() {
+        let root = unique_test_dir("fuzz-realization-mismatch");
+        fs::create_dir_all(root.join("verification/fuzz")).unwrap();
+        fs::write(
+            root.join("verification/fuzz/parser.md"),
+            "Promise: parser rejects malformed bytes.\nCommand/tool: fuzz\nExpected result: rejection.\nSource revision: git:test\n",
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: root.join("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"commands:
+  fuzz: test-fuzz
+architecture:
+  shape: boundary-adapter
+  reliability:
+    fuzz_targets:
+      - id: parser-fuzz
+        proves: parser-law
+        kind: fuzz
+        input_space: arbitrary byte strings
+        oracle: [malformed bytes are rejected]
+        command: fuzz
+        evidence: verification/fuzz/parser.md
+        realizations:
+          - profile: smoke
+            strategy: deterministic-corpus
+            command: fuzz
+"#,
+            )
+            .unwrap(),
+        };
+        let mut diagnostics = Vec::new();
+
+        validate_property_implementation(&manifest, &mut diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "evidence.fuzz-realization-mismatch"));
+    }
+
+    #[test]
+    fn git_changed_paths_include_nested_untracked_module_files() {
+        let root = unique_test_dir("nested-untracked-paths");
+        fs::create_dir_all(&root).unwrap();
+        let status = Command::new("git")
+            .current_dir(&root)
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        fs::create_dir_all(root.join("modules/new/src")).unwrap();
+        fs::write(
+            root.join("modules/new/module.yaml"),
+            "spec: rms/module/v0.1\n",
+        )
+        .unwrap();
+        fs::write(root.join("modules/new/src/lib.rs"), "pub fn run() {}\n").unwrap();
+
+        let paths = read_git_changed_paths(&root, None).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(paths
+            .iter()
+            .any(|path| { path.status == "??" && path.path == "modules/new/module.yaml" }));
+        assert!(paths
+            .iter()
+            .any(|path| { path.status == "??" && path.path == "modules/new/src/lib.rs" }));
+    }
+
+    #[test]
     fn audit_scope_excludes_examples_from_repo_root_by_default() {
         assert!(!audit_path_str_in_scope(
             Path::new("."),
@@ -38265,19 +41555,20 @@ architecture:
   shape: workflow
   machine:
     name: WorkflowGapsWorkflowMachine
-    state: WorkflowGapsState
+    mode: workflow-effect-machine
+    states: [NotStarted, WaitingForEffect, Completed, Failed]
     commands:
-      - WorkflowGapsCommand
+      - Start
     events:
-      - WorkflowGapsEvent
+      - Started
     effects:
-      - WorkflowGapsEffect
+      - Execute
     effect_results:
-      - WorkflowGapsEffectResult
+      - Succeeded
     replies:
-      - WorkflowGapsReply
+      - Completed
     rejections:
-      - WorkflowGapsRejection
+      - IllegalTransition
     transition_function: transition
   roles:
     representation:
@@ -38294,12 +41585,14 @@ architecture:
         for expected in [
             "structure.message-envelope-missing",
             "structure.transition-output-missing",
-            "structure.effect-lifecycle-missing",
             "structure.journal-role-missing",
             "structure.timeline-projection-missing",
             "structure.subscription-registry-missing",
             "structure.replay-bundle-missing",
             "structure.first-bad-transition-unsupported",
+            "structure.stateful-transition-state-input-missing",
+            "structure.machine-type-missing",
+            "structure.effect-protocol-missing",
         ] {
             assert!(
                 report
@@ -38845,7 +42138,8 @@ verification:
 
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.check == "implementation.rust.typing.stateful-representation"
+            diagnostic.check == "structure.declared-symbol-missing"
+                && diagnostic.message.contains("WidgetInput")
         }));
     }
 
@@ -38854,8 +42148,21 @@ verification:
         let root = rust_typing_fixture(
             "stateful-ok",
             &["core", "stateful"],
-            "  state_type: WidgetState\n  transition_function: transition_widget\n",
-            "pub enum WidgetState {\n    Draft,\n    Active,\n}\n\npub fn transition_widget(state: WidgetState) -> WidgetState {\n    state\n}\n",
+            "",
+            r#"pub struct TypingFixtureMachine;
+pub enum WidgetState { Draft, Active }
+pub enum WidgetInput { Command(WidgetCommand) }
+pub enum WidgetCommand { Apply }
+pub enum WidgetEvent { Applied }
+pub enum WidgetReply { Accepted }
+pub enum WidgetRejection { Rejected }
+pub enum WidgetTransition { Accepted }
+pub enum WidgetTransitionRecord { Accepted }
+
+pub fn transition_widget(_state: WidgetState, _input: WidgetInput) -> WidgetTransition {
+    WidgetTransition::Accepted
+}
+"#,
         );
 
         let diagnostics = validate_fixture_implementation(&root);
@@ -38979,7 +42286,8 @@ verification:
 
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.check == "implementation.swift.typing.stateful-representation"
+            diagnostic.check == "structure.declared-symbol-missing"
+                && diagnostic.message.contains("WidgetInput")
         }));
     }
 
@@ -38988,8 +42296,21 @@ verification:
         let root = swift_typing_fixture(
             "swift-stateful-ok",
             &["core", "stateful"],
-            "  state_type: WidgetState\n  transition_function: transitionWidget\n",
-            "public enum WidgetState {\n    case draft\n    case active\n}\n\npublic func transitionWidget(_ state: WidgetState) -> WidgetState {\n    state\n}\n",
+            "",
+            r#"public enum TypingFixtureMachine { case machine }
+public enum WidgetState { case draft, active }
+public enum WidgetInput { case command(WidgetCommand) }
+public enum WidgetCommand { case apply }
+public enum WidgetEvent { case applied }
+public enum WidgetReply { case accepted }
+public enum WidgetRejection { case rejected }
+public enum WidgetTransition { case accepted }
+public enum WidgetTransitionRecord { case accepted }
+
+public func transitionWidget(_ state: WidgetState, _ input: WidgetInput) -> WidgetTransition {
+    .accepted
+}
+"#,
         );
 
         let diagnostics = validate_fixture_implementation(&root);
@@ -39778,11 +43099,15 @@ verification:
         assert!(domain_implementation.contains("distribution:"));
         assert!(domain_implementation.contains("public_facade: src/public.mjs"));
         assert!(domain_public_facade);
+        assert_eq!(report.machine.mode.as_deref(), Some("boundary-machine"));
         assert_eq!(
-            report.machine.mode.as_deref(),
-            Some("stateless-decision-machine")
+            report.machine.states,
+            vec![
+                "AwaitingInput".to_string(),
+                "Completed".to_string(),
+                "Rejected".to_string()
+            ]
         );
-        assert_eq!(report.machine.states, vec!["AwaitingInput".to_string()]);
         assert!(controller.contains("handleBoundaryInput"));
         assert!(controller.contains("mountRmsSurface"));
         assert!(app.contains("mountRmsSurface"));
@@ -40680,6 +44005,8 @@ export function transitionRecord(command) {
     output: transition(command),
   };
 }
+export const PackageFixtureTransition = Object.freeze({ create: transition });
+export const PackageFixtureTransitionRecord = Object.freeze({ create: transitionRecord });
 export const PackageFixtureMachine = Object.freeze({ transition, transitionRecord });
 "#,
         )
@@ -40707,15 +44034,32 @@ architecture:
   machine:
     name: PackageFixtureMachine
     mode: stateless-decision-machine
+    transition_signature: input-only
     stateless_justification: fixture has no lifecycle state
+    types:
+      state: PackageFixtureState
+      command: PackageFixtureCommand
+      event: PackageFixtureEvent
+      reply: PackageFixtureReply
+      rejection: PackageFixtureRejection
+      transition: PackageFixtureTransition
+      transition_record: PackageFixtureTransitionRecord
     states: [Ready]
-    commands: [PackageFixtureCommand]
-    events: [PackageFixtureEvent]
+    commands: [Accept]
+    observed_events: []
+    events: [Accepted]
     effects: []
     effect_results: []
-    replies: [PackageFixtureReply]
-    rejections: [PackageFixtureRejection]
+    replies: [Accepted]
+    rejections: [InvalidCommand]
+    effect_protocols: []
     transition_function: transition
+    transitions:
+      - from: Ready
+        on: Accept
+        to: Ready
+        events: [Accepted]
+        reply: Accepted
   roles:
     representation: [src/representation.mjs]
     transition: [src/transition.mjs]
@@ -40762,6 +44106,8 @@ requires:
 invariants:
   - id: law
     statement: Law holds.
+    authority: transition
+    enforced_by: transition-model
     verified_by: verification/laws/law
 
 effects: []
@@ -42080,8 +45426,46 @@ commands:
   build: "true"
   verify: "true"
 architecture:
+  shape: boundary-adapter
   static_inspection: opaque
+  machine:
+    name: BadTraceMachine
+    mode: boundary-machine
+    transition_signature: state-and-input
+    types:
+      state: BadTraceState
+      input: BadTraceInput
+      command: BadTraceCommand
+      event: BadTraceEvent
+      reply: BadTraceReply
+      rejection: BadTraceRejection
+      transition: BadTraceTransition
+      transition_record: BadTraceTransitionRecord
+    states: [Ready, Done, Closed]
+    commands: [Run]
+    observed_events: []
+    events: [Accepted]
+    effects: []
+    effect_results: []
+    replies: [Accepted]
+    rejections: [Rejected]
+    effect_protocols: []
+    transition_function: transition
+    transitions:
+      - from: Ready
+        on: Run
+        to: Done
+        events: [Accepted]
+        reply: Accepted
   roles:
+    representation:
+      - implementation.yaml
+    parser:
+      - scripts/verify.sh
+    transition:
+      - scripts/verify.sh
+    adapter:
+      - scripts/verify.sh
     replay_bundle:
       - verification/traces/bad.yaml
 "#,
@@ -42176,15 +45560,33 @@ architecture:
   shape: domain-engine
   machine:
     name: MissingSymbolMachine
-    state: PresentState
-    commands:
-      - MissingCommand
-    events: []
+    mode: stateless-decision-machine
+    transition_signature: input-only
+    stateless_justification: fixture isolates missing source symbols without lifecycle
+    types:
+      state: PresentState
+      command: MissingCommand
+      event: MissingEvent
+      reply: MissingReply
+      rejection: MissingRejection
+      transition: MissingTransition
+      transition_record: MissingTransitionRecord
+    states: [Ready]
+    commands: [Run]
+    observed_events: []
+    events: [Completed]
     effects: []
     effect_results: []
-    replies: []
-    rejections: []
+    replies: [Accepted]
+    rejections: [Rejected]
+    effect_protocols: []
     transition_function: transition
+    transitions:
+      - from: Ready
+        on: Run
+        to: Ready
+        events: [Completed]
+        reply: Accepted
   roles:
     representation:
       - src/lib.rs
@@ -42698,6 +46100,7 @@ requires:
 invariants:
   - id: work-is-safe
     statement: Accepted work satisfies the module rules.
+    authority: parser
     verified_by: verification/laws/work_is_safe
 
 effects: []
@@ -42727,6 +46130,32 @@ verification:
         source: &str,
     ) -> PathBuf {
         let root = unique_test_dir(label);
+        let stateful = profiles.contains(&"stateful");
+        let mode = if stateful {
+            "stateful-transition-machine"
+        } else {
+            "stateless-decision-machine"
+        };
+        let signature = if stateful {
+            "state-and-input"
+        } else {
+            "input-only"
+        };
+        let input_type = if stateful {
+            "      input: WidgetInput\n"
+        } else {
+            ""
+        };
+        let states = if stateful {
+            "[Draft, Active]"
+        } else {
+            "[Ready]"
+        };
+        let transition = if stateful {
+            "      - from: Draft\n        on: Apply\n        to: Active\n        events: [Applied]\n        reply: Accepted"
+        } else {
+            "      - from: Ready\n        on: Apply\n        to: Ready\n        events: [Applied]\n        reply: Accepted"
+        };
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
             root.join("Cargo.toml"),
@@ -42737,7 +46166,7 @@ verification:
         fs::write(
             root.join("implementation.yaml"),
             format!(
-                "spec: rms/implementation/v0.1\n\nmodule: typing-fixture\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: typing-fixture\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  public_modules: []\n{architecture_extra}"
+                "spec: rms/implementation/v0.1\n\nmodule: typing-fixture\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: typing-fixture\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: domain-engine\n  public_modules: []\n  machine:\n    name: TypingFixtureMachine\n    mode: {mode}\n    transition_signature: {signature}\n    stateless_justification: fixture uses no lifecycle when mode is stateless\n    types:\n      state: WidgetState\n{input_type}      command: WidgetCommand\n      event: WidgetEvent\n      reply: WidgetReply\n      rejection: WidgetRejection\n      transition: WidgetTransition\n      transition_record: WidgetTransitionRecord\n    states: {states}\n    commands: [Apply]\n    observed_events: []\n    events: [Applied]\n    effects: []\n    effect_results: []\n    replies: [Accepted]\n    rejections: [Rejected]\n    effect_protocols: []\n    transition_function: transition_widget\n    transitions:\n{transition}\n  roles:\n    representation: [src/lib.rs]\n    transition: [src/lib.rs]\n{architecture_extra}"
             ),
         )
         .unwrap();
@@ -42971,7 +46400,55 @@ verification:
         .unwrap();
         fs::write(
             root.join("child/implementation.yaml"),
-            "spec: rms/implementation/v0.1\n\nmodule: child\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\ncommands:\n  build: sh scripts/smoke.sh\n  verify: sh scripts/smoke.sh\n",
+            r#"spec: rms/implementation/v0.1
+
+module: child
+binding: executable
+
+source:
+  root: .
+  public_entrypoint: scripts/smoke.sh
+commands:
+  build: sh scripts/smoke.sh
+  verify: sh scripts/smoke.sh
+architecture:
+  shape: boundary-adapter
+  static_inspection: opaque
+  machine:
+    name: ChildBoundaryMachine
+    mode: boundary-machine
+    transition_signature: state-and-input
+    types:
+      state: ChildBoundaryState
+      input: ChildBoundaryInput
+      command: ChildBoundaryCommand
+      event: ChildBoundaryEvent
+      reply: ChildBoundaryReply
+      rejection: ChildBoundaryRejection
+      transition: ChildBoundaryTransition
+      transition_record: ChildBoundaryTransitionRecord
+    states: [AwaitingInput, Completed]
+    commands: [DoWork]
+    observed_events: []
+    events: [WorkCompleted]
+    effects: []
+    effect_results: []
+    replies: [WorkAccepted]
+    rejections: [WorkRejected]
+    effect_protocols: []
+    transition_function: transition
+    transitions:
+      - from: AwaitingInput
+        on: DoWork
+        to: Completed
+        events: [WorkCompleted]
+        reply: WorkAccepted
+  roles:
+    representation: [implementation.yaml]
+    parser: [scripts/smoke.sh]
+    transition: [scripts/smoke.sh]
+    adapter: [scripts/smoke.sh]
+"#,
         )
         .unwrap();
         fs::write(
@@ -42988,6 +46465,32 @@ verification:
         source: &str,
     ) -> PathBuf {
         let root = unique_test_dir(label);
+        let stateful = profiles.contains(&"stateful");
+        let mode = if stateful {
+            "stateful-transition-machine"
+        } else {
+            "stateless-decision-machine"
+        };
+        let signature = if stateful {
+            "state-and-input"
+        } else {
+            "input-only"
+        };
+        let input_type = if stateful {
+            "      input: WidgetInput\n"
+        } else {
+            ""
+        };
+        let states = if stateful {
+            "[Draft, Active]"
+        } else {
+            "[Ready]"
+        };
+        let transition = if stateful {
+            "      - from: Draft\n        on: Apply\n        to: Active\n        events: [Applied]\n        reply: Accepted"
+        } else {
+            "      - from: Ready\n        on: Apply\n        to: Ready\n        events: [Applied]\n        reply: Accepted"
+        };
         fs::create_dir_all(root.join("Sources/TypingFixture")).unwrap();
         fs::write(
             root.join("Package.swift"),
@@ -43002,7 +46505,7 @@ verification:
         fs::write(
             root.join("implementation.yaml"),
             format!(
-                "spec: rms/implementation/v0.1\n\nmodule: typing-fixture\nbinding: swift\n\nsource:\n  root: Sources/TypingFixture\n  public_entrypoint: Sources/TypingFixture/TypingFixture.swift\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: typing-fixture\n  target: TypingFixture\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  public_modules: []\n{architecture_extra}"
+                "spec: rms/implementation/v0.1\n\nmodule: typing-fixture\nbinding: swift\n\nsource:\n  root: Sources/TypingFixture\n  public_entrypoint: Sources/TypingFixture/TypingFixture.swift\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n\ntoolchain:\n  package_manifest: Package.swift\n  package: typing-fixture\n  target: TypingFixture\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: domain-engine\n  public_modules: []\n  machine:\n    name: TypingFixtureMachine\n    mode: {mode}\n    transition_signature: {signature}\n    stateless_justification: fixture uses no lifecycle when mode is stateless\n    types:\n      state: WidgetState\n{input_type}      command: WidgetCommand\n      event: WidgetEvent\n      reply: WidgetReply\n      rejection: WidgetRejection\n      transition: WidgetTransition\n      transition_record: WidgetTransitionRecord\n    states: {states}\n    commands: [Apply]\n    observed_events: []\n    events: [Applied]\n    effects: []\n    effect_results: []\n    replies: [Accepted]\n    rejections: [Rejected]\n    effect_protocols: []\n    transition_function: transitionWidget\n    transitions:\n{transition}\n  roles:\n    representation: [Sources/TypingFixture/TypingFixture.swift]\n    transition: [Sources/TypingFixture/TypingFixture.swift]\n{architecture_extra}"
             ),
         )
         .unwrap();

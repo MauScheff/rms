@@ -585,13 +585,19 @@ Every implemented module should declare a domain-named machine. The canonical fi
 |---|---|
 | `architecture.machine.name` | Domain-named machine role, such as `PaymentsMachine` or `NutritionAssistantMachine`. |
 | `architecture.machine.mode` | One of `stateless-decision-machine`, `stateful-transition-machine`, `workflow-effect-machine`, `boundary-machine`, `storage-machine`, `integration-machine`, or `projection-machine`. |
-| `architecture.machine.state` | Binding type or role name for the state ADT. |
+| `architecture.machine.transition_signature` | `input-only` for a justified stateless decision machine; `state-and-input` for every stateful, boundary, workflow, storage, integration, or projection machine. |
+| `architecture.machine.types` | Binding-native names for state, input, command, event, effect, effect result, reply, rejection, transition, and transition-record containers. These are not semantic cases. |
 | `architecture.machine.states` | Closed state variants. Stateless machines usually contain `Ready` and must justify why lifecycle state is not meaningful. |
-| `architecture.machine.commands/events/effects/effect_results/replies/rejections` | Closed variants that define what the machine accepts, emits, asks the world to do, observes back, returns, and rejects. |
+| `architecture.machine.commands/observed_events/events/effects/effect_results/replies/rejections` | Semantic cases that define what the machine accepts, observes, emits, asks the world to do, receives back, returns, and rejects. A case belongs to exactly one input category. |
+| `architecture.machine.effect_protocols` | Effect-to-result mapping, executor role, and atomicity. One-request-one-result is the default when an individual outcome can affect later decisions. |
 | `architecture.machine.transitions` | Accepted and rejected state/input/output transitions when order or lifecycle matters. |
 | `architecture.roles.*` | Binding files or artifacts that realize representation, transition, parser, adapter, effect executor, journal, replay, trace evidence, and related roles. |
 
 Use `rms machine apply` to add or change these architecture fields only when the semantic layer is already correct. If laws, public contracts, effects, or evidence obligations change, use `rms spec apply` instead.
+
+This is the only accepted implementation-machine model. Collapsed declarations such as `architecture.machine.state`, top-level `architecture.state_type`, or semantic lists containing container type names are invalid rather than compatibility aliases.
+
+Invariant entries declare `authority` as `representation`, `constructor`, `parser`, `transition`, `effect-executor`, or `composition`. State progression, sequencing, retry, compensation, and stop/continue laws belong to `transition`; effect executors may enforce only the mechanics of the external request.
 
 ### `semantic_functions`
 

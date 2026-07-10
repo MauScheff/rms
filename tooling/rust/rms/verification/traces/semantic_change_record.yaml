@@ -1,0 +1,116 @@
+spec: rms/trace-bundle/v0.1
+machine: RmsWorkbenchMachine
+records:
+  - id: apply-semantic-change-success
+    scenario_start: true
+    state_before: Ready
+    input:
+      command_id: command-apply-success
+      target_machine: RmsWorkbenchMachine
+      correlation_id: semantic-change-success
+      causation_id: user-request-success
+      idempotency_key: semantic-change-success
+      command:
+        tag: RmsWorkbenchCommand.ApplySemanticChange
+    output:
+      next_state: WritingSemanticChangeRecord
+      events: []
+      commands: []
+      effects:
+        - effect_id: write-semantic-change-success
+          requester: RmsWorkbenchMachine
+          correlation_id: semantic-change-success
+          causation_id: command-apply-success
+          idempotency_key: semantic-change-success
+          effect:
+            tag: RmsWorkbenchEffect.WriteSemanticChangeRecord
+      reply: null
+    state_after: WritingSemanticChangeRecord
+    source:
+      file: src/main.rs
+      function: transition
+      branch: ApplySemanticChange
+  - id: semantic-change-record-written
+    state_before: WritingSemanticChangeRecord
+    input:
+      effect_id: write-semantic-change-success
+      requester: RmsWorkbenchMachine
+      correlation_id: semantic-change-success
+      causation_id: command-apply-success
+      status: succeeded
+      effect_result:
+        tag: RmsWorkbenchEffectResult.SemanticChangeRecordWritten
+    output:
+      next_state: Ready
+      events:
+        - event_id: semantic-change-recorded
+          source_machine: RmsWorkbenchMachine
+          correlation_id: semantic-change-success
+          causation_id: write-semantic-change-success
+          sequence: 1
+          schema_version: 1
+          occurred_at: explicit-clock-not-recorded
+          event:
+            tag: RmsWorkbenchEvent.SemanticChangeRecorded
+      commands: []
+      effects: []
+      reply:
+        tag: RmsWorkbenchReply.SemanticChangeApplied
+    state_after: Ready
+    source:
+      file: src/main.rs
+      function: transition
+      branch: SemanticChangeRecordWritten
+  - id: apply-semantic-change-rejected
+    scenario_start: true
+    state_before: Ready
+    input:
+      command_id: command-apply-rejected
+      target_machine: RmsWorkbenchMachine
+      correlation_id: semantic-change-rejected
+      causation_id: user-request-rejected
+      idempotency_key: semantic-change-rejected
+      command:
+        tag: RmsWorkbenchCommand.ApplySemanticChange
+    output:
+      next_state: WritingSemanticChangeRecord
+      events: []
+      commands: []
+      effects:
+        - effect_id: write-semantic-change-rejected
+          requester: RmsWorkbenchMachine
+          correlation_id: semantic-change-rejected
+          causation_id: command-apply-rejected
+          idempotency_key: semantic-change-rejected
+          effect:
+            tag: RmsWorkbenchEffect.WriteSemanticChangeRecord
+      reply: null
+    state_after: WritingSemanticChangeRecord
+    source:
+      file: src/main.rs
+      function: transition
+      branch: ApplySemanticChange
+  - id: semantic-change-record-write-rejected
+    state_before: WritingSemanticChangeRecord
+    input:
+      effect_id: write-semantic-change-rejected
+      requester: RmsWorkbenchMachine
+      correlation_id: semantic-change-rejected
+      causation_id: command-apply-rejected
+      status: failed
+      effect_result:
+        tag: RmsWorkbenchEffectResult.SemanticChangeRecordWriteRejected
+    output:
+      next_state: Ready
+      events: []
+      commands: []
+      effects: []
+      reply:
+        tag: RmsWorkbenchReply.SemanticChangeRejected
+      rejection:
+        tag: RmsWorkbenchRejection.SemanticChangeRecordWriteFailed
+    state_after: Ready
+    source:
+      file: src/main.rs
+      function: transition
+      branch: SemanticChangeRecordWriteRejected

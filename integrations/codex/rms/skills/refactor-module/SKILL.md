@@ -33,6 +33,9 @@ Use this skill when the requested outcome is better internal shape, clearer boun
    - lifecycle/order-dependent behavior: state model, transition table, or transition function.
 7. Do not add a state machine merely because a record has a status field. Use one only when legal behavior depends on lifecycle or order.
 8. Keep domain decisions separate from effects where practical. Move IO, clocks, randomness, storage, network, and vendor calls behind declared effects or capabilities. Private helpers inside pure role files must stay pure.
+   - Keep type mappings separate from semantic alternatives.
+   - Stateful machines use one input ADT and one `transition(state, input)` path for commands, observed events, and effect results.
+   - Effect executors perform one request and return one result; move iteration, retry, compensation, and stop/continue policy into transitions.
 9. Preserve module boundaries:
    - do not move private state across ownership boundaries;
    - do not expose private implementation as public contract;

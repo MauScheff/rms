@@ -51,6 +51,8 @@ Every retained artifact should serve a current manifest promise, public contract
    - compatibility code without a policy, consumer, or expiry condition;
    - generated artifacts that cannot be regenerated or validated;
    - state/status fields without lifecycle-dependent behavior;
+   - semantic lists containing container type names instead of cases;
+   - effect lifecycle types with no declared effects, or executor loops that conceal transition policy;
    - folders, modules, or classes created around nouns rather than ownership, invariants, contracts, or replaceability;
    - speculative extension points not tied to an active decision;
    - comments or docs that restate obsolete behavior.

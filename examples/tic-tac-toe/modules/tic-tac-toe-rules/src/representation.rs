@@ -100,29 +100,53 @@ pub enum GameStatus {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Game {
-    board: Board,
-    status: GameStatus,
+pub enum Game {
+    InProgress { board: Board, next: Mark },
+    Won {
+        board: Board,
+        winner: Mark,
+        line: [Cell; 3],
+    },
+    Draw { board: Board },
 }
 
 impl Game {
     pub fn new() -> Self {
-        Self {
+        Self::InProgress {
             board: Board::empty(),
-            status: GameStatus::InProgress { next: Mark::X },
+            next: Mark::X,
         }
     }
 
     pub fn board(&self) -> &Board {
-        &self.board
+        match self {
+            Self::InProgress { board, .. }
+            | Self::Won { board, .. }
+            | Self::Draw { board } => board,
+        }
     }
 
     pub fn status(&self) -> GameStatus {
-        self.status
+        match self {
+            Self::InProgress { next, .. } => GameStatus::InProgress { next: *next },
+            Self::Won { winner, line, .. } => GameStatus::Won {
+                winner: *winner,
+                line: *line,
+            },
+            Self::Draw { .. } => GameStatus::Draw,
+        }
     }
 
     pub fn from_parts(board: Board, status: GameStatus) -> Self {
-        Self { board, status }
+        match status {
+            GameStatus::InProgress { next } => Self::InProgress { board, next },
+            GameStatus::Won { winner, line } => Self::Won {
+                board,
+                winner,
+                line,
+            },
+            GameStatus::Draw => Self::Draw { board },
+        }
     }
 }
 
@@ -135,6 +159,17 @@ impl Default for Game {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
     PlaceMark { cell: Cell },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TicTacToeInput {
+    Command(Command),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TicTacToeEvent {
+    MarkPlaced,
+    MoveRejected,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

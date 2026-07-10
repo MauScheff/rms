@@ -2,15 +2,17 @@ spec: rms/contract/v0.1
 name: "check-semantic-properties"
 version: 1
 kind: command
-meaning: "Public command `rms-property-check` declared by RMS semantic change."
+meaning: Check language-neutral property and fuzz declarations, including whether their realization strategy can support the declared input-space claim.
 preconditions:
   - id: "accepts-1"
     statement: "module or implementation target with semantic property declarations"
 postconditions:
   - id: explicit-outcome
     statement: "The command returns an explicit accepted or rejected outcome."
+  - id: realization-is-truthful
+    statement: Fixed corpora, finite exhaustive checks, generated properties, and coverage-guided fuzzers remain distinct; an open-ended fuzz target cannot be satisfied by a fixed corpus.
 failure_categories:
   - id: "rejects-1"
-    statement: "property missing input space, oracle, evidence, command, or replayable counterexample metadata"
+    statement: "property missing input space, oracle, evidence, realization, command, or replayable counterexample metadata"
 compatibility:
   policy: backward-compatible-within-major

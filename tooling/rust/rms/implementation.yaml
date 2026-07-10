@@ -40,6 +40,10 @@ architecture:
       command: fuzz
       evidence: verification/fuzz/malformed_artifacts.md
       counterexamples: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: generated-property
+        command: fuzz
   messages:
     command_envelope:
     - command_id
@@ -67,14 +71,6 @@ architecture:
     - correlation_id
     - causation_id
     - status
-  effects:
-    lifecycle:
-    - Pending
-    - Running
-    - Succeeded
-    - Failed
-    - RetryScheduled
-    - Abandoned
   transition:
     output:
     - next_state
@@ -82,57 +78,79 @@ architecture:
     - commands
     - effects
     - reply
+  trace:
+    journal: verification/traces/semantic_change_record.yaml
+    timeline_projection: verification/traces/semantic_change_record.yaml
+    replay_bundle: verification/traces/semantic_change_record.yaml
+    first_bad_transition: source-provenance-from-transition-record
   machine:
     name: RmsWorkbenchMachine
     mode: boundary-machine
+    transition_signature: state-and-input
+    types:
+      state: RmsWorkbenchState
+      input: RmsWorkbenchInput
+      command: RmsWorkbenchCommand
+      event: RmsWorkbenchEvent
+      effect: RmsWorkbenchEffect
+      effect_result: RmsWorkbenchEffectResult
+      reply: RmsWorkbenchReply
+      rejection: RmsWorkbenchRejection
+      transition: RmsWorkbenchTransition
+      transition_record: RmsWorkbenchTransitionRecord
     states:
     - Ready
     - WritingSemanticChangeRecord
     commands:
     - ApplySemanticChange
-    - validate-rms-artifacts
-    - explain-module
-    - diagnose-rms-environment
-    - render-workbench-prompt
-    - plan-module-change
-    - design-rms-system
-    - compose-rms-system
-    - route-rms-work
-    - review-module-diff
-    - analyze-git-impact
-    - gate-rms-change
-    - audit-rms-project
-    - refactor-module-workbench
-    - implement-module-workbench
-    - capture-intent-workbench
-    - evolve-contract-workbench
-    - evidence-workbench
-    - list-workbench-runs
-    - inspect-workbench-run
-    - inspect-latest-workbench-run
-    - init-workbench-config
-    - configure-agent-integration
-    - init-rms-system
-    - add-rms-module
-    - add-rms-capability
-    - check-release-readiness
-    - build-context-packet
-    - build-module-atlas
-    - inspect-implementation-structure
-    - inspect-trace-bundle
-    - plan-machine-change
-    - apply-machine-change
-    - plan-semantic-change
-    - apply-semantic-change
-    - check-semantic-change
-    - diff-semantic-change
-    - check-machine-structure
-    - diff-machine-structure
-    - apply-runnable-surface
-    - check-runnable-surface
-    - package-module
-    - verify-implementation
+    - ValidateRmsArtifacts
+    - ExplainModule
+    - DiagnoseRmsEnvironment
+    - RenderWorkbenchPrompt
+    - PlanModuleChange
+    - DesignRmsSystem
+    - ComposeRmsSystem
+    - RouteRmsWork
+    - ReviewModuleDiff
+    - AnalyzeGitImpact
+    - GateRmsChange
+    - AuditRmsProject
+    - RefactorModuleWorkbench
+    - ImplementModuleWorkbench
+    - CaptureIntentWorkbench
+    - EvolveContractWorkbench
+    - EvidenceWorkbench
+    - ListWorkbenchRuns
+    - InspectWorkbenchRun
+    - InspectLatestWorkbenchRun
+    - InitWorkbenchConfig
+    - ConfigureAgentIntegration
+    - InitRmsSystem
+    - AddRmsModule
+    - AddRmsCapability
+    - CheckReleaseReadiness
+    - BuildContextPacket
+    - BuildModuleAtlas
+    - InspectImplementationStructure
+    - InspectTraceBundle
+    - PlanMachineChange
+    - ApplyMachineChange
+    - PlanSemanticChange
+    - CheckSemanticChange
+    - DiffSemanticChange
+    - CheckMachineStructure
+    - DiffMachineStructure
+    - ApplyRunnableSurface
+    - CheckRunnableSurface
+    - PackageModule
+    - VerifyImplementation
+    - CheckSemanticProperties
+    - RunSemanticProperties
+    - ReplayPropertyCounterexample
+    - InspectModule
+    observed_events: []
     events:
+    - CommandCompleted
     - SemanticChangeRecorded
     effects:
     - WriteSemanticChangeRecord
@@ -140,28 +158,41 @@ architecture:
     - SemanticChangeRecordWritten
     - SemanticChangeRecordWriteRejected
     replies:
+    - CommandCompleted
     - SemanticChangeApplied
-    rejections: []
-    transition_function: run_spec_apply
+    - SemanticChangeRejected
+    rejections:
+    - IllegalTransition
+    - SemanticChangeRecordWriteFailed
+    effect_protocols:
+    - effect: WriteSemanticChangeRecord
+      results:
+      - SemanticChangeRecordWritten
+      - SemanticChangeRecordWriteRejected
+      executor_role: effect_executor
+      atomicity: one-request-one-result
+    transition_function: transition
     transitions:
     - from: Ready
       on: ApplySemanticChange
-      to: Ready
+      to: WritingSemanticChangeRecord
       effects:
       - WriteSemanticChangeRecord
-      reply: SemanticChangeApplied
-    - from: Ready
+      no_reply_justification: semantic change record write is pending
+    - from: WritingSemanticChangeRecord
       on: SemanticChangeRecordWritten
       to: Ready
       events:
       - SemanticChangeRecorded
       reply: SemanticChangeApplied
-    - from: Ready
+    - from: WritingSemanticChangeRecord
       on: SemanticChangeRecordWriteRejected
       to: Ready
-      reply: SemanticChangeApplied
+      rejection: SemanticChangeRecordWriteFailed
   roles:
     representation:
+    - src/main.rs
+    transition:
     - src/main.rs
     message_envelope:
     - src/main.rs
@@ -169,12 +200,36 @@ architecture:
     - src/main.rs
     adapter:
     - src/main.rs
-    effect_lifecycle:
+    effect_executor:
+    - src/effect_executor.rs
+    transition_record:
     - src/main.rs
+    journal:
+    - verification/traces/semantic_change_record.yaml
+    timeline_projection:
+    - verification/traces/semantic_change_record.yaml
+    replay_bundle:
+    - verification/traces/semantic_change_record.yaml
     trace_evidence:
     - verification/contracts/inspect_implementation_structure.md
+    - verification/traces/semantic_change_record.yaml
     runnable_surface:
     - src/main.rs
+  representation:
+    closed_variants:
+    - RmsWorkbenchState
+    - RmsWorkbenchInput
+    - RmsWorkbenchCommand
+    - RmsWorkbenchEvent
+    - RmsWorkbenchEffect
+    - RmsWorkbenchEffectResult
+    - RmsWorkbenchReply
+    - RmsWorkbenchRejection
+    - RmsWorkbenchTransition
+    - RmsWorkbenchTransitionRecord
+    validated_values: []
+    transition_functions:
+    - transition
   surfaces:
   - name: rms-cli-cli
     kind: runnable-boundary
@@ -814,3 +869,132 @@ semantic_functions:
   evidence:
     scenarios:
     - verification/scenarios/verify_implementation.md
+- id: rms-workbench-transition
+  symbol: transition
+  kind: transition
+  purity: pure
+  evidence:
+    traces:
+    - verification/traces/semantic_change_record.yaml
+- id: machine-change-plan-command
+  symbol: run_machine_plan
+  kind: projector
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/plan-machine-change.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/plan_machine_change.md
+- id: machine-change-apply-command
+  symbol: run_machine_apply
+  kind: adapter
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/apply-machine-change.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/apply_machine_change.md
+- id: machine-structure-check-command
+  symbol: run_machine_check
+  kind: parser
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/check-machine-structure.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/check_machine_structure.md
+- id: machine-structure-diff-command
+  symbol: run_machine_diff
+  kind: projector
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/diff-machine-structure.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/diff_machine_structure.md
+- id: semantic-change-plan-command
+  symbol: run_spec_plan
+  kind: projector
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/plan-semantic-change.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/plan_semantic_change.md
+- id: semantic-change-apply-command
+  symbol: run_spec_apply
+  kind: adapter
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/apply-semantic-change.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/apply_semantic_change.md
+    traces:
+    - verification/traces/semantic_change_record.yaml
+- id: semantic-change-record-writer
+  symbol: effect_executor::write_if_changed
+  kind: adapter
+  purity: effectful
+  evidence:
+    traces:
+    - verification/traces/semantic_change_record.yaml
+- id: semantic-change-check-command
+  symbol: run_spec_check
+  kind: parser
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/check-semantic-change.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/check_semantic_change.md
+- id: semantic-change-diff-command
+  symbol: run_spec_diff
+  kind: projector
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/diff-semantic-change.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/diff_semantic_change.md
+- id: semantic-property-check-command
+  symbol: run_property_check
+  kind: parser
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/check-semantic-properties.v1.yaml
+    invariants:
+    - semantic-properties-are-canonical-reliability-evidence
+    - fuzz-realization-matches-semantic-claim
+  evidence:
+    contracts:
+    - verification/contracts/check_semantic_properties.md
+- id: semantic-property-run-command
+  symbol: run_property_run
+  kind: interpreter
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/run-semantic-properties.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/run_semantic_properties.md
+- id: property-counterexample-replay-command
+  symbol: run_property_replay
+  kind: projector
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/replay-property-counterexample.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/replay_property_counterexample.md

@@ -13,5 +13,50 @@ commands:
   format: "true"
 
 architecture:
+  shape: domain-engine
+  reliability:
+    properties:
+      - id: example-fixture-remains-valid
+        proves: example-is-valid
+        kind: property
+        input_space: the single checked fixture artifact
+        oracle:
+          - the declared fixture evidence exists
+        command: verify
+        evidence: verification/laws/example_is_valid
   static_inspection: opaque
   dependency_checker: manual-fixture-review
+  machine:
+    name: ExampleMachine
+    mode: stateless-decision-machine
+    transition_signature: input-only
+    stateless_justification: the fixture validates one immutable example without lifecycle or ordering
+    types:
+      state: ExampleState
+      command: ExampleCommand
+      event: ExampleEvent
+      reply: ExampleReply
+      rejection: ExampleRejection
+      transition: ExampleTransition
+      transition_record: ExampleTransitionRecord
+    states: [Ready]
+    commands: [ValidateExample]
+    observed_events: []
+    events: [ExampleValidated]
+    effects: []
+    effect_results: []
+    replies: [ExampleAccepted]
+    rejections: [ExampleInvalid]
+    effect_protocols: []
+    transition_function: validate_example
+    transitions:
+      - from: Ready
+        on: ValidateExample
+        to: Ready
+        events: [ExampleValidated]
+        reply: ExampleAccepted
+  roles:
+    representation:
+      - implementation.yaml
+    transition:
+      - src/example.txt

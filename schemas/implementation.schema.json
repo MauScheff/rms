@@ -8,7 +8,8 @@
     "module",
     "binding",
     "source",
-    "commands"
+    "commands",
+    "architecture"
   ],
   "properties": {
     "spec": {
@@ -58,8 +59,7 @@
       "additionalProperties": true
     },
     "architecture": {
-      "type": "object",
-      "additionalProperties": true
+      "$ref": "#/$defs/architecture"
     },
     "toolchain": {
       "type": "object",
@@ -111,6 +111,175 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "architecture": {
+      "type": "object",
+      "required": [
+        "shape",
+        "machine",
+        "roles"
+      ],
+      "properties": {
+        "shape": {
+          "type": "string"
+        },
+        "machine": {
+          "$ref": "#/$defs/machine"
+        },
+        "state_type": false,
+        "transition_function": false
+      },
+      "additionalProperties": true
+    },
+    "machine": {
+      "type": "object",
+      "required": [
+        "name",
+        "mode",
+        "transition_signature",
+        "types",
+        "states",
+        "commands",
+        "observed_events",
+        "events",
+        "effects",
+        "effect_results",
+        "replies",
+        "rejections",
+        "effect_protocols",
+        "transition_function",
+        "transitions"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "enum": [
+            "stateless-decision-machine",
+            "stateful-transition-machine",
+            "workflow-effect-machine",
+            "boundary-machine",
+            "storage-machine",
+            "integration-machine",
+            "projection-machine"
+          ]
+        },
+        "transition_signature": {
+          "enum": [
+            "input-only",
+            "state-and-input"
+          ]
+        },
+        "types": {
+          "$ref": "#/$defs/machineTypes"
+        },
+        "states": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "commands": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "observed_events": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "events": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "effects": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "effect_results": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "replies": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "rejections": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "effect_protocols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/effectProtocol"
+          }
+        },
+        "transition_function": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transitions": {
+          "type": "array"
+        },
+        "stateless_justification": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lifecycle_justification": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "machineTypes": {
+      "type": "object",
+      "required": [
+        "state",
+        "command",
+        "event",
+        "reply",
+        "rejection",
+        "transition",
+        "transition_record"
+      ],
+      "properties": {
+        "state": { "type": "string" },
+        "input": { "type": "string" },
+        "command": { "type": "string" },
+        "event": { "type": "string" },
+        "effect": { "type": "string" },
+        "effect_result": { "type": "string" },
+        "reply": { "type": "string" },
+        "rejection": { "type": "string" },
+        "transition": { "type": "string" },
+        "transition_record": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "identifierList": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "uniqueItems": true
+    },
+    "effectProtocol": {
+      "type": "object",
+      "required": [
+        "effect",
+        "results",
+        "atomicity"
+      ],
+      "properties": {
+        "effect": { "type": "string" },
+        "results": { "$ref": "#/$defs/identifierList" },
+        "executor_role": { "type": "string" },
+        "atomicity": {
+          "enum": [
+            "one-request-one-result",
+            "aggregate"
+          ]
+        },
+        "aggregate_justification": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
     "semanticFunction": {
       "type": "object",
       "required": [

@@ -47,6 +47,7 @@ composition:
 invariants:
   - id: playable-command-uses-rules-engine
     statement: The public play command is backed by the CLI adapter and the internal rules engine dependency.
+    authority: composition
     enforced_by: composition
     verified_by: verification/scenarios/composed_play.md
 

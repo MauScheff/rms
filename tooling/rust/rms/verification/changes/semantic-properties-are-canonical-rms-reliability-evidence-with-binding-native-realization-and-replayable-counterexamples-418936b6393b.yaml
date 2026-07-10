@@ -49,6 +49,7 @@ properties:
     - property and fuzz targets reference concrete evidence
     - counterexamples carry replay metadata
     evidence:
+      kind: property
       path: verification/properties/semantic_properties.md
     counterexamples:
       path: verification/fuzz/counterexamples

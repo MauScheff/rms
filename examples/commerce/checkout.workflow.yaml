@@ -53,10 +53,12 @@ requires:
 invariants:
   - id: one-terminal-outcome
     statement: Each checkout reaches at most one accepted terminal outcome.
+    authority: transition
     enforced_by: checkout-workflow
     verified_by: verification/laws/one_terminal_outcome
   - id: failed-payment-releases-reservation
     statement: A checkout rejected for payment does not retain an active inventory reservation.
+    authority: transition
     enforced_by: checkout-workflow
     verified_by: verification/scenarios/payment_failure_releases_inventory
 

@@ -8,9 +8,9 @@ preconditions:
     statement: "The target `implementation.yaml` is readable and parseable."
 postconditions:
   - id: structure-report-produced
-    statement: The command reports declared machine name, mode, state type, state variants, messages, transition output, trace roles, role files, and findings.
+    statement: The command reports machine mode, transition signature, binding type mappings, semantic variants, classified inputs, effect protocols, messages, transition output, trace roles, role files, and findings.
   - id: strict-promotes-production-blockers
-    statement: "`--strict` fails on production machine-gate blockers such as scaffold traces, lifecycle-without-state, hidden effects in pure roles, role-file drift, and unhandled effect results."
+    statement: "`--strict` fails on collapsed type/case declarations, missing state-plus-input signatures, unclassified inputs, missing effect protocols, executor-owned orchestration, incomplete replay, hidden effects, role drift, and unhandled effect results."
 failure_categories:
   - id: invalid-implementation
     statement: The target file is not an RMS implementation binding.

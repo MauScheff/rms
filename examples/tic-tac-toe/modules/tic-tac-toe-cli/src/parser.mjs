@@ -1,4 +1,9 @@
-import { makeCell, parsedMove, rejected } from "./representation.mjs";
+import {
+  makeCell,
+  parsedMove,
+  rejected,
+  TicTacToeBoundaryRejection,
+} from "./representation.mjs";
 
 const LETTER_ROWS = new Map([
   ["a", 0],
@@ -8,12 +13,12 @@ const LETTER_ROWS = new Map([
 
 export function parseMoveText(input) {
   if (typeof input !== "string") {
-    return rejected("malformed-input");
+    return rejected(TicTacToeBoundaryRejection.MalformedInput);
   }
 
   const value = input.trim().toLowerCase();
   if (!value) {
-    return rejected("malformed-input");
+    return rejected(TicTacToeBoundaryRejection.MalformedInput);
   }
 
   const compact = value.replace(/\s+/g, "");
@@ -22,7 +27,7 @@ export function parseMoveText(input) {
     const row = LETTER_ROWS.get(letterMatch[1]);
     const column = Number(letterMatch[2]) - 1;
     const cell = makeCell(row, column);
-    return cell ? parsedMove(cell) : rejected("out-of-board");
+    return cell ? parsedMove(cell) : rejected(TicTacToeBoundaryRejection.OutOfBoard);
   }
 
   const numericMatch = compact.match(/^([1-3]),?([1-3])$/);
@@ -30,8 +35,8 @@ export function parseMoveText(input) {
     const row = Number(numericMatch[1]) - 1;
     const column = Number(numericMatch[2]) - 1;
     const cell = makeCell(row, column);
-    return cell ? parsedMove(cell) : rejected("out-of-board");
+    return cell ? parsedMove(cell) : rejected(TicTacToeBoundaryRejection.OutOfBoard);
   }
 
-  return rejected("malformed-input");
+  return rejected(TicTacToeBoundaryRejection.MalformedInput);
 }

@@ -36,38 +36,92 @@ pub enum DescribeWidgetCommand {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum RustExampleEvent {
+    WidgetDescribed,
+    WidgetRejected,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum RustExampleRejection {
+    EmptyWidgetName,
+    ExpectedEmptyName,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DescribeWidgetReply {
     Description(String),
-    Rejected { reason: String },
+    Rejected { reason: RustExampleRejection },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RustExampleTransition {
+    pub next_state: RustExampleState,
+    pub events: Vec<RustExampleEvent>,
+    pub commands: Vec<DescribeWidgetCommand>,
+    pub effects: Vec<()>,
+    pub reply: DescribeWidgetReply,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RustExampleTransitionRecord {
+    pub state_before: RustExampleState,
+    pub state_after: RustExampleState,
+    pub input: DescribeWidgetCommand,
+    pub output: RustExampleTransition,
 }
 
 pub struct RustExampleMachine;
 
 impl RustExampleMachine {
-    pub fn transition(command: DescribeWidgetCommand) -> DescribeWidgetReply {
-        match command {
-            DescribeWidgetCommand::Describe { widget } => {
-                DescribeWidgetReply::Description(describe_widget(&widget).to_string())
-            }
-            DescribeWidgetCommand::RejectEmptyName { name } => {
-                if Widget::new(name).is_some() {
-                    DescribeWidgetReply::Rejected {
-                        reason: "expected-empty-name".to_string(),
-                    }
-                } else {
-                    DescribeWidgetReply::Rejected {
-                        reason: "empty-widget-name".to_string(),
-                    }
-                }
-            }
+    pub fn transition(command: DescribeWidgetCommand) -> RustExampleTransition {
+        transition(command)
+    }
+}
+
+pub fn transition(command: DescribeWidgetCommand) -> RustExampleTransition {
+    transition_record(command).output
+}
+
+pub fn transition_record(command: DescribeWidgetCommand) -> RustExampleTransitionRecord {
+    let state_before = RustExampleState::Ready;
+    let (event, reply) = match &command {
+        DescribeWidgetCommand::Describe { widget } => (
+            RustExampleEvent::WidgetDescribed,
+            DescribeWidgetReply::Description(describe_widget(widget).to_string()),
+        ),
+        DescribeWidgetCommand::RejectEmptyName { name } => {
+            let reason = if Widget::new(name.clone()).is_some() {
+                RustExampleRejection::ExpectedEmptyName
+            } else {
+                RustExampleRejection::EmptyWidgetName
+            };
+            (
+                RustExampleEvent::WidgetRejected,
+                DescribeWidgetReply::Rejected { reason },
+            )
         }
+    };
+    let next_state = RustExampleState::Ready;
+    let output = RustExampleTransition {
+        next_state: next_state.clone(),
+        events: vec![event],
+        commands: Vec::new(),
+        effects: Vec::new(),
+        reply,
+    };
+    RustExampleTransitionRecord {
+        state_before,
+        state_after: next_state,
+        input: command,
+        output,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        describe_widget, DescribeWidgetCommand, DescribeWidgetReply, RustExampleMachine, Widget,
+        describe_widget, DescribeWidgetCommand, DescribeWidgetReply, RustExampleEvent,
+        RustExampleMachine, RustExampleTransition, Widget,
     };
 
     #[test]
@@ -95,7 +149,13 @@ mod tests {
 
         assert_eq!(
             RustExampleMachine::transition(DescribeWidgetCommand::Describe { widget }),
-            DescribeWidgetReply::Description("example".to_string())
+            RustExampleTransition {
+                next_state: super::RustExampleState::Ready,
+                events: vec![RustExampleEvent::WidgetDescribed],
+                commands: Vec::new(),
+                effects: Vec::new(),
+                reply: DescribeWidgetReply::Description("example".to_string()),
+            }
         );
     }
 }

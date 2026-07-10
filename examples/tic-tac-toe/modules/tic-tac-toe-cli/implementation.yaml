@@ -3,7 +3,7 @@ module: tic-tac-toe-cli
 binding: js
 source:
   root: .
-  public_entrypoint: src/representation.mjs
+  public_entrypoint: src/adapter.mjs
 commands:
   build: sh scripts/build.sh
   verify: sh scripts/smoke.sh
@@ -33,6 +33,10 @@ architecture:
       - malformed input does not delegate to the rules module
       - accepted input delegates only parsed board cells
       command: fuzz
+      realizations:
+      - profile: smoke
+        strategy: generated-property
+        command: fuzz
       evidence: verification/fuzz/malformed_input_fuzz.md
       counterexamples: verification/fuzz/counterexamples
   messages:
@@ -69,43 +73,78 @@ architecture:
     - commands
     - effects
     - reply
-  effects:
-    lifecycle:
-    - Pending
-    - Running
-    - Succeeded
-    - Failed
-    - RetryScheduled
-    - Abandoned
   trace:
     journal: verification/traces/boundary_parse.yaml
     timeline_projection: verification/traces/boundary_parse.yaml
     replay_bundle: verification/traces/boundary_parse.yaml
     first_bad_transition: source-provenance-from-transition-record
   machine:
-    name: TicTacToeCliBoundary
+    name: TicTacToeBoundaryMachine
     mode: boundary-machine
-    state: BoundaryState
+    transition_signature: state-and-input
+    types:
+      state: TicTacToeBoundaryState
+      input: TicTacToeBoundaryInput
+      command: TicTacToeBoundaryCommand
+      event: TicTacToeBoundaryEvent
+      effect: TicTacToeBoundaryEffect
+      effect_result: TicTacToeBoundaryEffectResult
+      reply: TicTacToeBoundaryReply
+      rejection: TicTacToeBoundaryRejection
+      transition: TicTacToeBoundaryTransition
+      transition_record: TicTacToeBoundaryTransitionRecord
     states:
     - AwaitingInput
-    - ParsedCommand
-    - Delegating
-    - Completed
-    - Rejected
+    - AwaitingRulesResult
     commands:
-    - RawCliInput
+    - RunMove
+    observed_events: []
     events:
-    - ParsedMove
+    - MoveParsed
+    - RulesInvocationRequested
+    - RulesInvocationCompleted
+    - RunRejected
     effects:
     - InvokeRulesBridge
     effect_results:
-    - RulesBridgeResult
+    - RulesBridgeSucceeded
+    - RulesBridgeFailed
     replies:
-    - BoundaryResult
+    - Accepted
+    - Rejected
     rejections:
-    - malformed-input
-    - out-of-board
-    transition_function: handleBoundaryTransition
+    - MalformedInput
+    - OutOfBoard
+    - RulesBridgeFailure
+    - IllegalTransition
+    effect_protocols:
+    - effect: InvokeRulesBridge
+      results: [RulesBridgeSucceeded, RulesBridgeFailed]
+      executor_role: effect_executor
+      atomicity: one-request-one-result
+    transition_function: transition
+    transitions:
+    - from: AwaitingInput
+      on: RunMove
+      to: AwaitingRulesResult
+      events: [MoveParsed, RulesInvocationRequested]
+      effects: [InvokeRulesBridge]
+      no_reply_justification: the rules bridge result is pending
+    - from: AwaitingInput
+      on: RunMove
+      to: AwaitingInput
+      events: [RunRejected]
+      rejection: MalformedInput
+    - from: AwaitingRulesResult
+      on: RulesBridgeSucceeded
+      to: AwaitingInput
+      events: [RulesInvocationCompleted]
+      reply: Accepted
+    - from: AwaitingRulesResult
+      on: RulesBridgeFailed
+      to: AwaitingInput
+      events: [RunRejected]
+      rejection: RulesBridgeFailure
   roles:
     representation:
     - src/representation.mjs
@@ -113,12 +152,14 @@ architecture:
     - src/representation.mjs
     parser:
     - src/parser.mjs
+    transition:
+    - src/transition.mjs
     adapter:
     - src/adapter.mjs
-    effect_lifecycle:
+    effect_executor:
     - src/ports.mjs
     transition_record:
-    - src/adapter.mjs
+    - src/transition.mjs
     journal:
     - verification/traces/boundary_parse.yaml
     timeline_projection:
@@ -132,16 +173,18 @@ architecture:
     - src/adapter.mjs
   representation:
     closed_variants:
-    - BoundaryState
-    - RawCliInput
-    - ParsedMove
-    - BoundaryResult
-    - InvokeRulesBridge
-    - RulesBridgeResult
+    - TicTacToeBoundaryState
+    - TicTacToeBoundaryInput
+    - TicTacToeBoundaryCommand
+    - TicTacToeBoundaryEvent
+    - TicTacToeBoundaryEffect
+    - TicTacToeBoundaryEffectResult
+    - TicTacToeBoundaryReply
+    - TicTacToeBoundaryRejection
     validated_values:
     - makeCell
     transition_functions:
-    - handleBoundaryTransition
+    - transition
   effect_roles:
   - representation
   - parsers
@@ -184,10 +227,10 @@ semantic_functions:
     - verification/boundaries/cli_input.md
     traces:
     - verification/traces/boundary_parse.yaml
-- id: rules-port-adapter
-  symbol: src/adapter.mjs#handleBoundaryTransition
+- id: boundary-transition
+  symbol: src/transition.mjs#transition
   kind: transition
-  purity: boundary
+  purity: pure
   discharges:
     contracts:
     - contracts/play-tic-tac-toe.v1.yaml
@@ -210,10 +253,10 @@ semantic_functions:
     - verification/contracts/play_tic_tac_toe.md
     boundaries:
     - verification/boundaries/cli_input.md
-- id: rust-rules-port
-  symbol: src/ports.mjs#createRustRulesPort
+- id: rust-rules-effect-executor
+  symbol: src/ports.mjs#createRulesEffectExecutor
   kind: adapter
-  purity: boundary
+  purity: effectful
   discharges:
     contracts:
     - contracts/play-tic-tac-toe.v1.yaml

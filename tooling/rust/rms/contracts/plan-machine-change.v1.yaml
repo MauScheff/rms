@@ -12,7 +12,9 @@ postconditions:
   - id: plan-is-advisory
     statement: The command does not mutate canonical artifacts; provider output becomes architecture only after `rms machine apply` validates and writes it.
   - id: output-is-machine-shaped
-    statement: "The prompt asks for `rms/machine-change/v0.1` when states, commands, events, effects, replies, rejections, transitions, or semantic roles must change."
+    statement: "The prompt asks for `rms/machine-change/v0.1` with separate binding types and semantic cases, classified input categories, canonical transition signature, effect protocols, transitions, and roles."
+  - id: orchestration-remains-in-transition
+    statement: The prompt asks whether an effect outcome changes later decisions and requires one request, one typed result, and a follow-up transition when it does.
   - id: role-boundary-is-stated
     statement: The prompt states that agents edit declared role bodies and do not hand-create semantic architecture by direct file edits.
   - id: provider-run-is-recorded

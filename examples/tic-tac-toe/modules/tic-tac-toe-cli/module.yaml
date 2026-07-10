@@ -99,6 +99,10 @@ fuzz_targets:
       - accepted input delegates only parsed board cells
     evidence: verification/fuzz/malformed_input_fuzz.md
     counterexamples: verification/fuzz/counterexamples
+    realizations:
+      - profile: smoke
+        strategy: generated-property
+        command: fuzz
 
 x-scaffold:
   shape: "boundary-adapter"

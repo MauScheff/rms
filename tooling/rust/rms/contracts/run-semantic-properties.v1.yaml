@@ -2,13 +2,15 @@ spec: rms/contract/v0.1
 name: "run-semantic-properties"
 version: 1
 kind: command
-meaning: "Public command `rms-property-run` declared by RMS semantic change."
+meaning: Run binding commands selected by the declared property or fuzz realization profile without changing the semantic claim.
 preconditions:
   - id: "accepts-1"
-    statement: "implementation target with commands.properties or commands.fuzz"
+    statement: "implementation target with a property or fuzz realization whose command resolves through the binding"
 postconditions:
   - id: explicit-outcome
     statement: "The command returns an explicit accepted or rejected outcome."
+  - id: selected-profile-only
+    statement: The command runs only realizations matching the requested profile and reports the declared strategy.
 failure_categories:
   - id: "rejects-1"
     statement: "missing declared property or fuzz verification command"

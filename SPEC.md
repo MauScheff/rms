@@ -85,6 +85,14 @@ Rationale is the accepted explanation for why a particular interpretation, contr
 
 Intent and rationale MAY be recorded as natural-language artifacts and linked from manifests, contracts, laws, or evidence. They explain and justify public meaning, but they MUST NOT silently override manifests, contracts, invariants, context language, compatibility declarations, or verification evidence.
 
+### 3.14 Semantic machine
+
+An implemented RMS module MUST declare a domain-named semantic machine. Binding-native container names MUST be declared separately from semantic alternatives. A machine's state, command, observed-event, event, effect, effect-result, reply, and rejection lists MUST contain case names rather than the names of their enclosing language types.
+
+Stateful, boundary, workflow, storage, integration, and projection machines MUST expose one canonical transition that consumes current state plus a closed input over commands, observed events, and effect results. Each transition input MUST belong to exactly one category. Stateless decision machines MAY consume input without state only when an explicit justification explains why no lifecycle or ordering exists.
+
+A declared effect MUST define its possible results, executor role, and atomicity. When an individual result can alter a subsequent decision, the protocol MUST use one request and one result, and that result MUST return through the canonical transition. Effect executors MUST NOT own business sequencing, iteration, retry, compensation, stop/continue policy, or machine state progression.
+
 ## 4. Core profile requirements
 
 Every declared RMS module MUST satisfy the Core profile. Ordinary private components need not be modeled as separate RMS modules.
@@ -149,6 +157,8 @@ An invariant SHOULD have:
 - an enforcement location;
 - verification evidence.
 
+An invariant MUST declare its authority as representation, constructor, parser, transition, effect executor, or composition. Lifecycle, sequencing, retry, compensation, and progress invariants MUST have transition authority. An effect executor MAY enforce IO mechanism rules but MUST NOT discharge transition-authority laws.
+
 Invariants SHOULD be few, meaningful, and owned by the narrowest valid consistency boundary.
 
 ### 4.7 Effects
@@ -159,7 +169,7 @@ Effects SHOULD be isolated behind explicit ports, capabilities, or interpreters.
 
 Ambient access to global state, network, storage, time, randomness, or secrets SHOULD be minimized and MUST NOT bypass declared permissions.
 
-Effect handlers SHOULD execute requested work and return observations, failures, timeouts, or acknowledgements through declared results, events, or adapter outputs. They SHOULD NOT make cross-module domain decisions or mutate another module's owned semantic state directly.
+Effect handlers SHOULD execute one declared request and return one declared observation, failure, timeout, or acknowledgement through an effect result. They MUST NOT make cross-module domain decisions, mutate another module's owned semantic state, or hide iteration and progress policy that belongs in a transition.
 
 ### 4.8 Contracts
 
@@ -346,7 +356,7 @@ The module MUST additionally declare:
 - malformed-input behavior;
 - compatibility and deprecation policy.
 
-Boundary verification SHOULD include semantic fuzz properties or generated adversarial cases when parser complexity or security risk justifies it. The semantic property SHOULD name the raw input space, parse/delegation oracle, evidence path, and replayable counterexample policy; the binding may realize it with any appropriate test or fuzzing tool.
+Boundary verification SHOULD include semantic fuzz properties or generated adversarial cases when parser complexity or security risk justifies it. The semantic property SHOULD name the raw input space, parse/delegation oracle, evidence path, replayable counterexample policy, and realization strategy. A fixed deterministic corpus MUST NOT satisfy an open-ended fuzz claim. Complete finite spaces MAY use deterministic exhaustive evidence; open spaces require generated-property or coverage-guided evidence for a production claim.
 
 ### 5.5 Monitor profile
 

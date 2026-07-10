@@ -21,6 +21,7 @@ properties:
     - rejected input does not create semantic authority outside RMS canonical apply paths
     - diagnostics remain derived evidence rather than hidden architecture
     evidence:
+      kind: fuzz
       path: verification/fuzz/malformed_artifacts.md
     counterexamples:
       path: verification/fuzz/counterexamples

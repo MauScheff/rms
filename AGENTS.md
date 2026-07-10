@@ -12,6 +12,24 @@ Core rule:
 - Agents fill declared roles.
 - Bugs should become diagnosable bad states.
 
+## Change Gate
+
+| Change | Required RMS gate before source edits |
+| --- | --- |
+| Meaning, law, contract, property, effect, evidence | `rms spec plan/apply/check` |
+| State, command, observed event, effect result, transition | `rms spec apply` or focused `rms machine apply/check` |
+| App, CLI, UI, HTTP, batch, executable entrypoint | `rms surface apply/check` |
+| Module boundary or public capability | `rms design` then `rms add-module` or `rms add-capability` |
+| Declared role body only | Edit the role body, then verify |
+
+Machine rules:
+
+- `architecture.machine.types` names binding containers; semantic lists name actual cases.
+- Stateful, boundary, workflow, storage, integration, and projection machines use `transition(state, input)`.
+- The input ADT closes over commands, observed events, and effect results; each case belongs to exactly one category.
+- An effect executor performs one declared request and returns one declared result. Transitions own sequencing, retry, compensation, stop/continue policy, and state progression.
+- Fixed examples are a deterministic corpus, not an open-ended fuzz realization.
+
 You can:
 
 - edit bodies inside RMS-declared role files;
@@ -71,7 +89,7 @@ When creating a new capability, choose semantic shape before file layout:
 
 Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a public capability should be scaffolded as a recursive tree with a composite parent, domain child, and boundary child. Prefer this over a single module when the intent combines user/boundary interaction, lifecycle decisions, and effect simulation or external-service coordination.
 
-If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only. Simple runnable surfaces should stay thin and stateless unless the intent has real lifecycle, order, session, retry, status, recovery, or workflow semantics.
+If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only. Runnable surfaces stay thin, but boundary machines still use explicit state-plus-input transitions; product lifecycle belongs in the owning domain or workflow machine.
 
 If a pure/domain module is meant to be reused like a library or Lego block, declare the reusable capability in `provides.capabilities[]`, keep a single public code facade in `implementation.yaml`, and add package/reuse evidence. RMS says what is reusable; native package files only say how a binding imports it.
 

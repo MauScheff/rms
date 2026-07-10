@@ -10,15 +10,17 @@ records:
       causation_id: user-request-1
       idempotency_key: null
       command:
-        tag: DescribeSwiftWidget
+        tag: Describe
         widget_name: example
     output:
       next_state: Ready
-      events: []
+      events:
+        - event:
+            tag: WidgetDescribed
       commands: []
       effects: []
       reply:
-        tag: DescribeSwiftWidgetReply
+        tag: Description
         description: example
     state_after: Ready
     source:
@@ -34,11 +36,13 @@ records:
       causation_id: user-request-2
       idempotency_key: null
       command:
-        tag: ConstructSwiftWidget
+        tag: RejectEmptyName
         name: ""
     output:
       next_state: Ready
-      events: []
+      events:
+        - event:
+            tag: WidgetRejected
       commands: []
       effects: []
       reply:

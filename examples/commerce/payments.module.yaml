@@ -54,10 +54,12 @@ requires:
 invariants:
   - id: capture-requires-authorization
     statement: Capture is accepted only for an active authorization.
+    authority: transition
     enforced_by: payment-aggregate
     verified_by: verification/laws/capture_requires_authorization
   - id: refund-within-capture
     statement: Total accepted refunds never exceed captured value.
+    authority: transition
     enforced_by: payment-aggregate
     verified_by: verification/laws/refund_within_capture
 

@@ -21,6 +21,21 @@ dependencies:
 
 architecture:
   shape: "domain-engine"
+  reliability:
+    properties:
+      - id: legal-moves-preserve-game-laws
+        proves: marks-never-overwrite
+        kind: property
+        input_space: finite boards and validated place-mark commands
+        oracle:
+          - accepted moves fill exactly one empty cell
+          - rejected moves preserve state
+          - terminal games reject further moves
+        command: verify
+        evidence: verification/laws/transition_trace.md
+  allowed_public_field_structs:
+    - TicTacToeTransition
+    - TicTacToeTransitionRecord
   public_modules:
     - representation
     - transition
@@ -54,22 +69,67 @@ architecture:
   machine:
     name: TicTacToeMachine
     mode: stateful-transition-machine
-    state: Game
+    transition_signature: state-and-input
+    types:
+      state: Game
+      input: TicTacToeInput
+      command: Command
+      event: TicTacToeEvent
+      reply: TransitionOutcome
+      rejection: MoveRejection
+      transition: TicTacToeTransition
+      transition_record: TicTacToeTransitionRecord
     states:
       - InProgress
       - Won
       - Draw
     commands:
-      - Command
+      - PlaceMark
+    observed_events: []
     events:
-      - TransitionOutcome
+      - MarkPlaced
+      - MoveRejected
     effects: []
     effect_results: []
     replies:
-      - TransitionOutcome
+      - Accepted
+      - Rejected
     rejections:
-      - MoveRejection
+      - CellOccupied
+      - GameAlreadyTerminal
+    effect_protocols: []
     transition_function: transition
+    transitions:
+      - from: InProgress
+        on: PlaceMark
+        to: InProgress
+        events: [MarkPlaced]
+        reply: Accepted
+      - from: InProgress
+        on: PlaceMark
+        to: Won
+        events: [MarkPlaced]
+        reply: Accepted
+      - from: InProgress
+        on: PlaceMark
+        to: Draw
+        events: [MarkPlaced]
+        reply: Accepted
+      - from: InProgress
+        on: PlaceMark
+        to: InProgress
+        events: [MoveRejected]
+        rejection: CellOccupied
+      - from: Won
+        on: PlaceMark
+        to: Won
+        events: [MoveRejected]
+        rejection: GameAlreadyTerminal
+      - from: Draw
+        on: PlaceMark
+        to: Draw
+        events: [MoveRejected]
+        rejection: GameAlreadyTerminal
   roles:
     representation:
       - src/representation.rs
@@ -88,12 +148,12 @@ architecture:
     trace_evidence:
       - verification/laws/transition_trace.md
       - verification/traces/transition_trace.yaml
-  state_type: Game
-  transition_function: transition
   representation:
     closed_variants:
       - Command
       - GameStatus
+      - TicTacToeInput
+      - TicTacToeEvent
       - Mark
       - MoveRejection
       - TransitionOutcome

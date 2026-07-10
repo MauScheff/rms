@@ -19,9 +19,9 @@ Scenario:
 - `rms surface apply` supports a runnable controller `entrypoint` plus an
   optional `launch_entrypoint`, and strict surface checks verify browser launch
   files reference the declared controller.
-- Generated simple runnable browser/tool boundaries default to thin stateless
-  boundary machines unless lifecycle/order/session/retry/status/recovery
-  semantics are real.
+- Generated runnable browser/tool boundaries stay thin while still using a
+  canonical state-plus-input transition; product lifecycle is not invented in
+  the surface or hidden in its effect executor.
 
 Command/tool:
 

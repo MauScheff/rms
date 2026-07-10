@@ -1,11 +1,11 @@
 # Contract Evidence: check-machine-structure
 
-Promise: `check-machine-structure` reports whether declared machine roles, variants, transition output, envelopes, replay support, and trace roles are present.
+Promise: `check-machine-structure` reports whether semantic cases, binding types, the closed machine input, state-and-input transition signature, effect protocols, transition output, replay support, and trace roles agree.
 
-Scenario: generated Rust, Swift, and JavaScript bindings pass structure checks; malformed fixtures produce focused diagnostics.
+Scenario: generated Rust, Swift, and JavaScript bindings realize the same canonical model idiomatically. Malformed fixtures collapse cases into type names, omit state/input parameters, bypass effect results, hide orchestration in executors, or leave trace branches uncovered.
 
-Command: `cargo test --manifest-path tooling/rust/rms/Cargo.toml structure_report js_boundary_machine_flags -- --nocapture`
+Command: `cargo test --workspace --locked`
 
-Expected result: structure gaps are deterministic diagnostics, including missing transition output, string-only JS state, role drift, hidden effects, and reply-only boundary machines.
+Expected result: structure gaps produce focused deterministic diagnostics. Strict checks reject collapsed semantic variants, missing machine inputs, stateful transitions without state, incomplete effect protocols, result paths that bypass transitions, hidden executor orchestration, role drift, and replay gaps.
 
-Source revision: git:dfe027ab8502 plus current semantic-gate change under review.
+Source provenance: the candidate commit and this command are recorded by strict audit before a production claim.

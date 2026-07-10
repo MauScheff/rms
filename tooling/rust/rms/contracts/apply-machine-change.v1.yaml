@@ -10,9 +10,13 @@ preconditions:
     statement: Exactly one inline JSON, inline YAML, or change file input is supplied.
 postconditions:
   - id: canonical-artifacts-updated
-    statement: "Successful non-dry-run application updates `architecture.machine`, traceable-machine defaults, declared roles, transitions, and local trace placeholders in canonical artifacts."
+    statement: "Successful non-dry-run application updates binding type mappings, semantic variants, transition signature, effect protocols, declared roles, transitions, and local trace evidence in canonical artifacts."
   - id: invalid-change-rejected
-    statement: Unknown states, commands, events, effects, effect results, replies, rejections, duplicate variants, unsupported modes, and invalid effect executors are rejected before writes.
+    statement: Unknown states, commands, observed events, effects, effect results, replies, rejections, duplicate variants, collapsed type/case declarations, unsupported signatures, invalid protocols, and invalid executors are rejected before writes.
+  - id: stateful-input-is-canonical
+    statement: Stateful modes declare `state-and-input`, one input ADT over commands, observed events, and effect results, and transitions classify every input exactly once.
+  - id: effect-protocol-is-explicit
+    statement: Each effect declares result alternatives, executor role, and atomicity before generated binding roles execute it.
   - id: dry-run-does-not-write
     statement: "`--dry-run` reports planned writes and diagnostics without mutating tracked files."
   - id: provider-output-not-authority
@@ -24,5 +28,7 @@ failure_categories:
     statement: A transition references undeclared state, input, output, event, command, effect, reply, or rejection.
   - id: missing-effect-executor
     statement: A declared effect executor does not name a declared effect.
+  - id: invalid-effect-protocol
+    statement: An effect lacks results or executor semantics, or an aggregate protocol lacks justification and evidence.
 compatibility:
   policy: backward-compatible-within-major

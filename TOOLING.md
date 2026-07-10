@@ -121,7 +121,7 @@ Generated module guidance is an adapter over canonical artifacts. It tells human
 
 When Stateful, Distributed, Workflow, or Boundary profiles are requested, the scaffold includes the required empty profile section so the manifest validates. Fill those sections with real lifecycle, reconciliation, workflow, or boundary semantics before relying on the profile.
 
-Inspectable bindings also scaffold inner structure declarations under `architecture.machine`, `architecture.messages`, `architecture.transition`, `architecture.trace`, and `architecture.roles`. Generated role types use semantic domain-prefixed suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Role, binding, and surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped from generated inner names so module slugs do not become domain types. Traceable scaffolds also seed `verification/traces/*.yaml`; `rms verify` checks declared JSON/YAML trace bundles after the native verify command.
+Inspectable bindings also scaffold inner structure declarations under `architecture.machine`, `architecture.messages`, `architecture.transition`, `architecture.trace`, and `architecture.roles`. `architecture.machine.types` contains binding-native container names; `states`, `commands`, `observed_events`, `events`, `effects`, `effect_results`, `replies`, and `rejections` contain semantic alternatives only. Generated role types use semantic domain-prefixed suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Input`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Stateful bindings expose one `transition(state, input)` path, and replay folds each record's `state_after` into the next input. Role, binding, and surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped from generated inner names so module slugs do not become domain types. Traceable scaffolds also seed `verification/traces/*.yaml`; `rms verify` checks declared JSON/YAML trace bundles after the native verify command.
 
 ### `spec`
 
@@ -149,6 +149,8 @@ laws:
   add:
     - id: payment-failure-releases-inventory
       statement: Failed payment after reservation emits ReleaseInventory before final status.
+      authority: transition
+      enforced_by: checkout-transition
 contracts:
   add:
     - name: resolve-checkout
@@ -182,10 +184,24 @@ spec: rms/machine-change/v0.1
 module: modules/example/implementation.yaml
 machine:
   mode: stateful-transition-machine
+  transition_signature: state-and-input
+  types:
+    state: ExampleState
+    input: ExampleInput
+    command: ExampleCommand
+    event: ExampleEvent
+    effect: ExampleEffect
+    effect_result: ExampleEffectResult
+    reply: ExampleReply
+    rejection: ExampleRejection
+    transition: ExampleTransition
+    transition_record: ExampleTransitionRecord
   states:
     set: [Ready, NeedsContext, PendingConfirmation]
   commands:
     add: [Start, Confirm]
+  observed_events:
+    add: []
   events:
     add: [ContextRequested, Confirmed]
   effects:
@@ -196,6 +212,12 @@ machine:
     add: [AskForContext, Done]
   rejections:
     add: [NoPendingWork]
+  effect_protocols:
+    add:
+      - effect: AppendLocalLog
+        results: [LocalLogAppended]
+        executor_role: effect_executor
+        atomicity: one-request-one-result
 transitions:
   add:
     - from: Ready
@@ -210,7 +232,9 @@ roles:
       binding_hint: local_filesystem
 ```
 
-Agents may add small private pure helpers inside declared pure role files. Private IO helpers are not allowed in pure roles; IO must be represented as declared effects plus effect results and executed only in adapter, port, or effect-executor roles.
+Agents may add small private pure helpers inside declared pure role files. Private IO helpers are not allowed in pure roles; IO must be represented as declared effects plus effect results and executed only in adapter, port, or effect-executor roles. An executor performs one declared request and returns one declared result. If that result changes what happens next, the canonical transition owns the follow-up, retry, compensation, stop/continue policy, and state progression.
+
+Property realization names are claims, not labels of convenience. Use `deterministic-corpus` for fixed examples, `deterministic-exhaustive` only for complete finite spaces, `generated-property` for generated cases, and `coverage-fuzzer` for coverage-guided fuzzing. Strict audit rejects open-ended fuzz claims backed only by a corpus.
 
 If external truth can be unknown, duplicate, stale, partial, conflicting, delayed, or later corrected, model recovery, retry, compensation, convergence, or reconciliation evidence before source changes.
 

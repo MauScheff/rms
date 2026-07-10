@@ -156,6 +156,26 @@ How is compatibility demonstrated?
 
 The implementation remains private. Other modules should not depend on its tables, internal helpers, framework objects, or vendor SDKs.
 
+### Give implementations one traceable machine shape
+
+RMS separates binding containers from semantic alternatives:
+
+```text
+types.state = CheckoutState
+states = NotStarted | Reserving | Authorizing | Releasing | Completed | Failed
+```
+
+The same distinction applies to commands, observed events, effects, effect results, replies, and rejections. Stateful modules use one closed input ADT and one pure path:
+
+```text
+transition(current_state, command | observed_event | effect_result)
+  -> next_state + events + commands + effects + reply
+```
+
+Effects are requests, not hidden control flow. An executor performs one request and returns one result. If that result changes what should happen next, the result re-enters the machine and the transition owns sequencing, retry, compensation, and stop/continue policy. This is what makes a bad outcome replayable as a specific bad transition rather than an opaque failure inside IO code.
+
+Invariant authority should be explicit. Constructors own value validity; parsers own boundary acceptance; transitions own lifecycle policy; effect executors own only the mechanics of touching the world; composition owns cross-module wiring.
+
 ---
 
 ## 5. Contracts are more than schemas

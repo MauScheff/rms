@@ -22,6 +22,20 @@ dependencies:
 
 architecture:
   shape: domain-engine
+  reliability:
+    properties:
+      - id: accepted-widget-name-is-non-empty
+        proves: accepted-widget-has-name
+        kind: property
+        input_space: arbitrary local widget names
+        oracle:
+          - accepted widget names are non-empty after trimming
+          - rejected empty names remain explicit
+        command: verify
+        evidence: verification/laws/accepted_widget_has_name
+  allowed_public_field_structs:
+    - RustExampleTransition
+    - RustExampleTransitionRecord
   public_modules:
     - widget
   messages:
@@ -54,19 +68,46 @@ architecture:
   machine:
     name: RustExampleMachine
     mode: stateless-decision-machine
+    transition_signature: input-only
     stateless_justification: "describe-widget is a pure query over already validated input; no lifecycle or ordering state is owned by this example"
-    state: RustExampleState
+    types:
+      state: RustExampleState
+      command: DescribeWidgetCommand
+      event: RustExampleEvent
+      reply: DescribeWidgetReply
+      rejection: RustExampleRejection
+      transition: RustExampleTransition
+      transition_record: RustExampleTransitionRecord
     states:
       - Ready
     commands:
-      - DescribeWidgetCommand
-    events: []
+      - Describe
+      - RejectEmptyName
+    observed_events: []
+    events:
+      - WidgetDescribed
+      - WidgetRejected
     effects: []
     effect_results: []
     replies:
-      - DescribeWidgetReply
-    rejections: []
-    transition_function: describe_widget
+      - Description
+      - Rejected
+    rejections:
+      - EmptyWidgetName
+      - ExpectedEmptyName
+    effect_protocols: []
+    transition_function: transition
+    transitions:
+      - from: Ready
+        on: Describe
+        to: Ready
+        events: [WidgetDescribed]
+        reply: Description
+      - from: Ready
+        on: RejectEmptyName
+        to: Ready
+        events: [WidgetRejected]
+        rejection: EmptyWidgetName
   roles:
     representation:
       - src/widget.rs

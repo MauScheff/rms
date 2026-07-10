@@ -31,6 +31,7 @@ requires:
 invariants:
   - id: accepted-widget-has-name
     statement: Every accepted widget has a non-empty name.
+    authority: constructor
     enforced_by: widget-constructor
     verified_by: verification/laws/accepted_widget_has_name
 

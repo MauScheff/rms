@@ -185,65 +185,104 @@ requires:
 invariants:
 - id: canonical-artifacts-remain-authoritative
   statement: The CLI may inspect, explain, package, and validate RMS artifacts, but it must not create module semantics outside canonical manifests and contracts.
-  enforced_by: manifest-first-command-handlers
+  authority: parser
+  enforced_by: validate-rms-artifacts-command
   verified_by: verification/laws/canonical_artifacts_remain_authoritative.md
 - id: diagnostics-are-evidence-not-authority
   statement: Diagnostic, context, package, and conformance outputs must identify their source artifacts and remain derived evidence rather than hidden architectural truth.
-  enforced_by: derived-output-renderers
+  authority: parser
+  enforced_by: diagnose-rms-environment-command
   verified_by: verification/laws/diagnostics_are_evidence_not_authority.md
 - id: composite-evidence-lanes-are-concrete
   statement: Composite scaffolds must not declare empty evidence lanes for production claims.
-  enforced_by: add-capability-evidence-scaffold
+  authority: effect-executor
+  enforced_by: add-rms-capability-command
   verified_by: verification/laws/composite_evidence_lanes_are_concrete.md
 - id: effect-results-are-canonical-machine-inputs
   statement: Machine-shaped modules that represent effect-result types or envelopes declare semantic effect results and consume them through transitions.
-  enforced_by: effect-result-structure-diagnostics
+  authority: parser
+  enforced_by: inspect-implementation-structure-command
   verified_by: verification/laws/effect_results_are_canonical_machine_inputs.md
 - id: boundary-lifecycle-is-trace-evidenced
   statement: Boundary-machine states used for parse, delegation, completion, and rejection are evidenced by replayable transition traces.
-  enforced_by: boundary-trace-coverage-audit
+  authority: parser
+  enforced_by: audit-rms-project-command
   verified_by: verification/laws/boundary_lifecycle_is_trace_evidenced.md
 - id: source-drift-has-semantic-record
   statement: Source behavior changes require a committed semantic-change record before strict production audit can pass.
-  enforced_by: strict-audit-semantic-drift-check
+  authority: parser
+  enforced_by: audit-rms-project-command
   verified_by: verification/laws/source_drift_has_semantic_record.md
 - id: semantic-revisions-are-applied-canonically
   statement: Semantic and machine revisions that correct scaffold drift must use canonical set, remove, supersedes, launch entrypoint, and active-record rules instead of hand-edited manifest surgery.
-  enforced_by: semantic-revision-apply-and-audit
+  authority: effect-executor
+  enforced_by: semantic-change-apply-command
   verified_by: verification/laws/semantic_revisions_are_applied_canonically.md
 - id: runnable-surfaces-enter-through-boundaries
   statement: Runnable surfaces adapt outside input into declared RMS commands and must not reimplement domain decisions or call private module internals.
-  enforced_by: runnable-surface-structure-diagnostics
+  authority: parser
+  enforced_by: check-runnable-surface-command
   verified_by: verification/contracts/check_runnable_surface.md
 - id: runnable-launch-assets-route-through-boundaries
   statement: Launch assets reachable from a runnable surface must route through the declared RMS entrypoint or adapter and must not duplicate parser or domain decision logic outside declared roles.
-  enforced_by: runnable-surface-launch-asset-diagnostics
+  authority: parser
+  enforced_by: check-runnable-surface-command
   verified_by: verification/laws/runnable_launch_assets_route_through_boundaries.md
-- id: simple-runnable-boundaries-are-stateless-by-default
-  statement: Simple runnable app, tool, browser, and CLI boundary scaffolds use stateless boundary machines unless product intent declares lifecycle, order, session, retry, status, recovery, or workflow semantics.
-  enforced_by: add-capability-and-surface-scaffold-defaults
-  verified_by: verification/laws/simple_runnable_boundaries_are_stateless_by_default.md
 - id: bindings-realize-canonical-semantics
   statement: Binding adapters realize canonical module shape, machine roles, runnable surfaces, evidence obligations, public contracts, and dependency links; bindings must not invent semantic roles outside canonical declarations.
-  enforced_by: binding-scaffold-model-and-adapters
+  authority: effect-executor
+  enforced_by: add-rms-module-command
   verified_by: verification/laws/bindings_realize_canonical_semantics.md
 - id: no-effect-scaffolds-have-no-effect-residue
   statement: Scaffolds and source roles for modules with no canonical effects or effect results must not expose effect, effect envelope, effect lifecycle, effect result, or effect-result envelope semantic types.
-  enforced_by: canonical-scaffold-flags-and-source-residue-diagnostics
+  authority: parser
+  enforced_by: inspect-implementation-structure-command
   verified_by: verification/laws/no_effect_scaffolds_have_no_effect_residue.md
 - id: bootstrap-provenance-is-visible
   statement: RMS init, diagnose, and gate surfaces must make the git source revision requirement visible before strict audit is treated as production evidence.
-  enforced_by: init-diagnose-gate-provenance-guidance
+  authority: parser
+  enforced_by: diagnose-rms-environment-command
   verified_by: verification/laws/bootstrap_provenance_is_visible.md
 - id: reusable-module-consumers-use-public-facade
   statement: Reusable modules declare capabilities and consumers use the RMS public facade instead of private role files.
   kind: invariant
+  authority: parser
+  enforced_by: inspect-implementation-structure-command
 - id: rms-package-carries-declared-implementation-surface
   statement: RMS packages include declared implementation facade and role artifacts needed to verify reuse.
   kind: invariant
+  authority: effect-executor
+  enforced_by: package-module-command
 - id: semantic-properties-are-canonical-reliability-evidence
   statement: RMS properties define generated input spaces and oracles semantically; language bindings only realize those properties and counterexamples remain replayable evidence.
   kind: invariant
+  authority: parser
+  enforced_by: semantic-property-check-command
+- id: semantic-variants-are-distinct-from-binding-types
+  statement: Machine semantic lists contain domain alternatives while implementation type mappings contain binding-native container names.
+  kind: invariant
+  authority: parser
+  enforced_by: inspect-implementation-structure-command
+- id: stateful-machines-consume-state-and-classified-input
+  statement: Every stateful machine transition consumes current state plus a command, observed event, or effect result through one canonical transition path.
+  kind: invariant
+  authority: parser
+  enforced_by: inspect-implementation-structure-command
+- id: effect-executors-do-not-own-orchestration
+  statement: Effect executors perform declared effect requests and return declared results while transition functions own sequencing, retry, compensation, and progress policy.
+  kind: invariant
+  authority: parser
+  enforced_by: inspect-implementation-structure-command
+- id: strict-audit-observes-all-production-files
+  statement: Strict production audit includes every tracked, modified, and untracked production artifact in provenance and semantic-drift checks.
+  kind: invariant
+  authority: parser
+  enforced_by: audit-rms-project-command
+- id: fuzz-realization-matches-semantic-claim
+  statement: Open-ended fuzz claims use generated or coverage-guided realization while deterministic corpora are reported only as corpus evidence.
+  kind: invariant
+  authority: parser
+  enforced_by: semantic-property-check-command
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -288,12 +327,16 @@ compatibility:
 verification:
   laws:
   - verification/laws
-  - verification/laws/simple_runnable_boundaries_are_stateless_by_default.md
   - verification/laws/bindings_realize_canonical_semantics.md
   - verification/laws/no_effect_scaffolds_have_no_effect_residue.md
   - verification/laws/bootstrap_provenance_is_visible.md
   - verification/laws/reusable_module_facade.md
   - verification/laws/package_declared_surface.md
+  - verification/laws/semantic_variants_are_cases.md
+  - verification/laws/stateful_machine_inputs.md
+  - verification/laws/atomic_effect_protocols.md
+  - verification/laws/complete_provenance.md
+  - verification/laws/fuzz_realization.md
   contracts:
   - verification/contracts
   - verification/contracts/add_rms_capability.md
@@ -312,12 +355,14 @@ verification:
   - verification/scenarios/reusable_module_package.md
   boundaries:
   - verification/boundaries
+  traces:
+  - verification/traces/semantic_change_record.yaml
   properties:
   - verification/properties/semantic_properties.md
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: RMS command and artifact parsing has fuzz-style semantic evidence for malformed inputs.
+  last_semantic_intent: Enforce semantic variants, stateful input transitions, atomic effect protocols, complete provenance, and truthful property realization.
 properties:
 - id: semantic-property-declarations-have-oracles
   proves: semantic-properties-are-canonical-reliability-evidence
@@ -336,6 +381,10 @@ properties:
     path: verification/properties/semantic_properties.md
   counterexamples:
     path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: properties
 fuzz_targets:
 - id: rms-cli-malformed-artifacts-produce-diagnostics
   proves: canonical-artifacts-remain-authoritative
@@ -353,3 +402,7 @@ fuzz_targets:
     path: verification/fuzz/malformed_artifacts.md
   counterexamples:
     path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: fuzz
