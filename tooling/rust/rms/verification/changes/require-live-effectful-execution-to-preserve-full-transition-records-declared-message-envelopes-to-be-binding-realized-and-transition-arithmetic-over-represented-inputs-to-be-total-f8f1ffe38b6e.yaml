@@ -1,0 +1,134 @@
+spec: rms/semantic-change/v0.1
+module: null
+supersedes:
+- verification/changes/align-gate-completion-authority-with-the-effectful-rms-command-that-executes-deterministic-checks-and-decides-the-reported-gate-result-c0c030e14852.yaml
+- verification/changes/bind-rms-semantic-change-record-writes-to-the-canonical-workbench-machine-driver-and-exact-one-request-executor-6eef08246ac0.yaml
+- verification/changes/bindings-realize-canonical-rms-semantics-without-no-effect-source-residue-and-bootstrap-diagnostics-expose-strict-audit-provenance-requirements-39dedec31a55.yaml
+- verification/changes/classify-reusable-modules-only-from-explicit-canonical-reuse-declarations-ccf923635b2c.yaml
+- verification/changes/close-every-active-rms-semantic-revision-when-applying-the-next-canonical-semantic-state-11e43a26cab5.yaml
+- verification/changes/close-first-pass-blind-agent-gaps-in-effectful-driver-closure-reusable-package-proof-binding-dependencies-and-executor-authority-5d0a127288ae.yaml
+- verification/changes/correct-semantic-contract-revision-authority-to-the-rms-canonical-artifact-writer-c2637c5213e4.yaml
+- verification/changes/enforce-semantic-variants-stateful-input-transitions-atomic-effect-protocols-complete-provenance-and-truthful-property-realization-8f470678104d.yaml
+- verification/changes/expose-semantic-contract-revision-and-strict-scaffold-provenance-rejection-through-the-rms-public-contracts-83e253d221b9.yaml
+- verification/changes/give-semantic-only-modules-a-canonical-binding-attachment-path-make-implementation-binding-choices-explicit-in-design-guidance-make-semantic-plan-item-cardinalities-exact-and-treat-empty-template-sections-as-inert-1d72fbfd0276.yaml
+- verification/changes/make-focused-machine-apply-validate-the-final-canonical-candidate-without-manufacturing-active-replay-evidence-from-declarations-2e202d62eef3.yaml
+- verification/changes/make-package-construction-verify-and-record-reusable-proof-before-returning-success-17080f619d79.yaml
+- verification/changes/make-rms-semantic-and-machine-planning-prompts-self-contained-enough-that-agents-can-author-valid-replacement-changes-without-consulting-sibling-projects-or-prior-generated-examples-d82cf18d1347.yaml
+- verification/changes/record-the-completed-canonical-binding-attachment-and-exact-semantic-planning-verification-60810890d63c.yaml
+- verification/changes/repair-first-pass-dogfood-semantics-for-runnable-surfaces-semantic-revisions-superseded-changes-traces-reconciliation-and-plugin-freshness-diagnostics-919adac47cfd.yaml
+- verification/changes/replace-the-remaining-generic-property-counterexample-replay-contract-with-executable-semantic-meaning-dbb87f6c6d29.yaml
+- verification/changes/require-cli-applied-semantic-revision-proof-explicit-replayed-transition-cases-property-linked-risk-laws-validated-public-domain-values-and-declared-runnable-delegation-ddfed6c79f43.yaml
+- verification/changes/require-exact-effect-executor-bindings-and-prove-that-effectful-runnable-paths-drive-the-canonical-transition-machine-instead-of-hiding-lifecycle-policy-in-adapters-cdfe440cb5ec.yaml
+- verification/changes/require-production-contracts-to-replace-scaffold-semantics-reject-evidence-that-disclaims-committed-provenance-and-let-semantic-revisions-update-existing-contracts-through-rms-fb4eacc5b88f.yaml
+- verification/changes/reusable-modules-are-semantic-packages-with-capability-contracts-public-facades-and-package-integrity-evidence-e27d9f8ac93f.yaml
+- verification/changes/rms-command-and-artifact-parsing-has-fuzz-style-semantic-evidence-for-malformed-inputs-257187eb263f.yaml
+- verification/changes/semantic-properties-are-canonical-rms-reliability-evidence-with-binding-native-realization-and-replayable-counterexamples-418936b6393b.yaml
+- verification/changes/treat-launch-assets-reachable-from-runnable-surfaces-as-checked-rms-surface-code-so-one-shot-browser-apps-cannot-bypass-declared-boundaries-0821638d7eb1.yaml
+intent:
+  summary: Require live effectful execution to preserve full transition records, declared message envelopes to be binding-realized, and transition arithmetic over represented inputs to be total.
+laws:
+  add:
+  - id: declared-message-envelopes-are-binding-realized
+    statement: Every declared command, event, effect, and effect-result envelope has a binding-native representation and traceable effect paths retain the declared envelope semantics.
+    kind: invariant
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  - id: transition-arithmetic-is-total
+    statement: Arithmetic over represented machine inputs is checked or bounded so every input produces a transition or explicit rejection instead of a trap, panic, or overflow.
+    kind: invariant
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  set:
+  - id: runnable-effects-are-transition-driven
+    statement: An effectful runnable surface routes repeated transition, effect execution, effect-result feedback, progress policy, and complete transition-record capture through its exact machine driver even when public and machine command names differ.
+    kind: invariant
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  remove: []
+contracts: null
+properties:
+  add:
+  - id: effectful-driver-preserves-transition-records
+    proves: runnable-effects-are-transition-driven
+    kind: conformance
+    subject: effectful stateful machine drivers
+    input_space:
+      fixtures:
+      - driver records transition output only
+      - driver records full transition record with state input branch and provenance
+    preconditions: []
+    operation: inspect the exact machine driver and transition-record function
+    oracle:
+    - effectful drivers invoke the declared transition-record function
+    - live driver history stores complete transition records rather than outputs alone
+    evidence:
+      kind: property
+      path: verification/properties/effectful_driver_transition_records.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/effectful-driver-records
+    realizations:
+    - profile: smoke
+      strategy: deterministic-exhaustive
+      command: verify
+      exhaustive: true
+  - id: message-envelope-binding-conformance
+    proves: declared-message-envelopes-are-binding-realized
+    kind: conformance
+    subject: inspectable message envelope bindings
+    input_space:
+      fixtures:
+      - declared envelope absent from representation source
+      - declared envelope present as a binding-native type or constructor
+    preconditions: []
+    operation: inspect declared envelope type mappings and representation roles
+    oracle:
+    - each declared envelope is represented in its binding
+    - undeclared no-effect envelopes are not generated
+    evidence:
+      kind: property
+      path: verification/properties/message_envelope_binding_conformance.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/message-envelope-binding
+    realizations:
+    - profile: smoke
+      strategy: deterministic-exhaustive
+      command: verify
+      exhaustive: true
+  - id: transition-arithmetic-totality
+    proves: transition-arithmetic-is-total
+    kind: conformance
+    subject: exact transition functions over represented numeric inputs
+    input_space:
+      fixtures:
+      - unchecked index increment at the numeric maximum
+      - checked increment with explicit rejection
+    preconditions: []
+    operation: inspect transition arithmetic and exercise extreme represented values
+    oracle:
+    - unchecked arithmetic in a transition is rejected
+    - checked or bounded arithmetic remains explicit and total
+    evidence:
+      kind: property
+      path: verification/properties/transition_arithmetic_totality.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/transition-arithmetic
+    realizations:
+    - profile: smoke
+      strategy: deterministic-exhaustive
+      command: verify
+      exhaustive: true
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: runnable-effects-are-transition-driven
+    path: verification/laws/effectful_surface_driver_closure.md
+  - kind: law
+    proves: declared-message-envelopes-are-binding-realized
+    path: verification/laws/message_envelope_binding_realization.md
+  - kind: law
+    proves: transition-arithmetic-is-total
+    path: verification/laws/transition_arithmetic_totality.md
+surfaces: null
+binding_dependencies: null

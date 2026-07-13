@@ -25,7 +25,7 @@ records:
     state_after: Ready
     source:
       file: Sources/RmsSwiftExample/RmsSwiftExample.swift
-      function: describeWidget
+      function: transitionRecord
       branch: DescribeWidget
   - id: swift-widget-constructor-rejected-empty-name
     state_before: Ready
@@ -51,5 +51,5 @@ records:
     state_after: Ready
     source:
       file: Sources/RmsSwiftExample/RmsSwiftExample.swift
-      function: SwiftWidget.init
+      function: transitionRecord
       branch: RejectEmptyWidgetName

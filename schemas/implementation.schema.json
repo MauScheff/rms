@@ -175,6 +175,10 @@
           "type": "string",
           "minLength": 1
         },
+        "transition_record_function": {
+          "type": "string",
+          "minLength": 1
+        },
         "types": {
           "$ref": "#/$defs/machineTypes"
         },
@@ -241,9 +245,13 @@
         "state": { "type": "string" },
         "input": { "type": "string" },
         "command": { "type": "string" },
+        "command_envelope": { "type": "string" },
         "event": { "type": "string" },
+        "event_envelope": { "type": "string" },
         "effect": { "type": "string" },
+        "effect_envelope": { "type": "string" },
         "effect_result": { "type": "string" },
+        "effect_result_envelope": { "type": "string" },
         "reply": { "type": "string" },
         "rejection": { "type": "string" },
         "transition": { "type": "string" },
@@ -309,7 +317,8 @@
             "transition",
             "projector",
             "adapter",
-            "interpreter"
+            "interpreter",
+            "effect-executor"
           ]
         },
         "purity": {

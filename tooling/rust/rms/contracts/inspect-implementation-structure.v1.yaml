@@ -2,21 +2,29 @@ spec: rms/contract/v0.1
 name: "inspect-implementation-structure"
 version: 1
 kind: command
-meaning: "Print and validate the canonical inner structure realized by an RMS implementation binding."
+meaning: "Print and validate the canonical inner structure and live trace path realized by an RMS implementation binding."
 preconditions:
   - id: "accepts-1"
     statement: "a readable RMS implementation binding with inspectable or explicitly opaque source"
+  - id: "accepts-2"
+    statement: "canonical machine, message, role, trace, surface, and semantic-function declarations"
 postconditions:
   - id: "ensures-1"
     statement: "the report distinguishes binding container types from semantic variants and named transition cases"
   - id: "ensures-2"
-    statement: "a stateful inspectable transition accepts the declared State and Input types and returns the declared Transition or TransitionRecord type"
+    statement: "stateful inspectable machines expose exact state-and-input transition and transition-record callables"
   - id: "ensures-3"
-    statement: "public domain values cannot silence validated-construction checks through a generic public-field allowlist"
+    statement: "effectful drivers retain complete records, advance from state_after, execute output effects, and feed typed results back as inputs"
   - id: "ensures-4"
-    statement: "runnable delegation targets and role ownership are checked against canonical declarations"
+    statement: "declared envelopes, total transition arithmetic, runnable delegation, and role ownership are checked against canonical declarations"
 failure_categories:
   - id: "rejects-1"
-    statement: "missing declared symbols or roles, transition signature or return-type drift, undeclared semantic source ownership, invalid public domain representation, undeclared effects, and malformed machine or surface structure"
+    statement: "missing declared symbols or roles, transition signature or return drift, and incomplete live record execution"
+  - id: "rejects-2"
+    statement: "undeclared semantic source ownership, invalid public domain representation, or undeclared effects"
+  - id: "rejects-3"
+    statement: "declared message envelopes absent from source or unchecked arithmetic over represented transition values"
+  - id: "rejects-4"
+    statement: "malformed machine, trace, driver, effect protocol, or surface structure"
 compatibility:
   policy: backward-compatible-within-major

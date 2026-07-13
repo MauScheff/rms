@@ -1,0 +1,80 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/expose-trace-complete-machine-execution-declared-envelope-realization-and-total-transition-arithmetic-through-rms-machine-application-and-structure-inspection-49097f298a01.yaml
+intent:
+  summary: Require generated property evidence obligations to remain production-blocking until replaced by observed proof, and require non-corpus property realizations to name code-backed binding harnesses.
+laws:
+  add:
+  - id: property-evidence-obligation-is-not-proof
+    statement: Generated property evidence remains an obligation until it names the exact executed command and observed result; untouched instructional prose cannot satisfy production audit.
+    kind: evidence-integrity
+    authority: parser
+    enforced_by: semantic-property-check-command
+  - id: non-corpus-property-realization-is-code-backed
+    statement: Every generated-property, deterministic-exhaustive, coverage-fuzzer, or model-checker realization names an exact binding harness that exists in inspectable source or an executable artifact.
+    kind: binding-conformance
+    authority: parser
+    enforced_by: semantic-property-check-command
+  set: []
+  remove: []
+contracts: null
+properties:
+  add:
+  - id: property-evidence-placeholder-detection
+    proves: property-evidence-obligation-is-not-proof
+    kind: property
+    subject: null
+    input_space:
+      description: Generated property evidence templates and concrete observed property evidence.
+    preconditions: []
+    operation:
+      command: validate-rms-artifacts
+    oracle:
+    - Untouched generated property evidence reports evidence.placeholder.
+    - Concrete evidence naming the exact command and observed result is accepted.
+    evidence:
+      kind: property
+      path: verification/properties/property_evidence_placeholder_detection.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/property-evidence
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      exhaustive: false
+  - id: property-realization-harness-conformance
+    proves: non-corpus-property-realization-is-code-backed
+    kind: property
+    subject: null
+    input_space:
+      description: Property realization fixtures spanning fixed corpus, exhaustive enumeration, generated cases, coverage fuzzing, and model checking.
+    preconditions: []
+    operation:
+      command: check-property-evidence
+    oracle:
+    - Non-corpus realization without an exact harness is rejected.
+    - Inspectable bindings reject a declared harness symbol absent from source.
+    - Deterministic corpus remains valid without a harness.
+    evidence:
+      kind: property
+      path: verification/properties/property_realization_harness_conformance.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/property-harness
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      exhaustive: false
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: property-evidence-obligation-is-not-proof
+    path: verification/laws/property_evidence_obligation_is_not_proof.md
+  - kind: law
+    proves: non-corpus-property-realization-is-code-backed
+    path: verification/laws/non_corpus_property_realization_is_code_backed.md
+surfaces: null
+binding_dependencies: null

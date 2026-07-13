@@ -1,0 +1,80 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/require-live-effectful-execution-to-preserve-full-transition-records-declared-message-envelopes-to-be-binding-realized-and-transition-arithmetic-over-represented-inputs-to-be-total-f8f1ffe38b6e.yaml
+intent:
+  summary: Expose trace-complete machine execution, declared envelope realization, and total transition arithmetic through RMS machine application and structure inspection.
+laws: null
+contracts:
+  add: []
+  set:
+  - name: apply-machine-change
+    version: '1'
+    command: apply-machine-change
+    meaning: Validate and apply a language-neutral machine change to canonical implementation structure, including exact transition-record and message-envelope bindings, then record and seal the resulting semantic revision.
+    accepts:
+    - one complete rms/machine-change/v0.1 object supplied as inline JSON, inline YAML, or a change file
+    - set, add, and remove operations over machine variants, transition-record ownership, effect protocols, transitions, and declared roles
+    - a candidate whose generated binding types and exact driver functions can be derived from the final canonical model
+    ensures:
+    - the complete post-change candidate is validated before any write
+    - successful apply records semantic variants separately from binding container and envelope types
+    - effectful stateful machines declare exact driver and transition-record functions and preserve trace roles without manufacturing replay evidence
+    - dry-run reports the complete final machine and planned writes without mutation
+    rejects:
+    - unsupported change specifications, invalid stable identifiers, or invalid final variants
+    - unknown or multiply classified inputs, stale removals, duplicate cases, or invalid state and output references
+    - effects without typed result protocols or exact executors
+    - effectful stateful machines without an exact transition-record construction path
+  - name: check-machine-structure
+    version: '1'
+    command: check-machine-structure
+    meaning: Check whether an implementation binding faithfully realizes its canonical semantic machine, exact live transition-record path, message envelopes, effect protocols, and total transition behavior.
+    accepts:
+    - a readable RMS implementation binding
+    - inspectable Rust, Swift, or JavaScript role source, or explicitly opaque executable evidence
+    - declared machine types, variants, roles, effects, traces, and runnable surfaces
+    ensures:
+    - reports binding container types separately from semantic variants and input categories
+    - checks exact transition-record and driver callables for effectful stateful machines
+    - checks declared command, event, effect, and effect-result envelopes are represented when applicable
+    - checks live drivers retain full records and transition arithmetic over represented inputs is checked or bounded
+    rejects:
+    - collapsed type and case declarations or missing state-plus-input signatures
+    - missing envelope representation, transition-record construction, or complete live record retention
+    - unclassified inputs, incomplete effect protocols, result paths that bypass transitions, or executor-owned orchestration
+    - unchecked transition arithmetic that can panic, trap, wrap, or silently lose a represented input
+  - name: inspect-implementation-structure
+    version: '1'
+    command: inspect-implementation-structure
+    meaning: Print and validate the canonical inner structure and live trace path realized by an RMS implementation binding.
+    accepts:
+    - a readable RMS implementation binding with inspectable or explicitly opaque source
+    - canonical machine, message, role, trace, surface, and semantic-function declarations
+    ensures:
+    - the report distinguishes binding container types from semantic variants and named transition cases
+    - stateful inspectable machines expose exact state-and-input transition and transition-record callables
+    - effectful drivers retain complete records, advance from state_after, execute output effects, and feed typed results back as inputs
+    - declared envelopes, total transition arithmetic, runnable delegation, and role ownership are checked against canonical declarations
+    rejects:
+    - missing declared symbols or roles, transition signature or return drift, and incomplete live record execution
+    - undeclared semantic source ownership, invalid public domain representation, or undeclared effects
+    - declared message envelopes absent from source or unchecked arithmetic over represented transition values
+    - malformed machine, trace, driver, effect protocol, or surface structure
+  remove: []
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: apply-machine-change
+    path: verification/contracts/apply_machine_change.md
+  - kind: contract
+    proves: check-machine-structure
+    path: verification/contracts/check_machine_structure.md
+  - kind: contract
+    proves: inspect-implementation-structure
+    path: verification/contracts/inspect_implementation_structure.md
+surfaces: null
+binding_dependencies: null

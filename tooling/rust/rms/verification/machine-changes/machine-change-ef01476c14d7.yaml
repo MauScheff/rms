@@ -1,0 +1,53 @@
+spec: rms/machine-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+machine:
+  mode: boundary-machine
+  justification: null
+  transition_signature: null
+  driver_function: null
+  types: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set:
+    - effect: WriteSemanticChangeRecord
+      results:
+      - SemanticChangeRecordWritten
+      - SemanticChangeRecordWriteRejected
+      executor_role: effect_executor
+      executor_symbol: execute_rms_workbench_effect
+      atomicity: one-request-one-result
+    add: []
+    remove: []
+transitions: null
+roles: null

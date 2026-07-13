@@ -24,8 +24,8 @@ records:
         description: example
     state_after: Ready
     source:
-      file: src/lib.rs
-      function: describe_widget
+      file: src/widget.rs
+      function: transition_record
       branch: DescribeWidget
   - id: widget-constructor-rejected-empty-name
     state_before: Ready
@@ -51,5 +51,5 @@ records:
     state_after: Ready
     source:
       file: src/widget.rs
-      function: Widget::new
+      function: transition_record
       branch: RejectEmptyWidgetName

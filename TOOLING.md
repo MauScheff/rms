@@ -124,7 +124,9 @@ Generated module guidance is an adapter over canonical artifacts. It tells human
 
 When Stateful, Distributed, Workflow, or Boundary profiles are requested, the scaffold includes the required empty profile section so the manifest validates. Fill those sections with real lifecycle, reconciliation, workflow, or boundary semantics before relying on the profile.
 
-Inspectable bindings scaffold one canonical machine model. Container names live under `architecture.machine.types`; semantic lists contain alternatives only; every transition has a stable `case`; and replay source provenance uses the same case name. Multiple outcomes for one state/input are separate cases. Stateful bindings expose one `transition(state, input)` path, and replay folds `state_after` into the next input.
+Inspectable bindings scaffold one canonical machine model. Container names live under `architecture.machine.types`; semantic lists contain alternatives only; every transition has a stable `case`; and replay source provenance uses the same case name. Declared cases must occur in the declared transition role source, source-only branches are rejected, and lifecycle states must be reachable from `initial_state`. Trace provenance points to that source file and case rather than to the trace artifact. Multiple outcomes for one state/input are separate cases. Stateful bindings expose one `transition(state, input)` path, and replay folds `state_after` into the next input.
+
+Project discovery excludes derived package, build, dependency, and atlas trees such as `dist`, `target`, `build`, `.build`, and `node_modules`. Canonical artifacts belong in source-owned module paths; generated copies are package evidence, not additional live modules.
 
 ### `spec`
 
@@ -159,12 +161,26 @@ contracts:
     - name: resolve-checkout
       version: v1
       command: ResolveCheckout
+semantic_functions:
+  set:
+    - id: checkout-transition
+      symbol: src/transition.rs#transition
+      kind: transition
+      purity: pure
+      discharges:
+        invariants: [payment-failure-releases-inventory]
+      evidence:
+        traces: [verification/traces/payment_failure_release.yaml]
 evidence:
   add:
     - kind: trace
       proves: payment-failure-releases-inventory
       path: verification/traces/payment_failure_release.yaml
 ```
+
+`semantic_functions.add/set/remove` is the architecture gate for exact binding symbols, authority ownership, purity, discharged contracts or invariants, assumptions, and categorized evidence. Dry-run prints `final_semantic_functions`; agents edit the declared function body afterward, but do not repair `implementation.yaml.semantic_functions` directly.
+
+Incremental semantic changes leave `surfaces.set: null`. RMS rejects `surfaces.set: []` as ambiguous; remove an intentional runnable surface explicitly by name so unrelated changes cannot erase entrypoints.
 
 ### `machine`
 
@@ -237,12 +253,15 @@ roles:
       path: src/machine_driver
     - kind: effect_executor
       effect: AppendLocalLog
+      path: src/effect_executor
       binding_hint: local_filesystem
 ```
 
-Agents may add small private pure helpers inside declared pure role files. Private IO helpers are not allowed in pure roles; IO must be represented as declared effects plus effect results and executed only in adapter, port, or effect-executor roles. Effectful stateful machines declare an exact machine driver. Each protocol binds an exact executor symbol that performs one declared request and returns one declared result. Effect-emitting runnable commands delegate to an exact callable that reaches the driver. The driver advances state through the canonical transition, invokes emitted effects, and feeds results back; surfaces, adapters, and executors do not own follow-up, retry, compensation, stop/continue policy, or state progression.
+Agents may add small private pure helpers inside declared pure role files. Private IO helpers are not allowed in pure roles; IO must be represented as declared effects plus effect results and executed only in adapter, port, or effect-executor roles. Effectful stateful machines declare exact machine-driver and transition-record callables. Each executor role names its exact effect and uses a dedicated role path separate from transition and machine-driver code. Each protocol binds an exact executor symbol and a matching effectful `effect-executor` semantic function that performs one declared request and returns one declared result. Effect-emitting runnable surfaces delegate to an exact callable that reaches the driver. The driver retains complete records, advances from `state_after`, executes `output.effects`, and owns the complete repeated transition/effect/result cycle; surfaces, adapters, and executors do not loop around a one-step driver or own follow-up, retry, compensation, stop/continue policy, or state progression.
 
-Property realization names are claims, not labels of convenience. Use `deterministic-corpus` for fixed examples, `deterministic-exhaustive` only for complete finite spaces, `generated-property` for generated cases, and `coverage-fuzzer` for coverage-guided fuzzing. Strict audit rejects open-ended fuzz claims backed only by a corpus.
+Property realization names are claims, not labels of convenience. Use `deterministic-corpus` for fixed examples, `deterministic-exhaustive` only for complete finite spaces, `generated-property` for generated cases, and `coverage-fuzzer` for coverage-guided fuzzing. Every non-corpus realization declares an exact relative `path#symbol` harness; inspectable bindings prove that symbol exists. Strict audit rejects open-ended fuzz claims backed only by a corpus or a decorative realization label.
+
+Use `properties.add`, `properties.set`, and `properties.remove` through `rms spec apply` to revise property semantics. RMS synchronizes module properties with implementation realization metadata. Newly generated property evidence is deliberately an unmet obligation: it blocks strict production claims until it is replaced with the exact command, observed result, and replay or coverage summary.
 
 If external truth can be unknown, duplicate, stale, partial, conflicting, delayed, or later corrected, model recovery, retry, compensation, convergence, or reconciliation evidence before source changes.
 
@@ -283,11 +302,11 @@ The first composition checker is manifest-level. It checks required module prese
 
 ### `audit`
 
-Aggregates project-readiness findings from validation, composition, semantic revision integrity, implementation structure, trace coverage, compatibility, and provenance. Strict mode rejects direct canonical drift, missing revision records, unnamed or unreplayed transition cases, uncovered workflow events, risk-bearing laws without properties, public domain-field bypasses, unresolved runnable delegation, and existing evidence/provenance blockers.
+Aggregates project-readiness findings from validation, composition, semantic revision integrity, implementation structure, trace coverage, compatibility, and provenance. Strict mode rejects direct canonical drift, changed or missing revision records, broken supersession chains, unnamed or unreplayed transition cases, uncovered workflow events, risk-bearing laws without properties, public domain-field bypasses, unresolved runnable delegation, and existing evidence/provenance blockers.
 
 ### `structure`
 
-Prints a focused inner-structure report for an `implementation.yaml`. The report identifies the module, binding, semantic shape, declared machine roles, message envelopes, transition output, trace roles, role files, transition function, replay support, first-bad-transition support, and structure/evidence diagnostics. Missing machine, representation, parser, transition, message-envelope, journal, timeline-projection, replay-bundle, hidden-effect, hidden-choreography, slug-derived machine-name, and placeholder-evidence findings are advisory in v0.1, but they are intended to catch drift before agents start inventing local architecture. `rms validate`, `rms structure`, and `rms conformance` warn when referenced evidence still contains scaffold placeholders, bootstrap prose, unpinned source revisions, or `semantic_shape.md`-only proof.
+Prints a focused inner-structure report for an `implementation.yaml`. The report identifies the module, binding, semantic shape, declared machine roles, message-envelope binding types, transition output, exact transition-record and driver functions, trace roles, role files, replay support, first-bad-transition support, and structure/evidence diagnostics. Strict checks reject output-only live drivers, missing envelope representations, and unchecked arithmetic over represented transition inputs. `rms validate`, `rms structure`, and `rms conformance` also warn when referenced evidence still contains scaffold placeholders, bootstrap prose, unpinned source revisions, or `semantic_shape.md`-only proof.
 
 ### `trace`
 
@@ -542,9 +561,9 @@ rms property replay <counterexample.yaml> [--json]
 
 ### `package`
 
-Assembles a portable module package directory from the canonical manifest, referenced contracts and evidence, sibling implementation binding when present, declared implementation role files and public facade, generated conformance report, and `PACKAGE.json` metadata with source revision, validator identity, included files, sizes, and SHA-256 checksums. The resulting directory may be archived or used as an input to another registry or artifact system.
+Assembles and verifies a portable module package directory from the canonical manifest, referenced contracts and evidence, sibling implementation binding when present, declared implementation role files and public facade, generated conformance report, and `PACKAGE.json` metadata with source revision, validator identity, included files, sizes, and SHA-256 checksums. For a reusable module, the command records the concrete result in declared package evidence, rebuilds with that proof, and verifies the final artifact. The resulting directory may be archived or used as an input to another registry or artifact system.
 
-Reusable modules are defined by RMS semantics, not by a language package manager. A reusable provider should declare `provides.capabilities[]` with a contract, expose one public facade in `implementation.yaml`, include package/reuse evidence, and route native package exports to that facade. Consumer modules declare `requires.capabilities[]` with the expected contract and should not import provider `representation`, `transition`, parser, adapter, or port internals.
+Reusable modules are defined by RMS semantics, not by a language package manager. A reusable provider should declare `provides.capabilities[]` with a contract, expose one public facade in `implementation.yaml`, include package/reuse evidence, and route native package exports to that facade. Expected-result prose is only an obligation; the recorded `rms package` pass is proof. Consumer modules declare `requires.capabilities[]` with the expected contract and should not import provider `representation`, `transition`, parser, adapter, or port internals. Local implementation links are changed through language-neutral `binding_dependencies`; binding adapters realize native allowlists and package metadata.
 
 ### `verify-package`
 

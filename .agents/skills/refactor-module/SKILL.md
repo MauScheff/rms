@@ -9,7 +9,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
 
 1. Run the `inspect-module` workflow for the owning module.
 2. Build a bounded packet with `rms context <module> --task "<task>"` when the CLI is available. Use `rms refactor <module> --task "<task>"` when a refactor prompt would help before editing.
-3. Treat RMS as the semantic and architecture gate. Apply structural revisions through `rms spec apply --dry-run` or focused machine/surface apply, inspect the complete final model, and let RMS seal the semantic revision. Never repair scaffold drift by hand-editing canonical manifests.
+3. Treat RMS as the semantic and architecture gate. Apply structural revisions through `rms spec apply --dry-run` or focused machine/surface apply, inspect the complete final model, and let RMS hash-seal and chain the semantic revision. Never repair scaffold drift by hand-editing canonical manifests or deleting applied change records.
 4. State the public semantics that must be preserved:
    - public commands, queries, events, APIs, and capabilities;
    - invariants and laws;
@@ -35,8 +35,8 @@ Use this skill when the requested outcome is better internal shape, clearer boun
 8. Keep domain decisions separate from effects where practical. Move IO, clocks, randomness, storage, network, and vendor calls behind declared effects or capabilities. Private helpers inside pure role files must stay pure.
    - Keep type mappings separate from semantic alternatives.
    - Stateful machines use one input ADT and one `transition(state, input)` path for commands, observed events, and effect results.
-   - Every transition branch has a stable semantic case mirrored by replay source provenance.
-   - Effectful stateful machines declare one exact machine driver, and each effect protocol declares an exact executor symbol. Runnable effect paths reach the driver; the driver reaches the pure transition and one-request executors; typed results return through the driver. Move iteration, retry, compensation, and stop/continue policy out of surfaces, adapters, and executors and into transitions.
+   - Every transition branch has a stable semantic case mirrored by replay source provenance. Declared cases occur in declared transition source, source-only branches are first added through RMS semantics, every lifecycle state is reachable from `initial_state`, and provenance names the actual transition source file.
+   - Effectful stateful machines declare exact driver and transition-record functions, and each effect protocol declares an exact executor symbol plus an effectful `effect-executor` semantic function. Runnable effect paths reach the driver; the driver stores complete records and owns the complete repeated transition/effect/result cycle. Move output-only histories, outer loops around one-step drivers, retry, compensation, and stop/continue policy out of surfaces, adapters, and executors and into the machine path, even when public and machine command names differ.
 9. Preserve module boundaries:
    - do not move private state across ownership boundaries;
    - do not expose private implementation as public contract;

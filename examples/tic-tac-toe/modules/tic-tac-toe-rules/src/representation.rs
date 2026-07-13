@@ -101,13 +101,18 @@ pub enum GameStatus {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Game {
-    InProgress { board: Board, next: Mark },
+    InProgress {
+        board: Board,
+        next: Mark,
+    },
     Won {
         board: Board,
         winner: Mark,
         line: [Cell; 3],
     },
-    Draw { board: Board },
+    Draw {
+        board: Board,
+    },
 }
 
 impl Game {
@@ -120,9 +125,9 @@ impl Game {
 
     pub fn board(&self) -> &Board {
         match self {
-            Self::InProgress { board, .. }
-            | Self::Won { board, .. }
-            | Self::Draw { board } => board,
+            Self::InProgress { board, .. } | Self::Won { board, .. } | Self::Draw { board } => {
+                board
+            }
         }
     }
 
@@ -161,6 +166,16 @@ pub enum Command {
     PlaceMark { cell: Cell },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicTacToeCommandEnvelope {
+    pub command_id: String,
+    pub target_machine: String,
+    pub correlation_id: String,
+    pub causation_id: String,
+    pub idempotency_key: Option<String>,
+    pub command: Command,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TicTacToeInput {
     Command(Command),
@@ -170,6 +185,18 @@ pub enum TicTacToeInput {
 pub enum TicTacToeEvent {
     MarkPlaced,
     MoveRejected,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicTacToeEventEnvelope {
+    pub event_id: String,
+    pub source_machine: String,
+    pub correlation_id: String,
+    pub causation_id: String,
+    pub sequence: u64,
+    pub schema_version: u64,
+    pub occurred_at: String,
+    pub event: TicTacToeEvent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

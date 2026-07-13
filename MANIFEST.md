@@ -601,7 +601,7 @@ Product meaning changes move through `rms spec apply` before code. The canonical
 
 | Field | Meaning |
 |---|---|
-| `supersedes` | Historical change records that this semantic change replaces for active reflection checks. |
+| `supersedes` | Historical change records replaced for active reflection checks. `rms spec apply` automatically adds every currently active semantic revision; explicit entries are only for additional non-local branches. Applied records are append-only. |
 | `intent.summary` | Human-readable reason for the semantic delta. |
 | `laws.add` | Invariants, laws, or product promises that must hold. |
 | `contracts.add` | Public commands, queries, events, APIs, or capabilities consumed outside the module. |
@@ -609,7 +609,7 @@ Product meaning changes move through `rms spec apply` before code. The canonical
 | `surfaces.add` | Runnable surface declarations for app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints that adapt outside input into declared RMS commands. Browser-style surfaces may include a controller `entrypoint`, a host `launch_entrypoint`, and checked local `launch_scripts`. |
 | `evidence.add` | Required proof lanes for laws, contracts, transitions, effects, scenarios, traces, or boundary behavior. |
 
-Use `rms spec apply` to add or change laws, contracts, machine structure, runnable surfaces, effects, semantic roles, public entrypoints, and evidence obligations together. Machine and semantic changes support `set`, `add`, and `remove` for semantic revision; use `supersedes` instead of editing old change records. Use `rms surface apply/check` for focused runnable entrypoint changes. Browser launch files and local launch scripts are part of the surface and must route through the declared controller, adapter, parser, or boundary machine rather than duplicating domain decisions. Agents may edit bodies inside declared role files after the semantic delta is applied. Focused inner-machine edits may use `rms machine apply` when laws, public contracts, and evidence obligations are already correct.
+Use `rms spec apply` to add or change laws, contracts, machine structure, runnable surfaces, effects, semantic roles, public entrypoints, and evidence obligations together. Machine and semantic changes support `set`, `add`, and `remove`. Spec apply automatically closes every active semantic revision and stores `change_record_digest`; use explicit `supersedes` only for additional non-local branches, never to replace history by deleting or rewriting old records. Use `rms surface apply/check` for focused runnable entrypoint changes. Browser launch files and local launch scripts are part of the surface and must route through the declared controller, adapter, parser, or boundary machine rather than duplicating domain decisions. Agents may edit bodies inside declared role files after the semantic delta is applied. Focused inner-machine edits may use `rms machine apply` when laws, public contracts, and evidence obligations are already correct.
 
 ### Semantic Machine Structure
 
@@ -621,20 +621,22 @@ Every implemented module should declare a domain-named machine. The canonical fi
 | `architecture.machine.mode` | One of `stateless-decision-machine`, `stateful-transition-machine`, `workflow-effect-machine`, `boundary-machine`, `storage-machine`, `integration-machine`, or `projection-machine`. |
 | `architecture.machine.transition_signature` | `input-only` for a justified stateless decision machine; `state-and-input` for every stateful, boundary, workflow, storage, integration, or projection machine. |
 | `architecture.machine.driver_function` | Exact callable that drives an effectful stateful machine through transition, emitted effects, typed results, and follow-up transitions. |
-| `architecture.machine.types` | Binding-native names for state, input, command, event, effect, effect result, reply, rejection, transition, and transition-record containers. These are not semantic cases. |
-| `architecture.machine.states` | Closed state variants. Stateless machines usually contain `Ready` and must justify why lifecycle state is not meaningful. |
+| `architecture.machine.transition_record_function` | Exact pure callable used by the live machine driver to construct each complete transition record. |
+| `architecture.machine.types` | Binding-native names for state, input, command, event, effect, effect result, reply, rejection, transition, transition record, and declared message-envelope containers. These are not semantic cases. |
+| `architecture.machine.states` | Closed state variants. Stateful variants must be reachable from `initial_state` through canonical transitions. Stateless machines usually contain `Ready` and must justify why lifecycle state is not meaningful. |
 | `architecture.machine.commands/observed_events/events/effects/effect_results/replies/rejections` | Semantic cases that define what the machine accepts, observes, emits, asks the world to do, receives back, returns, and rejects. A case belongs to exactly one input category. |
 | `architecture.machine.effect_protocols` | Effect-to-result mapping, exact executor role and symbol, and atomicity. One-request-one-result is the default when an individual outcome can affect later decisions. |
-| `architecture.machine.transitions` | Accepted and rejected state/input/output transitions. Every branch has a stable `case` used by trace provenance and replay coverage. |
+| `architecture.machine.transitions` | Accepted and rejected state/input/output transitions. Every branch has a stable `case` represented in declared transition source; source-only branches are drift. Trace provenance names that source file and exact case. |
 | `architecture.roles.*` | Binding files or artifacts that realize representation, transition, parser, adapter, machine driver, effect executor, journal, replay, trace evidence, and related roles. |
+| `dependencies.local_modules` | Language-neutral RMS module identities consumed by this implementation. Change them through `rms spec apply` `binding_dependencies`; the binding adapter realizes native allowlists and local package metadata. |
 
 Use `rms machine apply` to add or change these architecture fields only when the semantic layer is already correct. RMS validates the complete final candidate and records the focused change, but it does not synthesize active trace evidence from transition declarations. Implemented transition paths must populate and replay the declared evidence roles. If laws, public contracts, effects, or evidence obligations change, use `rms spec apply` instead.
 
 This is the only accepted implementation-machine model. Collapsed declarations such as `architecture.machine.state`, top-level `architecture.state_type`, or semantic lists containing container type names are invalid rather than compatibility aliases.
 
-Invariant entries declare `authority` as `representation`, `constructor`, `parser`, `transition`, `effect-executor`, or `composition`. State progression, sequencing, retry, compensation, and stop/continue laws belong to `transition`; effect executors may enforce only the mechanics of the external request. An effect-emitting runnable command must delegate to an exact callable that reaches the declared machine driver rather than hiding lifecycle control in a surface or adapter.
+Invariant entries declare `authority` as `representation`, `constructor`, `parser`, `transition`, `effect-executor`, or `composition`. An effect protocol's exact executor symbol is represented by an effectful `effect-executor` semantic function. State progression, sequencing, retry, compensation, and stop/continue laws belong to `transition`; effect executors may enforce only the mechanics of the external request. An effect-emitting runnable surface must delegate to an exact callable that reaches the declared machine driver. The driver calls `transition_record_function`, retains complete records, advances from `state_after`, executes `output.effects`, and owns the complete repeated cycle rather than leaving lifecycle work in a surface or adapter. Declared message-envelope types must exist in inspectable bindings, and arithmetic over represented transition inputs must be checked or bounded.
 
-Ordering, safety, bounded, normalization, parser, and numeric laws also declare semantic properties with input spaces and oracles. A fixed example corpus does not satisfy an open-ended generated-property or coverage-fuzzer claim.
+Ordering, safety, bounded, normalization, parser, and numeric laws also declare semantic properties with input spaces and oracles. A fixed example corpus does not satisfy an open-ended generated-property or coverage-fuzzer claim. Every non-corpus realization binds an exact relative `path#symbol` harness, and generated property evidence remains an obligation until an executed command and observed result replace it.
 
 ### Applied Semantic Revision
 
@@ -656,7 +658,7 @@ Recommended fields:
 |---|---|
 | `id` | Stable identifier for the semantic function declaration. |
 | `symbol` | Language-binding source symbol such as `Widget::new` or `payments::authorize_payment`. |
-| `kind` | `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, or `interpreter`. |
+| `kind` | `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, `interpreter`, or `effect-executor`. |
 | `purity` | `pure`, `effectful`, or `boundary`. |
 | `discharges.contracts` | Published contracts this function implements or helps satisfy. |
 | `discharges.invariants` | Module invariant identifiers this function enforces or preserves. |
@@ -666,6 +668,8 @@ Recommended fields:
 | `evidence` | Law, contract, scenario, or boundary evidence paths for this function. |
 
 Prefer typed representations over repeated preconditions. A constructor or parser should discharge raw-value assumptions once, so later decision and transition functions can accept validated values.
+
+Add, replace, or remove these bindings through `rms spec apply` with `semantic_functions.add/set/remove`. RMS validates the final authority graph, prints it during dry-run, records the exact operation, and rejects removal of the last owner of an active non-composition invariant. Direct edits are semantic revision drift.
 
 ## 6. `conformance-report.json`
 

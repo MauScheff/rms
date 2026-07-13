@@ -32,18 +32,355 @@ architecture:
     - id: rms-cli-malformed-artifacts-produce-diagnostics
       proves: canonical-artifacts-remain-authoritative
       kind: fuzz
-      input_space: generated malformed RMS command arguments and malformed RMS YAML artifacts
+      subject: rms-cli-command-and-artifact-boundary
+      input_space:
+        cli_args: generated malformed or incomplete command arguments
+        manifests: generated malformed RMS YAML and schema-violating artifacts
+      operation: parse-and-validate-rms-input
       oracle:
       - malformed input produces diagnostics or explicit command errors
       - rejected input does not create semantic authority outside RMS canonical apply paths
       - diagnostics remain derived evidence rather than hidden architecture
-      command: fuzz
-      evidence: verification/fuzz/malformed_artifacts.md
-      counterexamples: verification/fuzz/counterexamples
+      evidence:
+        path: verification/fuzz/malformed_artifacts.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
       realizations:
       - profile: smoke
         strategy: generated-property
         command: fuzz
+        harness: src/main.rs#generate_malformed_artifact_cases
+    properties:
+    - id: canonical-semantic-revision-drift-is-rejected
+      proves: canonical-semantics-match-cli-applied-revision
+      kind: property
+      input_space: RMS-applied module and implementation manifests followed by one canonical semantic mutation
+      preconditions:
+      - the semantic revision was produced by RMS apply
+      operation: run strict audit before and after the mutation
+      oracle:
+      - the applied revision passes
+      - the directly mutated canonical artifact fails semantic revision integrity
+      evidence:
+        path: verification/properties/canonical_semantic_revision.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: declared-transition-cases-have-replay
+      proves: transition-cases-are-declared-and-replayed
+      kind: property
+      input_space: machines with unique and conditional state/input transition cases
+      preconditions:
+      - each conditional branch has a stable case name
+      operation: compare canonical transition cases with trace state, input, destination, and source branch
+      oracle:
+      - every declared case has one matching replay record
+      - missing or collapsed cases fail strict audit
+      evidence:
+        path: verification/properties/transition_case_replay.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: public-domain-field-bypass-is-rejected
+      proves: public-domain-values-preserve-validity
+      kind: property
+      input_space: inspectable binding structs with public fields, generated transport records, and validated domain values
+      preconditions:
+      - the implementation declares its machine and representation roles
+      operation: run binding structure inspection
+      oracle:
+      - generated envelopes and transition records remain allowed
+      - arbitrary domain structs with public fields fail even when added to the legacy allowlist
+      evidence:
+        path: verification/properties/public_domain_validity.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: risk-law-property-link-is-required
+      proves: risk-bearing-laws-have-semantic-properties
+      kind: property
+      input_space: module invariants classified as ordering, safety, bounded, normalization, parser, or numeric
+      preconditions:
+      - the module is implemented rather than scaffold-only
+      operation: resolve semantic property targets and their proves links
+      oracle:
+      - each risk-bearing law has a property target with input space, oracle, evidence, and realization
+      - evidence prose alone does not satisfy the property obligation
+      evidence:
+        path: verification/properties/risk_law_property_link.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: runnable-delegation-resolves-to-declared-role
+      proves: runnable-delegation-has-semantic-owner
+      kind: property
+      input_space: runnable surface declarations with role, symbol, effect, and no-effect combinations
+      preconditions:
+      - the surface entrypoint exists
+      operation: resolve the delegation target and boundary effect declaration
+      oracle:
+      - declared roles or symbols pass
+      - unknown role targets and effectless surfaces without justification fail
+      evidence:
+        path: verification/properties/runnable_delegation_owner.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: gate-pass-requires-structural-preflight
+      proves: gate-pass-has-no-known-production-blockers
+      kind: property
+      input_space: RMS roots with valid structure, strict-blocking diagnostics, absent Git repositories, unborn Git repositories, and ordinary dirty working changes
+      preconditions:
+      - the root contains at least one RMS module and implementation binding
+      operation: run rms gate and compare its result with strict structural audit checks excluding final provenance cleanliness
+      oracle:
+      - strict structural blockers make gate fail
+      - missing source revision makes gate fail after deterministic checks
+      - ordinary dirty source in an established repository may pass pre-commit gate when semantics and structure are valid
+      - only a clean committed candidate can pass final strict audit
+      evidence:
+        path: verification/properties/gate_completion_integrity.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: binding-transition-types-match-canonical-machine
+      proves: binding-transition-signature-realizes-canonical-types
+      kind: property
+      input_space: Rust, Swift, and JavaScript stateful binding fixtures with matching and mismatching transition parameters and outputs
+      preconditions:
+      - the implementation declares machine types, transition signature, and transition function
+      operation: run binding conformance inspection
+      oracle:
+      - matching State and Input parameters with Transition or TransitionRecord output pass
+      - same-arity unrelated parameters fail
+      - reply-only or ambient Result outputs fail canonical transition shape
+      evidence:
+        path: verification/properties/binding_transition_signature.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: init-establishes-git-worktree
+      proves: bootstrap-creates-provenance-worktree
+      kind: property
+      input_space: fresh directories outside Git and target directories already nested inside an existing Git worktree
+      preconditions:
+      - git is available and generated RMS files are absent
+      operation: run rms init and inspect the target repository root
+      oracle:
+      - fresh standalone target becomes a Git worktree
+      - nested target continues to use its existing parent worktree without a nested .git directory
+      - generated guidance names commit plus strict audit as production completion
+      evidence:
+        path: verification/properties/init_git_provenance.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: semantic-plan-prompt-is-actionable-without-external-examples
+      proves: semantic-plan-schema-is-self-contained
+      kind: property
+      input_space: Rendered semantic-change and machine-change prompts for scaffolded stateless and stateful implementations
+      preconditions:
+      - the target implementation is readable
+      operation: render the RMS plan prompt and inspect its schema instructions
+      oracle:
+      - allowed invariant authorities are explicit
+      - machine variant categories show set, add, and remove
+      - transition removal uses from, on, optional to, and optional case
+      - replacement guidance prefers set and forbids external template lookup
+      evidence:
+        path: verification/properties/semantic_plan_self_containment.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: transition-case-source-conformance
+      proves: transition-cases-are-code-backed
+      kind: conformance
+      subject: inspectable transition bindings
+      input_space:
+        fixtures:
+        - declared case missing from source
+        - source branch missing from declarations
+        - unreachable lifecycle state
+        - trace source outside transition role
+      operation: run structure and strict trace checks
+      oracle:
+      - declared and implemented cases align
+      - unreachable states fail
+      - trace provenance names declared transition source
+      evidence:
+        path: verification/properties/transition_case_source_conformance.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/transition-case-source
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: fuzz
+    - id: generated-output-discovery-is-excluded
+      proves: generated-package-output-is-derived
+      kind: conformance
+      subject: RMS root discovery
+      input_space:
+        fixtures:
+        - source module beside dist package copy
+        - target build tree
+        - node_modules dependency tree
+      operation: discover RMS manifests from the project root
+      oracle:
+      - only source-owned canonical artifacts are discovered
+      - derived package copies do not create duplicate modules
+      evidence:
+        path: verification/properties/generated_output_discovery.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/generated-output-discovery
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: fuzz
+    - id: effectful-driver-preserves-transition-records
+      proves: runnable-effects-are-transition-driven
+      kind: conformance
+      subject: effectful stateful machine drivers
+      input_space:
+        fixtures:
+        - driver records transition output only
+        - driver records full transition record with state input branch and provenance
+      operation: inspect the exact machine driver and transition-record function
+      oracle:
+      - effectful drivers invoke the declared transition-record function
+      - live driver history stores complete transition records rather than outputs alone
+      evidence:
+        path: verification/properties/effectful_driver_transition_records.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/effectful-driver-records
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: message-envelope-binding-conformance
+      proves: declared-message-envelopes-are-binding-realized
+      kind: conformance
+      subject: inspectable message envelope bindings
+      input_space:
+        fixtures:
+        - declared envelope absent from representation source
+        - declared envelope present as a binding-native type or constructor
+      operation: inspect declared envelope type mappings and representation roles
+      oracle:
+      - each declared envelope is represented in its binding
+      - undeclared no-effect envelopes are not generated
+      evidence:
+        path: verification/properties/message_envelope_binding_conformance.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/message-envelope-binding
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: transition-arithmetic-totality
+      proves: transition-arithmetic-is-total
+      kind: conformance
+      subject: exact transition functions over represented numeric inputs
+      input_space:
+        fixtures:
+        - unchecked index increment at the numeric maximum
+        - checked increment with explicit rejection
+      operation: inspect transition arithmetic and exercise extreme represented values
+      oracle:
+      - unchecked arithmetic in a transition is rejected
+      - checked or bounded arithmetic remains explicit and total
+      evidence:
+        path: verification/properties/transition_arithmetic_totality.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/transition-arithmetic
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: property-evidence-placeholder-detection
+      proves: property-evidence-obligation-is-not-proof
+      kind: property
+      input_space:
+        description: Generated property evidence templates and concrete observed property evidence.
+      operation:
+        command: validate-rms-artifacts
+      oracle:
+      - Untouched generated property evidence reports evidence.placeholder.
+      - Concrete evidence naming the exact command and observed result is accepted.
+      evidence:
+        path: verification/properties/property_evidence_placeholder_detection.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/property-evidence
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: property-realization-harness-conformance
+      proves: non-corpus-property-realization-is-code-backed
+      kind: property
+      input_space:
+        description: Property realization fixtures spanning fixed corpus, exhaustive enumeration, generated cases, coverage fuzzing, and model checking.
+      operation:
+        command: check-property-evidence
+      oracle:
+      - Non-corpus realization without an exact harness is rejected.
+      - Inspectable bindings reject a declared harness symbol absent from source.
+      - Deterministic corpus remains valid without a harness.
+      evidence:
+        path: verification/properties/property_realization_harness_conformance.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/property-harness
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: semantic-property-declarations-have-oracles
+      proves: semantic-properties-are-canonical-reliability-evidence
+      kind: invariant
+      subject: semantic-property-model
+      input_space:
+        semantic_changes: rms/semantic-change/v0.1 objects with properties.add entries
+        implementation_bindings: implementation.yaml files with architecture.reliability properties or fuzz_targets
+      oracle:
+      - every property names what it proves
+      - every property declares an input space
+      - every property declares at least one oracle
+      - property and fuzz targets reference concrete evidence
+      - counterexamples carry replay metadata
+      evidence:
+        path: verification/properties/semantic_properties.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
   messages:
     command_envelope:
     - command_id
@@ -99,6 +436,10 @@ architecture:
       rejection: RmsWorkbenchRejection
       transition: RmsWorkbenchTransition
       transition_record: RmsWorkbenchTransitionRecord
+      command_envelope: RmsWorkbenchCommandEnvelope
+      event_envelope: RmsWorkbenchEventEnvelope
+      effect_envelope: RmsWorkbenchEffectEnvelope
+      effect_result_envelope: RmsWorkbenchEffectResultEnvelope
     states:
     - Ready
     - WritingSemanticChangeRecord
@@ -196,6 +537,7 @@ architecture:
       case: SemanticChangeRecordWriteRejected
       rejection: SemanticChangeRecordWriteFailed
     driver_function: drive_rms_workbench
+    transition_record_function: transition_record
   roles:
     representation:
     - src/main.rs
@@ -236,6 +578,10 @@ architecture:
     - RmsWorkbenchRejection
     - RmsWorkbenchTransition
     - RmsWorkbenchTransitionRecord
+    - RmsWorkbenchCommandEnvelope
+    - RmsWorkbenchEffectEnvelope
+    - RmsWorkbenchEffectResultEnvelope
+    - RmsWorkbenchEventEnvelope
     validated_values: []
     transition_functions:
     - transition
@@ -987,12 +1333,19 @@ semantic_functions:
     invariants:
     - semantic-contract-revisions-are-cli-applied
     - canonical-semantics-match-cli-applied-revision
+    - semantic-function-bindings-are-cli-applied
+    assumptions: []
   assumptions:
+    requires: []
+    maintains: []
     ensures:
     - contract add, set, and remove operations update canonical module references, files, and semantic-change records together
+    - semantic-function add, set, and remove operations update implementation bindings and sealed semantic-change records together
   evidence:
     contracts:
     - verification/contracts/apply_semantic_change.md
+    laws:
+    - verification/laws/semantic_function_bindings_are_cli_applied.md
     traces:
     - verification/traces/semantic_change_record.yaml
 - id: semantic-change-record-writer
@@ -1056,8 +1409,13 @@ semantic_functions:
   evidence:
     contracts:
     - verification/contracts/replay_property_counterexample.md
+- id: writesemanticchangerecord-effect-executor
+  symbol: execute_rms_workbench_effect
+  kind: effect-executor
+  purity: effectful
 x-rms:
   semantic_revision:
-    digest: sha256:38874bc699ae4d4a0e4c00a99b1852fe0e72ae842d0712a692030f188e000968
-    change_record: verification/changes/bind-rms-semantic-change-record-writes-to-the-canonical-workbench-machine-driver-and-exact-one-request-executor-6eef08246ac0.yaml
+    digest: sha256:bbf0237e63add3cbf1b89e7c7cdede980a702a45d87fda3ac2f8a146ac879686
+    change_record: verification/changes/prevent-semantic-plan-templates-from-accidentally-clearing-existing-runnable-surfaces-during-unrelated-changes-c4ba4b53c414.yaml
     applied_by: rms spec apply
+    change_record_digest: sha256:c4ba4b53c414c70ef0807a88c29cef87b627e5a682bb8741f52ecbe522eff3bd

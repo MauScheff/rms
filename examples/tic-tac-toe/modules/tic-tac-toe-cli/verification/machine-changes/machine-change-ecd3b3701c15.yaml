@@ -1,0 +1,110 @@
+spec: rms/machine-change/v0.1
+module: examples/tic-tac-toe/modules/tic-tac-toe-cli/implementation.yaml
+machine:
+  mode: boundary-machine
+  justification: null
+  transition_signature: state-and-input
+  driver_function: driveMachine
+  transition_record_function: transitionRecord
+  types: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set:
+    - effect: InvokeRulesBridge
+      results:
+      - RulesBridgeSucceeded
+      - RulesBridgeFailed
+      executor_role: effect_executor
+      executor_symbol: executeRulesBridge
+      atomicity: one-request-one-result
+    add: []
+    remove: []
+transitions:
+  set:
+  - from: AwaitingInput
+    on: RunMove
+    to: AwaitingRulesResult
+    case: RunMove
+    events:
+    - MoveParsed
+    - RulesInvocationRequested
+    commands: []
+    effects:
+    - InvokeRulesBridge
+    reply: null
+    rejection: null
+    no_reply_justification: the rules bridge result is pending
+  - from: AwaitingInput
+    on: RunMove
+    to: AwaitingInput
+    case: RunRejected
+    events:
+    - RunRejected
+    commands: []
+    effects: []
+    reply: null
+    rejection: MalformedInput
+    no_reply_justification: null
+  - from: AwaitingRulesResult
+    on: RulesBridgeSucceeded
+    to: AwaitingInput
+    case: RulesBridgeSucceeded
+    events:
+    - RulesInvocationCompleted
+    commands: []
+    effects: []
+    reply: Accepted
+    rejection: null
+    no_reply_justification: null
+  - from: AwaitingRulesResult
+    on: RulesBridgeFailed
+    to: AwaitingInput
+    case: RulesBridgeFailed
+    events:
+    - RunRejected
+    commands: []
+    effects: []
+    reply: null
+    rejection: RulesBridgeFailure
+    no_reply_justification: null
+  add: []
+  remove: []
+roles:
+  set: []
+  add:
+  - kind: machine_driver
+    effect: null
+    binding_hint: null
+    path: src/machine_driver.mjs
+  remove: []

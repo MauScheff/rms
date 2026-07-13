@@ -1,0 +1,26 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/bind-semantic-revision-history-enforcement-to-the-declared-rms-audit-semantic-function-366503054deb.yaml
+intent:
+  summary: Close every active RMS semantic revision when applying the next canonical semantic state.
+laws:
+  add: []
+  set:
+  - id: semantic-revision-history-is-sealed
+    statement: Every RMS-applied semantic revision records the digest of its exact immutable change record, and later semantic revisions retain prior records through valid supersession references.
+    kind: invariant
+    authority: parser
+    enforced_by: audit-rms-project-command
+  remove: []
+contracts: null
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: semantic-revision-history-is-sealed
+    path: verification/laws/semantic_revision_history_is_sealed.md
+surfaces: null
+binding_dependencies: null

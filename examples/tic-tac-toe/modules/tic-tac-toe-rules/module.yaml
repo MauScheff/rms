@@ -79,6 +79,7 @@ x-scaffold:
   - law-evidence
 x-rms:
   semantic_revision:
-    digest: sha256:7354d31154a67a6b360e0f3e249ddec837f315cd6986ce867ce04384b25d6579
-    change_record: verification/machine-changes/machine-change-9c6d0cec5af5.yaml
+    digest: sha256:0e740083afb07c11e575d888eedbebe3114fe2f5e8e1e1a32b676a83465c9215
+    change_record: verification/machine-changes/machine-change-d095cdfe55af.yaml
     applied_by: rms machine apply
+    change_record_digest: sha256:d095cdfe55af61196a05dbd15c7387325011eed5507b9f07768c3de2e86f8a5c

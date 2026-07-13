@@ -51,7 +51,7 @@ records:
         next: O
     source:
       file: src/transition.rs
-      function: transition
+      function: transition_record
       branch: PlaceMarkContinues
   - id: reject-occupied-cell
     state_before:
@@ -99,7 +99,7 @@ records:
         next: O
     source:
       file: src/transition.rs
-      function: transition
+      function: transition_record
       branch: RejectOccupiedCell
   - id: accept-winning-move
     scenario_start: true
@@ -131,7 +131,7 @@ records:
     state_after: Won
     source:
       file: src/transition.rs
-      function: transition
+      function: transition_record
       branch: PlaceMarkWins
   - id: accept-drawing-move
     scenario_start: true
@@ -163,7 +163,7 @@ records:
     state_after: Draw
     source:
       file: src/transition.rs
-      function: transition
+      function: transition_record
       branch: PlaceMarkDraws
   - id: reject-move-after-win
     scenario_start: true
@@ -196,7 +196,7 @@ records:
     state_after: Won
     source:
       file: src/transition.rs
-      function: transition
+      function: transition_record
       branch: RejectMoveAfterWin
   - id: reject-move-after-draw
     scenario_start: true
@@ -229,5 +229,5 @@ records:
     state_after: Draw
     source:
       file: src/transition.rs
-      function: transition
+      function: transition_record
       branch: RejectMoveAfterDraw

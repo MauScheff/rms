@@ -43,7 +43,7 @@ records:
     state_after: AwaitingRulesResult
     source:
       file: src/transition.mjs
-      function: transition
+      function: transitionRecord
       branch: RunMove
   - id: complete-valid-move
     state_before: AwaitingRulesResult
@@ -71,7 +71,7 @@ records:
     state_after: AwaitingInput
     source:
       file: src/transition.mjs
-      function: transition
+      function: transitionRecord
       branch: RulesBridgeSucceeded
   - id: reject-malformed-coordinate
     scenario_start: true
@@ -102,7 +102,7 @@ records:
     state_after: AwaitingInput
     source:
       file: src/transition.mjs
-      function: transition
+      function: transitionRecord
       branch: RunRejected
   - id: reject-rules-bridge-failure
     scenario_start: true
@@ -131,5 +131,5 @@ records:
     state_after: AwaitingInput
     source:
       file: src/transition.mjs
-      function: transition
+      function: transitionRecord
       branch: RulesBridgeFailed

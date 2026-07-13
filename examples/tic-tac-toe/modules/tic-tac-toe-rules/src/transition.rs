@@ -29,6 +29,14 @@ pub struct TicTacToeTransitionRecord {
     pub state_after: Game,
     pub input: TicTacToeInput,
     pub output: TicTacToeTransition,
+    pub source: TicTacToeSourceProvenance,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicTacToeSourceProvenance {
+    pub file: &'static str,
+    pub function: &'static str,
+    pub branch: &'static str,
 }
 
 pub fn transition(state: Game, input: TicTacToeInput) -> TicTacToeTransition {
@@ -38,7 +46,7 @@ pub fn transition(state: Game, input: TicTacToeInput) -> TicTacToeTransition {
 pub fn transition_record(state: Game, input: TicTacToeInput) -> TicTacToeTransitionRecord {
     let state_before = state;
     let TicTacToeInput::Command(command) = input;
-    let reply = apply_command(state, command);
+    let (reply, branch) = apply_command(state, command);
     let (next_state, event) = match reply {
         TransitionOutcome::Accepted { state } => (state, TicTacToeEvent::MarkPlaced),
         TransitionOutcome::Rejected { state, .. } => (state, TicTacToeEvent::MoveRejected),
@@ -55,28 +63,60 @@ pub fn transition_record(state: Game, input: TicTacToeInput) -> TicTacToeTransit
         state_after: next_state,
         input,
         output,
+        source: TicTacToeSourceProvenance {
+            file: "src/transition.rs",
+            function: "transition_record",
+            branch,
+        },
     }
 }
 
-fn apply_command(state: Game, command: Command) -> TransitionOutcome {
-    let GameStatus::InProgress { next } = state.status() else {
-        return TransitionOutcome::Rejected {
-            state,
-            reason: MoveRejection::GameAlreadyTerminal,
-        };
+fn apply_command(state: Game, command: Command) -> (TransitionOutcome, &'static str) {
+    let next = match state.status() {
+        GameStatus::InProgress { next } => next,
+        GameStatus::Won { .. } => {
+            return (
+                TransitionOutcome::Rejected {
+                    state,
+                    reason: MoveRejection::GameAlreadyTerminal,
+                },
+                "RejectMoveAfterWin",
+            );
+        }
+        GameStatus::Draw => {
+            return (
+                TransitionOutcome::Rejected {
+                    state,
+                    reason: MoveRejection::GameAlreadyTerminal,
+                },
+                "RejectMoveAfterDraw",
+            );
+        }
     };
 
     match command {
         Command::PlaceMark { cell } => {
             let Some(board) = state.board().with_mark(cell, next) else {
-                return TransitionOutcome::Rejected {
-                    state,
-                    reason: MoveRejection::CellOccupied,
-                };
+                return (
+                    TransitionOutcome::Rejected {
+                        state,
+                        reason: MoveRejection::CellOccupied,
+                    },
+                    "RejectOccupiedCell",
+                );
             };
-            TransitionOutcome::Accepted {
-                state: Game::from_parts(board, status_after_move(&board, next)),
-            }
+            let status = status_after_move(&board, next);
+            let branch = match status {
+                GameStatus::InProgress { .. } => "PlaceMarkContinues",
+                GameStatus::Won { .. } => "PlaceMarkWins",
+                GameStatus::Draw => "PlaceMarkDraws",
+            };
+            (
+                TransitionOutcome::Accepted {
+                    state: Game::from_parts(board, status),
+                },
+                branch,
+            )
         }
     }
 }

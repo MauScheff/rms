@@ -44,6 +44,7 @@ verification:
   - verification/traces
 x-rms:
   semantic_revision:
-    digest: sha256:cd96adf9c8e71886cf1c74a767c384b352997d737662fa27e356ed30fec20855
-    change_record: verification/machine-changes/machine-change-b3eef6cf1b9d.yaml
+    digest: sha256:7ea4887a822cbfb25d88ad092dffecf8fb81455d24e77da2ef30df6129af6a9f
+    change_record: verification/machine-changes/machine-change-42fc232943cb.yaml
     applied_by: rms machine apply
+    change_record_digest: sha256:42fc232943cbe25266f8dfd062ec77c08090f1fa5d85e5699b619a1149bfa374

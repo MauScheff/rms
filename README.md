@@ -43,11 +43,11 @@ For agents, RMS narrows the job. The agent does not invent architecture directly
 
 - A canonical specification for modules, bounded contexts, contracts, effects, profiles, compatibility, and conformance.
 - YAML manifests for systems, context maps, modules, contracts, implementations, semantic changes, machine changes, and conformance reports.
-- A semantic gate for changing meaning before code: laws, contracts, commands, states, events, effects, effect results, replies, rejections, transitions, public entrypoints, and evidence obligations.
-- A semantic revision seal: strict audit recomputes canonical module, contract, and implementation semantics and rejects direct manifest edits made after RMS apply.
-- Semantic properties for broad laws: RMS declares input spaces, oracles, evidence, replayable counterexamples, and the realization claim. Fixed corpora, finite exhaustive checks, generated properties, and coverage fuzzers remain distinct.
+- A semantic gate for changing meaning before code: laws, contracts, commands, states, events, effects, effect results, replies, rejections, transitions, semantic-function authority bindings, public entrypoints, and evidence obligations.
+- A semantic revision seal: RMS hash-seals the exact applied change, automatically closes every active prior revision, and recomputes canonical module, contract, and implementation semantics during strict audit.
+- Semantic properties for broad laws: RMS declares input spaces, oracles, evidence, replayable counterexamples, and the realization claim. Fixed corpora, finite exhaustive checks, generated properties, and coverage fuzzers remain distinct; every stronger-than-corpus claim names a real binding harness.
 - Traceable machine scaffolds with named transition cases, state, effects, transition outputs, journals, replay bundles, and first-bad-transition diagnostics.
-- Atomic effect protocols with an inspectable execution chain: runnable callable -> machine driver -> pure transition -> exact one-request executor -> typed effect result -> machine driver. The transition owns what happens next.
+- Atomic effect protocols with a trace-complete execution chain: runnable callable -> machine driver -> pure transition record -> exact one-request executor -> typed effect result -> machine driver. Executors are first-class semantic functions; the transition owns what happens next, and the driver retains the live record history for replay and first-bad-transition diagnosis.
 - A Rust reference CLI that acts as the human and agent workbench for validation, explanation, context packets, semantic planning, structure checks, trace replay, compatibility, audit, packaging, and conformance evidence.
 - Agent skills for inspecting modules, implementing changes, pruning semantic residue, adding modules, evolving contracts, composing modules, and verifying conformance through the shared CLI surface.
 - Thin Codex and Claude integration guidance that points agents at the same semantic model instead of creating agent-specific architecture.
@@ -165,9 +165,9 @@ rms add-binding ./my-system/modules/tic-tac-toe-boundary/module.yaml --binding j
 
 This creates `module.yaml`, a module `README.md`, `contracts/README.md`, concrete evidence files referenced by the manifests, and optional implementation bindings. Semantic shapes such as `domain-engine`, `boundary-adapter`, `workflow`, `storage-adapter`, `integration-adapter`, and `composite` define role obligations before file layout. Bindings such as `rust`, `swift`, `js`, and `executable` realize those roles idiomatically. The executable binding remains the opaque command-backed lane for web, mobile, CLI, native UI, generated assets, or integration surfaces when RMS cannot statically inspect internals.
 
-Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, message envelopes, transition output, transition records, parser, adapter, journal, timeline projection, replay bundle, first-bad-transition, and trace evidence roles, plus a domain-named machine with an explicit mode and state variants. They also seed local trace bundles under `verification/traces/`, and `rms verify` checks those bundles after native verification. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, `Rejection`, `Transition`, and `TransitionRecord`. Prefer the `add-capability` default child paths unless the user supplied better product/domain names; do not invent `-rules`, `-adapter`, `-cli`, or `-web` child names just to describe RMS roles. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`, and a boundary role should avoid names like `CouponEvaluationAdapterMachine`.
+Generated inspectable bindings declare inner structure in `implementation.yaml`: representation, binding-native message envelopes, transition output, an exact transition-record function, parser, adapter, journal, timeline projection, replay bundle, first-bad-transition, and trace evidence roles, plus a domain-named machine with an explicit mode and state variants. Effectful drivers return complete transition records rather than output-only histories. They also seed local trace bundles under `verification/traces/`, and `rms verify` checks those bundles after native verification. Role types use a semantic domain prefix, not the module slug: role, binding, and surface suffixes such as `rules`, `engine`, `adapter`, `cli`, `web`, `js`, `rust`, and `swift` are stripped before appending `Machine`, `State`, `Command`, `Event`, `Effect`, `EffectResult`, `Reply`, `Rejection`, `Transition`, and `TransitionRecord`. Prefer the `add-capability` default child paths unless the user supplied better product/domain names; do not invent `-rules`, `-adapter`, `-cli`, or `-web` child names just to describe RMS roles. For example, a `coupon-rules` child under a `coupon-evaluation` capability should expose names like `CouponEvaluationMachine`, not `CouponRulesMachine`, and a boundary role should avoid names like `CouponEvaluationAdapterMachine`.
 
-Semantic properties live above language-specific property-test libraries. A law says what must always hold; a property says which inputs to generate and which oracle judges them; a Rust, JS, Swift, Python, or executable binding decides how to run that property. Inspect and run those obligations with:
+Semantic properties live above language-specific property-test libraries. A law says what must always hold; a property says which inputs to generate and which oracle judges them; a Rust, JS, Swift, Python, or executable binding decides how to run that property. Revise them through `rms spec apply` with `properties.add/set/remove`. Non-corpus realizations name an exact `path#symbol` harness, and generated evidence remains an obligation until the actual command and observed result are recorded. Inspect and run those obligations with:
 
 ```bash
 rms property check ./my-system/modules/widget/module.yaml --strict
@@ -223,6 +223,16 @@ contracts:
       accepts: [a pending draft with matching confirmation]
       ensures: [the confirmed draft produces one declared local-write effect]
       rejects: [no pending draft, stale confirmation, malformed draft]
+semantic_functions:
+  set:
+    - id: confirmation-transition
+      symbol: src/transition.rs#transition
+      kind: transition
+      purity: pure
+      discharges:
+        invariants: [confirmation-before-local-log]
+      evidence:
+        traces: [verification/traces/confirmation_before_log.yaml]
 evidence:
   add:
     - kind: trace
@@ -262,7 +272,7 @@ transitions:
 rms machine check ./my-system/modules/widget/implementation.yaml
 ```
 
-`rms spec plan`, `rms machine plan`, and provider output are advisory. Apply first with `--dry-run` and inspect the complete `final_machine`; do not write product code while generic scaffold cases remain. Spec, machine, and surface apply record the exact change and seal the resulting canonical semantic revision. Strict audit recomputes that revision, so a clean commit cannot hide direct manifest surgery. Every transition has a stable `case`, and replay source provenance uses the same case name. Machine apply preserves evidence roles but never generates passing replay evidence from its own declarations; implementation and replay must provide that proof. Generated capability contracts remain incomplete until `contracts.set` supplies product meaning, inputs, outcomes, and rejections.
+`rms spec plan`, `rms machine plan`, and provider output are advisory. Apply first with `--dry-run` and inspect the complete `final_machine` and `final_semantic_functions`; do not write product code while generic scaffold cases remain. Use `semantic_functions.add/set/remove` rather than editing implementation bindings when an exact symbol, authority owner, purity, discharged promise, assumption, or evidence binding changes. Spec apply records and hash-seals the exact change and automatically supersedes every active semantic revision; applied records are append-only. Machine and surface apply also seal their exact records. Strict audit recomputes the canonical revision and record digest, so a clean commit cannot hide direct manifest or change-record surgery. Every transition has a stable `case`; each declared case must exist in the declared transition source, source-only branches are rejected, and every lifecycle state must be reachable from `initial_state`. Replay provenance names that transition source file and exact case, not the evidence YAML itself. Machine apply preserves evidence roles but never generates passing replay evidence from its own declarations; implementation and replay must provide that proof. Generated capability contracts remain incomplete until `contracts.set` supplies product meaning, inputs, outcomes, and rejections.
 
 Runnable app/tool/browser/CLI surfaces stay thin, but their boundary machines still use explicit `state + input -> transition` structure. A boundary command parses or rejects outside input, emitted effects are executed once by declared adapters, and typed effect results return through the same transition. Product lifecycle belongs in a workflow or domain machine rather than hidden in the surface. Browser surfaces normally use `entrypoint: public/app.mjs` for the inspectable controller and `launch_entrypoint: public/index.html` for the host file. Any script loaded by the host file is part of the RMS surface: it should import or call the declared controller/adapter, not duplicate parser, generator, transition, or domain logic in a second browser bundle. Use `--launch-script` when an extra local launch script is intentional and should be checked explicitly.
 
@@ -482,7 +492,7 @@ rms package examples/rust/module.yaml --output dist/rust-example.rms
 rms verify-package dist/rust-example.rms
 ```
 
-Reusable modules are semantic packages first. A reusable domain/library module should publish a domain-neutral `provides.capabilities[]` entry with a contract, expose one RMS-declared public facade from `implementation.yaml`, and include package/reuse evidence. Native package files such as `package.json`, `Cargo.toml`, `Package.swift`, or `pyproject.toml` are binding evidence: they describe how to import the facade, not what is reusable.
+`rms package` assembles and verifies the package, records the concrete pass in declared reuse evidence, rebuilds with that proof, and verifies the final artifact. `rms verify-package` remains the independent recheck. Reusable modules are semantic packages first: publish a domain-neutral `provides.capabilities[]` entry with a contract, expose one RMS-declared public facade from `implementation.yaml`, and include package/reuse evidence. Native package files such as `package.json`, `Cargo.toml`, `Package.swift`, or `pyproject.toml` are binding evidence: they describe how to import the facade, not what is reusable.
 
 ## Adopt RMS In A Project
 

@@ -1,0 +1,43 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/let-semantic-changes-declare-revise-and-remove-implementation-semantic-function-bindings-through-the-rms-gate-2765c1bb666a.yaml
+intent:
+  summary: Bind semantic-function declaration changes to the RMS semantic apply command and its observed evidence.
+laws: null
+contracts: null
+properties: null
+semantic_functions:
+  add: []
+  set:
+  - id: semantic-change-apply-command
+    symbol: run_spec_apply
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/apply-semantic-change.v1.yaml
+      invariants:
+      - semantic-contract-revisions-are-cli-applied
+      - canonical-semantics-match-cli-applied-revision
+      - semantic-function-bindings-are-cli-applied
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - contract add, set, and remove operations update canonical module references, files, and semantic-change records together
+      - semantic-function add, set, and remove operations update implementation bindings and sealed semantic-change records together
+    evidence:
+      contracts:
+      - verification/contracts/apply_semantic_change.md
+      laws:
+      - verification/laws/semantic_function_bindings_are_cli_applied.md
+      traces:
+      - verification/traces/semantic_change_record.yaml
+  remove: []
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null

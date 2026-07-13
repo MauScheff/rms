@@ -1,0 +1,84 @@
+spec: rms/semantic-change/v0.1
+module: null
+supersedes: []
+intent:
+  summary: Require transition cases and replay provenance to be represented by declared transition source, keep lifecycle states reachable, and keep generated package outputs outside live project discovery.
+laws:
+  add:
+  - id: transition-cases-are-code-backed
+    statement: Every canonical transition case and replay source branch is represented by a declared transition role, and every lifecycle state is reachable from the machine initial state.
+    kind: invariant
+    authority: transition
+    enforced_by: inspect-implementation-structure-command
+  - id: generated-package-output-is-derived
+    statement: Generated package and build outputs remain derived artifacts and are excluded from live RMS project semantic discovery.
+    kind: invariant
+    authority: composition
+    enforced_by: validate-rms-artifacts-command
+  set: []
+  remove: []
+contracts: null
+properties:
+  add:
+  - id: transition-case-source-conformance
+    proves: transition-cases-are-code-backed
+    kind: conformance
+    subject: inspectable transition bindings
+    input_space:
+      fixtures:
+      - declared case missing from source
+      - source branch missing from declarations
+      - unreachable lifecycle state
+      - trace source outside transition role
+    preconditions: []
+    operation: run structure and strict trace checks
+    oracle:
+    - declared and implemented cases align
+    - unreachable states fail
+    - trace provenance names declared transition source
+    evidence:
+      kind: property
+      path: verification/properties/transition_case_source_conformance.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/transition-case-source
+    realizations:
+    - profile: smoke
+      strategy: deterministic-exhaustive
+      command: fuzz
+      exhaustive: false
+  - id: generated-output-discovery-is-excluded
+    proves: generated-package-output-is-derived
+    kind: conformance
+    subject: RMS root discovery
+    input_space:
+      fixtures:
+      - source module beside dist package copy
+      - target build tree
+      - node_modules dependency tree
+    preconditions: []
+    operation: discover RMS manifests from the project root
+    oracle:
+    - only source-owned canonical artifacts are discovered
+    - derived package copies do not create duplicate modules
+    evidence:
+      kind: property
+      path: verification/properties/generated_output_discovery.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/generated-output-discovery
+    realizations:
+    - profile: smoke
+      strategy: deterministic-exhaustive
+      command: fuzz
+      exhaustive: false
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: transition-cases-are-code-backed
+    path: verification/laws/transition_cases_are_code_backed.md
+  - kind: law
+    proves: generated-package-output-is-derived
+    path: verification/laws/generated_package_output_is_derived.md
+surfaces: null
+binding_dependencies: null

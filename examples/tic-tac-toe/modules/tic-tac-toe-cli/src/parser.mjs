@@ -11,6 +11,15 @@ const LETTER_ROWS = new Map([
   ["c", 2],
 ]);
 
+export function generateMalformedInputCases() {
+  const whitespace = ["", " ", "\n", "\t", " \n\t "];
+  const outOfBoard = ["D4", "A0", "4,4", "-1,1"];
+  const incomplete = ["A", "1", "1,", ",1", "A1B2"];
+  const nonText = [null, undefined, Object.freeze({ row: 1, column: 1 })];
+
+  return Object.freeze([...whitespace, ...outOfBoard, ...incomplete, ...nonText]);
+}
+
 export function parseMoveText(input) {
   if (typeof input !== "string") {
     return rejected(TicTacToeBoundaryRejection.MalformedInput);

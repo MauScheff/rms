@@ -1,0 +1,26 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/require-transition-cases-and-replay-provenance-to-be-represented-by-declared-transition-source-keep-lifecycle-states-reachable-and-keep-generated-package-outputs-outside-live-project-discovery-36b55baeb038.yaml
+intent:
+  summary: Assign transition-source conformance to the RMS structural parser that deterministically enforces it.
+laws:
+  add: []
+  set:
+  - id: transition-cases-are-code-backed
+    statement: Every canonical transition case and replay source branch is represented by a declared transition role, and every lifecycle state is reachable from the machine initial state.
+    kind: invariant
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  remove: []
+contracts: null
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: transition-cases-are-code-backed
+    path: verification/laws/transition_cases_are_code_backed.md
+surfaces: null
+binding_dependencies: null

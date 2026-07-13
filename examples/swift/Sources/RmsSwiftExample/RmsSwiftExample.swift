@@ -25,9 +25,29 @@ public enum DescribeSwiftWidgetCommand: Equatable {
     case rejectEmptyName(String)
 }
 
+public struct SwiftExampleCommandEnvelope: Equatable {
+    public let commandId: String
+    public let targetMachine: String
+    public let correlationId: String
+    public let causationId: String
+    public let idempotencyKey: String?
+    public let command: DescribeSwiftWidgetCommand
+}
+
 public enum SwiftExampleEvent: Equatable {
     case widgetDescribed
     case widgetRejected
+}
+
+public struct SwiftExampleEventEnvelope: Equatable {
+    public let eventId: String
+    public let sourceMachine: String
+    public let correlationId: String
+    public let causationId: String
+    public let sequence: UInt64
+    public let schemaVersion: UInt64
+    public let occurredAt: String
+    public let event: SwiftExampleEvent
 }
 
 public enum SwiftExampleRejection: Equatable {
@@ -53,6 +73,13 @@ public struct SwiftExampleTransitionRecord: Equatable {
     public let stateAfter: SwiftExampleState
     public let input: DescribeSwiftWidgetCommand
     public let output: SwiftExampleTransition
+    public let source: SwiftExampleSourceProvenance
+}
+
+public struct SwiftExampleSourceProvenance: Equatable {
+    public let file: String
+    public let function: String
+    public let branch: String
 }
 
 public enum SwiftExampleMachine {
@@ -69,15 +96,18 @@ public func transitionRecord(_ command: DescribeSwiftWidgetCommand) -> SwiftExam
     let stateBefore = SwiftExampleState.ready
     let event: SwiftExampleEvent
     let reply: DescribeSwiftWidgetReply
+    let branch: String
     switch command {
     case .describe(let widget):
         event = .widgetDescribed
         reply = .description(describeWidget(widget))
+        branch = "DescribeWidget"
     case .rejectEmptyName(let name):
         event = .widgetRejected
         reply = .rejected(
             reason: SwiftWidget(name) == nil ? .emptyWidgetName : .expectedEmptyName
         )
+        branch = "RejectEmptyWidgetName"
     }
     let output = SwiftExampleTransition(
         nextState: .ready,
@@ -90,6 +120,11 @@ public func transitionRecord(_ command: DescribeSwiftWidgetCommand) -> SwiftExam
         stateBefore: stateBefore,
         stateAfter: output.nextState,
         input: command,
-        output: output
+        output: output,
+        source: SwiftExampleSourceProvenance(
+            file: "Sources/RmsSwiftExample/RmsSwiftExample.swift",
+            function: "transitionRecord",
+            branch: branch
+        )
     )
 }

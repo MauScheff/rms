@@ -1,0 +1,30 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/assign-transition-source-conformance-to-the-rms-structural-parser-that-deterministically-enforces-it-5860b2ba335c.yaml
+intent:
+  summary: Seal every applied semantic revision to its exact change record and preserve prior revisions through an auditable supersession chain.
+laws:
+  add:
+  - id: semantic-revision-history-is-sealed
+    statement: Every RMS-applied semantic revision records the digest of its exact immutable change record, and later semantic revisions retain prior records through valid supersession references.
+    kind: invariant
+    authority: parser
+    enforced_by: strict-audit-semantic-revision-check
+  set: []
+  remove: []
+contracts:
+  add: []
+  set: []
+  remove: []
+properties:
+  add: []
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: semantic-revision-history-is-sealed
+    path: verification/laws/semantic_revision_history_is_sealed.md
+surfaces: null
+binding_dependencies: null

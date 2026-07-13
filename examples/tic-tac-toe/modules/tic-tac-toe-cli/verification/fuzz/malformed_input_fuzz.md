@@ -8,10 +8,17 @@ Input space:
 
 ```yaml
 raw_cli_input:
-  - empty string
-  - out-of-board coordinates such as D4
+  - generated empty and whitespace strings
+  - generated out-of-board and incomplete coordinates
+  - generated non-text boundary values
   - valid mixed-case board coordinates such as A1 and b2
 ```
+
+Binding realization:
+
+- Strategy: `generated-property`.
+- Harness: `src/parser.mjs#generateMalformedInputCases`.
+- The harness constructs 17 malformed values across whitespace, range, shape, and runtime-type categories; the binding test consumes every generated value.
 
 Oracle:
 
@@ -26,7 +33,7 @@ Command/tool:
 
 Expected result:
 
-- Empty input and out-of-board coordinates are rejected.
+- Every generated malformed input is rejected before delegation.
 - Valid coordinates delegate board indexes 0 and 4 to the rules port.
 - Future generated failures should be recorded under `verification/fuzz/counterexamples` with `spec: rms/property-counterexample/v0.1`.
 

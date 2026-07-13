@@ -1,0 +1,47 @@
+spec: rms/machine-change/v0.1
+module: examples/tic-tac-toe/modules/tic-tac-toe-rules/implementation.yaml
+machine:
+  mode: stateful-transition-machine
+  justification: null
+  transition_signature: state-and-input
+  driver_function: null
+  transition_record_function: transition_record
+  types: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+transitions: null
+roles: null

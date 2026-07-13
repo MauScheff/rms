@@ -1,0 +1,35 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Make package construction verify and record reusable proof before returning success.
+laws: null
+contracts:
+  add: []
+  set:
+  - name: package-module
+    version: '1'
+    command: PackageModule
+    meaning: Assemble and verify a portable RMS module package and record concrete reusable-package proof when the module declares reusable intent.
+    accepts:
+    - a valid RMS module manifest with readable referenced artifacts
+    - an absent output directory or an existing output explicitly allowed for replacement
+    ensures:
+    - package metadata identifies payload files sizes checksums validator identity and source revision
+    - the assembled package passes deterministic package verification before success is reported
+    - reusable package evidence records the successful result and the final rebuilt artifact includes that proof
+    rejects:
+    - invalid or missing source artifacts
+    - unsafe output overwrite without force
+    - package verification failure
+    - reusable evidence recording or final rebuild failure
+  remove: []
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: package-module
+    path: verification/contracts/package_module.md
+surfaces: null

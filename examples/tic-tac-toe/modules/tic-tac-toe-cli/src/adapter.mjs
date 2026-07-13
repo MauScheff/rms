@@ -4,6 +4,7 @@ import {
   effectResultInput,
   runMove,
 } from "./representation.mjs";
+import { driveMachine } from "./machine_driver.mjs";
 import { transitionRecord } from "./transition.mjs";
 
 export function createBoundarySession(effectExecutor) {
@@ -28,8 +29,9 @@ export function createBoundarySession(effectExecutor) {
   });
 }
 
-export function handleBoundaryInput(inputText, effectExecutor) {
-  return createBoundarySession(effectExecutor).handle(inputText);
+export function handleBoundaryInput(inputText) {
+  const records = driveMachine(awaitingInput(), commandInput(runMove(inputText)));
+  return records.at(-1)?.output.reply ?? null;
 }
 
 export const TicTacToeBoundaryAdapter = Object.freeze({

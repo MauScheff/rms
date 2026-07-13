@@ -36,9 +36,31 @@ pub enum DescribeWidgetCommand {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RustExampleCommandEnvelope {
+    pub command_id: String,
+    pub target_machine: String,
+    pub correlation_id: String,
+    pub causation_id: String,
+    pub idempotency_key: Option<String>,
+    pub command: DescribeWidgetCommand,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum RustExampleEvent {
     WidgetDescribed,
     WidgetRejected,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RustExampleEventEnvelope {
+    pub event_id: String,
+    pub source_machine: String,
+    pub correlation_id: String,
+    pub causation_id: String,
+    pub sequence: u64,
+    pub schema_version: u64,
+    pub occurred_at: String,
+    pub event: RustExampleEvent,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -68,6 +90,14 @@ pub struct RustExampleTransitionRecord {
     pub state_after: RustExampleState,
     pub input: DescribeWidgetCommand,
     pub output: RustExampleTransition,
+    pub source: RustExampleSourceProvenance,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RustExampleSourceProvenance {
+    pub file: String,
+    pub function: String,
+    pub branch: String,
 }
 
 pub struct RustExampleMachine;
@@ -84,10 +114,11 @@ pub fn transition(command: DescribeWidgetCommand) -> RustExampleTransition {
 
 pub fn transition_record(command: DescribeWidgetCommand) -> RustExampleTransitionRecord {
     let state_before = RustExampleState::Ready;
-    let (event, reply) = match &command {
+    let (event, reply, branch) = match &command {
         DescribeWidgetCommand::Describe { widget } => (
             RustExampleEvent::WidgetDescribed,
             DescribeWidgetReply::Description(describe_widget(widget).to_string()),
+            "DescribeWidget",
         ),
         DescribeWidgetCommand::RejectEmptyName { name } => {
             let reason = if Widget::new(name.clone()).is_some() {
@@ -98,6 +129,7 @@ pub fn transition_record(command: DescribeWidgetCommand) -> RustExampleTransitio
             (
                 RustExampleEvent::WidgetRejected,
                 DescribeWidgetReply::Rejected { reason },
+                "RejectEmptyWidgetName",
             )
         }
     };
@@ -114,6 +146,11 @@ pub fn transition_record(command: DescribeWidgetCommand) -> RustExampleTransitio
         state_after: next_state,
         input: command,
         output,
+        source: RustExampleSourceProvenance {
+            file: "src/widget.rs".to_string(),
+            function: "transition_record".to_string(),
+            branch: branch.to_string(),
+        },
     }
 }
 

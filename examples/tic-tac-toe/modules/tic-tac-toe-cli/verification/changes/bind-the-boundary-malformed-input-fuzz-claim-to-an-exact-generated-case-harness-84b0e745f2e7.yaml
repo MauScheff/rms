@@ -1,0 +1,42 @@
+spec: rms/semantic-change/v0.1
+module: examples/tic-tac-toe/modules/tic-tac-toe-cli/module.yaml
+supersedes: []
+intent:
+  summary: Bind the boundary malformed-input fuzz claim to an exact generated-case harness.
+laws: null
+contracts: null
+properties:
+  add: []
+  set:
+  - id: tic-tac-toe-cli-malformed-input-stops-before-domain
+    proves: boundary-parse
+    kind: fuzz
+    subject: null
+    input_space:
+      raw_cli_input:
+      - generated empty and whitespace strings
+      - generated out-of-board coordinates
+      - valid mixed-case board coordinates
+    preconditions: []
+    operation: handleBoundaryInput
+    oracle:
+    - malformed input returns a typed rejection
+    - malformed input does not delegate to the rules module
+    - accepted input delegates only parsed board cells
+    evidence:
+      kind: fuzz
+      path: verification/fuzz/malformed_input_fuzz.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: generated-property
+      command: fuzz
+      harness: src/parser.mjs#generateMalformedInputCases
+      exhaustive: false
+  remove: []
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null

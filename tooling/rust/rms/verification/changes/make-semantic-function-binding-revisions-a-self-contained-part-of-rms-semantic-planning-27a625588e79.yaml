@@ -1,0 +1,40 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/bind-semantic-function-declaration-changes-to-the-rms-semantic-apply-command-and-its-observed-evidence-ac3e4334b55a.yaml
+intent:
+  summary: Make semantic-function binding revisions a self-contained part of RMS semantic planning.
+laws: null
+contracts:
+  add: []
+  set:
+  - name: plan-semantic-change
+    version: '1'
+    command: plan-semantic-change
+    meaning: Render or run a self-contained advisory prompt for a language-neutral RMS semantic-change object.
+    accepts:
+    - a readable module.yaml or implementation.yaml target
+    - product or maintenance intent describing the requested semantic change
+    ensures:
+    - the prompt enumerates allowed invariant authorities and explains how enforced_by binds to semantic functions
+    - the prompt shows exact scalar, list, mapping, and operation cardinalities for contracts, properties, semantic functions, evidence, effect protocols, transitions, roles, and surfaces
+    - the prompt requires a distinct evidence obligation for every changed law and contract
+    - the prompt shows set, add, and remove for every supported semantic category, including semantic-function bindings, and exact structured removal shapes
+    - semantic-function items name exact binding symbols, allowed kinds and purity, discharged promises, assumptions, and categorized evidence
+    - targets without implementation bindings render semantic-function, machine, role, and surface sections as null and direct agents to attach a binding before requesting those changes
+    - the prompt tells agents to rely only on the current project, prompt, and RMS diagnostics
+    rejects:
+    - the target is unreadable or unsupported
+    - task intent is missing
+  remove: []
+properties: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: plan-semantic-change
+    path: verification/contracts/plan_semantic_change.md
+surfaces: null
+binding_dependencies: null

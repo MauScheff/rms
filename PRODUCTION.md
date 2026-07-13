@@ -33,10 +33,12 @@ A project is ready for production pilot use when all requirements hold:
 | Evidence is concrete | No active implemented module reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only`. |
 | Public compatibility is explicit | Contract or manifest changes include `rms check-compat` evidence or an explicit compatibility decision. |
 | Agents can start cold | `AGENTS.md`, `.rms/config.yaml`, and local agent skills are generated or synced from the pinned RMS CLI. |
-| Semantic changes are gated | New laws, contracts, states, commands, events, effects, transitions, semantic roles, public entrypoints, and evidence obligations are introduced through `rms spec apply`, then checked with `rms spec check`. |
-| Canonical revision is intact | Strict audit reports `semantic.revision-integrity`; a clean commit does not hide direct manifest edits after RMS apply. |
-| Transition branches are replayed | Every transition has a stable `case`, and strict audit finds matching state/input/destination/source-branch evidence plus declared workflow events. |
-| Effect execution is machine-driven | Every effectful stateful machine declares an exact driver and executor symbols; effect-emitting runnable commands reach the driver, and lifecycle loops do not live in surfaces, adapters, or executors. |
+| Semantic changes are gated | New laws, contracts, states, commands, events, effects, transitions, semantic roles, semantic-function authority bindings, public entrypoints, and evidence obligations are introduced through `rms spec apply`, then checked with `rms spec check`. |
+| Canonical revision is intact | Strict audit reports `semantic.revision-integrity`; the exact applied record digest matches, superseded records still exist, and a clean commit does not hide direct manifest or history edits after RMS apply. |
+| Transition branches are code-backed and replayed | Every declared case exists in the declared transition source, no source-only branch escapes canonical semantics, every lifecycle state is reachable, and strict audit finds matching state/input/destination/source-file/source-branch evidence plus declared workflow events. |
+| Effect execution is trace-complete | Every effectful stateful machine declares exact driver and transition-record functions plus executor semantic functions. Live execution retains complete records, advances from `state_after`, executes `output.effects`, and owns the repeated cycle. |
+| Machine inputs are total | Arithmetic over represented indices, counts, attempts, offsets, lengths, and sequences is checked or bounded; extreme inputs produce explicit rejection instead of overflow, panic, or trap. |
+| Message declarations are real | Every declared command, event, effect, and effect-result envelope has a binding-native representation. |
 
 ## New Project Flow
 
@@ -99,7 +101,7 @@ rms spec apply <module.yaml|implementation.yaml> --change-yaml '<semantic-change
 rms spec check <module.yaml|implementation.yaml>
 ```
 
-Inspect `final_machine` before source edits. Product variants must replace generic scaffold cases, every transition must name its semantic case, and every ordering/safety/bounded/parser/numeric law must have a matching property. Spec, machine, and surface apply record their change and reseal canonical semantics. Machine apply does not manufacture replay evidence; traces must come from implemented transition paths. Direct changes to module, local contract, or implementation semantics invalidate the seal and fail strict audit. Public domain values keep private fields and validated constructors; `allowed_public_field_structs` is limited to declared envelopes and transition/provenance records.
+Inspect `final_machine` before source edits. Product variants must replace generic scaffold cases, every transition must name its semantic case, and every ordering/safety/bounded/parser/numeric law must have a matching property. Non-corpus property realizations name an exact binding `path#symbol` harness, and generated property evidence is production-blocking until an executed command and observed result replace the obligation. Spec, machine, and surface apply record their change and reseal canonical semantics. Machine apply does not manufacture replay evidence; traces must come from implemented transition paths. Direct changes to module, local contract, or implementation semantics invalidate the seal and fail strict audit. Public domain values keep private fields and validated constructors; `allowed_public_field_structs` is limited to declared envelopes and transition/provenance records.
 
 ## Existing Project Flow
 

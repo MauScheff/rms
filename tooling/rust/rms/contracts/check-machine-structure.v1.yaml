@@ -1,20 +1,32 @@
 spec: rms/contract/v0.1
-name: check-machine-structure
+name: "check-machine-structure"
 version: 1
 kind: command
-meaning: Check an implementation binding's semantic machine declarations, role files, traceable-machine obligations, and structure diagnostics.
+meaning: "Check whether an implementation binding faithfully realizes its canonical semantic machine, exact live transition-record path, message envelopes, effect protocols, and total transition behavior."
 preconditions:
-  - id: implementation-readable
-    statement: "The target `implementation.yaml` is readable and parseable."
+  - id: "accepts-1"
+    statement: "a readable RMS implementation binding"
+  - id: "accepts-2"
+    statement: "inspectable Rust, Swift, or JavaScript role source, or explicitly opaque executable evidence"
+  - id: "accepts-3"
+    statement: "declared machine types, variants, roles, effects, traces, and runnable surfaces"
 postconditions:
-  - id: structure-report-produced
-    statement: The command reports machine mode, transition signature, binding type mappings, semantic variants, classified inputs, effect protocols, messages, transition output, trace roles, role files, and findings.
-  - id: strict-promotes-production-blockers
-    statement: "`--strict` fails on collapsed type/case declarations, missing state-plus-input signatures, unclassified inputs, missing effect protocols, executor-owned orchestration, incomplete replay, hidden effects, role drift, and unhandled effect results."
+  - id: "ensures-1"
+    statement: "reports binding container types separately from semantic variants and input categories"
+  - id: "ensures-2"
+    statement: "checks exact transition-record and driver callables for effectful stateful machines"
+  - id: "ensures-3"
+    statement: "checks declared command, event, effect, and effect-result envelopes are represented when applicable"
+  - id: "ensures-4"
+    statement: "checks live drivers retain full records and transition arithmetic over represented inputs is checked or bounded"
 failure_categories:
-  - id: invalid-implementation
-    statement: The target file is not an RMS implementation binding.
-  - id: strict-finding
-    statement: Strict mode found a production-blocking structure diagnostic.
+  - id: "rejects-1"
+    statement: "collapsed type and case declarations or missing state-plus-input signatures"
+  - id: "rejects-2"
+    statement: "missing envelope representation, transition-record construction, or complete live record retention"
+  - id: "rejects-3"
+    statement: "unclassified inputs, incomplete effect protocols, result paths that bypass transitions, or executor-owned orchestration"
+  - id: "rejects-4"
+    statement: "unchecked transition arithmetic that can panic, trap, wrap, or silently lose a represented input"
 compatibility:
   policy: backward-compatible-within-major

@@ -1,0 +1,43 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/classify-fixed-property-fixtures-as-deterministic-corpora-and-bind-open-generated-claims-to-exact-source-harnesses-7fa532d92f0b.yaml
+intent:
+  summary: Bind the semantic property declaration corpus to the existing RMS verification command.
+laws: null
+contracts: null
+properties:
+  add: []
+  set:
+  - id: semantic-property-declarations-have-oracles
+    proves: semantic-properties-are-canonical-reliability-evidence
+    kind: invariant
+    subject: semantic-property-model
+    input_space:
+      semantic_changes: rms/semantic-change/v0.1 objects with properties.add entries
+      implementation_bindings: implementation.yaml files with architecture.reliability properties or fuzz_targets
+    preconditions: []
+    operation: null
+    oracle:
+    - every property names what it proves
+    - every property declares an input space
+    - every property declares at least one oracle
+    - property and fuzz targets reference concrete evidence
+    - counterexamples carry replay metadata
+    evidence:
+      kind: property
+      path: verification/properties/semantic_properties.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  remove: []
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null

@@ -34,6 +34,10 @@ export function createRulesEffectExecutor(options = {}) {
   });
 }
 
+export function executeRulesBridge(effect) {
+  return createRulesEffectExecutor().execute(effect);
+}
+
 export function createRulesPort(overrides = {}) {
   if (overrides.execute) return Object.freeze({ execute: overrides.execute });
   if (overrides.applyMove) {

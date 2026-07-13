@@ -1,114 +1,113 @@
 spec: rms/module/v0.1
-
 module:
-  name: "tic-tac-toe-cli"
+  name: tic-tac-toe-cli
   version: 0.1.0
-  kind: "adapter"
-  purpose: "Parse local command-line Tic-Tac-Toe input and adapt it to the rules engine"
-
+  kind: adapter
+  purpose: Parse local command-line Tic-Tac-Toe input and adapt it to the rules engine
 profiles:
-  - "boundary"
-  - "core"
-
+- boundary
+- core
 owns:
   concepts:
-    - CLI move input
-    - Parsed move command
-    - Rules engine port
+  - CLI move input
+  - Parsed move command
+  - Rules engine port
   data: []
   decisions:
-    - move input parsing
-    - malformed input rejection
-    - rules command delegation
-
+  - move input parsing
+  - malformed input rejection
+  - rules command delegation
 provides:
   commands:
-    - name: play-tic-tac-toe
-      contract: contracts/play-tic-tac-toe.v1.yaml
+  - name: play-tic-tac-toe
+    contract: contracts/play-tic-tac-toe.v1.yaml
   queries: []
   events: []
   capabilities: []
-
 requires:
   modules:
-    - name: tic-tac-toe-rules
+  - name: tic-tac-toe-rules
   capabilities:
-    - name: apply-move
-
+  - name: apply-move
 invariants: []
-
 effects:
-  - name: local-cli-io
-    kind: local-ui
-    semantics:
-      scope: current process stdin/stdout
-      persistence: none
-      network: none
-  - name: rules-engine-bridge
-    kind: local-process
-    semantics:
-      scope: invokes the local Rust rules bridge for the declared tic-tac-toe-rules module dependency
-      persistence: none
-      network: none
-
+- name: local-cli-io
+  kind: local-ui
+  semantics:
+    scope: current process stdin/stdout
+    persistence: none
+    network: none
+- name: rules-engine-bridge
+  kind: local-process
+  semantics:
+    scope: invokes the local Rust rules bridge for the declared tic-tac-toe-rules module dependency
+    persistence: none
+    network: none
 boundary:
   trust_boundary: local-command-line-input
   inputs:
-    - move text such as `A1`, `b2`, or `3,3`
+  - move text such as `A1`, `b2`, or `3,3`
   validation:
-    - Unknown coordinate syntax is rejected before rules delegation.
-    - Out-of-board coordinates are rejected before rules delegation.
+  - Unknown coordinate syntax is rejected before rules delegation.
+  - Out-of-board coordinates are rejected before rules delegation.
   outputs:
-    - accepted parsed move command
-    - malformed-input rejection
-    - delegated rules result
+  - accepted parsed move command
+  - malformed-input rejection
+  - delegated rules result
   limits:
-    - No network calls.
-    - No persistent storage.
-    - The only local subprocess is the rules bridge declared by the implementation binding.
+  - No network calls.
+  - No persistent storage.
+  - The only local subprocess is the rules bridge declared by the implementation binding.
 compatibility:
   policy: backward-compatible-within-major
-
 verification:
   laws:
-    - verification/laws/boundary_parse.md
+  - verification/laws/boundary_parse.md
   contracts:
-    - verification/contracts
+  - verification/contracts
   scenarios:
-    - verification/scenarios
+  - verification/scenarios
   boundaries:
-    - verification/boundaries
+  - verification/boundaries
   traces:
-    - verification/traces
+  - verification/traces
   fuzz:
-    - verification/fuzz/malformed_input_fuzz.md
-
+  - verification/fuzz/malformed_input_fuzz.md
 fuzz_targets:
-  - id: tic-tac-toe-cli-malformed-input-stops-before-domain
-    proves: boundary-parse
-    kind: fuzz
-    input_space:
-      raw_cli_input:
-        - empty string
-        - out-of-board coordinates
-        - valid mixed-case board coordinates
-    operation: handleBoundaryInput
-    oracle:
-      - malformed input returns a typed rejection
-      - malformed input does not delegate to the rules module
-      - accepted input delegates only parsed board cells
-    evidence: verification/fuzz/malformed_input_fuzz.md
-    counterexamples: verification/fuzz/counterexamples
-    realizations:
-      - profile: smoke
-        strategy: generated-property
-        command: fuzz
-
+- id: tic-tac-toe-cli-malformed-input-stops-before-domain
+  proves: boundary-parse
+  kind: fuzz
+  input_space:
+    raw_cli_input:
+    - generated empty and whitespace strings
+    - generated out-of-board coordinates
+    - valid mixed-case board coordinates
+  operation: handleBoundaryInput
+  oracle:
+  - malformed input returns a typed rejection
+  - malformed input does not delegate to the rules module
+  - accepted input delegates only parsed board cells
+  evidence:
+    path: verification/fuzz/malformed_input_fuzz.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: fuzz
+    harness: src/parser.mjs#generateMalformedInputCases
 x-scaffold:
-  shape: "boundary-adapter"
+  shape: boundary-adapter
   roles:
-    - "representation"
-    - "parsers"
-    - "ports"
-    - "adapters"
-    - "boundary-evidence"
+  - representation
+  - parsers
+  - ports
+  - adapters
+  - boundary-evidence
+x-rms:
+  semantic_revision:
+    digest: sha256:46e913f954413572dc009a655f5a4dbd356a4224d19340e46fb8d1041af4ee02
+    change_record: verification/changes/bind-the-boundary-malformed-input-fuzz-claim-to-an-exact-generated-case-harness-84b0e745f2e7.yaml
+    change_record_digest: sha256:84b0e745f2e7a708ded6eae0358183ad47d1dc85139110f9168baa3a4447ae67
+    applied_by: rms spec apply
+  last_semantic_intent: Bind the boundary malformed-input fuzz claim to an exact generated-case harness.

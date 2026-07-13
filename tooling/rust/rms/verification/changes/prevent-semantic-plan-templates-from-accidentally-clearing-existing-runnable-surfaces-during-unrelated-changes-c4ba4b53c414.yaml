@@ -1,0 +1,60 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/make-semantic-function-binding-revisions-a-self-contained-part-of-rms-semantic-planning-27a625588e79.yaml
+intent:
+  summary: Prevent semantic plan templates from accidentally clearing existing runnable surfaces during unrelated changes.
+laws: null
+contracts:
+  add: []
+  set:
+  - name: plan-semantic-change
+    version: '1'
+    command: plan-semantic-change
+    meaning: Render or run a self-contained advisory prompt for a language-neutral RMS semantic-change object.
+    accepts:
+    - a readable module.yaml or implementation.yaml target
+    - product or maintenance intent describing the requested semantic change
+    ensures:
+    - the prompt enumerates allowed invariant authorities and explains how enforced_by binds to semantic functions
+    - the prompt shows exact scalar, list, mapping, and operation cardinalities for contracts, properties, semantic functions, evidence, effect protocols, transitions, roles, and surfaces
+    - the prompt requires a distinct evidence obligation for every changed law and contract
+    - the prompt shows set, add, and remove for every supported semantic category, including semantic-function bindings, and exact structured removal shapes
+    - semantic-function items name exact binding symbols, allowed kinds and purity, discharged promises, assumptions, and categorized evidence
+    - incremental surface templates use a null replacement so unrelated semantic changes preserve existing runnable surfaces
+    - targets without implementation bindings render semantic-function, machine, role, and surface sections as null and direct agents to attach a binding before requesting those changes
+    - the prompt tells agents to rely only on the current project, prompt, and RMS diagnostics
+    rejects:
+    - the target is unreadable or unsupported
+    - task intent is missing
+  - name: apply-semantic-change
+    version: '1'
+    command: apply-semantic-change
+    meaning: Validate and atomically apply language-neutral semantic additions, replacements, and removals, including implementation semantic-function bindings, while sealing the resulting canonical semantic revision.
+    accepts:
+    - one complete rms/semantic-change/v0.1 object targeting a readable module or implementation
+    - named transition cases when one state and input can produce different destinations or outputs
+    - semantic_functions add, set, and remove operations whose ids, symbols, kinds, purity, discharged promises, assumptions, and evidence references are valid for the implementation binding
+    ensures:
+    - canonical module and implementation semantics are updated together with the exact committed change record
+    - the resulting semantic projection carries a deterministic revision digest that changes after direct canonical edits
+    - dry-run reports the complete final intended machine, semantic-function set, and planned writes without mutation
+    - semantic-function operations preserve a unique final id set and update implementation.yaml without direct manifest editing
+    - incremental semantic changes preserve existing runnable surfaces unless a non-empty replacement or explicit named removal requests a surface change
+    rejects:
+    - empty or incomplete semantic changes, unknown references, duplicate ids or transition cases, invalid removal targets, ambiguous empty surface replacement, and incomplete law, contract, property, function, surface, or evidence declarations
+  remove: []
+properties: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: plan-semantic-change
+    path: verification/contracts/plan_semantic_change.md
+  - kind: contract
+    proves: apply-semantic-change
+    path: verification/contracts/apply_semantic_change.md
+surfaces: null
+binding_dependencies: null

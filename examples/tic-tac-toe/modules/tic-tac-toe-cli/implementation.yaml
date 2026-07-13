@@ -27,18 +27,25 @@ architecture:
     - id: tic-tac-toe-cli-malformed-input-stops-before-domain
       proves: boundary-parse
       kind: fuzz
-      input_space: generated local CLI coordinate text
+      input_space:
+        raw_cli_input:
+        - generated empty and whitespace strings
+        - generated out-of-board coordinates
+        - valid mixed-case board coordinates
+      operation: handleBoundaryInput
       oracle:
       - malformed input returns a typed rejection
       - malformed input does not delegate to the rules module
       - accepted input delegates only parsed board cells
-      command: fuzz
+      evidence:
+        path: verification/fuzz/malformed_input_fuzz.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
       realizations:
       - profile: smoke
         strategy: generated-property
         command: fuzz
-      evidence: verification/fuzz/malformed_input_fuzz.md
-      counterexamples: verification/fuzz/counterexamples
+        harness: src/parser.mjs#generateMalformedInputCases
   messages:
     command_envelope:
     - command_id
@@ -73,6 +80,7 @@ architecture:
     - commands
     - effects
     - reply
+    - rejection
   trace:
     journal: verification/traces/boundary_parse.yaml
     timeline_projection: verification/traces/boundary_parse.yaml
@@ -93,6 +101,10 @@ architecture:
       rejection: TicTacToeBoundaryRejection
       transition: TicTacToeBoundaryTransition
       transition_record: TicTacToeBoundaryTransitionRecord
+      command_envelope: TicTacToeBoundaryCommandEnvelope
+      event_envelope: TicTacToeBoundaryEventEnvelope
+      effect_envelope: TicTacToeBoundaryEffectEnvelope
+      effect_result_envelope: TicTacToeBoundaryEffectResultEnvelope
     states:
     - AwaitingInput
     - AwaitingRulesResult
@@ -119,32 +131,47 @@ architecture:
     - IllegalTransition
     effect_protocols:
     - effect: InvokeRulesBridge
-      results: [RulesBridgeSucceeded, RulesBridgeFailed]
+      results:
+      - RulesBridgeSucceeded
+      - RulesBridgeFailed
       executor_role: effect_executor
+      executor_symbol: executeRulesBridge
       atomicity: one-request-one-result
     transition_function: transition
     transitions:
     - from: AwaitingInput
       on: RunMove
       to: AwaitingRulesResult
-      events: [MoveParsed, RulesInvocationRequested]
-      effects: [InvokeRulesBridge]
+      case: RunMove
+      events:
+      - MoveParsed
+      - RulesInvocationRequested
+      effects:
+      - InvokeRulesBridge
       no_reply_justification: the rules bridge result is pending
     - from: AwaitingInput
       on: RunMove
       to: AwaitingInput
-      events: [RunRejected]
+      case: RunRejected
+      events:
+      - RunRejected
       rejection: MalformedInput
     - from: AwaitingRulesResult
       on: RulesBridgeSucceeded
       to: AwaitingInput
-      events: [RulesInvocationCompleted]
+      case: RulesBridgeSucceeded
+      events:
+      - RulesInvocationCompleted
       reply: Accepted
     - from: AwaitingRulesResult
       on: RulesBridgeFailed
       to: AwaitingInput
-      events: [RunRejected]
+      case: RulesBridgeFailed
+      events:
+      - RunRejected
       rejection: RulesBridgeFailure
+    driver_function: driveMachine
+    transition_record_function: transitionRecord
   roles:
     representation:
     - src/representation.mjs
@@ -171,6 +198,8 @@ architecture:
     - verification/traces/boundary_parse.yaml
     runnable_surface:
     - src/adapter.mjs
+    machine_driver:
+    - src/machine_driver.mjs
   representation:
     closed_variants:
     - TicTacToeBoundaryState
@@ -181,6 +210,12 @@ architecture:
     - TicTacToeBoundaryEffectResult
     - TicTacToeBoundaryReply
     - TicTacToeBoundaryRejection
+    - TicTacToeBoundaryCommandEnvelope
+    - TicTacToeBoundaryEffectEnvelope
+    - TicTacToeBoundaryEffectResultEnvelope
+    - TicTacToeBoundaryEventEnvelope
+    - TicTacToeBoundaryTransition
+    - TicTacToeBoundaryTransitionRecord
     validated_values:
     - makeCell
     transition_functions:
@@ -205,6 +240,14 @@ architecture:
     - local-cli-io
     evidence:
     - verification/boundaries/runnable_surface_routes_through_boundary.md
+  allowed_public_field_structs:
+  - TicTacToeBoundaryCommandEnvelope
+  - TicTacToeBoundaryEffectEnvelope
+  - TicTacToeBoundaryEffectResultEnvelope
+  - TicTacToeBoundaryEventEnvelope
+  - TicTacToeBoundarySourceProvenance
+  - TicTacToeBoundaryTransition
+  - TicTacToeBoundaryTransitionRecord
 semantic_functions:
 - id: cell-parser
   symbol: src/representation.mjs#makeCell
@@ -263,3 +306,13 @@ semantic_functions:
   evidence:
     contracts:
     - verification/contracts/play_tic_tac_toe.md
+- id: invokerulesbridge-effect-executor
+  symbol: executeRulesBridge
+  kind: effect-executor
+  purity: effectful
+x-rms:
+  semantic_revision:
+    digest: sha256:46e913f954413572dc009a655f5a4dbd356a4224d19340e46fb8d1041af4ee02
+    change_record: verification/changes/bind-the-boundary-malformed-input-fuzz-claim-to-an-exact-generated-case-harness-84b0e745f2e7.yaml
+    change_record_digest: sha256:84b0e745f2e7a708ded6eae0358183ad47d1dc85139110f9168baa3a4447ae67
+    applied_by: rms spec apply

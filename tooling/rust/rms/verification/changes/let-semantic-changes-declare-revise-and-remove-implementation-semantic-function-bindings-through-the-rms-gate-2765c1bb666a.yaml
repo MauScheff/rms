@@ -1,0 +1,47 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/bind-the-semantic-property-declaration-corpus-to-the-existing-rms-verification-command-0cb89d6f7cd5.yaml
+intent:
+  summary: Let semantic changes declare, revise, and remove implementation semantic-function bindings through the RMS gate.
+laws:
+  add:
+  - id: semantic-function-bindings-are-cli-applied
+    statement: Implementation semantic-function bindings are added, replaced, or removed only through validated RMS semantic changes so authority, symbol, and evidence ownership remain sealed with canonical semantics.
+    kind: invariant
+    authority: effect-executor
+    enforced_by: semantic-change-apply-command
+  set: []
+  remove: []
+contracts:
+  add: []
+  set:
+  - name: apply-semantic-change
+    version: v1
+    command: apply-semantic-change
+    meaning: Validate and atomically apply language-neutral semantic additions, replacements, and removals, including implementation semantic-function bindings, while sealing the resulting canonical semantic revision.
+    accepts:
+    - one complete rms/semantic-change/v0.1 object targeting a readable module or implementation
+    - named transition cases when one state and input can produce different destinations or outputs
+    - semantic_functions add, set, and remove operations whose ids, symbols, kinds, purity, discharged promises, assumptions, and evidence references are valid for the implementation binding
+    ensures:
+    - canonical module and implementation semantics are updated together with the exact committed change record
+    - the resulting semantic projection carries a deterministic revision digest that changes after direct canonical edits
+    - dry-run reports the complete final intended machine and planned writes without mutation
+    - semantic-function operations preserve a unique final id set and update implementation.yaml without direct manifest editing
+    rejects:
+    - empty or incomplete semantic changes, unknown references, duplicate ids or transition cases, invalid removal targets, and incomplete law, contract, property, function, surface, or evidence declarations
+  remove: []
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: semantic-function-bindings-are-cli-applied
+    path: verification/laws/semantic_function_bindings_are_cli_applied.md
+  - kind: contract
+    proves: apply-semantic-change
+    path: verification/contracts/apply_semantic_change.md
+surfaces: null
+binding_dependencies: null

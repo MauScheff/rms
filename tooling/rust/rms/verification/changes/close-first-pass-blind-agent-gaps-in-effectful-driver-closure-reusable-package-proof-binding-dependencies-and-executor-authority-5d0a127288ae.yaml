@@ -1,0 +1,48 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Close first-pass blind-agent gaps in effectful driver closure, reusable package proof, binding dependencies, and executor authority.
+laws:
+  add:
+  - id: binding-dependencies-are-adapter-realized
+    statement: RMS binding adapters realize declared local implementation dependencies idiomatically and normalize equivalent binding-native package and import names.
+    kind: invariant
+    authority: effect-executor
+    enforced_by: add-rms-capability-command
+  - id: reusable-package-proof-is-cli-recorded
+    statement: Successful RMS package construction and verification records a concrete reusable-package result in the owning module evidence.
+    kind: invariant
+    authority: effect-executor
+    enforced_by: package-module-command
+  - id: effect-executors-are-semantic-functions
+    statement: Declared effect protocol executor symbols are represented as effect-executor semantic functions with effectful purity.
+    kind: invariant
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  set:
+  - id: runnable-effects-are-transition-driven
+    statement: An effectful runnable surface routes repeated transition, effect execution, effect-result feedback, and progress policy through its exact machine driver even when public and machine command names differ.
+    kind: invariant
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  remove: []
+contracts: null
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: runnable-effects-are-transition-driven
+    path: verification/laws/effectful_surface_driver_closure.md
+  - kind: law
+    proves: binding-dependencies-are-adapter-realized
+    path: verification/laws/binding_dependency_realization.md
+  - kind: law
+    proves: reusable-package-proof-is-cli-recorded
+    path: verification/laws/reusable_package_proof_recording.md
+  - kind: law
+    proves: effect-executors-are-semantic-functions
+    path: verification/laws/effect_executor_semantic_authority.md
+surfaces: null

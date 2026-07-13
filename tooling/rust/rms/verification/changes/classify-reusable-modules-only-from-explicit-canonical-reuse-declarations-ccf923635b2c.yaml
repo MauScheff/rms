@@ -1,0 +1,25 @@
+spec: rms/semantic-change/v0.1
+module: null
+supersedes: []
+intent:
+  summary: Classify reusable modules only from explicit canonical reuse declarations.
+laws:
+  add:
+  - id: reusable-intent-is-explicit
+    statement: Reusable capability and package-proof obligations apply only when a module explicitly declares reusable intent; incidental prose and semantic-change history do not create reuse semantics.
+    kind: invariant
+    authority: parser
+    enforced_by: validate-rms-artifacts-command
+  set: []
+  remove: []
+contracts: null
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: reusable-intent-is-explicit
+    path: verification/laws/reusable_intent_classification.md
+surfaces: null
+binding_dependencies: null

@@ -30,7 +30,8 @@ description: Inspect an RMS module before planning or changing it; use when owne
    - suspected gaps or drift.
    - binding type mappings versus actual semantic alternatives;
    - canonical input categories and effect request/result protocols;
-   - exact machine driver and effect executor symbols, plus whether each effect-emitting runnable command reaches that driver;
+   - exact machine driver, transition-record, and effect executor symbols, plus whether live execution retains complete records and each effect-emitting runnable surface reaches that driver and leaves the complete repeated transition/effect/result cycle inside it even when public and machine command names differ;
+   - declared transition cases versus source branches, lifecycle-state reachability from `initial_state`, and whether trace provenance names the declared transition source rather than an evidence artifact;
    - whether any executor hides sequencing, retry, compensation, or state progression.
 8. For a proposed task, identify the owning module and the smallest affected contract surface.
 9. Identify whether the task should use:

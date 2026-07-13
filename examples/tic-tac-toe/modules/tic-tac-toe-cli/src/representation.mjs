@@ -30,6 +30,12 @@ export function runMove(text) {
 
 export const TicTacToeBoundaryCommand = Object.freeze({ RunMove: runMove });
 
+export function commandEnvelope(metadata, command) {
+  return Object.freeze({ tag: "TicTacToeBoundaryCommandEnvelope", ...metadata, command });
+}
+
+export const TicTacToeBoundaryCommandEnvelope = Object.freeze({ create: commandEnvelope });
+
 export function commandInput(command) {
   return Object.freeze({ tag: "Command", command });
 }
@@ -70,6 +76,12 @@ export const TicTacToeBoundaryEvent = Object.freeze({
   RunRejected: runRejected,
 });
 
+export function eventEnvelope(metadata, event) {
+  return Object.freeze({ tag: "TicTacToeBoundaryEventEnvelope", ...metadata, event });
+}
+
+export const TicTacToeBoundaryEventEnvelope = Object.freeze({ create: eventEnvelope });
+
 export function invokeRulesBridge(acceptedMoveIndexes, move) {
   return Object.freeze({
     tag: "InvokeRulesBridge",
@@ -82,6 +94,12 @@ export const TicTacToeBoundaryEffect = Object.freeze({
   InvokeRulesBridge: invokeRulesBridge,
 });
 
+export function effectEnvelope(metadata, effect) {
+  return Object.freeze({ tag: "TicTacToeBoundaryEffectEnvelope", ...metadata, effect });
+}
+
+export const TicTacToeBoundaryEffectEnvelope = Object.freeze({ create: effectEnvelope });
+
 export function rulesBridgeSucceeded(result) {
   return Object.freeze({ tag: "RulesBridgeSucceeded", result });
 }
@@ -93,6 +111,18 @@ export function rulesBridgeFailed(reason) {
 export const TicTacToeBoundaryEffectResult = Object.freeze({
   RulesBridgeSucceeded: rulesBridgeSucceeded,
   RulesBridgeFailed: rulesBridgeFailed,
+});
+
+export function effectResultEnvelope(metadata, effectResult) {
+  return Object.freeze({
+    tag: "TicTacToeBoundaryEffectResultEnvelope",
+    ...metadata,
+    effectResult,
+  });
+}
+
+export const TicTacToeBoundaryEffectResultEnvelope = Object.freeze({
+  create: effectResultEnvelope,
 });
 
 export function accepted(value) {
@@ -132,7 +162,7 @@ export function transitionRecord(stateBefore, input, output, branch) {
     state_after: output.next_state,
     input,
     output,
-    source: Object.freeze({ file: "src/transition.mjs", function: "transition", branch }),
+    source: Object.freeze({ file: "src/transition.mjs", function: "transitionRecord", branch }),
   });
 }
 

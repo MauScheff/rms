@@ -1,18 +1,28 @@
 spec: rms/contract/v0.1
-name: package-module
+name: "package-module"
 version: 1
 kind: command
-meaning: Assemble a portable RMS module package from a module manifest, referenced artifacts, implementation binding, and generated metadata.
+meaning: "Assemble and verify a portable RMS module package and record concrete reusable-package proof when the module declares reusable intent."
 preconditions:
-  - id: target-module-valid
-    statement: The target module manifest is readable and passes validation.
+  - id: "accepts-1"
+    statement: "a valid RMS module manifest with readable referenced artifacts"
+  - id: "accepts-2"
+    statement: "an absent output directory or an existing output explicitly allowed for replacement"
 postconditions:
-  - id: package-identifies-sources
-    statement: The package contains metadata identifying included files, sizes, checksums, validator identity, and source revision when available.
+  - id: "ensures-1"
+    statement: "package metadata identifies payload files sizes checksums validator identity and source revision"
+  - id: "ensures-2"
+    statement: "the assembled package passes deterministic package verification before success is reported"
+  - id: "ensures-3"
+    statement: "reusable package evidence records the successful result and the final rebuilt artifact includes that proof"
 failure_categories:
-  - id: unsafe-overwrite
-    statement: The output directory already exists and force was not requested.
-  - id: invalid-source-artifact
-    statement: A required source artifact is missing or invalid.
+  - id: "rejects-1"
+    statement: "invalid or missing source artifacts"
+  - id: "rejects-2"
+    statement: "unsafe output overwrite without force"
+  - id: "rejects-3"
+    statement: "package verification failure"
+  - id: "rejects-4"
+    statement: "reusable evidence recording or final rebuild failure"
 compatibility:
   policy: backward-compatible-within-major

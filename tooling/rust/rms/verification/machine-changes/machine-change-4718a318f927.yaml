@@ -1,0 +1,61 @@
+spec: rms/machine-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+machine:
+  mode: boundary-machine
+  justification: null
+  transition_signature: state-and-input
+  driver_function: drive_rms_workbench
+  transition_record_function: transition_record
+  types:
+    state: RmsWorkbenchState
+    input: RmsWorkbenchInput
+    command: RmsWorkbenchCommand
+    command_envelope: RmsWorkbenchCommandEnvelope
+    event: RmsWorkbenchEvent
+    event_envelope: RmsWorkbenchEventEnvelope
+    effect: RmsWorkbenchEffect
+    effect_envelope: RmsWorkbenchEffectEnvelope
+    effect_result: RmsWorkbenchEffectResult
+    effect_result_envelope: RmsWorkbenchEffectResultEnvelope
+    reply: RmsWorkbenchReply
+    rejection: RmsWorkbenchRejection
+    transition: RmsWorkbenchTransition
+    transition_record: RmsWorkbenchTransitionRecord
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+transitions: null
+roles: null

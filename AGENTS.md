@@ -31,6 +31,8 @@ Core rule:
 | App, CLI, UI, HTTP, batch, executable entrypoint | `rms surface apply/check` |
 | Module boundary or public capability | `rms design` then `rms add-module` or `rms add-capability` |
 | Implementation realization for a semantic-only module | `rms add-binding <module.yaml> --binding <binding>` |
+| Local implementation dependency | `rms spec apply` with language-neutral `binding_dependencies` |
+| Semantic function owner, symbol, purity, or discharged promise | `rms spec apply` with `semantic_functions.add/set/remove` |
 | Declared role body only | Edit the role body, then verify |
 
 Machine rules:
@@ -38,11 +40,16 @@ Machine rules:
 - `architecture.machine.types` names binding containers; semantic lists name actual cases.
 - Stateful, boundary, workflow, storage, integration, and projection machines use `transition(state, input)`.
 - The input ADT closes over commands, observed events, and effect results; each case belongs to exactly one category.
-- Every canonical transition declares a stable `case`; distinct outcomes for the same state/input are separate named cases and replay evidence names the same source branch.
-- An effect executor performs one declared request and returns one declared result. Transitions own sequencing, retry, compensation, stop/continue policy, and state progression.
-- Every effectful stateful machine declares an exact `driver_function` in a `machine_driver` role. The driver advances state only through the canonical transition, invokes exact protocol `executor_symbol` functions, and feeds typed effect results back as machine inputs.
-- Every effect-emitting runnable command delegates to an exact callable that reaches the machine driver. Surfaces and adapters must not hide a second lifecycle loop.
-- Fixed examples are a deterministic corpus, not an open-ended fuzz realization.
+- Every canonical transition declares a stable `case`, and every implemented transition branch is declared. Distinct outcomes for the same state/input are separate named cases; declaration-only and source-only branches are drift.
+- Every declared lifecycle state is reachable from `initial_state` through canonical transitions. Do not make a state look covered by starting a trace inside an otherwise unreachable state.
+- Replay provenance names the declared transition role source file and the exact canonical case. An evidence YAML file is not transition source code.
+- An effect executor performs one declared request and returns one declared result. Each exact protocol `executor_symbol` names its effect in the RMS role declaration and is bound as an effectful `effect-executor` semantic function. Keep its role path separate from transition and machine-driver code. Transitions own sequencing, retry, compensation, stop/continue policy, and state progression.
+- Every effectful stateful machine declares exact `driver_function` and `transition_record_function` callables. The driver retains complete transition records, advances from `state_after`, executes `output.effects`, and feeds typed results back as inputs.
+- Every declared command, event, effect, and effect-result envelope has a binding-native type or tagged constructor; declarations without binding representation are drift.
+- Arithmetic over represented transition inputs, including indices, counters, attempts, offsets, lengths, and sequence values, is checked or bounded so extreme inputs become explicit rejection rather than overflow, panic, or trap.
+- Every effect-emitting runnable surface delegates to an exact callable that reaches the machine driver. The driver owns the complete repeated transition/effect/result cycle until reply, rejection, or a declared waiting state; surfaces and adapters must not loop around a one-step driver, even when public and machine command names differ.
+- Fixed examples are a deterministic corpus, not an open-ended fuzz realization. `generated-property`, `deterministic-exhaustive`, `coverage-fuzzer`, and `model-checker` realizations name an exact binding `path#symbol` harness.
+- Property evidence emitted by `rms spec apply` is an obligation, not proof. Replace it with the exact executed command, observed result, and counterexample or coverage summary before production audit. Revise property semantics through `properties.set/remove`, not direct manifest edits.
 
 You can:
 
@@ -54,11 +61,12 @@ You can:
 
 You cannot:
 
-- hand-create laws, contracts, public commands, states, events, effects, effect results, transitions, semantic roles, runnable surfaces, public entrypoints, or evidence obligations;
+- hand-create laws, contracts, public commands, states, events, effects, effect results, transitions, semantic roles, semantic-function bindings, runnable surfaces, public entrypoints, or evidence obligations;
 - implement real product behavior only in an undeclared runnable surface while the declared machine remains generic;
 - bypass another module's public contract or a module's declared public entrypoint;
 - import another module's private role files such as representation, transition, parser, adapter internals, or native package exports that bypass the RMS public facade;
 - treat provider output, generated reports, or command logs as semantic authority until RMS canonical artifacts reflect them.
+- treat generated package, build, dependency, or atlas output as live project semantics; author canonical artifacts only in source-owned module paths.
 
 ## Before Changing Behavior
 
@@ -80,11 +88,12 @@ Use these advisory workbench commands when they match the task:
 - `rms evolve-contract <module.yaml> --task "<task>"`
 - `rms evidence <module.yaml> --task "<task>"`
 - `rms refactor <module.yaml> --task "<task>"`
-- `rms spec plan <module.yaml|implementation.yaml> --task "<task>"` when a change needs new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, public entrypoints, or evidence obligations
-- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics, record the exact applied change, and seal the resulting semantic revision; use `contracts.set` to replace generated contract scaffolds with product-specific meaning, accepted inputs, guaranteed outcomes, and rejection categories; use `set`, `remove`, and `supersedes` to revise semantics instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
+- `rms spec plan <module.yaml|implementation.yaml> --task "<task>"` when a change needs new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, semantic-function bindings, public entrypoints, binding dependencies, or evidence obligations
+- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics, record and hash-seal the exact applied change, and automatically supersede every currently active semantic revision; use `semantic_functions.add/set/remove` for exact binding symbols, authority owners, purity, discharged promises, and evidence; `binding_dependencies` names RMS modules and lets the binding adapter realize native dependency metadata; use `contracts.set` to replace generated contract scaffolds with product-specific meaning, accepted inputs, guaranteed outcomes, and rejection categories; use `set`, `remove`, and explicit `supersedes` only for additional non-local branches instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
 - `rms spec check <module.yaml|implementation.yaml>` after semantic changes
 - `rms machine plan/apply/check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct
 - `rms surface apply/check <implementation.yaml>` when adding or changing app, UI, CLI, browser, HTTP, batch, or executable entrypoints; browser-style surfaces should distinguish controller `entrypoint` from host `launch_entrypoint`, and declare intentional local launch scripts with `--launch-script`
+- In semantic-change objects, keep `surfaces.set: null` when surfaces are unchanged. Remove intentional surfaces by name; an empty replacement is rejected because it can erase runnable entrypoints accidentally.
 - `rms structure <implementation.yaml>` when implementation inner roles, machine declarations, or evidence placeholders are unclear
 - `rms review <module.yaml> --impact`
 
@@ -118,10 +127,10 @@ Naming rule: choose module and inner role names from product/capability language
 
 Before writing implementation code, make the user's intent concrete enough to encode:
 
-- Semantic gate: do not hand-create laws, contracts, semantic roles, states, commands, events, effects, transition functions, parsers, runnable surfaces, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply` and `rms surface apply`, then edit the declared role bodies. Use semantic `set`, `remove`, and `supersedes` operations for revisions instead of manual manifest surgery.
+- Semantic gate: do not hand-create laws, contracts, semantic roles, semantic-function bindings, states, commands, events, effects, transition functions, parsers, runnable surfaces, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply` and `rms surface apply`, then edit the declared role bodies. Use `semantic_functions.add/set/remove` when an authority owner, exact symbol, purity, discharged promise, or evidence binding changes. Use semantic `set` and `remove` operations instead of manual manifest surgery. `rms spec apply` automatically closes every currently active semantic revision; use explicit `supersedes` only for additional non-local branches. Never edit or delete an applied change record.
 - Apply gate: run semantic or machine apply with `--dry-run` first. Do not write product code while `final_machine` still contains generic scaffold variants or omits real branches. Machine apply preserves evidence roles but does not generate replay proof; update and replay them from implemented paths. Direct edits after apply invalidate the semantic revision and strict audit.
 - Public surface gate: generated capability contracts are scaffold obligations, not production semantics. Replace them through `rms spec apply` with `contracts.set` before implementation. Public commands in `module.yaml` must be represented by the declared implementation surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
-- Reuse gate: reusable modules publish capabilities and contracts first, expose one declared public facade, and prove package integrity with `rms package` plus `rms verify-package`. Consumers must require the capability contract and import only the public facade.
+- Reuse gate: reusable modules publish capabilities and contracts first and expose one declared public facade. `rms package` builds, verifies, records the concrete result, rebuilds, and verifies the final artifact; expected-result prose alone is not proof. Consumers must require the capability contract and import only the public facade.
 - Property gate: laws that say always, never, bounded, ordered, normalized, parsed, generated, impossible, or must not happen should declare semantic properties with input spaces, oracles, evidence, and counterexample replay policy before relying on binding tests.
 - Intent: restate the behavior in the owning context's language and name what must never happen.
 - ADTs and values: define closed variants, validated values, commands, states, events, and accepted/rejected result types.
@@ -140,7 +149,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Keep changes inside the owning module boundary.
 - Edit bodies inside RMS-declared role files. Add small private pure helpers inside declared pure role files when useful.
 - Do not add private IO helpers in pure roles. Filesystem, network, clocks, randomness, environment, processes, provider calls, and external services must be declared effects with effect results and executed only in adapter, port, or effect-executor roles.
-- For effectful stateful behavior, keep the execution chain explicit: runnable callable -> machine driver -> pure transition -> exact one-request executor -> typed effect result -> machine driver.
+- For effectful stateful behavior, keep the execution chain explicit: runnable callable -> machine driver -> pure transition record -> exact one-request executor -> typed effect result -> machine driver. The driver retains complete records, advances from `state_after`, and owns the whole repeated cycle; do not put an outer lifecycle loop in the runnable surface.
 - When new semantic structure is needed, run `rms spec plan/apply/check` instead of inventing files or naming schemes directly. Use `rms machine plan/apply/check` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct.
 - Change public contracts or manifests before code when public meaning changes.
 - Declare new effects, dependencies, profiles, state, migration, compatibility impact, and recovery paths before relying on them.
@@ -149,7 +158,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Do not use role-derived inner names such as `<Domain>RulesMachine`, `<Domain>AdapterMachine`, `<Domain>CliMachine`, or `<Domain>WebMachine`; prefer `<Domain>Machine` for pure decisions and `<Domain>BoundaryMachine` only when a boundary state/transition role is useful.
 - Keep pure transitions separate from representation definitions, and keep boundary parsing separate from both.
 - Replace generated role files incrementally. Do not delete a declared role file and leave the project invalid while hand-building a replacement; add the replacement first or keep the old file until `rms structure <implementation.yaml>` and the binding's syntax check can run.
-- When replacing generated role code, update `implementation.yaml` in the same change so `architecture.roles`, `architecture.machine`, `architecture.representation`, and `semantic_functions` name the actual files and symbols.
+- When replacing generated role code, use RMS apply commands so `architecture.roles`, `architecture.machine`, `architecture.representation`, and `semantic_functions` name the actual files and symbols. Do not repair these canonical declarations by direct manifest editing.
 - Prefer ADTs, sealed variants, enums, opaque values, validated constructors, explicit result/rejection types, schemas at untrusted boundaries, and focused tests.
 - Do not add domain structs to `allowed_public_field_structs` to silence constructor diagnostics. That exemption is only for declared envelopes, transition outputs, transition records, and source-provenance records; domain values keep private fields and validated constructors.
 - Use state machines or transition functions when behavior depends on lifecycle or order; illegal transitions must be rejected or made unrepresentable.
@@ -182,7 +191,7 @@ Run the smallest checks that prove the changed promise:
 - `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, or `rms trace diagnose <trace-bundle>` when local transition evidence exists.
 - `rms property check <module.yaml|implementation.yaml>`, `rms property run <implementation.yaml>`, or `rms property replay <counterexample.yaml>` when laws, parsers, numeric bounds, reusable modules, or generated counterexamples are involved.
 - `rms verify <implementation.yaml>` when the module has an implementation binding, or `rms verify <composite-module.yaml>` for composite rollups.
-- `rms package <module.yaml>` and `rms verify-package <package-dir>` when a module is intended for reuse outside its current owner.
+- `rms package <module.yaml>` when a module is intended for reuse outside its current owner; it records concrete package proof. Use `rms verify-package <package-dir>` for an independent recheck.
 - `rms gate --root .` when reviewing a working-tree change.
 - `rms audit --root . --strict` before claiming production-ready RMS software.
 
