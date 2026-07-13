@@ -2943,8 +2943,10 @@ struct GatePlan {
 #[derive(Clone, Debug)]
 enum GateCheckAction {
     ValidateRoot,
+    StrictStructuralPreflight,
     ComposeRoot,
     VerifyTarget(PathBuf),
+    RequireSourceRevision,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -3049,6 +3051,7 @@ impl PromptKind {
             ],
             PromptKind::Design => &[
                 "Treat RMS design output as advisory until module manifests, contracts, implementation bindings, semantic-change applications, and focused machine-change applications reflect it.",
+                "Treat deterministic design hints as the scaffold decision: when they recommend a recursive capability, use `rms add-capability`; use one module only for explicit library-only intent or a canonically recorded single-module exception.",
                 "Start from system purpose, contexts, existing modules, glossary language, and the requested task.",
                 "Propose the smallest honest module set; do not create a module for every noun.",
                 "Assign each module a semantic shape: domain-engine, boundary-adapter, runtime-monitor, workflow, storage-adapter, integration-adapter, or composite.",
@@ -3088,6 +3091,7 @@ impl PromptKind {
             ],
             PromptKind::Implement => &[
                 "RMS owns semantics and architecture, and agents fill declared roles: use `rms spec plan/apply/check` when laws, contracts, machine structure, runnable surfaces, effects, or evidence obligations change, then edit only declared role files.",
+                "Never repair canonical manifests, contracts, roles, surfaces, or evidence declarations by direct editing. If an RMS apply command cannot express the required change, stop and report that RMS gap.",
                 "Restate the requested outcome in the owning context's domain language.",
                 "Check whether accepted intent and rationale already exist for this semantic change; if not, stop and run intent capture before coding.",
                 "Classify the change as private implementation, invariant or domain policy, public contract, dependency or effect, state or migration, or workflow.",
@@ -4755,13 +4759,19 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
                 &bin_dir,
             )?,
         )?;
-        run_release_step(
-            "clean-room dogfood git init",
-            command_with_path("git", &["init"], &app, &bin_dir)?,
-        )?;
-        run_release_step(
-            "clean-room dogfood gate",
+        let scaffold_gate = run_release_step_expect_failure(
+            "clean-room dogfood scaffold gate rejection",
             command_with_path("rms", &["gate", "--root", "."], &app, &bin_dir)?,
+        )?;
+        ensure_output_contains(
+            "clean-room dogfood scaffold gate rejection",
+            &scaffold_gate,
+            "semantic.contract-scaffold-active",
+        )?;
+        ensure_output_contains(
+            "clean-room dogfood scaffold gate rejection",
+            &scaffold_gate,
+            "semantic.revision-missing",
         )?;
         Ok(())
     })();
@@ -4903,6 +4913,21 @@ fn run_release_step_capture(label: &str, mut command: Command) -> Result<String>
     println!("pass");
     println!();
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn run_release_step_expect_failure(label: &str, mut command: Command) -> Result<String> {
+    println!("## {label}");
+    let output = command
+        .output()
+        .with_context(|| format!("failed to start release check step `{label}`"))?;
+    if output.status.success() {
+        bail!("release check step `{label}` unexpectedly succeeded");
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    println!("pass: rejected as expected");
+    println!();
+    Ok(format!("{stdout}\n{stderr}"))
 }
 
 fn ensure_output_contains(label: &str, output: &str, needle: &str) -> Result<()> {
@@ -6669,6 +6694,7 @@ fn render_design_prompt(root: &Path, task: &str) -> Result<String> {
     writeln!(out)?;
     writeln!(out, "## Operating Rule")?;
     writeln!(out, "Use RMS canonical artifacts as the source of architectural truth. Use design output as advisory evidence until reflected in system, context, module, contract, implementation, and verification artifacts.")?;
+    writeln!(out, "Execution rule: deterministic design hints choose the initial scaffold. If they recommend the composite/domain/boundary tree, use `rms add-capability`; do not replace it with one module merely to save work. A single-module exception requires explicit user intent and canonical justification.")?;
     writeln!(out, "Product intent is enough input from the user: ask clarifying questions only when needed, surface semantic edge cases, name what must never happen, and propose laws, contracts, machines, effects, rejections, and evidence before code.")?;
     writeln!(out, "For external truth, decide what happens when outcomes are unknown, duplicate, stale, partial, conflicting, delayed, or later corrected; use reconciliation or recovery evidence when those cases matter.")?;
     writeln!(out)?;
@@ -10079,6 +10105,13 @@ fn build_nongit_gate_plan(root: &Path) -> Result<GatePlan> {
         &mut executable_checks,
         &mut actions,
         &mut seen_executable,
+        "strict RMS structural preflight".to_string(),
+        GateCheckAction::StrictStructuralPreflight,
+    );
+    push_gate_check(
+        &mut executable_checks,
+        &mut actions,
+        &mut seen_executable,
         format!("rms compose --root {}", root.display()),
         GateCheckAction::ComposeRoot,
     );
@@ -10102,6 +10135,14 @@ fn build_nongit_gate_plan(root: &Path) -> Result<GatePlan> {
             GateCheckAction::VerifyTarget(target),
         );
     }
+
+    push_gate_check(
+        &mut executable_checks,
+        &mut actions,
+        &mut seen_executable,
+        "resolve RMS source revision".to_string(),
+        GateCheckAction::RequireSourceRevision,
+    );
 
     affected_modules.sort();
     affected_modules.dedup();
@@ -10149,6 +10190,13 @@ fn build_gate_plan(root: &Path, diff: Option<&str>, impact: &ImpactReport) -> Ga
             &mut seen_executable,
             format!("rms validate --root {}", root.display()),
             GateCheckAction::ValidateRoot,
+        );
+        push_gate_check(
+            &mut executable_checks,
+            &mut actions,
+            &mut seen_executable,
+            "strict RMS structural preflight".to_string(),
+            GateCheckAction::StrictStructuralPreflight,
         );
 
         if impact.changed_paths.iter().any(|path| {
@@ -10231,16 +10279,20 @@ fn build_gate_plan(root: &Path, diff: Option<&str>, impact: &ImpactReport) -> Ga
         }
     }
 
+    if impact.source_revision.is_none() {
+        push_gate_check(
+            &mut executable_checks,
+            &mut actions,
+            &mut seen_executable,
+            "resolve RMS source revision".to_string(),
+            GateCheckAction::RequireSourceRevision,
+        );
+    }
     let result = if executable_checks.is_empty() {
         GateResult::Pass
     } else {
         GateResult::Pending
     };
-    if impact.source_revision.is_none() && git_worktree_exists(root) {
-        manual_checks.insert(
-            "Strict audit cannot pass until the project has a git source revision; commit the production candidate before running `rms audit --root . --strict`.".to_string(),
-        );
-    }
 
     GatePlan {
         report: GateReport {
@@ -10338,6 +10390,7 @@ fn run_gate_action(root: &Path, action: &GateCheckAction) -> Result<String> {
             }
             Ok(format!("{warnings} warning(s), no validation errors"))
         }
+        GateCheckAction::StrictStructuralPreflight => run_gate_structural_preflight(root),
         GateCheckAction::ComposeRoot => {
             let report = compose_system(root)?;
             if report.result == ComposeResult::Fail {
@@ -10352,7 +10405,59 @@ fn run_gate_action(root: &Path, action: &GateCheckAction) -> Result<String> {
             ))
         }
         GateCheckAction::VerifyTarget(target) => run_verify_target_captured(&root.join(target)),
+        GateCheckAction::RequireSourceRevision => source_revision(root)
+            .map(|revision| format!("source revision resolved to `{revision}`"))
+            .ok_or_else(|| {
+                anyhow!(
+                    "source revision is missing; initialize Git if needed, commit the candidate, then rerun `rms gate --root .` and `rms audit --root . --strict`"
+                )
+            }),
     }
+}
+
+fn run_gate_structural_preflight(root: &Path) -> Result<String> {
+    let report = build_audit_report(root, true)?;
+    let blockers = report
+        .checks
+        .iter()
+        .filter(|check| check.result == "fail" && !gate_preflight_ignores(check))
+        .collect::<Vec<_>>();
+    if blockers.is_empty() {
+        return Ok(
+            "no strict semantic or structural blockers; final clean-commit provenance remains for `rms audit --strict`"
+                .to_string(),
+        );
+    }
+
+    let mut labels = blockers
+        .iter()
+        .map(|check| format!("{} ({})", check.id, check.evidence))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let hidden = labels.len().saturating_sub(12);
+    labels.truncate(12);
+    let suffix = if hidden == 0 {
+        String::new()
+    } else {
+        format!(", plus {hidden} more")
+    };
+    bail!(
+        "{} strict semantic or structural blocker(s): {}{}; run `rms audit --root . --strict` for the full report",
+        blockers.len(),
+        labels.join(", "),
+        suffix
+    )
+}
+
+fn gate_preflight_ignores(check: &AuditCheck) -> bool {
+    matches!(
+        check.id.as_str(),
+        "provenance.source-revision"
+            | "audit.worktree-state"
+            | "audit.dirty-production-claim"
+            | "audit.untracked-implementation"
+    )
 }
 
 fn run_verify_target_captured(target: &Path) -> Result<String> {
@@ -12149,6 +12254,8 @@ fn validate_machine_gate_structure(
     }
 
     validate_canonical_machine_model(manifest, diagnostics, shape);
+    validate_transition_semantic_owner(manifest, diagnostics);
+    inspect_transition_role_ownership(manifest, diagnostics);
 
     inspect_scaffold_trace_sources(manifest, diagnostics);
     inspect_parser_role_drift(manifest, diagnostics);
@@ -12161,6 +12268,108 @@ fn validate_machine_gate_structure(
     inspect_public_command_representation(manifest, diagnostics);
     inspect_runnable_surface_declarations(manifest, diagnostics);
     inspect_runnable_surface_boundary_use(manifest, diagnostics);
+}
+
+fn validate_transition_semantic_owner(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(transition_function) = get_str(
+        &manifest.value,
+        &["architecture", "machine", "transition_function"],
+    ) else {
+        return;
+    };
+    let Some(functions) = semantic_function_items(manifest) else {
+        push_unique_warning(
+            diagnostics,
+            "structure.transition-function-semantic-owner-missing",
+            &manifest.path,
+            format!(
+                "canonical transition `{transition_function}` must be declared as a pure transition semantic function"
+            ),
+        );
+        return;
+    };
+    let owner = functions.iter().find(|function| {
+        get_str(function, &["symbol"])
+            .is_some_and(|symbol| semantic_symbol_name(symbol) == transition_function)
+    });
+    let Some(owner) = owner else {
+        push_unique_warning(
+            diagnostics,
+            "structure.transition-function-semantic-owner-missing",
+            &manifest.path,
+            format!(
+                "canonical transition `{transition_function}` must be declared as a pure transition semantic function"
+            ),
+        );
+        return;
+    };
+    let kind = get_str(owner, &["kind"]).unwrap_or("<missing>");
+    let purity = get_str(owner, &["purity"]).unwrap_or("<missing>");
+    if kind != "transition" || purity != "pure" {
+        push_unique_warning(
+            diagnostics,
+            "structure.transition-function-not-pure",
+            &manifest.path,
+            format!(
+                "canonical transition `{transition_function}` is bound as `{kind}`/`{purity}`; transitions must be pure and IO must return through declared effects and effect results"
+            ),
+        );
+    }
+}
+
+fn semantic_symbol_name(symbol: &str) -> &str {
+    let symbol = symbol.rsplit_once('#').map_or(symbol, |(_, name)| name);
+    symbol.rsplit("::").next().unwrap_or(symbol)
+}
+
+fn inspect_transition_role_ownership(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    if get_str(&manifest.value, &["binding"]) == Some("executable") {
+        return;
+    }
+    let Some(transition_function) = get_str(
+        &manifest.value,
+        &["architecture", "machine", "transition_function"],
+    ) else {
+        return;
+    };
+    let role_paths = structure_role_paths(manifest, "transition");
+    if role_paths.is_empty() {
+        return;
+    }
+    let binding = get_str(&manifest.value, &["binding"]).unwrap_or("");
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    if role_paths.iter().any(|reference| {
+        fs::read_to_string(base.join(reference)).is_ok_and(|source| {
+            source_declares_transition_function(binding, &source, transition_function)
+        })
+    }) {
+        return;
+    }
+    push_unique_warning(
+        diagnostics,
+        "structure.transition-function-role-mismatch",
+        &manifest.path,
+        format!(
+            "canonical transition `{transition_function}` is not defined by a declared transition role file; do not point the machine at an adapter or effect executor"
+        ),
+    );
+}
+
+fn source_declares_transition_function(binding: &str, source: &str, function: &str) -> bool {
+    match binding {
+        "rust" => source.contains(&format!("fn {function}")),
+        "swift" => source.contains(&format!("func {function}")),
+        "js" | "javascript" => {
+            source.contains(&format!("function {function}"))
+                || source.contains(&format!("const {function}"))
+                || source.contains(&format!("let {function}"))
+                || source.contains(&format!("var {function}"))
+        }
+        _ => source.contains(function),
+    }
 }
 
 fn validate_canonical_machine_model(
@@ -15939,10 +16148,14 @@ fn inspect_rust_typing_file(
             }
             Item::Impl(item_impl) => collect_rust_impl_methods(item_impl, summary),
             Item::Fn(item_fn) => {
-                summary.functions.insert(item_fn.sig.ident.to_string());
+                let function = item_fn.sig.ident.to_string();
+                summary.functions.insert(function.clone());
                 summary
                     .function_parameter_counts
-                    .insert(item_fn.sig.ident.to_string(), item_fn.sig.inputs.len());
+                    .insert(function.clone(), item_fn.sig.inputs.len());
+                summary
+                    .function_signatures
+                    .insert(function, rust_function_signature(&item_fn.sig));
             }
             _ => {}
         }
@@ -16217,6 +16430,73 @@ fn validate_rust_machine_variants_and_signature(
             ),
         ));
     }
+
+    let Some(signature) = summary.function_signatures.get(function) else {
+        return;
+    };
+    let machine_types = machine_types_from_value(&implementation.value);
+    let expected_parameters = match get_str(
+        &implementation.value,
+        &["architecture", "machine", "transition_signature"],
+    ) {
+        Some("state-and-input") => vec![
+            machine_types.state.as_deref(),
+            machine_types.input.as_deref(),
+        ],
+        Some("input-only") => vec![machine_types
+            .input
+            .as_deref()
+            .or(machine_types.command.as_deref())],
+        _ => Vec::new(),
+    };
+    if !expected_parameters.is_empty()
+        && expected_parameters
+            .iter()
+            .enumerate()
+            .any(|(index, expected)| {
+                expected.is_some_and(|expected| {
+                    signature
+                        .parameter_types
+                        .get(index)
+                        .and_then(Option::as_deref)
+                        != Some(expected)
+                })
+            })
+    {
+        diagnostics.push(error(
+            "structure.stateful-transition-state-input-missing",
+            &implementation.path,
+            format!(
+                "Rust transition `{function}` parameters {:?} do not realize declared canonical types {:?}",
+                signature.parameter_types, expected_parameters
+            ),
+        ));
+    }
+
+    let valid_outputs = [
+        machine_types.transition.as_deref(),
+        machine_types.transition_record.as_deref(),
+    ];
+    if valid_outputs.iter().flatten().next().is_some()
+        && !valid_outputs
+            .iter()
+            .flatten()
+            .any(|expected| signature.return_type.as_deref() == Some(*expected))
+    {
+        diagnostics.push(error(
+            "structure.transition-function-not-transition-shaped",
+            &implementation.path,
+            format!(
+                "Rust transition `{function}` returns {:?}; expected declared transition output `{}` or record `{}`",
+                signature.return_type,
+                machine_types.transition.as_deref().unwrap_or("<missing>"),
+                machine_types
+                    .transition_record
+                    .as_deref()
+                    .unwrap_or("<missing>")
+            ),
+        ));
+    }
 }
 
 fn machine_semantic_variant_fields() -> [(&'static str, &'static str); 8] {
@@ -16383,6 +16663,46 @@ struct RustTypingSummary {
     functions: BTreeSet<String>,
     enum_variants: std::collections::BTreeMap<String, BTreeSet<String>>,
     function_parameter_counts: std::collections::BTreeMap<String, usize>,
+    function_signatures: std::collections::BTreeMap<String, RustFunctionSignature>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct RustFunctionSignature {
+    parameter_types: Vec<Option<String>>,
+    return_type: Option<String>,
+}
+
+fn rust_function_signature(signature: &syn::Signature) -> RustFunctionSignature {
+    let parameter_types = signature
+        .inputs
+        .iter()
+        .map(|argument| match argument {
+            syn::FnArg::Receiver(_) => None,
+            syn::FnArg::Typed(argument) => rust_outer_type_name(&argument.ty),
+        })
+        .collect();
+    let return_type = match &signature.output {
+        syn::ReturnType::Default => None,
+        syn::ReturnType::Type(_, output) => rust_outer_type_name(output),
+    };
+    RustFunctionSignature {
+        parameter_types,
+        return_type,
+    }
+}
+
+fn rust_outer_type_name(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string()),
+        Type::Reference(reference) => rust_outer_type_name(&reference.elem),
+        Type::Group(group) => rust_outer_type_name(&group.elem),
+        Type::Paren(paren) => rust_outer_type_name(&paren.elem),
+        _ => None,
+    }
 }
 
 #[derive(Default)]
@@ -17175,6 +17495,12 @@ fn validate_swift_machine_variants_and_signature(
         }
     }
 
+    let Some(function) = get_str(
+        &implementation.value,
+        &["architecture", "machine", "transition_function"],
+    ) else {
+        return;
+    };
     let expected = match get_str(
         &implementation.value,
         &["architecture", "machine", "transition_signature"],
@@ -17183,13 +17509,70 @@ fn validate_swift_machine_variants_and_signature(
         Some("input-only") => 1,
         _ => return,
     };
-    if let Some(parameters) = source_function_parameter_count(&source, "transition") {
-        if parameters != expected {
+    if let Some(signature) = swift_function_signature(&source, function) {
+        if signature.parameter_types.len() != expected {
             diagnostics.push(error(
                 "structure.stateful-transition-state-input-missing",
                 &implementation.path,
                 format!(
-                    "Swift transition must accept {expected} canonical parameter(s) for the declared transition signature"
+                    "Swift transition `{function}` must accept {expected} canonical parameter(s) for the declared transition signature"
+                ),
+            ));
+        }
+        let machine_types = machine_types_from_value(&implementation.value);
+        let expected_parameters = match get_str(
+            &implementation.value,
+            &["architecture", "machine", "transition_signature"],
+        ) {
+            Some("state-and-input") => vec![
+                machine_types.state.as_deref(),
+                machine_types.input.as_deref(),
+            ],
+            Some("input-only") => vec![machine_types
+                .input
+                .as_deref()
+                .or(machine_types.command.as_deref())],
+            _ => Vec::new(),
+        };
+        if expected_parameters
+            .iter()
+            .enumerate()
+            .any(|(index, expected)| {
+                expected.is_some_and(|expected| {
+                    signature.parameter_types.get(index).map(String::as_str) != Some(expected)
+                })
+            })
+        {
+            diagnostics.push(error(
+                "structure.stateful-transition-state-input-missing",
+                &implementation.path,
+                format!(
+                    "Swift transition `{function}` parameters {:?} do not realize declared canonical types {:?}",
+                    signature.parameter_types, expected_parameters
+                ),
+            ));
+        }
+        let valid_outputs = [
+            machine_types.transition.as_deref(),
+            machine_types.transition_record.as_deref(),
+        ];
+        if valid_outputs.iter().flatten().next().is_some()
+            && !valid_outputs
+                .iter()
+                .flatten()
+                .any(|expected| signature.return_type.as_deref() == Some(*expected))
+        {
+            diagnostics.push(error(
+                "structure.transition-function-not-transition-shaped",
+                &implementation.path,
+                format!(
+                    "Swift transition `{function}` returns {:?}; expected declared transition output `{}` or record `{}`",
+                    signature.return_type,
+                    machine_types.transition.as_deref().unwrap_or("<missing>"),
+                    machine_types
+                        .transition_record
+                        .as_deref()
+                        .unwrap_or("<missing>")
                 ),
             ));
         }
@@ -17218,17 +17601,68 @@ fn swift_enum_body<'a>(source: &'a str, type_name: &str) -> Option<&'a str> {
     None
 }
 
-fn source_function_parameter_count(source: &str, function: &str) -> Option<usize> {
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct SwiftFunctionSignature {
+    parameter_types: Vec<String>,
+    return_type: Option<String>,
+}
+
+fn swift_function_signature(source: &str, function: &str) -> Option<SwiftFunctionSignature> {
     let marker = format!("func {function}(");
     let start = source.find(&marker)? + marker.len();
     let rest = &source[start..];
-    let end = rest.find(')')?;
+    let mut depth = 1_i32;
+    let mut end = None;
+    for (index, character) in rest.char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(index);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let end = end?;
     let parameters = rest[..end].trim();
-    Some(if parameters.is_empty() {
-        0
+    let parameter_types = if parameters.is_empty() {
+        Vec::new()
     } else {
-        parameters.split(',').count()
+        parameters
+            .split(',')
+            .filter_map(|parameter| parameter.rsplit_once(':'))
+            .filter_map(|(_, ty)| binding_type_leaf(ty))
+            .collect()
+    };
+    let after = rest[end + 1..].trim_start();
+    let return_type = after.strip_prefix("->").and_then(|value| {
+        let value = value.split(['{', '\n']).next().unwrap_or(value).trim();
+        binding_type_leaf(value)
+    });
+    Some(SwiftFunctionSignature {
+        parameter_types,
+        return_type,
     })
+}
+
+fn binding_type_leaf(value: &str) -> Option<String> {
+    let value = value
+        .trim()
+        .trim_start_matches("inout ")
+        .trim_start_matches("@escaping ")
+        .trim_end_matches(['?', '!'])
+        .trim();
+    if value.is_empty() {
+        return None;
+    }
+    let value = value.rsplit('.').next().unwrap_or(value);
+    let end = value
+        .find(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .unwrap_or(value.len());
+    (end > 0).then(|| value[..end].to_string())
 }
 
 fn swift_type_exists(summary: &SwiftTypingSummary, symbol: &str) -> bool {
@@ -17339,6 +17773,29 @@ fn validate_js_machine_shape(
             );
         }
     }
+    if expected_parameters == Some(2) {
+        if let Some(parameters) = js_function_parameter_names(function_source, transition_function)
+        {
+            let state_parameter = parameters.first().map(String::as_str).unwrap_or_default();
+            let input_parameter = parameters.get(1).map(String::as_str).unwrap_or_default();
+            if !state_parameter.to_ascii_lowercase().contains("state")
+                || !matches!(
+                    input_parameter.to_ascii_lowercase().as_str(),
+                    value if value.contains("input") || value.contains("message")
+                )
+            {
+                push_unique_warning(
+                    diagnostics,
+                    "structure.stateful-transition-state-input-missing",
+                    &implementation.path,
+                    format!(
+                        "JavaScript transition `{transition_function}` parameters {:?} do not identify the canonical state and closed machine input roles",
+                        parameters
+                    ),
+                );
+            }
+        }
+    }
     let transition_shaped = function_source.contains("next_state")
         && function_source.contains("events")
         && function_source.contains("effects")
@@ -17375,15 +17832,31 @@ fn validate_js_machine_shape(
 }
 
 fn js_function_parameter_count(source: &str, function_name: &str) -> Option<usize> {
+    Some(js_function_parameter_names(source, function_name)?.len())
+}
+
+fn js_function_parameter_names(source: &str, function_name: &str) -> Option<Vec<String>> {
     let function_position = source.find(function_name)? + function_name.len();
     let after = &source[function_position..];
     let open = after.find('(')?;
     let parameters = &after[open + 1..after[open + 1..].find(')')? + open + 1];
     let parameters = parameters.trim();
     Some(if parameters.is_empty() {
-        0
+        Vec::new()
     } else {
-        parameters.split(',').count()
+        parameters
+            .split(',')
+            .map(|parameter| {
+                parameter
+                    .trim()
+                    .trim_start_matches("...")
+                    .split(['=', ':'])
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string()
+            })
+            .collect()
     })
 }
 
@@ -17854,7 +18327,9 @@ fn check_evidence_source_quality(
         );
     }
 
-    if lower.contains("bootstrap")
+    if lower.contains("# bootstrap evidence")
+        || lower.contains("bootstrap scaffold")
+        || lower.contains("bootstrap-only evidence")
         || lower.contains("generated scaffold")
         || lower.contains("scaffold obligations")
     {
@@ -23312,6 +23787,9 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "structure.declared-effect-result-not-represented"
                 | "structure.declared-variant-not-represented"
                 | "structure.transition-function-not-transition-shaped"
+                | "structure.transition-function-semantic-owner-missing"
+                | "structure.transition-function-not-pure"
+                | "structure.transition-function-role-mismatch"
                 | "structure.boundary-machine-reply-only"
                 | "structure.role-symbol-missing"
                 | "structure.adapter-effect-without-port-or-executor"
@@ -25362,6 +25840,45 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
             }
         }
     }
+
+    ensure_transition_semantic_function(value);
+}
+
+fn ensure_transition_semantic_function(value: &mut YamlValue) {
+    let Some(transition_function) =
+        get_str(value, &["architecture", "machine", "transition_function"]).map(str::to_string)
+    else {
+        return;
+    };
+    let mut functions = get_path(value, &["semantic_functions"])
+        .and_then(YamlValue::as_sequence)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(owner) = functions.iter_mut().find(|function| {
+        get_str(function, &["symbol"])
+            .is_some_and(|symbol| semantic_symbol_name(symbol) == transition_function)
+    }) {
+        set_yaml_string_path(owner, &["kind"], "transition");
+        set_yaml_string_path(owner, &["purity"], "pure");
+    } else {
+        let existing_ids = functions
+            .iter()
+            .filter_map(|function| get_str(function, &["id"]))
+            .collect::<BTreeSet<_>>();
+        let mut id = "transition-model".to_string();
+        let mut suffix = 2;
+        while existing_ids.contains(id.as_str()) {
+            id = format!("transition-model-{suffix}");
+            suffix += 1;
+        }
+        let mut owner = YamlValue::Mapping(serde_yaml::Mapping::new());
+        set_yaml_string_path(&mut owner, &["id"], &id);
+        set_yaml_string_path(&mut owner, &["symbol"], &transition_function);
+        set_yaml_string_path(&mut owner, &["kind"], "transition");
+        set_yaml_string_path(&mut owner, &["purity"], "pure");
+        functions.push(owner);
+    }
+    set_yaml_sequence_path(value, &["semantic_functions"], functions);
 }
 
 fn machine_transition_yaml(transition: &MachineTransitionChange) -> YamlValue {
@@ -32682,12 +33199,41 @@ fn run_init(
         &render_workbench_config(Provider::Codex, None, Path::new(DEFAULT_RUN_ROOT)),
     )?;
     scaffold_agent_skills(path)?;
+    let git_initialized = ensure_init_git_worktree(path)?;
 
     println!("initialized RMS system at {}", path.display());
+    if git_initialized {
+        println!("initialized Git worktree at {}", path.display());
+    }
     println!(
-        "strict audit provenance: run `git init && git add . && git commit -m \"Initial RMS project\"` before claiming `rms audit --root . --strict` as production evidence"
+        "bootstrap provenance: before product work, run `git add . && git commit -m \"Initial RMS project\"`; completion then requires `rms gate --root .`, a candidate commit, and `rms audit --root . --strict` to exit successfully"
     );
     Ok(())
+}
+
+fn ensure_init_git_worktree(path: &Path) -> Result<bool> {
+    let existing = Command::new("git")
+        .current_dir(path)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .context("`rms init` requires Git for production provenance")?;
+    if existing.status.success() {
+        return Ok(false);
+    }
+
+    let initialized = Command::new("git")
+        .current_dir(path)
+        .arg("init")
+        .output()
+        .context("failed to execute `git init` for RMS provenance")?;
+    if !initialized.status.success() {
+        bail!(
+            "failed to initialize Git worktree at `{}`{}",
+            path.display(),
+            command_output_excerpt(&initialized)
+        );
+    }
+    Ok(true)
 }
 
 fn scaffold_agent_skills(path: &Path) -> Result<()> {
@@ -37277,6 +37823,15 @@ Core rule:
 - Agents fill declared roles.
 - Bugs should become diagnosable bad states.
 
+## Non-Negotiable Execution
+
+1. In a fresh standalone project, run `rms init`, then commit the generated bootstrap so later semantic and source drift has a provenance baseline.
+2. Run `rms design` before choosing the first module tree. When its deterministic hints recommend a recursive capability, use `rms add-capability`; do not substitute one module for convenience. A single-module exception is valid only when the user explicitly requests it and RMS records the justification canonically.
+3. Never repair `module.yaml`, `implementation.yaml`, contracts, machine structure, surfaces, or evidence declarations by direct editing. Use the applicable RMS apply command. If RMS cannot express the required change, stop and report the RMS gap instead of bypassing the gate.
+4. Fill only declared role bodies after the semantic apply succeeds.
+5. Before completion, `rms gate --root .` must exit zero with no failed check. A warning or `review-required` item is an obligation to resolve or report, never permission to collapse the recommended architecture.
+6. Commit the candidate, then `rms audit --root . --strict` must exit zero. Do not describe the project as complete or production-ready unless both commands succeeded in that order.
+
 ## Change Gate
 
 | Change | Required RMS gate before source edits |
@@ -37412,6 +37967,14 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Treat generated reports, diffs, and provider output as evidence, not architecture.
 
 ## Before Completion
+
+Completion is binary:
+
+1. Run focused native, spec, machine, surface, property, trace, and package checks that apply.
+2. Run `rms gate --root .`; continue working if it exits nonzero or reports a failed check.
+3. Commit the candidate.
+4. Run `rms audit --root . --strict`; continue working if it exits nonzero.
+5. Only then report completion, including the exact checks run.
 
 Run the smallest checks that prove the changed promise:
 
@@ -38093,14 +38656,6 @@ fn source_revision(root: &Path) -> Option<String> {
     }
 }
 
-fn git_worktree_exists(root: &Path) -> bool {
-    Command::new("git")
-        .current_dir(root)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38700,6 +39255,7 @@ import struct ExternalKit.Widget
         let gitignore = fs::read_to_string(root.join(".gitignore")).unwrap();
         let config_text = fs::read_to_string(root.join(".rms/config.yaml")).unwrap();
         let config = load_workbench_config(&root).unwrap().unwrap();
+        let git_initialized = root.join(".git").is_dir();
         for (relative_path, contents) in INIT_AGENT_SKILLS {
             let generated =
                 fs::read_to_string(root.join(".agents").join("skills").join(relative_path))
@@ -38709,9 +39265,14 @@ import struct ExternalKit.Widget
 
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert!(git_initialized);
         assert!(agents.contains("RMS artifacts are the architectural source of truth"));
         assert!(agents.contains("Product intent is enough input from the user"));
         assert!(agents.contains("rms design --root . --task"));
+        assert!(agents.contains("Non-Negotiable Execution"));
+        assert!(agents.contains("do not substitute one module for convenience"));
+        assert!(agents.contains("Never repair `module.yaml`"));
+        assert!(agents.contains("Completion is binary"));
         assert!(agents.contains("choose semantic shape before file layout"));
         assert!(agents.contains("Default split for any capability"));
         assert!(agents.contains("Naming rule"));
@@ -38742,6 +39303,42 @@ import struct ExternalKit.Widget
             config.value.runs.directory.as_deref(),
             Some(Path::new(".rms/runs"))
         );
+    }
+
+    #[test]
+    fn init_reuses_parent_git_worktree_without_nested_repository() {
+        let root = unique_test_dir("init-parent-git");
+        fs::create_dir_all(&root).unwrap();
+        let initialized = Command::new("git")
+            .current_dir(&root)
+            .arg("init")
+            .output()
+            .unwrap();
+        assert!(initialized.status.success());
+        let child = root.join("child");
+
+        run_init(
+            &child,
+            "nested-system",
+            "Exercise nested RMS initialization.",
+            "0.1.0",
+            &[String::from("nested")],
+        )
+        .unwrap();
+
+        let worktree = Command::new("git")
+            .current_dir(&child)
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .unwrap();
+        let discovered = PathBuf::from(String::from_utf8_lossy(&worktree.stdout).trim());
+        let expected = root.canonicalize().unwrap();
+        let nested_repository = child.join(".git").exists();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(worktree.status.success());
+        assert_eq!(discovered, expected);
+        assert!(!nested_repository);
     }
 
     #[test]
@@ -40788,6 +41385,10 @@ roles:
             .effects
             .contains(&"AppendMarkdownDayLog".to_string()));
         assert!(implementation.contains("effect_executor:"));
+        assert!(implementation.contains("id: transition-model"));
+        assert!(implementation.contains("symbol: transition"));
+        assert!(implementation.contains("kind: transition"));
+        assert!(implementation.contains("purity: pure"));
         assert!(!implementation.contains("verification/traces/machine_change.yaml"));
         assert!(!implementation.contains("aggregate_justification: null"));
         assert!(!generated_trace_exists);
@@ -41875,6 +42476,90 @@ architecture:
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.check == "structure.boundary-machine-reply-only"));
+    }
+
+    #[test]
+    fn js_stateful_transition_rejects_noncanonical_parameter_roles() {
+        let root = unique_test_dir("js-stateful-wrong-parameter-roles");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/transition.mjs"),
+            r#"export const FixtureMachine = Object.freeze({});
+export const FixtureState = Object.freeze({ Ready: Object.freeze({ tag: "FixtureState.Ready" }) });
+export const FixtureInput = Object.freeze({ Command: "FixtureInput.Command" });
+export const FixtureCommand = Object.freeze({ Run: "FixtureCommand.Run" });
+export const FixtureEvent = Object.freeze({ Ran: "FixtureEvent.Ran" });
+export const FixtureReply = Object.freeze({ Completed: "FixtureReply.Completed" });
+export const FixtureRejection = Object.freeze({ Invalid: "FixtureRejection.Invalid" });
+export const FixtureTransition = Object.freeze({ create: runPlan });
+export const FixtureTransitionRecord = Object.freeze({});
+export function runPlan(plan, argumentsList) {
+  return { next_state: plan, events: [], commands: [], effects: [], reply: argumentsList };
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: fixture
+binding: js
+source:
+  root: .
+  public_entrypoint: src/transition.mjs
+commands:
+  build: node --check src/transition.mjs
+  verify: node --check src/transition.mjs
+architecture:
+  shape: workflow
+  machine:
+    name: FixtureMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    types:
+      state: FixtureState
+      input: FixtureInput
+      command: FixtureCommand
+      event: FixtureEvent
+      reply: FixtureReply
+      rejection: FixtureRejection
+      transition: FixtureTransition
+      transition_record: FixtureTransitionRecord
+    states: [Ready]
+    commands: [Run]
+    observed_events: []
+    events: [Ran]
+    effects: []
+    effect_results: []
+    replies: [Completed]
+    rejections: [Invalid]
+    effect_protocols: []
+    transition_function: runPlan
+    transitions:
+      - from: Ready
+        on: Run
+        to: Ready
+        case: Run
+        events: [Ran]
+        reply: Completed
+  roles:
+    transition: [src/transition.mjs]
+semantic_functions:
+  - id: transition-model
+    symbol: src/transition.mjs#runPlan
+    kind: transition
+    purity: pure
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.stateful-transition-state-input-missing"
+                && diagnostic.message.contains("canonical state")
+        }));
     }
 
     #[test]
@@ -43047,6 +43732,34 @@ architecture:
     }
 
     #[test]
+    fn evidence_about_project_bootstrap_is_not_scaffold_residue() {
+        let root = unique_test_dir("evidence-bootstrap-subject");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = LoadedManifest {
+            path: root.join("module.yaml"),
+            value: serde_yaml::from_str("spec: rms/module/v0.1\nmodule:\n  name: evidence\n")
+                .unwrap(),
+        };
+        let evidence = root.join("evidence.md");
+        let source = "Promise: bootstrap-creates-provenance-worktree\nCommand/tool: cargo test\nExpected result: project initialization creates Git provenance.\nSource revision: resolved by strict audit.\n";
+        fs::write(&evidence, source).unwrap();
+        let mut diagnostics = Vec::new();
+
+        check_evidence_source_quality(
+            &manifest,
+            &mut diagnostics,
+            "evidence.md",
+            source,
+            &evidence,
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.check != "evidence.bootstrap-active"));
+    }
+
+    #[test]
     fn generated_contract_semantics_are_visible_scaffold_obligations() {
         let root = unique_test_dir("contract-scaffold-obligation");
         fs::create_dir_all(&root).unwrap();
@@ -43357,6 +44070,8 @@ architecture:
 
         fs::remove_dir_all(&root).ok();
         assert!(rendered.contains("Prompt: rms.design@v1"));
+        assert!(rendered.contains("deterministic design hints choose the initial scaffold"));
+        assert!(rendered.contains("do not replace it with one module merely to save work"));
         assert!(rendered.contains("Candidate split"));
         assert!(rendered.contains("## Semantic Structure Before Code"));
         assert!(rendered.contains("Traceable machine rule"));
@@ -43859,6 +44574,92 @@ pub fn transition_widget(_state: WidgetState, _input: WidgetInput) -> WidgetTran
     }
 
     #[test]
+    fn rust_typing_rejects_same_arity_noncanonical_transition_signature() {
+        let root = rust_typing_fixture(
+            "stateful-wrong-types",
+            &["core", "stateful"],
+            "",
+            r#"pub struct TypingFixtureMachine;
+pub enum WidgetState { Draft, Active }
+pub enum WidgetInput { Command(WidgetCommand) }
+pub enum WidgetCommand { Apply }
+pub enum WidgetEvent { Applied }
+pub enum WidgetReply { Accepted }
+pub enum WidgetRejection { Rejected }
+pub enum WidgetTransition { Accepted }
+pub enum WidgetTransitionRecord { Accepted }
+pub struct InvocationPlan;
+
+pub fn transition_widget(_plan: InvocationPlan, _items: Vec<String>) -> Result<(), WidgetRejection> {
+    Ok(())
+}
+"#,
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.stateful-transition-state-input-missing"
+                && diagnostic.message.contains("canonical types")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.transition-function-not-transition-shaped"
+        }));
+    }
+
+    #[test]
+    fn structure_rejects_effectful_adapter_as_canonical_transition() {
+        let root = rust_typing_fixture(
+            "effectful-canonical-transition",
+            &["core", "stateful"],
+            "",
+            r#"pub struct TypingFixtureMachine;
+pub enum WidgetState { Draft, Active }
+pub enum WidgetInput { Command(WidgetCommand) }
+pub enum WidgetCommand { Apply }
+pub enum WidgetEvent { Applied }
+pub enum WidgetReply { Accepted }
+pub enum WidgetRejection { Rejected }
+pub enum WidgetTransition { Accepted }
+pub enum WidgetTransitionRecord { Accepted }
+
+pub fn run_plan(_state: WidgetState, _input: WidgetInput) -> WidgetTransition {
+    WidgetTransition::Accepted
+}
+"#,
+        );
+        fs::write(root.join("src/transition.rs"), "pub fn unrelated() {}\n").unwrap();
+        let implementation = fs::read_to_string(root.join("implementation.yaml"))
+            .unwrap()
+            .replace(
+                "transition_function: transition_widget",
+                "transition_function: run_plan",
+            )
+            .replace(
+                "transition: [src/lib.rs]",
+                "transition: [src/transition.rs]",
+            );
+        fs::write(
+            root.join("implementation.yaml"),
+            format!(
+                "{implementation}\nsemantic_functions:\n  - id: process-adapter\n    symbol: run_plan\n    kind: adapter\n    purity: effectful\n"
+            ),
+        )
+        .unwrap();
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "structure.transition-function-not-pure" }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.transition-function-role-mismatch"
+        }));
+    }
+
+    #[test]
     fn rust_semantic_functions_reject_missing_symbols() {
         let root = rust_typing_fixture(
             "semantic-missing-symbol",
@@ -44021,6 +44822,41 @@ public func transitionWidget(_ state: WidgetState, _ input: WidgetInput) -> Widg
                 .starts_with("implementation.swift.typing.state")),
             "{diagnostics:#?}"
         );
+    }
+
+    #[test]
+    fn swift_typing_rejects_same_arity_noncanonical_transition_signature() {
+        let root = swift_typing_fixture(
+            "swift-stateful-wrong-types",
+            &["core", "stateful"],
+            "",
+            r#"public enum TypingFixtureMachine { case machine }
+public enum WidgetState { case draft, active }
+public enum WidgetInput { case command(WidgetCommand) }
+public enum WidgetCommand { case apply }
+public enum WidgetEvent { case applied }
+public enum WidgetReply { case accepted }
+public enum WidgetRejection { case rejected }
+public enum WidgetTransition { case accepted }
+public enum WidgetTransitionRecord { case accepted }
+public struct InvocationPlan {}
+
+public func transitionWidget(_ plan: InvocationPlan, _ items: [String]) -> Result<Void, WidgetRejection> {
+    .success(())
+}
+"#,
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.stateful-transition-state-input-missing"
+                && diagnostic.message.contains("canonical types")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.transition-function-not-transition-shaped"
+        }));
     }
 
     #[test]
@@ -46602,7 +47438,7 @@ verification:
     }
 
     #[test]
-    fn gate_plan_skips_unrelated_paths() {
+    fn gate_plan_skips_unrelated_paths_but_still_requires_provenance() {
         let root = unique_test_dir("gate-unrelated");
         fs::create_dir_all(&root).unwrap();
         let changed = vec![ChangedPath {
@@ -46615,8 +47451,12 @@ verification:
 
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(plan.report.impact_result, ImpactResult::NoRmsImpact);
-        assert_eq!(plan.report.result, GateResult::Pass);
-        assert!(plan.report.executable_checks.is_empty());
+        assert_eq!(plan.report.result, GateResult::Pending);
+        assert_eq!(plan.report.executable_checks.len(), 1);
+        assert!(plan
+            .actions
+            .iter()
+            .any(|action| matches!(action, GateCheckAction::RequireSourceRevision)));
         assert!(plan.report.manual_checks.is_empty());
     }
 
@@ -47605,9 +48445,10 @@ runs:
         let root = prompt_fixture("gate-no-git");
 
         let plan = build_nongit_gate_plan(&root).unwrap();
-        run_gate(&root, None, false, false).unwrap();
+        let result = run_gate(&root, None, false, false);
 
         fs::remove_dir_all(&root).unwrap();
+        assert!(result.is_err());
         assert_eq!(plan.report.impact_result, ImpactResult::ReviewRequired);
         assert!(plan
             .report
@@ -47620,6 +48461,14 @@ runs:
             .iter()
             .any(|check| check.command.contains("rms compose --root")));
         assert!(plan
+            .actions
+            .iter()
+            .any(|action| matches!(action, GateCheckAction::StrictStructuralPreflight)));
+        assert!(plan
+            .actions
+            .iter()
+            .any(|action| matches!(action, GateCheckAction::RequireSourceRevision)));
+        assert!(plan
             .report
             .manual_checks
             .iter()
@@ -47629,6 +48478,56 @@ runs:
             .manual_checks
             .iter()
             .any(|check| { check.contains("strict audit cannot pass") }));
+    }
+
+    #[test]
+    fn gate_structural_preflight_blocks_missing_semantic_revision() {
+        let root = rust_typing_fixture(
+            "gate-semantic-revision",
+            &["core", "stateful"],
+            "",
+            r#"pub struct TypingFixtureMachine;
+pub enum WidgetState { Draft, Active }
+pub enum WidgetInput { Command(WidgetCommand) }
+pub enum WidgetCommand { Apply }
+pub enum WidgetEvent { Applied }
+pub enum WidgetReply { Accepted }
+pub enum WidgetRejection { Rejected }
+pub enum WidgetTransition { Accepted }
+pub enum WidgetTransitionRecord { Accepted }
+pub fn transition_widget(_state: WidgetState, _input: WidgetInput) -> WidgetTransition {
+    WidgetTransition::Accepted
+}
+"#,
+        );
+
+        let error = run_gate_structural_preflight(&root)
+            .unwrap_err()
+            .to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(error.contains("semantic.revision-missing"), "{error}");
+    }
+
+    #[test]
+    fn gate_preflight_ignores_only_final_worktree_provenance() {
+        for id in [
+            "provenance.source-revision",
+            "audit.worktree-state",
+            "audit.dirty-production-claim",
+            "audit.untracked-implementation",
+        ] {
+            let check = audit_check(id, "provenance", "fail", Path::new("."), "fixture");
+            assert!(gate_preflight_ignores(&check));
+        }
+        let semantic = audit_check(
+            "semantic.revision-missing",
+            "semantic",
+            "fail",
+            Path::new("implementation.yaml"),
+            "fixture",
+        );
+        assert!(!gate_preflight_ignores(&semantic));
     }
 
     #[test]

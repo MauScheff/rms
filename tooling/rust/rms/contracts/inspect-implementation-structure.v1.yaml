@@ -10,11 +10,13 @@ postconditions:
   - id: "ensures-1"
     statement: "the report distinguishes binding container types from semantic variants and named transition cases"
   - id: "ensures-2"
-    statement: "public domain values cannot silence validated-construction checks through a generic public-field allowlist"
+    statement: "a stateful inspectable transition accepts the declared State and Input types and returns the declared Transition or TransitionRecord type"
   - id: "ensures-3"
+    statement: "public domain values cannot silence validated-construction checks through a generic public-field allowlist"
+  - id: "ensures-4"
     statement: "runnable delegation targets and role ownership are checked against canonical declarations"
 failure_categories:
   - id: "rejects-1"
-    statement: "missing declared symbols or roles, undeclared semantic source ownership, invalid public domain representation, undeclared effects, and malformed machine or surface structure"
+    statement: "missing declared symbols or roles, transition signature or return-type drift, undeclared semantic source ownership, invalid public domain representation, undeclared effects, and malformed machine or surface structure"
 compatibility:
   policy: backward-compatible-within-major

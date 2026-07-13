@@ -1,0 +1,25 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/make-fresh-project-completion-deterministic-initialize-provenance-make-gate-pass-exclude-strict-structural-blockers-and-prove-binding-transitions-realize-canonical-state-input-transition-types-afbe0e713fb8.yaml
+intent:
+  summary: Align gate completion authority with the effectful RMS command that executes deterministic checks and decides the reported gate result.
+laws:
+  add: []
+  set:
+  - id: gate-pass-has-no-known-production-blockers
+    statement: The RMS gate must not report pass while strict structural preflight has a blocker or the project has no source revision.
+    kind: safety
+    authority: effect-executor
+    enforced_by: gate-rms-change-command
+  remove: []
+contracts: null
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: property
+    proves: gate-pass-has-no-known-production-blockers
+    path: verification/properties/gate_completion_integrity.md
+surfaces: null

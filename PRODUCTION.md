@@ -62,6 +62,8 @@ rms diagnose
 rms design --root . --task "<product intent>"
 ```
 
+Follow the deterministic scaffold recommendation. If it recommends a recursive capability, use `rms add-capability`; do not collapse it to one module for convenience. A single-module exception requires explicit user intent and canonical justification.
+
 For a product capability that has pure decisions plus a UI, CLI, service, file, process, or network boundary, prefer a recursive capability tree:
 
 ```bash
@@ -85,7 +87,7 @@ rms add-module ./modules/<module> \
   --binding rust
 ```
 
-Then implement inside the generated roles. Update `module.yaml`, contracts, `implementation.yaml`, and evidence when behavior changes.
+Then implement inside the generated roles. When behavior changes, update `module.yaml`, contracts, `implementation.yaml`, and evidence only through the applicable `rms spec apply`, `rms machine apply`, or `rms surface apply` command. If the CLI cannot express the required change, report an RMS gap instead of editing canonical artifacts directly.
 
 When product meaning changes, do not ask the agent to hand-create laws, contracts, transitions, or evidence files. Have it run:
 
@@ -143,8 +145,12 @@ Before completion:
 rms validate --root .
 rms compose --root .
 rms gate --root .
+git add .
+git commit -m "Implement RMS candidate"
 rms audit --root . --strict
 ```
+
+Completion is binary: gate must exit zero before the candidate commit, and strict audit must exit zero after it. Failed checks are blockers, not manual notes.
 
 ## Evidence Rules
 

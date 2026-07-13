@@ -1,0 +1,54 @@
+spec: rms/machine-change/v0.1
+module: null
+machine:
+  mode: stateless-decision-machine
+  justification: This example is a pure query over validated input with no lifecycle.
+  transition_signature: null
+  types: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+transitions: null
+roles:
+  set: []
+  add:
+  - kind: transition
+    effect: null
+    binding_hint: null
+    path: src/widget.rs
+  remove:
+  - kind: transition
+    path: src/lib.rs

@@ -323,6 +323,21 @@ invariants:
   kind: boundary
   authority: parser
   enforced_by: check-runnable-surface-command
+- id: gate-pass-has-no-known-production-blockers
+  statement: The RMS gate must not report pass while strict structural preflight has a blocker or the project has no source revision.
+  kind: safety
+  authority: effect-executor
+  enforced_by: gate-rms-change-command
+- id: binding-transition-signature-realizes-canonical-types
+  statement: An inspectable binding's canonical transition accepts the declared State and Input types and returns the declared Transition or TransitionRecord type.
+  kind: safety
+  authority: parser
+  enforced_by: inspect-implementation-structure-command
+- id: bootstrap-creates-provenance-worktree
+  statement: Initializing an RMS system outside an existing Git worktree creates a local Git worktree so provenance can be committed and audited without separate setup.
+  kind: reliability
+  authority: effect-executor
+  enforced_by: init-rms-system-command
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -396,6 +411,7 @@ verification:
   - verification/contracts/validate_rms_artifacts.md
   - verification/contracts/apply_semantic_change.md
   - verification/contracts/apply_machine_change.md
+  - verification/contracts/init_rms_system.md
   scenarios:
   - verification/scenarios
   - verification/scenarios/reusable_module_package.md
@@ -410,13 +426,16 @@ verification:
   - verification/properties/public_domain_validity.md
   - verification/properties/risk_law_property_link.md
   - verification/properties/runnable_delegation_owner.md
+  - verification/properties/gate_completion_integrity.md
+  - verification/properties/binding_transition_signature.md
+  - verification/properties/init_git_provenance.md
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Make focused machine apply validate the final canonical candidate without manufacturing active replay evidence from declarations.
+  last_semantic_intent: Align gate completion authority with the effectful RMS command that executes deterministic checks and decides the reported gate result.
   semantic_revision:
-    digest: sha256:258bc91db556b0229aa35cd8516320abbca347e4dda8732fa33183486293fb50
-    change_record: verification/changes/make-focused-machine-apply-validate-the-final-canonical-candidate-without-manufacturing-active-replay-evidence-from-declarations-2e202d62eef3.yaml
+    digest: sha256:1151a96984998dcd19ce73377cbb62e5d1e0f7d108c02b726afd2f2bd77de285
+    change_record: verification/changes/align-gate-completion-authority-with-the-effectful-rms-command-that-executes-deterministic-checks-and-decides-the-reported-gate-result-c0c030e14852.yaml
     applied_by: rms spec apply
 properties:
 - id: semantic-property-declarations-have-oracles
@@ -524,6 +543,64 @@ properties:
   - unknown role targets and effectless surfaces without justification fail
   evidence:
     path: verification/properties/runnable_delegation_owner.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: verify
+- id: gate-pass-requires-structural-preflight
+  proves: gate-pass-has-no-known-production-blockers
+  kind: property
+  input_space: RMS roots with valid structure, strict-blocking diagnostics, absent Git repositories, unborn Git repositories, and ordinary dirty working changes
+  preconditions:
+  - the root contains at least one RMS module and implementation binding
+  operation: run rms gate and compare its result with strict structural audit checks excluding final provenance cleanliness
+  oracle:
+  - strict structural blockers make gate fail
+  - missing source revision makes gate fail after deterministic checks
+  - ordinary dirty source in an established repository may pass pre-commit gate when semantics and structure are valid
+  - only a clean committed candidate can pass final strict audit
+  evidence:
+    path: verification/properties/gate_completion_integrity.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: verify
+- id: binding-transition-types-match-canonical-machine
+  proves: binding-transition-signature-realizes-canonical-types
+  kind: property
+  input_space: Rust, Swift, and JavaScript stateful binding fixtures with matching and mismatching transition parameters and outputs
+  preconditions:
+  - the implementation declares machine types, transition signature, and transition function
+  operation: run binding conformance inspection
+  oracle:
+  - matching State and Input parameters with Transition or TransitionRecord output pass
+  - same-arity unrelated parameters fail
+  - reply-only or ambient Result outputs fail canonical transition shape
+  evidence:
+    path: verification/properties/binding_transition_signature.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: verify
+- id: init-establishes-git-worktree
+  proves: bootstrap-creates-provenance-worktree
+  kind: property
+  input_space: fresh directories outside Git and target directories already nested inside an existing Git worktree
+  preconditions:
+  - git is available and generated RMS files are absent
+  operation: run rms init and inspect the target repository root
+  oracle:
+  - fresh standalone target becomes a Git worktree
+  - nested target continues to use its existing parent worktree without a nested .git directory
+  - generated guidance names commit plus strict audit as production completion
+  evidence:
+    path: verification/properties/init_git_provenance.md
   counterexamples:
     path: verification/fuzz/counterexamples
   realizations:

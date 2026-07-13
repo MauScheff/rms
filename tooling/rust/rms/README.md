@@ -87,7 +87,7 @@ rms audit --root <project> --strict
 
 The quickstart is in `../../../QUICKSTART.md`, the self-hosted walkthrough is in `../../../DOGFOOD.md`, and the release process is in `../../../RELEASE.md` from the repository root.
 
-`rms init` writes the canonical system artifacts plus `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore` so a fresh project is ready for RMS-guided human or Codex work without hand-authored bootstrap files.
+`rms init` writes the canonical system artifacts plus `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore`. It initializes Git when the target is not already inside a worktree, then directs the agent to commit the bootstrap before product work. Completion is binary: `rms gate --root .` must pass, the candidate must be committed, and `rms audit --root . --strict` must pass.
 
 `rms add-module` writes `module.yaml`, a module `README.md`, `contracts/README.md`, guided verification directories, and an optional Rust, Swift, or executable binding. The generated guidance routes future work through canonical artifacts without defining module-specific semantics.
 

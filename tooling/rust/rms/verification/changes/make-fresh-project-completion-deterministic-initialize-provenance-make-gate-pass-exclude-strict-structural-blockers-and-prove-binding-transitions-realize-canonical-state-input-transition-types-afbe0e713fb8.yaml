@@ -1,0 +1,162 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: 'Make fresh-project completion deterministic: initialize provenance, make gate pass exclude strict structural blockers, and prove binding transitions realize canonical State/Input/Transition types.'
+laws:
+  add:
+  - id: gate-pass-has-no-known-production-blockers
+    statement: The RMS gate must not report pass while strict structural preflight has a blocker or the project has no source revision.
+    kind: safety
+    authority: parser
+    enforced_by: gate-rms-change-command
+  - id: binding-transition-signature-realizes-canonical-types
+    statement: An inspectable binding's canonical transition accepts the declared State and Input types and returns the declared Transition or TransitionRecord type.
+    kind: safety
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  - id: bootstrap-creates-provenance-worktree
+    statement: Initializing an RMS system outside an existing Git worktree creates a local Git worktree so provenance can be committed and audited without separate setup.
+    kind: reliability
+    authority: effect-executor
+    enforced_by: init-rms-system-command
+  set: []
+  remove: []
+contracts:
+  add: []
+  set:
+  - name: gate-rms-change
+    version: '1'
+    command: gate-rms-change
+    meaning: Run deterministic pre-commit RMS verification and strict structural preflight for the current or requested change.
+    accepts:
+    - a readable RMS project root and optional Git diff
+    - an uncommitted working change when the root already has a resolvable source revision
+    ensures:
+    - validation, required composition checks, and declared implementation verification run for the affected project
+    - strict structural, semantic revision, invariant authority, trace, property, effect protocol, and runnable-surface blockers are promoted to gate failures before commit
+    - pre-commit structural preflight ignores only source-revision cleanliness and dirty or untracked worktree checks that final strict audit owns
+    - gate reports pass only when the root has a source revision and no executable or structural blocker remains
+    - a successful gate remains pre-commit evidence; production proof still requires a clean committed candidate and strict audit
+    rejects:
+    - unreadable artifacts, executable verification failures, strict structural blockers, missing RMS-applied semantic revisions, and roots without a source revision
+  - name: inspect-implementation-structure
+    version: '1'
+    command: inspect-implementation-structure
+    meaning: Print and validate the canonical inner structure realized by an RMS implementation binding.
+    accepts:
+    - a readable RMS implementation binding with inspectable or explicitly opaque source
+    ensures:
+    - the report distinguishes binding container types from semantic variants and named transition cases
+    - a stateful inspectable transition accepts the declared State and Input types and returns the declared Transition or TransitionRecord type
+    - public domain values cannot silence validated-construction checks through a generic public-field allowlist
+    - runnable delegation targets and role ownership are checked against canonical declarations
+    rejects:
+    - missing declared symbols or roles, transition signature or return-type drift, undeclared semantic source ownership, invalid public domain representation, undeclared effects, and malformed machine or surface structure
+  - name: init-rms-system
+    version: '1'
+    command: init-rms-system
+    meaning: Scaffold a self-contained RMS system directory with canonical manifests, local agent guidance, workbench configuration, and provenance-ready Git setup.
+    accepts:
+    - a writable target whose generated RMS files do not already exist
+    - valid system name, purpose, version, and optional context names
+    ensures:
+    - system, context map, glossary, AGENTS.md, .gitignore, workbench config, and project-local skills are created
+    - a target outside an existing Git worktree is initialized as a Git worktree
+    - a target already inside a Git worktree is not given a nested repository
+    - completion guidance requires committing the candidate and passing strict audit
+    rejects:
+    - existing generated files, invalid input, unwritable targets, and failure to establish required provenance setup
+  remove: []
+properties:
+  add:
+  - id: gate-pass-requires-structural-preflight
+    proves: gate-pass-has-no-known-production-blockers
+    kind: property
+    subject: null
+    input_space: RMS roots with valid structure, strict-blocking diagnostics, absent Git repositories, unborn Git repositories, and ordinary dirty working changes
+    preconditions:
+    - the root contains at least one RMS module and implementation binding
+    operation: run rms gate and compare its result with strict structural audit checks excluding final provenance cleanliness
+    oracle:
+    - strict structural blockers make gate fail
+    - missing source revision makes gate fail after deterministic checks
+    - ordinary dirty source in an established repository may pass pre-commit gate when semantics and structure are valid
+    - only a clean committed candidate can pass final strict audit
+    evidence:
+      kind: property
+      path: verification/properties/gate_completion_integrity.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: generated-property
+      command: verify
+      exhaustive: false
+  - id: binding-transition-types-match-canonical-machine
+    proves: binding-transition-signature-realizes-canonical-types
+    kind: property
+    subject: null
+    input_space: Rust, Swift, and JavaScript stateful binding fixtures with matching and mismatching transition parameters and outputs
+    preconditions:
+    - the implementation declares machine types, transition signature, and transition function
+    operation: run binding conformance inspection
+    oracle:
+    - matching State and Input parameters with Transition or TransitionRecord output pass
+    - same-arity unrelated parameters fail
+    - reply-only or ambient Result outputs fail canonical transition shape
+    evidence:
+      kind: property
+      path: verification/properties/binding_transition_signature.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: generated-property
+      command: verify
+      exhaustive: false
+  - id: init-establishes-git-worktree
+    proves: bootstrap-creates-provenance-worktree
+    kind: property
+    subject: null
+    input_space: fresh directories outside Git and target directories already nested inside an existing Git worktree
+    preconditions:
+    - git is available and generated RMS files are absent
+    operation: run rms init and inspect the target repository root
+    oracle:
+    - fresh standalone target becomes a Git worktree
+    - nested target continues to use its existing parent worktree without a nested .git directory
+    - generated guidance names commit plus strict audit as production completion
+    evidence:
+      kind: property
+      path: verification/properties/init_git_provenance.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: generated-property
+      command: verify
+      exhaustive: false
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: property
+    proves: gate-pass-has-no-known-production-blockers
+    path: verification/properties/gate_completion_integrity.md
+  - kind: property
+    proves: binding-transition-signature-realizes-canonical-types
+    path: verification/properties/binding_transition_signature.md
+  - kind: property
+    proves: bootstrap-creates-provenance-worktree
+    path: verification/properties/init_git_provenance.md
+  - kind: contract
+    proves: gate-rms-change
+    path: verification/contracts/gate_rms_change.md
+  - kind: contract
+    proves: inspect-implementation-structure
+    path: verification/contracts/inspect_implementation_structure.md
+  - kind: contract
+    proves: init-rms-system
+    path: verification/contracts/init_rms_system.md
+surfaces: null

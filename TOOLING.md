@@ -111,6 +111,8 @@ Scaffolds a new RMS system with:
 - local agent skills: `.agents/skills`;
 - repository hygiene defaults: `.gitignore`.
 
+The command also establishes provenance: it initializes Git when the target is outside a worktree and reuses an existing parent worktree without creating a nested repository. Commit the generated bootstrap before product work.
+
 Generated agent and workbench files are operational guidance. They must route future work through RMS manifests, contracts, and the shared CLI; they do not create module semantics. The command refuses to overwrite existing files.
 
 ### `add-module`
@@ -175,7 +177,7 @@ rms machine diff <implementation.yaml> [--json]
 ```
 
 Use this for focused inner-machine edits when laws, public contracts, and evidence obligations are already correct. For product-meaning changes, prefer `rms spec apply` so laws, contracts, machine structure, and evidence move together.
-Machine changes support `set`, `add`, and `remove`. RMS computes and validates the complete final candidate, records the focused change, reseals canonical semantics, and rejects stale references or unnamed transition cases. Apply preserves declared evidence roles but does not generate a passing trace from the declarations it is meant to prove; agents fill and replay those roles after implementation.
+Machine changes support `set`, `add`, and `remove`. RMS computes and validates the complete final candidate, records the focused change, binds the canonical transition as a pure semantic function, reseals canonical semantics, and rejects stale references or unnamed transition cases. Apply preserves declared evidence roles but does not generate a passing trace from the declarations it is meant to prove; agents fill and replay those roles after implementation.
 
 The canonical change format is language-neutral:
 
@@ -437,9 +439,9 @@ rms gate HEAD~1..HEAD
 rms gate --dry-run --json
 ```
 
-The gate runs validation for impacted RMS changes, composition for architecture-level changes, and implementation verification for affected modules with implementation bindings. Review prompts, compatibility classification, and missing implementation bindings are reported as manual obligations instead of being silently treated as passed.
+The gate runs validation for impacted RMS changes, strict semantic/structural preflight, composition for architecture-level changes, and implementation verification for affected modules with implementation bindings. A failed check makes the command exit nonzero. Review and compatibility obligations remain visible and must not be used to justify bypassing the recommended structure.
 
-When git changed-path evidence is available, `rms gate` uses it to select the smallest useful checks. In a fresh project that is not a git repository, `rms gate` falls back to deterministic full-project checks: validation, composition, and every discovered implementation or composite verification target. The fallback reports review-required impact because it cannot classify a diff without git.
+When git changed-path evidence is available, `rms gate` uses it to select the smallest useful checks. Strict preflight promotes every production-blocking semantic or structural audit finding except final dirty/untracked worktree cleanliness. A missing source revision is itself a gate failure. In a root without Git, the gate still runs deterministic full-project checks before returning failure so setup problems cannot hide architecture findings.
 
 ### `refactor`
 

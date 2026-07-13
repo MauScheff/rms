@@ -1020,6 +1020,6 @@ semantic_functions:
     - verification/contracts/replay_property_counterexample.md
 x-rms:
   semantic_revision:
-    digest: sha256:258bc91db556b0229aa35cd8516320abbca347e4dda8732fa33183486293fb50
-    change_record: verification/changes/make-focused-machine-apply-validate-the-final-canonical-candidate-without-manufacturing-active-replay-evidence-from-declarations-2e202d62eef3.yaml
+    digest: sha256:1151a96984998dcd19ce73377cbb62e5d1e0f7d108c02b726afd2f2bd77de285
+    change_record: verification/changes/align-gate-completion-authority-with-the-effectful-rms-command-that-executes-deterministic-checks-and-decides-the-reported-gate-result-c0c030e14852.yaml
     applied_by: rms spec apply

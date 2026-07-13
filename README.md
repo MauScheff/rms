@@ -99,7 +99,7 @@ For a guided first pass, use `QUICKSTART.md`. For a self-hosted RMS walkthrough,
 The golden path is:
 
 ```text
-init -> design -> add-capability -> spec/surface apply -> implement declared roles -> gate -> audit
+init -> bootstrap commit -> design -> add-capability -> spec/surface apply -> implement declared roles -> gate -> candidate commit -> strict audit
 ```
 
 Create a new RMS system:
@@ -111,7 +111,7 @@ rms init ./my-system \
   --context core
 ```
 
-This creates `system.yaml`, `context-map.yaml`, `GLOSSARY.md`, `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore`. The generated agent and workbench files are adapters over the RMS manifests and CLI; they are not a second source of architecture.
+This creates `system.yaml`, `context-map.yaml`, `GLOSSARY.md`, `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore`. Outside an existing worktree it also runs `git init`; inside one it reuses the existing repository. Commit this bootstrap before product work so semantic and source drift have a baseline. The generated agent and workbench files are adapters over the RMS manifests and CLI; they are not a second source of architecture.
 
 Add a module with an implementation binding:
 
@@ -141,6 +141,8 @@ rms add-module ./my-system/modules/snake-web \
   --shape boundary-adapter \
   --binding js
 ```
+
+Treat deterministic design hints as the scaffold decision. When they recommend a composite/domain/boundary capability tree, use `rms add-capability`; use one module only for explicit library-only intent or a canonically recorded single-module exception.
 
 Add a recursive capability tree when one public capability needs a composite parent plus domain and boundary children:
 
@@ -294,6 +296,8 @@ rms impact HEAD~1..HEAD --json
 rms gate --dry-run
 rms gate HEAD~1..HEAD --json
 ```
+
+`rms gate` runs affected verification plus a strict semantic and structural preflight. It exits nonzero for missing semantic revisions, invalid machine/effect/trace structure, failed verification, or a missing source revision. It defers only clean-commit worktree checks to the final strict audit; a gate pass is not production proof until the candidate is committed and `rms audit --root . --strict` also passes.
 
 Inspect a module:
 

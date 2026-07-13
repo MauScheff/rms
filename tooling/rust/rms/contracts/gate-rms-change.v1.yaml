@@ -1,30 +1,26 @@
 spec: rms/contract/v0.1
-name: gate-rms-change
+name: "gate-rms-change"
 version: 1
 kind: command
-meaning: Run executable RMS verification checks for a current or requested diff, using git impact analysis when available and deterministic full-project checks when git changed-path evidence is unavailable.
+meaning: "Run deterministic pre-commit RMS verification and strict structural preflight for the current or requested change."
 preconditions:
-  - id: repository-root-readable
-    statement: The requested root is readable.
-  - id: git-diff-readable-when-requested
-    statement: When an explicit diff is requested, git can report changed paths for that diff.
+  - id: "accepts-1"
+    statement: "a readable RMS project root and optional Git diff"
+  - id: "accepts-2"
+    statement: "an uncommitted working change when the root already has a resolvable source revision"
 postconditions:
-  - id: checks-are-derived
-    statement: Gate checks are derived from git path evidence, discovered module manifests, implementation bindings, and declared verification references; the gate must not create module semantics outside canonical artifacts.
-  - id: nongit-fallback-runs-full-project-checks
-    statement: When no explicit diff is requested and the root is not a git repository, the gate runs deterministic full-project validation, composition, discovered implementation verification, and composite rollup verification instead of failing.
-  - id: no-impact-skips-work
-    statement: Changes with no RMS impact are reported without running RMS verification commands.
-  - id: executable-obligations-run
-    statement: RMS validation runs for impacted RMS changes, composition runs for system, context, manifest, contract, operation, and glossary changes, implementation verification runs for affected modules with implementation bindings, and composite rollup verification runs for affected composite modules.
-  - id: manual-obligations-are-explicit
-    statement: Review prompts, compatibility classification, and missing deterministic verification targets are reported as manual obligations instead of being silently treated as passed.
+  - id: "ensures-1"
+    statement: "validation, required composition checks, and declared implementation verification run for the affected project"
+  - id: "ensures-2"
+    statement: "strict structural, semantic revision, invariant authority, trace, property, effect protocol, and runnable-surface blockers are promoted to gate failures before commit"
+  - id: "ensures-3"
+    statement: "pre-commit structural preflight ignores only source-revision cleanliness and dirty or untracked worktree checks that final strict audit owns"
+  - id: "ensures-4"
+    statement: "gate reports pass only when the root has a source revision and no executable or structural blocker remains"
+  - id: "ensures-5"
+    statement: "a successful gate remains pre-commit evidence; production proof still requires a clean committed candidate and strict audit"
 failure_categories:
-  - id: git-diff-unavailable
-    statement: An explicit git diff was requested but git is not available or cannot describe the requested diff.
-  - id: rms-artifact-unreadable
-    statement: A discovered RMS artifact cannot be read or parsed.
-  - id: executable-check-failed
-    statement: An executable validation, composition, implementation verification, or composite rollup verification check failed.
+  - id: "rejects-1"
+    statement: "unreadable artifacts, executable verification failures, strict structural blockers, missing RMS-applied semantic revisions, and roots without a source revision"
 compatibility:
   policy: backward-compatible-within-major

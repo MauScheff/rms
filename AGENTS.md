@@ -12,6 +12,15 @@ Core rule:
 - Agents fill declared roles.
 - Bugs should become diagnosable bad states.
 
+## Non-Negotiable Execution
+
+1. In a fresh standalone project, run `rms init`, then commit the generated bootstrap so later semantic and source drift has a provenance baseline.
+2. Run `rms design` before choosing the first module tree. When its deterministic hints recommend a recursive capability, use `rms add-capability`; do not substitute one module for convenience. A single-module exception is valid only when the user explicitly requests it and RMS records the justification canonically.
+3. Never repair `module.yaml`, `implementation.yaml`, contracts, machine structure, surfaces, or evidence declarations by direct editing. Use the applicable RMS apply command. If RMS cannot express the required change, stop and report the RMS gap instead of bypassing the gate.
+4. Fill only declared role bodies after the semantic apply succeeds.
+5. Before completion, `rms gate --root .` must exit zero with no failed check. A warning or `review-required` item is an obligation to resolve or report, never permission to collapse the recommended architecture.
+6. Commit the candidate, then `rms audit --root . --strict` must exit zero. Do not describe the project as complete or production-ready unless both commands succeeded in that order.
+
 ## Change Gate
 
 | Change | Required RMS gate before source edits |
@@ -147,6 +156,14 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Treat generated reports, diffs, and provider output as evidence, not architecture.
 
 ## Before Completion
+
+Completion is binary:
+
+1. Run focused native, spec, machine, surface, property, trace, and package checks that apply.
+2. Run `rms gate --root .`; continue working if it exits nonzero or reports a failed check.
+3. Commit the candidate.
+4. Run `rms audit --root . --strict`; continue working if it exits nonzero.
+5. Only then report completion, including the exact checks run.
 
 Run the smallest checks that prove the changed promise:
 

@@ -125,6 +125,11 @@ architecture:
     - verification/traces/transition_trace.yaml
 x-rms:
   semantic_revision:
-    digest: sha256:35218e93b6e6af7c53f3d4cd80a19967ae5660b27723d8c876b1194109f0d81b
-    change_record: verification/machine-changes/machine-change-d094fb0cc605.yaml
+    digest: sha256:cd96adf9c8e71886cf1c74a767c384b352997d737662fa27e356ed30fec20855
+    change_record: verification/machine-changes/machine-change-b3eef6cf1b9d.yaml
     applied_by: rms machine apply
+semantic_functions:
+- id: transition-model
+  symbol: transition
+  kind: transition
+  purity: pure
