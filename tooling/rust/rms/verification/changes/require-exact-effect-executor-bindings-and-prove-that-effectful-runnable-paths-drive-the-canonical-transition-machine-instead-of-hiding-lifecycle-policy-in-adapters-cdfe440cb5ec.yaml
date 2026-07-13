@@ -1,0 +1,32 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Require exact effect-executor bindings and prove that effectful runnable paths drive the canonical transition machine instead of hiding lifecycle policy in adapters.
+laws:
+  add:
+  - id: effect-protocols-bind-exact-executors
+    statement: Every declared effect protocol names one exact executor symbol whose binding accepts the declared effect request and returns a declared effect result without owning orchestration.
+    kind: reliability
+    authority: composition
+    enforced_by: effect-protocol-binding-check
+  - id: runnable-effects-are-transition-driven
+    statement: An effectful stateful runnable surface reaches a declared machine driver, and effectful iteration or stop, retry, sequencing, and compensation policy does not bypass the canonical transition function.
+    kind: reliability
+    authority: composition
+    enforced_by: machine-execution-path-check
+  set: []
+  remove: []
+contracts: null
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: effect-protocols-bind-exact-executors
+    path: verification/laws/exact_effect_executor_binding.md
+  - kind: law
+    proves: runnable-effects-are-transition-driven
+    path: verification/laws/transition_driven_runnable_effects.md
+surfaces: null

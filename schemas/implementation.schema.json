@@ -171,6 +171,10 @@
             "state-and-input"
           ]
         },
+        "driver_function": {
+          "type": "string",
+          "minLength": 1
+        },
         "types": {
           "$ref": "#/$defs/machineTypes"
         },
@@ -266,6 +270,7 @@
         "effect": { "type": "string" },
         "results": { "$ref": "#/$defs/identifierList" },
         "executor_role": { "type": "string" },
+        "executor_symbol": { "type": "string", "minLength": 1 },
         "atomicity": {
           "enum": [
             "one-request-one-result",

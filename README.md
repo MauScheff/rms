@@ -47,7 +47,7 @@ For agents, RMS narrows the job. The agent does not invent architecture directly
 - A semantic revision seal: strict audit recomputes canonical module, contract, and implementation semantics and rejects direct manifest edits made after RMS apply.
 - Semantic properties for broad laws: RMS declares input spaces, oracles, evidence, replayable counterexamples, and the realization claim. Fixed corpora, finite exhaustive checks, generated properties, and coverage fuzzers remain distinct.
 - Traceable machine scaffolds with named transition cases, state, effects, transition outputs, journals, replay bundles, and first-bad-transition diagnostics.
-- Atomic effect protocols: executors perform one request and return one typed result; the machine transition owns what happens next.
+- Atomic effect protocols with an inspectable execution chain: runnable callable -> machine driver -> pure transition -> exact one-request executor -> typed effect result -> machine driver. The transition owns what happens next.
 - A Rust reference CLI that acts as the human and agent workbench for validation, explanation, context packets, semantic planning, structure checks, trace replay, compatibility, audit, packaging, and conformance evidence.
 - Agent skills for inspecting modules, implementing changes, pruning semantic residue, adding modules, evolving contracts, composing modules, and verifying conformance through the shared CLI surface.
 - Thin Codex and Claude integration guidance that points agents at the same semantic model instead of creating agent-specific architecture.

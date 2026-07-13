@@ -172,6 +172,7 @@ architecture:
       - SemanticChangeRecordWritten
       - SemanticChangeRecordWriteRejected
       executor_role: effect_executor
+      executor_symbol: execute_rms_workbench_effect
       atomicity: one-request-one-result
     transition_function: transition
     transitions:
@@ -194,6 +195,7 @@ architecture:
       to: Ready
       case: SemanticChangeRecordWriteRejected
       rejection: SemanticChangeRecordWriteFailed
+    driver_function: drive_rms_workbench
   roles:
     representation:
     - src/main.rs
@@ -219,6 +221,8 @@ architecture:
     - verification/contracts/inspect_implementation_structure.md
     - verification/traces/semantic_change_record.yaml
     runnable_surface:
+    - src/main.rs
+    machine_driver:
     - src/main.rs
   representation:
     closed_variants:
@@ -1054,6 +1058,6 @@ semantic_functions:
     - verification/contracts/replay_property_counterexample.md
 x-rms:
   semantic_revision:
-    digest: sha256:c13fd842abc42a871d4e73c0ff1ed0054fa148b2de3cc46bad0120349494a19f
-    change_record: verification/changes/record-the-completed-canonical-binding-attachment-and-exact-semantic-planning-verification-60810890d63c.yaml
+    digest: sha256:38874bc699ae4d4a0e4c00a99b1852fe0e72ae842d0712a692030f188e000968
+    change_record: verification/changes/bind-rms-semantic-change-record-writes-to-the-canonical-workbench-machine-driver-and-exact-one-request-executor-6eef08246ac0.yaml
     applied_by: rms spec apply

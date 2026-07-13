@@ -16,7 +16,7 @@ description: Inspect an RMS module before planning or changing it; use when owne
    - public contracts;
    - direct dependency contracts;
    - the implementation binding and relevant decisions.
-6. Do not read unrelated implementation unless the public artifacts are insufficient.
+6. Do not read unrelated implementation unless the public artifacts are insufficient. Never inspect sibling projects, prior dogfood runs, RMS source, or generated examples outside the target project to infer a semantic-change schema or borrow product semantics; use the rendered RMS prompt and deterministic diagnostics.
 7. Produce a concise module brief:
    - purpose and ownership;
    - public surface;
@@ -30,6 +30,7 @@ description: Inspect an RMS module before planning or changing it; use when owne
    - suspected gaps or drift.
    - binding type mappings versus actual semantic alternatives;
    - canonical input categories and effect request/result protocols;
+   - exact machine driver and effect executor symbols, plus whether each effect-emitting runnable command reaches that driver;
    - whether any executor hides sequencing, retry, compensation, or state progression.
 8. For a proposed task, identify the owning module and the smallest affected contract surface.
 9. Identify whether the task should use:

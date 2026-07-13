@@ -188,6 +188,7 @@ module: modules/example/implementation.yaml
 machine:
   mode: stateful-transition-machine
   transition_signature: state-and-input
+  driver_function: driveExampleMachine
   types:
     state: ExampleState
     input: ExampleInput
@@ -220,6 +221,7 @@ machine:
       - effect: AppendLocalLog
         results: [LocalLogAppended]
         executor_role: effect_executor
+        executor_symbol: executeAppendLocalLog
         atomicity: one-request-one-result
 transitions:
   add:
@@ -231,12 +233,14 @@ transitions:
       reply: AskForContext
 roles:
   add:
+    - kind: machine_driver
+      path: src/machine_driver
     - kind: effect_executor
       effect: AppendLocalLog
       binding_hint: local_filesystem
 ```
 
-Agents may add small private pure helpers inside declared pure role files. Private IO helpers are not allowed in pure roles; IO must be represented as declared effects plus effect results and executed only in adapter, port, or effect-executor roles. An executor performs one declared request and returns one declared result. If that result changes what happens next, the canonical transition owns the follow-up, retry, compensation, stop/continue policy, and state progression.
+Agents may add small private pure helpers inside declared pure role files. Private IO helpers are not allowed in pure roles; IO must be represented as declared effects plus effect results and executed only in adapter, port, or effect-executor roles. Effectful stateful machines declare an exact machine driver. Each protocol binds an exact executor symbol that performs one declared request and returns one declared result. Effect-emitting runnable commands delegate to an exact callable that reaches the driver. The driver advances state through the canonical transition, invokes emitted effects, and feeds results back; surfaces, adapters, and executors do not own follow-up, retry, compensation, stop/continue policy, or state progression.
 
 Property realization names are claims, not labels of convenience. Use `deterministic-corpus` for fixed examples, `deterministic-exhaustive` only for complete finite spaces, `generated-property` for generated cases, and `coverage-fuzzer` for coverage-guided fuzzing. Strict audit rejects open-ended fuzz claims backed only by a corpus.
 

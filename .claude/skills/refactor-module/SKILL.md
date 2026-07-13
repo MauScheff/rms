@@ -36,7 +36,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
    - Keep type mappings separate from semantic alternatives.
    - Stateful machines use one input ADT and one `transition(state, input)` path for commands, observed events, and effect results.
    - Every transition branch has a stable semantic case mirrored by replay source provenance.
-   - Effect executors perform one request and return one result; move iteration, retry, compensation, and stop/continue policy into transitions.
+   - Effectful stateful machines declare one exact machine driver, and each effect protocol declares an exact executor symbol. Runnable effect paths reach the driver; the driver reaches the pure transition and one-request executors; typed results return through the driver. Move iteration, retry, compensation, and stop/continue policy out of surfaces, adapters, and executors and into transitions.
 9. Preserve module boundaries:
    - do not move private state across ownership boundaries;
    - do not expose private implementation as public contract;

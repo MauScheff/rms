@@ -355,6 +355,16 @@ invariants:
   kind: reliability
   authority: parser
   enforced_by: semantic-change-noop-classifier
+- id: effect-protocols-bind-exact-executors
+  statement: Every declared effect protocol names one exact executor symbol whose binding accepts the declared effect request and returns a declared effect result without owning orchestration.
+  kind: reliability
+  authority: composition
+  enforced_by: effect-protocol-binding-check
+- id: runnable-effects-are-transition-driven
+  statement: An effectful stateful runnable surface reaches a declared machine driver, and effectful iteration or stop, retry, sequencing, and compensation policy does not bypass the canonical transition function.
+  kind: reliability
+  authority: composition
+  enforced_by: machine-execution-path-check
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -415,6 +425,8 @@ verification:
   - verification/laws/semantic_only_binding_attachment.md
   - verification/laws/empty_semantic_sections.md
   - verification/laws/semantic_plan_exact_schema.md
+  - verification/laws/exact_effect_executor_binding.md
+  - verification/laws/transition_driven_runnable_effects.md
   contracts:
   - verification/contracts
   - verification/contracts/add_rms_capability.md
@@ -458,10 +470,10 @@ verification:
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Record the completed canonical binding attachment and exact semantic planning verification.
+  last_semantic_intent: Bind RMS semantic-change record writes to the canonical workbench machine driver and exact one-request executor.
   semantic_revision:
-    digest: sha256:c13fd842abc42a871d4e73c0ff1ed0054fa148b2de3cc46bad0120349494a19f
-    change_record: verification/changes/record-the-completed-canonical-binding-attachment-and-exact-semantic-planning-verification-60810890d63c.yaml
+    digest: sha256:38874bc699ae4d4a0e4c00a99b1852fe0e72ae842d0712a692030f188e000968
+    change_record: verification/changes/bind-rms-semantic-change-record-writes-to-the-canonical-workbench-machine-driver-and-exact-one-request-executor-6eef08246ac0.yaml
     applied_by: rms spec apply
 properties:
 - id: semantic-property-declarations-have-oracles

@@ -40,6 +40,8 @@ Machine rules:
 - The input ADT closes over commands, observed events, and effect results; each case belongs to exactly one category.
 - Every canonical transition declares a stable `case`; distinct outcomes for the same state/input are separate named cases and replay evidence names the same source branch.
 - An effect executor performs one declared request and returns one declared result. Transitions own sequencing, retry, compensation, stop/continue policy, and state progression.
+- Every effectful stateful machine declares an exact `driver_function` in a `machine_driver` role. The driver advances state only through the canonical transition, invokes exact protocol `executor_symbol` functions, and feeds typed effect results back as machine inputs.
+- Every effect-emitting runnable command delegates to an exact callable that reaches the machine driver. Surfaces and adapters must not hide a second lifecycle loop.
 - Fixed examples are a deterministic corpus, not an open-ended fuzz realization.
 
 You can:
@@ -138,6 +140,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Keep changes inside the owning module boundary.
 - Edit bodies inside RMS-declared role files. Add small private pure helpers inside declared pure role files when useful.
 - Do not add private IO helpers in pure roles. Filesystem, network, clocks, randomness, environment, processes, provider calls, and external services must be declared effects with effect results and executed only in adapter, port, or effect-executor roles.
+- For effectful stateful behavior, keep the execution chain explicit: runnable callable -> machine driver -> pure transition -> exact one-request executor -> typed effect result -> machine driver.
 - When new semantic structure is needed, run `rms spec plan/apply/check` instead of inventing files or naming schemes directly. Use `rms machine plan/apply/check` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct.
 - Change public contracts or manifests before code when public meaning changes.
 - Declare new effects, dependencies, profiles, state, migration, compatibility impact, and recovery paths before relying on them.

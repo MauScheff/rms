@@ -30,6 +30,7 @@ description: Inspect an RMS module before planning or changing it; use when owne
    - suspected gaps or drift.
    - binding type mappings versus actual semantic alternatives;
    - canonical input categories and effect request/result protocols;
+   - exact machine driver and effect executor symbols, plus whether each effect-emitting runnable command reaches that driver;
    - whether any executor hides sequencing, retry, compensation, or state progression.
 8. For a proposed task, identify the owning module and the smallest affected contract surface.
 9. Identify whether the task should use:

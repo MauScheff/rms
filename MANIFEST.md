@@ -620,18 +620,19 @@ Every implemented module should declare a domain-named machine. The canonical fi
 | `architecture.machine.name` | Domain-named machine role, such as `PaymentsMachine` or `NutritionAssistantMachine`. |
 | `architecture.machine.mode` | One of `stateless-decision-machine`, `stateful-transition-machine`, `workflow-effect-machine`, `boundary-machine`, `storage-machine`, `integration-machine`, or `projection-machine`. |
 | `architecture.machine.transition_signature` | `input-only` for a justified stateless decision machine; `state-and-input` for every stateful, boundary, workflow, storage, integration, or projection machine. |
+| `architecture.machine.driver_function` | Exact callable that drives an effectful stateful machine through transition, emitted effects, typed results, and follow-up transitions. |
 | `architecture.machine.types` | Binding-native names for state, input, command, event, effect, effect result, reply, rejection, transition, and transition-record containers. These are not semantic cases. |
 | `architecture.machine.states` | Closed state variants. Stateless machines usually contain `Ready` and must justify why lifecycle state is not meaningful. |
 | `architecture.machine.commands/observed_events/events/effects/effect_results/replies/rejections` | Semantic cases that define what the machine accepts, observes, emits, asks the world to do, receives back, returns, and rejects. A case belongs to exactly one input category. |
-| `architecture.machine.effect_protocols` | Effect-to-result mapping, executor role, and atomicity. One-request-one-result is the default when an individual outcome can affect later decisions. |
+| `architecture.machine.effect_protocols` | Effect-to-result mapping, exact executor role and symbol, and atomicity. One-request-one-result is the default when an individual outcome can affect later decisions. |
 | `architecture.machine.transitions` | Accepted and rejected state/input/output transitions. Every branch has a stable `case` used by trace provenance and replay coverage. |
-| `architecture.roles.*` | Binding files or artifacts that realize representation, transition, parser, adapter, effect executor, journal, replay, trace evidence, and related roles. |
+| `architecture.roles.*` | Binding files or artifacts that realize representation, transition, parser, adapter, machine driver, effect executor, journal, replay, trace evidence, and related roles. |
 
 Use `rms machine apply` to add or change these architecture fields only when the semantic layer is already correct. RMS validates the complete final candidate and records the focused change, but it does not synthesize active trace evidence from transition declarations. Implemented transition paths must populate and replay the declared evidence roles. If laws, public contracts, effects, or evidence obligations change, use `rms spec apply` instead.
 
 This is the only accepted implementation-machine model. Collapsed declarations such as `architecture.machine.state`, top-level `architecture.state_type`, or semantic lists containing container type names are invalid rather than compatibility aliases.
 
-Invariant entries declare `authority` as `representation`, `constructor`, `parser`, `transition`, `effect-executor`, or `composition`. State progression, sequencing, retry, compensation, and stop/continue laws belong to `transition`; effect executors may enforce only the mechanics of the external request.
+Invariant entries declare `authority` as `representation`, `constructor`, `parser`, `transition`, `effect-executor`, or `composition`. State progression, sequencing, retry, compensation, and stop/continue laws belong to `transition`; effect executors may enforce only the mechanics of the external request. An effect-emitting runnable command must delegate to an exact callable that reaches the declared machine driver rather than hiding lifecycle control in a surface or adapter.
 
 Ordering, safety, bounded, normalization, parser, and numeric laws also declare semantic properties with input spaces and oracles. A fixed example corpus does not satisfy an open-ended generated-property or coverage-fuzzer claim.
 

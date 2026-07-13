@@ -36,6 +36,7 @@ A project is ready for production pilot use when all requirements hold:
 | Semantic changes are gated | New laws, contracts, states, commands, events, effects, transitions, semantic roles, public entrypoints, and evidence obligations are introduced through `rms spec apply`, then checked with `rms spec check`. |
 | Canonical revision is intact | Strict audit reports `semantic.revision-integrity`; a clean commit does not hide direct manifest edits after RMS apply. |
 | Transition branches are replayed | Every transition has a stable `case`, and strict audit finds matching state/input/destination/source-branch evidence plus declared workflow events. |
+| Effect execution is machine-driven | Every effectful stateful machine declares an exact driver and executor symbols; effect-emitting runnable commands reach the driver, and lifecycle loops do not live in surfaces, adapters, or executors. |
 
 ## New Project Flow
 

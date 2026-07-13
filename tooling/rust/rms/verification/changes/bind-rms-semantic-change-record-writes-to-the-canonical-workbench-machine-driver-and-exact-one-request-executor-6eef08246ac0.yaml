@@ -1,0 +1,67 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Bind RMS semantic-change record writes to the canonical workbench machine driver and exact one-request executor.
+laws: null
+contracts: null
+properties: null
+machine:
+  mode: boundary-machine
+  justification: null
+  transition_signature: null
+  driver_function: drive_rms_workbench
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set:
+    - effect: WriteSemanticChangeRecord
+      results:
+      - SemanticChangeRecordWritten
+      - SemanticChangeRecordWriteRejected
+      executor_role: effect_executor
+      executor_symbol: execute_rms_workbench_effect
+      atomicity: one-request-one-result
+    add: []
+    remove: []
+  transitions: null
+roles:
+  set: []
+  add:
+  - kind: machine_driver
+    effect: null
+    binding_hint: null
+    path: src/main.rs
+  remove: []
+evidence: null
+surfaces: null

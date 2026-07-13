@@ -35,7 +35,7 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - machine semantic lists contain actual alternatives while binding container names appear only under `architecture.machine.types`.
    - stateful machines have one state-plus-input transition; every transition input is exactly one command, observed event, or effect result.
    - every transition has a stable semantic case; multiple outcomes for one state/input are separate cases and each appears in replay evidence with matching source provenance.
-   - every effect declares request/result atomicity, every result returns through transition, and executors contain no business sequencing or state progression.
+   - every effect declares request/result atomicity and an exact executor symbol, every effectful stateful machine declares an exact machine driver, every effect-emitting runnable command reaches that driver, every result returns through transition, and surfaces, adapters, and executors contain no hidden business sequencing or state progression.
    - broad laws that say always, never, bounded, ordered, normalized, parsed, generated, impossible, or must not happen have semantic properties with input spaces, operations, oracles, evidence, and replayable counterexample policy.
    - boundary, storage, integration, and runnable parser surfaces have fuzz-style semantic targets or a concrete no-fuzz justification; fixed corpora do not satisfy open-ended fuzz claims.
    - semantic roles, state variants, commands, events, effects, effect results, public entrypoints, and evidence roles are declared in canonical artifacts rather than invented by direct source edits.

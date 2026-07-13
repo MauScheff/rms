@@ -14,8 +14,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use syn::visit::{self, Visit};
 use syn::{
-    Attribute, ExprMacro, ExprMethodCall, Fields, ImplItem, Item, ItemStruct, Meta, Type, UseTree,
-    Visibility,
+    Attribute, ExprCall, ExprForLoop, ExprLoop, ExprMacro, ExprMethodCall, ExprWhile, Fields,
+    ImplItem, Item, ItemStruct, Meta, Type, UseTree, Visibility,
 };
 use toml::Value as TomlValue;
 use walkdir::WalkDir;
@@ -1184,6 +1184,7 @@ struct SpecApplyReport {
 struct MachineFinalStateReport {
     mode: Option<String>,
     transition_signature: Option<String>,
+    driver_function: Option<String>,
     types: MachineTypeNames,
     states: Vec<String>,
     commands: Vec<String>,
@@ -1260,7 +1261,10 @@ enum RmsWorkbenchCommand {
     PlanMachineChange,
     ApplyMachineChange,
     PlanSemanticChange,
-    ApplySemanticChange,
+    ApplySemanticChange {
+        record_path: PathBuf,
+        record_contents: String,
+    },
     CheckSemanticChange,
     DiffSemanticChange,
     CheckMachineStructure,
@@ -1285,7 +1289,10 @@ enum RmsWorkbenchEvent {
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RmsWorkbenchEffect {
-    WriteSemanticChangeRecord,
+    WriteSemanticChangeRecord {
+        record_path: PathBuf,
+        record_contents: String,
+    },
 }
 
 #[allow(dead_code)]
@@ -1352,12 +1359,18 @@ fn transition(state: RmsWorkbenchState, input: RmsWorkbenchInput) -> RmsWorkbenc
     match (&state, &input) {
         (
             RmsWorkbenchState::Ready,
-            RmsWorkbenchInput::Command(RmsWorkbenchCommand::ApplySemanticChange),
+            RmsWorkbenchInput::Command(RmsWorkbenchCommand::ApplySemanticChange {
+                record_path,
+                record_contents,
+            }),
         ) => RmsWorkbenchTransition {
             next_state: RmsWorkbenchState::WritingSemanticChangeRecord,
             events: Vec::new(),
             commands: Vec::new(),
-            effects: vec![RmsWorkbenchEffect::WriteSemanticChangeRecord],
+            effects: vec![RmsWorkbenchEffect::WriteSemanticChangeRecord {
+                record_path: record_path.clone(),
+                record_contents: record_contents.clone(),
+            }],
             reply: None,
             rejection: None,
         },
@@ -1402,6 +1415,27 @@ fn transition(state: RmsWorkbenchState, input: RmsWorkbenchInput) -> RmsWorkbenc
             rejection: Some(RmsWorkbenchRejection::IllegalTransition),
         },
     }
+}
+
+#[allow(dead_code)]
+fn drive_rms_workbench(
+    initial_state: RmsWorkbenchState,
+    initial_input: RmsWorkbenchInput,
+) -> Vec<RmsWorkbenchTransition> {
+    let mut state = initial_state;
+    let mut pending = vec![initial_input];
+    let mut outputs = Vec::new();
+    while let Some(input) = pending.pop() {
+        let output = transition(state, input);
+        state = output.next_state.clone();
+        for effect in output.effects.iter().cloned().rev() {
+            pending.push(RmsWorkbenchInput::EffectResult(
+                effect_executor::execute_rms_workbench_effect(effect),
+            ));
+        }
+        outputs.push(output);
+    }
+    outputs
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1612,6 +1646,8 @@ struct SemanticMachineChange {
     #[serde(default)]
     transition_signature: Option<String>,
     #[serde(default)]
+    driver_function: Option<String>,
+    #[serde(default)]
     states: MachineVariantListChange,
     #[serde(default)]
     commands: MachineVariantListChange,
@@ -1654,6 +1690,8 @@ struct MachineChangeMachine {
     justification: Option<String>,
     #[serde(default)]
     transition_signature: Option<String>,
+    #[serde(default)]
+    driver_function: Option<String>,
     #[serde(default)]
     types: Option<MachineTypeNames>,
     #[serde(default)]
@@ -1720,6 +1758,8 @@ struct MachineEffectProtocol {
     results: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     executor_role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    executor_symbol: Option<String>,
     atomicity: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     aggregate_justification: Option<String>,
@@ -1863,6 +1903,7 @@ struct StructureMachineReport {
     name: Option<String>,
     mode: Option<String>,
     transition_signature: Option<String>,
+    driver_function: Option<String>,
     types: MachineTypeNames,
     states: Vec<String>,
     commands: Vec<String>,
@@ -12473,6 +12514,31 @@ fn validate_canonical_machine_model(
             "machines with effect results must declare `architecture.machine.types.effect_result`",
         );
     }
+    if get_str(&manifest.value, &["binding"]) != Some("executable")
+        && is_stateful_machine_mode(mode)
+        && !effects.is_empty()
+    {
+        let driver = get_str(
+            &manifest.value,
+            &["architecture", "machine", "driver_function"],
+        );
+        if driver.is_none_or(|driver| driver.trim().is_empty()) {
+            push_unique_warning(
+                diagnostics,
+                "structure.machine-driver-missing",
+                &manifest.path,
+                "effectful stateful machines must declare an exact `architecture.machine.driver_function` that interprets transition outputs and feeds effect results back as inputs",
+            );
+        }
+        if structure_role_paths(manifest, "machine_driver").is_empty() {
+            push_unique_warning(
+                diagnostics,
+                "structure.machine-driver-role-missing",
+                &manifest.path,
+                "effectful stateful machines must declare an `architecture.roles.machine_driver` binding role",
+            );
+        }
+    }
 
     let type_names = [
         types.state.as_deref(),
@@ -12660,6 +12726,22 @@ fn validate_canonical_machine_model(
                 &manifest.path,
                 format!(
                     "effect protocol `{}` must reference a declared executor role",
+                    protocol.effect
+                ),
+            );
+        }
+        if get_str(&manifest.value, &["binding"]) != Some("executable")
+            && protocol
+                .executor_symbol
+                .as_deref()
+                .is_none_or(|symbol| symbol.trim().is_empty())
+        {
+            push_unique_warning(
+                diagnostics,
+                "structure.effect-protocol-executor-symbol-missing",
+                &manifest.path,
+                format!(
+                    "effect protocol `{}` must bind one exact `executor_symbol`; a broad adapter role cannot prove one-request-one-result execution",
                     protocol.effect
                 ),
             );
@@ -13130,6 +13212,7 @@ fn machine_expected_for_shape(shape: &str) -> bool {
     matches!(
         shape,
         "domain-engine"
+            | "boundary-adapter"
             | "workflow"
             | "storage-adapter"
             | "integration-adapter"
@@ -13179,6 +13262,7 @@ fn structure_role_aliases(role: &str) -> Vec<&str> {
     match role {
         "parser" => vec!["parser", "boundary_parser", "boundary-parser", "parsers"],
         "effect_executor" => vec!["effect_executor", "effect-executor", "effect_executors"],
+        "machine_driver" => vec!["machine_driver", "machine-driver", "execution_driver"],
         _ => vec![role],
     }
 }
@@ -15540,6 +15624,7 @@ fn validate_js_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<D
     validate_js_declared_architecture_symbols(manifest, diagnostics, &summary);
     validate_js_semantic_function_symbols(manifest, diagnostics, &summary);
     validate_js_machine_shape(manifest, diagnostics, &source_root);
+    validate_js_machine_execution_path(manifest, diagnostics, &summary, &source_root);
 }
 
 fn validate_executable_implementation(
@@ -15770,6 +15855,7 @@ fn validate_swift_typing(
     validate_swift_stateful_representation(implementation, diagnostics, &summary);
     validate_swift_declared_architecture_symbols(implementation, diagnostics, &summary);
     validate_swift_machine_variants_and_signature(implementation, diagnostics, source_root);
+    validate_swift_machine_execution_path(implementation, diagnostics, &summary, source_root);
 }
 
 fn rust_cargo_manifest_path(manifest: &LoadedManifest, base: &Path, source_root: &Path) -> PathBuf {
@@ -16094,6 +16180,7 @@ fn validate_rust_typing(
     validate_rust_declared_architecture_symbols(implementation, diagnostics, &summary);
     validate_rust_machine_variants_and_signature(implementation, diagnostics, &summary);
     validate_rust_semantic_function_symbols(implementation, diagnostics, &summary);
+    validate_rust_machine_execution_path(implementation, diagnostics, &summary);
 }
 
 fn inspect_rust_typing_file(
@@ -16174,11 +16261,24 @@ fn inspect_rust_typing_file(
                 let function = item_fn.sig.ident.to_string();
                 summary.functions.insert(function.clone());
                 summary
+                    .function_paths
+                    .insert(function.clone(), path.to_path_buf());
+                summary
                     .function_parameter_counts
                     .insert(function.clone(), item_fn.sig.inputs.len());
                 summary
                     .function_signatures
-                    .insert(function, rust_function_signature(&item_fn.sig));
+                    .insert(function.clone(), rust_function_signature(&item_fn.sig));
+                let mut execution = RustExecutionVisitor::default();
+                execution.visit_block(&item_fn.block);
+                summary.function_facts.insert(
+                    function,
+                    RustFunctionFacts {
+                        calls: execution.calls,
+                        has_control_loop: execution.has_control_loop,
+                        touches_effect: execution.touches_effect,
+                    },
+                );
             }
             _ => {}
         }
@@ -16687,6 +16787,15 @@ struct RustTypingSummary {
     enum_variants: std::collections::BTreeMap<String, BTreeSet<String>>,
     function_parameter_counts: std::collections::BTreeMap<String, usize>,
     function_signatures: std::collections::BTreeMap<String, RustFunctionSignature>,
+    function_paths: std::collections::BTreeMap<String, PathBuf>,
+    function_facts: std::collections::BTreeMap<String, RustFunctionFacts>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct RustFunctionFacts {
+    calls: BTreeSet<String>,
+    has_control_loop: bool,
+    touches_effect: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -16726,6 +16835,410 @@ fn rust_outer_type_name(ty: &Type) -> Option<String> {
         Type::Paren(paren) => rust_outer_type_name(&paren.elem),
         _ => None,
     }
+}
+
+#[derive(Default)]
+struct RustExecutionVisitor {
+    calls: BTreeSet<String>,
+    has_control_loop: bool,
+    touches_effect: bool,
+}
+
+impl<'ast> Visit<'ast> for RustExecutionVisitor {
+    fn visit_expr_call(&mut self, node: &'ast ExprCall) {
+        if let syn::Expr::Path(path) = node.func.as_ref() {
+            if let Some(function) = path.path.segments.last() {
+                let function = function.ident.to_string();
+                self.calls.insert(function.clone());
+                if rust_effect_call_marker(&function)
+                    || (function == "new"
+                        && path
+                            .path
+                            .segments
+                            .iter()
+                            .any(|segment| segment.ident == "Command"))
+                {
+                    self.touches_effect = true;
+                }
+            }
+        }
+        visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
+        let method = node.method.to_string();
+        self.calls.insert(method.clone());
+        if rust_effect_call_marker(&method) {
+            self.touches_effect = true;
+        }
+        visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_expr_for_loop(&mut self, node: &'ast ExprForLoop) {
+        self.has_control_loop = true;
+        visit::visit_expr_for_loop(self, node);
+    }
+
+    fn visit_expr_while(&mut self, node: &'ast ExprWhile) {
+        self.has_control_loop = true;
+        visit::visit_expr_while(self, node);
+    }
+
+    fn visit_expr_loop(&mut self, node: &'ast ExprLoop) {
+        self.has_control_loop = true;
+        visit::visit_expr_loop(self, node);
+    }
+
+    fn visit_expr_macro(&mut self, node: &'ast ExprMacro) {
+        if node.mac.path.segments.last().is_some_and(|segment| {
+            matches!(
+                segment.ident.to_string().as_str(),
+                "print" | "println" | "eprint" | "eprintln" | "write" | "writeln"
+            )
+        }) {
+            self.touches_effect = true;
+        }
+        visit::visit_expr_macro(self, node);
+    }
+}
+
+fn rust_effect_call_marker(name: &str) -> bool {
+    matches!(
+        name,
+        "stdin"
+            | "stdout"
+            | "stderr"
+            | "read"
+            | "read_to_string"
+            | "read_to_end"
+            | "write"
+            | "write_all"
+            | "flush"
+            | "open"
+            | "create"
+            | "remove_file"
+            | "rename"
+            | "copy"
+            | "spawn"
+            | "status"
+            | "output"
+            | "wait"
+            | "current_dir"
+            | "current_exe"
+            | "var"
+            | "var_os"
+    )
+}
+
+fn validate_rust_machine_execution_path(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    summary: &RustTypingSummary,
+) {
+    let mode = get_str(&implementation.value, &["architecture", "machine", "mode"]);
+    let effects = get_string_array(
+        &implementation.value,
+        &["architecture", "machine", "effects"],
+    );
+    if mode.is_none_or(|mode| !is_stateful_machine_mode(mode)) || effects.is_empty() {
+        return;
+    }
+
+    let transition = get_str(
+        &implementation.value,
+        &["architecture", "machine", "transition_function"],
+    )
+    .unwrap_or("transition");
+    let Some(driver) = get_str(
+        &implementation.value,
+        &["architecture", "machine", "driver_function"],
+    ) else {
+        return;
+    };
+    let driver = semantic_symbol_name(driver);
+    if !summary.functions.contains(driver) {
+        diagnostics.push(error(
+            "structure.machine-driver-symbol-missing",
+            &implementation.path,
+            format!("declared Rust machine driver `{driver}` was not found"),
+        ));
+        return;
+    }
+    if !rust_symbol_belongs_to_role(
+        summary,
+        driver,
+        &structure_role_paths(implementation, "machine_driver"),
+    ) {
+        diagnostics.push(error(
+            "structure.machine-driver-role-mismatch",
+            &implementation.path,
+            format!(
+                "machine driver `{driver}` is not defined in a declared machine_driver role file"
+            ),
+        ));
+    }
+    if !rust_function_reaches(summary, driver, transition, None) {
+        diagnostics.push(error(
+            "structure.machine-driver-transition-missing",
+            &implementation.path,
+            format!("machine driver `{driver}` does not reach canonical transition `{transition}`"),
+        ));
+    }
+
+    let machine_types = machine_types_from_value(&implementation.value);
+    if summary
+        .function_signatures
+        .get(driver)
+        .is_none_or(|signature| {
+            signature.parameter_types.len() != 2
+                || signature.parameter_types.first().and_then(Option::as_deref)
+                    != machine_types.state.as_deref()
+                || signature.parameter_types.get(1).and_then(Option::as_deref)
+                    != machine_types.input.as_deref()
+        })
+    {
+        diagnostics.push(error(
+            "structure.machine-driver-signature-mismatch",
+            &implementation.path,
+            format!(
+                "Rust machine driver `{driver}` must accept declared state `{}` and input `{}`",
+                machine_types.state.as_deref().unwrap_or("<missing>"),
+                machine_types.input.as_deref().unwrap_or("<missing>")
+            ),
+        ));
+    }
+    for protocol in existing_effect_protocols(implementation) {
+        let Some(executor_symbol) = protocol.executor_symbol.as_deref() else {
+            continue;
+        };
+        let executor = semantic_symbol_name(executor_symbol);
+        if !summary.functions.contains(executor) {
+            diagnostics.push(error(
+                "structure.effect-protocol-executor-symbol-missing",
+                &implementation.path,
+                format!(
+                    "effect `{}` executor symbol `{executor_symbol}` was not found in Rust source",
+                    protocol.effect
+                ),
+            ));
+            continue;
+        }
+        let executor_paths = protocol
+            .executor_role
+            .as_deref()
+            .map(|role| structure_role_paths(implementation, role))
+            .unwrap_or_default();
+        if !rust_symbol_belongs_to_role(summary, executor, &executor_paths) {
+            diagnostics.push(error(
+                "structure.effect-protocol-executor-role-mismatch",
+                &implementation.path,
+                format!(
+                    "effect `{}` executor `{executor}` is not defined in its declared executor role",
+                    protocol.effect
+                ),
+            ));
+        }
+        if let Some(signature) = summary.function_signatures.get(executor) {
+            let expected_input = machine_types.effect.as_deref();
+            let expected_output = machine_types.effect_result.as_deref();
+            if signature.parameter_types.len() != 1
+                || signature.parameter_types.first().and_then(Option::as_deref) != expected_input
+                || signature.return_type.as_deref() != expected_output
+            {
+                diagnostics.push(error(
+                    "structure.effect-protocol-executor-signature-mismatch",
+                    &implementation.path,
+                    format!(
+                        "effect `{}` executor `{executor}` must accept {:?} and return {:?}; found {:?} -> {:?}",
+                        protocol.effect,
+                        expected_input,
+                        expected_output,
+                        signature.parameter_types,
+                        signature.return_type
+                    ),
+                ));
+            }
+        }
+        if protocol.atomicity == "one-request-one-result"
+            && rust_reachable_functions(summary, executor, None)
+                .iter()
+                .any(|function| {
+                    summary
+                        .function_facts
+                        .get(function)
+                        .is_some_and(|facts| facts.has_control_loop)
+                })
+        {
+            diagnostics.push(error(
+                "structure.effect-protocol-not-atomic",
+                &implementation.path,
+                format!(
+                    "effect `{}` executor `{executor}` reaches an iteration loop despite `one-request-one-result` atomicity",
+                    protocol.effect
+                ),
+            ));
+        }
+        if rust_function_reaches(summary, executor, transition, None) {
+            diagnostics.push(error(
+                "structure.effect-result-bypasses-transition",
+                &implementation.path,
+                format!(
+                    "effect `{}` executor `{executor}` calls the machine transition; executors return results and the driver feeds them back",
+                    protocol.effect
+                ),
+            ));
+        }
+        if !rust_function_reaches(summary, driver, executor, None) {
+            diagnostics.push(error(
+                "structure.machine-driver-effect-executor-missing",
+                &implementation.path,
+                format!(
+                    "machine driver `{driver}` does not reach executor `{executor}` for effect `{}`",
+                    protocol.effect
+                ),
+            ));
+        }
+    }
+
+    for surface in architecture_surface_declarations(implementation) {
+        let surface_drives_effects = surface
+            .delegates_to
+            .as_ref()
+            .and_then(|delegation| delegation.command.as_deref())
+            .is_some_and(|command| machine_command_emits_effect(implementation, command));
+        if !surface_drives_effects {
+            continue;
+        }
+        let Some(symbol) = surface
+            .delegates_to
+            .as_ref()
+            .and_then(|delegation| delegation.symbol.as_deref())
+            .filter(|symbol| is_concrete_callable_symbol(symbol))
+        else {
+            continue;
+        };
+        let surface_function = semantic_symbol_name(symbol);
+        if !summary.functions.contains(surface_function) {
+            diagnostics.push(error(
+                "structure.runnable-surface-delegate-symbol-missing",
+                &implementation.path,
+                format!("runnable delegate `{symbol}` was not found in Rust source"),
+            ));
+            continue;
+        }
+        if surface_function != driver
+            && !rust_function_reaches(summary, surface_function, driver, None)
+        {
+            diagnostics.push(error(
+                "structure.runnable-surface-machine-bypass",
+                &implementation.path,
+                format!(
+                    "runnable delegate `{surface_function}` does not reach declared machine driver `{driver}`"
+                ),
+            ));
+        }
+        if surface_function != driver
+            && rust_subgraph_has_effectful_loop(summary, surface_function, Some(driver))
+        {
+            diagnostics.push(error(
+                "structure.effectful-control-flow-outside-machine-driver",
+                &implementation.path,
+                format!(
+                    "runnable delegate `{surface_function}` reaches looped IO outside machine driver `{driver}`; transitions must own stop, retry, sequencing, and progress policy"
+                ),
+            ));
+        }
+    }
+}
+
+fn rust_symbol_belongs_to_role(
+    summary: &RustTypingSummary,
+    symbol: &str,
+    role_paths: &[String],
+) -> bool {
+    let Some(path) = summary.function_paths.get(symbol) else {
+        return false;
+    };
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    role_paths
+        .iter()
+        .any(|role| normalized.ends_with(&role.replace('\\', "/")))
+}
+
+fn rust_reachable_functions(
+    summary: &RustTypingSummary,
+    start: &str,
+    blocked: Option<&str>,
+) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut pending = vec![start.to_string()];
+    while let Some(function) = pending.pop() {
+        if blocked == Some(function.as_str()) || !seen.insert(function.clone()) {
+            continue;
+        }
+        if let Some(facts) = summary.function_facts.get(&function) {
+            for call in &facts.calls {
+                if summary.functions.contains(call) && !seen.contains(call) {
+                    pending.push(call.clone());
+                }
+            }
+        }
+    }
+    seen
+}
+
+fn rust_function_reaches(
+    summary: &RustTypingSummary,
+    start: &str,
+    target: &str,
+    blocked: Option<&str>,
+) -> bool {
+    rust_reachable_functions(summary, start, blocked).contains(target)
+}
+
+fn rust_subgraph_has_effectful_loop(
+    summary: &RustTypingSummary,
+    start: &str,
+    blocked: Option<&str>,
+) -> bool {
+    rust_reachable_functions(summary, start, blocked)
+        .into_iter()
+        .filter(|function| {
+            summary
+                .function_facts
+                .get(function)
+                .is_some_and(|facts| facts.has_control_loop)
+        })
+        .any(|loop_function| {
+            rust_reachable_functions(summary, &loop_function, blocked)
+                .iter()
+                .any(|function| {
+                    summary
+                        .function_facts
+                        .get(function)
+                        .is_some_and(|facts| facts.touches_effect)
+                })
+        })
+}
+
+fn machine_command_emits_effect(manifest: &LoadedManifest, command: &str) -> bool {
+    existing_machine_transitions(manifest)
+        .iter()
+        .any(|transition| {
+            semantic_names_equivalent(&transition_input_variant(&transition.on), command)
+                && !transition.effects.is_empty()
+        })
+}
+
+fn semantic_names_equivalent(left: &str, right: &str) -> bool {
+    identifier_word_tokens(left)
+        .into_iter()
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        == identifier_word_tokens(right)
+            .into_iter()
+            .map(|token| token.to_ascii_lowercase())
+            .collect::<Vec<_>>()
 }
 
 #[derive(Default)]
@@ -17852,6 +18365,359 @@ fn validate_js_machine_shape(
             ),
         );
     }
+}
+
+fn validate_js_machine_execution_path(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    summary: &JsSourceSummary,
+    source_root: &Path,
+) {
+    if !implementation_requires_machine_driver(implementation) {
+        return;
+    }
+    let Some(driver_symbol) = get_str(
+        &implementation.value,
+        &["architecture", "machine", "driver_function"],
+    ) else {
+        return;
+    };
+    let driver = semantic_symbol_name(driver_symbol);
+    if !summary.functions.contains(driver) {
+        diagnostics.push(error(
+            "structure.machine-driver-symbol-missing",
+            &implementation.path,
+            format!("declared JavaScript machine driver `{driver_symbol}` was not found"),
+        ));
+        return;
+    }
+    let driver_role_source = declared_role_source(implementation, "machine_driver");
+    let Some(driver_source) = js_function_source(&driver_role_source, driver) else {
+        diagnostics.push(error(
+            "structure.machine-driver-role-mismatch",
+            &implementation.path,
+            format!(
+                "JavaScript machine driver `{driver}` is not defined in a declared machine_driver role file"
+            ),
+        ));
+        return;
+    };
+    if js_function_parameter_count(driver_source, driver) != Some(2) {
+        diagnostics.push(error(
+            "structure.machine-driver-signature-mismatch",
+            &implementation.path,
+            format!("JavaScript machine driver `{driver}` must accept initial state and input"),
+        ));
+    }
+    let transition = get_str(
+        &implementation.value,
+        &["architecture", "machine", "transition_function"],
+    )
+    .unwrap_or("transition");
+    if !source_calls_symbol(driver_source, transition) {
+        diagnostics.push(error(
+            "structure.machine-driver-transition-missing",
+            &implementation.path,
+            format!(
+                "JavaScript machine driver `{driver}` does not call canonical transition `{transition}`"
+            ),
+        ));
+    }
+
+    for protocol in existing_effect_protocols(implementation) {
+        let Some(executor_symbol) = protocol.executor_symbol.as_deref() else {
+            continue;
+        };
+        let executor = semantic_symbol_name(executor_symbol);
+        if !summary.functions.contains(executor) {
+            diagnostics.push(error(
+                "structure.effect-protocol-executor-symbol-missing",
+                &implementation.path,
+                format!(
+                    "effect `{}` executor symbol `{executor_symbol}` was not found in JavaScript source",
+                    protocol.effect
+                ),
+            ));
+            continue;
+        }
+        let executor_role = protocol
+            .executor_role
+            .as_deref()
+            .unwrap_or("effect_executor");
+        let executor_role_source = declared_role_source(implementation, executor_role);
+        let Some(executor_source) = js_function_source(&executor_role_source, executor) else {
+            diagnostics.push(error(
+                "structure.effect-protocol-executor-role-mismatch",
+                &implementation.path,
+                format!(
+                    "effect `{}` executor `{executor}` is not defined in its declared executor role",
+                    protocol.effect
+                ),
+            ));
+            continue;
+        };
+        if js_function_parameter_count(executor_source, executor) != Some(1) {
+            diagnostics.push(error(
+                "structure.effect-protocol-executor-signature-mismatch",
+                &implementation.path,
+                format!(
+                    "effect `{}` JavaScript executor `{executor}` must accept exactly one effect request",
+                    protocol.effect
+                ),
+            ));
+        }
+        if !source_calls_symbol(driver_source, executor) {
+            diagnostics.push(error(
+                "structure.machine-driver-effect-executor-missing",
+                &implementation.path,
+                format!(
+                    "JavaScript machine driver `{driver}` does not call executor `{executor}` for effect `{}`",
+                    protocol.effect
+                ),
+            ));
+        }
+    }
+
+    validate_textual_surface_driver_paths(
+        implementation,
+        diagnostics,
+        driver,
+        &read_js_sources_concatenated(source_root),
+        js_function_source,
+    );
+}
+
+fn validate_swift_machine_execution_path(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    summary: &SwiftTypingSummary,
+    source_root: &Path,
+) {
+    if !implementation_requires_machine_driver(implementation) {
+        return;
+    }
+    let Some(driver_symbol) = get_str(
+        &implementation.value,
+        &["architecture", "machine", "driver_function"],
+    ) else {
+        return;
+    };
+    let driver = semantic_symbol_name(driver_symbol);
+    if !summary.functions.contains(driver) {
+        diagnostics.push(error(
+            "structure.machine-driver-symbol-missing",
+            &implementation.path,
+            format!("declared Swift machine driver `{driver_symbol}` was not found"),
+        ));
+        return;
+    }
+    let driver_role_source = declared_role_source(implementation, "machine_driver");
+    let Some(driver_source) = swift_function_source(&driver_role_source, driver) else {
+        diagnostics.push(error(
+            "structure.machine-driver-role-mismatch",
+            &implementation.path,
+            format!(
+                "Swift machine driver `{driver}` is not defined in a declared machine_driver role file"
+            ),
+        ));
+        return;
+    };
+    if swift_function_signature(driver_source, driver)
+        .is_none_or(|signature| signature.parameter_types.len() != 2)
+    {
+        diagnostics.push(error(
+            "structure.machine-driver-signature-mismatch",
+            &implementation.path,
+            format!("Swift machine driver `{driver}` must accept initial state and input"),
+        ));
+    }
+    let transition = get_str(
+        &implementation.value,
+        &["architecture", "machine", "transition_function"],
+    )
+    .unwrap_or("transition");
+    if !source_calls_symbol(driver_source, transition) {
+        diagnostics.push(error(
+            "structure.machine-driver-transition-missing",
+            &implementation.path,
+            format!(
+                "Swift machine driver `{driver}` does not call canonical transition `{transition}`"
+            ),
+        ));
+    }
+    let machine_types = machine_types_from_value(&implementation.value);
+    for protocol in existing_effect_protocols(implementation) {
+        let Some(executor_symbol) = protocol.executor_symbol.as_deref() else {
+            continue;
+        };
+        let executor = semantic_symbol_name(executor_symbol);
+        if !summary.functions.contains(executor) {
+            diagnostics.push(error(
+                "structure.effect-protocol-executor-symbol-missing",
+                &implementation.path,
+                format!(
+                    "effect `{}` executor symbol `{executor_symbol}` was not found in Swift source",
+                    protocol.effect
+                ),
+            ));
+            continue;
+        }
+        let executor_role = protocol
+            .executor_role
+            .as_deref()
+            .unwrap_or("effect_executor");
+        let executor_role_source = declared_role_source(implementation, executor_role);
+        let Some(executor_source) = swift_function_source(&executor_role_source, executor) else {
+            diagnostics.push(error(
+                "structure.effect-protocol-executor-role-mismatch",
+                &implementation.path,
+                format!(
+                    "effect `{}` executor `{executor}` is not defined in its declared executor role",
+                    protocol.effect
+                ),
+            ));
+            continue;
+        };
+        let expected_input = machine_types.effect.as_deref();
+        let expected_output = machine_types.effect_result.as_deref();
+        if swift_function_signature(executor_source, executor).is_none_or(|signature| {
+            signature.parameter_types.len() != 1
+                || signature.parameter_types.first().map(String::as_str) != expected_input
+                || signature.return_type.as_deref() != expected_output
+        }) {
+            diagnostics.push(error(
+                "structure.effect-protocol-executor-signature-mismatch",
+                &implementation.path,
+                format!(
+                    "effect `{}` Swift executor `{executor}` must accept {:?} and return {:?}",
+                    protocol.effect, expected_input, expected_output
+                ),
+            ));
+        }
+        if !source_calls_symbol(driver_source, executor) {
+            diagnostics.push(error(
+                "structure.machine-driver-effect-executor-missing",
+                &implementation.path,
+                format!(
+                    "Swift machine driver `{driver}` does not call executor `{executor}` for effect `{}`",
+                    protocol.effect
+                ),
+            ));
+        }
+    }
+
+    let source = swift_source_files(source_root)
+        .into_iter()
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .collect::<Vec<_>>()
+        .join("\n");
+    validate_textual_surface_driver_paths(
+        implementation,
+        diagnostics,
+        driver,
+        &source,
+        swift_function_source,
+    );
+}
+
+fn implementation_requires_machine_driver(implementation: &LoadedManifest) -> bool {
+    get_str(&implementation.value, &["architecture", "machine", "mode"])
+        .is_some_and(is_stateful_machine_mode)
+        && !get_string_array(
+            &implementation.value,
+            &["architecture", "machine", "effects"],
+        )
+        .is_empty()
+}
+
+fn declared_role_source(implementation: &LoadedManifest, role: &str) -> String {
+    let base = implementation
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    structure_role_paths(implementation, role)
+        .into_iter()
+        .filter_map(|path| fs::read_to_string(base.join(path)).ok())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn source_calls_symbol(source: &str, symbol: &str) -> bool {
+    let symbol = semantic_symbol_name(symbol);
+    source.contains(&format!("{symbol}(")) || source.contains(&format!("{symbol} ("))
+}
+
+fn validate_textual_surface_driver_paths<'a>(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    driver: &str,
+    source: &'a str,
+    function_source: fn(&'a str, &str) -> Option<&'a str>,
+) {
+    for surface in architecture_surface_declarations(implementation) {
+        let Some(delegation) = surface.delegates_to.as_ref() else {
+            continue;
+        };
+        if !delegation
+            .command
+            .as_deref()
+            .is_some_and(|command| machine_command_emits_effect(implementation, command))
+        {
+            continue;
+        }
+        let Some(symbol) = delegation
+            .symbol
+            .as_deref()
+            .filter(|symbol| is_concrete_callable_symbol(symbol))
+        else {
+            continue;
+        };
+        let surface_function = semantic_symbol_name(symbol);
+        if surface_function == driver {
+            continue;
+        }
+        let Some(surface_source) = function_source(source, surface_function) else {
+            diagnostics.push(error(
+                "structure.runnable-surface-delegate-symbol-missing",
+                &implementation.path,
+                format!("runnable delegate `{symbol}` was not found in binding source"),
+            ));
+            continue;
+        };
+        if !source_calls_symbol(surface_source, driver) {
+            diagnostics.push(error(
+                "structure.runnable-surface-machine-bypass",
+                &implementation.path,
+                format!(
+                    "runnable delegate `{surface_function}` does not call declared machine driver `{driver}`"
+                ),
+            ));
+        }
+    }
+}
+
+fn swift_function_source<'a>(source: &'a str, function_name: &str) -> Option<&'a str> {
+    braced_declaration_source(source, &format!("func {function_name}("))
+}
+
+fn braced_declaration_source<'a>(source: &'a str, marker: &str) -> Option<&'a str> {
+    let start = source.find(marker)?;
+    let after = &source[start..];
+    let open = after.find('{')?;
+    let mut depth = 0_i32;
+    for (index, character) in after[open..].char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&after[..open + index + 1]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn js_function_parameter_count(source: &str, function_name: &str) -> Option<usize> {
@@ -23817,11 +24683,23 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "structure.effect-protocol-unknown-result"
                 | "structure.effect-protocol-result-missing"
                 | "structure.effect-protocol-executor-missing"
+                | "structure.effect-protocol-executor-symbol-missing"
+                | "structure.effect-protocol-executor-role-mismatch"
+                | "structure.effect-protocol-executor-signature-mismatch"
                 | "structure.effect-result-bypasses-transition"
                 | "structure.effect-protocol-not-atomic"
                 | "structure.replay-effect-result-gap"
                 | "structure.effect-lifecycle-unused"
                 | "structure.aggregate-effect-policy-hidden"
+                | "structure.machine-driver-missing"
+                | "structure.machine-driver-role-missing"
+                | "structure.machine-driver-symbol-missing"
+                | "structure.machine-driver-role-mismatch"
+                | "structure.machine-driver-signature-mismatch"
+                | "structure.machine-driver-transition-missing"
+                | "structure.machine-driver-effect-executor-missing"
+                | "structure.runnable-surface-machine-bypass"
+                | "structure.effectful-control-flow-outside-machine-driver"
         )
         || check.starts_with("trace.")
 }
@@ -24061,6 +24939,8 @@ fn structure_machine_report(value: &YamlValue) -> StructureMachineReport {
         mode: get_str(value, &["architecture", "machine", "mode"]).map(str::to_string),
         transition_signature: get_str(value, &["architecture", "machine", "transition_signature"])
             .map(str::to_string),
+        driver_function: get_str(value, &["architecture", "machine", "driver_function"])
+            .map(str::to_string),
         types: machine_types_from_value(value),
         states: get_string_array(value, &["architecture", "machine", "states"]),
         commands: get_string_array(value, &["architecture", "machine", "commands"]),
@@ -24169,6 +25049,14 @@ fn print_structure_report(report: &StructureReport) {
             .as_deref()
             .unwrap_or("<not declared>")
     );
+    println!(
+        "  driver_function: {}",
+        report
+            .machine
+            .driver_function
+            .as_deref()
+            .unwrap_or("<not applicable>")
+    );
     println!("  types:");
     for (field, value) in [
         ("state", report.machine.types.state.as_deref()),
@@ -24204,14 +25092,22 @@ fn print_structure_report(report: &StructureReport) {
     } else {
         for protocol in &report.machine.effect_protocols {
             println!(
-                "    {} -> {} [{}]",
+                "    {} -> {} [{}; executor: {}#{}]",
                 protocol.effect,
                 if protocol.results.is_empty() {
                     "<no results>".to_string()
                 } else {
                     protocol.results.join(", ")
                 },
-                protocol.atomicity
+                protocol.atomicity,
+                protocol
+                    .executor_role
+                    .as_deref()
+                    .unwrap_or("<missing-role>"),
+                protocol
+                    .executor_symbol
+                    .as_deref()
+                    .unwrap_or("<missing-symbol>")
             );
         }
     }
@@ -24412,6 +25308,15 @@ fn render_machine_plan_prompt(
             .as_deref()
             .unwrap_or("<missing>")
     )?;
+    writeln!(
+        out,
+        "- driver_function: {}",
+        report
+            .machine
+            .driver_function
+            .as_deref()
+            .unwrap_or("<not declared>")
+    )?;
     writeln!(out, "- binding types: state={}, input={}, command={}, event={}, effect={}, effect_result={}, reply={}, rejection={}, transition={}, transition_record={}",
         report.machine.types.state.as_deref().unwrap_or("<missing>"),
         report.machine.types.input.as_deref().unwrap_or("<not applicable>"),
@@ -24461,6 +25366,16 @@ fn render_machine_plan_prompt(
             .transition_signature
             .as_deref()
             .unwrap_or("state-and-input")
+    )?;
+    writeln!(
+        out,
+        "  driver_function: {}",
+        report
+            .machine
+            .driver_function
+            .as_deref()
+            .map(yaml_quote)
+            .unwrap_or_else(|| "null".to_string())
     )?;
     writeln!(out, "  types:")?;
     for (field, value) in [
@@ -24534,7 +25449,7 @@ fn render_machine_plan_prompt(
     writeln!(out, "For each variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "Transition items use `from`, `on`, `to`, stable `case`, optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every semantic branch has its own case, including multiple destinations or outputs for the same state and input.")?;
     writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effect-protocol removal items use `effect`. Role removal items use `kind` and optional `path`.")?;
-    writeln!(out, "Role items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, and `atomicity: one-request-one-result`; aggregate protocols use `atomicity: aggregate` plus `aggregate_justification` and evidence.")?;
+    writeln!(out, "Role items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`. Effectful stateful machines declare one `machine_driver` role and set `machine.driver_function` to its exact callable. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; aggregate protocols use `atomicity: aggregate` plus `aggregate_justification` and evidence.")?;
     writeln!(out, "Run `rms machine apply ... --dry-run` first and do not edit source while `final_machine` still contains scaffold-generic variants instead of the intended product cases.")?;
     writeln!(out)?;
     writeln!(out, "## Machine-Gate Checklist")?;
@@ -24544,9 +25459,11 @@ fn render_machine_plan_prompt(
         "Lifecycle, missing context, confirmation, retry, reconciliation, persistence, or external truth requires meaningful state variants.",
         "Stateful transitions accept state plus one input ADT over commands, observed events, and effect results, then return next state, events, commands, effects, and reply.",
         "Every transition input belongs to exactly one category and every effect-result case returns through the canonical transition.",
+        "Every effectful stateful machine has an exact driver function in a declared machine_driver role; the driver alone advances state, invokes the canonical transition, executes emitted effects, and feeds typed results back as inputs.",
         "Expected failures are explicit rejections, not ambient throws.",
         "Boundary input parses into domain commands before delegation.",
-        "Effects declare atomic request/result protocols. Executors perform one request and return one result; transitions own sequencing, retry, compensation, and stop/continue policy.",
+        "Effects declare atomic request/result protocols with exact executor symbols. Executors perform one request and return one result; transitions own sequencing, retry, compensation, and stop/continue policy.",
+        "An effect-emitting runnable command delegates to an exact callable that reaches the machine driver; a surface or adapter must not hide its own lifecycle loop.",
         "Public constructors cannot create contradictory values without a validated rejection path.",
         "Bad behavior should be diagnosable as invalid command, illegal transition, stale state, unexpected effect result, bad projection, or missing evidence.",
     ] {
@@ -25072,7 +25989,8 @@ fn validate_machine_mode_obligations(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let states = final_machine_variants(manifest, "states", &change.machine.states, true);
-    if is_stateful_machine_mode(&change.machine.mode)
+    if get_str(&manifest.value, &["binding"]) != Some("executable")
+        && is_stateful_machine_mode(&change.machine.mode)
         && !states.iter().any(|state| !is_ready_like_state(state))
     {
         diagnostics.push(error(
@@ -25336,6 +26254,7 @@ fn validate_machine_effect_protocols(
         false,
     );
     let protocols = final_effect_protocols(manifest, change);
+    let final_roles = final_machine_role_map(manifest, change);
     let mut seen = BTreeSet::new();
     for protocol in &protocols {
         if !seen.insert(protocol.effect.clone()) {
@@ -25386,6 +26305,35 @@ fn validate_machine_effect_protocols(
                     protocol.effect
                 ),
             ));
+        } else if protocol
+            .executor_role
+            .as_deref()
+            .is_some_and(|role| final_roles.get(role).is_none_or(|paths| paths.is_empty()))
+        {
+            diagnostics.push(error(
+                "structure.effect-protocol-executor-missing",
+                &manifest.path,
+                format!(
+                    "effect protocol `{}` references executor role `{}`, but that role has no declared file",
+                    protocol.effect,
+                    protocol.executor_role.as_deref().unwrap_or("<missing>")
+                ),
+            ));
+        }
+        if get_str(&manifest.value, &["binding"]) != Some("executable")
+            && protocol
+                .executor_symbol
+                .as_deref()
+                .is_none_or(|symbol| symbol.trim().is_empty())
+        {
+            diagnostics.push(error(
+                "structure.effect-protocol-executor-symbol-missing",
+                &manifest.path,
+                format!(
+                    "effect protocol `{}` must name one exact `executor_symbol`",
+                    protocol.effect
+                ),
+            ));
         }
         match protocol.atomicity.as_str() {
             "one-request-one-result" => {}
@@ -25422,6 +26370,33 @@ fn validate_machine_effect_protocols(
                 "structure.effect-protocol-missing",
                 &manifest.path,
                 format!("declared effect `{effect}` requires an effect protocol"),
+            ));
+        }
+    }
+    let driver_function = change.machine.driver_function.as_deref().or_else(|| {
+        get_str(
+            &manifest.value,
+            &["architecture", "machine", "driver_function"],
+        )
+    });
+    if is_stateful_machine_mode(&change.machine.mode)
+        && !final_machine_variants(manifest, "effects", &change.machine.effects, false).is_empty()
+    {
+        if driver_function.is_none_or(|driver| driver.trim().is_empty()) {
+            diagnostics.push(error(
+                "structure.machine-driver-missing",
+                &manifest.path,
+                "effectful stateful machines must name `machine.driver_function`",
+            ));
+        }
+        if final_roles
+            .get("machine_driver")
+            .is_none_or(|paths| paths.is_empty())
+        {
+            diagnostics.push(error(
+                "structure.machine-driver-role-missing",
+                &manifest.path,
+                "effectful stateful machines must declare a machine_driver role file",
             ));
         }
     }
@@ -25798,6 +26773,13 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
         &["architecture", "machine", "transition_function"],
         "transition",
     );
+    if let Some(driver_function) = change.machine.driver_function.as_deref() {
+        set_yaml_string_path(
+            value,
+            &["architecture", "machine", "driver_function"],
+            driver_function,
+        );
+    }
     if let Some(justification) = change.machine.justification.as_deref() {
         let field = if change.machine.mode == "stateless-decision-machine" {
             "stateless_justification"
@@ -26003,6 +26985,13 @@ fn machine_final_state_report(
                 }
             },
         )),
+        driver_function: change.machine.driver_function.clone().or_else(|| {
+            get_str(
+                &manifest.value,
+                &["architecture", "machine", "driver_function"],
+            )
+            .map(str::to_string)
+        }),
         types: final_machine_types(manifest, change),
         states: final_machine_variant_values(manifest, "states", &change.machine.states, true),
         commands: final_machine_variant_values(
@@ -26285,6 +27274,13 @@ fn print_machine_final_state(final_machine: &MachineFinalStateReport) {
             .as_deref()
             .unwrap_or("<not declared>")
     );
+    println!(
+        "  driver_function: {}",
+        final_machine
+            .driver_function
+            .as_deref()
+            .unwrap_or("<not declared>")
+    );
     println!("  types:");
     for (label, value) in [
         ("state", final_machine.types.state.as_deref()),
@@ -26330,9 +27326,17 @@ fn print_machine_final_state(final_machine: &MachineFinalStateReport) {
         println!("  effect_protocols:");
         for protocol in &final_machine.effect_protocols {
             println!(
-                "    - {} -> {} [{}]",
+                "    - {} -> {} via {}#{} [{}]",
                 protocol.effect,
                 protocol.results.join(", "),
+                protocol
+                    .executor_role
+                    .as_deref()
+                    .unwrap_or("<role missing>"),
+                protocol
+                    .executor_symbol
+                    .as_deref()
+                    .unwrap_or("<symbol missing>"),
                 protocol.atomicity
             );
         }
@@ -26433,8 +27437,24 @@ fn surface_delegation_from_input(input: &str, command: &str) -> SurfaceDelegatio
         } else {
             "adapter".to_string()
         });
-    } else {
+    } else if matches!(
+        input,
+        "parser"
+            | "adapter"
+            | "transition"
+            | "effect_executor"
+            | "effect-executor"
+            | "machine_driver"
+            | "machine-driver"
+            | "port"
+            | "ports"
+            | "runnable_surface"
+            | "runnable-surface"
+    ) {
         delegation.role = Some(input.to_string());
+    } else {
+        delegation.symbol = Some(input.to_string());
+        delegation.role = Some("adapter".to_string());
     }
     delegation
 }
@@ -26559,6 +27579,24 @@ fn validate_surface_declaration(
             ));
         }
     }
+    let effectful_surface_command = get_str(&manifest.value, &["architecture", "machine", "mode"])
+        .is_some_and(is_stateful_machine_mode)
+        && delegation
+            .command
+            .as_deref()
+            .is_some_and(|command| machine_command_emits_effect(manifest, command));
+    if effectful_surface_command
+        && delegation
+            .symbol
+            .as_deref()
+            .is_none_or(|symbol| !is_concrete_callable_symbol(symbol))
+    {
+        diagnostics.push(error(
+            "structure.runnable-surface-delegate-symbol-missing",
+            &manifest.path,
+            "effectful stateful runnable surfaces must delegate to an exact callable symbol, not only a role or source file",
+        ));
+    }
     let no_effects_justification = declaration
         .no_effects_justification
         .as_deref()
@@ -26604,6 +27642,26 @@ fn validate_surface_declaration(
         }
     }
     diagnostics
+}
+
+fn is_concrete_callable_symbol(symbol: &str) -> bool {
+    let symbol = symbol.trim();
+    if symbol.is_empty() {
+        return false;
+    }
+    if let Some((path, callable)) = symbol.rsplit_once('#') {
+        return !path.trim().is_empty()
+            && is_safe_relative_artifact_path(path)
+            && is_stable_identifier(callable);
+    }
+    !symbol.contains('/')
+        && !symbol.contains('\\')
+        && !symbol.ends_with(".rs")
+        && !symbol.ends_with(".swift")
+        && !symbol.ends_with(".js")
+        && !symbol.ends_with(".mjs")
+        && (is_stable_identifier(symbol)
+            || symbol.rsplit("::").next().is_some_and(is_stable_identifier))
 }
 
 fn is_supported_surface_binding(surface: &str) -> bool {
@@ -27129,6 +28187,17 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "machine:")?;
         writeln!(out, "  mode: {mode}")?;
         writeln!(out, "  transition_signature: {signature}")?;
+        let driver_function = get_str(
+            &implementation.value,
+            &["architecture", "machine", "driver_function"],
+        );
+        writeln!(
+            out,
+            "  driver_function: {}",
+            driver_function
+                .map(yaml_quote)
+                .unwrap_or_else(|| "null".to_string())
+        )?;
         for field in [
             "states",
             "commands",
@@ -27168,7 +28237,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
     writeln!(out, "For every machine variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "Machine transition items use `from`, `on`, `to`, stable `case`, optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names.")?;
-    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, and `atomicity: one-request-one-result`; `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Role removal items use `kind` and optional `path`.")?;
+    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effectful stateful machines set `machine.driver_function` and declare its file as a `machine_driver` role. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Role removal items use `kind` and optional `path`.")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
     writeln!(out, "Contract add/set entries use scalar `name`, `version`, `command`, product-specific `meaning`, and non-empty string lists `accepts`, `ensures`, and `rejects`. Generated capability contracts are scaffold obligations: replace them with `contracts.set` before implementation or production audit. Contract remove entries use scalar `name` and optional scalar `version`.")?;
@@ -27176,7 +28245,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "This target has no implementation binding, so `machine`, `roles`, and `surfaces` are null. Keep them null for contract/law/property-only work. Before requesting machine roles or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
     }
     writeln!(out)?;
-    writeln!(out, "Surface add entries use `name`, `kind: runnable-boundary`, `surface`, `entrypoint`, `delegates_to.role` or `delegates_to.symbol`, `delegates_to.command`, `effects` or `no_effects_justification`, and `evidence`. A delegated role must exist in `architecture.roles`; use a concrete symbol when delegation is function-specific.")?;
+    writeln!(out, "Surface add entries use `name`, `kind: runnable-boundary`, `surface`, `entrypoint`, `delegates_to.role` or `delegates_to.symbol`, `delegates_to.command`, `effects` or `no_effects_justification`, and `evidence`. A delegated role must exist in `architecture.roles`; effect-emitting commands use an exact callable symbol that reaches the declared machine driver.")?;
     writeln!(out)?;
     writeln!(out, "## Semantic Gate Checklist")?;
     for item in [
@@ -27186,7 +28255,9 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         "Semantic lists contain case names, never binding container names; bindings generate idiomatic enums, sealed cases, or tagged constructors from those cases.",
         "Each always/never/bounded/parser/normalization/numeric/reusable/state-machine law has a semantic property with input_space, oracle, evidence, and counterexample replay policy.",
         "Every stateful input is exactly one command, observed event, or effect result, and every illegal state/input combination is rejected explicitly.",
-        "Effects have one-request-one-result protocols and adapter, port, effect-executor, or explicit delegation roles; executors do not own business sequencing.",
+        "Effects have one-request-one-result protocols with exact executor symbols; executors do not own business sequencing.",
+        "Effectful stateful machines declare an exact machine driver that calls the pure transition, invokes emitted-effect executors, and feeds each typed result back through the transition.",
+        "Effect-emitting runnable commands delegate to an exact callable that reaches the machine driver; surfaces and adapters do not hide lifecycle loops.",
         "Runnable app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints are declared as surfaces before files own product behavior.",
         "Evidence names the promise, scenario, command/tool, expected result, source revision, and related law/contract/machine item; it never claims a current filesystem snapshot or missing Git revision.",
         "`rms spec apply` records the exact semantic-change object under `verification/changes/`; command logs with placeholders are not evidence.",
@@ -28224,6 +29295,14 @@ fn semantic_machine_change_requests_change(
     {
         return true;
     }
+    if machine.driver_function.as_deref().is_some_and(|driver| {
+        get_str(
+            &implementation.value,
+            &["architecture", "machine", "driver_function"],
+        ) != Some(driver)
+    }) {
+        return true;
+    }
     machine
         .justification
         .as_deref()
@@ -28831,6 +29910,7 @@ fn semantic_machine_change_to_machine_change(
             mode: machine.mode.clone(),
             justification: machine.justification.clone(),
             transition_signature: machine.transition_signature.clone(),
+            driver_function: machine.driver_function.clone(),
             types: None,
             states: machine.states.clone(),
             commands: machine.commands.clone(),
@@ -29023,8 +30103,18 @@ fn write_semantic_change_record(
     let path = semantic_change_record_path(context, change);
     let rendered =
         serde_yaml::to_string(change).with_context(|| "failed to render semantic-change record")?;
-    effect_executor::write_if_changed(&path, &rendered)
-        .with_context(|| format!("failed to write `{}`", path.display()))?;
+    let outputs = drive_rms_workbench(
+        RmsWorkbenchState::Ready,
+        RmsWorkbenchInput::Command(RmsWorkbenchCommand::ApplySemanticChange {
+            record_path: path.clone(),
+            record_contents: rendered,
+        }),
+    );
+    if !outputs.iter().any(|output| {
+        output.reply == Some(RmsWorkbenchReply::SemanticChangeApplied) && output.rejection.is_none()
+    }) {
+        bail!("failed to write `{}`", path.display());
+    }
     Ok(path)
 }
 
@@ -34134,6 +35224,7 @@ impl BindingScaffoldModel {
             effect: "Execute".to_string(),
             results: self.declared_effect_results(),
             executor_role: Some("effect_executor".to_string()),
+            executor_symbol: Some("execute_effect".to_string()),
             atomicity: "one-request-one-result".to_string(),
             aggregate_justification: None,
             evidence: Vec::new(),
@@ -34462,6 +35553,12 @@ fn scaffold_rust_module(path: &Path, model: &BindingScaffoldModel) -> Result<()>
             &path.join("src").join("effect_executor.rs"),
             &render_rust_effect_executor_rs(&model.names),
         )?;
+        if model.stateful() {
+            write_new_file(
+                &path.join("src").join("machine_driver.rs"),
+                &render_rust_machine_driver_rs(&model.names),
+            )?;
+        }
     }
     Ok(())
 }
@@ -34506,6 +35603,15 @@ fn scaffold_swift_module(path: &Path, model: &BindingScaffoldModel) -> Result<()
                 .join("EffectExecutor.swift"),
             &render_swift_effect_executor(&model.names),
         )?;
+        if model.stateful() {
+            write_new_file(
+                &path
+                    .join("Sources")
+                    .join(&target_name)
+                    .join("MachineDriver.swift"),
+                &render_swift_machine_driver(&model.names),
+            )?;
+        }
     }
     write_new_file(
         &path
@@ -34546,6 +35652,12 @@ fn scaffold_js_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
             &path.join("src").join("effect_executor.mjs"),
             &render_js_effect_executor_mjs(&model.names),
         )?;
+        if model.stateful() {
+            write_new_file(
+                &path.join("src").join("machine_driver.mjs"),
+                &render_js_machine_driver_mjs(&model.names),
+            )?;
+        }
     }
     match model.shape {
         ScaffoldShape::BoundaryAdapter
@@ -35287,6 +36399,11 @@ fn render_traceable_roles_yaml_with_parser(
         let executor_path = binding_sibling_role_path(transition_path, "effect_executor");
         let _ = writeln!(out, "    effect_executor:");
         let _ = writeln!(out, "      - {executor_path}");
+        if is_stateful_machine_mode(machine_mode_for_shape(shape)) {
+            let driver_path = binding_sibling_role_path(transition_path, "machine_driver");
+            let _ = writeln!(out, "    machine_driver:");
+            let _ = writeln!(out, "      - {driver_path}");
+        }
     }
     let _ = writeln!(out, "    replay_bundle:");
     let _ = writeln!(
@@ -35345,7 +36462,14 @@ fn binding_sibling_role_path(source_path: &str, stem: &str) -> String {
     let path = Path::new(source_path);
     let extension = path.extension().and_then(|value| value.to_str());
     let file_name = match extension {
-        Some("swift") => "EffectExecutor.swift".to_string(),
+        Some("swift") => match stem {
+            "effect_executor" => "EffectExecutor.swift".to_string(),
+            "machine_driver" => "MachineDriver.swift".to_string(),
+            _ => format!(
+                "{}.swift",
+                pascal_case_tokens(&identifier_word_tokens(stem))
+            ),
+        },
         Some(extension) => format!("{stem}.{extension}"),
         None => stem.to_string(),
     };
@@ -35404,7 +36528,7 @@ fn render_closed_variants_yaml(model: &BindingScaffoldModel) -> String {
     format!("{}\n", yaml_string_list(&model.closed_variants(), 6))
 }
 
-fn render_machine_architecture_yaml(model: &BindingScaffoldModel) -> String {
+fn render_machine_architecture_yaml(model: &BindingScaffoldModel, binding: &str) -> String {
     let names = &model.names;
     let states = starter_states_for_shape(model.shape);
     let initial = states
@@ -35442,6 +36566,14 @@ fn render_machine_architecture_yaml(model: &BindingScaffoldModel) -> String {
     );
     if model.shape == ScaffoldShape::DomainEngine {
         let _ = writeln!(out, "    stateless_justification: {}", yaml_quote("generated domain-engine starts as a pure decision machine; use rms spec apply when lifecycle state changes product meaning"));
+    }
+    if model.declares_effects && model.stateful() {
+        let driver = if matches!(binding, "swift" | "js") {
+            "driveMachine"
+        } else {
+            "drive_machine"
+        };
+        let _ = writeln!(out, "    driver_function: {driver}");
     }
     let _ = writeln!(out, "    types:");
     for (field, value) in [
@@ -35506,6 +36638,12 @@ fn render_machine_architecture_yaml(model: &BindingScaffoldModel) -> String {
             let _ = write!(out, "{}", yaml_string_list(&protocol.results, 10));
             let _ = writeln!(out);
             let _ = writeln!(out, "        executor_role: effect_executor");
+            let executor = if matches!(binding, "swift" | "js") {
+                "executeEffect"
+            } else {
+                "execute_effect"
+            };
+            let _ = writeln!(out, "        executor_symbol: {executor}");
             let _ = writeln!(out, "        atomicity: one-request-one-result");
         }
     }
@@ -35591,7 +36729,7 @@ fn render_rust_implementation_yaml(
 ) -> String {
     let names = &model.names;
     let shape = model.shape;
-    let machine_yaml = render_machine_architecture_yaml(model);
+    let machine_yaml = render_machine_architecture_yaml(model, "rust");
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
         "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n{}  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules: []\n{}{}  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
@@ -35660,7 +36798,7 @@ fn render_rust_lib_rs(model: &BindingScaffoldModel) -> String {
     } else {
         format!("replay_trace([{}::Accept(label)])", names.command)
     };
-    format!(
+    let rendered = format!(
         "mod representation;\nmod transition;\n\npub use crate::representation::{{{representation_exports}}};\npub use crate::transition::{{replay_trace, transition, {machine}, {source_provenance}, {transition}, {transition_record}}};\n\npub fn semantic_shape() -> &'static str {{\n    {:?}\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn rejects_invalid_representation() {{\n        assert!({label}::new(\"\").is_none());\n    }}\n\n    #[test]\n    fn transition_returns_traceable_output() {{\n        let label = {label}::new(\"example\").unwrap();\n        let outcome = {transition_call};\n        assert!(matches!(outcome.reply, Some({reply}::Accepted) | None));\n        assert_eq!(outcome.events.len(), 1);\n    }}\n\n    #[test]\n    fn transition_replay_records_source_branch() {{\n        let label = {label}::new(\"example\").unwrap();\n        let records = {replay_call};\n        assert_eq!(records.len(), 1);\n        assert_eq!(records[0].source.branch, \"Accept\");\n    }}\n\n    #[test]\n    fn property_transition_outputs_use_declared_variants() {{\n        for raw in [\"a\", \"example\", \"generated-case-1\", \"with punctuation !?\"] {{\n            let label = {label}::new(raw).unwrap();\n            let outcome = {transition_call};\n            assert_eq!(outcome.events.len(), 1);\n        }}\n    }}\n\n    #[test]\n    fn fuzz_malformed_generated_values_are_rejected_by_constructor() {{\n        for raw in [\"\", \" \", \"\\n\", \"\\t\"] {{\n            assert!({label}::new(raw).is_none());\n        }}\n    }}\n}}\n",
         model.shape.as_str(),
         label = names.label,
@@ -35672,7 +36810,28 @@ fn render_rust_lib_rs(model: &BindingScaffoldModel) -> String {
         representation_exports = representation_exports,
         replay_call = replay_call,
         transition_call = transition_call,
-    )
+    );
+    if model.declares_effects && model.stateful() {
+        rendered
+            .replacen(
+                "mod representation;\nmod transition;\n",
+                "mod representation;\nmod transition;\nmod effect_executor;\nmod machine_driver;\n",
+                1,
+            )
+            .replacen(
+                "pub fn semantic_shape()",
+                "pub use crate::machine_driver::drive_machine;\n\npub fn semantic_shape()",
+                1,
+            )
+    } else if model.declares_effects {
+        rendered.replacen(
+            "mod representation;\nmod transition;\n",
+            "mod representation;\nmod transition;\nmod effect_executor;\n",
+            1,
+        )
+    } else {
+        rendered
+    }
 }
 
 fn render_rust_representation_rs(model: &BindingScaffoldModel) -> String {
@@ -35904,15 +37063,8 @@ fn render_rust_transition_rs(model: &BindingScaffoldModel) -> String {
         }
     }
     let imports = imports.join(", ");
-    let effect_executor_module = if model.declares_effects {
-        "#[path = \"effect_executor.rs\"]\npub mod effect_executor;\n\n"
-    } else {
-        ""
-    };
     let common = format!(
         r#"use crate::representation::{{{imports}}};
-
-{effect_executor_module}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct {source_provenance} {{
@@ -35954,7 +37106,6 @@ pub struct {transition_record} {{
         } else {
             names.command.as_str()
         },
-        effect_executor_module = effect_executor_module,
     );
 
     if !model.stateful() {
@@ -36154,6 +37305,32 @@ pub fn execute_effect(effect: {effect}) -> {effect_result} {{
     )
 }
 
+fn render_rust_machine_driver_rs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"use crate::effect_executor::execute_effect;
+use crate::representation::{{{input}, {state}}};
+use crate::transition::{{transition, {transition_type}}};
+
+pub fn drive_machine(initial_state: {state}, initial_input: {input}) -> Vec<{transition_type}> {{
+    let first = transition(initial_state, initial_input);
+    let effects = first.effects.clone();
+    let mut state = first.next_state.clone();
+    let mut outputs = vec![first];
+    for effect in effects {{
+        let result = execute_effect(effect);
+        let output = transition(state, {input}::EffectResult(result));
+        state = output.next_state.clone();
+        outputs.push(output);
+    }}
+    outputs
+}}
+"#,
+        input = names.input,
+        state = names.state,
+        transition_type = names.transition,
+    )
+}
+
 fn render_rust_cargo_toml(package_name: &str) -> String {
     format!(
         "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n\n[workspace]\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\n"
@@ -36170,7 +37347,7 @@ fn render_swift_implementation_yaml(
     let shape = model.shape;
     let source_root = format!("Sources/{target_name}");
     let public_entrypoint = format!("Sources/{target_name}/{target_name}.swift");
-    let machine_yaml = render_machine_architecture_yaml(model);
+    let machine_yaml = render_machine_architecture_yaml(model, "swift");
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
         "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n{}\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}{}  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}",
@@ -36615,6 +37792,33 @@ fn render_swift_effect_executor(names: &InnerStructureNames) -> String {
     )
 }
 
+fn render_swift_machine_driver(names: &InnerStructureNames) -> String {
+    format!(
+        r#"public func driveMachine(
+    _ initialState: {state},
+    _ initialInput: {input}
+) -> [{transition}] {{
+    var state = initialState
+    var pending = [initialInput]
+    var outputs: [{transition}] = []
+    while !pending.isEmpty {{
+        let input = pending.removeFirst()
+        let output = transition(state, input)
+        state = output.nextState
+        outputs.append(output)
+        for effect in output.effects {{
+            pending.append(.effectResult(executeEffect(effect)))
+        }}
+    }}
+    return outputs
+}}
+"#,
+        input = names.input,
+        state = names.state,
+        transition = names.transition,
+    )
+}
+
 fn render_swift_tests(target_name: &str, model: &BindingScaffoldModel) -> String {
     let names = &model.names;
     let initial = swift_case_name(
@@ -36688,7 +37892,7 @@ fn render_js_implementation_yaml(module_name: &str, model: &BindingScaffoldModel
     } else {
         ""
     };
-    let machine_yaml = render_machine_architecture_yaml(model);
+    let machine_yaml = render_machine_architecture_yaml(model, "js");
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
         "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n{}\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\n{}architecture:\n  shape: {}\n  public_modules:\n{}\n{}{}  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - make{}\n    transition_functions:\n      - {}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n{}{}{}",
@@ -36952,6 +38156,32 @@ export function executeEffect(effect) {{
 "#,
         effect = names.effect,
         effect_result = names.effect_result,
+    )
+}
+
+fn render_js_machine_driver_mjs(names: &InnerStructureNames) -> String {
+    format!(
+        r#"import {{ executeEffect }} from "./effect_executor.mjs";
+import {{ make{input}EffectResult }} from "./representation.mjs";
+import {{ transition }} from "./transition.mjs";
+
+export function driveMachine(initialState, initialInput) {{
+  let state = initialState;
+  const pending = [initialInput];
+  const outputs = [];
+  while (pending.length > 0) {{
+    const input = pending.shift();
+    const output = transition(state, input);
+    state = output.next_state;
+    outputs.push(output);
+    for (const effect of output.effects) {{
+      pending.push(make{input}EffectResult(executeEffect(effect)));
+    }}
+  }}
+  return Object.freeze(outputs);
+}}
+"#,
+        input = names.input,
     )
 }
 
@@ -37240,6 +38470,37 @@ export function parseCommand(input) {{
 fn render_js_adapter_mjs(names: &InnerStructureNames, shape: ScaffoldShape) -> String {
     let states = starter_states_for_shape(shape);
     let state_before = states.first().map(String::as_str).unwrap_or("Ready");
+    let effectful = scaffold_declares_effects_by_default(shape)
+        && is_stateful_machine_mode(machine_mode_for_shape(shape));
+    let machine_execution_import = if effectful {
+        "import { driveMachine } from \"./machine_driver.mjs\";"
+    } else {
+        "import { transitionRecord } from \"./transition.mjs\";"
+    };
+    let transition_call = if effectful {
+        format!(
+            "  const outputs = driveMachine(\n    {state_before},\n    make{input}Command(parsed.command_envelope.command),\n  );\n  return Object.freeze({{ output: outputs.at(-1), transitions: outputs }});",
+            input = names.input,
+        )
+    } else {
+        format!(
+            "  return transitionRecord(\n    {state_before},\n    make{input}Command(parsed.command_envelope.command),\n  );",
+            input = names.input,
+        )
+    };
+    let rejection_call = if effectful {
+        format!(
+            "    const outputs = driveMachine({state_before}, make{input}Command(make{command}Reject(reason)));\n    return Object.freeze({{ output: outputs.at(-1), transitions: outputs }});",
+            command = names.command,
+            input = names.input,
+        )
+    } else {
+        format!(
+            "    return transitionRecord({state_before}, make{input}Command(make{command}Reject(reason)));",
+            command = names.command,
+            input = names.input,
+        )
+    };
     format!(
         r#"import {{
   {state_before},
@@ -37248,21 +38509,17 @@ fn render_js_adapter_mjs(names: &InnerStructureNames, shape: ScaffoldShape) -> S
   make{label},
 }} from "./representation.mjs";
 import {{ parseCommand }} from "./parser.mjs";
-import {{ transitionRecord }} from "./transition.mjs";
+{machine_execution_import}
 
 export function handleBoundaryTransition(input, ports) {{
   const parsed = parseCommand(input);
   if (parsed.tag === "{prefix}ParseRejected") {{
     const reason = make{label}(parsed.rejection?.reason ?? "malformed-input");
-    return transitionRecord({state_before}, make{input}Command(make{command}Reject(reason)));
+{rejection_call}
   }}
 
-  const record = transitionRecord(
-    {state_before},
-    make{input}Command(parsed.command_envelope.command),
-  );
   ports?.write?.(parsed.command_envelope);
-  return record;
+{transition_call}
 }}
 
 export function handleBoundaryInput(input, ports) {{
@@ -37278,8 +38535,11 @@ export const {machine} = Object.freeze({{
         input = names.input,
         label = names.label,
         machine = names.machine,
+        machine_execution_import = machine_execution_import,
         prefix = names.prefix,
+        rejection_call = rejection_call,
         state_before = state_before,
+        transition_call = transition_call,
     )
 }
 
@@ -37464,7 +38724,7 @@ fn render_js_browser_surface_html(script_src: &str, entrypoint: &str) -> String 
 fn render_executable_implementation_yaml(model: &BindingScaffoldModel) -> String {
     let module_name = &model.module_name;
     let shape = model.shape;
-    let machine_yaml = render_machine_architecture_yaml(model);
+    let machine_yaml = render_machine_architecture_yaml(model, "executable");
     let effect_role = if model.declares_effects {
         "    effect_executor:\n      - scripts/smoke.sh\n"
     } else {
@@ -37815,7 +39075,7 @@ const JS_PORTS_MJS: &str = r#"export function createPorts(overrides = {}) {
 }
 "#;
 
-const JS_BUILD_SH: &str = "#!/usr/bin/env sh\nset -eu\nnode --check src/representation.mjs\nif [ -f src/transition.mjs ]; then node --check src/transition.mjs; fi\nif [ -f src/effect_executor.mjs ]; then node --check src/effect_executor.mjs; fi\nif [ -f src/public.mjs ]; then node --check src/public.mjs; fi\nif [ -f src/parser.mjs ]; then node --check src/parser.mjs; fi\nif [ -f src/adapter.mjs ]; then node --check src/adapter.mjs; fi\nif [ -f public/controller.mjs ]; then node --check public/controller.mjs; fi\nif [ -f public/app.mjs ]; then node --check public/app.mjs; fi\n";
+const JS_BUILD_SH: &str = "#!/usr/bin/env sh\nset -eu\nnode --check src/representation.mjs\nif [ -f src/transition.mjs ]; then node --check src/transition.mjs; fi\nif [ -f src/effect_executor.mjs ]; then node --check src/effect_executor.mjs; fi\nif [ -f src/machine_driver.mjs ]; then node --check src/machine_driver.mjs; fi\nif [ -f src/public.mjs ]; then node --check src/public.mjs; fi\nif [ -f src/parser.mjs ]; then node --check src/parser.mjs; fi\nif [ -f src/adapter.mjs ]; then node --check src/adapter.mjs; fi\nif [ -f public/controller.mjs ]; then node --check public/controller.mjs; fi\nif [ -f public/app.mjs ]; then node --check public/app.mjs; fi\n";
 
 const JS_SMOKE_SH: &str = "#!/usr/bin/env sh\nset -eu\nif [ -f tests/trace-smoke.mjs ]; then node tests/trace-smoke.mjs; fi\nif [ -f tests/boundary-smoke.mjs ]; then node tests/boundary-smoke.mjs; fi\nprintf '%s\\n' 'js semantic scaffold smoke passed'\n";
 
@@ -38108,6 +39368,8 @@ Machine rules:
 - The input ADT closes over commands, observed events, and effect results; each case belongs to exactly one category.
 - Every canonical transition declares a stable `case`; distinct outcomes for the same state/input are separate named cases and replay evidence names the same source branch.
 - An effect executor performs one declared request and returns one declared result. Transitions own sequencing, retry, compensation, stop/continue policy, and state progression.
+- Every effectful stateful machine declares an exact `driver_function` in a `machine_driver` role. The driver advances state only through the canonical transition, invokes exact protocol `executor_symbol` functions, and feeds typed effect results back as machine inputs.
+- Every effect-emitting runnable command delegates to an exact callable that reaches the machine driver. Surfaces and adapters must not hide a second lifecycle loop.
 - Fixed examples are a deterministic corpus, not an open-ended fuzz realization.
 
 You can:
@@ -38206,6 +39468,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Keep changes inside the owning module boundary.
 - Edit bodies inside RMS-declared role files. Add small private pure helpers inside declared pure role files when useful.
 - Do not add private IO helpers in pure roles. Filesystem, network, clocks, randomness, environment, processes, provider calls, and external services must be declared effects with effect results and executed only in adapter, port, or effect-executor roles.
+- For effectful stateful behavior, keep the execution chain explicit: runnable callable -> machine driver -> pure transition -> exact one-request executor -> typed effect result -> machine driver.
 - When new semantic structure is needed, run `rms spec plan/apply/check` instead of inventing files or naming schemes directly. Use `rms machine plan/apply/check` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct.
 - Change public contracts or manifests before code when public meaning changes.
 - Declare new effects, dependencies, profiles, state, migration, compatibility impact, and recovery paths before relying on them.
@@ -39544,6 +40807,9 @@ import struct ExternalKit.Widget
         assert!(agents.contains("External truth"));
         assert!(agents.contains("Traceable machine"));
         assert!(agents.contains("command, event, effect, and effect-result envelopes"));
+        assert!(agents.contains("exact `driver_function`"));
+        assert!(agents.contains("exact protocol `executor_symbol`"));
+        assert!(agents.contains("runnable callable -> machine driver -> pure transition"));
         assert!(agents.contains("Keep projections passive"));
         assert!(agents.contains("Make representation first-class"));
         assert!(agents.contains("Do not use role-derived inner names"));
@@ -39867,6 +41133,8 @@ import struct ExternalKit.Widget
         let trace_report =
             build_trace_report(&root.join("verification/traces/transition_trace.yaml")).unwrap();
         run_verify(&root.join("implementation.yaml"), false).unwrap();
+        let driver_exists = root.join("src/machine_driver.rs").is_file();
+        let executor_exists = root.join("src/effect_executor.rs").is_file();
 
         fs::remove_dir_all(&root).unwrap();
         assert!(module_yaml.contains("workflow: {}"));
@@ -39874,11 +41142,22 @@ import struct ExternalKit.Widget
         assert!(implementation.contains("subscriptions:"));
         assert!(implementation.contains("subscription_registry:"));
         assert!(implementation.contains("timeline_projection: transition-records"));
+        assert!(implementation.contains("driver_function: drive_machine"));
+        assert!(implementation.contains("executor_symbol: execute_effect"));
+        assert!(implementation.contains("machine_driver:"));
+        assert!(driver_exists);
+        assert!(executor_exists);
         assert_eq!(trace_report.result, "pass");
         for missing in [
             "structure.subscription-registry-missing",
             "structure.timeline-projection-missing",
             "structure.first-bad-transition-unsupported",
+            "structure.machine-driver-missing",
+            "structure.machine-driver-role-missing",
+            "structure.machine-driver-symbol-missing",
+            "structure.machine-driver-transition-missing",
+            "structure.machine-driver-effect-executor-missing",
+            "structure.effect-protocol-executor-symbol-missing",
         ] {
             assert!(
                 report
@@ -39889,6 +41168,296 @@ import struct ExternalKit.Widget
                 report.diagnostics
             );
         }
+    }
+
+    #[test]
+    fn effectful_swift_and_js_scaffolds_bind_machine_drivers_and_exact_executors() {
+        for (binding, driver_file, driver, executor) in [
+            (
+                "swift",
+                "MachineDriver.swift",
+                "driveMachine",
+                "executeEffect",
+            ),
+            (
+                "js",
+                "src/machine_driver.mjs",
+                "driveMachine",
+                "executeEffect",
+            ),
+        ] {
+            let root = unique_test_dir(&format!("workflow-{binding}-driver"));
+            run_add_module(
+                add_module_request(
+                    &root,
+                    "checkout-flow",
+                    "Coordinate checkout progress.",
+                    "tool",
+                    &[],
+                    Some(ScaffoldShape::Workflow),
+                    Some(binding),
+                ),
+                &no_provider_options(),
+            )
+            .unwrap();
+
+            let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+            let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+            let driver_exists = if binding == "swift" {
+                WalkDir::new(root.join("Sources"))
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .any(|entry| entry.file_name().to_str() == Some(driver_file))
+            } else {
+                root.join(driver_file).is_file()
+            };
+            if binding == "swift" {
+                let status = std::process::Command::new("swift")
+                    .args(["build", "--package-path"])
+                    .arg(&root)
+                    .status()
+                    .unwrap();
+                assert!(status.success());
+            } else {
+                run_verify(&root.join("implementation.yaml"), false).unwrap();
+            }
+
+            fs::remove_dir_all(&root).unwrap();
+            assert!(implementation.contains(&format!("driver_function: {driver}")));
+            assert!(implementation.contains(&format!("executor_symbol: {executor}")));
+            assert!(implementation.contains("machine_driver:"));
+            assert!(driver_exists);
+            assert!(
+                report.diagnostics.iter().all(|diagnostic| {
+                    !matches!(
+                        diagnostic.check.as_str(),
+                        "structure.machine-driver-missing"
+                            | "structure.machine-driver-role-missing"
+                            | "structure.machine-driver-symbol-missing"
+                            | "structure.machine-driver-role-mismatch"
+                            | "structure.machine-driver-signature-mismatch"
+                            | "structure.machine-driver-transition-missing"
+                            | "structure.machine-driver-effect-executor-missing"
+                            | "structure.effect-protocol-executor-symbol-missing"
+                            | "structure.effect-protocol-executor-role-mismatch"
+                            | "structure.effect-protocol-executor-signature-mismatch"
+                    )
+                }),
+                "{:#?}",
+                report.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn rust_boundary_rejects_hidden_imperative_effect_loop_bypassing_machine_driver() {
+        let root = unique_test_dir("rust-hidden-boundary-loop");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("verification/boundaries")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"hidden-boundary-loop\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/representation.rs"),
+            r#"#[derive(Clone)] pub enum BoundaryState { AwaitingInput, Running, Completed, Rejected }
+#[derive(Clone)] pub enum BoundaryCommand { RunMiniXargs }
+#[derive(Clone)] pub enum BoundaryInput { Command(BoundaryCommand), EffectResult(BoundaryEffectResult) }
+#[derive(Clone)] pub enum BoundaryEvent { InvocationPlanned, InvocationCompleted, RunRejected }
+#[derive(Clone)] pub enum BoundaryEffect { ExecuteInvocation }
+#[derive(Clone)] pub enum BoundaryEffectResult { InvocationExited, InvocationSpawnFailed }
+#[derive(Clone)] pub enum BoundaryReply { RunCompleted }
+#[derive(Clone)] pub enum BoundaryRejection { InvalidRequest }
+#[derive(Clone)] pub struct BoundaryTransition { pub next_state: BoundaryState, pub events: Vec<BoundaryEvent>, pub commands: Vec<BoundaryCommand>, pub effects: Vec<BoundaryEffect>, pub reply: Option<BoundaryReply> }
+#[derive(Clone)] pub struct BoundaryTransitionRecord { pub output: BoundaryTransition }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/transition.rs"),
+            r#"use crate::representation::*;
+pub fn transition(state: BoundaryState, input: BoundaryInput) -> BoundaryTransition {
+    match (state, input) {
+        (BoundaryState::AwaitingInput, BoundaryInput::Command(BoundaryCommand::RunMiniXargs)) => BoundaryTransition { next_state: BoundaryState::Running, events: vec![BoundaryEvent::InvocationPlanned], commands: vec![], effects: vec![BoundaryEffect::ExecuteInvocation], reply: None },
+        (BoundaryState::Running, BoundaryInput::EffectResult(BoundaryEffectResult::InvocationExited)) => BoundaryTransition { next_state: BoundaryState::Completed, events: vec![BoundaryEvent::InvocationCompleted], commands: vec![], effects: vec![], reply: Some(BoundaryReply::RunCompleted) },
+        (_, BoundaryInput::EffectResult(BoundaryEffectResult::InvocationSpawnFailed)) => BoundaryTransition { next_state: BoundaryState::Rejected, events: vec![BoundaryEvent::RunRejected], commands: vec![], effects: vec![], reply: None },
+        (state, _) => BoundaryTransition { next_state: state, events: vec![BoundaryEvent::RunRejected], commands: vec![], effects: vec![], reply: None },
+    }
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/effect_executor.rs"),
+            r#"use crate::representation::{BoundaryEffect, BoundaryEffectResult};
+pub fn execute_invocation(_effect: BoundaryEffect) -> BoundaryEffectResult {
+    match std::process::Command::new("true").status() {
+        Ok(_) => BoundaryEffectResult::InvocationExited,
+        Err(_) => BoundaryEffectResult::InvocationSpawnFailed,
+    }
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/machine_driver.rs"),
+            r#"use crate::effect_executor::execute_invocation;
+use crate::representation::{BoundaryInput, BoundaryState, BoundaryTransition};
+use crate::transition::transition;
+pub fn drive_machine(initial_state: BoundaryState, initial_input: BoundaryInput) -> Vec<BoundaryTransition> {
+    let first = transition(initial_state, initial_input);
+    let mut outputs = vec![first.clone()];
+    for effect in first.effects {
+        outputs.push(transition(first.next_state.clone(), BoundaryInput::EffectResult(execute_invocation(effect))));
+    }
+    outputs
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            r#"mod effect_executor;
+mod machine_driver;
+mod representation;
+mod transition;
+pub fn run_request() {
+    for _ in 0..2 {
+        let _ = std::process::Command::new("true").status();
+    }
+}
+pub fn run_cli() { run_request(); }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("verification/boundaries/cli.md"),
+            "Promise: CLI delegates through the machine.\nCommand/tool: rms structure implementation.yaml\nExpected result: bypass is rejected.\nSource revision: fixture.\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: hidden-boundary-loop
+binding: rust
+source:
+  root: .
+  public_entrypoint: src/lib.rs
+commands:
+  build: cargo check --manifest-path Cargo.toml
+  verify: cargo test --manifest-path Cargo.toml
+toolchain:
+  cargo_manifest: Cargo.toml
+  package: hidden-boundary-loop
+dependencies:
+  allowed_external_crates: []
+architecture:
+  shape: boundary-adapter
+  public_modules: []
+  allowed_public_field_structs: [BoundaryTransition, BoundaryTransitionRecord]
+  machine:
+    name: MiniXargsBoundaryMachine
+    mode: boundary-machine
+    transition_signature: state-and-input
+    driver_function: drive_machine
+    types:
+      state: BoundaryState
+      input: BoundaryInput
+      command: BoundaryCommand
+      event: BoundaryEvent
+      effect: BoundaryEffect
+      effect_result: BoundaryEffectResult
+      reply: BoundaryReply
+      rejection: BoundaryRejection
+      transition: BoundaryTransition
+      transition_record: BoundaryTransitionRecord
+    states: [AwaitingInput, Running, Completed, Rejected]
+    commands: [RunMiniXargs]
+    observed_events: []
+    events: [InvocationPlanned, InvocationCompleted, RunRejected]
+    effects: [ExecuteInvocation]
+    effect_results: [InvocationExited, InvocationSpawnFailed]
+    replies: [RunCompleted]
+    rejections: [InvalidRequest]
+    effect_protocols:
+      - effect: ExecuteInvocation
+        results: [InvocationExited, InvocationSpawnFailed]
+        executor_role: effect_executor
+        executor_symbol: execute_invocation
+        atomicity: one-request-one-result
+    transition_function: transition
+    transitions:
+      - from: AwaitingInput
+        on: RunMiniXargs
+        to: Running
+        case: StartRun
+        events: [InvocationPlanned]
+        effects: [ExecuteInvocation]
+        no_reply_justification: invocation result is pending
+      - from: Running
+        on: InvocationExited
+        to: Completed
+        case: InvocationExited
+        events: [InvocationCompleted]
+        reply: RunCompleted
+      - from: Running
+        on: InvocationSpawnFailed
+        to: Rejected
+        case: InvocationSpawnFailed
+        events: [RunRejected]
+        rejection: InvalidRequest
+  roles:
+    representation: [src/representation.rs]
+    transition: [src/transition.rs]
+    effect_executor: [src/effect_executor.rs]
+    machine_driver: [src/machine_driver.rs]
+    runnable_surface: [src/lib.rs]
+  surfaces:
+    - name: mini-xargs-cli
+      kind: runnable-boundary
+      surface: cli
+      entrypoint: src/lib.rs
+      delegates_to:
+        role: adapter
+        symbol: run_cli
+        command: run-mini-xargs
+      effects: [local-process]
+      evidence: [verification/boundaries/cli.md]
+semantic_functions:
+  - id: transition-model
+    symbol: src/transition.rs#transition
+    kind: transition
+    purity: pure
+    evidence:
+      boundaries: [verification/boundaries/cli.md]
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.check == "structure.runnable-surface-machine-bypass"
+            }),
+            "{:#?}",
+            report.diagnostics
+        );
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.check == "structure.effectful-control-flow-outside-machine-driver"
+            }),
+            "{:#?}",
+            report.diagnostics
+        );
+        assert!(audit_blocking_diagnostic(
+            "structure.runnable-surface-machine-bypass"
+        ));
+        assert!(audit_blocking_diagnostic(
+            "structure.effectful-control-flow-outside-machine-driver"
+        ));
     }
 
     #[test]
@@ -41574,6 +43143,7 @@ architecture:
 module: implementation.yaml
 machine:
   mode: stateful-transition-machine
+  driver_function: driveMachine
   states:
     add: [NeedsTargetContext, PendingLogConfirmation]
   commands:
@@ -41589,6 +43159,7 @@ machine:
       - effect: AppendMarkdownDayLog
         results: [MarkdownDayLogAppended]
         executor_role: effect_executor
+        executor_symbol: executeEffect
         atomicity: one-request-one-result
   replies:
     add: [AskForContext, LogConfirmed]
@@ -41619,6 +43190,9 @@ roles:
     - kind: effect_executor
       effect: AppendMarkdownDayLog
       binding_hint: local_filesystem
+      path: src/effects.mjs
+    - kind: machine_driver
+      path: src/machine_driver.mjs
 "#,
             ),
             None,
@@ -41670,6 +43244,11 @@ roles:
         )
         .unwrap();
         fs::write(
+            root.join("src/machine_driver.mjs"),
+            "import { executeEffect } from './effects.mjs';\nimport { transition } from './transition.mjs';\nexport function driveMachine(state, input) { const first = transition(state, input); return first.effects.map(executeEffect); }\n",
+        )
+        .unwrap();
+        fs::write(
             root.join("implementation.yaml"),
             r#"spec: rms/implementation/v0.1
 module: repair-candidate
@@ -41686,6 +43265,7 @@ architecture:
     name: RepairCandidateMachine
     mode: workflow-effect-machine
     transition_signature: state-and-input
+    driver_function: driveMachine
     types:
       state: RepairCandidateState
       input: RepairCandidateInput
@@ -41709,6 +43289,7 @@ architecture:
       - effect: DoWork
         results: [WorkDone]
         executor_role: effect_executor
+        executor_symbol: executeEffect
         atomicity: one-request-one-result
         aggregate_justification: null
     transition_function: transition
@@ -41728,6 +43309,7 @@ architecture:
   roles:
     transition: [src/transition.mjs]
     effect_executor: [src/effects.mjs]
+    machine_driver: [src/machine_driver.mjs]
 "#,
         )
         .unwrap();
@@ -42238,6 +43820,7 @@ contracts:
       rejects: [illegal transition]
 machine:
   mode: stateful-transition-machine
+  driver_function: driveMachine
   states:
     add: [InventoryReserved, PaymentFailed, InventoryReleased, ReleaseFailed]
   commands:
@@ -42253,6 +43836,7 @@ machine:
       - effect: ReleaseInventory
         results: [InventoryReleased, InventoryReleaseFailed]
         executor_role: effect_executor
+        executor_symbol: executeEffect
         atomicity: one-request-one-result
   replies:
     add: [CheckoutStatus]
@@ -42281,6 +43865,9 @@ roles:
   add:
     - kind: effect_executor
       effect: ReleaseInventory
+      path: src/effects.mjs
+    - kind: machine_driver
+      path: src/machine_driver.mjs
 evidence:
   add:
     - kind: trace
@@ -47154,6 +48741,9 @@ verification:
         assert!(semantic.contains("non-empty `oracle`"));
         assert!(semantic.contains("Every changed law and every added or changed contract"));
         assert!(semantic.contains("atomicity: one-request-one-result"));
+        assert!(semantic.contains("driver_function:"));
+        assert!(semantic.contains("exact scalar `executor_symbol`"));
+        assert!(semantic.contains("exact callable symbol that reaches the declared machine driver"));
         assert!(semantic.matches("set: null").count() >= 10);
         assert!(semantic.contains(
             "Transition removal items use `from`, `on`, optional `to`, and optional `case`"
@@ -47166,6 +48756,9 @@ verification:
         ));
         assert!(machine.contains("Prefer `set` when replacing generated scaffold semantics"));
         assert!(machine.contains("Do not inspect sibling projects, prior dogfood runs"));
+        assert!(machine.contains("driver_function:"));
+        assert!(machine.contains("exact scalar `executor_symbol`"));
+        assert!(machine.contains("surface or adapter must not hide its own lifecycle loop"));
     }
 
     #[test]
