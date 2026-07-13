@@ -17,9 +17,10 @@ Core rule:
 1. In a fresh standalone project, run `rms init`, then commit the generated bootstrap so later semantic and source drift has a provenance baseline.
 2. Run `rms design` before choosing the first module tree. When its deterministic hints recommend a recursive capability, use `rms add-capability`; do not substitute one module for convenience. A single-module exception is valid only when the user explicitly requests it and RMS records the justification canonically.
 3. Never repair `module.yaml`, `implementation.yaml`, contracts, machine structure, surfaces, or evidence declarations by direct editing. Use the applicable RMS apply command. If RMS cannot express the required change, stop and report the RMS gap instead of bypassing the gate.
-4. Fill only declared role bodies after the semantic apply succeeds.
-5. Before completion, `rms gate --root .` must exit zero with no failed check. A warning or `review-required` item is an obligation to resolve or report, never permission to collapse the recommended architecture.
-6. Commit the candidate, then `rms audit --root . --strict` must exit zero. Do not describe the project as complete or production-ready unless both commands succeeded in that order.
+4. Use the current project, rendered RMS prompts, and deterministic RMS diagnostics as planning context. Do not inspect sibling projects, prior dogfood runs, RMS source, or generated examples outside the project to infer a change schema or borrow semantics.
+5. Fill only declared role bodies after the semantic apply succeeds.
+6. Before completion, `rms gate --root .` must exit zero with no failed check. A warning or `review-required` item is an obligation to resolve or report, never permission to collapse the recommended architecture.
+7. Commit the candidate, then `rms audit --root . --strict` must exit zero. Do not describe the project as complete or production-ready unless both commands succeeded in that order.
 
 ## Change Gate
 

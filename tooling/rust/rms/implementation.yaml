@@ -1020,6 +1020,6 @@ semantic_functions:
     - verification/contracts/replay_property_counterexample.md
 x-rms:
   semantic_revision:
-    digest: sha256:1151a96984998dcd19ce73377cbb62e5d1e0f7d108c02b726afd2f2bd77de285
-    change_record: verification/changes/align-gate-completion-authority-with-the-effectful-rms-command-that-executes-deterministic-checks-and-decides-the-reported-gate-result-c0c030e14852.yaml
+    digest: sha256:d7d28303e872dbf1b055473b4f8385491027586a17330ce7a17a9c64ddcb39ed
+    change_record: verification/changes/make-rms-semantic-and-machine-planning-prompts-self-contained-enough-that-agents-can-author-valid-replacement-changes-without-consulting-sibling-projects-or-prior-generated-examples-d82cf18d1347.yaml
     applied_by: rms spec apply

@@ -1,20 +1,28 @@
 spec: rms/contract/v0.1
-name: plan-semantic-change
+name: "plan-semantic-change"
 version: 1
 kind: command
-meaning: Render or run an advisory RMS prompt that proposes a language-neutral semantic-change object for a module or implementation binding.
+meaning: "Render or run a self-contained advisory prompt for a language-neutral RMS semantic-change object."
 preconditions:
-  - id: target-readable
-    statement: The target module.yaml or implementation.yaml is readable and parseable.
-  - id: task-provided
-    statement: The caller supplies a product or maintenance intent.
+  - id: "accepts-1"
+    statement: "a readable module.yaml or implementation.yaml target"
+  - id: "accepts-2"
+    statement: "product or maintenance intent describing the requested semantic change"
 postconditions:
-  - id: advisory-output
-    statement: The command produces a bounded prompt or provider response; it does not mutate canonical artifacts.
-  - id: semantic-change-requested
-    statement: The prompt asks for rms/semantic-change/v0.1 when laws, contracts, machine structure, runnable surfaces, effects, or evidence obligations must change.
+  - id: "ensures-1"
+    statement: "the prompt enumerates allowed invariant authorities and explains how enforced_by binds to semantic functions"
+  - id: "ensures-2"
+    statement: "the prompt shows set, add, and remove for every machine variant category"
+  - id: "ensures-3"
+    statement: "the prompt shows exact transition set, add, and structured remove shapes"
+  - id: "ensures-4"
+    statement: "the prompt recommends set when replacing scaffold semantics and requires final_machine to contain only intended product cases"
+  - id: "ensures-5"
+    statement: "the prompt tells agents to rely on the current project and RMS diagnostics rather than sibling projects or prior generated examples"
 failure_categories:
-  - id: unsupported-target
-    statement: The target is not an RMS module or implementation manifest.
+  - id: "rejects-1"
+    statement: "unreadable or unsupported targets"
+  - id: "rejects-2"
+    statement: "missing task intent"
 compatibility:
   policy: backward-compatible-within-major

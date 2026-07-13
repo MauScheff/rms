@@ -338,6 +338,11 @@ invariants:
   kind: reliability
   authority: effect-executor
   enforced_by: init-rms-system-command
+- id: semantic-plan-schema-is-self-contained
+  statement: RMS semantic and machine planning prompts enumerate canonical values and exact set, add, and remove shapes needed to replace scaffold semantics without external examples.
+  kind: reliability
+  authority: parser
+  enforced_by: semantic-change-plan-command
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -412,6 +417,7 @@ verification:
   - verification/contracts/apply_semantic_change.md
   - verification/contracts/apply_machine_change.md
   - verification/contracts/init_rms_system.md
+  - verification/contracts/plan_semantic_change.md
   scenarios:
   - verification/scenarios
   - verification/scenarios/reusable_module_package.md
@@ -429,13 +435,14 @@ verification:
   - verification/properties/gate_completion_integrity.md
   - verification/properties/binding_transition_signature.md
   - verification/properties/init_git_provenance.md
+  - verification/properties/semantic_plan_self_containment.md
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Align gate completion authority with the effectful RMS command that executes deterministic checks and decides the reported gate result.
+  last_semantic_intent: Make RMS semantic and machine planning prompts self-contained enough that agents can author valid replacement changes without consulting sibling projects or prior generated examples.
   semantic_revision:
-    digest: sha256:1151a96984998dcd19ce73377cbb62e5d1e0f7d108c02b726afd2f2bd77de285
-    change_record: verification/changes/align-gate-completion-authority-with-the-effectful-rms-command-that-executes-deterministic-checks-and-decides-the-reported-gate-result-c0c030e14852.yaml
+    digest: sha256:d7d28303e872dbf1b055473b4f8385491027586a17330ce7a17a9c64ddcb39ed
+    change_record: verification/changes/make-rms-semantic-and-machine-planning-prompts-self-contained-enough-that-agents-can-author-valid-replacement-changes-without-consulting-sibling-projects-or-prior-generated-examples-d82cf18d1347.yaml
     applied_by: rms spec apply
 properties:
 - id: semantic-property-declarations-have-oracles
@@ -601,6 +608,26 @@ properties:
   - generated guidance names commit plus strict audit as production completion
   evidence:
     path: verification/properties/init_git_provenance.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: verify
+- id: semantic-plan-prompt-is-actionable-without-external-examples
+  proves: semantic-plan-schema-is-self-contained
+  kind: property
+  input_space: Rendered semantic-change and machine-change prompts for scaffolded stateless and stateful implementations
+  preconditions:
+  - the target implementation is readable
+  operation: render the RMS plan prompt and inspect its schema instructions
+  oracle:
+  - allowed invariant authorities are explicit
+  - machine variant categories show set, add, and remove
+  - transition removal uses from, on, optional to, and optional case
+  - replacement guidance prefers set and forbids external template lookup
+  evidence:
+    path: verification/properties/semantic_plan_self_containment.md
   counterexamples:
     path: verification/fuzz/counterexamples
   realizations:

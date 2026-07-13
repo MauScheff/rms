@@ -1,0 +1,70 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Make RMS semantic and machine planning prompts self-contained enough that agents can author valid replacement changes without consulting sibling projects or prior generated examples.
+laws:
+  add:
+  - id: semantic-plan-schema-is-self-contained
+    statement: RMS semantic and machine planning prompts enumerate canonical values and exact set, add, and remove shapes needed to replace scaffold semantics without external examples.
+    kind: reliability
+    authority: parser
+    enforced_by: semantic-change-plan-command
+  set: []
+  remove: []
+contracts:
+  add: []
+  set:
+  - name: plan-semantic-change
+    version: '1'
+    command: plan-semantic-change
+    meaning: Render or run a self-contained advisory prompt for a language-neutral RMS semantic-change object.
+    accepts:
+    - a readable module.yaml or implementation.yaml target
+    - product or maintenance intent describing the requested semantic change
+    ensures:
+    - the prompt enumerates allowed invariant authorities and explains how enforced_by binds to semantic functions
+    - the prompt shows set, add, and remove for every machine variant category
+    - the prompt shows exact transition set, add, and structured remove shapes
+    - the prompt recommends set when replacing scaffold semantics and requires final_machine to contain only intended product cases
+    - the prompt tells agents to rely on the current project and RMS diagnostics rather than sibling projects or prior generated examples
+    rejects:
+    - unreadable or unsupported targets
+    - missing task intent
+  remove: []
+properties:
+  add:
+  - id: semantic-plan-prompt-is-actionable-without-external-examples
+    proves: semantic-plan-schema-is-self-contained
+    kind: property
+    subject: null
+    input_space: Rendered semantic-change and machine-change prompts for scaffolded stateless and stateful implementations
+    preconditions:
+    - the target implementation is readable
+    operation: render the RMS plan prompt and inspect its schema instructions
+    oracle:
+    - allowed invariant authorities are explicit
+    - machine variant categories show set, add, and remove
+    - transition removal uses from, on, optional to, and optional case
+    - replacement guidance prefers set and forbids external template lookup
+    evidence:
+      kind: property
+      path: verification/properties/semantic_plan_self_containment.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: generated-property
+      command: verify
+      exhaustive: false
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: property
+    proves: semantic-plan-schema-is-self-contained
+    path: verification/properties/semantic_plan_self_containment.md
+  - kind: contract
+    proves: plan-semantic-change
+    path: verification/contracts/plan_semantic_change.md
+surfaces: null

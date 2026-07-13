@@ -24385,6 +24385,10 @@ fn render_machine_plan_prompt(
         out,
         "Pure roles stay pure. IO, clocks, randomness, processes, provider calls, filesystem, and network work must become declared effects plus effect results executed in adapter, port, or effect-executor roles."
     )?;
+    writeln!(
+        out,
+        "Use the current target project, this prompt, and RMS diagnostics as the complete planning context. Do not inspect sibling projects, prior dogfood runs, the RMS source repository, or generated examples outside the target project to infer this schema."
+    )?;
     writeln!(out)?;
     writeln!(out, "## Current Machine")?;
     writeln!(
@@ -24452,30 +24456,54 @@ fn render_machine_plan_prompt(
     writeln!(out, "    transition: DomainTransition")?;
     writeln!(out, "    transition_record: DomainTransitionRecord")?;
     writeln!(out, "  states:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  commands:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  observed_events:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  events:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  effects:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  effect_results:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  replies:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  rejections:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  effect_protocols:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "transitions:")?;
+    writeln!(out, "  set: null")?;
     writeln!(out, "  add: []")?;
+    writeln!(out, "  remove: []")?;
     writeln!(out, "roles:")?;
+    writeln!(out, "  set: []")?;
     writeln!(out, "  add: []")?;
+    writeln!(out, "  remove: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
+    writeln!(out, "For each variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "Transition items use `from`, `on`, `to`, stable `case`, optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every semantic branch has its own case, including multiple destinations or outputs for the same state and input.")?;
+    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effect-protocol removal items use `effect`. Role removal items use `kind` and optional `path`.")?;
     writeln!(out, "Role items use `kind`, optional `path`, optional `effect`, and optional `binding_hint`. Effect protocols use `effect`, `results`, `executor_role`, `atomicity`, and aggregate justification/evidence only when atomicity is aggregate.")?;
     writeln!(out, "Run `rms machine apply ... --dry-run` first and do not edit source while `final_machine` still contains scaffold-generic variants instead of the intended product cases.")?;
     writeln!(out)?;
@@ -27029,6 +27057,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Reusable modules must declare capabilities/contracts, one public facade, and package/reuse evidence before consumers import them; native package files only describe how to import the RMS facade.")?;
     writeln!(out, "Ask clarifying questions only when needed. Otherwise infer the smallest coherent semantic model from the task, name edge cases and must-never-happen conditions, and encode them in the semantic-change object.")?;
     writeln!(out, "For external truth, include reconciliation or recovery evidence when outcomes can be unknown, duplicate, stale, partial, conflicting, delayed, or later corrected.")?;
+    writeln!(out, "Use the current target project, this prompt, and RMS diagnostics as the complete planning context. Do not inspect sibling projects, prior dogfood runs, the RMS source repository, or generated examples outside the target project to infer this schema.")?;
     writeln!(out)?;
     writeln!(out, "## Required Output")?;
     writeln!(out, "Return only YAML or JSON matching this language-neutral schema when meaning changes. If no semantic change is needed, say that current semantics are sufficient and name the declared role files to edit.")?;
@@ -27057,33 +27086,62 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  mode: stateful-transition-machine")?;
     writeln!(out, "  transition_signature: state-and-input")?;
     writeln!(out, "  states:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  commands:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  observed_events:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  events:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  effects:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  effect_results:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  replies:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  rejections:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  effect_protocols:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "  transitions:")?;
+    writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
-    writeln!(out, "surfaces:")?;
+    writeln!(out, "    remove: []")?;
+    writeln!(out, "roles:")?;
+    writeln!(out, "  set: []")?;
     writeln!(out, "  add: []")?;
+    writeln!(out, "  remove: []")?;
+    writeln!(out, "surfaces:")?;
+    writeln!(out, "  set: []")?;
+    writeln!(out, "  add: []")?;
+    writeln!(out, "  remove: []")?;
     writeln!(out, "evidence:")?;
     writeln!(out, "  add: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
     writeln!(out, "Item shapes are exact: `laws.add[]` uses `id`, `statement`, `kind`, scalar `authority`, and scalar `enforced_by`; `properties.add[]` uses `id`, `proves`, `kind`, `input_space`, `preconditions`, `operation`, `oracle`, `evidence: {{kind, path}}`, `counterexamples: {{path}}`, and `realizations: [{{profile, strategy, command}}]`; `evidence.add[]` uses `kind`, `proves`, and `path`.")?;
+    writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
+    writeln!(out, "For every machine variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "Machine transition items use `from`, `on`, `to`, stable `case`, optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names.")?;
+    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effect-protocol removal items use `effect`. Role removal items use `kind` and optional `path`.")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
     writeln!(out, "Contract add/set entries use `name`, `version`, `command`, product-specific `meaning`, `accepts`, `ensures`, and `rejects`. Generated capability contracts are scaffold obligations: replace them with `contracts.set` before implementation or production audit. Contract remove entries use `name` and optional `version`.")?;
@@ -28212,7 +28270,7 @@ fn validate_semantic_laws(
                 "semantic.invariant-authority-missing",
                 &context.target,
                 format!(
-                    "law `{}` must declare a canonical enforcement authority",
+                    "law `{}` must declare one canonical enforcement authority: representation, constructor, parser, transition, effect-executor, or composition",
                     law.id
                 ),
             ));
@@ -29482,7 +29540,7 @@ fn validate_semantic_module_completeness(
                 "semantic.invariant-authority-missing",
                 &module.path,
                 format!(
-                    "invariant `{id}` must declare whether representation, parser, transition, effect-executor, or composition owns enforcement"
+                    "invariant `{id}` must declare whether representation, constructor, parser, transition, effect-executor, or composition owns enforcement"
                 ),
             );
         } else if !matches!(
@@ -37828,9 +37886,10 @@ Core rule:
 1. In a fresh standalone project, run `rms init`, then commit the generated bootstrap so later semantic and source drift has a provenance baseline.
 2. Run `rms design` before choosing the first module tree. When its deterministic hints recommend a recursive capability, use `rms add-capability`; do not substitute one module for convenience. A single-module exception is valid only when the user explicitly requests it and RMS records the justification canonically.
 3. Never repair `module.yaml`, `implementation.yaml`, contracts, machine structure, surfaces, or evidence declarations by direct editing. Use the applicable RMS apply command. If RMS cannot express the required change, stop and report the RMS gap instead of bypassing the gate.
-4. Fill only declared role bodies after the semantic apply succeeds.
-5. Before completion, `rms gate --root .` must exit zero with no failed check. A warning or `review-required` item is an obligation to resolve or report, never permission to collapse the recommended architecture.
-6. Commit the candidate, then `rms audit --root . --strict` must exit zero. Do not describe the project as complete or production-ready unless both commands succeeded in that order.
+4. Use the current project, rendered RMS prompts, and deterministic RMS diagnostics as planning context. Do not inspect sibling projects, prior dogfood runs, RMS source, or generated examples outside the project to infer a change schema or borrow semantics.
+5. Fill only declared role bodies after the semantic apply succeeds.
+6. Before completion, `rms gate --root .` must exit zero with no failed check. A warning or `review-required` item is an obligation to resolve or report, never permission to collapse the recommended architecture.
+7. Commit the candidate, then `rms audit --root . --strict` must exit zero. Do not describe the project as complete or production-ready unless both commands succeeded in that order.
 
 ## Change Gate
 
@@ -39272,6 +39331,7 @@ import struct ExternalKit.Widget
         assert!(agents.contains("Non-Negotiable Execution"));
         assert!(agents.contains("do not substitute one module for convenience"));
         assert!(agents.contains("Never repair `module.yaml`"));
+        assert!(agents.contains("Do not inspect sibling projects"));
         assert!(agents.contains("Completion is binary"));
         assert!(agents.contains("choose semantic shape before file layout"));
         assert!(agents.contains("Default split for any capability"));
@@ -46775,6 +46835,50 @@ verification:
         assert!(rendered.contains("Mode: advisory"));
         assert!(rendered.contains("## Bounded RMS Context"));
         assert!(rendered.contains("rms validate --root <root>"));
+    }
+
+    #[test]
+    fn plan_prompt_is_self_contained() {
+        let root = unique_test_dir("self-contained-plan-prompt");
+        run_add_module(
+            add_module_request(
+                &root,
+                "prompt-example",
+                "Exercise self-contained semantic planning.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("js"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let semantic =
+            render_spec_plan_prompt(&context, &root, "replace scaffold semantics").unwrap();
+        let machine =
+            render_machine_plan_prompt(&implementation, &root, "replace scaffold semantics")
+                .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(semantic.contains(
+            "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`"
+        ));
+        assert!(semantic.contains("`enforced_by` names the declared semantic-function id"));
+        assert!(semantic.matches("set: null").count() >= 10);
+        assert!(semantic.contains(
+            "Transition removal items use `from`, `on`, optional `to`, and optional `case`"
+        ));
+        assert!(semantic.contains("Prefer `set` when replacing generated scaffold semantics"));
+        assert!(semantic.contains("Do not inspect sibling projects, prior dogfood runs"));
+        assert!(machine.matches("set: null").count() >= 10);
+        assert!(machine.contains(
+            "Transition removal items use `from`, `on`, optional `to`, and optional `case`"
+        ));
+        assert!(machine.contains("Prefer `set` when replacing generated scaffold semantics"));
+        assert!(machine.contains("Do not inspect sibling projects, prior dogfood runs"));
     }
 
     #[test]

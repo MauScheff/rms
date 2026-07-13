@@ -1,11 +1,11 @@
 # Contract Evidence: plan-semantic-change
 
-Promise: `plan-semantic-change` renders an advisory `rms/semantic-change/v0.1` prompt for laws, contracts, machine structure, runnable surfaces, effects, and evidence obligations.
+Promise: `plan-semantic-change` renders a self-contained advisory `rms/semantic-change/v0.1` prompt for laws, contracts, machine structure, runnable surfaces, effects, and evidence obligations.
 
-Scenario: `rms spec plan <module.yaml|implementation.yaml> --task "<intent>"` asks providers to output a semantic-change object, not direct architecture edits.
+Scenario: render semantic and focused machine plans for fresh scaffolded implementations without consulting another project or RMS source.
 
-Command: `cargo test --manifest-path tooling/rust/rms/Cargo.toml workbench_prompt implement_prompt refactor_prompt -- --nocapture`
+Command: `cargo test --manifest-path tooling/rust/rms/Cargo.toml plan_prompt_is_self_contained -- --nocapture`
 
-Expected result: prompts say provider output is advisory until `rms spec apply` updates canonical artifacts.
+Expected result: the semantic prompt enumerates every invariant authority, shows exact `set`, `add`, and `remove` forms, explains structured transition removal and scaffold replacement, and both prompts prohibit external template lookup. Provider output remains advisory until the corresponding RMS apply command succeeds.
 
-Source revision: git:dfe027ab8502 plus current semantic-gate change under review.
+Source revision: resolved by the candidate commit and `rms audit --root . --strict`.
