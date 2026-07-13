@@ -2,27 +2,29 @@ spec: rms/contract/v0.1
 name: "apply-semantic-change"
 version: 1
 kind: command
-meaning: "Validate and atomically apply language-neutral semantic additions, replacements, and removals, including implementation semantic-function bindings, while sealing the resulting canonical semantic revision."
+meaning: "Validate and atomically apply language-neutral semantic additions, replacements, and removals while preserving whether each contract is provided by the module or required from another capability and sealing the resulting canonical semantic revision."
 preconditions:
   - id: "accepts-1"
-    statement: "one complete rms/semantic-change/v0.1 object targeting a readable module or implementation"
+    statement: "One complete rms/semantic-change/v0.1 object targeting a readable module or implementation."
   - id: "accepts-2"
-    statement: "named transition cases when one state and input can produce different destinations or outputs"
+    statement: "Contract operations whose optional direction is provided or required, with omitted direction inferred only when existing ownership is unambiguous."
   - id: "accepts-3"
-    statement: "semantic_functions add, set, and remove operations whose ids, symbols, kinds, purity, discharged promises, assumptions, and evidence references are valid for the implementation binding"
+    statement: "Named transition cases and valid semantic-function bindings when machine or implementation meaning changes."
 postconditions:
   - id: "ensures-1"
-    statement: "canonical module and implementation semantics are updated together with the exact committed change record"
+    statement: "Canonical module and implementation semantics are updated together with the exact committed change record."
   - id: "ensures-2"
-    statement: "the resulting semantic projection carries a deterministic revision digest that changes after direct canonical edits"
+    statement: "Provided contract operations update provider surfaces, while required contract operations update consumer capability requirements without publishing commands."
   - id: "ensures-3"
-    statement: "dry-run reports the complete final intended machine, semantic-function set, and planned writes without mutation"
+    statement: "Removing one contract reference preserves its artifact while another canonical reference still uses the same path."
   - id: "ensures-4"
-    statement: "semantic-function operations preserve a unique final id set and update implementation.yaml without direct manifest editing"
-  - id: "ensures-5"
-    statement: "incremental semantic changes preserve existing runnable surfaces unless a non-empty replacement or explicit named removal requests a surface change"
+    statement: "Dry-run reports the complete final intended machine, semantic-function set, and planned writes without mutation."
 failure_categories:
   - id: "rejects-1"
-    statement: "empty or incomplete semantic changes, unknown references, duplicate ids or transition cases, invalid removal targets, ambiguous empty surface replacement, and incomplete law, contract, property, function, surface, or evidence declarations"
+    statement: "Empty or incomplete semantic changes, unknown references, duplicate ids, invalid removal targets, and incomplete evidence declarations."
+  - id: "rejects-2"
+    statement: "Contract operations with an unsupported direction or an ambiguous existing ownership when direction is omitted."
+  - id: "rejects-3"
+    statement: "Implicit contract addition that would publish a name already owned as a required capability contract."
 compatibility:
   policy: backward-compatible-within-major

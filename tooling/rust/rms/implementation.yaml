@@ -1415,7 +1415,7 @@ semantic_functions:
   purity: effectful
 x-rms:
   semantic_revision:
-    digest: sha256:bbf0237e63add3cbf1b89e7c7cdede980a702a45d87fda3ac2f8a146ac879686
-    change_record: verification/changes/prevent-semantic-plan-templates-from-accidentally-clearing-existing-runnable-surfaces-during-unrelated-changes-c4ba4b53c414.yaml
+    digest: sha256:067f690b890842c96c1308fe4be9f27a62ac308bf43557c6132c91822d62b716
+    change_record: verification/changes/preserve-provided-and-required-capability-contract-ownership-during-canonical-semantic-revision-fc420b7c3897.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:c4ba4b53c414c70ef0807a88c29cef87b627e5a682bb8741f52ecbe522eff3bd
+    change_record_digest: sha256:fc420b7c38973f39a8a26f83e81f186b406c24deee7eba47f982cf1a45433397

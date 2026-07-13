@@ -296,10 +296,10 @@ invariants:
   authority: parser
   enforced_by: check_evidence_source_quality
 - id: semantic-contract-revisions-are-cli-applied
-  statement: Existing public contracts are revised or removed through rms spec apply so canonical contract files and module references change together.
+  statement: Provided contracts and required capability contracts are revised or removed through RMS spec apply without transferring ownership, deleting still-referenced artifacts, or requiring direct manifest edits.
   kind: invariant
   authority: effect-executor
-  enforced_by: apply_semantic_change
+  enforced_by: semantic-change-apply-command
 - id: canonical-semantics-match-cli-applied-revision
   statement: Production canonical semantics must match the latest RMS-applied semantic revision; direct manifest surgery cannot satisfy strict audit.
   kind: safety
@@ -552,12 +552,12 @@ verification:
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Prevent semantic plan templates from accidentally clearing existing runnable surfaces during unrelated changes.
+  last_semantic_intent: Preserve provided and required capability-contract ownership during canonical semantic revision.
   semantic_revision:
-    digest: sha256:bbf0237e63add3cbf1b89e7c7cdede980a702a45d87fda3ac2f8a146ac879686
-    change_record: verification/changes/prevent-semantic-plan-templates-from-accidentally-clearing-existing-runnable-surfaces-during-unrelated-changes-c4ba4b53c414.yaml
+    digest: sha256:067f690b890842c96c1308fe4be9f27a62ac308bf43557c6132c91822d62b716
+    change_record: verification/changes/preserve-provided-and-required-capability-contract-ownership-during-canonical-semantic-revision-fc420b7c3897.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:c4ba4b53c414c70ef0807a88c29cef87b627e5a682bb8741f52ecbe522eff3bd
+    change_record_digest: sha256:fc420b7c38973f39a8a26f83e81f186b406c24deee7eba47f982cf1a45433397
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-cli-applied-revision

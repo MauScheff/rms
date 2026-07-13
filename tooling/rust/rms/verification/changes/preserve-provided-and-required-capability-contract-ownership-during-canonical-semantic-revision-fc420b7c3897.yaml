@@ -1,0 +1,68 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/prevent-semantic-plan-templates-from-accidentally-clearing-existing-runnable-surfaces-during-unrelated-changes-c4ba4b53c414.yaml
+intent:
+  summary: Preserve provided and required capability-contract ownership during canonical semantic revision.
+laws:
+  add: []
+  set:
+  - id: semantic-contract-revisions-are-cli-applied
+    statement: Provided contracts and required capability contracts are revised or removed through RMS spec apply without transferring ownership, deleting still-referenced artifacts, or requiring direct manifest edits.
+    kind: invariant
+    authority: effect-executor
+    enforced_by: semantic-change-apply-command
+  remove: []
+contracts:
+  add: []
+  set:
+  - name: apply-semantic-change
+    version: v1
+    command: apply-semantic-change
+    meaning: Validate and atomically apply language-neutral semantic additions, replacements, and removals while preserving whether each contract is provided by the module or required from another capability and sealing the resulting canonical semantic revision.
+    accepts:
+    - One complete rms/semantic-change/v0.1 object targeting a readable module or implementation.
+    - Contract operations whose optional direction is provided or required, with omitted direction inferred only when existing ownership is unambiguous.
+    - Named transition cases and valid semantic-function bindings when machine or implementation meaning changes.
+    ensures:
+    - Canonical module and implementation semantics are updated together with the exact committed change record.
+    - Provided contract operations update provider surfaces, while required contract operations update consumer capability requirements without publishing commands.
+    - Removing one contract reference preserves its artifact while another canonical reference still uses the same path.
+    - Dry-run reports the complete final intended machine, semantic-function set, and planned writes without mutation.
+    rejects:
+    - Empty or incomplete semantic changes, unknown references, duplicate ids, invalid removal targets, and incomplete evidence declarations.
+    - Contract operations with an unsupported direction or an ambiguous existing ownership when direction is omitted.
+    - Implicit contract addition that would publish a name already owned as a required capability contract.
+  - name: plan-semantic-change
+    version: v1
+    command: plan-semantic-change
+    meaning: Render or run a self-contained advisory prompt for a language-neutral RMS semantic-change object, including ownership-aware provided and required contract operations.
+    accepts:
+    - A readable module.yaml or implementation.yaml target.
+    - Product or maintenance intent describing the requested semantic change.
+    ensures:
+    - The prompt enumerates allowed invariant authorities and exact scalar, list, mapping, and operation cardinalities.
+    - Contract add, set, and remove entries explain direction provided versus required and unambiguous inference.
+    - The prompt tells agents to revise consumer capability contracts without publishing provider commands.
+    - The prompt requires distinct evidence obligations and keeps provider output advisory until apply succeeds.
+    rejects:
+    - The target is unreadable or unsupported.
+    - Task intent is missing.
+  remove: []
+properties: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: semantic-contract-revisions-are-cli-applied
+    path: verification/laws/semantic_contract_revisions_are_cli_applied.md
+  - kind: contract
+    proves: apply-semantic-change
+    path: verification/contracts/apply_semantic_change.md
+  - kind: contract
+    proves: plan-semantic-change
+    path: verification/contracts/plan_semantic_change.md
+surfaces: null
+binding_dependencies: null

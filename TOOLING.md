@@ -159,6 +159,7 @@ laws:
 contracts:
   add:
     - name: resolve-checkout
+      direction: provided
       version: v1
       command: ResolveCheckout
 semantic_functions:
@@ -179,6 +180,8 @@ evidence:
 ```
 
 `semantic_functions.add/set/remove` is the architecture gate for exact binding symbols, authority ownership, purity, discharged contracts or invariants, assumptions, and categorized evidence. Dry-run prints `final_semantic_functions`; agents edit the declared function body afterward, but do not repair `implementation.yaml.semantic_functions` directly.
+
+Contract operations carry semantic ownership. `direction: provided` targets commands or capabilities owned by the module; `direction: required` targets the consumer expectation in `requires.capabilities`. Existing `set` and `remove` operations may omit direction only when exactly one direction exists. RMS rejects an implicit `contracts.add` that would turn an existing requirement into a provider surface, and it preserves a contract file while another canonical reference still uses it.
 
 Incremental semantic changes leave `surfaces.set: null`. RMS rejects `surfaces.set: []` as ambiguous; remove an intentional runnable surface explicitly by name so unrelated changes cannot erase entrypoints.
 
@@ -563,7 +566,7 @@ rms property replay <counterexample.yaml> [--json]
 
 Assembles and verifies a portable module package directory from the canonical manifest, referenced contracts and evidence, sibling implementation binding when present, declared implementation role files and public facade, generated conformance report, and `PACKAGE.json` metadata with source revision, validator identity, included files, sizes, and SHA-256 checksums. For a reusable module, the command records the concrete result in declared package evidence, rebuilds with that proof, and verifies the final artifact. The resulting directory may be archived or used as an input to another registry or artifact system.
 
-Reusable modules are defined by RMS semantics, not by a language package manager. A reusable provider should declare `provides.capabilities[]` with a contract, expose one public facade in `implementation.yaml`, include package/reuse evidence, and route native package exports to that facade. Expected-result prose is only an obligation; the recorded `rms package` pass is proof. Consumer modules declare `requires.capabilities[]` with the expected contract and should not import provider `representation`, `transition`, parser, adapter, or port internals. Local implementation links are changed through language-neutral `binding_dependencies`; binding adapters realize native allowlists and package metadata.
+Reusable modules are defined by RMS semantics, not by a language package manager. A reusable provider should declare `provides.capabilities[]` with a contract, expose one public facade in `implementation.yaml`, include package/reuse evidence, and route native package exports to that facade. Expected-result prose is only an obligation; the recorded `rms package` pass is proof. Consumer modules declare `requires.capabilities[]` with the expected contract and revise that expectation using `contracts.set` with `direction: required`; this does not publish or transfer provider ownership. Consumers should not import provider `representation`, `transition`, parser, adapter, or port internals. Local implementation links are changed through language-neutral `binding_dependencies`; binding adapters realize native allowlists and package metadata.
 
 ### `verify-package`
 

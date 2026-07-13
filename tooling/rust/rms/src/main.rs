@@ -1631,6 +1631,8 @@ struct SemanticContractsChange {
 struct SemanticContractChange {
     name: String,
     #[serde(default)]
+    direction: Option<SemanticContractDirection>,
+    #[serde(default)]
     version: Option<String>,
     #[serde(default)]
     command: Option<String>,
@@ -1649,7 +1651,25 @@ struct SemanticContractChange {
 struct SemanticContractRemoveChange {
     name: String,
     #[serde(default)]
+    direction: Option<SemanticContractDirection>,
+    #[serde(default)]
     version: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum SemanticContractDirection {
+    Provided,
+    Required,
+}
+
+impl SemanticContractDirection {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Provided => "provided",
+            Self::Required => "required",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -24519,32 +24539,36 @@ fn append_semantic_change_module_reflection_checks(
     }
 
     if let Some(contracts) = &change.contracts {
-        let public_surface = module_public_surface_names(module);
         for contract in contracts.add.iter().chain(&contracts.replace) {
-            let expected = contract.command.as_deref().unwrap_or(&contract.name);
-            if !public_surface.contains(expected) && !public_surface.contains(&contract.name) {
+            let direction = contract
+                .direction
+                .unwrap_or(SemanticContractDirection::Provided);
+            if !semantic_contract_directions(module, &contract.name).contains(&direction) {
                 push_applied_change_reflection_failure(
                     checks,
                     strict,
                     "semantic.applied-change-not-reflected",
                     change_path,
                     format!(
-                        "semantic-change declares contract `{}`, but `module.yaml` does not expose `{expected}` in the public surface",
-                        contract.name
+                        "semantic-change declares {} contract `{}`, but `module.yaml` does not contain the matching {} contract reference",
+                        direction.label(), contract.name, direction.label()
                     ),
                 );
             }
         }
         for contract in &contracts.remove {
-            if public_surface.contains(&contract.name) {
+            let direction = contract
+                .direction
+                .unwrap_or(SemanticContractDirection::Provided);
+            if semantic_contract_directions(module, &contract.name).contains(&direction) {
                 push_applied_change_reflection_failure(
                     checks,
                     strict,
                     "semantic.applied-change-not-reflected",
                     change_path,
                     format!(
-                        "semantic-change removes contract `{}`, but `module.yaml` still exposes it in the public surface",
-                        contract.name
+                        "semantic-change removes {} contract `{}`, but `module.yaml` still contains that contract reference",
+                        direction.label(), contract.name
                     ),
                 );
             }
@@ -24910,31 +24934,6 @@ fn semantic_machine_transition_expectations(
         expected.push(transition.clone());
     }
     (expected, change.remove.clone())
-}
-
-fn module_public_surface_names(module: &YamlValue) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    for section in [
-        &["provides", "commands"][..],
-        &["provides", "queries"][..],
-        &["provides", "events"][..],
-        &["provides", "capabilities"][..],
-    ] {
-        if let Some(items) = get_path(module, section).and_then(YamlValue::as_sequence) {
-            for item in items {
-                if let Some(name) = get_str(item, &["name"]) {
-                    names.insert(name.to_string());
-                }
-                if let Some(command) = get_str(item, &["command"]) {
-                    names.insert(command.to_string());
-                }
-                if let Some(contract) = get_str(item, &["contract"]) {
-                    names.insert(contract.to_string());
-                }
-            }
-        }
-    }
-    names
 }
 
 fn module_verification_references(module: &YamlValue) -> BTreeSet<String> {
@@ -30068,7 +30067,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact: `laws.add[]` and `laws.set[]` use scalar strings `id`, `statement`, `kind`, `authority`, and `enforced_by`. `contracts.add[]` and `contracts.set[]` use scalar strings `name`, `version`, `command`, and `meaning`, plus non-empty string lists `accepts`, `ensures`, and `rejects`. `properties.add[]` and `properties.set[]` use scalar strings `id`, `proves`, and `kind`; structured `input_space` and `operation`; string lists `preconditions` and non-empty `oracle`; `evidence: {{kind: property, path: <relative-path>}}` (or kind `fuzz` for a fuzz property); `counterexamples: {{path: <relative-path>}}`; and `realizations: [{{profile, strategy, command, harness}}]`. `properties.remove[]` contains existing property ids. `semantic_functions.add[]` and `semantic_functions.set[]` use scalar `id`, exact binding `symbol`, `kind`, and `purity`; optional string-list mappings under `discharges` and `assumptions`; and non-empty categorized evidence paths. `semantic_functions.remove[]` contains existing function ids. `evidence.add[]` uses scalar strings `kind`, `proves`, and `path`.")?;
+    writeln!(out, "Item shapes and cardinalities are exact: `laws.add[]` and `laws.set[]` use scalar strings `id`, `statement`, `kind`, `authority`, and `enforced_by`. `contracts.add[]` and `contracts.set[]` use scalar strings `name`, optional `direction: provided|required`, `version`, `command`, and `meaning`, plus non-empty string lists `accepts`, `ensures`, and `rejects`. `properties.add[]` and `properties.set[]` use scalar strings `id`, `proves`, and `kind`; structured `input_space` and `operation`; string lists `preconditions` and non-empty `oracle`; `evidence: {{kind: property, path: <relative-path>}}` (or kind `fuzz` for a fuzz property); `counterexamples: {{path: <relative-path>}}`; and `realizations: [{{profile, strategy, command, harness}}]`. `properties.remove[]` contains existing property ids. `semantic_functions.add[]` and `semantic_functions.set[]` use scalar `id`, exact binding `symbol`, `kind`, and `purity`; optional string-list mappings under `discharges` and `assumptions`; and non-empty categorized evidence paths. `semantic_functions.remove[]` contains existing function ids. `evidence.add[]` uses scalar strings `kind`, `proves`, and `path`.")?;
     writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module.")?;
     writeln!(out, "`rms spec apply` automatically adds every currently active semantic revision to `supersedes` and hash-seals the exact new record. Use explicit `supersedes` only for additional branches that are not locally discoverable. Applied records are append-only: never edit or delete them.")?;
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
@@ -30079,7 +30078,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically.")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
-    writeln!(out, "Contract add/set entries use scalar `name`, `version`, `command`, product-specific `meaning`, and non-empty string lists `accepts`, `ensures`, and `rejects`. Generated capability contracts are scaffold obligations: replace them with `contracts.set` before implementation or production audit. Contract remove entries use scalar `name` and optional scalar `version`.")?;
+    writeln!(out, "Contract add/set entries use scalar `name`, optional `direction: provided|required`, `version`, `command`, product-specific `meaning`, and non-empty string lists `accepts`, `ensures`, and `rejects`. `provided` owns a module's public command/capability contract; `required` owns the consumer expectation under `requires.capabilities`. Set/remove may omit direction only when exactly one ownership direction exists. If a required contract already exists, revise it with `contracts.set`; do not use `contracts.add` to publish the dependency as a provider command. Generated capability contracts are scaffold obligations: replace them with `contracts.set` before implementation or production audit. Contract remove entries use scalar `name`, optional `direction`, and optional scalar `version`.")?;
     if context.implementation.is_none() {
         writeln!(out, "This target has no implementation binding, so `semantic_functions`, `machine`, `roles`, and `surfaces` are null. Keep them null for contract/law/property-only work. Before requesting implementation bindings, machine roles, or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
     }
@@ -30216,6 +30215,7 @@ fn prepare_semantic_change_for_apply(
     context: &SpecTargetContext,
     mut change: SemanticChange,
 ) -> SemanticChange {
+    normalize_semantic_contract_directions(context, &mut change);
     let base = spec_target_base(context);
     let changes_dir = base.join("verification").join("changes");
     for previous in active_semantic_change_record_references(base, &changes_dir) {
@@ -30229,6 +30229,45 @@ fn prepare_semantic_change_for_apply(
         }
     }
     change
+}
+
+fn normalize_semantic_contract_directions(
+    context: &SpecTargetContext,
+    change: &mut SemanticChange,
+) {
+    let Some(contracts) = change.contracts.as_mut() else {
+        return;
+    };
+    let module = context.module.as_ref().map(|module| &module.value);
+    for contract in &mut contracts.add {
+        if contract.direction.is_some() {
+            continue;
+        }
+        let existing = module
+            .map(|module| semantic_contract_directions(module, &contract.name))
+            .unwrap_or_default();
+        if !existing.contains(&SemanticContractDirection::Required) {
+            contract.direction = Some(SemanticContractDirection::Provided);
+        }
+    }
+    for contract in &mut contracts.replace {
+        if contract.direction.is_some() {
+            continue;
+        }
+        let existing = module
+            .map(|module| semantic_contract_directions(module, &contract.name))
+            .unwrap_or_default();
+        contract.direction = resolve_existing_semantic_contract_direction(&existing, None).ok();
+    }
+    for contract in &mut contracts.remove {
+        if contract.direction.is_some() {
+            continue;
+        }
+        let existing = module
+            .map(|module| semantic_contract_directions(module, &contract.name))
+            .unwrap_or_default();
+        contract.direction = resolve_existing_semantic_contract_direction(&existing, None).ok();
+    }
 }
 
 fn active_semantic_change_record_references(base: &Path, changes_dir: &Path) -> Vec<String> {
@@ -32185,19 +32224,7 @@ fn validate_semantic_contracts(
     let Some(contracts) = &change.contracts else {
         return;
     };
-    let existing = context
-        .module
-        .as_ref()
-        .and_then(|module| get_path(&module.value, &["provides", "commands"]))
-        .and_then(YamlValue::as_sequence)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| get_str(item, &["name"]))
-                .map(ToString::to_string)
-                .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_default();
+    let module = context.module.as_ref().map(|module| &module.value);
     let mut changed = BTreeSet::new();
 
     for contract in contracts.add.iter().chain(&contracts.replace) {
@@ -32225,7 +32252,10 @@ fn validate_semantic_contracts(
             diagnostics.push(error(
                 "semantic.contract-without-public-surface",
                 &context.target,
-                format!("contract `{}` must declare a public command", contract.name),
+                format!(
+                    "contract `{}` must declare the command provided or required by the capability",
+                    contract.name
+                ),
             ));
         }
         if contract.meaning.as_deref().unwrap_or("").trim().is_empty() {
@@ -32273,27 +32303,62 @@ fn validate_semantic_contracts(
     }
 
     for contract in &contracts.add {
-        if existing.contains(&contract.name) {
+        let existing = module
+            .map(|module| semantic_contract_directions(module, &contract.name))
+            .unwrap_or_default();
+        let direction = contract
+            .direction
+            .unwrap_or(SemanticContractDirection::Provided);
+        if contract.direction.is_none()
+            && existing.contains(&SemanticContractDirection::Required)
+            && !existing.contains(&SemanticContractDirection::Provided)
+        {
+            diagnostics.push(error(
+                "semantic.contract-add-direction-required",
+                &context.target,
+                format!(
+                    "contract `{}` already exists as a required capability contract; revise it through `contracts.set` or explicitly use `direction: provided` to publish a distinct provider surface",
+                    contract.name
+                ),
+            ));
+        } else if existing.contains(&direction) {
             diagnostics.push(error(
                 "semantic.contract-add-exists",
                 &context.target,
                 format!(
-                    "contract `{}` already exists; revise it through `contracts.set`",
+                    "{} contract `{}` already exists; revise it through `contracts.set`",
+                    direction.label(),
                     contract.name
                 ),
             ));
         }
     }
     for contract in &contracts.replace {
-        if !existing.contains(&contract.name) {
-            diagnostics.push(error(
+        let existing = module
+            .map(|module| semantic_contract_directions(module, &contract.name))
+            .unwrap_or_default();
+        match resolve_existing_semantic_contract_direction(&existing, contract.direction) {
+            Ok(_) => {}
+            Err(SemanticContractDirectionResolution::Missing) => diagnostics.push(error(
                 "semantic.contract-set-missing",
                 &context.target,
                 format!(
-                    "contract `{}` does not exist; create it through `contracts.add`",
+                    "{}contract `{}` does not exist; create it through `contracts.add`",
+                    contract
+                        .direction
+                        .map(|direction| format!("{} ", direction.label()))
+                        .unwrap_or_default(),
                     contract.name
                 ),
-            ));
+            )),
+            Err(SemanticContractDirectionResolution::Ambiguous) => diagnostics.push(error(
+                "semantic.contract-direction-ambiguous",
+                &context.target,
+                format!(
+                    "contract `{}` is both provided and required; set `direction: provided` or `direction: required` explicitly",
+                    contract.name
+                ),
+            )),
         }
     }
     for contract in &contracts.remove {
@@ -32317,13 +32382,88 @@ fn validate_semantic_contracts(
                 ),
             ));
         }
-        if !existing.contains(&contract.name) {
-            diagnostics.push(error(
+        let existing = module
+            .map(|module| semantic_contract_directions(module, &contract.name))
+            .unwrap_or_default();
+        match resolve_existing_semantic_contract_direction(&existing, contract.direction) {
+            Ok(_) => {}
+            Err(SemanticContractDirectionResolution::Missing) => diagnostics.push(error(
                 "semantic.contract-remove-missing",
                 &context.target,
-                format!("contract `{}` does not exist", contract.name),
-            ));
+                format!(
+                    "{}contract `{}` does not exist",
+                    contract
+                        .direction
+                        .map(|direction| format!("{} ", direction.label()))
+                        .unwrap_or_default(),
+                    contract.name
+                ),
+            )),
+            Err(SemanticContractDirectionResolution::Ambiguous) => diagnostics.push(error(
+                "semantic.contract-direction-ambiguous",
+                &context.target,
+                format!(
+                    "contract `{}` is both provided and required; set `direction: provided` or `direction: required` explicitly",
+                    contract.name
+                ),
+            )),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SemanticContractDirectionResolution {
+    Missing,
+    Ambiguous,
+}
+
+fn semantic_contract_directions(
+    module: &YamlValue,
+    name: &str,
+) -> BTreeSet<SemanticContractDirection> {
+    let mut directions = BTreeSet::new();
+    for path in [
+        &["provides", "commands"][..],
+        &["provides", "capabilities"][..],
+    ] {
+        if get_path(module, path)
+            .and_then(YamlValue::as_sequence)
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| get_str(item, &["name"]) == Some(name))
+            })
+        {
+            directions.insert(SemanticContractDirection::Provided);
+        }
+    }
+    if get_path(module, &["requires", "capabilities"])
+        .and_then(YamlValue::as_sequence)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| get_str(item, &["name"]) == Some(name))
+        })
+    {
+        directions.insert(SemanticContractDirection::Required);
+    }
+    directions
+}
+
+fn resolve_existing_semantic_contract_direction(
+    existing: &BTreeSet<SemanticContractDirection>,
+    requested: Option<SemanticContractDirection>,
+) -> std::result::Result<SemanticContractDirection, SemanticContractDirectionResolution> {
+    if let Some(requested) = requested {
+        return existing
+            .contains(&requested)
+            .then_some(requested)
+            .ok_or(SemanticContractDirectionResolution::Missing);
+    }
+    match existing.iter().copied().collect::<Vec<_>>().as_slice() {
+        [direction] => Ok(*direction),
+        [] => Err(SemanticContractDirectionResolution::Missing),
+        _ => Err(SemanticContractDirectionResolution::Ambiguous),
     }
 }
 
@@ -33412,7 +33552,7 @@ fn apply_semantic_law_changes_to_module(value: &mut YamlValue, laws: &SemanticLa
     invariants.extend(laws.add.iter().map(semantic_law_yaml));
 }
 
-fn semantic_contract_command_yaml(contract: &SemanticContractChange) -> YamlValue {
+fn semantic_contract_reference_yaml(contract: &SemanticContractChange) -> YamlValue {
     let mut mapping = serde_yaml::Mapping::new();
     mapping.insert(yaml_key("name"), YamlValue::String(contract.name.clone()));
     mapping.insert(
@@ -33426,25 +33566,79 @@ fn apply_semantic_contract_changes_to_module(
     value: &mut YamlValue,
     contracts: &SemanticContractsChange,
 ) {
-    let commands = ensure_yaml_sequence_path(value, &["provides", "commands"]);
     for contract in &contracts.replace {
-        if let Some(index) = commands
-            .iter()
-            .position(|item| get_str(item, &["name"]) == Some(contract.name.as_str()))
-        {
-            commands[index] = semantic_contract_command_yaml(contract);
+        update_semantic_contract_references(
+            value,
+            &contract.name,
+            contract
+                .direction
+                .unwrap_or(SemanticContractDirection::Provided),
+            semantic_contract_reference_yaml(contract),
+        );
+    }
+    for contract in &contracts.remove {
+        remove_semantic_contract_references(
+            value,
+            &contract.name,
+            contract
+                .direction
+                .unwrap_or(SemanticContractDirection::Provided),
+        );
+    }
+    for contract in &contracts.add {
+        let direction = contract
+            .direction
+            .unwrap_or(SemanticContractDirection::Provided);
+        let path = match direction {
+            SemanticContractDirection::Provided => &["provides", "commands"][..],
+            SemanticContractDirection::Required => &["requires", "capabilities"][..],
+        };
+        ensure_yaml_sequence_path(value, path).push(semantic_contract_reference_yaml(contract));
+    }
+}
+
+fn update_semantic_contract_references(
+    value: &mut YamlValue,
+    name: &str,
+    direction: SemanticContractDirection,
+    replacement: YamlValue,
+) {
+    let paths = match direction {
+        SemanticContractDirection::Provided => vec![
+            &["provides", "commands"][..],
+            &["provides", "capabilities"][..],
+        ],
+        SemanticContractDirection::Required => vec![&["requires", "capabilities"][..]],
+    };
+    for path in paths {
+        let Some(items) = get_path_mut(value, path).and_then(YamlValue::as_sequence_mut) else {
+            continue;
+        };
+        for item in items {
+            if get_str(item, &["name"]) == Some(name) {
+                *item = replacement.clone();
+            }
         }
     }
-    commands.retain(|item| {
-        let Some(name) = get_str(item, &["name"]) else {
-            return true;
-        };
-        !contracts
-            .remove
-            .iter()
-            .any(|contract| contract.name == name)
-    });
-    commands.extend(contracts.add.iter().map(semantic_contract_command_yaml));
+}
+
+fn remove_semantic_contract_references(
+    value: &mut YamlValue,
+    name: &str,
+    direction: SemanticContractDirection,
+) {
+    let paths = match direction {
+        SemanticContractDirection::Provided => vec![
+            &["provides", "commands"][..],
+            &["provides", "capabilities"][..],
+        ],
+        SemanticContractDirection::Required => vec![&["requires", "capabilities"][..]],
+    };
+    for path in paths {
+        if let Some(items) = get_path_mut(value, path).and_then(YamlValue::as_sequence_mut) {
+            items.retain(|item| get_str(item, &["name"]) != Some(name));
+        }
+    }
 }
 
 fn semantic_property_yaml(property: &SemanticPropertyChange) -> YamlValue {
@@ -33548,6 +33742,7 @@ fn write_semantic_contracts_and_evidence(
     change: &SemanticChange,
 ) -> Result<()> {
     let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    let retained_contract_paths = module_contract_reference_paths(&module.value);
     if let Some(contracts) = &change.contracts {
         for contract in &contracts.add {
             let path = base.join(semantic_contract_path(contract));
@@ -33569,7 +33764,8 @@ fn write_semantic_contracts_and_evidence(
         }
         for contract in &contracts.remove {
             let path = base.join(semantic_contract_remove_path(contract));
-            if path.exists() {
+            let relative = display_relative(base, &path);
+            if path.exists() && !retained_contract_paths.contains(&relative) {
                 fs::remove_file(&path)
                     .with_context(|| format!("failed to remove `{}`", path.display()))?;
             }
@@ -33605,6 +33801,26 @@ fn write_semantic_contracts_and_evidence(
         }
     }
     Ok(())
+}
+
+fn module_contract_reference_paths(module: &YamlValue) -> BTreeSet<String> {
+    [
+        &["provides", "commands"][..],
+        &["provides", "queries"][..],
+        &["provides", "events"][..],
+        &["provides", "capabilities"][..],
+        &["requires", "capabilities"][..],
+    ]
+    .into_iter()
+    .flat_map(|path| {
+        get_path(module, path)
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| get_str(item, &["contract"]).map(ToString::to_string))
+            .collect::<Vec<_>>()
+    })
+    .collect()
 }
 
 fn render_semantic_contract(contract: &SemanticContractChange) -> String {
@@ -42901,7 +43117,7 @@ Use these advisory workbench commands when they match the task:
 - `rms evidence <module.yaml> --task "<task>"`
 - `rms refactor <module.yaml> --task "<task>"`
 - `rms spec plan <module.yaml|implementation.yaml> --task "<task>"` when a change needs new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, semantic-function bindings, public entrypoints, binding dependencies, or evidence obligations
-- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics, record and hash-seal the exact applied change, and automatically supersede every currently active semantic revision; use `semantic_functions.add/set/remove` for exact binding symbols, authority owners, purity, discharged promises, and evidence; `binding_dependencies` names RMS modules and lets the binding adapter realize native dependency metadata; use `contracts.set` to replace generated contract scaffolds with product-specific meaning, accepted inputs, guaranteed outcomes, and rejection categories; use `set`, `remove`, and explicit `supersedes` only for additional non-local branches instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
+- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics, record and hash-seal the exact applied change, and automatically supersede every currently active semantic revision; use `semantic_functions.add/set/remove` for exact binding symbols, authority owners, purity, discharged promises, and evidence; `binding_dependencies` names RMS modules and lets the binding adapter realize native dependency metadata; use `contracts.set` with `direction: provided|required` to replace generated provider or consumer contract scaffolds without transferring ownership; use `set`, `remove`, and explicit `supersedes` only for additional non-local branches instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
 - `rms spec check <module.yaml|implementation.yaml>` after semantic changes
 - `rms machine plan/apply/check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct
 - `rms surface apply/check <implementation.yaml>` when adding or changing app, UI, CLI, browser, HTTP, batch, or executable entrypoints; browser-style surfaces should distinguish controller `entrypoint` from host `launch_entrypoint`, and declare intentional local launch scripts with `--launch-script`
@@ -47885,6 +48101,346 @@ evidence:
         assert!(diagnostics
             .iter()
             .all(|diagnostic| diagnostic.check != "semantic.contract-scaffold-active"));
+    }
+
+    #[test]
+    fn spec_apply_contract_set_infers_required_ownership_without_publishing_command() {
+        let root = unique_test_dir("spec-apply-required-contract-set");
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: batch-runner-boundary
+  version: 0.1.0
+  kind: library
+  purpose: Consume reusable batch planning.
+profiles: [core]
+owns: { concepts: [], data: [], decisions: [] }
+provides:
+  commands:
+    - name: run-batches
+      contract: contracts/run-batches.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: [{ name: batch-planner-domain }]
+  capabilities:
+    - name: plan-batches
+      contract: contracts/plan-batches.v1.yaml
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("contracts/plan-batches.v1.yaml"),
+            render_capability_contract("plan-batches", "domain decision command"),
+        )
+        .unwrap();
+
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+contracts:
+  set:
+    - name: plan-batches
+      version: v1
+      command: plan-batches
+      meaning: Consume ordered bounded batch plans from the declared provider.
+      accepts: [validated ordered items and a positive batch size]
+      ensures: [the consumer expectation preserves item order and the requested bound]
+      rejects: [invalid batch size and invalid item]
+evidence:
+  add:
+    - kind: contract
+      proves: plan-batches
+      path: verification/contracts/plan_batches_dependency.md
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let module = load_manifest(&root.join("module.yaml")).unwrap();
+        let provided = get_path(&module.value, &["provides", "commands"])
+            .and_then(YamlValue::as_sequence)
+            .unwrap();
+        let required = get_path(&module.value, &["requires", "capabilities"])
+            .and_then(YamlValue::as_sequence)
+            .unwrap();
+        let contract = fs::read_to_string(root.join("contracts/plan-batches.v1.yaml")).unwrap();
+        let record = fs::read_dir(root.join("verification/changes"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| fs::read_to_string(entry.path()).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(provided
+            .iter()
+            .all(|item| get_str(item, &["name"]) != Some("plan-batches")));
+        assert!(required
+            .iter()
+            .any(|item| get_str(item, &["name"]) == Some("plan-batches")));
+        assert!(contract.contains("Consume ordered bounded batch plans"));
+        assert!(record.contains("direction: required"));
+    }
+
+    #[test]
+    fn spec_apply_contract_add_does_not_implicitly_publish_required_contract() {
+        let root = unique_test_dir("spec-apply-required-contract-add-guard");
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: consumer, version: 0.1.0, kind: library, purpose: Consume a capability. }
+profiles: [core]
+owns: { concepts: [], data: [], decisions: [] }
+provides: { commands: [], queries: [], events: [], capabilities: [] }
+requires:
+  modules: []
+  capabilities:
+    - name: plan-batches
+      contract: contracts/plan-batches.v1.yaml
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("contracts/plan-batches.v1.yaml"),
+            render_capability_contract("plan-batches", "required capability"),
+        )
+        .unwrap();
+        let before = fs::read_to_string(root.join("module.yaml")).unwrap();
+
+        let error = run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+contracts:
+  add:
+    - name: plan-batches
+      version: v1
+      command: plan-batches
+      meaning: Accidentally publish a required contract.
+      accepts: [valid request]
+      ensures: [valid response]
+      rejects: [invalid request]
+evidence:
+  add:
+    - kind: contract
+      proves: plan-batches
+      path: verification/contracts/plan_batches.md
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        let after = fs::read_to_string(root.join("module.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(error.contains("RMS semantic change rejected"));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn spec_apply_contract_add_can_declare_required_consumer_expectation() {
+        let root = unique_test_dir("spec-apply-required-contract-add");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: consumer, version: 0.1.0, kind: library, purpose: Consume a capability. }
+profiles: [core]
+owns: { concepts: [], data: [], decisions: [] }
+provides: { commands: [], queries: [], events: [], capabilities: [] }
+requires: { modules: [], capabilities: [] }
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+contracts:
+  add:
+    - name: plan-batches
+      direction: required
+      version: v1
+      command: plan-batches
+      meaning: Consume ordered bounded batch plans from a compatible provider.
+      accepts: [validated ordered items and a positive batch size]
+      ensures: [the provider response preserves item order and the requested bound]
+      rejects: [invalid batch size and invalid item]
+evidence:
+  add:
+    - kind: contract
+      proves: plan-batches
+      path: verification/contracts/plan_batches_dependency.md
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let module = load_manifest(&root.join("module.yaml")).unwrap();
+        let directions = semantic_contract_directions(&module.value, "plan-batches");
+        let contract_exists = root.join("contracts/plan-batches.v1.yaml").is_file();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            directions,
+            BTreeSet::from([SemanticContractDirection::Required])
+        );
+        assert!(contract_exists);
+    }
+
+    #[test]
+    fn spec_apply_contract_set_requires_direction_when_name_is_provided_and_required() {
+        let root = unique_test_dir("spec-apply-ambiguous-contract-direction");
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: bridge, version: 0.1.0, kind: library, purpose: Bridge a shared capability. }
+profiles: [core]
+owns: { concepts: [], data: [], decisions: [] }
+provides:
+  commands:
+    - name: shared-operation
+      contract: contracts/shared-operation.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities:
+    - name: shared-operation
+      contract: contracts/shared-operation.v1.yaml
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("contracts/shared-operation.v1.yaml"),
+            render_capability_contract("shared-operation", "shared operation"),
+        )
+        .unwrap();
+
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let mut change: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+contracts:
+  set:
+    - name: shared-operation
+      command: shared-operation
+      meaning: Revise one side of a shared name.
+      accepts: [valid request]
+      ensures: [valid response]
+      rejects: [invalid request]
+evidence:
+  add:
+    - kind: contract
+      proves: shared-operation
+      path: verification/contracts/shared_operation.md
+"#,
+        )
+        .unwrap();
+        normalize_semantic_contract_directions(&context, &mut change);
+        let diagnostics = validate_semantic_change(&context, &change);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "semantic.contract-direction-ambiguous"));
+    }
+
+    #[test]
+    fn spec_apply_required_contract_remove_preserves_shared_provider_artifact() {
+        let root = unique_test_dir("spec-apply-required-contract-remove");
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: bridge, version: 0.1.0, kind: library, purpose: Bridge a shared capability. }
+profiles: [core]
+owns: { concepts: [], data: [], decisions: [] }
+provides:
+  commands:
+    - name: shared-operation
+      contract: contracts/shared-operation.v1.yaml
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities:
+    - name: shared-operation
+      contract: contracts/shared-operation.v1.yaml
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("contracts/shared-operation.v1.yaml"),
+            render_capability_contract("shared-operation", "shared operation"),
+        )
+        .unwrap();
+
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+contracts:
+  remove:
+    - name: shared-operation
+      direction: required
+      version: v1
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let module = load_manifest(&root.join("module.yaml")).unwrap();
+        let directions = semantic_contract_directions(&module.value, "shared-operation");
+        let contract_exists = root.join("contracts/shared-operation.v1.yaml").is_file();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            directions,
+            BTreeSet::from([SemanticContractDirection::Provided])
+        );
+        assert!(contract_exists);
     }
 
     #[test]
@@ -53801,6 +54357,9 @@ verification:
         ));
         assert!(semantic.contains("`enforced_by` names the declared semantic-function id"));
         assert!(semantic.contains("non-empty string lists `accepts`, `ensures`, and `rejects`"));
+        assert!(semantic.contains("optional `direction: provided|required`"));
+        assert!(semantic.contains("consumer expectation under `requires.capabilities`"));
+        assert!(semantic.contains("do not use `contracts.add` to publish the dependency"));
         assert!(semantic.contains("non-empty `oracle`"));
         assert!(semantic.contains("`properties.add[]` and `properties.set[]`"));
         assert!(semantic.contains("`properties.remove[]` contains existing property ids"));
