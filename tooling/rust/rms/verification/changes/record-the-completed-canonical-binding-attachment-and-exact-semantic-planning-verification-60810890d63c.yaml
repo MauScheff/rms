@@ -1,0 +1,16 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Record the completed canonical binding attachment and exact semantic planning verification.
+laws: null
+contracts: null
+properties: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: scenario
+    proves: add-rms-binding
+    path: verification/scenarios/add_binding_roundtrip.md
+surfaces: null

@@ -961,6 +961,16 @@ enum Commands {
         provider_timeout_seconds: Option<u64>,
     },
 
+    /// Attach an implementation binding to an existing semantic-only RMS module.
+    AddBinding {
+        /// Path to module.yaml or the module directory.
+        module: PathBuf,
+
+        /// Implementation binding to scaffold: rust, swift, js, or executable.
+        #[arg(long)]
+        binding: String,
+    },
+
     /// Scaffold a recursive RMS capability tree: composite parent, domain child, and boundary child.
     AddCapability {
         /// Directory where the composite parent module artifacts should be created.
@@ -1241,6 +1251,7 @@ enum RmsWorkbenchCommand {
     InitRmsSystem,
     AddRmsModule,
     AddRmsCapability,
+    AddRmsBinding,
     CheckReleaseReadiness,
     BuildContextPacket,
     BuildModuleAtlas,
@@ -5950,6 +5961,9 @@ fn main() -> Result<()> {
             };
             run_add_module(request, &options)
         }
+        Commands::AddBinding { module, binding } => {
+            run_add_binding(AddBindingRequest { module, binding })
+        }
         Commands::AddCapability {
             path,
             name,
@@ -6880,6 +6894,14 @@ fn append_design_recommendations(
         )?;
         writeln!(
             out,
+            "  - Choose implementation bindings before scaffolding code. For an implemented tree, run `rms add-capability <path> --name <name> --purpose <purpose> --domain-binding <rust|swift|js|executable> --boundary-binding <rust|swift|js|executable>`. Omit binding flags only for an intentionally semantic-only design."
+        )?;
+        writeln!(
+            out,
+            "  - If a semantic-only child already exists, attach its implementation canonically with `rms add-binding <child>/module.yaml --binding <rust|swift|js|executable>`; do not create a scratch module or copy generated files."
+        )?;
+        writeln!(
+            out,
             "  - Do not name inner machines from role or surface words such as `RulesMachine`, `AdapterMachine`, `CliMachine`, or `WebMachine`; prefer capability language such as `<Capability>Machine` or `<Capability>BoundaryMachine`."
         )?;
         writeln!(
@@ -6892,6 +6914,7 @@ fn append_design_recommendations(
     if mentions_runnable_surface {
         writeln!(out, "- Because the intent names an app/tool/runnable surface, include a boundary adapter with a declared runnable surface via `rms surface apply` or `rms spec apply`, plus smoke evidence; do not leave the result as library-only unless the user explicitly requested a library.")?;
         writeln!(out, "- Preferred scaffold for a runnable product app is a composite capability with at least one boundary child and one domain/workflow child. A single-module app is acceptable only when `module.yaml` or `implementation.yaml` records the semantic single-module justification.")?;
+        writeln!(out, "- A runnable product needs an implementation binding now. Supply explicit child binding flags to `rms add-capability`, or run `rms add-binding` before machine and surface changes; an omitted binding is an intentional semantic-only scaffold, not an implementation plan.")?;
     }
     writeln!(out, "- Choose `domain-engine` when the module owns pure decisions, invariants, transitions, or traceable rules.")?;
     writeln!(out, "- Choose `boundary-adapter` when untrusted input, UI, CLI, network, storage, time, randomness, or external effects enter or leave.")?;
@@ -22569,27 +22592,6 @@ fn append_semantic_change_implementation_reflection_checks(
     let Some(machine) = &change.machine else {
         return;
     };
-    if !semantic_machine_change_has_structural_operations(machine)
-        && get_str(implementation, &["architecture", "machine", "mode"])
-            == Some(machine.mode.as_str())
-        && machine
-            .transition_signature
-            .as_deref()
-            .is_none_or(|signature| {
-                get_str(
-                    implementation,
-                    &["architecture", "machine", "transition_signature"],
-                ) == Some(signature)
-            })
-    {
-        push_applied_change_reflection_failure(
-            checks,
-            strict,
-            "semantic.machine-change-empty",
-            change_path,
-            "active semantic-change record contains a no-op machine section; it does not account for product machine semantics",
-        );
-    }
     for (field, expected_present, expected_absent) in semantic_machine_variant_groups(machine) {
         let declared = get_string_array(implementation, &["architecture", "machine", field])
             .into_iter()
@@ -24442,19 +24444,47 @@ fn render_machine_plan_prompt(
         yaml_quote(&implementation.path.display().to_string())
     )?;
     writeln!(out, "machine:")?;
-    writeln!(out, "  mode: stateful-transition-machine")?;
-    writeln!(out, "  transition_signature: state-and-input")?;
+    writeln!(
+        out,
+        "  mode: {}",
+        report
+            .machine
+            .mode
+            .as_deref()
+            .unwrap_or("stateful-transition-machine")
+    )?;
+    writeln!(
+        out,
+        "  transition_signature: {}",
+        report
+            .machine
+            .transition_signature
+            .as_deref()
+            .unwrap_or("state-and-input")
+    )?;
     writeln!(out, "  types:")?;
-    writeln!(out, "    state: DomainState")?;
-    writeln!(out, "    input: DomainInput")?;
-    writeln!(out, "    command: DomainCommand")?;
-    writeln!(out, "    event: DomainEvent")?;
-    writeln!(out, "    effect: DomainEffect")?;
-    writeln!(out, "    effect_result: DomainEffectResult")?;
-    writeln!(out, "    reply: DomainReply")?;
-    writeln!(out, "    rejection: DomainRejection")?;
-    writeln!(out, "    transition: DomainTransition")?;
-    writeln!(out, "    transition_record: DomainTransitionRecord")?;
+    for (field, value) in [
+        ("state", report.machine.types.state.as_deref()),
+        ("input", report.machine.types.input.as_deref()),
+        ("command", report.machine.types.command.as_deref()),
+        ("event", report.machine.types.event.as_deref()),
+        ("effect", report.machine.types.effect.as_deref()),
+        (
+            "effect_result",
+            report.machine.types.effect_result.as_deref(),
+        ),
+        ("reply", report.machine.types.reply.as_deref()),
+        ("rejection", report.machine.types.rejection.as_deref()),
+        ("transition", report.machine.types.transition.as_deref()),
+        (
+            "transition_record",
+            report.machine.types.transition_record.as_deref(),
+        ),
+    ] {
+        if let Some(value) = value {
+            writeln!(out, "    {field}: {value}")?;
+        }
+    }
     writeln!(out, "  states:")?;
     writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
@@ -24504,7 +24534,7 @@ fn render_machine_plan_prompt(
     writeln!(out, "For each variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "Transition items use `from`, `on`, `to`, stable `case`, optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every semantic branch has its own case, including multiple destinations or outputs for the same state and input.")?;
     writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effect-protocol removal items use `effect`. Role removal items use `kind` and optional `path`.")?;
-    writeln!(out, "Role items use `kind`, optional `path`, optional `effect`, and optional `binding_hint`. Effect protocols use `effect`, `results`, `executor_role`, `atomicity`, and aggregate justification/evidence only when atomicity is aggregate.")?;
+    writeln!(out, "Role items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, and `atomicity: one-request-one-result`; aggregate protocols use `atomicity: aggregate` plus `aggregate_justification` and evidence.")?;
     writeln!(out, "Run `rms machine apply ... --dry-run` first and do not edit source while `final_machine` still contains scaffold-generic variants instead of the intended product cases.")?;
     writeln!(out)?;
     writeln!(out, "## Machine-Gate Checklist")?;
@@ -27082,69 +27112,69 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  remove: []")?;
     writeln!(out, "properties:")?;
     writeln!(out, "  add: []")?;
-    writeln!(out, "machine:")?;
-    writeln!(out, "  mode: stateful-transition-machine")?;
-    writeln!(out, "  transition_signature: state-and-input")?;
-    writeln!(out, "  states:")?;
-    writeln!(out, "    set: null")?;
-    writeln!(out, "    add: []")?;
-    writeln!(out, "    remove: []")?;
-    writeln!(out, "  commands:")?;
-    writeln!(out, "    set: null")?;
-    writeln!(out, "    add: []")?;
-    writeln!(out, "    remove: []")?;
-    writeln!(out, "  observed_events:")?;
-    writeln!(out, "    set: null")?;
-    writeln!(out, "    add: []")?;
-    writeln!(out, "    remove: []")?;
-    writeln!(out, "  events:")?;
-    writeln!(out, "    set: null")?;
-    writeln!(out, "    add: []")?;
-    writeln!(out, "    remove: []")?;
-    writeln!(out, "  effects:")?;
-    writeln!(out, "    set: null")?;
-    writeln!(out, "    add: []")?;
-    writeln!(out, "    remove: []")?;
-    writeln!(out, "  effect_results:")?;
-    writeln!(out, "    set: null")?;
-    writeln!(out, "    add: []")?;
-    writeln!(out, "    remove: []")?;
-    writeln!(out, "  replies:")?;
-    writeln!(out, "    set: null")?;
-    writeln!(out, "    add: []")?;
-    writeln!(out, "    remove: []")?;
-    writeln!(out, "  rejections:")?;
-    writeln!(out, "    set: null")?;
-    writeln!(out, "    add: []")?;
-    writeln!(out, "    remove: []")?;
-    writeln!(out, "  effect_protocols:")?;
-    writeln!(out, "    set: null")?;
-    writeln!(out, "    add: []")?;
-    writeln!(out, "    remove: []")?;
-    writeln!(out, "  transitions:")?;
-    writeln!(out, "    set: null")?;
-    writeln!(out, "    add: []")?;
-    writeln!(out, "    remove: []")?;
-    writeln!(out, "roles:")?;
-    writeln!(out, "  set: []")?;
-    writeln!(out, "  add: []")?;
-    writeln!(out, "  remove: []")?;
-    writeln!(out, "surfaces:")?;
-    writeln!(out, "  set: []")?;
-    writeln!(out, "  add: []")?;
-    writeln!(out, "  remove: []")?;
+    if let Some(implementation) = &context.implementation {
+        let mode = get_str(&implementation.value, &["architecture", "machine", "mode"])
+            .unwrap_or("stateful-transition-machine");
+        let signature = get_str(
+            &implementation.value,
+            &["architecture", "machine", "transition_signature"],
+        )
+        .unwrap_or_else(|| {
+            if is_stateful_machine_mode(mode) {
+                "state-and-input"
+            } else {
+                "input-only"
+            }
+        });
+        writeln!(out, "machine:")?;
+        writeln!(out, "  mode: {mode}")?;
+        writeln!(out, "  transition_signature: {signature}")?;
+        for field in [
+            "states",
+            "commands",
+            "observed_events",
+            "events",
+            "effects",
+            "effect_results",
+            "replies",
+            "rejections",
+            "effect_protocols",
+            "transitions",
+        ] {
+            writeln!(out, "  {field}:")?;
+            writeln!(out, "    set: null")?;
+            writeln!(out, "    add: []")?;
+            writeln!(out, "    remove: []")?;
+        }
+        writeln!(out, "roles:")?;
+        writeln!(out, "  set: []")?;
+        writeln!(out, "  add: []")?;
+        writeln!(out, "  remove: []")?;
+        writeln!(out, "surfaces:")?;
+        writeln!(out, "  set: []")?;
+        writeln!(out, "  add: []")?;
+        writeln!(out, "  remove: []")?;
+    } else {
+        writeln!(out, "machine: null")?;
+        writeln!(out, "roles: null")?;
+        writeln!(out, "surfaces: null")?;
+    }
     writeln!(out, "evidence:")?;
     writeln!(out, "  add: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes are exact: `laws.add[]` uses `id`, `statement`, `kind`, scalar `authority`, and scalar `enforced_by`; `properties.add[]` uses `id`, `proves`, `kind`, `input_space`, `preconditions`, `operation`, `oracle`, `evidence: {{kind, path}}`, `counterexamples: {{path}}`, and `realizations: [{{profile, strategy, command}}]`; `evidence.add[]` uses `kind`, `proves`, and `path`.")?;
+    writeln!(out, "Item shapes and cardinalities are exact: `laws.add[]` and `laws.set[]` use scalar strings `id`, `statement`, `kind`, `authority`, and `enforced_by`. `contracts.add[]` and `contracts.set[]` use scalar strings `name`, `version`, `command`, and `meaning`, plus non-empty string lists `accepts`, `ensures`, and `rejects`. `properties.add[]` uses scalar strings `id`, `proves`, and `kind`; structured `input_space` and `operation`; string lists `preconditions` and non-empty `oracle`; `evidence: {{kind: property, path: <relative-path>}}` (or kind `fuzz` for a fuzz property); `counterexamples: {{path: <relative-path>}}`; and `realizations: [{{profile, strategy, command}}]`. `evidence.add[]` uses scalar strings `kind`, `proves`, and `path`.")?;
+    writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module.")?;
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
     writeln!(out, "For every machine variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "Machine transition items use `from`, `on`, `to`, stable `case`, optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names.")?;
-    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effect-protocol removal items use `effect`. Role removal items use `kind` and optional `path`.")?;
+    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, and `atomicity: one-request-one-result`; `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Role removal items use `kind` and optional `path`.")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
-    writeln!(out, "Contract add/set entries use `name`, `version`, `command`, product-specific `meaning`, `accepts`, `ensures`, and `rejects`. Generated capability contracts are scaffold obligations: replace them with `contracts.set` before implementation or production audit. Contract remove entries use `name` and optional `version`.")?;
+    writeln!(out, "Contract add/set entries use scalar `name`, `version`, `command`, product-specific `meaning`, and non-empty string lists `accepts`, `ensures`, and `rejects`. Generated capability contracts are scaffold obligations: replace them with `contracts.set` before implementation or production audit. Contract remove entries use scalar `name` and optional scalar `version`.")?;
+    if context.implementation.is_none() {
+        writeln!(out, "This target has no implementation binding, so `machine`, `roles`, and `surfaces` are null. Keep them null for contract/law/property-only work. Before requesting machine roles or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
+    }
     writeln!(out)?;
     writeln!(out, "Surface add entries use `name`, `kind: runnable-boundary`, `surface`, `entrypoint`, `delegates_to.role` or `delegates_to.symbol`, `delegates_to.command`, `effects` or `no_effects_justification`, and `evidence`. A delegated role must exist in `architecture.roles`; use a concrete symbol when delegation is function-specific.")?;
     writeln!(out)?;
@@ -27194,7 +27224,7 @@ fn run_spec_apply(
         (context.implementation.as_ref(), machine_change.as_ref())
     {
         diagnostics.extend(validate_machine_change(implementation, machine_change));
-    } else if change.machine.is_some() {
+    } else if semantic_machine_change_requests_change(&change, context.implementation.as_ref()) {
         diagnostics.push(warning(
             "semantic.machine-without-implementation",
             &context.target,
@@ -28122,11 +28152,13 @@ fn validate_semantic_change(
     let has_surfaces = change
         .surfaces
         .as_ref()
-        .is_some_and(|surfaces| !surfaces.add.is_empty());
+        .is_some_and(semantic_surfaces_change_has_operations);
+    let has_machine =
+        semantic_machine_change_requests_change(change, context.implementation.as_ref());
     if !has_laws
         && !has_contracts
         && !has_properties
-        && change.machine.is_none()
+        && !has_machine
         && !has_evidence
         && !has_surfaces
     {
@@ -28147,31 +28179,63 @@ fn validate_semantic_change(
     validate_semantic_properties(context, change, evidence_items, &mut diagnostics);
     validate_semantic_evidence(context, evidence_items, &mut diagnostics);
     validate_semantic_surfaces(context, change, &mut diagnostics);
-    if let Some(machine) = &change.machine {
-        let existing_mode = context.implementation.as_ref().and_then(|implementation| {
-            get_str(&implementation.value, &["architecture", "machine", "mode"])
-        });
-        let existing_signature = context.implementation.as_ref().and_then(|implementation| {
+    diagnostics
+}
+
+fn semantic_surfaces_change_has_operations(surfaces: &SemanticSurfacesChange) -> bool {
+    !surfaces.replace.is_empty() || !surfaces.add.is_empty() || !surfaces.remove.is_empty()
+}
+
+fn machine_roles_change_has_operations(roles: Option<&MachineRolesChange>) -> bool {
+    roles.is_some_and(|roles| {
+        !roles.replace.is_empty() || !roles.add.is_empty() || !roles.remove.is_empty()
+    })
+}
+
+fn semantic_machine_change_requests_change(
+    change: &SemanticChange,
+    implementation: Option<&LoadedManifest>,
+) -> bool {
+    let Some(machine) = &change.machine else {
+        return false;
+    };
+    if semantic_machine_change_has_structural_operations(machine)
+        || machine_roles_change_has_operations(change.roles.as_ref())
+    {
+        return true;
+    }
+    let Some(implementation) = implementation else {
+        return false;
+    };
+    if get_str(&implementation.value, &["architecture", "machine", "mode"])
+        != Some(machine.mode.as_str())
+    {
+        return true;
+    }
+    if machine
+        .transition_signature
+        .as_deref()
+        .is_some_and(|signature| {
             get_str(
                 &implementation.value,
                 &["architecture", "machine", "transition_signature"],
-            )
-        });
-        if !semantic_machine_change_has_structural_operations(machine)
-            && existing_mode == Some(machine.mode.as_str())
-            && machine
-                .transition_signature
-                .as_deref()
-                .is_none_or(|signature| existing_signature == Some(signature))
-        {
-            diagnostics.push(error(
-                "semantic.machine-change-empty",
-                &context.target,
-                "semantic change includes a machine section but does not revise mode, variants, effect protocols, or transitions; the dry-run final machine must contain the intended product semantics",
-            ));
-        }
+            ) != Some(signature)
+        })
+    {
+        return true;
     }
-    diagnostics
+    machine
+        .justification
+        .as_deref()
+        .is_some_and(|justification| {
+            let field = if machine.mode == "stateless-decision-machine" {
+                "stateless_justification"
+            } else {
+                "lifecycle_justification"
+            };
+            get_str(&implementation.value, &["architecture", "machine", field])
+                != Some(justification)
+        })
 }
 
 fn semantic_machine_change_has_structural_operations(machine: &SemanticMachineChange) -> bool {
@@ -28734,6 +28798,9 @@ fn validate_semantic_surfaces(
     let Some(surfaces) = &change.surfaces else {
         return;
     };
+    if !semantic_surfaces_change_has_operations(surfaces) {
+        return;
+    }
     let Some(implementation) = context.implementation.as_ref() else {
         diagnostics.push(error(
             "surface.implementation-missing",
@@ -28742,7 +28809,7 @@ fn validate_semantic_surfaces(
         ));
         return;
     };
-    for declaration in &surfaces.add {
+    for declaration in surfaces.replace.iter().chain(&surfaces.add) {
         diagnostics.extend(validate_surface_declaration(implementation, declaration));
     }
 }
@@ -28751,6 +28818,9 @@ fn semantic_machine_change_to_machine_change(
     change: &SemanticChange,
     implementation: Option<&LoadedManifest>,
 ) -> Option<MachineChange> {
+    if !semantic_machine_change_requests_change(change, implementation) {
+        return None;
+    }
     let machine = change.machine.as_ref()?;
     Some(MachineChange {
         spec: "rms/machine-change/v0.1".to_string(),
@@ -33328,6 +33398,11 @@ struct AddCapabilityRequest {
     boundary_binding: Option<String>,
 }
 
+struct AddBindingRequest {
+    module: PathBuf,
+    binding: String,
+}
+
 struct SurfaceApplyRequest {
     implementation: PathBuf,
     kind: String,
@@ -33400,6 +33475,130 @@ fn run_add_module(request: AddModuleRequest, options: &PromptRunOptions) -> Resu
     }
 
     println!("added RMS module at {}", path.display());
+    Ok(())
+}
+
+fn run_add_binding(request: AddBindingRequest) -> Result<()> {
+    validate_scaffold_binding(Some(&request.binding))?;
+    let module_path = if request.module.is_dir() {
+        request.module.join("module.yaml")
+    } else {
+        request.module
+    };
+    let module = load_manifest(&module_path)?;
+    if get_str(&module.value, &["spec"]) != Some("rms/module/v0.1") {
+        bail!("`{}` is not an RMS module manifest", module_path.display());
+    }
+    let module_dir = module_path.parent().unwrap_or_else(|| Path::new("."));
+    let implementation_path = module_dir.join("implementation.yaml");
+    if implementation_path.exists() {
+        bail!(
+            "module `{}` already has an implementation binding at `{}`",
+            module_path.display(),
+            implementation_path.display()
+        );
+    }
+
+    let module_name = get_str(&module.value, &["module", "name"])
+        .ok_or_else(|| anyhow!("module manifest does not declare module.name"))?;
+    let shape = get_str(&module.value, &["x-scaffold", "shape"])
+        .and_then(ScaffoldShape::from_str)
+        .unwrap_or_else(|| {
+            ScaffoldShape::inferred(
+                get_str(&module.value, &["module", "kind"]).unwrap_or("module"),
+                &get_string_array(&module.value, &["profiles"]),
+            )
+        });
+    let model = BindingScaffoldModel::new(module_name, module_name, shape);
+    scaffold_binding_transactionally(module_dir, &request.binding, &model)?;
+    println!(
+        "added {} implementation binding at {}",
+        request.binding,
+        implementation_path.display()
+    );
+    Ok(())
+}
+
+fn scaffold_binding_transactionally(
+    module_dir: &Path,
+    binding: &str,
+    model: &BindingScaffoldModel,
+) -> Result<()> {
+    let parent = module_dir.parent().unwrap_or_else(|| Path::new("."));
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut attempt = 0_u32;
+    let staging = loop {
+        let candidate = parent.join(format!(
+            ".rms-binding-stage-{}-{}-{nanos}-{attempt}",
+            semantic_id_segment(&model.module_name),
+            std::process::id()
+        ));
+        match fs::create_dir(&candidate) {
+            Ok(()) => break candidate,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                attempt = attempt
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("exhausted binding staging path attempts"))?;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to create `{}`", candidate.display()));
+            }
+        }
+    };
+
+    let result = (|| -> Result<()> {
+        let adapter = binding_adapter(binding)?;
+        debug_assert_eq!(adapter.id(), binding);
+        adapter.scaffold(&staging, model)?;
+
+        let mut generated = WalkDir::new(&staging)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| entry.path().to_path_buf())
+            .collect::<Vec<_>>();
+        generated.sort();
+        for source in &generated {
+            let relative = source.strip_prefix(&staging).with_context(|| {
+                format!("failed to relativize staged binding `{}`", source.display())
+            })?;
+            let destination = module_dir.join(relative);
+            if destination.exists() {
+                bail!(
+                    "refusing to overwrite existing file `{}` while attaching binding",
+                    destination.display()
+                );
+            }
+        }
+        for source in generated {
+            let relative = source.strip_prefix(&staging).with_context(|| {
+                format!("failed to relativize staged binding `{}`", source.display())
+            })?;
+            let destination = module_dir.join(relative);
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::rename(&source, &destination).with_context(|| {
+                format!(
+                    "failed to install staged binding `{}` at `{}`",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+        }
+        Ok(())
+    })();
+    let cleanup = fs::remove_dir_all(&staging);
+    if let Err(error) = result {
+        let _ = cleanup;
+        return Err(error);
+    }
+    cleanup.with_context(|| format!("failed to remove `{}`", staging.display()))?;
     Ok(())
 }
 
@@ -37884,7 +38083,7 @@ Core rule:
 ## Non-Negotiable Execution
 
 1. In a fresh standalone project, run `rms init`, then commit the generated bootstrap so later semantic and source drift has a provenance baseline.
-2. Run `rms design` before choosing the first module tree. When its deterministic hints recommend a recursive capability, use `rms add-capability`; do not substitute one module for convenience. A single-module exception is valid only when the user explicitly requests it and RMS records the justification canonically.
+2. Run `rms design` before choosing the first module tree. When its deterministic hints recommend a recursive capability, use `rms add-capability`; choose explicit implementation bindings for work that will produce code. Omit binding flags only for an intentionally semantic-only scaffold, and use `rms add-binding` before machine or surface work if a binding was deferred; do not substitute one module for convenience.
 3. Never repair `module.yaml`, `implementation.yaml`, contracts, machine structure, surfaces, or evidence declarations by direct editing. Use the applicable RMS apply command. If RMS cannot express the required change, stop and report the RMS gap instead of bypassing the gate.
 4. Use the current project, rendered RMS prompts, and deterministic RMS diagnostics as planning context. Do not inspect sibling projects, prior dogfood runs, RMS source, or generated examples outside the project to infer a change schema or borrow semantics.
 5. Fill only declared role bodies after the semantic apply succeeds.
@@ -37899,6 +38098,7 @@ Core rule:
 | State, command, observed event, effect result, transition | `rms spec apply` or focused `rms machine apply/check` |
 | App, CLI, UI, HTTP, batch, executable entrypoint | `rms surface apply/check` |
 | Module boundary or public capability | `rms design` then `rms add-module` or `rms add-capability` |
+| Implementation realization for a semantic-only module | `rms add-binding <module.yaml> --binding <binding>` |
 | Declared role body only | Edit the role body, then verify |
 
 Machine rules:
@@ -37938,6 +38138,7 @@ You cannot:
 Use these advisory workbench commands when they match the task:
 
 - Fresh intent-only project: after `rms init`, run `rms design --root . --task "<task>"` before choosing `rms add-module` or `rms add-capability`.
+- Implemented project: pass `--binding` to `rms add-module`, or both `--domain-binding` and `--boundary-binding` to `rms add-capability`; use `rms add-binding` only when an intentionally semantic-only module later gains code.
 - `rms design --root . --task "<task>"` before module boundaries or semantic shapes are fixed
 - `rms route <module.yaml> --task "<task>"` before implementing against a composite parent
 - `rms plan <module.yaml> --task "<task>"`
@@ -37967,7 +38168,7 @@ When creating a new capability, choose semantic shape before file layout:
 - `integration-adapter`: external service boundary, retries, idempotency, reconciliation evidence.
 - `composite`: contained submodules, public exports, visibility boundaries, composition evidence.
 
-Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a public capability should be scaffolded as a recursive tree with a composite parent, domain child, and boundary child. Prefer this over a single module when the intent combines a runnable surface or untrusted input with invariant-bearing planning, ordering, batching, filtering, policy, lifecycle decisions, or external effects.
+Use `rms add-capability <path> --name <name> --purpose "<purpose>" --domain-binding <binding> --boundary-binding <binding>` when a public capability should be implemented as a recursive tree with a composite parent, domain child, and boundary child. Prefer this over a single module when the intent combines a runnable surface or untrusted input with invariant-bearing planning, ordering, batching, filtering, policy, lifecycle decisions, or external effects. Omit bindings only when the requested output is deliberately semantic-only; attach them later with `rms add-binding <child>/module.yaml --binding <binding>` rather than copying a scratch scaffold.
 
 If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only. Runnable surfaces stay thin, but boundary machines still use explicit state-plus-input transitions; product lifecycle belongs in the owning domain or workflow machine.
 
@@ -43535,7 +43736,7 @@ verification:
     }
 
     #[test]
-    fn semantic_change_rejects_noop_machine_section() {
+    fn semantic_change_treats_noop_machine_section_as_empty() {
         let implementation = LoadedManifest {
             path: PathBuf::from("implementation.yaml"),
             value: serde_yaml::from_str(
@@ -43597,7 +43798,10 @@ machine:
 
         assert!(diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.check == "semantic.machine-change-empty"));
+            .any(|diagnostic| diagnostic.check == "semantic-change.empty"));
+        assert!(diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.check != "semantic.machine-change-empty"));
     }
 
     #[test]
@@ -44143,6 +44347,8 @@ architecture:
         assert!(rendered.contains("`<semantic-boundary-child>` [boundary-adapter, internal]"));
         assert!(rendered.contains("Name children in product/domain language"));
         assert!(rendered.contains("omit `--domain-child`"));
+        assert!(rendered.contains("--domain-binding <rust|swift|js|executable>"));
+        assert!(rendered.contains("rms add-binding <child>/module.yaml"));
         assert!(rendered.contains("Do not name inner machines from role or surface words"));
         assert!(rendered.contains("domain-engine"));
         assert!(rendered.contains("boundary-adapter"));
@@ -45597,6 +45803,83 @@ verification:
     }
 
     #[test]
+    fn add_binding_attaches_to_semantic_only_module_without_changing_semantics() {
+        let root = unique_test_dir("add-binding-semantic-only");
+        run_add_module(
+            add_module_request(
+                &root,
+                "line-selection-domain",
+                "Select lines through pure declared semantics.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                None,
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let module_before = fs::read_to_string(root.join("module.yaml")).unwrap();
+
+        run_add_binding(AddBindingRequest {
+            module: root.join("module.yaml"),
+            binding: "js".to_string(),
+        })
+        .unwrap();
+
+        let module_after = fs::read_to_string(root.join("module.yaml")).unwrap();
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        let second = run_add_binding(AddBindingRequest {
+            module: root.clone(),
+            binding: "js".to_string(),
+        })
+        .unwrap_err()
+        .to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(module_before, module_after);
+        assert!(implementation.contains("module: line-selection-domain"));
+        assert!(implementation.contains("LineSelectionMachine"));
+        assert!(!implementation.contains("LineSelectionDomainMachine"));
+        assert!(second.contains("already has an implementation binding"));
+    }
+
+    #[test]
+    fn add_binding_conflict_leaves_no_partial_binding() {
+        let root = unique_test_dir("add-binding-conflict");
+        run_add_module(
+            add_module_request(
+                &root,
+                "conflict-domain",
+                "Exercise transactional binding attachment.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                None,
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/representation.mjs"), "keep\n").unwrap();
+
+        let error = run_add_binding(AddBindingRequest {
+            module: root.join("module.yaml"),
+            binding: "js".to_string(),
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("refusing to overwrite existing file"));
+        assert!(!root.join("implementation.yaml").exists());
+        assert!(!root.join("scripts/build.sh").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("src/representation.mjs")).unwrap(),
+            "keep\n"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn add_capability_parent_does_not_declare_empty_boundary_lane() {
         let root = unique_test_dir("add-capability-parent-evidence-lanes");
         run_init(
@@ -46867,6 +47150,10 @@ verification:
             "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`"
         ));
         assert!(semantic.contains("`enforced_by` names the declared semantic-function id"));
+        assert!(semantic.contains("non-empty string lists `accepts`, `ensures`, and `rejects`"));
+        assert!(semantic.contains("non-empty `oracle`"));
+        assert!(semantic.contains("Every changed law and every added or changed contract"));
+        assert!(semantic.contains("atomicity: one-request-one-result"));
         assert!(semantic.matches("set: null").count() >= 10);
         assert!(semantic.contains(
             "Transition removal items use `from`, `on`, optional `to`, and optional `case`"
@@ -46879,6 +47166,84 @@ verification:
         ));
         assert!(machine.contains("Prefer `set` when replacing generated scaffold semantics"));
         assert!(machine.contains("Do not inspect sibling projects, prior dogfood runs"));
+    }
+
+    #[test]
+    fn semantic_only_plan_keeps_implementation_sections_null() {
+        let root = unique_test_dir("semantic-only-plan");
+        run_add_module(
+            add_module_request(
+                &root,
+                "semantic-only",
+                "Describe semantics before selecting a binding.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                None,
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let rendered =
+            render_spec_plan_prompt(&context, &root, "replace contract meaning").unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("machine: null"));
+        assert!(rendered.contains("roles: null"));
+        assert!(rendered.contains("surfaces: null"));
+        assert!(rendered.contains("rms add-binding"));
+    }
+
+    #[test]
+    fn empty_machine_and_surface_sections_are_inert_without_binding() {
+        let root = unique_test_dir("semantic-noop-sections");
+        run_add_module(
+            add_module_request(
+                &root,
+                "semantic-noop",
+                "Exercise inert semantic template sections.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                None,
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let change: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+machine:
+  mode: stateful-transition-machine
+  states: {set: null, add: [], remove: []}
+  commands: {set: null, add: [], remove: []}
+  observed_events: {set: null, add: [], remove: []}
+  events: {set: null, add: [], remove: []}
+  effects: {set: null, add: [], remove: []}
+  effect_results: {set: null, add: [], remove: []}
+  replies: {set: null, add: [], remove: []}
+  rejections: {set: null, add: [], remove: []}
+  effect_protocols: {set: null, add: [], remove: []}
+  transitions: {set: null, add: [], remove: []}
+roles: {set: [], add: [], remove: []}
+surfaces: {set: [], add: [], remove: []}
+evidence:
+  add:
+    - kind: scenario
+      proves: noop-template
+      path: verification/scenarios/noop_template.md
+"#,
+        )
+        .unwrap();
+        let diagnostics = validate_semantic_change(&context, &change);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(semantic_machine_change_to_machine_change(&change, None).is_none());
+        assert!(diagnostics.iter().all(|diagnostic| {
+            diagnostic.check != "surface.implementation-missing"
+                && diagnostic.check != "semantic.machine-change-empty"
+        }));
     }
 
     #[test]

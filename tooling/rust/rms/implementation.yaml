@@ -149,6 +149,7 @@ architecture:
     - RunSemanticProperties
     - ValidateRmsArtifacts
     - VerifyImplementation
+    - AddRmsBinding
     observed_events: []
     events:
     - CommandCompleted
@@ -433,6 +434,25 @@ semantic_functions:
   evidence:
     contracts:
     - verification/contracts/add_rms_capability.md
+- id: add-rms-binding-command
+  symbol: run_add_binding
+  kind: adapter
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/add-rms-binding.v1.yaml
+    invariants:
+    - semantic-only-modules-have-canonical-binding-attachment
+  assumptions:
+    ensures:
+    - a supported binding is rendered through the canonical binding adapter into a staging directory before any module file is installed
+    - the existing module manifest and semantic artifacts remain unchanged
+    - destination conflicts reject the complete attachment without leaving a partial implementation binding
+  evidence:
+    contracts:
+    - verification/contracts/add_rms_binding.md
+    laws:
+    - verification/laws/semantic_only_binding_attachment.md
 - id: release-check-command
   symbol: run_release_check
   kind: interpreter
@@ -936,9 +956,23 @@ semantic_functions:
   discharges:
     contracts:
     - contracts/plan-semantic-change.v1.yaml
+    invariants:
+    - semantic-plan-schema-is-self-contained
   evidence:
     contracts:
     - verification/contracts/plan_semantic_change.md
+    laws:
+    - verification/laws/semantic_plan_exact_schema.md
+- id: semantic-change-noop-classifier
+  symbol: semantic_machine_change_requests_change
+  kind: parser
+  purity: pure
+  discharges:
+    invariants:
+    - empty-semantic-change-sections-are-inert
+  evidence:
+    laws:
+    - verification/laws/empty_semantic_sections.md
 - id: semantic-change-apply-command
   symbol: run_spec_apply
   kind: adapter
@@ -1020,6 +1054,6 @@ semantic_functions:
     - verification/contracts/replay_property_counterexample.md
 x-rms:
   semantic_revision:
-    digest: sha256:d7d28303e872dbf1b055473b4f8385491027586a17330ce7a17a9c64ddcb39ed
-    change_record: verification/changes/make-rms-semantic-and-machine-planning-prompts-self-contained-enough-that-agents-can-author-valid-replacement-changes-without-consulting-sibling-projects-or-prior-generated-examples-d82cf18d1347.yaml
+    digest: sha256:c13fd842abc42a871d4e73c0ff1ed0054fa148b2de3cc46bad0120349494a19f
+    change_record: verification/changes/record-the-completed-canonical-binding-attachment-and-exact-semantic-planning-verification-60810890d63c.yaml
     applied_by: rms spec apply

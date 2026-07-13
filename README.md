@@ -99,7 +99,7 @@ For a guided first pass, use `QUICKSTART.md`. For a self-hosted RMS walkthrough,
 The golden path is:
 
 ```text
-init -> bootstrap commit -> design -> add-capability -> spec/surface apply -> implement declared roles -> gate -> candidate commit -> strict audit
+init -> bootstrap commit -> design -> add-capability with bindings -> spec/surface apply -> implement declared roles -> gate -> candidate commit -> strict audit
 ```
 
 Create a new RMS system:
@@ -153,6 +153,15 @@ rms add-capability ./my-system/modules/tic-tac-toe \
   --domain-binding rust \
   --boundary-binding js
 ```
+
+Choose bindings when the project is expected to produce code. Omitting them creates an intentional semantic-only scaffold. If implementation is deferred, attach it later without copying a scratch scaffold:
+
+```bash
+rms add-binding ./my-system/modules/tic-tac-toe-domain/module.yaml --binding rust
+rms add-binding ./my-system/modules/tic-tac-toe-boundary/module.yaml --binding js
+```
+
+`rms add-binding` preserves the module's laws, contracts, capabilities, and dependencies. It realizes the existing semantic shape through the selected binding adapter, then machine and surface semantics continue through `rms spec apply` or `rms machine apply`.
 
 This creates `module.yaml`, a module `README.md`, `contracts/README.md`, concrete evidence files referenced by the manifests, and optional implementation bindings. Semantic shapes such as `domain-engine`, `boundary-adapter`, `workflow`, `storage-adapter`, `integration-adapter`, and `composite` define role obligations before file layout. Bindings such as `rust`, `swift`, `js`, and `executable` realize those roles idiomatically. The executable binding remains the opaque command-backed lane for web, mobile, CLI, native UI, generated assets, or integration surfaces when RMS cannot statically inspect internals.
 

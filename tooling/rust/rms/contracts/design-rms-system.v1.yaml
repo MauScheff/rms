@@ -1,32 +1,30 @@
 spec: rms/contract/v0.1
-name: design-rms-system
+name: "design-rms-system"
 version: 1
 kind: command
-meaning: Render an advisory RMS system design prompt that proposes module boundaries, semantic scaffold shapes, representation obligations, effects, dependencies, and verification evidence before implementation scope is fixed.
+meaning: "Render an advisory RMS system design prompt that proposes module boundaries, semantic scaffold shapes, implementation binding choices, representation obligations, effects, dependencies, and verification evidence before implementation scope is fixed."
 preconditions:
-  - id: task-supplied
-    statement: The requested system or repository design task is supplied as task text.
-  - id: root-readable
-    statement: The requested root can be inspected for existing RMS artifacts.
+  - id: "accepts-1"
+    statement: "a supplied system or repository design task"
+  - id: "accepts-2"
+    statement: "a readable project root for existing RMS context"
 postconditions:
-  - id: design-prompt-created
-    statement: The prompt summarizes discovered RMS context and asks for the smallest honest module set rather than a module per noun.
-  - id: semantic-shapes-named
-    statement: The prompt asks for language-agnostic semantic shapes such as domain-engine, boundary-adapter, runtime-monitor, workflow, storage-adapter, and integration-adapter.
-  - id: monitor-authority-named
-    statement: When runtime monitoring or supervisory control is relevant, the prompt asks for explicit monitor authority and declared outputs rather than direct mutation of controlled module state.
-  - id: representation-obligations-named
-    statement: The prompt asks for explicit representation obligations including closed variants, validated values, commands, states, events, accepted or rejected outcomes, and boundary schemas.
-  - id: semantic-structure-precedes-code
-    statement: The prompt asks for semantic structure before implementation code, including ADTs or closed variants, validated values, command and state models, message envelopes, transition outputs, trace records, replay obligations, transition boundaries, and edge-case decisions.
-  - id: edge-cases-resolved-first
-    statement: The prompt asks for invalid commands, illegal transitions, terminal states, malformed boundary input, stale or conflicting state, duplicate or out-of-order external facts, and not-applicable cases before file layout is treated as implementation guidance.
-  - id: design-provider-execution-is-optional
-    statement: Provider-backed design is opt-in and must preserve the rendered prompt and provider response as a run record.
+  - id: "ensures-1"
+    statement: "the prompt recommends the smallest honest module set and deterministic add-module or add-capability command shape"
+  - id: "ensures-2"
+    statement: "when implementation is intended, the prompt requires explicit supported binding choices on add-capability or a later rms add-binding step"
+  - id: "ensures-3"
+    statement: "semantic-only scaffolding is presented as intentional rather than an accidental default for a runnable product"
+  - id: "ensures-4"
+    statement: "the prompt asks for language-agnostic semantic shapes, explicit representations, edge cases, effects, recovery, and evidence before code"
+  - id: "ensures-5"
+    statement: "provider-backed design remains opt-in and recorded as advisory evidence"
 failure_categories:
-  - id: missing-task
-    statement: No design task was supplied.
-  - id: provider-unavailable
-    statement: The requested provider command cannot be started or exits unsuccessfully.
+  - id: "rejects-1"
+    statement: "the design task is missing"
+  - id: "rejects-2"
+    statement: "the project root cannot be inspected"
+  - id: "rejects-3"
+    statement: "an explicitly requested provider cannot run successfully"
 compatibility:
   policy: backward-compatible-within-major

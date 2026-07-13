@@ -15,7 +15,7 @@ Core rule:
 ## Non-Negotiable Execution
 
 1. In a fresh standalone project, run `rms init`, then commit the generated bootstrap so later semantic and source drift has a provenance baseline.
-2. Run `rms design` before choosing the first module tree. When its deterministic hints recommend a recursive capability, use `rms add-capability`; do not substitute one module for convenience. A single-module exception is valid only when the user explicitly requests it and RMS records the justification canonically.
+2. Run `rms design` before choosing the first module tree. When its deterministic hints recommend a recursive capability, use `rms add-capability`; choose explicit implementation bindings for work that will produce code. Omit binding flags only for an intentionally semantic-only scaffold, and use `rms add-binding` before machine or surface work if a binding was deferred; do not substitute one module for convenience.
 3. Never repair `module.yaml`, `implementation.yaml`, contracts, machine structure, surfaces, or evidence declarations by direct editing. Use the applicable RMS apply command. If RMS cannot express the required change, stop and report the RMS gap instead of bypassing the gate.
 4. Use the current project, rendered RMS prompts, and deterministic RMS diagnostics as planning context. Do not inspect sibling projects, prior dogfood runs, RMS source, or generated examples outside the project to infer a change schema or borrow semantics.
 5. Fill only declared role bodies after the semantic apply succeeds.
@@ -30,6 +30,7 @@ Core rule:
 | State, command, observed event, effect result, transition | `rms spec apply` or focused `rms machine apply/check` |
 | App, CLI, UI, HTTP, batch, executable entrypoint | `rms surface apply/check` |
 | Module boundary or public capability | `rms design` then `rms add-module` or `rms add-capability` |
+| Implementation realization for a semantic-only module | `rms add-binding <module.yaml> --binding <binding>` |
 | Declared role body only | Edit the role body, then verify |
 
 Machine rules:
@@ -69,6 +70,7 @@ You cannot:
 Use these advisory workbench commands when they match the task:
 
 - Fresh intent-only project: after `rms init`, run `rms design --root . --task "<task>"` before choosing `rms add-module` or `rms add-capability`.
+- Implemented project: pass `--binding` to `rms add-module`, or both `--domain-binding` and `--boundary-binding` to `rms add-capability`; use `rms add-binding` only when an intentionally semantic-only module later gains code.
 - `rms design --root . --task "<task>"` before module boundaries or semantic shapes are fixed
 - `rms route <module.yaml> --task "<task>"` before implementing against a composite parent
 - `rms plan <module.yaml> --task "<task>"`
@@ -98,7 +100,7 @@ When creating a new capability, choose semantic shape before file layout:
 - `integration-adapter`: external service boundary, retries, idempotency, reconciliation evidence.
 - `composite`: contained submodules, public exports, visibility boundaries, composition evidence.
 
-Use `rms add-capability <path> --name <name> --purpose "<purpose>"` when a public capability should be scaffolded as a recursive tree with a composite parent, domain child, and boundary child. Prefer this over a single module when the intent combines a runnable surface or untrusted input with invariant-bearing planning, ordering, batching, filtering, policy, lifecycle decisions, or external effects.
+Use `rms add-capability <path> --name <name> --purpose "<purpose>" --domain-binding <binding> --boundary-binding <binding>` when a public capability should be implemented as a recursive tree with a composite parent, domain child, and boundary child. Prefer this over a single module when the intent combines a runnable surface or untrusted input with invariant-bearing planning, ordering, batching, filtering, policy, lifecycle decisions, or external effects. Omit bindings only when the requested output is deliberately semantic-only; attach them later with `rms add-binding <child>/module.yaml --binding <binding>` rather than copying a scratch scaffold.
 
 If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only. Runnable surfaces stay thin, but boundary machines still use explicit state-plus-input transitions; product lifecycle belongs in the owning domain or workflow machine.
 

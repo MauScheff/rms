@@ -1,0 +1,146 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes: []
+intent:
+  summary: Give semantic-only modules a canonical binding attachment path, make implementation binding choices explicit in design guidance, make semantic plan item cardinalities exact, and treat empty template sections as inert.
+laws:
+  add:
+  - id: semantic-only-modules-have-canonical-binding-attachment
+    statement: A semantic-only RMS module can gain one supported implementation binding through a canonical RMS command without copying scaffold files or changing its declared semantics.
+    kind: reliability
+    authority: effect-executor
+    enforced_by: add-rms-binding-command
+  - id: empty-semantic-change-sections-are-inert
+    statement: Empty machine, role, and runnable-surface operation sections do not request architecture changes or require an implementation binding.
+    kind: reliability
+    authority: parser
+    enforced_by: semantic-change-noop-classifier
+  set:
+  - id: semantic-plan-schema-is-self-contained
+    statement: RMS semantic and machine planning prompts enumerate canonical values, exact field cardinalities, evidence linkage, effect-protocol fields, and set, add, and remove shapes needed to replace scaffold semantics without external examples.
+    kind: reliability
+    authority: parser
+    enforced_by: semantic-change-plan-command
+  remove: []
+contracts:
+  add:
+  - name: add-rms-binding
+    version: v1
+    command: add-rms-binding
+    meaning: Attach one supported implementation binding to an existing semantic-only RMS module through the canonical binding adapter without changing module semantics.
+    accepts:
+    - a readable RMS module manifest whose directory has no implementation.yaml
+    - 'one supported binding identifier: rust, swift, js, or executable'
+    ensures:
+    - the selected binding adapter creates implementation.yaml and its declared source, verification, and build artifacts
+    - the existing module manifest, contracts, laws, public capabilities, and dependency semantics remain authoritative and unchanged
+    - the result can be revised through rms spec apply and checked through rms machine check, rms structure, and rms verify
+    rejects:
+    - the module target is unreadable or unsupported
+    - implementation.yaml already exists for the module
+    - the requested binding is unsupported
+    - a generated binding artifact would overwrite an existing file
+  set:
+  - name: design-rms-system
+    version: v1
+    command: design-rms-system
+    meaning: Render an advisory RMS system design prompt that proposes module boundaries, semantic scaffold shapes, implementation binding choices, representation obligations, effects, dependencies, and verification evidence before implementation scope is fixed.
+    accepts:
+    - a supplied system or repository design task
+    - a readable project root for existing RMS context
+    ensures:
+    - the prompt recommends the smallest honest module set and deterministic add-module or add-capability command shape
+    - when implementation is intended, the prompt requires explicit supported binding choices on add-capability or a later rms add-binding step
+    - semantic-only scaffolding is presented as intentional rather than an accidental default for a runnable product
+    - the prompt asks for language-agnostic semantic shapes, explicit representations, edge cases, effects, recovery, and evidence before code
+    - provider-backed design remains opt-in and recorded as advisory evidence
+    rejects:
+    - the design task is missing
+    - the project root cannot be inspected
+    - an explicitly requested provider cannot run successfully
+  - name: plan-semantic-change
+    version: v1
+    command: plan-semantic-change
+    meaning: Render or run a self-contained advisory prompt for a language-neutral RMS semantic-change object.
+    accepts:
+    - a readable module.yaml or implementation.yaml target
+    - product or maintenance intent describing the requested semantic change
+    ensures:
+    - the prompt enumerates allowed invariant authorities and explains how enforced_by binds to semantic functions
+    - the prompt shows exact scalar, list, mapping, and operation cardinalities for contracts, properties, evidence, effect protocols, transitions, roles, and surfaces
+    - the prompt requires a distinct evidence obligation for every changed law and contract
+    - the prompt shows set, add, and remove for every supported semantic category and exact structured removal shapes
+    - targets without implementation bindings render machine, role, and surface sections as null and direct agents to attach a binding before requesting those changes
+    - the prompt tells agents to rely only on the current project, prompt, and RMS diagnostics
+    rejects:
+    - the target is unreadable or unsupported
+    - task intent is missing
+  remove: []
+properties: null
+machine:
+  mode: boundary-machine
+  justification: null
+  transition_signature: state-and-input
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add:
+    - AddRmsBinding
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+  transitions:
+    set: null
+    add: []
+    remove: []
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: semantic-only-modules-have-canonical-binding-attachment
+    path: verification/laws/semantic_only_binding_attachment.md
+  - kind: law
+    proves: empty-semantic-change-sections-are-inert
+    path: verification/laws/empty_semantic_sections.md
+  - kind: law
+    proves: semantic-plan-schema-is-self-contained
+    path: verification/laws/semantic_plan_exact_schema.md
+  - kind: contract
+    proves: add-rms-binding
+    path: verification/contracts/add_rms_binding.md
+  - kind: contract
+    proves: design-rms-system
+    path: verification/contracts/design_binding_realization.md
+  - kind: contract
+    proves: plan-semantic-change
+    path: verification/contracts/plan_semantic_change_exact_shapes.md
+surfaces: null

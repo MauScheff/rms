@@ -171,6 +171,8 @@ provides:
     contract: contracts/run-semantic-properties.v1.yaml
   - name: replay-property-counterexample
     contract: contracts/replay-property-counterexample.v1.yaml
+  - name: add-rms-binding
+    contract: contracts/add-rms-binding.v1.yaml
   queries:
   - name: inspect-module
     contract: contracts/inspect-module.v1.yaml
@@ -339,10 +341,20 @@ invariants:
   authority: effect-executor
   enforced_by: init-rms-system-command
 - id: semantic-plan-schema-is-self-contained
-  statement: RMS semantic and machine planning prompts enumerate canonical values and exact set, add, and remove shapes needed to replace scaffold semantics without external examples.
+  statement: RMS semantic and machine planning prompts enumerate canonical values, exact field cardinalities, evidence linkage, effect-protocol fields, and set, add, and remove shapes needed to replace scaffold semantics without external examples.
   kind: reliability
   authority: parser
   enforced_by: semantic-change-plan-command
+- id: semantic-only-modules-have-canonical-binding-attachment
+  statement: A semantic-only RMS module can gain one supported implementation binding through a canonical RMS command without copying scaffold files or changing its declared semantics.
+  kind: reliability
+  authority: effect-executor
+  enforced_by: add-rms-binding-command
+- id: empty-semantic-change-sections-are-inert
+  statement: Empty machine, role, and runnable-surface operation sections do not request architecture changes or require an implementation binding.
+  kind: reliability
+  authority: parser
+  enforced_by: semantic-change-noop-classifier
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -400,6 +412,9 @@ verification:
   - verification/laws/production_contracts_are_semantically_specific.md
   - verification/laws/release_evidence_does_not_disclaim_provenance.md
   - verification/laws/semantic_contract_revisions_are_cli_applied.md
+  - verification/laws/semantic_only_binding_attachment.md
+  - verification/laws/empty_semantic_sections.md
+  - verification/laws/semantic_plan_exact_schema.md
   contracts:
   - verification/contracts
   - verification/contracts/add_rms_capability.md
@@ -418,9 +433,13 @@ verification:
   - verification/contracts/apply_machine_change.md
   - verification/contracts/init_rms_system.md
   - verification/contracts/plan_semantic_change.md
+  - verification/contracts/add_rms_binding.md
+  - verification/contracts/design_binding_realization.md
+  - verification/contracts/plan_semantic_change_exact_shapes.md
   scenarios:
   - verification/scenarios
   - verification/scenarios/reusable_module_package.md
+  - verification/scenarios/add_binding_roundtrip.md
   boundaries:
   - verification/boundaries
   traces:
@@ -439,10 +458,10 @@ verification:
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Make RMS semantic and machine planning prompts self-contained enough that agents can author valid replacement changes without consulting sibling projects or prior generated examples.
+  last_semantic_intent: Record the completed canonical binding attachment and exact semantic planning verification.
   semantic_revision:
-    digest: sha256:d7d28303e872dbf1b055473b4f8385491027586a17330ce7a17a9c64ddcb39ed
-    change_record: verification/changes/make-rms-semantic-and-machine-planning-prompts-self-contained-enough-that-agents-can-author-valid-replacement-changes-without-consulting-sibling-projects-or-prior-generated-examples-d82cf18d1347.yaml
+    digest: sha256:c13fd842abc42a871d4e73c0ff1ed0054fa148b2de3cc46bad0120349494a19f
+    change_record: verification/changes/record-the-completed-canonical-binding-attachment-and-exact-semantic-planning-verification-60810890d63c.yaml
     applied_by: rms spec apply
 properties:
 - id: semantic-property-declarations-have-oracles

@@ -66,6 +66,7 @@ rms validate --contract <contract.yaml>
 rms init <path> --name <system> --purpose <purpose>
 rms add-module <path> --name <module> --purpose <purpose> [--shape domain-engine|boundary-adapter|workflow|storage-adapter|integration-adapter|composite] [--binding rust|swift|js|executable]
 rms add-capability <path> --name <capability> --purpose <purpose> [--domain-binding rust|swift|js|executable] [--boundary-binding rust|swift|js|executable]
+rms add-binding <module.yaml|module-directory> --binding rust|swift|js|executable
 rms inspect <module.yaml>
 rms route <module.yaml> --task "..." [--root <path>] [--json]
 rms explain [<module.yaml>] ["question"] [--module <module.yaml>]
@@ -259,6 +260,12 @@ Scaffolds a recursive capability tree: a composite parent module at the requeste
 Use this when `rms design` recommends a composite tree for one public capability. Use `rms add-module` for single modules or when the hierarchy is already in place.
 
 For app, tool, CLI, local-first reference app, runnable, or smoke-test intents, choose or add a boundary surface with a declared smoke command or executable entrypoint. A library-only boundary is appropriate only for explicitly library-only product intent.
+
+### `add-binding`
+
+Attaches one supported implementation binding to an existing semantic-only module. RMS derives the module shape from canonical metadata, renders through the same modular binding adapter used by `add-module` and `add-capability`, stages the complete output, and refuses the operation if any generated file would overwrite existing work. The module manifest, laws, contracts, capabilities, and dependency semantics remain unchanged.
+
+Use this only when binding selection was intentionally deferred. For an implemented project, prefer passing `--binding` to `add-module` or both child binding flags to `add-capability` on the first scaffold command.
 
 The first language binding is Rust. A Rust implementation binding declares `binding: rust` in `implementation.yaml`; the CLI then checks Cargo manifest shape, package identity, public entrypoint placement, explicit external crate dependencies, source import roots, public external re-exports, declared public modules, primitive type aliases, public domain fields, failure discipline, constructor evidence, query-produced read-model exceptions, Stateful representation declarations, and semantic function source symbols.
 
