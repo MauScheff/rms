@@ -39,14 +39,29 @@ For developers, RMS means architecture is not hidden in a prompt, a convention, 
 
 For agents, RMS narrows the job. The agent does not invent architecture directly in source files. It uses the CLI to create or change semantic structure, then edits inside declared roles. Bugs become diagnosable bad states: invalid commands, illegal transitions, unexpected effect results, stale projections, missing evidence, or boundary violations.
 
+## The Universal Semantic Core
+
+State machines make behavior local and diagnosable, but serious software also fails between machines and around resources. RMS therefore models six language-neutral structures:
+
+- **module machines** own commands, events, effects, results, states, and legal transitions;
+- **public protocols** own ordered conversations between module participants;
+- **resource protocols** own acquire, use, release, and transfer lifecycles;
+- **artifacts and transformations** own versioned inputs, outputs, compatibility, and preservation laws;
+- **authority boundaries** contain privileged, unsafe, and foreign operations behind exact safe facades;
+- **temporal properties** state what must always, eventually, in order, at most once, or within a bound hold.
+
+These are specifications and proof obligations, not a required runtime. A compiler can model source/object artifacts and lowering passes; an OS component can model handles, memory, interrupts, devices, and privileged instructions; an ordinary app can use only the subset its semantics require. Bindings realize the same model idiomatically in Rust, Swift, JavaScript, or an opaque executable.
+
 ## What You Get
 
 - A canonical specification for modules, bounded contexts, contracts, effects, profiles, compatibility, and conformance.
 - YAML manifests for systems, context maps, modules, contracts, implementations, semantic changes, machine changes, and conformance reports.
 - A semantic gate for changing meaning before code: laws, contracts, commands, states, events, effects, effect results, replies, rejections, transitions, semantic-function authority bindings, public entrypoints, and evidence obligations.
+- Versioned artifact contracts, transformation declarations, cross-module protocol automata, resource lifecycle automata, explicit authority boundaries, and temporal properties.
 - A semantic revision seal: RMS hash-seals the exact applied change, automatically closes every active prior revision, and recomputes canonical module, contract, and implementation semantics during strict audit.
 - Semantic properties for broad laws: RMS declares input spaces, oracles, evidence, replayable counterexamples, and the realization claim. Fixed corpora, finite exhaustive checks, generated properties, and coverage fuzzers remain distinct; every stronger-than-corpus claim names a real binding harness.
 - Traceable machine scaffolds with named transition cases, state, effects, transition outputs, journals, replay bundles, and first-bad-transition diagnostics.
+- Deterministic system-trace stitching that matches public message sends and receives and identifies the first broken cross-module handoff without introducing a router or runtime.
 - Atomic effect protocols with a trace-complete execution chain: runnable callable -> machine driver -> pure transition record -> exact one-request executor -> typed effect result -> machine driver. Executors are first-class semantic functions; the transition owns what happens next, and the driver retains the live record history for replay and first-bad-transition diagnosis.
 - A Rust reference CLI that acts as the human and agent workbench for validation, explanation, context packets, semantic planning, structure checks, trace replay, compatibility, audit, packaging, and conformance evidence.
 - Agent skills for inspecting modules, implementing changes, pruning semantic residue, adding modules, evolving contracts, composing modules, and verifying conformance through the shared CLI surface.
@@ -346,9 +361,13 @@ Check local transition evidence without a runtime:
 rms trace check verification/traces/transition_trace.yaml
 rms trace replay verification/traces/transition_trace.yaml
 rms trace diagnose verification/traces/transition_trace.yaml
+rms trace stitch modules/client/verification/traces/request.yaml \
+  modules/compiler/verification/traces/receive.yaml \
+  --output verification/traces/compile-system-trace.yaml
+rms trace diagnose verification/traces/compile-system-trace.yaml
 ```
 
-Trace commands inspect JSON or YAML trace bundles with recorded transition records. They reconstruct timelines and identify the first structurally bad transition when the bundle contains enough local evidence; they do not route messages, dispatch effects, or require a runtime framework.
+Trace commands inspect JSON or YAML trace bundles with recorded transition records. Local checks reconstruct machine timelines. `stitch` joins recorded public-message sends and receives by envelope identity, correlation, causation, source, target, and sequence, then identifies the first broken handoff. These commands do not route messages, dispatch effects, or require a runtime framework.
 
 Audit production-readiness blockers:
 

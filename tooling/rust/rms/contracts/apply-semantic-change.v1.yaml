@@ -2,29 +2,23 @@ spec: rms/contract/v0.1
 name: "apply-semantic-change"
 version: 1
 kind: command
-meaning: "Validate and atomically apply language-neutral semantic additions, replacements, and removals while preserving whether each contract is provided by the module or required from another capability and sealing the resulting canonical semantic revision."
+meaning: "Validate and atomically apply language-neutral module, machine, protocol, resource, artifact, authority, temporal-property, and evidence revisions while sealing the resulting canonical state."
 preconditions:
   - id: "accepts-1"
     statement: "One complete rms/semantic-change/v0.1 object targeting a readable module or implementation."
   - id: "accepts-2"
-    statement: "Contract operations whose optional direction is provided or required, with omitted direction inferred only when existing ownership is unambiguous."
-  - id: "accepts-3"
-    statement: "Named transition cases and valid semantic-function bindings when machine or implementation meaning changes."
+    statement: "Set, add, and remove operations whose protocol participants, resource operations, artifacts, transformations, authorities, machine cases, properties, and evidence references resolve in the final candidate."
 postconditions:
   - id: "ensures-1"
-    statement: "Canonical module and implementation semantics are updated together with the exact committed change record."
+    statement: "Canonical module and implementation semantics are updated together with an immutable applied change record and revision seal."
   - id: "ensures-2"
-    statement: "Provided contract operations update provider surfaces, while required contract operations update consumer capability requirements without publishing commands."
+    statement: "Dry-run reports the complete final machine, protocols, resources, artifacts, transformations, authorities, semantic functions, and planned writes without mutation."
   - id: "ensures-3"
-    statement: "Removing one contract reference preserves its artifact while another canonical reference still uses the same path."
-  - id: "ensures-4"
-    statement: "Dry-run reports the complete final intended machine, semantic-function set, and planned writes without mutation."
+    statement: "Bindings realize canonical semantics but cannot invent protocol, resource, artifact, or authority meaning."
 failure_categories:
   - id: "rejects-1"
-    statement: "Empty or incomplete semantic changes, unknown references, duplicate ids, invalid removal targets, and incomplete evidence declarations."
+    statement: "Unknown participants, messages, artifacts, authorities, effects, results, transitions, resources, or evidence references."
   - id: "rejects-2"
-    statement: "Contract operations with an unsupported direction or an ambiguous existing ownership when direction is omitted."
-  - id: "rejects-3"
-    statement: "Implicit contract addition that would publish a name already owned as a required capability contract."
+    statement: "Duplicate identifiers, invalid removals, unclosed resource lifecycles, and incompatible final semantic candidates."
 compatibility:
   policy: backward-compatible-within-major

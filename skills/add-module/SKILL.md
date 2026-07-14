@@ -19,6 +19,11 @@ description: Design and add a new RMS module or bounded context with a coherent 
    - important invariants;
    - declared effects;
    - compatibility policy.
+   - versioned artifacts and transformations when data changes form or crosses a boundary;
+   - public protocol automata when several modules participate in one ordered conversation;
+   - resource ownership automata when handles, files, memory, locks, transactions, processes, devices, or similar lifetimes affect correctness;
+   - privileged, unsafe, or foreign authority boundaries;
+   - temporal properties for always, eventually, ordering, exclusion, at-most-once, or bounded-response promises.
 7. Declare the Core profile and only the additional profiles that actually apply.
 8. Choose the strongest representation the implementation language supports:
    - closed sets of domain meaning: algebraic data types, sealed variants, or enums;

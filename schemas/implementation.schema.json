@@ -125,6 +125,16 @@
         "machine": {
           "$ref": "#/$defs/machine"
         },
+        "protocol_bindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/protocolBinding" },
+          "uniqueItems": true
+        },
+        "authority_bindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/authorityBinding" },
+          "uniqueItems": true
+        },
         "state_type": false,
         "transition_function": false
       },
@@ -212,6 +222,13 @@
             "$ref": "#/$defs/effectProtocol"
           }
         },
+        "resource_protocols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resourceProtocol"
+          },
+          "uniqueItems": true
+        },
         "transition_function": {
           "type": "string",
           "minLength": 1
@@ -293,6 +310,79 @@
       },
       "additionalProperties": false
     },
+    "resourceProtocol": {
+      "type": "object",
+      "required": ["resource", "ownership", "states", "initial_state", "terminal_states", "transitions"],
+      "properties": {
+        "resource": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "ownership": { "enum": ["exclusive", "shared", "borrowed"] },
+        "states": { "$ref": "#/$defs/identifierList" },
+        "initial_state": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "terminal_states": { "$ref": "#/$defs/identifierList" },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "on", "trigger_kind", "operation", "to"],
+            "properties": {
+              "from": { "type": "string" },
+              "on": { "type": "string" },
+              "trigger_kind": { "enum": ["command", "observed-event", "event", "effect", "effect-result"] },
+              "operation": { "enum": ["acquire", "use", "release", "transfer"] },
+              "to": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "protocolBinding": {
+      "type": "object",
+      "required": ["name", "contract", "participant", "mappings"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$" },
+        "contract": { "type": "string", "minLength": 1 },
+        "participant": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$" },
+        "mappings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["machine_case", "message", "direction"],
+            "properties": {
+              "machine_case": { "type": "string" },
+              "message": { "type": "string" },
+              "direction": { "enum": ["send", "receive"] }
+            },
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "authorityBinding": {
+      "type": "object",
+      "required": ["authority", "roles", "safe_facade", "evidence"],
+      "properties": {
+        "authority": { "type": "string", "minLength": 1 },
+        "roles": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "safe_facade": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
     "semanticFunction": {
       "type": "object",
       "required": [
@@ -318,7 +408,8 @@
             "projector",
             "adapter",
             "interpreter",
-            "effect-executor"
+            "effect-executor",
+            "transformation"
           ]
         },
         "purity": {
@@ -417,9 +508,22 @@
             }
           },
           "additionalProperties": true
+        },
+        "authorities": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
         }
       },
-      "additionalProperties": true
-    }
+          "additionalProperties": true
+        },
+        "authorities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
   }
 }

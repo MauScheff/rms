@@ -33,6 +33,11 @@ description: Inspect an RMS module before planning or changing it; use when owne
    - exact machine driver, transition-record, and effect executor symbols, plus whether live execution retains complete records and each effect-emitting runnable surface reaches that driver and leaves the complete repeated transition/effect/result cycle inside it even when public and machine command names differ;
    - declared transition cases versus source branches, lifecycle-state reachability from `initial_state`, whether expected failures remain in a typed transition rejection channel, and whether execution-derived traces name the transition source and match each case's exact outputs rather than copying declarations;
    - whether any executor hides sequencing, retry, compensation, or state progression.
+   - declared artifacts and transformations, including version and compatibility ownership;
+   - public protocol participants/message mappings and whether composition closes every route;
+   - resource protocols and terminal-path closure;
+   - privileged, unsafe, or foreign authority bindings and exact safe facades;
+   - temporal properties and whether each realization can prove its declared scope.
 8. For a proposed task, identify the owning module and the smallest affected contract surface.
 9. Identify whether the task should use:
    - an ADT, sealed variant, or enum for closed alternatives;

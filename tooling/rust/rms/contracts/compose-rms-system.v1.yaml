@@ -2,23 +2,21 @@ spec: rms/contract/v0.1
 name: "compose-rms-system"
 version: 1
 kind: command
-meaning: "Resolve RMS dependencies, contracts, recursive exports, and explicit composite proof delegations."
+meaning: "Resolve RMS dependencies, contracts, recursive exports, protocol participants, routed messages, artifact transformations, and explicit composite proof delegations."
 preconditions:
   - id: "accepts-1"
-    statement: "a root containing canonical RMS module and composition artifacts"
+    statement: "A root containing canonical RMS modules, contracts, implementations, protocol bindings, artifacts, and composition artifacts."
 postconditions:
   - id: "ensures-1"
-    statement: "dependencies and contracts resolve to compatible providers"
+    statement: "Required capabilities and contracts resolve to compatible providers."
   - id: "ensures-2"
-    statement: "recursive exports are backed by contained modules"
+    statement: "Every cross-module message route has compatible participants, direction, cases, and protocol ordering."
   - id: "ensures-3"
-    statement: "each proof delegation resolves its parent law, child law and property, export, and concrete evidence"
+    statement: "Transformation outputs satisfy the next stage artifact contract."
+  - id: "ensures-4"
+    statement: "Recursive exports and proof delegations resolve to their declared owners and evidence."
 failure_categories:
   - id: "rejects-1"
-    statement: "unresolved providers or incompatible contracts"
-  - id: "rejects-2"
-    statement: "broken containment or export ownership"
-  - id: "rejects-3"
-    statement: "incomplete or false composite proof delegation"
+    statement: "Unresolved providers, incompatible contracts or artifacts, unmatched messages, ambiguous routes, illegal protocol order, or broken proof delegation."
 compatibility:
   policy: backward-compatible-within-major

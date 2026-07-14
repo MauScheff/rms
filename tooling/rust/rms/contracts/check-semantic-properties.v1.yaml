@@ -2,23 +2,23 @@ spec: rms/contract/v0.1
 name: "check-semantic-properties"
 version: 1
 kind: command
-meaning: "Check language-neutral property and fuzz declarations and whether each binding realization truthfully supports the declared input-space claim."
+meaning: "Check language-neutral data, temporal, protocol, resource, and bounded-property declarations and whether each realization can truthfully evaluate the claim."
 preconditions:
   - id: "accepts-1"
-    statement: "module or implementation target with semantic property declarations"
+    statement: "Module or implementation semantics with input spaces, oracles, temporal patterns, bounds, evidence, and realization metadata."
   - id: "accepts-2"
-    statement: "deterministic corpus exhaustive generated coverage-guided or model-checker realization metadata"
+    statement: "Deterministic corpus, exhaustive, generated, coverage-guided, bounded-model, static-analysis, sanitizer, or benchmark realizations."
 postconditions:
   - id: "ensures-1"
-    statement: "every property returns an explicit accepted or rejected conformance result"
+    statement: "Structured always, eventually, precedence, exclusion, at-most-once, bounded-response, resource-closure, and bounded-resource claims are validated."
   - id: "ensures-2"
-    statement: "fixed corpora exhaustive spaces generated properties and coverage fuzzers remain distinct"
+    statement: "Finite semantic graphs may use bounded exploration while platform claims name an exact delegated realization."
   - id: "ensures-3"
-    statement: "generated-property harnesses perform generation rather than return only a fixed literal collection"
+    statement: "Fixed corpora, exhaustive spaces, generators, fuzzers, model checkers, analyzers, sanitizers, and benchmarks remain distinct."
 failure_categories:
   - id: "rejects-1"
-    statement: "missing input space oracle evidence command harness or replayable counterexample metadata"
+    statement: "Missing scope, trigger, expected condition, bound, oracle, evidence, command, harness, or replay metadata."
   - id: "rejects-2"
-    statement: "generated-property or fuzz claims backed only by fixed literal cases"
+    statement: "A realization strategy incapable of evaluating the declared temporal or resource claim."
 compatibility:
   policy: backward-compatible-within-major

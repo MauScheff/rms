@@ -32,6 +32,11 @@ description: Implement a feature, fix, or refactor in an RMS project while prese
    - binding type mappings separately from semantic alternatives;
    - one classified input ADT over commands, observed events, and effect results for stateful machines;
    - one-request-one-result effect protocols whenever outcomes can alter subsequent decisions.
+   - versioned artifacts and transformations when data changes form or crosses a module boundary;
+   - public protocol automata for ordered cross-module conversations;
+   - resource ownership automata for acquire/use/release/transfer lifecycles;
+   - exact safe facades for privileged, unsafe, or foreign authority;
+   - temporal properties and scope-appropriate realizations for always, eventually, ordering, exclusion, at-most-once, and bounded-response claims.
 7. Resolve semantic edge cases before implementation:
    - invalid commands;
    - impossible variants;
@@ -71,6 +76,11 @@ description: Implement a feature, fix, or refactor in an RMS project while prese
    - property obligations for always/never/bounded/ordered/normalized/parser/numeric laws, including generated input spaces and oracles;
    - replayable counterexamples for failed generated cases;
    - transition records, golden timelines, replay bundles, and first-bad-transition diagnostics for stateful or workflow behavior.
+   - artifact compatibility and transformation preservation;
+   - protocol composition plus stitched cross-module causation;
+   - resource closure on every reachable terminal path;
+   - authority containment behind the declared safe facade;
+   - temporal properties using exhaustive, model-checking, static-analysis, sanitizer, or benchmark evidence appropriate to their scope.
 17. Run `rms property check <module.yaml|implementation.yaml>` whenever properties, fuzz targets, parsers, numeric bounds, reusable modules, or generated counterexamples are involved. Run `rms property run <implementation.yaml> --profile smoke` when the binding declares property or fuzz commands, and `rms property replay <counterexample.yaml>` for recorded failures.
 18. For reusable modules, run `rms package <module.yaml>` before claiming reuse. It builds, verifies, records the concrete result in declared package evidence, rebuilds, and verifies the final artifact. Use `rms verify-package <package-dir>` for an independent recheck; expected-result prose alone is not package proof.
 19. Run `rms review <module>` before finalizing when a diff exists. Run `rms validate --root <root>`, `rms spec check <module.yaml|implementation.yaml>`, `rms machine check <implementation.yaml>`, `rms property check <module.yaml|implementation.yaml>`, `rms surface check <implementation.yaml> --strict` when runnable surfaces exist, `rms structure <implementation.yaml>` when inner roles changed, and project-native verification from the implementation binding. Use `rms verify <implementation.yaml>` when the binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups. Treat `semantic.contract-scaffold-active`, `structure.public-command-not-represented`, `structure.generic-scaffold-command-active`, `structure.native-package-export-mismatch`, `semantic.reusable-capability-missing`, `semantic.reusable-package-evidence-missing`, `semantic.property-without-input-space`, `semantic.property-without-oracle`, `structure.property-target-missing`, `structure.boundary-parser-without-fuzz-property`, and `structure.runnable-surface-*` as architecture-gate failures, not cleanup suggestions. Do not declare implemented modules done while validation reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` for those modules. Evidence must not claim a current filesystem snapshot or missing Git revision; strict audit resolves the committed candidate revision.

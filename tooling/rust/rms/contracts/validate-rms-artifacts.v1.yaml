@@ -2,17 +2,17 @@ spec: rms/contract/v0.1
 name: "validate-rms-artifacts"
 version: 1
 kind: command
-meaning: "Validate RMS manifests, public contracts, referenced evidence, and implementation bindings against canonical schemas and semantic production rules."
+meaning: "Validate RMS manifests, contracts, implementations, protocols, resources, artifacts, authorities, properties, and evidence against canonical schemas and semantic reference rules."
 preconditions:
   - id: "accepts-1"
-    statement: "readable RMS roots or explicit manifest paths"
+    statement: "A root or file containing supported RMS canonical artifacts."
 postconditions:
   - id: "ensures-1"
-    statement: "diagnostics identify scaffold-generic public contracts and evidence that disclaims committed provenance"
+    statement: "Every canonical reference resolves with stable identifiers and valid ownership."
   - id: "ensures-2"
-    statement: "all reported findings remain derived from canonical artifacts and deterministic checks"
+    statement: "Protocol, resource, artifact, authority, and temporal declarations are structurally and referentially coherent."
 failure_categories:
   - id: "rejects-1"
-    statement: "unparseable artifacts, invalid references, semantic contract scaffolds, unpinned evidence, and binding conformance failures"
+    statement: "Schema violations, unknown references, duplicate identifiers, invalid ownership, or incoherent semantic automata."
 compatibility:
   policy: backward-compatible-within-major

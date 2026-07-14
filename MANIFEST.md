@@ -366,6 +366,67 @@ Recommended effect fields:
 
 Only declare semantics that matter. Use explicit values such as `not-applicable` rather than silently omitting a critical question.
 
+### `artifacts` and `transformations`
+
+Artifacts are versioned semantic inputs or outputs, not incidental files. Transformations name how one declared artifact becomes another:
+
+```yaml
+artifacts:
+  - name: source-unit
+    version: v1
+    direction: provided
+    contract: contracts/source-unit.v1.yaml
+    invariants: [source-unit-is-valid]
+  - name: object-unit
+    version: v1
+    direction: provided
+    contract: contracts/object-unit.v1.yaml
+    invariants: [object-unit-is-valid]
+
+transformations:
+  - name: lower-source
+    input: source-unit
+    output: object-unit
+    semantic_function: lower-source
+    rejections: [InvalidSource]
+    properties: [lowering-preserves-validity]
+```
+
+`direction` is `provided`, `required`, or `internal`. Composition matches required artifacts to one provider by semantic name, version, and contract identity.
+
+### `authorities`
+
+Elevated operations must be explicit:
+
+```yaml
+authorities:
+  - id: native-backend
+    kind: foreign
+    capabilities: [emit-native-code]
+    rationale: Native emission crosses a foreign ABI.
+```
+
+`kind` is `privileged`, `unsafe`, or `foreign`. `implementation.yaml` binds the authority to declared roles, one exact safe-facade `path#symbol`, and evidence. Authority is a containment boundary, not permission for arbitrary code elsewhere.
+
+### Contract protocols
+
+A public contract may define an ordered conversation shared by several modules:
+
+```yaml
+semantics:
+  protocol:
+    participants: [client, compiler]
+    messages:
+      - {id: compile-requested, kind: command, from: client, to: compiler}
+    states: [Ready, Requested]
+    initial_state: Ready
+    terminal_states: [Requested]
+    transitions:
+      - {from: Ready, on: compile-requested, to: Requested}
+```
+
+Message kinds are `command`, `event`, `reply`, or `rejection`. Composition requires one implementation owner per participant and one sender and receiver mapping per message.
+
 ### `state`
 
 Required only for the Stateful profile. It should identify:
@@ -605,6 +666,12 @@ Product meaning changes move through `rms spec apply` before code. The canonical
 | `intent.summary` | Human-readable reason for the semantic delta. |
 | `laws.add` | Invariants, laws, or product promises that must hold. |
 | `contracts.add/set/remove` | Contract references with `direction: provided` for module-owned surfaces or `direction: required` for consumer expectations. Existing set/remove operations may infer a single unambiguous direction. |
+| `artifacts.add/set/remove` | Versioned provided, required, or internal artifact contracts. |
+| `transformations.add/set/remove` | Artifact input/output mappings with exact semantic owner, rejection cases, and preservation properties. |
+| `authorities.add/set/remove` | Privileged, unsafe, or foreign capabilities and their rationale. |
+| `properties.*.temporal` | Optional always, eventually, precedence, exclusion, at-most-once, bounded-response, resource-closure, or bounded-resource property semantics. |
+| `protocol_bindings.add/set/remove` | Implementation ownership and send/receive mapping for public contract protocol messages. |
+| `authority_bindings.add/set/remove` | Implementation roles, exact safe facade, and evidence for declared elevated authority. |
 | `machine` | Optional machine section reused from `rms/machine-change/v0.1` for states, inputs, outputs, transitions, and inner roles. |
 | `surfaces.add` | Runnable surface declarations for app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints that adapt outside input into declared RMS commands. Browser-style surfaces may include a controller `entrypoint`, a host `launch_entrypoint`, and checked local `launch_scripts`. |
 | `evidence.add` | Required proof lanes for laws, contracts, transitions, effects, scenarios, traces, or boundary behavior. |
@@ -626,8 +693,11 @@ Every implemented module should declare a domain-named machine. The canonical fi
 | `architecture.machine.states` | Closed state variants. Stateful variants must be reachable from `initial_state` through canonical transitions. Stateless machines usually contain `Ready` and must justify why lifecycle state is not meaningful. |
 | `architecture.machine.commands/observed_events/events/effects/effect_results/replies/rejections` | Semantic cases that define what the machine accepts, observes, emits, asks the world to do, receives back, returns, and rejects. A case belongs to exactly one input category. |
 | `architecture.machine.effect_protocols` | Effect-to-result mapping, exact executor role and symbol, and atomicity. One-request-one-result is the default when an individual outcome can affect later decisions. |
+| `architecture.machine.resource_protocols` | Ownership plus closed acquire/use/release/transfer automata for lifetime-sensitive resources. Product and resource states are validated together so terminal machine paths cannot leak resources. |
 | `architecture.machine.transitions` | Accepted and rejected state/input/output transitions. Every branch has a stable `case` represented in declared transition source; source-only branches are drift. Trace provenance names that source file and exact case. |
 | `architecture.roles.*` | Binding files or artifacts that realize representation, transition, parser, adapter, machine driver, effect executor, private effect support, journal, replay, trace evidence, and related roles. |
+| `architecture.protocol_bindings` | Participant ownership and exact machine-case mapping for public protocol messages. |
+| `architecture.authority_bindings` | Declared authority roles, exact safe facade, and containment evidence. |
 | `dependencies.local_modules` | Language-neutral RMS module identities consumed by this implementation. Change them through `rms spec apply` `binding_dependencies`; the binding adapter realizes native allowlists and local package metadata. |
 
 Use `rms machine apply` to add or change these architecture fields only when the semantic layer is already correct. RMS validates the complete final candidate and records the focused change, but it does not synthesize active trace evidence from transition declarations. Implemented transition paths must populate and replay the declared evidence roles. If laws, public contracts, effects, or evidence obligations change, use `rms spec apply` instead.
@@ -660,7 +730,7 @@ Recommended fields:
 |---|---|
 | `id` | Stable identifier for the semantic function declaration. |
 | `symbol` | Language-binding source symbol such as `Widget::new` or `payments::authorize_payment`. |
-| `kind` | `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, `interpreter`, or `effect-executor`. |
+| `kind` | `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, `interpreter`, `transformation`, or `effect-executor`. |
 | `purity` | `pure`, `effectful`, or `boundary`. |
 | `discharges.contracts` | Published contracts this function implements or helps satisfy. |
 | `discharges.invariants` | Module invariant identifiers this function enforces or preserves. |
@@ -668,6 +738,7 @@ Recommended fields:
 | `assumptions.maintains` | Invariants preserved before and after execution. |
 | `assumptions.ensures` | Function-local postconditions. |
 | `evidence` | Law, contract, scenario, or boundary evidence paths for this function. |
+| `authorities` | Declared privileged, unsafe, or foreign authority ids used by this function. |
 
 Prefer typed representations over repeated preconditions. A constructor or parser should discharge raw-value assumptions once, so later decision and transition functions can accept validated values.
 

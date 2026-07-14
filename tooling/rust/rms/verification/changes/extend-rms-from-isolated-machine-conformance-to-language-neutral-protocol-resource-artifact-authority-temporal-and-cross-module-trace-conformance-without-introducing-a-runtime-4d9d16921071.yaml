@@ -1,0 +1,339 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/expose-truthful-trace-rejection-boundary-effect-property-realization-and-runnable-machine-checks-through-rms-public-contracts-f177ab616ddc.yaml
+intent:
+  summary: Extend RMS from isolated machine conformance to language-neutral protocol, resource, artifact, authority, temporal, and cross-module trace conformance without introducing a runtime.
+laws:
+  add:
+  - id: module-protocols-compose-by-contract
+    statement: Cross-module commands, events, replies, and rejections are bound to explicit contract participants and compose only when every routed message has a compatible sender, receiver, direction, and legal protocol order.
+    kind: composition-safety
+    authority: composition
+    enforced_by: compose-rms-system-command
+  - id: resource-lifecycles-close-on-terminal-paths
+    statement: Every acquired semantic resource is used only while held and reaches a declared released or transferred disposition on every terminal machine path.
+    kind: lifecycle-safety
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  - id: artifact-transformations-preserve-declared-contracts
+    statement: Stateless transformations consume and produce explicitly versioned artifacts whose invariants and compatibility contracts compose between stages.
+    kind: composition-safety
+    authority: composition
+    enforced_by: compose-rms-system-command
+  - id: privileged-authority-is-explicit-and-contained
+    statement: Privileged, unsafe, foreign, or otherwise elevated operations occur only in declared authority roles behind a declared safe facade and concrete evidence.
+    kind: safety
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  - id: temporal-properties-have-matching-realizations
+    statement: Trace and bounded-resource claims use structured temporal patterns and a proof realization capable of evaluating the declared scope and bound.
+    kind: evidence-integrity
+    authority: parser
+    enforced_by: semantic-property-check-command
+  - id: system-traces-preserve-message-causation
+    statement: Cross-module trace stitching preserves correlation, causation, participant direction, protocol order, and each owning machine transition so diagnosis identifies the first invalid handoff or transition.
+    kind: traceability
+    authority: parser
+    enforced_by: trace-bundle-check-command
+  set: []
+  remove: []
+contracts:
+  add: []
+  set:
+  - name: apply-semantic-change
+    direction: provided
+    version: '1'
+    command: apply-semantic-change
+    meaning: Validate and atomically apply language-neutral module, machine, protocol, resource, artifact, authority, temporal-property, and evidence revisions while sealing the resulting canonical state.
+    accepts:
+    - One complete rms/semantic-change/v0.1 object targeting a readable module or implementation.
+    - Set, add, and remove operations whose protocol participants, resource operations, artifacts, transformations, authorities, machine cases, properties, and evidence references resolve in the final candidate.
+    ensures:
+    - Canonical module and implementation semantics are updated together with an immutable applied change record and revision seal.
+    - Dry-run reports the complete final machine, protocols, resources, artifacts, transformations, authorities, semantic functions, and planned writes without mutation.
+    - Bindings realize canonical semantics but cannot invent protocol, resource, artifact, or authority meaning.
+    rejects:
+    - Unknown participants, messages, artifacts, authorities, effects, results, transitions, resources, or evidence references.
+    - Duplicate identifiers, invalid removals, unclosed resource lifecycles, and incompatible final semantic candidates.
+  - name: compose-rms-system
+    direction: provided
+    version: '1'
+    command: compose-rms-system
+    meaning: Resolve RMS dependencies, contracts, recursive exports, protocol participants, routed messages, artifact transformations, and explicit composite proof delegations.
+    accepts:
+    - A root containing canonical RMS modules, contracts, implementations, protocol bindings, artifacts, and composition artifacts.
+    ensures:
+    - Required capabilities and contracts resolve to compatible providers.
+    - Every cross-module message route has compatible participants, direction, cases, and protocol ordering.
+    - Transformation outputs satisfy the next stage artifact contract.
+    - Recursive exports and proof delegations resolve to their declared owners and evidence.
+    rejects:
+    - Unresolved providers, incompatible contracts or artifacts, unmatched messages, ambiguous routes, illegal protocol order, or broken proof delegation.
+  - name: check-machine-structure
+    direction: provided
+    version: '1'
+    command: check-machine-structure
+    meaning: Check whether an implementation faithfully realizes its canonical machine, protocols, resource lifecycles, authority boundaries, exact transition path, message envelopes, and total behavior.
+    accepts:
+    - A readable RMS implementation with inspectable source or explicitly opaque executable evidence.
+    - Declared machine cases, protocol bindings, resource protocols, authorities, roles, effects, traces, and runnable surfaces.
+    ensures:
+    - Resource operations are checked against acquisition, ownership, use, transfer, release, failure, and terminal-disposition semantics.
+    - Privileged operations are constrained to declared authority roles and safe facades.
+    - Machine types, semantic cases, inputs, effects, records, and live driver paths remain binding-realized.
+    rejects:
+    - Resource use before acquisition, use after release, double release, terminal leaks, or unconsumed transfer.
+    - Undeclared authority, privileged operations outside authority roles, missing safe facades, or missing evidence.
+    - Collapsed variants, incomplete protocols, result paths bypassing transitions, or executor-owned orchestration.
+  - name: inspect-trace-bundle
+    direction: provided
+    version: '1'
+    command: inspect-trace-bundle
+    meaning: Check, replay, diagnose, and stitch local RMS transition records across machines, protocols, and resources without requiring an RMS runtime.
+    accepts:
+    - One local trace bundle or a set of bundles whose envelopes identify source, target, correlation, causation, sequence, and protocol message.
+    - Discoverable owning implementations and protocol contracts when semantic conformance is requested.
+    ensures:
+    - Local replay reconstructs state, input, outputs, resource disposition, and source provenance.
+    - Stitched timelines preserve causation and validate each cross-module handoff against participant and protocol semantics.
+    - Diagnosis reports the first structurally, semantically, causally, or resource-invalid transition.
+    rejects:
+    - Invalid syntax, state discontinuity, canonical output mismatch, broken causation, illegal participant direction, protocol-order violation, or resource-lifecycle contradiction.
+  - name: check-semantic-properties
+    direction: provided
+    version: '1'
+    command: check-semantic-properties
+    meaning: Check language-neutral data, temporal, protocol, resource, and bounded-property declarations and whether each realization can truthfully evaluate the claim.
+    accepts:
+    - Module or implementation semantics with input spaces, oracles, temporal patterns, bounds, evidence, and realization metadata.
+    - Deterministic corpus, exhaustive, generated, coverage-guided, bounded-model, static-analysis, sanitizer, or benchmark realizations.
+    ensures:
+    - Structured always, eventually, precedence, exclusion, at-most-once, bounded-response, resource-closure, and bounded-resource claims are validated.
+    - Finite semantic graphs may use bounded exploration while platform claims name an exact delegated realization.
+    - Fixed corpora, exhaustive spaces, generators, fuzzers, model checkers, analyzers, sanitizers, and benchmarks remain distinct.
+    rejects:
+    - Missing scope, trigger, expected condition, bound, oracle, evidence, command, harness, or replay metadata.
+    - A realization strategy incapable of evaluating the declared temporal or resource claim.
+  - name: validate-rms-artifacts
+    direction: provided
+    version: '1'
+    command: validate-rms-artifacts
+    meaning: Validate RMS manifests, contracts, implementations, protocols, resources, artifacts, authorities, properties, and evidence against canonical schemas and semantic reference rules.
+    accepts:
+    - A root or file containing supported RMS canonical artifacts.
+    ensures:
+    - Every canonical reference resolves with stable identifiers and valid ownership.
+    - Protocol, resource, artifact, authority, and temporal declarations are structurally and referentially coherent.
+    rejects:
+    - Schema violations, unknown references, duplicate identifiers, invalid ownership, or incoherent semantic automata.
+  - name: audit-rms-project
+    direction: provided
+    version: '1'
+    command: audit-rms-project
+    meaning: Audit a committed RMS project for production blockers across semantic revision integrity, protocol and artifact composition, resource closure, authority containment, properties, traces, implementation structure, evidence, and provenance.
+    accepts:
+    - A canonical RMS project root with an optional strict production policy.
+    ensures:
+    - The report distinguishes pass, failure, review-required, and not-applicable outcomes with source provenance.
+    - Strict mode rejects unresolved protocol routes, resource leaks, undeclared authority, artifact incompatibility, unrealized temporal claims, broken system traces, semantic drift, and placeholder evidence.
+    rejects:
+    - Invalid roots, unreadable artifacts, or production claims whose required evidence cannot be evaluated.
+  - name: design-rms-system
+    direction: provided
+    version: '1'
+    command: design-rms-system
+    meaning: Render an advisory RMS system design prompt that proposes modules, machines, artifacts, protocols, resources, authority boundaries, effects, temporal laws, and evidence before implementation scope is fixed.
+    accepts:
+    - Product intent and a readable RMS project root.
+    ensures:
+    - The prompt asks what values and artifacts are valid, what messages cross boundaries, what resources are owned, what authority is elevated, and what must always or eventually hold.
+    - Recommendations remain language-neutral and become authoritative only through RMS apply commands.
+    rejects:
+    - Missing task intent or unreadable project context.
+  remove: []
+properties:
+  add:
+  - id: protocol-composition-closure
+    proves: module-protocols-compose-by-contract
+    kind: conformance
+    subject: cross-module protocol bindings
+    input_space:
+      fixtures: compatible, unmatched, ambiguous, and order-invalid message routes
+    preconditions: []
+    operation: compose participant bindings with public protocol contracts
+    oracle:
+    - every emitted message has one compatible receiving participant and legal protocol transition
+    - unmatched, ambiguous, direction-invalid, and order-invalid routes fail
+    evidence:
+      kind: property
+      path: verification/properties/protocol_composition_closure.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/protocol-composition
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  - id: resource-lifecycle-closure
+    proves: resource-lifecycles-close-on-terminal-paths
+    kind: conformance
+    subject: machine and resource product automata
+    input_space:
+      fixtures: acquire-use-release, use-before-acquire, double-release, transfer, and terminal-leak graphs
+    preconditions: []
+    operation: explore the finite product of machine and resource states
+    oracle:
+    - all reachable operations respect resource ownership and lifecycle state
+    - every terminal path ends released, transferred, or an explicitly permitted disposition
+    evidence:
+      kind: property
+      path: verification/properties/resource_lifecycle_closure.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/resource-lifecycle
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  - id: artifact-transformation-compatibility
+    proves: artifact-transformations-preserve-declared-contracts
+    kind: conformance
+    subject: artifact transformation edges
+    input_space:
+      fixtures: compatible versions, missing artifacts, invariant mismatch, and incompatible stage edges
+    preconditions: []
+    operation: compare each transformation output with its consumer input artifact contract
+    oracle:
+    - compatible artifact identity version and invariants compose
+    - missing or incompatible artifact edges fail
+    evidence:
+      kind: property
+      path: verification/properties/artifact_transformation_compatibility.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/artifact-transformations
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  - id: authority-containment
+    proves: privileged-authority-is-explicit-and-contained
+    kind: conformance
+    subject: authority declarations and binding roles
+    input_space:
+      fixtures: declared authority role, undeclared privileged operation, missing safe facade, and missing evidence
+    preconditions: []
+    operation: compare authority use detected by a binding adapter with canonical authority declarations
+    oracle:
+    - declared authority confined to its role and safe facade passes
+    - undeclared or misplaced privileged operations fail
+    evidence:
+      kind: property
+      path: verification/properties/authority_containment.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/authority-containment
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  - id: temporal-realization-conformance
+    proves: temporal-properties-have-matching-realizations
+    kind: conformance
+    subject: structured temporal and bounded properties
+    input_space:
+      fixtures: finite always, eventually, precedence, exclusion, bounded-response, resource-closure, and platform-budget claims
+    preconditions: []
+    operation: compare property pattern and scope with the declared proof realization
+    oracle:
+    - finite graph claims accept bounded semantic exploration
+    - platform memory time and concurrency claims require a capable external realization
+    evidence:
+      kind: property
+      path: verification/properties/temporal_realization_conformance.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/temporal-properties
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  - id: cross-module-trace-causation
+    proves: system-traces-preserve-message-causation
+    kind: conformance
+    subject: stitched transition bundles
+    input_space:
+      fixtures: valid causal chains, missing causes, duplicate sequences, wrong participants, and illegal protocol order
+    preconditions: []
+    operation: stitch envelopes by correlation causation source target and sequence then replay owning automata
+    oracle:
+    - every handoff resolves to one emitted message and one compatible receiving input
+    - the first broken causal or semantic edge is reported deterministically
+    evidence:
+      kind: property
+      path: verification/properties/cross_module_trace_causation.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/system-traces
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  set: []
+  remove: []
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: module-protocols-compose-by-contract
+    path: verification/laws/module_protocols_compose_by_contract.md
+  - kind: law
+    proves: resource-lifecycles-close-on-terminal-paths
+    path: verification/laws/resource_lifecycles_close_on_terminal_paths.md
+  - kind: law
+    proves: artifact-transformations-preserve-declared-contracts
+    path: verification/laws/artifact_transformations_preserve_declared_contracts.md
+  - kind: law
+    proves: privileged-authority-is-explicit-and-contained
+    path: verification/laws/privileged_authority_is_explicit_and_contained.md
+  - kind: law
+    proves: temporal-properties-have-matching-realizations
+    path: verification/laws/temporal_properties_have_matching_realizations.md
+  - kind: law
+    proves: system-traces-preserve-message-causation
+    path: verification/laws/system_traces_preserve_message_causation.md
+  - kind: contract
+    proves: apply-semantic-change
+    path: verification/contracts/apply_semantic_change.md
+  - kind: contract
+    proves: compose-rms-system
+    path: verification/contracts/compose_rms_system.md
+  - kind: contract
+    proves: check-machine-structure
+    path: verification/contracts/check_machine_structure.md
+  - kind: contract
+    proves: inspect-trace-bundle
+    path: verification/contracts/inspect_trace_bundle.md
+  - kind: contract
+    proves: check-semantic-properties
+    path: verification/contracts/check_semantic_properties.md
+  - kind: contract
+    proves: validate-rms-artifacts
+    path: verification/contracts/validate_rms_artifacts.md
+  - kind: contract
+    proves: audit-rms-project
+    path: verification/contracts/audit_rms_project.md
+  - kind: contract
+    proves: design-rms-system
+    path: verification/contracts/design_rms_system.md
+surfaces: null
+binding_dependencies: null

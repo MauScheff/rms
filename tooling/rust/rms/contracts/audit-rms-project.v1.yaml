@@ -2,19 +2,17 @@ spec: rms/contract/v0.1
 name: "audit-rms-project"
 version: 1
 kind: command
-meaning: "Audit a committed RMS project for production blockers across semantic revision integrity, composition, implementation structure, evidence, traces, and provenance."
+meaning: "Audit a committed RMS project for production blockers across semantic revision integrity, protocol and artifact composition, resource closure, authority containment, properties, traces, implementation structure, evidence, and provenance."
 preconditions:
   - id: "accepts-1"
-    statement: "a readable committed RMS project root and optional strict production mode"
+    statement: "A canonical RMS project root with an optional strict production policy."
 postconditions:
   - id: "ensures-1"
-    statement: "strict mode verifies canonical semantics still match their RMS-applied revision"
+    statement: "The report distinguishes pass, failure, review-required, and not-applicable outcomes with source provenance."
   - id: "ensures-2"
-    statement: "strict mode verifies every named transition case and effect-result branch has replay evidence"
-  - id: "ensures-3"
-    statement: "the report remains provider-independent and identifies every deterministic blocker"
+    statement: "Strict mode rejects unresolved protocol routes, resource leaks, undeclared authority, artifact incompatibility, unrealized temporal claims, broken system traces, semantic drift, and placeholder evidence."
 failure_categories:
   - id: "rejects-1"
-    statement: "unknown source revision, dirty production artifacts, direct canonical drift, incomplete transition cases, invalid or thin trace evidence, scaffold contracts, unpinned evidence, and missing verification commands"
+    statement: "Invalid roots, unreadable artifacts, or production claims whose required evidence cannot be evaluated."
 compatibility:
   policy: backward-compatible-within-major

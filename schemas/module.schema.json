@@ -108,6 +108,27 @@
         "$ref": "#/$defs/effect"
       }
     },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      },
+      "uniqueItems": true
+    },
+    "transformations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/transformation"
+      },
+      "uniqueItems": true
+    },
+    "authorities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/authority"
+      },
+      "uniqueItems": true
+    },
     "properties": {
       "type": "array",
       "items": {
@@ -402,6 +423,59 @@
         }
       },
       "additionalProperties": true
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["name", "version", "direction", "contract"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "version": { "type": "string", "minLength": 1 },
+        "direction": { "enum": ["provided", "required", "internal"] },
+        "contract": { "type": "string", "minLength": 1 },
+        "invariants": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "transformation": {
+      "type": "object",
+      "required": ["name", "input", "output", "semantic_function"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "input": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "output": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "semantic_function": { "type": "string", "minLength": 1 },
+        "rejections": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+          "uniqueItems": true
+        },
+        "properties": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "authority": {
+      "type": "object",
+      "required": ["id", "kind", "capabilities", "rationale"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$" },
+        "kind": { "enum": ["privileged", "unsafe", "foreign"] },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "rationale": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
     }
   },
   "allOf": [

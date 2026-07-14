@@ -1,0 +1,369 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/extend-rms-from-isolated-machine-conformance-to-language-neutral-protocol-resource-artifact-authority-temporal-and-cross-module-trace-conformance-without-introducing-a-runtime-4d9d16921071.yaml
+intent:
+  summary: Bind universal protocol, resource, artifact, authority, temporal, and system-trace semantics to their exact deterministic implementations and proof realizations.
+laws:
+  add: []
+  set:
+  - id: module-protocols-compose-by-contract
+    statement: Cross-module commands, events, replies, and rejections are bound to explicit contract participants and compose only when every routed message has a compatible sender, receiver, direction, and legal protocol order.
+    kind: composition-safety
+    authority: composition
+    enforced_by: compose-protocol-contracts
+  - id: resource-lifecycles-close-on-terminal-paths
+    statement: Every acquired semantic resource is used only while held and reaches a declared released or transferred disposition on every terminal machine path.
+    kind: lifecycle-safety
+    authority: parser
+    enforced_by: validate-resource-protocols
+  - id: artifact-transformations-preserve-declared-contracts
+    statement: Stateless transformations consume and produce explicitly versioned artifacts whose invariants and compatibility contracts compose between stages.
+    kind: composition-safety
+    authority: composition
+    enforced_by: compose-artifact-contracts
+  - id: privileged-authority-is-explicit-and-contained
+    statement: Privileged, unsafe, foreign, or otherwise elevated operations occur only in declared authority roles behind a declared safe facade and concrete evidence.
+    kind: safety
+    authority: parser
+    enforced_by: inspect-authority-containment
+  - id: temporal-properties-have-matching-realizations
+    statement: Trace and bounded-resource claims use structured temporal patterns and a proof realization capable of evaluating the declared scope and bound.
+    kind: evidence-integrity
+    authority: parser
+    enforced_by: validate-temporal-properties
+  - id: system-traces-preserve-message-causation
+    statement: Cross-module trace stitching preserves correlation, causation, participant direction, protocol order, and each owning machine transition so diagnosis identifies the first invalid handoff or transition.
+    kind: traceability
+    authority: parser
+    enforced_by: stitch-system-traces
+  remove: []
+contracts: null
+properties:
+  add: []
+  set:
+  - id: protocol-composition-closure
+    proves: module-protocols-compose-by-contract
+    kind: conformance
+    subject: cross-module protocol bindings
+    input_space:
+      fixtures: compatible, unmatched, ambiguous, direction-invalid, and automaton-mismatched message routes
+    preconditions: []
+    operation: compose every participant and message binding with its public protocol contract
+    oracle:
+    - every protocol participant has one implementation owner
+    - every public message has one compatible sender and receiver mapping
+    - mismatched automata, ownership, direction, and routes fail
+    evidence:
+      kind: property
+      path: verification/properties/protocol_composition_closure.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/protocol-composition
+    realizations:
+    - profile: smoke
+      strategy: model-checker
+      command: verify
+      harness: src/main.rs#compose_protocol_contracts
+      exhaustive: false
+    temporal:
+      pattern: always
+      scope: composition
+      trigger: null
+      condition: every public protocol message has exactly one compatible sender and receiver
+      bound: null
+  - id: resource-lifecycle-closure
+    proves: resource-lifecycles-close-on-terminal-paths
+    kind: conformance
+    subject: machine and resource product automata
+    input_space:
+      fixtures: acquire-use-release, use-before-acquire, double-release, transfer, and terminal-leak graphs
+    preconditions: []
+    operation: explore the reachable finite product of machine and resource states
+    oracle:
+    - all reachable operations respect resource ownership and lifecycle state
+    - every reachable terminal product state closes or transfers the resource
+    evidence:
+      kind: property
+      path: verification/properties/resource_lifecycle_closure.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/resource-lifecycle
+    realizations:
+    - profile: smoke
+      strategy: model-checker
+      command: verify
+      harness: src/main.rs#validate_machine_resource_protocols
+      exhaustive: false
+    temporal:
+      pattern: resource-closure
+      scope: resource
+      trigger: null
+      condition: every acquired resource reaches a declared terminal disposition on every terminal machine path
+      bound: null
+  - id: artifact-transformation-compatibility
+    proves: artifact-transformations-preserve-declared-contracts
+    kind: conformance
+    subject: artifact transformation edges
+    input_space:
+      fixtures: compatible versions, missing artifacts, incompatible contracts, and ambiguous providers
+    preconditions: []
+    operation: compare every required artifact with all declared providers
+    oracle:
+    - compatible artifact name version and contract identity compose
+    - missing incompatible and ambiguous artifact edges fail
+    evidence:
+      kind: property
+      path: verification/properties/artifact_transformation_compatibility.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/artifact-transformations
+    realizations:
+    - profile: smoke
+      strategy: model-checker
+      command: verify
+      harness: src/main.rs#compose_artifact_contracts
+      exhaustive: false
+    temporal:
+      pattern: always
+      scope: artifact
+      trigger: null
+      condition: every required artifact resolves to exactly one compatible provider contract
+      bound: null
+  - id: authority-containment
+    proves: privileged-authority-is-explicit-and-contained
+    kind: conformance
+    subject: authority declarations and binding roles
+    input_space:
+      fixtures: declared authority role, undeclared privileged operation, missing safe facade, and misplaced elevated source
+    preconditions: []
+    operation: statically inspect privileged operations against canonical authority ownership
+    oracle:
+    - declared elevated operations confined to authority roles and safe facades pass
+    - undeclared or misplaced elevated operations fail
+    evidence:
+      kind: property
+      path: verification/properties/authority_containment.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/authority-containment
+    realizations:
+    - profile: smoke
+      strategy: static-analyzer
+      command: verify
+      harness: src/main.rs#inspect_privileged_source_containment
+      exhaustive: false
+    temporal:
+      pattern: always
+      scope: platform
+      trigger: null
+      condition: every privileged unsafe or foreign operation remains inside its declared authority role
+      bound: null
+  - id: temporal-realization-conformance
+    proves: temporal-properties-have-matching-realizations
+    kind: conformance
+    subject: structured temporal and bounded properties
+    input_space:
+      fixtures: finite always, eventually, precedence, exclusion, at-most-once, bounded-response, resource-closure, and platform-budget claims
+    preconditions: []
+    operation: compare every temporal pattern and scope with its declared proof realization
+    oracle:
+    - finite semantic scopes require exhaustive or model-checking realization
+    - runtime and platform scopes require a model checker static analyzer sanitizer or benchmark
+    - bounded-response claims carry exactly one complete bound
+    evidence:
+      kind: property
+      path: verification/properties/temporal_realization_conformance.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/temporal-properties
+    realizations:
+    - profile: smoke
+      strategy: model-checker
+      command: verify
+      harness: src/main.rs#validate_temporal_target_report
+      exhaustive: false
+    temporal:
+      pattern: always
+      scope: composition
+      trigger: null
+      condition: every declared temporal property uses a realization capable of proving its scope and bound
+      bound: null
+  - id: cross-module-trace-causation
+    proves: system-traces-preserve-message-causation
+    kind: conformance
+    subject: stitched transition bundles
+    input_space:
+      fixtures: valid causal chains, missing causes, missing receivers, wrong participants, and duplicate handoffs
+    preconditions: []
+    operation: stitch every protocol envelope by identity correlation causation endpoints and sequence
+    oracle:
+    - every logical handoff has one matching send and receive
+    - every non-root cause resolves within the same correlation
+    - the first invalid handoff is deterministic
+    evidence:
+      kind: property
+      path: verification/properties/cross_module_trace_causation.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/system-traces
+    realizations:
+    - profile: smoke
+      strategy: model-checker
+      command: verify
+      harness: src/main.rs#build_system_trace_report
+      exhaustive: false
+    temporal:
+      pattern: precedence
+      scope: composition
+      trigger: protocol message is received
+      condition: a matching causally prior send exists in the same correlation
+      bound: null
+  remove: []
+semantic_functions:
+  add:
+  - id: compose-protocol-contracts
+    symbol: compose_protocol_contracts
+    kind: decision
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/compose-rms-system.v1.yaml
+      invariants:
+      - module-protocols-compose-by-contract
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - every discovered protocol participant and message route is checked
+    evidence:
+      laws:
+      - verification/laws/module_protocols_compose_by_contract.md
+      properties:
+      - verification/properties/protocol_composition_closure.md
+  - id: compose-artifact-contracts
+    symbol: compose_artifact_contracts
+    kind: decision
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/compose-rms-system.v1.yaml
+      invariants:
+      - artifact-transformations-preserve-declared-contracts
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - every required artifact is compared with all declared providers
+    evidence:
+      laws:
+      - verification/laws/artifact_transformations_preserve_declared_contracts.md
+      properties:
+      - verification/properties/artifact_transformation_compatibility.md
+  - id: validate-resource-protocols
+    symbol: validate_machine_resource_protocols
+    kind: decision
+    purity: pure
+    discharges:
+      contracts:
+      - contracts/check-machine-structure.v1.yaml
+      invariants:
+      - resource-lifecycles-close-on-terminal-paths
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - reachable machine and resource product states are explored to closure
+    evidence:
+      laws:
+      - verification/laws/resource_lifecycles_close_on_terminal_paths.md
+      properties:
+      - verification/properties/resource_lifecycle_closure.md
+  - id: inspect-authority-containment
+    symbol: inspect_privileged_source_containment
+    kind: parser
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/check-machine-structure.v1.yaml
+      invariants:
+      - privileged-authority-is-explicit-and-contained
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - inspectable elevated operations are compared with declared authority role paths
+    evidence:
+      laws:
+      - verification/laws/privileged_authority_is_explicit_and_contained.md
+      properties:
+      - verification/properties/authority_containment.md
+  - id: validate-temporal-properties
+    symbol: validate_temporal_target_report
+    kind: decision
+    purity: pure
+    discharges:
+      contracts:
+      - contracts/check-semantic-properties.v1.yaml
+      invariants:
+      - temporal-properties-have-matching-realizations
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - each temporal scope and bound is paired with a capable realization
+    evidence:
+      laws:
+      - verification/laws/temporal_properties_have_matching_realizations.md
+      properties:
+      - verification/properties/temporal_realization_conformance.md
+  - id: stitch-system-traces
+    symbol: build_system_trace_report
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/inspect-trace-bundle.v1.yaml
+      invariants:
+      - system-traces-preserve-message-causation
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - each extracted envelope and causal edge is checked and the first bad handoff is retained
+    evidence:
+      laws:
+      - verification/laws/system_traces_preserve_message_causation.md
+      properties:
+      - verification/properties/cross_module_trace_causation.md
+  set: []
+  remove: []
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: module-protocols-compose-by-contract
+    path: verification/laws/module_protocols_compose_by_contract.md
+  - kind: law
+    proves: resource-lifecycles-close-on-terminal-paths
+    path: verification/laws/resource_lifecycles_close_on_terminal_paths.md
+  - kind: law
+    proves: artifact-transformations-preserve-declared-contracts
+    path: verification/laws/artifact_transformations_preserve_declared_contracts.md
+  - kind: law
+    proves: privileged-authority-is-explicit-and-contained
+    path: verification/laws/privileged_authority_is_explicit_and_contained.md
+  - kind: law
+    proves: temporal-properties-have-matching-realizations
+    path: verification/laws/temporal_properties_have_matching_realizations.md
+  - kind: law
+    proves: system-traces-preserve-message-causation
+    path: verification/laws/system_traces_preserve_message_causation.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

@@ -33,7 +33,7 @@ A project is ready for production pilot use when all requirements hold:
 | Evidence is concrete | No active implemented module reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only`. |
 | Public compatibility is explicit | Contract or manifest changes include `rms check-compat` evidence or an explicit compatibility decision. |
 | Agents can start cold | `AGENTS.md`, `.rms/config.yaml`, and local agent skills are generated or synced from the pinned RMS CLI. |
-| Semantic changes are gated | New laws, contracts, states, commands, events, effects, transitions, semantic roles, semantic-function authority bindings, public entrypoints, and evidence obligations are introduced through `rms spec apply`, then checked with `rms spec check`. |
+| Semantic changes are gated | New laws, contracts, artifacts, transformations, protocols, resource lifecycles, authorities, temporal properties, states, commands, events, effects, transitions, semantic roles, public entrypoints, and evidence obligations are introduced through `rms spec apply`, then checked with `rms spec check`. |
 | Canonical revision is intact | Strict audit reports `semantic.revision-integrity`; the exact applied record digest matches, superseded records still exist, and a clean commit does not hide direct manifest or history edits after RMS apply. |
 | Transition branches are code-backed and replayed | Every declared case exists in the declared transition source, no source-only branch escapes canonical semantics, every lifecycle state is reachable, and strict audit finds matching state/input/destination/source-file/source-branch evidence plus declared workflow events. |
 | Transition evidence is truthful | Expected failures use the typed transition rejection channel, and each execution-derived trace record matches its canonical case's exact state change, events, commands, effects, reply, and rejection. |
@@ -41,6 +41,10 @@ A project is ready for production pilot use when all requirements hold:
 | Boundary IO is explicit | Inspectable boundary filesystem, process, network, clock, randomness, or persistence work is declared as effects with typed results, atomic protocols, and dedicated executors. Runnable surfaces name exact callables into that machine path. |
 | Machine inputs are total | Arithmetic over represented indices, counts, attempts, offsets, lengths, and sequences is checked or bounded; extreme inputs produce explicit rejection instead of overflow, panic, or trap. |
 | Message declarations are real | Every declared command, event, effect, and effect-result envelope has a binding-native representation. |
+| Cross-module protocols close | Every protocol participant is bound once, every public message has one sender and receiver mapping, and stitched traces preserve identity and causation. |
+| Resources close | Every reachable terminal machine path leaves each declared resource in a terminal or transferred state. |
+| Elevated authority is contained | Privileged, unsafe, and foreign operations occur only in authority-bound roles behind exact safe facade symbols. |
+| Temporal proof matches scope | Finite semantic guarantees use exhaustive or model-checking evidence; runtime and platform bounds use the declared model checker, static analyzer, sanitizer, or benchmark. |
 
 ## New Project Flow
 
@@ -105,6 +109,8 @@ rms spec check <module.yaml|implementation.yaml>
 
 Inspect `final_machine` before source edits. Product variants must replace generic scaffold cases, every transition must name its semantic case, and every ordering/safety/bounded/parser/numeric law must have a matching property. Contract operations use `direction: provided` for module-owned surfaces and `direction: required` for consumer expectations; do not publish a dependency contract to make it editable. Non-corpus property realizations name an exact binding `path#symbol` harness, and a generated-property harness must generate rather than return fixed examples. Generated property evidence is production-blocking until an executed command and observed result replace the obligation. Spec, machine, and surface apply record their change and reseal canonical semantics. Machine apply does not manufacture replay evidence; traces must come from implemented transition paths and match the exact canonical outputs. Direct changes to module, local contract, or implementation semantics invalidate the seal and fail strict audit. Public domain values keep private fields and validated constructors; `allowed_public_field_structs` is limited to declared envelopes and transition/provenance records.
 
+Before implementation, also classify the universal system semantics: versioned artifacts and transformations, ordered cross-module protocols, resource ownership and closure, privileged/unsafe/foreign authority, and always/eventually/bounded temporal guarantees. Declare only the structures the product actually needs, but never leave these concerns implicit when correctness depends on them.
+
 ## Existing Project Flow
 
 Adopt one boundary at a time.
@@ -166,6 +172,8 @@ Evidence must name:
 - command or tool used;
 - source revision or artifact identity;
 - trace bundle, replay result, or first-bad-transition proof when behavior depends on lifecycle order.
+- stitched system trace and first-bad-handoff result when behavior crosses module boundaries;
+- artifact compatibility, resource closure, authority containment, and temporal realization results when those semantics are declared.
 
 During work in progress, evidence may be temporary. Before production:
 

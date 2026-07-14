@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
@@ -1086,6 +1086,8 @@ struct PropertyTargetReport {
     evidence: Option<String>,
     counterexamples: Option<String>,
     realizations: Vec<PropertyRealization>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temporal: Option<SemanticTemporalProperty>,
     status: String,
 }
 
@@ -1181,6 +1183,11 @@ struct SpecApplyReport {
     writes: Vec<String>,
     final_machine: Option<MachineFinalStateReport>,
     final_semantic_functions: Option<Vec<SemanticFunctionFinalStateReport>>,
+    final_artifacts: Vec<String>,
+    final_transformations: Vec<String>,
+    final_authorities: Vec<String>,
+    final_protocol_bindings: Vec<String>,
+    final_authority_bindings: Vec<String>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -1208,6 +1215,7 @@ struct MachineFinalStateReport {
     replies: Vec<String>,
     rejections: Vec<String>,
     effect_protocols: Vec<MachineEffectProtocol>,
+    resource_protocols: Vec<String>,
     transitions: Vec<String>,
     roles: Vec<String>,
 }
@@ -1571,6 +1579,302 @@ struct SemanticChange {
     surfaces: Option<SemanticSurfacesChange>,
     #[serde(default)]
     binding_dependencies: Option<BindingDependenciesChange>,
+    #[serde(default)]
+    artifacts: Option<SemanticArtifactsChange>,
+    #[serde(default)]
+    transformations: Option<SemanticTransformationsChange>,
+    #[serde(default)]
+    authorities: Option<SemanticAuthoritiesChange>,
+    #[serde(default)]
+    protocol_bindings: Option<ProtocolBindingsChange>,
+    #[serde(default)]
+    authority_bindings: Option<AuthorityBindingsChange>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticArtifactsChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<SemanticArtifact>>,
+    #[serde(default)]
+    add: Vec<SemanticArtifact>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticArtifact {
+    name: String,
+    version: String,
+    direction: String,
+    contract: String,
+    #[serde(default)]
+    invariants: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticTransformationsChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<SemanticTransformation>>,
+    #[serde(default)]
+    add: Vec<SemanticTransformation>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticTransformation {
+    name: String,
+    input: String,
+    output: String,
+    semantic_function: String,
+    #[serde(default)]
+    rejections: Vec<String>,
+    #[serde(default)]
+    properties: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticAuthoritiesChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<SemanticAuthority>>,
+    #[serde(default)]
+    add: Vec<SemanticAuthority>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticAuthority {
+    id: String,
+    kind: String,
+    capabilities: Vec<String>,
+    rationale: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProtocolBindingsChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<ProtocolBinding>>,
+    #[serde(default)]
+    add: Vec<ProtocolBinding>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProtocolBinding {
+    name: String,
+    contract: String,
+    participant: String,
+    mappings: Vec<ProtocolMessageMapping>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProtocolMessageMapping {
+    machine_case: String,
+    message: String,
+    direction: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityBindingsChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<AuthorityBinding>>,
+    #[serde(default)]
+    add: Vec<AuthorityBinding>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityBinding {
+    authority: String,
+    roles: Vec<String>,
+    safe_facade: String,
+    evidence: Vec<String>,
+}
+
+fn typed_yaml_sequence<T: DeserializeOwned>(value: &YamlValue, path: &[&str]) -> Vec<T> {
+    get_path(value, path)
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| serde_yaml::from_value(item.clone()).ok())
+        .collect()
+}
+
+fn final_named_changes<T: Clone>(
+    existing: Vec<T>,
+    replace: Option<&Vec<T>>,
+    remove: &[String],
+    add: &[T],
+    key: impl Fn(&T) -> &str,
+) -> Vec<T> {
+    let mut final_items = replace.cloned().unwrap_or(existing);
+    final_items.retain(|item| !remove.iter().any(|removed| removed == key(item)));
+    final_items.extend_from_slice(add);
+    final_items
+}
+
+fn semantic_artifact_yaml(item: &SemanticArtifact) -> YamlValue {
+    yaml_mapping_value([
+        ("name", YamlValue::String(item.name.clone())),
+        ("version", YamlValue::String(item.version.clone())),
+        ("direction", YamlValue::String(item.direction.clone())),
+        ("contract", YamlValue::String(item.contract.clone())),
+        ("invariants", yaml_string_sequence(&item.invariants)),
+    ])
+}
+
+fn semantic_transformation_yaml(item: &SemanticTransformation) -> YamlValue {
+    yaml_mapping_value([
+        ("name", YamlValue::String(item.name.clone())),
+        ("input", YamlValue::String(item.input.clone())),
+        ("output", YamlValue::String(item.output.clone())),
+        (
+            "semantic_function",
+            YamlValue::String(item.semantic_function.clone()),
+        ),
+        ("rejections", yaml_string_sequence(&item.rejections)),
+        ("properties", yaml_string_sequence(&item.properties)),
+    ])
+}
+
+fn semantic_authority_yaml(item: &SemanticAuthority) -> YamlValue {
+    yaml_mapping_value([
+        ("id", YamlValue::String(item.id.clone())),
+        ("kind", YamlValue::String(item.kind.clone())),
+        ("capabilities", yaml_string_sequence(&item.capabilities)),
+        ("rationale", YamlValue::String(item.rationale.clone())),
+    ])
+}
+
+fn protocol_binding_yaml(item: &ProtocolBinding) -> YamlValue {
+    let mappings = item
+        .mappings
+        .iter()
+        .map(|mapping| {
+            yaml_mapping_value([
+                (
+                    "machine_case",
+                    YamlValue::String(mapping.machine_case.clone()),
+                ),
+                ("message", YamlValue::String(mapping.message.clone())),
+                ("direction", YamlValue::String(mapping.direction.clone())),
+            ])
+        })
+        .collect();
+    yaml_mapping_value([
+        ("name", YamlValue::String(item.name.clone())),
+        ("contract", YamlValue::String(item.contract.clone())),
+        ("participant", YamlValue::String(item.participant.clone())),
+        ("mappings", YamlValue::Sequence(mappings)),
+    ])
+}
+
+fn authority_binding_yaml(item: &AuthorityBinding) -> YamlValue {
+    yaml_mapping_value([
+        ("authority", YamlValue::String(item.authority.clone())),
+        ("roles", yaml_string_sequence(&item.roles)),
+        ("safe_facade", YamlValue::String(item.safe_facade.clone())),
+        ("evidence", yaml_string_sequence(&item.evidence)),
+    ])
+}
+
+fn semantic_artifacts_change_has_operations(change: &SemanticArtifactsChange) -> bool {
+    change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty()
+}
+
+fn final_semantic_artifacts(
+    value: &YamlValue,
+    change: &SemanticArtifactsChange,
+) -> Vec<SemanticArtifact> {
+    final_named_changes(
+        typed_yaml_sequence(value, &["artifacts"]),
+        change.replace.as_ref(),
+        &change.remove,
+        &change.add,
+        |item| item.name.as_str(),
+    )
+}
+
+fn semantic_transformations_change_has_operations(change: &SemanticTransformationsChange) -> bool {
+    change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty()
+}
+
+fn final_semantic_transformations(
+    value: &YamlValue,
+    change: &SemanticTransformationsChange,
+) -> Vec<SemanticTransformation> {
+    final_named_changes(
+        typed_yaml_sequence(value, &["transformations"]),
+        change.replace.as_ref(),
+        &change.remove,
+        &change.add,
+        |item| item.name.as_str(),
+    )
+}
+
+fn semantic_authorities_change_has_operations(change: &SemanticAuthoritiesChange) -> bool {
+    change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty()
+}
+
+fn final_semantic_authorities(
+    value: &YamlValue,
+    change: &SemanticAuthoritiesChange,
+) -> Vec<SemanticAuthority> {
+    final_named_changes(
+        typed_yaml_sequence(value, &["authorities"]),
+        change.replace.as_ref(),
+        &change.remove,
+        &change.add,
+        |item| item.id.as_str(),
+    )
+}
+
+fn protocol_bindings_change_has_operations(change: &ProtocolBindingsChange) -> bool {
+    change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty()
+}
+
+fn final_protocol_bindings(
+    value: &YamlValue,
+    change: &ProtocolBindingsChange,
+) -> Vec<ProtocolBinding> {
+    final_named_changes(
+        typed_yaml_sequence(value, &["architecture", "protocol_bindings"]),
+        change.replace.as_ref(),
+        &change.remove,
+        &change.add,
+        |item| item.name.as_str(),
+    )
+}
+
+fn authority_bindings_change_has_operations(change: &AuthorityBindingsChange) -> bool {
+    change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty()
+}
+
+fn final_authority_bindings(
+    value: &YamlValue,
+    change: &AuthorityBindingsChange,
+) -> Vec<AuthorityBinding> {
+    final_named_changes(
+        typed_yaml_sequence(value, &["architecture", "authority_bindings"]),
+        change.replace.as_ref(),
+        &change.remove,
+        &change.add,
+        |item| item.authority.as_str(),
+    )
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1644,6 +1948,37 @@ struct SemanticContractChange {
     ensures: Vec<String>,
     #[serde(default)]
     rejects: Vec<String>,
+    #[serde(default)]
+    protocol: Option<SemanticProtocol>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticProtocol {
+    participants: Vec<String>,
+    messages: Vec<ProtocolMessage>,
+    states: Vec<String>,
+    initial_state: String,
+    #[serde(default)]
+    terminal_states: Vec<String>,
+    transitions: Vec<ProtocolTransition>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProtocolMessage {
+    id: String,
+    kind: String,
+    from: String,
+    to: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProtocolTransition {
+    from: String,
+    on: String,
+    to: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1706,6 +2041,33 @@ struct SemanticPropertyChange {
     counterexamples: Option<SemanticPropertyCounterexamplesRef>,
     #[serde(default)]
     realizations: Vec<PropertyRealization>,
+    #[serde(default)]
+    temporal: Option<SemanticTemporalProperty>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticTemporalProperty {
+    pattern: String,
+    scope: String,
+    #[serde(default)]
+    trigger: Option<String>,
+    condition: String,
+    #[serde(default)]
+    bound: Option<SemanticTemporalBound>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticTemporalBound {
+    #[serde(default)]
+    transitions: Option<u64>,
+    #[serde(default)]
+    metric: Option<String>,
+    #[serde(default)]
+    value: Option<f64>,
+    #[serde(default)]
+    unit: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1745,6 +2107,8 @@ struct SemanticFunctionChange {
     assumptions: SemanticFunctionAssumptionsChange,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     evidence: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    authorities: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1883,6 +2247,8 @@ struct SemanticMachineChange {
     #[serde(default)]
     effect_protocols: MachineEffectProtocolsChange,
     #[serde(default)]
+    resource_protocols: MachineResourceProtocolsChange,
+    #[serde(default)]
     transitions: Option<MachineTransitionsChange>,
 }
 
@@ -1940,6 +2306,8 @@ struct MachineChangeMachine {
     rejections: MachineVariantListChange,
     #[serde(default)]
     effect_protocols: MachineEffectProtocolsChange,
+    #[serde(default)]
+    resource_protocols: MachineResourceProtocolsChange,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1984,6 +2352,38 @@ struct MachineEffectProtocolsChange {
     add: Vec<MachineEffectProtocol>,
     #[serde(default)]
     remove: Vec<MachineEffectProtocolRemove>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MachineResourceProtocolsChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<MachineResourceProtocol>>,
+    #[serde(default)]
+    add: Vec<MachineResourceProtocol>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MachineResourceProtocol {
+    resource: String,
+    ownership: String,
+    states: Vec<String>,
+    initial_state: String,
+    terminal_states: Vec<String>,
+    transitions: Vec<ResourceProtocolTransition>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ResourceProtocolTransition {
+    from: String,
+    on: String,
+    trigger_kind: String,
+    operation: String,
+    to: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2126,13 +2526,46 @@ struct TraceFirstBadTransition {
     source: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct TraceDiagnostic {
     severity: Severity,
     check: String,
     path: String,
     message: String,
     record_index: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SystemTraceMessage {
+    index: usize,
+    bundle: String,
+    record_index: usize,
+    machine: String,
+    direction: String,
+    kind: String,
+    protocol_message: String,
+    envelope_id: String,
+    correlation_id: String,
+    causation_id: Option<String>,
+    source: String,
+    target: String,
+    sequence: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SystemTraceFirstBadHandoff {
+    message_index: usize,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SystemTraceReport {
+    spec: String,
+    result: String,
+    bundles: Vec<String>,
+    messages: Vec<SystemTraceMessage>,
+    first_bad_handoff: Option<SystemTraceFirstBadHandoff>,
+    diagnostics: Vec<TraceDiagnostic>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -2152,6 +2585,7 @@ struct StructureMachineReport {
     replies: Vec<String>,
     rejections: Vec<String>,
     effect_protocols: Vec<MachineEffectProtocol>,
+    resource_protocols: Vec<MachineResourceProtocol>,
     transition_function: Option<String>,
 }
 
@@ -2218,7 +2652,7 @@ struct DeclaredArchitectureSymbol {
     kind: DeclaredSymbolKind,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 enum Severity {
     Error,
@@ -2307,6 +2741,21 @@ enum TraceCommands {
     Diagnose {
         /// Path to a local trace bundle.
         bundle: PathBuf,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Stitch module-local trace bundles into one causally ordered system trace.
+    Stitch {
+        /// Two or more local trace bundles participating in one system flow.
+        #[arg(required = true, num_args = 1..)]
+        bundles: Vec<PathBuf>,
+
+        /// Optional path for the generated rms/system-trace/v0.1 bundle.
+        #[arg(long)]
+        output: Option<PathBuf>,
 
         /// Emit machine-readable JSON.
         #[arg(long)]
@@ -3346,6 +3795,7 @@ impl PromptKind {
                 "Classify every machine input as exactly one command, observed event, or effect result, and name illegal state/input combinations.",
                 "Keep expected rejection as an explicit transition output, and require replay records to match the exact canonical case outputs rather than a copied declaration list.",
                 "When an effect outcome can change what happens next, plan one atomic request, one typed result, and a follow-up transition; do not hide sequencing in the executor.",
+                "Classify versioned artifacts and transformations, cross-module protocols, resource ownership, elevated authority, and temporal guarantees before choosing binding files.",
                 "Propose the smallest implementation and verification path.",
             ],
             PromptKind::Design => &[
@@ -3360,6 +3810,7 @@ impl PromptKind {
                 "Resolve semantic edge cases before file layout: invalid commands, illegal transitions, terminal states, stale or conflicting state, parser failures, numeric overflow or rounding, and effect failure categories.",
                 "Name semantic cases rather than Rust, Swift, JS, Python, or other binding type names; bindings realize the cases later.",
                 "For each effect, decide whether individual outcomes alter later decisions; if they do, use one-request-one-result protocols and transition-owned orchestration.",
+                "Define public protocol automata, resource lifecycle automata, artifact transformations, authority boundaries, and temporal proof obligations whenever the intent contains those semantics.",
                 "Treat inspectable boundary IO as declared effects with typed results and an executor, and require runnable surfaces to delegate to an exact callable that reaches the machine.",
                 "Define focused evidence: laws, contract scenarios, boundary parser tests, numeric boundary tests, runtime monitor trigger/non-trigger cases, transition records, replay bundles, first-bad-transition proof, fuzz/property checks, recovery, or reconciliation.",
                 "Treat provider output and generated plans as advisory evidence until reflected in canonical artifacts.",
@@ -3378,6 +3829,7 @@ impl PromptKind {
                 "Find behavioral regressions, boundary violations, undeclared effects or dependencies, compatibility drift, missing evidence, and stale canonical artifacts.",
                 "Flag collapsed semantic variants, stateful transitions that omit state or classified input, effect results that bypass transition, executor-owned retry or sequencing, and corpus-only evidence presented as fuzzing.",
                 "Flag typed rejections erased into replies or provenance strings, synthetic traces that do not match canonical outputs, boundary IO without effect protocols, and runnable delegation that names only a file.",
+                "Flag cross-module messages without protocol bindings, terminal resource leaks, undeclared privileged/unsafe/foreign operations, unversioned artifact transformations, and temporal claims backed by the wrong proof strategy.",
                 "Prioritize findings by severity and include file or artifact references when possible.",
                 "Do not treat generated prose, issue text, or incidental implementation shape as architectural authority.",
             ],
@@ -3386,6 +3838,7 @@ impl PromptKind {
                 "If refactoring reveals new laws, contracts, states, commands, events, effects, runnable surfaces, public entrypoints, semantic roles, semantic-function bindings, or evidence obligations, return an RMS semantic-change object before editing files.",
                 "Identify weak representation, duplicated concepts, decision/effect coupling, ownership confusion, boundary leakage, lifecycle clutter, or semantic residue.",
                 "Preserve one canonical transition path for commands, observed events, and effect results; move sequencing policy out of executors and into transitions.",
+                "Preserve protocol automata, resource ownership, artifact compatibility, authority containment, and temporal properties; revise them through `rms spec apply` when their meaning changes.",
                 "Prefer semantic roles over conventional helper names: representation, message envelopes, transition output, transition records, ports, adapters, trace roles, and evidence.",
                 "Prefer deletion, inlining, renaming, or representation strengthening before new abstractions.",
                 "Escalate to implement-change or evolve-contract if public meaning must change.",
@@ -3411,6 +3864,7 @@ impl PromptKind {
                 "Return expected failure through the transition rejection channel, and generate replay records from the same transition path with exact canonical outputs.",
                 "Effect executors perform one declared request and return one declared result; transitions own sequencing, retry, compensation, stop/continue policy, and progress.",
                 "Model inspectable boundary IO as declared effects and typed results behind executors; runnable surfaces delegate to exact callables rather than source files.",
+                "Implement declared artifact transformations, protocol message mappings, resource operations, authority facades, and temporal harnesses inside their exact semantic owners; do not infer them from helper names.",
                 "Use the strongest available representation for invalid states, expected failures, boundary input, and lifecycle transitions.",
                 "Add the smallest evidence that demonstrates the changed promise.",
                 "Return concrete implementation instructions; do not claim edits were made unless the executing agent actually made them.",
@@ -3422,6 +3876,7 @@ impl PromptKind {
                 "Synthesize accepted intent into candidate contracts, laws, invariants, glossary terms, ownership, effects, compatibility impact, and proof lanes.",
                 "Enumerate accepted command, observed-event, and effect-result cases plus illegal transitions before proposing code.",
                 "Ask whether each external outcome can change the next decision; model such outcomes as typed effect results rather than executor control flow.",
+                "Ask which artifacts cross boundaries or change form, which modules exchange ordered messages, which resources require ownership closure, which operations need elevated authority, and which facts must always or eventually hold.",
                 "Separate raw conversation notes from accepted rationale; raw prompt output is evidence, not semantic authority.",
                 "Name the canonical artifacts that must change before implementation: intent notes, decision records, glossary, module manifest, contracts, laws, semantic-function authority bindings, runnable surface declarations, and verification evidence.",
                 "Stop at an implementation gate when accepted intent is missing or contradictions exist among canonical artifacts.",
@@ -3441,6 +3896,7 @@ impl PromptKind {
             PromptKind::Evidence => &[
                 "Identify the changed promise and the evidence category it belongs to: law, contract, scenario, boundary, runnable surface, runtime, reconciliation, or migration.",
                 "For machine-shaped behavior, request transition records, replay bundles, golden timelines, effect-result handling, and first-bad-transition proof where applicable.",
+                "For system-shaped behavior, request artifact compatibility, protocol composition, stitched message causation, resource closure, authority containment, and temporal realization evidence where applicable.",
                 "Require stateful traces to cover every declared transition and effect-result branch, with each record's state_after feeding the next state_before.",
                 "Require each trace record to match its canonical case's exact state change, events, commands, effects, reply, and rejection, and reject declaration-derived synthetic traces as execution proof.",
                 "Distinguish deterministic corpus, deterministic exhaustive, generated-property, and coverage-fuzzer evidence; a fixed corpus does not prove an open-ended fuzz claim.",
@@ -5949,6 +6405,11 @@ fn main() -> Result<()> {
             TraceCommands::Check { bundle, json } => run_trace_check(&bundle, json),
             TraceCommands::Replay { bundle, json } => run_trace_replay(&bundle, json),
             TraceCommands::Diagnose { bundle, json } => run_trace_diagnose(&bundle, json),
+            TraceCommands::Stitch {
+                bundles,
+                output,
+                json,
+            } => run_trace_stitch(&bundles, output.as_deref(), json),
         },
         Commands::Property { command } => match command {
             PropertyCommands::Check {
@@ -7008,6 +7469,7 @@ fn render_design_prompt(root: &Path, task: &str) -> Result<String> {
     writeln!(out, "Use RMS canonical artifacts as the source of architectural truth. Use design output as advisory evidence until reflected in system, context, module, contract, implementation, and verification artifacts.")?;
     writeln!(out, "Execution rule: deterministic design hints choose the initial scaffold. If they recommend the composite/domain/boundary tree, use `rms add-capability`; do not replace it with one module merely to save work. A single-module exception requires explicit user intent and canonical justification.")?;
     writeln!(out, "Product intent is enough input from the user: ask clarifying questions only when needed, surface semantic edge cases, name what must never happen, and propose laws, contracts, machines, effects, rejections, and evidence before code.")?;
+    writeln!(out, "Before choosing files, ask five universal questions: which artifacts cross boundaries or change form; which modules exchange ordered messages; which resources are acquired, used, released, or transferred; which operations require elevated authority; and which facts must always, eventually, or within a bound hold.")?;
     writeln!(out, "For external truth, decide what happens when outcomes are unknown, duplicate, stale, partial, conflicting, delayed, or later corrected; use reconciliation or recovery evidence when those cases matter.")?;
     writeln!(out)?;
     append_design_context(&mut out, root, &modules)?;
@@ -7751,6 +8213,20 @@ fn run_trace_replay(bundle: &Path, json_output: bool) -> Result<()> {
 }
 
 fn run_trace_diagnose(bundle: &Path, json_output: bool) -> Result<()> {
+    if load_yaml_value(bundle)
+        .ok()
+        .and_then(|value| get_str(&value, &["spec"]).map(str::to_string))
+        .as_deref()
+        == Some("rms/system-trace/v0.1")
+    {
+        let source = fs::read_to_string(bundle)
+            .with_context(|| format!("failed to read `{}`", bundle.display()))?;
+        let mut report: SystemTraceReport = serde_yaml::from_str(&source)
+            .with_context(|| format!("failed to parse `{}`", bundle.display()))?;
+        diagnose_system_trace_messages(&mut report);
+        print_system_trace_report(&report, json_output)?;
+        return Ok(());
+    }
     let report = build_trace_report(bundle)?;
     if json_output {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -7758,6 +8234,383 @@ fn run_trace_diagnose(bundle: &Path, json_output: bool) -> Result<()> {
         print_trace_diagnose_report(&report);
     }
     Ok(())
+}
+
+fn run_trace_stitch(bundles: &[PathBuf], output: Option<&Path>, json_output: bool) -> Result<()> {
+    let report = build_system_trace_report(bundles)?;
+    if let Some(output) = output {
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create `{}`", parent.display()))?;
+        }
+        fs::write(output, serde_yaml::to_string(&report)?)
+            .with_context(|| format!("failed to write `{}`", output.display()))?;
+    }
+    print_system_trace_report(&report, json_output)?;
+    if report.result == "fail" {
+        bail!("RMS system trace stitch failed");
+    }
+    Ok(())
+}
+
+fn print_system_trace_report(report: &SystemTraceReport, json_output: bool) -> Result<()> {
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(report)?);
+        return Ok(());
+    }
+    println!("RMS system trace: {}", report.result);
+    println!("bundles: {}", report.bundles.len());
+    println!("messages: {}", report.messages.len());
+    for message in &report.messages {
+        println!(
+            "  #{} {} {} --{}--> {} [{}; correlation={}; causation={}]",
+            message.index + 1,
+            message.direction,
+            message.source,
+            message.protocol_message,
+            message.target,
+            message.envelope_id,
+            message.correlation_id,
+            message.causation_id.as_deref().unwrap_or("<root>")
+        );
+    }
+    if let Some(first_bad) = &report.first_bad_handoff {
+        println!(
+            "first_bad_handoff: #{} {}",
+            first_bad.message_index + 1,
+            first_bad.reason
+        );
+    } else {
+        println!("first_bad_handoff: <none>");
+    }
+    for diagnostic in &report.diagnostics {
+        println!(
+            "  {} [{}] {}",
+            severity_label(diagnostic.severity),
+            diagnostic.check,
+            diagnostic.message
+        );
+    }
+    Ok(())
+}
+
+fn build_system_trace_report(bundles: &[PathBuf]) -> Result<SystemTraceReport> {
+    let mut messages = Vec::new();
+    let mut diagnostics = Vec::new();
+    for bundle in bundles {
+        let local = build_trace_report(bundle)?;
+        for diagnostic in local
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        {
+            diagnostics.push(TraceDiagnostic {
+                severity: Severity::Error,
+                check: "trace.system-local-bundle-invalid".to_string(),
+                path: bundle.display().to_string(),
+                message: format!("{}: {}", diagnostic.check, diagnostic.message),
+                record_index: diagnostic.record_index,
+            });
+        }
+        let value = load_trace_bundle(bundle)?;
+        let machine = get_str(&value, &["machine"])
+            .or_else(|| get_str(&value, &["target_machine"]))
+            .or_else(|| get_str(&value, &["source_machine"]))
+            .unwrap_or("<unknown-machine>")
+            .to_string();
+        let Some((_, records)) = trace_record_values(&value) else {
+            continue;
+        };
+        for (record_index, record) in records.iter().enumerate() {
+            if let Some(input) = trace_record_input(record) {
+                collect_system_message_envelopes(
+                    input,
+                    "receive",
+                    "input",
+                    bundle,
+                    record_index,
+                    &machine,
+                    &mut messages,
+                );
+            }
+            if let Some(output) = get_path(record, &["output"]) {
+                for (field, kind) in [
+                    ("commands", "command"),
+                    ("events", "event"),
+                    ("reply", "reply"),
+                    ("rejection", "rejection"),
+                ] {
+                    if let Some(value) = yaml_mapping_get(output, field) {
+                        collect_system_message_envelopes(
+                            value,
+                            "send",
+                            kind,
+                            bundle,
+                            record_index,
+                            &machine,
+                            &mut messages,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    messages.sort_by(|left, right| {
+        left.correlation_id
+            .cmp(&right.correlation_id)
+            .then_with(|| {
+                left.sequence
+                    .unwrap_or(u64::MAX)
+                    .cmp(&right.sequence.unwrap_or(u64::MAX))
+            })
+            .then_with(|| left.bundle.cmp(&right.bundle))
+            .then_with(|| left.record_index.cmp(&right.record_index))
+            .then_with(|| left.direction.cmp(&right.direction))
+    });
+    for (index, message) in messages.iter_mut().enumerate() {
+        message.index = index;
+    }
+    let mut report = SystemTraceReport {
+        spec: "rms/system-trace/v0.1".to_string(),
+        result: "pass".to_string(),
+        bundles: bundles
+            .iter()
+            .map(|bundle| bundle.display().to_string())
+            .collect(),
+        messages,
+        first_bad_handoff: None,
+        diagnostics,
+    };
+    diagnose_system_trace_messages(&mut report);
+    Ok(report)
+}
+
+fn collect_system_message_envelopes(
+    value: &YamlValue,
+    direction: &str,
+    kind: &str,
+    bundle: &Path,
+    record_index: usize,
+    machine: &str,
+    messages: &mut Vec<SystemTraceMessage>,
+) {
+    if let Some(protocol_message) =
+        get_str(value, &["protocol_message"]).or_else(|| get_str(value, &["message_id"]))
+    {
+        let envelope_id = [
+            "command_id",
+            "event_id",
+            "reply_id",
+            "rejection_id",
+            "message_id",
+            "id",
+        ]
+        .into_iter()
+        .find_map(|field| get_path(value, &[field]).and_then(yaml_scalar_string))
+        .unwrap_or_default();
+        let source = get_str(value, &["source_machine"])
+            .or_else(|| get_str(value, &["source_module"]))
+            .or_else(|| get_str(value, &["requester"]))
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                if direction == "send" {
+                    machine.to_string()
+                } else {
+                    "<unknown-source>".to_string()
+                }
+            });
+        let target = get_str(value, &["target_machine"])
+            .or_else(|| get_str(value, &["target_module"]))
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                if direction == "receive" {
+                    machine.to_string()
+                } else {
+                    "<unknown-target>".to_string()
+                }
+            });
+        messages.push(SystemTraceMessage {
+            index: messages.len(),
+            bundle: bundle.display().to_string(),
+            record_index,
+            machine: machine.to_string(),
+            direction: direction.to_string(),
+            kind: kind.to_string(),
+            protocol_message: protocol_message.to_string(),
+            envelope_id,
+            correlation_id: get_path(value, &["correlation_id"])
+                .and_then(yaml_scalar_string)
+                .unwrap_or_default(),
+            causation_id: get_path(value, &["causation_id"]).and_then(yaml_scalar_string),
+            source,
+            target,
+            sequence: get_path(value, &["sequence"])
+                .and_then(yaml_usize)
+                .map(|value| value as u64),
+        });
+        return;
+    }
+    match value {
+        YamlValue::Sequence(items) => {
+            for item in items {
+                collect_system_message_envelopes(
+                    item,
+                    direction,
+                    kind,
+                    bundle,
+                    record_index,
+                    machine,
+                    messages,
+                );
+            }
+        }
+        YamlValue::Mapping(mapping) => {
+            for nested in mapping.values() {
+                collect_system_message_envelopes(
+                    nested,
+                    direction,
+                    kind,
+                    bundle,
+                    record_index,
+                    machine,
+                    messages,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn diagnose_system_trace_messages(report: &mut SystemTraceReport) {
+    report
+        .diagnostics
+        .retain(|diagnostic| !diagnostic.check.starts_with("trace.system-handoff"));
+    if report.messages.is_empty() {
+        report.diagnostics.push(TraceDiagnostic {
+            severity: Severity::Error,
+            check: "trace.system-handoff-missing".to_string(),
+            path: report.bundles.join(", "),
+            message: "stitched trace contains no protocol_message envelopes".to_string(),
+            record_index: None,
+        });
+    }
+    let mut by_key: BTreeMap<(String, String, String), Vec<&SystemTraceMessage>> = BTreeMap::new();
+    for message in &report.messages {
+        if message.envelope_id.is_empty()
+            || message.correlation_id.is_empty()
+            || message.source.starts_with('<')
+            || message.target.starts_with('<')
+        {
+            report.diagnostics.push(TraceDiagnostic {
+                severity: Severity::Error,
+                check: "trace.system-handoff-metadata-missing".to_string(),
+                path: message.bundle.clone(),
+                message: format!(
+                    "message `{}` requires envelope id, correlation id, source, and target",
+                    message.protocol_message
+                ),
+                record_index: Some(message.index),
+            });
+        }
+        by_key
+            .entry((
+                message.protocol_message.clone(),
+                message.correlation_id.clone(),
+                message.envelope_id.clone(),
+            ))
+            .or_default()
+            .push(message);
+    }
+    for ((protocol_message, _, _), observations) in by_key {
+        let sends = observations
+            .iter()
+            .filter(|message| message.direction == "send")
+            .collect::<Vec<_>>();
+        let receives = observations
+            .iter()
+            .filter(|message| message.direction == "receive")
+            .collect::<Vec<_>>();
+        let valid = sends.len() == 1
+            && receives.len() == 1
+            && sends[0].source == receives[0].source
+            && sends[0].target == receives[0].target;
+        if !valid {
+            let index = observations.first().map(|message| message.index);
+            report.diagnostics.push(TraceDiagnostic {
+                severity: Severity::Error,
+                check: "trace.system-handoff-broken".to_string(),
+                path: observations
+                    .first()
+                    .map(|message| message.bundle.clone())
+                    .unwrap_or_default(),
+                message: format!(
+                    "protocol message `{protocol_message}` requires one matching send and receive with identical source/target; found {} send(s), {} receive(s)",
+                    sends.len(),
+                    receives.len()
+                ),
+                record_index: index,
+            });
+        }
+    }
+    let envelope_ids = report
+        .messages
+        .iter()
+        .map(|message| {
+            (
+                message.correlation_id.as_str(),
+                message.envelope_id.as_str(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let first_by_correlation =
+        report
+            .messages
+            .iter()
+            .fold(BTreeMap::<&str, &str>::new(), |mut first, message| {
+                first
+                    .entry(&message.correlation_id)
+                    .or_insert(&message.envelope_id);
+                first
+            });
+    for message in &report.messages {
+        let Some(causation) = message.causation_id.as_deref() else {
+            continue;
+        };
+        let is_root = first_by_correlation
+            .get(message.correlation_id.as_str())
+            .is_some_and(|envelope_id| *envelope_id == message.envelope_id);
+        if !is_root && !envelope_ids.contains(&(message.correlation_id.as_str(), causation)) {
+            report.diagnostics.push(TraceDiagnostic {
+                severity: Severity::Error,
+                check: "trace.system-handoff-causation-missing".to_string(),
+                path: message.bundle.clone(),
+                message: format!(
+                    "message `{}` causation `{causation}` does not resolve inside correlation `{}`",
+                    message.protocol_message, message.correlation_id
+                ),
+                record_index: Some(message.index),
+            });
+        }
+    }
+    report.first_bad_handoff = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .min_by_key(|diagnostic| diagnostic.record_index.unwrap_or(usize::MAX))
+        .map(|diagnostic| SystemTraceFirstBadHandoff {
+            message_index: diagnostic.record_index.unwrap_or(0),
+            reason: format!("{}: {}", diagnostic.check, diagnostic.message),
+        });
+    report.result = if report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        "fail"
+    } else {
+        "pass"
+    }
+    .to_string();
 }
 
 fn run_property_check(target: &Path, strict: bool, json_output: bool) -> Result<()> {
@@ -8178,6 +9031,12 @@ fn invariant_requires_semantic_property(invariant: &YamlValue) -> bool {
                 kind.as_str(),
                 "ordering"
                     | "safety"
+                    | "liveness"
+                    | "temporal"
+                    | "resource"
+                    | "protocol"
+                    | "authority"
+                    | "artifact"
                     | "bounded"
                     | "bound"
                     | "normalization"
@@ -8336,6 +9195,9 @@ fn validate_property_target_report(
                 | "generated-property"
                 | "coverage-fuzzer"
                 | "model-checker"
+                | "benchmark"
+                | "static-analyzer"
+                | "sanitizer"
         ) {
             push_unique_warning(
                 diagnostics,
@@ -8427,6 +9289,69 @@ fn validate_property_target_report(
             format!(
                 "fuzz target `{}` needs generated, coverage-guided, model-checker, or explicitly exhaustive realization; a fixed corpus is smoke evidence only",
                 target.id
+            ),
+        );
+    }
+    validate_temporal_target_report(manifest, target, diagnostics);
+}
+
+fn validate_temporal_target_report(
+    manifest: &LoadedManifest,
+    target: &PropertyTargetReport,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(temporal) = &target.temporal else {
+        return;
+    };
+    if !matches!(
+        temporal.pattern.as_str(),
+        "always"
+            | "eventually"
+            | "precedence"
+            | "exclusion"
+            | "at-most-once"
+            | "bounded-response"
+            | "resource-closure"
+            | "bounded-resource"
+    ) || !matches!(
+        temporal.scope.as_str(),
+        "machine" | "protocol" | "resource" | "artifact" | "composition" | "runtime" | "platform"
+    ) {
+        push_unique_warning(
+            diagnostics,
+            "semantic.temporal-property-invalid",
+            &manifest.path,
+            format!(
+                "temporal property `{}` has unsupported pattern `{}` or scope `{}`",
+                target.id, temporal.pattern, temporal.scope
+            ),
+        );
+    }
+    let strategies = target
+        .realizations
+        .iter()
+        .map(|realization| realization.strategy.as_str())
+        .collect::<BTreeSet<_>>();
+    let supported = match temporal.scope.as_str() {
+        "machine" | "protocol" | "resource" | "artifact" | "composition" => strategies
+            .iter()
+            .any(|strategy| matches!(*strategy, "deterministic-exhaustive" | "model-checker")),
+        "runtime" | "platform" => strategies.iter().any(|strategy| {
+            matches!(
+                *strategy,
+                "benchmark" | "static-analyzer" | "sanitizer" | "model-checker"
+            )
+        }),
+        _ => true,
+    };
+    if !supported {
+        push_unique_warning(
+            diagnostics,
+            "evidence.temporal-realization-mismatch",
+            &manifest.path,
+            format!(
+                "temporal property `{}` has no realization capable of proving `{}` scope",
+                target.id, temporal.scope
             ),
         );
     }
@@ -8648,6 +9573,8 @@ fn property_target_from_yaml(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let temporal =
+        get_path(item, &["temporal"]).and_then(|value| serde_yaml::from_value(value.clone()).ok());
     let status =
         if proves.is_some() && input_space.is_some() && !oracle.is_empty() && evidence.is_some() {
             "declared"
@@ -8665,6 +9592,7 @@ fn property_target_from_yaml(
         evidence,
         counterexamples,
         realizations,
+        temporal,
         status,
     }
 }
@@ -10128,6 +11056,11 @@ fn append_semantic_structure_checklist(out: &mut String, kind: PromptKind) -> Re
     writeln!(out, "- Transitions: name accepted transitions, rejected transitions, terminal states, transition outputs, transition records, replay bundles, and first-bad-transition evidence when behavior depends on order or lifecycle.")?;
     writeln!(out, "- Canonical input: stateful machines use `transition(state, input)` and one input ADT over commands, observed events, and effect results; every input case is classified exactly once.")?;
     writeln!(out, "- Atomic effects: when an outcome can alter the next decision, emit one effect request, execute it once, return one typed result, and consume that result in a follow-up transition. Executors never own retry, iteration, compensation, or stop/continue policy.")?;
+    writeln!(out, "- Artifacts and transformations: name versioned inputs/outputs, compatibility contracts, explicit rejection cases, and the properties each transformation preserves.")?;
+    writeln!(out, "- Public protocols: model cross-module conversations as closed participant/message/state automata; bind each message send and receive exactly once at composition.")?;
+    writeln!(out, "- Resource ownership: model acquire, use, release, and transfer for resources whose lifecycle affects correctness; every terminal machine path must close the resource protocol.")?;
+    writeln!(out, "- Authority: contain privileged, unsafe, and foreign operations behind declared authority roles and exact safe facade symbols.")?;
+    writeln!(out, "- Temporal proof: turn always, eventually, precedence, exclusion, at-most-once, and bounded-response claims into temporal properties with scope-appropriate realizations.")?;
     writeln!(out, "- Constructor audit: check whether public constructors can create contradictory values or impossible state combinations.")?;
     writeln!(out, "- Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.")?;
     writeln!(out, "- Numeric safety: if validated values represent counts, money, quantities, rates, sizes, scores, or other numeric facts, choose checked, saturating, bounded, or explicitly proven arithmetic before implementation.")?;
@@ -12542,6 +13475,7 @@ fn validate_module(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>)
     check_change_protocols(manifest, diagnostics);
     check_composition_local_shape(manifest, diagnostics);
     check_profile_obligations(manifest, diagnostics, &profiles);
+    validate_module_universal_semantics(manifest, diagnostics);
 }
 
 fn check_composition_local_shape(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
@@ -12621,6 +13555,174 @@ fn validate_contract(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic
     }
     validate_contract_named_statements(manifest, diagnostics, "failure_categories");
     check_contract_semantic_specificity(manifest, diagnostics);
+    validate_contract_protocol(manifest, diagnostics);
+}
+
+fn validate_contract_protocol(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(value) = get_path(&manifest.value, &["semantics", "protocol"]) else {
+        return;
+    };
+    match serde_yaml::from_value::<SemanticProtocol>(value.clone()) {
+        Ok(protocol) => validate_protocol_definition(
+            &manifest.path,
+            get_str(&manifest.value, &["name"]).unwrap_or("<unnamed>"),
+            &protocol,
+            diagnostics,
+        ),
+        Err(parse_error) => diagnostics.push(error(
+            "semantic.protocol-invalid",
+            &manifest.path,
+            format!("contract protocol semantics are invalid: {parse_error}"),
+        )),
+    }
+}
+
+fn validate_module_universal_semantics(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let artifacts = typed_yaml_sequence::<SemanticArtifact>(&manifest.value, &["artifacts"]);
+    let mut artifact_names = BTreeSet::new();
+    let invariant_ids = module_invariant_ids(manifest);
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    for artifact in &artifacts {
+        if !is_stable_semantic_id(&artifact.name)
+            || !artifact_names.insert(artifact.name.clone())
+            || artifact.version.trim().is_empty()
+            || !matches!(
+                artifact.direction.as_str(),
+                "provided" | "required" | "internal"
+            )
+        {
+            diagnostics.push(error(
+                "semantic.artifact-invalid",
+                &manifest.path,
+                format!(
+                    "artifact `{}` is not a closed semantic declaration",
+                    artifact.name
+                ),
+            ));
+        }
+        check_relative_ref(
+            manifest,
+            diagnostics,
+            "semantic.artifact-contract-missing",
+            &artifact.contract,
+            "artifact contract does not exist",
+        );
+        for invariant in &artifact.invariants {
+            if !invariant_ids.contains(invariant) {
+                diagnostics.push(error(
+                    "semantic.artifact-invariant-missing",
+                    &manifest.path,
+                    format!(
+                        "artifact `{}` references undeclared invariant `{invariant}`",
+                        artifact.name
+                    ),
+                ));
+            }
+        }
+    }
+    let implementation = load_manifest(&base.join("implementation.yaml")).ok();
+    let semantic_functions = implementation
+        .as_ref()
+        .and_then(semantic_function_items)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| get_str(item, &["id"]).map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let rejections = implementation
+        .as_ref()
+        .map(|implementation| {
+            get_string_array(
+                &implementation.value,
+                &["architecture", "machine", "rejections"],
+            )
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let properties = module_property_promises_by_id(&manifest.value)
+        .into_keys()
+        .collect::<BTreeSet<_>>();
+    let mut transformations = BTreeSet::new();
+    for transformation in
+        typed_yaml_sequence::<SemanticTransformation>(&manifest.value, &["transformations"])
+    {
+        if !is_stable_semantic_id(&transformation.name)
+            || !transformations.insert(transformation.name.clone())
+        {
+            diagnostics.push(error(
+                "semantic.transformation-invalid",
+                &manifest.path,
+                format!(
+                    "transformation `{}` is not uniquely declared",
+                    transformation.name
+                ),
+            ));
+        }
+        for artifact in [&transformation.input, &transformation.output] {
+            if !artifact_names.contains(artifact) {
+                diagnostics.push(error(
+                    "semantic.transformation-artifact-missing",
+                    &manifest.path,
+                    format!(
+                        "transformation `{}` references undeclared artifact `{artifact}`",
+                        transformation.name
+                    ),
+                ));
+            }
+        }
+        if !semantic_functions.contains(&transformation.semantic_function) {
+            diagnostics.push(error(
+                "semantic.transformation-function-missing",
+                &manifest.path,
+                format!(
+                    "transformation `{}` references undeclared semantic function `{}`",
+                    transformation.name, transformation.semantic_function
+                ),
+            ));
+        }
+        for rejection in &transformation.rejections {
+            if !rejections.contains(rejection) {
+                diagnostics.push(error(
+                    "semantic.transformation-rejection-missing",
+                    &manifest.path,
+                    format!(
+                        "transformation `{}` references undeclared rejection `{rejection}`",
+                        transformation.name
+                    ),
+                ));
+            }
+        }
+        for property in &transformation.properties {
+            if !properties.contains(property) {
+                diagnostics.push(error(
+                    "semantic.transformation-property-missing",
+                    &manifest.path,
+                    format!(
+                        "transformation `{}` references undeclared property `{property}`",
+                        transformation.name
+                    ),
+                ));
+            }
+        }
+    }
+    let mut authorities = BTreeSet::new();
+    for authority in typed_yaml_sequence::<SemanticAuthority>(&manifest.value, &["authorities"]) {
+        if !is_stable_semantic_id(&authority.id)
+            || !authorities.insert(authority.id.clone())
+            || !matches!(authority.kind.as_str(), "privileged" | "unsafe" | "foreign")
+            || authority.capabilities.is_empty()
+            || authority.rationale.trim().is_empty()
+        {
+            diagnostics.push(error(
+                "semantic.authority-invalid",
+                &manifest.path,
+                format!("authority `{}` is not a closed declaration", authority.id),
+            ));
+        }
+    }
 }
 
 fn check_contract_semantic_specificity(
@@ -12750,6 +13852,7 @@ fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diag
     validate_semantic_function_declarations(manifest, diagnostics);
     validate_inner_structure(manifest, diagnostics);
     validate_property_implementation(manifest, diagnostics);
+    validate_implementation_universal_bindings(manifest, diagnostics);
 
     match get_str(&manifest.value, &["binding"]) {
         Some("rust") => validate_rust_implementation(manifest, diagnostics),
@@ -12851,6 +13954,389 @@ fn validate_semantic_function_declarations(
             }
         }
     }
+}
+
+fn validate_implementation_universal_bindings(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    validate_existing_resource_protocols(implementation, diagnostics);
+    let base = implementation
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let module = load_manifest(&base.join("module.yaml")).ok();
+    let authority_ids = module
+        .as_ref()
+        .map(|module| {
+            typed_yaml_sequence::<SemanticAuthority>(&module.value, &["authorities"])
+                .into_iter()
+                .map(|authority| authority.id)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let protocol_bindings = typed_yaml_sequence::<ProtocolBinding>(
+        &implementation.value,
+        &["architecture", "protocol_bindings"],
+    );
+    let mut protocol_names = BTreeSet::new();
+    for binding in &protocol_bindings {
+        if !protocol_names.insert(binding.name.clone()) {
+            diagnostics.push(error(
+                "semantic.protocol-binding-duplicate",
+                &implementation.path,
+                format!("duplicate protocol binding `{}`", binding.name),
+            ));
+        }
+        let contract_path = base.join(&binding.contract);
+        let Some(protocol) = load_yaml_value(&contract_path).ok().and_then(|value| {
+            get_path(&value, &["semantics", "protocol"])
+                .and_then(|value| serde_yaml::from_value::<SemanticProtocol>(value.clone()).ok())
+        }) else {
+            diagnostics.push(error(
+                "semantic.protocol-binding-contract-missing",
+                &implementation.path,
+                format!(
+                    "protocol binding `{}` references missing protocol contract `{}`",
+                    binding.name, binding.contract
+                ),
+            ));
+            continue;
+        };
+        if !protocol.participants.contains(&binding.participant) {
+            diagnostics.push(error(
+                "semantic.protocol-participant-missing",
+                &implementation.path,
+                format!(
+                    "protocol binding `{}` references undeclared participant `{}`",
+                    binding.name, binding.participant
+                ),
+            ));
+        }
+        let messages = protocol
+            .messages
+            .iter()
+            .map(|message| (message.id.as_str(), message))
+            .collect::<BTreeMap<_, _>>();
+        let mut mappings = BTreeSet::new();
+        for mapping in &binding.mappings {
+            let Some(message) = messages.get(mapping.message.as_str()) else {
+                diagnostics.push(error(
+                    "semantic.protocol-message-missing",
+                    &implementation.path,
+                    format!(
+                        "protocol binding `{}` maps undeclared message `{}`",
+                        binding.name, mapping.message
+                    ),
+                ));
+                continue;
+            };
+            if !mappings.insert((mapping.message.clone(), mapping.direction.clone())) {
+                diagnostics.push(error(
+                    "semantic.protocol-mapping-duplicate",
+                    &implementation.path,
+                    format!(
+                        "protocol message `{}` direction `{}` is mapped twice",
+                        mapping.message, mapping.direction
+                    ),
+                ));
+            }
+            let (expected, field) = match (message.kind.as_str(), mapping.direction.as_str()) {
+                ("command", "send") => (&message.from, "commands"),
+                ("command", "receive") => (&message.to, "commands"),
+                ("event", "send") => (&message.from, "events"),
+                ("event", "receive") => (&message.to, "observed_events"),
+                ("reply", "send") | ("rejection", "send") => (
+                    &message.from,
+                    if message.kind == "reply" {
+                        "replies"
+                    } else {
+                        "rejections"
+                    },
+                ),
+                ("reply", "receive") | ("rejection", "receive") => (
+                    &message.to,
+                    if message.kind == "reply" {
+                        "replies"
+                    } else {
+                        "rejections"
+                    },
+                ),
+                _ => {
+                    diagnostics.push(error(
+                        "semantic.protocol-direction-invalid",
+                        &implementation.path,
+                        format!(
+                            "protocol mapping `{}` must use send or receive",
+                            mapping.message
+                        ),
+                    ));
+                    continue;
+                }
+            };
+            if expected != &binding.participant {
+                diagnostics.push(error(
+                    "semantic.protocol-direction-mismatch",
+                    &implementation.path,
+                    format!(
+                        "participant `{}` cannot {} protocol message `{}`",
+                        binding.participant, mapping.direction, mapping.message
+                    ),
+                ));
+            }
+            if !get_string_array(&implementation.value, &["architecture", "machine", field])
+                .contains(&mapping.machine_case)
+            {
+                diagnostics.push(error(
+                    "semantic.protocol-machine-case-missing",
+                    &implementation.path,
+                    format!(
+                        "protocol message `{}` maps undeclared machine case `{}`",
+                        mapping.message, mapping.machine_case
+                    ),
+                ));
+            }
+        }
+    }
+
+    let authority_bindings = typed_yaml_sequence::<AuthorityBinding>(
+        &implementation.value,
+        &["architecture", "authority_bindings"],
+    );
+    let mut bound_authorities = BTreeSet::new();
+    let mut authority_role_paths = BTreeSet::new();
+    for binding in &authority_bindings {
+        if !authority_ids.contains(&binding.authority)
+            || !bound_authorities.insert(binding.authority.clone())
+        {
+            diagnostics.push(error(
+                "semantic.authority-binding-invalid",
+                &implementation.path,
+                format!(
+                    "authority binding `{}` must reference one unique module authority",
+                    binding.authority
+                ),
+            ));
+        }
+        for role in &binding.roles {
+            let paths = structure_role_paths(implementation, role);
+            if paths.is_empty() {
+                diagnostics.push(error(
+                    "semantic.authority-role-missing",
+                    &implementation.path,
+                    format!(
+                        "authority `{}` references undeclared role `{role}`",
+                        binding.authority
+                    ),
+                ));
+            }
+            authority_role_paths.extend(paths);
+        }
+        if !property_harness_symbol_exists(base, implementation, &binding.safe_facade) {
+            push_unique_warning(
+                diagnostics,
+                "semantic.authority-without-safe-facade",
+                &implementation.path,
+                format!(
+                    "authority `{}` safe facade `{}` does not resolve to binding source",
+                    binding.authority, binding.safe_facade
+                ),
+            );
+        }
+        if binding.evidence.is_empty() {
+            push_unique_warning(
+                diagnostics,
+                "semantic.authority-without-evidence",
+                &implementation.path,
+                format!(
+                    "authority `{}` has no containment evidence",
+                    binding.authority
+                ),
+            );
+        }
+        for evidence in &binding.evidence {
+            check_relative_ref(
+                implementation,
+                diagnostics,
+                "semantic.authority-without-evidence",
+                evidence,
+                "authority containment evidence does not exist",
+            );
+            check_evidence_quality(implementation, diagnostics, evidence);
+        }
+    }
+    for function in semantic_function_items(implementation)
+        .into_iter()
+        .flatten()
+    {
+        for authority in get_string_array(function, &["authorities"]) {
+            if !authority_ids.contains(&authority) {
+                diagnostics.push(error(
+                    "semantic.function-authority-missing",
+                    &implementation.path,
+                    format!(
+                        "semantic function `{}` references undeclared authority `{authority}`",
+                        get_str(function, &["id"]).unwrap_or("<unnamed>")
+                    ),
+                ));
+            }
+        }
+    }
+    inspect_privileged_source_containment(
+        implementation,
+        &authority_ids,
+        &authority_role_paths,
+        diagnostics,
+    );
+}
+
+fn current_machine_change_for_validation(manifest: &LoadedManifest) -> Option<MachineChange> {
+    let mode = get_str(&manifest.value, &["architecture", "machine", "mode"])?;
+    Some(MachineChange {
+        spec: "rms/machine-change/v0.1".to_string(),
+        module: Some(manifest.path.display().to_string()),
+        machine: MachineChangeMachine {
+            mode: mode.to_string(),
+            ..MachineChangeMachine::default()
+        },
+        transitions: None,
+        roles: None,
+    })
+}
+
+fn validate_existing_resource_protocols(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if existing_resource_protocols(implementation).is_empty() {
+        return;
+    }
+    if let Some(change) = current_machine_change_for_validation(implementation) {
+        validate_machine_resource_protocols(implementation, &change, diagnostics);
+    }
+}
+
+fn inspect_privileged_source_containment(
+    implementation: &LoadedManifest,
+    authority_ids: &BTreeSet<String>,
+    authority_role_paths: &BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let binding = get_str(&implementation.value, &["binding"]).unwrap_or("");
+    let mut role_paths = get_path(&implementation.value, &["architecture", "roles"])
+        .and_then(YamlValue::as_mapping)
+        .into_iter()
+        .flat_map(|roles| roles.values())
+        .flat_map(|value| match value {
+            YamlValue::Sequence(items) => items
+                .iter()
+                .filter_map(YamlValue::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+            YamlValue::String(path) => vec![path.clone()],
+            _ => Vec::new(),
+        })
+        .collect::<BTreeSet<_>>();
+    if let Some(entrypoint) = get_str(&implementation.value, &["source", "public_entrypoint"]) {
+        role_paths.insert(entrypoint.to_string());
+    }
+    let base = implementation
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    for relative in role_paths {
+        let path = base.join(&relative);
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let marker = match binding {
+            "rust" => rust_source_contains_privileged_operation(&source),
+            "swift" => {
+                source.contains("UnsafePointer")
+                    || source.contains("UnsafeMutablePointer")
+                    || source.contains("withUnsafe")
+                    || source.contains("@_silgen_name")
+                    || source.contains("dlopen(")
+            }
+            "js" => {
+                source.contains("process.binding(")
+                    || source.contains("process.dlopen(")
+                    || source.contains(".node\"")
+                    || source.contains(".node'")
+            }
+            _ => false,
+        };
+        if !marker {
+            continue;
+        }
+        if authority_ids.is_empty() {
+            push_unique_warning(
+                diagnostics,
+                "structure.authority-undeclared",
+                &implementation.path,
+                format!(
+                    "source `{relative}` contains unsafe, foreign, or privileged operations without a module authority declaration"
+                ),
+            );
+        } else if !authority_role_paths.contains(&relative) {
+            push_unique_warning(
+                diagnostics,
+                "structure.privileged-operation-outside-authority-role",
+                &implementation.path,
+                format!(
+                    "source `{relative}` contains unsafe, foreign, or privileged operations outside a declared authority role"
+                ),
+            );
+        }
+    }
+}
+
+#[derive(Default)]
+struct RustAuthorityVisitor {
+    privileged_operation: bool,
+}
+
+impl<'ast> Visit<'ast> for RustAuthorityVisitor {
+    fn visit_signature(&mut self, node: &'ast syn::Signature) {
+        if node.unsafety.is_some() || node.abi.is_some() {
+            self.privileged_operation = true;
+        }
+        visit::visit_signature(self, node);
+    }
+
+    fn visit_expr_unsafe(&mut self, node: &'ast syn::ExprUnsafe) {
+        self.privileged_operation = true;
+        visit::visit_expr_unsafe(self, node);
+    }
+
+    fn visit_item_foreign_mod(&mut self, node: &'ast syn::ItemForeignMod) {
+        self.privileged_operation = true;
+        visit::visit_item_foreign_mod(self, node);
+    }
+
+    fn visit_macro(&mut self, node: &'ast Macro) {
+        if node.path.segments.last().is_some_and(|segment| {
+            matches!(
+                segment.ident.to_string().as_str(),
+                "asm" | "global_asm" | "naked_asm" | "llvm_asm"
+            )
+        }) {
+            self.privileged_operation = true;
+        }
+        visit::visit_macro(self, node);
+    }
+}
+
+fn rust_source_contains_privileged_operation(source: &str) -> bool {
+    let Ok(parsed) = syn::parse_file(source) else {
+        return source.contains("unsafe ")
+            || source.contains("unsafe{")
+            || source.contains("extern \"C\"")
+            || source.contains("asm!(");
+    };
+    let mut visitor = RustAuthorityVisitor::default();
+    visitor.visit_file(&parsed);
+    visitor.privileged_operation
 }
 
 fn validate_inner_structure(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
@@ -27057,6 +28543,15 @@ fn structure_machine_report(value: &YamlValue) -> StructureMachineReport {
                     .collect()
             })
             .unwrap_or_default(),
+        resource_protocols: get_path(value, &["architecture", "machine", "resource_protocols"])
+            .and_then(YamlValue::as_sequence)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| serde_yaml::from_value(item.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default(),
         transition_function: get_str(value, &["architecture", "machine", "transition_function"])
             .map(str::to_string),
     }
@@ -27230,6 +28725,20 @@ fn print_structure_report(report: &StructureReport) {
                     .executor_symbol
                     .as_deref()
                     .unwrap_or("<missing-symbol>")
+            );
+        }
+    }
+    println!("  resource_protocols:");
+    if report.machine.resource_protocols.is_empty() {
+        println!("    <not declared>");
+    } else {
+        for protocol in &report.machine.resource_protocols {
+            println!(
+                "    {} [{}; {} -> {}]",
+                protocol.resource,
+                protocol.ownership,
+                protocol.initial_state,
+                protocol.terminal_states.join(", ")
             );
         }
     }
@@ -27597,6 +29106,10 @@ fn render_machine_plan_prompt(
     writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
     writeln!(out, "    remove: []")?;
+    writeln!(out, "  resource_protocols:")?;
+    writeln!(out, "    set: null")?;
+    writeln!(out, "    add: []")?;
+    writeln!(out, "    remove: []")?;
     writeln!(out, "transitions:")?;
     writeln!(out, "  set: null")?;
     writeln!(out, "  add: []")?;
@@ -27609,7 +29122,7 @@ fn render_machine_plan_prompt(
     writeln!(out)?;
     writeln!(out, "For each variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "Transition items use `from`, `on`, `to`, stable `case`, optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every semantic branch has its own case, including multiple destinations or outputs for the same state and input.")?;
-    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effect-protocol removal items use `effect`. Role removal items use `kind` and optional `path`.")?;
+    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effect-protocol removal items use `effect`. Resource-protocol items declare `resource`, `ownership`, closed `states`, `initial_state`, `terminal_states`, and acquire/use/release/transfer transitions; removal items use `resource`. Role removal items use `kind` and optional `path`.")?;
     writeln!(out, "Role items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`. A role with `kind: effect_executor` must include the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. Shared IO mechanics used by multiple executors use `kind: effect_support`; they cannot own state progression, transitions, drivers, or public/runnable behavior. Effectful stateful machines declare one `machine_driver` role, set `machine.driver_function` to its exact callable, and set `machine.transition_record_function` to the exact pure record constructor used by that driver. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; atomicity applies to that exact protocol. Machine apply binds each executor as an effectful `effect-executor` semantic function. Aggregate protocols use `atomicity: aggregate` plus `aggregate_justification` and evidence.")?;
     writeln!(out, "Run `rms machine apply ... --dry-run` first and do not edit source while `final_machine` still contains scaffold-generic variants instead of the intended product cases.")?;
     writeln!(out)?;
@@ -27621,6 +29134,7 @@ fn render_machine_plan_prompt(
         "Stateful transitions accept state plus one input ADT over commands, observed events, and effect results, then return next state, events, commands, effects, and reply.",
         "Every transition input belongs to exactly one category and every effect-result case returns through the canonical transition.",
         "Every effectful stateful machine has exact driver and transition-record functions; the driver stores complete records, advances state from state_after, executes output effects, and feeds typed results back as inputs.",
+        "Every owned or borrowed resource whose lifecycle affects correctness has a resource protocol; every reachable terminal product path leaves that resource in a declared terminal state.",
         "Every declared command, event, effect, and effect-result envelope has a binding-native type or tagged constructor.",
         "Arithmetic over represented transition inputs is checked or bounded so extreme values become explicit rejection rather than overflow or traps.",
         "Expected failures are explicit rejections, not ambient throws.",
@@ -27766,6 +29280,7 @@ fn validate_machine_change(manifest: &LoadedManifest, change: &MachineChange) ->
     validate_machine_transition_references(manifest, change, &mut diagnostics);
     validate_machine_signature_and_types(manifest, change, &mut diagnostics);
     validate_machine_effect_protocols(manifest, change, &mut diagnostics);
+    validate_machine_resource_protocols(manifest, change, &mut diagnostics);
     validate_machine_role_additions(manifest, change, &mut diagnostics);
     validate_machine_mode_obligations(manifest, change, &mut diagnostics);
     diagnostics
@@ -28395,6 +29910,52 @@ fn final_effect_protocols(
     protocols
 }
 
+fn existing_resource_protocols(manifest: &LoadedManifest) -> Vec<MachineResourceProtocol> {
+    get_path(
+        &manifest.value,
+        &["architecture", "machine", "resource_protocols"],
+    )
+    .and_then(YamlValue::as_sequence)
+    .map(|items| {
+        items
+            .iter()
+            .filter_map(|item| serde_yaml::from_value(item.clone()).ok())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+fn final_resource_protocols(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+) -> Vec<MachineResourceProtocol> {
+    let mut protocols = change
+        .machine
+        .resource_protocols
+        .replace
+        .clone()
+        .unwrap_or_else(|| existing_resource_protocols(manifest));
+    protocols.retain(|protocol| {
+        !change
+            .machine
+            .resource_protocols
+            .remove
+            .iter()
+            .any(|remove| remove == &protocol.resource)
+    });
+    for protocol in &change.machine.resource_protocols.add {
+        if let Some(existing) = protocols
+            .iter_mut()
+            .find(|existing| existing.resource == protocol.resource)
+        {
+            *existing = protocol.clone();
+        } else {
+            protocols.push(protocol.clone());
+        }
+    }
+    protocols
+}
+
 fn validate_machine_signature_and_types(
     manifest: &LoadedManifest,
     change: &MachineChange,
@@ -28667,6 +30228,296 @@ fn validate_machine_effect_protocols(
                 &manifest.path,
                 "effectful stateful machines must declare a machine_driver role file",
             ));
+        }
+    }
+}
+
+fn validate_machine_resource_protocols(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let protocols = final_resource_protocols(manifest, change);
+    if protocols.is_empty() {
+        return;
+    }
+    let variants = BTreeMap::from([
+        (
+            "command",
+            final_machine_variants(manifest, "commands", &change.machine.commands, false),
+        ),
+        (
+            "observed-event",
+            final_machine_variants(
+                manifest,
+                "observed_events",
+                &change.machine.observed_events,
+                false,
+            ),
+        ),
+        (
+            "event",
+            final_machine_variants(manifest, "events", &change.machine.events, false),
+        ),
+        (
+            "effect",
+            final_machine_variants(manifest, "effects", &change.machine.effects, false),
+        ),
+        (
+            "effect-result",
+            final_machine_variants(
+                manifest,
+                "effect_results",
+                &change.machine.effect_results,
+                false,
+            ),
+        ),
+    ]);
+    let machine_states =
+        final_machine_variant_values(manifest, "states", &change.machine.states, true);
+    let machine_transitions = final_machine_transitions_without_diagnostics(manifest, change);
+    let initial_machine_state = get_str(
+        &manifest.value,
+        &["architecture", "machine", "initial_state"],
+    )
+    .filter(|state| machine_states.iter().any(|candidate| candidate == *state))
+    .map(str::to_string)
+    .or_else(|| machine_states.first().cloned());
+    let terminal_machine_states = machine_states
+        .iter()
+        .filter(|state| {
+            !machine_transitions
+                .iter()
+                .any(|transition| transition.from == ***state)
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut resources = BTreeSet::new();
+    for protocol in protocols {
+        if !is_stable_semantic_id(&protocol.resource)
+            || !resources.insert(protocol.resource.clone())
+            || !matches!(
+                protocol.ownership.as_str(),
+                "exclusive" | "shared" | "borrowed"
+            )
+        {
+            diagnostics.push(error(
+                "structure.resource-protocol-invalid",
+                &manifest.path,
+                format!(
+                    "resource protocol `{}` requires a unique stable name and ownership exclusive|shared|borrowed",
+                    protocol.resource
+                ),
+            ));
+        }
+        let states = protocol.states.iter().cloned().collect::<BTreeSet<_>>();
+        if states.len() != protocol.states.len()
+            || !states.contains(&protocol.initial_state)
+            || protocol.terminal_states.is_empty()
+            || protocol
+                .terminal_states
+                .iter()
+                .any(|state| !states.contains(state))
+        {
+            diagnostics.push(error(
+                "structure.resource-state-invalid",
+                &manifest.path,
+                format!(
+                    "resource `{}` must declare unique states, one initial state, and at least one terminal state",
+                    protocol.resource
+                ),
+            ));
+        }
+        let mut seen_edges = BTreeSet::new();
+        for transition in &protocol.transitions {
+            if !states.contains(&transition.from)
+                || !states.contains(&transition.to)
+                || !matches!(
+                    transition.operation.as_str(),
+                    "acquire" | "use" | "release" | "transfer"
+                )
+                || variants
+                    .get(transition.trigger_kind.as_str())
+                    .is_none_or(|cases| !cases.contains(&transition.on))
+            {
+                diagnostics.push(error(
+                    "structure.resource-transition-invalid",
+                    &manifest.path,
+                    format!(
+                        "resource `{}` transition {} --{}:{}:{}--> {} references an undeclared state, operation, trigger kind, or machine variant",
+                        protocol.resource,
+                        transition.from,
+                        transition.trigger_kind,
+                        transition.on,
+                        transition.operation,
+                        transition.to
+                    ),
+                ));
+            }
+            if !seen_edges.insert((
+                transition.from.clone(),
+                transition.trigger_kind.clone(),
+                transition.on.clone(),
+            )) {
+                diagnostics.push(error(
+                    "structure.resource-transition-ambiguous",
+                    &manifest.path,
+                    format!(
+                        "resource `{}` has multiple transitions from `{}` for {} `{}`",
+                        protocol.resource, transition.from, transition.trigger_kind, transition.on
+                    ),
+                ));
+            }
+        }
+        let mut reachable = BTreeSet::from([protocol.initial_state.clone()]);
+        loop {
+            let before = reachable.len();
+            for transition in &protocol.transitions {
+                if reachable.contains(&transition.from) {
+                    reachable.insert(transition.to.clone());
+                }
+            }
+            if before == reachable.len() {
+                break;
+            }
+        }
+        let unreachable = states.difference(&reachable).cloned().collect::<Vec<_>>();
+        if !unreachable.is_empty() {
+            diagnostics.push(error(
+                "structure.resource-state-unreachable",
+                &manifest.path,
+                format!(
+                    "resource `{}` state(s) {} are unreachable from `{}`",
+                    protocol.resource,
+                    unreachable.join(", "),
+                    protocol.initial_state
+                ),
+            ));
+        }
+        if let Some(initial_machine_state) = &initial_machine_state {
+            validate_machine_resource_product(
+                manifest,
+                &protocol,
+                initial_machine_state,
+                &terminal_machine_states,
+                &machine_transitions,
+                diagnostics,
+            );
+        }
+    }
+}
+
+fn validate_machine_resource_product(
+    manifest: &LoadedManifest,
+    protocol: &MachineResourceProtocol,
+    initial_machine_state: &str,
+    terminal_machine_states: &BTreeSet<String>,
+    machine_transitions: &[MachineTransitionChange],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut pending = vec![(
+        initial_machine_state.to_string(),
+        protocol.initial_state.clone(),
+    )];
+    let mut visited = BTreeSet::new();
+    while let Some((machine_state, resource_state)) = pending.pop() {
+        if !visited.insert((machine_state.clone(), resource_state.clone())) {
+            continue;
+        }
+        if terminal_machine_states.contains(&machine_state)
+            && !protocol.terminal_states.contains(&resource_state)
+        {
+            diagnostics.push(error(
+                "structure.resource-not-closed-on-terminal-path",
+                &manifest.path,
+                format!(
+                    "machine terminal state `{machine_state}` can retain resource `{}` in non-terminal state `{resource_state}`",
+                    protocol.resource
+                ),
+            ));
+        }
+        for transition in machine_transitions
+            .iter()
+            .filter(|transition| transition.from == machine_state)
+        {
+            let input = transition_input_variant(&transition.on);
+            let input_kind = if transition.on.contains('.') {
+                transition.on.split_once('.').map(|(kind, _)| match kind {
+                    "Command" => "command",
+                    "ObservedEvent" | "Event" => "observed-event",
+                    "EffectResult" => "effect-result",
+                    _ => "command",
+                })
+            } else {
+                None
+            }
+            .unwrap_or_else(|| {
+                if protocol.transitions.iter().any(|candidate| {
+                    candidate.on == input && candidate.trigger_kind == "effect-result"
+                }) {
+                    "effect-result"
+                } else if protocol.transitions.iter().any(|candidate| {
+                    candidate.on == input && candidate.trigger_kind == "observed-event"
+                }) {
+                    "observed-event"
+                } else {
+                    "command"
+                }
+            });
+            let mut next_resource = resource_state.clone();
+            let mut triggers = vec![(input_kind, input.as_str())];
+            triggers.extend(
+                transition
+                    .events
+                    .iter()
+                    .map(|item| ("event", item.as_str())),
+            );
+            triggers.extend(
+                transition
+                    .commands
+                    .iter()
+                    .map(|item| ("command", item.as_str())),
+            );
+            triggers.extend(
+                transition
+                    .effects
+                    .iter()
+                    .map(|item| ("effect", item.as_str())),
+            );
+            let mut valid = true;
+            for (kind, on) in triggers {
+                let candidates = protocol
+                    .transitions
+                    .iter()
+                    .filter(|candidate| candidate.trigger_kind == kind && candidate.on == on)
+                    .collect::<Vec<_>>();
+                if candidates.is_empty() {
+                    continue;
+                }
+                let matching = candidates
+                    .iter()
+                    .filter(|candidate| candidate.from == next_resource)
+                    .copied()
+                    .collect::<Vec<_>>();
+                if matching.len() != 1 {
+                    diagnostics.push(error(
+                        "structure.resource-operation-illegal",
+                        &manifest.path,
+                        format!(
+                            "machine transition `{}` applies {} `{on}` while resource `{}` is `{next_resource}`",
+                            transition.case.as_deref().unwrap_or(&transition.on),
+                            kind,
+                            protocol.resource
+                        ),
+                    ));
+                    valid = false;
+                    break;
+                }
+                next_resource = matching[0].to.clone();
+            }
+            if valid {
+                pending.push((transition.to.clone(), next_resource));
+            }
         }
     }
 }
@@ -29129,6 +30980,14 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
             .filter_map(|protocol| serde_yaml::to_value(protocol).ok())
             .collect(),
     );
+    set_yaml_sequence_path(
+        value,
+        &["architecture", "machine", "resource_protocols"],
+        final_resource_protocols(&manifest_snapshot, change)
+            .iter()
+            .filter_map(|protocol| serde_yaml::to_value(protocol).ok())
+            .collect(),
+    );
 
     if let Some(transitions) = &change.transitions {
         let transitions = if transitions.replace.is_some()
@@ -29468,6 +31327,10 @@ fn machine_final_state_report(
             false,
         ),
         effect_protocols: final_effect_protocols(manifest, change),
+        resource_protocols: final_resource_protocols(manifest, change)
+            .into_iter()
+            .map(|protocol| protocol.resource)
+            .collect(),
         transitions: transitions
             .into_iter()
             .map(|transition| {
@@ -30733,12 +32596,32 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "  set: []")?;
     writeln!(out, "  remove: []")?;
+    writeln!(out, "artifacts:")?;
+    writeln!(out, "  add: []")?;
+    writeln!(out, "  set: []")?;
+    writeln!(out, "  remove: []")?;
+    writeln!(out, "transformations:")?;
+    writeln!(out, "  add: []")?;
+    writeln!(out, "  set: []")?;
+    writeln!(out, "  remove: []")?;
+    writeln!(out, "authorities:")?;
+    writeln!(out, "  add: []")?;
+    writeln!(out, "  set: []")?;
+    writeln!(out, "  remove: []")?;
     writeln!(out, "properties:")?;
     writeln!(out, "  add: []")?;
     writeln!(out, "  set: []")?;
     writeln!(out, "  remove: []")?;
     if let Some(implementation) = &context.implementation {
         writeln!(out, "semantic_functions:")?;
+        writeln!(out, "  add: []")?;
+        writeln!(out, "  set: []")?;
+        writeln!(out, "  remove: []")?;
+        writeln!(out, "protocol_bindings:")?;
+        writeln!(out, "  add: []")?;
+        writeln!(out, "  set: []")?;
+        writeln!(out, "  remove: []")?;
+        writeln!(out, "authority_bindings:")?;
         writeln!(out, "  add: []")?;
         writeln!(out, "  set: []")?;
         writeln!(out, "  remove: []")?;
@@ -30790,6 +32673,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
             "replies",
             "rejections",
             "effect_protocols",
+            "resource_protocols",
             "transitions",
         ] {
             writeln!(out, "  {field}:")?;
@@ -30811,6 +32695,8 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "  remove: []")?;
     } else {
         writeln!(out, "semantic_functions: null")?;
+        writeln!(out, "protocol_bindings: null")?;
+        writeln!(out, "authority_bindings: null")?;
         writeln!(out, "machine: null")?;
         writeln!(out, "roles: null")?;
         writeln!(out, "surfaces: null")?;
@@ -30820,14 +32706,14 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact: `laws.add[]` and `laws.set[]` use scalar strings `id`, `statement`, `kind`, `authority`, and `enforced_by`. `contracts.add[]` and `contracts.set[]` use scalar strings `name`, optional `direction: provided|required`, `version`, `command`, and `meaning`, plus non-empty string lists `accepts`, `ensures`, and `rejects`. `properties.add[]` and `properties.set[]` use scalar strings `id`, `proves`, and `kind`; structured `input_space` and `operation`; string lists `preconditions` and non-empty `oracle`; `evidence: {{kind: property, path: <relative-path>}}` (or kind `fuzz` for a fuzz property); `counterexamples: {{path: <relative-path>}}`; and `realizations: [{{profile, strategy, command, harness}}]`. `properties.remove[]` contains existing property ids. `semantic_functions.add[]` and `semantic_functions.set[]` use scalar `id`, exact binding `symbol`, `kind`, and `purity`; optional string-list mappings under `discharges` and `assumptions`; and non-empty categorized evidence paths. `semantic_functions.remove[]` contains existing function ids. `evidence.add[]` uses scalar strings `kind`, `proves`, and `path`.")?;
+    writeln!(out, "Item shapes and cardinalities are exact: `laws.add[]` and `laws.set[]` use scalar strings `id`, `statement`, `kind`, `authority`, and `enforced_by`. `contracts.add[]` and `contracts.set[]` use scalar strings `name`, optional `direction: provided|required`, `version`, `command`, and `meaning`, plus non-empty string lists `accepts`, `ensures`, and `rejects`; cross-module conversations add `protocol` with participants, closed messages, states, initial/terminal states, and transitions. `artifacts` declare `name`, `version`, `direction: provided|required|internal`, `contract`, and invariant ids. `transformations` declare input/output artifact names, an exact semantic function, rejection cases, and property ids. `authorities` declare an `id`, `kind: privileged|unsafe|foreign`, capabilities, and rationale. `properties.add[]` and `properties.set[]` use scalar strings `id`, `proves`, and `kind`; structured `input_space` and `operation`; string lists `preconditions` and non-empty `oracle`; `evidence: {{kind: property, path: <relative-path>}}` (or kind `fuzz` for a fuzz property); `counterexamples: {{path: <relative-path>}}`; `realizations: [{{profile, strategy, command, harness}}]`; and optional `temporal: {{pattern, scope, trigger, condition, bound}}`. `properties.remove[]` contains existing property ids. `semantic_functions.add[]` and `semantic_functions.set[]` use scalar `id`, exact binding `symbol`, `kind`, and `purity`; optional string-list mappings under `discharges` and `assumptions`; optional declared `authorities`; and non-empty categorized evidence paths. `semantic_functions.remove[]` contains existing function ids. `evidence.add[]` uses scalar strings `kind`, `proves`, and `path`.")?;
     writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module.")?;
     writeln!(out, "`rms spec apply` automatically adds every currently active semantic revision to `supersedes` and hash-seals the exact new record. Use explicit `supersedes` only for additional branches that are not locally discoverable. Applied records are append-only: never edit or delete them.")?;
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
-    writeln!(out, "Use `semantic_functions.add`, `set`, and `remove` whenever a law's authority owner, public semantic callable, parser, projector, adapter, or executor binding changes. Do not edit `implementation.yaml.semantic_functions` directly. Function kinds are `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, `interpreter`, or `effect-executor`; purity is `pure`, `effectful`, or `boundary`.")?;
+    writeln!(out, "Use `semantic_functions.add`, `set`, and `remove` whenever a law's authority owner, public semantic callable, parser, projector, adapter, transformation, or executor binding changes. Do not edit `implementation.yaml.semantic_functions` directly. Function kinds are `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, `interpreter`, `transformation`, or `effect-executor`; purity is `pure`, `effectful`, or `boundary`. Privileged, unsafe, or foreign functions list their declared authority ids.")?;
     writeln!(out, "For every machine variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "Machine transition items use `from`, `on`, `to`, stable `case`, optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names.")?;
-    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Role removal items use `kind` and optional `path`. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
+    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use scalar `resource`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings map a declared authority to role names, one exact safe-facade `path#symbol`, and evidence. Role removal items use `kind` and optional `path`. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically.")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
@@ -30849,6 +32735,11 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         "Each always/never/bounded/parser/normalization/numeric/reusable/state-machine law has a semantic property with input_space, oracle, evidence, and counterexample replay policy.",
         "Every stateful input is exactly one command, observed event, or effect result, and every illegal state/input combination is rejected explicitly.",
         "Effects have one-request-one-result protocols with exact executor symbols and effectful effect-executor semantic functions; executors do not own business sequencing.",
+        "Cross-module conversations use one public protocol automaton whose participants and messages are bound exactly once across composing modules.",
+        "Owned, shared, or borrowed resources use lifecycle automata whose reachable terminal product paths close or transfer the resource explicitly.",
+        "Artifacts have versioned contracts, and transformations name input/output artifacts, explicit rejection cases, semantic functions, and preserving properties.",
+        "Unsafe, foreign, or privileged operations occur only behind declared authority bindings and exact safe facade symbols.",
+        "Always, eventually, precedence, exclusion, at-most-once, and bounded-response claims use temporal properties with a realization appropriate to their scope.",
         "Effectful stateful machines declare exact machine-driver and transition-record callables. The driver retains each complete record, advances from state_after, invokes exact executors for output.effects, feeds typed results back as inputs, and owns the complete repeated cycle.",
         "Effect-emitting runnable surfaces delegate to an exact callable that reaches the machine driver; the driver owns the complete repeated transition/effect/result cycle, while surfaces and adapters do not hide lifecycle loops even when public and machine command names differ.",
         "Runnable app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints are declared as surfaces before files own product behavior.",
@@ -30939,6 +32830,86 @@ fn run_spec_apply(
                 })
                 .collect()
         });
+    let final_artifacts = context
+        .module
+        .as_ref()
+        .map(|module| {
+            change.artifacts.as_ref().map_or_else(
+                || typed_yaml_sequence::<SemanticArtifact>(&module.value, &["artifacts"]),
+                |request| final_semantic_artifacts(&module.value, request),
+            )
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.name)
+        .collect();
+    let final_transformations = context
+        .module
+        .as_ref()
+        .map(|module| {
+            change.transformations.as_ref().map_or_else(
+                || {
+                    typed_yaml_sequence::<SemanticTransformation>(
+                        &module.value,
+                        &["transformations"],
+                    )
+                },
+                |request| final_semantic_transformations(&module.value, request),
+            )
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.name)
+        .collect();
+    let final_authorities = context
+        .module
+        .as_ref()
+        .map(|module| {
+            change.authorities.as_ref().map_or_else(
+                || typed_yaml_sequence::<SemanticAuthority>(&module.value, &["authorities"]),
+                |request| final_semantic_authorities(&module.value, request),
+            )
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    let final_protocol_bindings = context
+        .implementation
+        .as_ref()
+        .map(|implementation| {
+            change.protocol_bindings.as_ref().map_or_else(
+                || {
+                    typed_yaml_sequence::<ProtocolBinding>(
+                        &implementation.value,
+                        &["architecture", "protocol_bindings"],
+                    )
+                },
+                |request| final_protocol_bindings(&implementation.value, request),
+            )
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.name)
+        .collect();
+    let final_authority_bindings = context
+        .implementation
+        .as_ref()
+        .map(|implementation| {
+            change.authority_bindings.as_ref().map_or_else(
+                || {
+                    typed_yaml_sequence::<AuthorityBinding>(
+                        &implementation.value,
+                        &["architecture", "authority_bindings"],
+                    )
+                },
+                |request| final_authority_bindings(&implementation.value, request),
+            )
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.authority)
+        .collect();
     let has_errors = diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == Severity::Error);
@@ -30955,6 +32926,11 @@ fn run_spec_apply(
         writes,
         final_machine,
         final_semantic_functions,
+        final_artifacts,
+        final_transformations,
+        final_authorities,
+        final_protocol_bindings,
+        final_authority_bindings,
         diagnostics,
     };
     print_spec_apply_report(&report);
@@ -31995,6 +33971,26 @@ fn validate_semantic_change(
         .binding_dependencies
         .as_ref()
         .is_some_and(binding_dependencies_change_has_operations);
+    let has_artifacts = change
+        .artifacts
+        .as_ref()
+        .is_some_and(semantic_artifacts_change_has_operations);
+    let has_transformations = change
+        .transformations
+        .as_ref()
+        .is_some_and(semantic_transformations_change_has_operations);
+    let has_authorities = change
+        .authorities
+        .as_ref()
+        .is_some_and(semantic_authorities_change_has_operations);
+    let has_protocol_bindings = change
+        .protocol_bindings
+        .as_ref()
+        .is_some_and(protocol_bindings_change_has_operations);
+    let has_authority_bindings = change
+        .authority_bindings
+        .as_ref()
+        .is_some_and(authority_bindings_change_has_operations);
     let has_machine =
         semantic_machine_change_requests_change(change, context.implementation.as_ref());
     if !has_laws
@@ -32005,11 +34001,16 @@ fn validate_semantic_change(
         && !has_evidence
         && !has_surfaces
         && !has_binding_dependencies
+        && !has_artifacts
+        && !has_transformations
+        && !has_authorities
+        && !has_protocol_bindings
+        && !has_authority_bindings
     {
         diagnostics.push(error(
             "semantic-change.empty",
             &context.target,
-            "semantic change must add a law, contract, property, semantic function, machine change, runnable surface, binding dependency, or evidence obligation",
+            "semantic change must revise laws, contracts, properties, semantic functions, machine structure, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, or evidence obligations",
         ));
     }
 
@@ -32025,6 +34026,11 @@ fn validate_semantic_change(
     validate_semantic_evidence(context, evidence_items, &mut diagnostics);
     validate_semantic_surfaces(context, change, &mut diagnostics);
     validate_binding_dependencies(context, change, &mut diagnostics);
+    validate_semantic_artifacts(context, change, &mut diagnostics);
+    validate_semantic_transformations(context, change, &mut diagnostics);
+    validate_semantic_authorities(context, change, &mut diagnostics);
+    validate_protocol_bindings(context, change, &mut diagnostics);
+    validate_authority_bindings(context, change, &mut diagnostics);
     diagnostics
 }
 
@@ -32095,6 +34101,12 @@ fn semantic_function_change_yaml(function: &SemanticFunctionChange) -> YamlValue
             .map(|(category, paths)| (yaml_key(category), yaml_string_sequence(paths)))
             .collect::<serde_yaml::Mapping>();
         mapping.insert(yaml_key("evidence"), YamlValue::Mapping(evidence));
+    }
+    if !function.authorities.is_empty() {
+        mapping.insert(
+            yaml_key("authorities"),
+            yaml_string_sequence(&function.authorities),
+        );
     }
     YamlValue::Mapping(mapping)
 }
@@ -32205,6 +34217,7 @@ fn validate_semantic_functions(
                 | "adapter"
                 | "interpreter"
                 | "effect-executor"
+                | "transformation"
         ) {
             diagnostics.push(error(
                 "semantic.function-kind",
@@ -32258,6 +34271,31 @@ fn validate_semantic_functions(
                     function.id
                 ),
             ));
+        }
+        let final_authority_ids = context
+            .module
+            .as_ref()
+            .map(|module| {
+                change.authorities.as_ref().map_or_else(
+                    || typed_yaml_sequence::<SemanticAuthority>(&module.value, &["authorities"]),
+                    |request| final_semantic_authorities(&module.value, request),
+                )
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|authority| authority.id)
+            .collect::<BTreeSet<_>>();
+        for authority in &function.authorities {
+            if !final_authority_ids.contains(authority) {
+                diagnostics.push(error(
+                    "semantic.function-authority-missing",
+                    &context.target,
+                    format!(
+                        "semantic function `{}` references undeclared authority `{authority}`",
+                        function.id
+                    ),
+                ));
+            }
         }
     }
     for function in &request.add {
@@ -32743,6 +34781,9 @@ fn semantic_machine_change_has_structural_operations(machine: &SemanticMachineCh
         || machine.effect_protocols.replace.is_some()
         || !machine.effect_protocols.add.is_empty()
         || !machine.effect_protocols.remove.is_empty()
+        || machine.resource_protocols.replace.is_some()
+        || !machine.resource_protocols.add.is_empty()
+        || !machine.resource_protocols.remove.is_empty()
         || machine.transitions.as_ref().is_some_and(|transitions| {
             transitions.replace.is_some()
                 || !transitions.add.is_empty()
@@ -32925,6 +34966,12 @@ fn semantic_law_requires_property(law: &SemanticLawChange) -> bool {
                 kind.as_str(),
                 "ordering"
                     | "safety"
+                    | "liveness"
+                    | "temporal"
+                    | "resource"
+                    | "protocol"
+                    | "authority"
+                    | "artifact"
                     | "bounded"
                     | "bound"
                     | "normalization"
@@ -33053,6 +35100,9 @@ fn validate_semantic_contracts(
                 ),
             ));
         }
+        if let Some(protocol) = &contract.protocol {
+            validate_protocol_definition(&context.target, &contract.name, protocol, diagnostics);
+        }
     }
 
     for contract in &contracts.add {
@@ -33161,6 +35211,103 @@ fn validate_semantic_contracts(
                 ),
             )),
         }
+    }
+}
+
+fn validate_protocol_definition(
+    target: &Path,
+    contract: &str,
+    protocol: &SemanticProtocol,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let participants = protocol
+        .participants
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let states = protocol.states.iter().cloned().collect::<BTreeSet<_>>();
+    if participants.len() != protocol.participants.len() || participants.len() < 2 {
+        diagnostics.push(error(
+            "semantic.protocol-participants-invalid",
+            target,
+            format!("contract `{contract}` protocol requires at least two unique participants"),
+        ));
+    }
+    if states.len() != protocol.states.len()
+        || !states.contains(&protocol.initial_state)
+        || protocol
+            .terminal_states
+            .iter()
+            .any(|state| !states.contains(state))
+    {
+        diagnostics.push(error(
+            "semantic.protocol-states-invalid",
+            target,
+            format!(
+                "contract `{contract}` protocol states, initial state, and terminal states must form one closed state set"
+            ),
+        ));
+    }
+    let mut messages = BTreeMap::new();
+    for message in &protocol.messages {
+        if !is_stable_semantic_id(&message.id)
+            || messages.insert(message.id.clone(), message).is_some()
+            || !matches!(
+                message.kind.as_str(),
+                "command" | "event" | "reply" | "rejection"
+            )
+            || !participants.contains(&message.from)
+            || !participants.contains(&message.to)
+            || message.from == message.to
+        {
+            diagnostics.push(error(
+                "semantic.protocol-message-invalid",
+                target,
+                format!(
+                    "contract `{contract}` protocol message `{}` must be unique, typed, and connect two declared participants",
+                    message.id
+                ),
+            ));
+        }
+    }
+    let mut reachable = BTreeSet::from([protocol.initial_state.clone()]);
+    for transition in &protocol.transitions {
+        if !states.contains(&transition.from)
+            || !states.contains(&transition.to)
+            || !messages.contains_key(&transition.on)
+        {
+            diagnostics.push(error(
+                "semantic.protocol-transition-invalid",
+                target,
+                format!(
+                    "contract `{contract}` protocol transition {} --{}--> {} references an undeclared state or message",
+                    transition.from, transition.on, transition.to
+                ),
+            ));
+        }
+    }
+    loop {
+        let before = reachable.len();
+        for transition in &protocol.transitions {
+            if reachable.contains(&transition.from) {
+                reachable.insert(transition.to.clone());
+            }
+        }
+        if before == reachable.len() {
+            break;
+        }
+    }
+    let unreachable = states.difference(&reachable).cloned().collect::<Vec<_>>();
+    if !unreachable.is_empty() {
+        diagnostics.push(error(
+            "semantic.protocol-state-unreachable",
+            target,
+            format!(
+                "contract `{contract}` protocol state(s) {} are unreachable from `{}`",
+                unreachable.join(", "),
+                protocol.initial_state
+            ),
+        ));
     }
 }
 
@@ -33299,6 +35446,9 @@ fn validate_semantic_properties(
                     | "generated-property"
                     | "coverage-fuzzer"
                     | "model-checker"
+                    | "benchmark"
+                    | "static-analyzer"
+                    | "sanitizer"
             );
             if !matches!(realization.profile.as_str(), "smoke" | "ci" | "nightly")
                 || !valid_strategy
@@ -33331,6 +35481,7 @@ fn validate_semantic_properties(
                 ));
             }
         }
+        validate_temporal_property(context, property, diagnostics);
         if semantic_property_is_fuzz(property)
             && !property.realizations.iter().any(|realization| {
                 matches!(
@@ -33449,8 +35600,123 @@ fn validate_semantic_properties(
 fn property_realization_requires_harness(strategy: &str) -> bool {
     matches!(
         strategy,
-        "deterministic-exhaustive" | "generated-property" | "coverage-fuzzer" | "model-checker"
+        "deterministic-exhaustive"
+            | "generated-property"
+            | "coverage-fuzzer"
+            | "model-checker"
+            | "benchmark"
+            | "static-analyzer"
+            | "sanitizer"
     )
+}
+
+fn validate_temporal_property(
+    context: &SpecTargetContext,
+    property: &SemanticPropertyChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(temporal) = &property.temporal else {
+        return;
+    };
+    if !matches!(
+        temporal.pattern.as_str(),
+        "always"
+            | "eventually"
+            | "precedence"
+            | "exclusion"
+            | "at-most-once"
+            | "bounded-response"
+            | "resource-closure"
+            | "bounded-resource"
+    ) {
+        diagnostics.push(error(
+            "semantic.temporal-pattern-invalid",
+            &context.target,
+            format!(
+                "property `{}` declares unsupported temporal pattern `{}`",
+                property.id, temporal.pattern
+            ),
+        ));
+    }
+    if !matches!(
+        temporal.scope.as_str(),
+        "machine" | "protocol" | "resource" | "artifact" | "composition" | "runtime" | "platform"
+    ) {
+        diagnostics.push(error(
+            "semantic.temporal-scope-invalid",
+            &context.target,
+            format!(
+                "property `{}` declares unsupported temporal scope `{}`",
+                property.id, temporal.scope
+            ),
+        ));
+    }
+    if temporal.condition.trim().is_empty() {
+        diagnostics.push(error(
+            "semantic.temporal-condition-missing",
+            &context.target,
+            format!(
+                "property `{}` must declare a temporal condition",
+                property.id
+            ),
+        ));
+    }
+    if temporal.pattern == "bounded-response" && temporal.bound.is_none() {
+        diagnostics.push(error(
+            "semantic.temporal-bound-missing",
+            &context.target,
+            format!(
+                "bounded-response property `{}` must declare a transition or metric bound",
+                property.id
+            ),
+        ));
+    }
+    if let Some(bound) = &temporal.bound {
+        let transition_bound = bound.transitions.is_some();
+        let metric_bound = bound.metric.is_some() || bound.value.is_some() || bound.unit.is_some();
+        if transition_bound == metric_bound
+            || (metric_bound
+                && (bound.metric.as_deref().is_none_or(str::is_empty)
+                    || bound.value.is_none()
+                    || bound.unit.as_deref().is_none_or(str::is_empty)))
+        {
+            diagnostics.push(error(
+                "semantic.temporal-bound-invalid",
+                &context.target,
+                format!(
+                    "property `{}` must declare exactly one complete transition or metric bound",
+                    property.id
+                ),
+            ));
+        }
+    }
+    let strategies = property
+        .realizations
+        .iter()
+        .map(|realization| realization.strategy.as_str())
+        .collect::<BTreeSet<_>>();
+    let supported = match temporal.scope.as_str() {
+        "machine" | "protocol" | "resource" | "artifact" | "composition" => strategies
+            .iter()
+            .any(|strategy| matches!(*strategy, "deterministic-exhaustive" | "model-checker")),
+        "runtime" | "platform" => strategies.iter().any(|strategy| {
+            matches!(
+                *strategy,
+                "benchmark" | "static-analyzer" | "sanitizer" | "model-checker"
+            )
+        }),
+        _ => true,
+    };
+    if !supported {
+        diagnostics.push(error(
+            "evidence.temporal-realization-mismatch",
+            &context.target,
+            format!(
+                "temporal property `{}` has no realization capable of proving `{}` scope",
+                property.id, temporal.scope
+            ),
+        ));
+    }
 }
 
 fn property_harness_reference_parts(reference: &str) -> Option<(&str, &str)> {
@@ -33503,6 +35769,718 @@ fn validate_semantic_evidence(
                 format!(
                     "semantic change adds duplicate evidence path `{}`",
                     evidence.path
+                ),
+            ));
+        }
+    }
+}
+
+fn final_module_value(context: &SpecTargetContext, change: &SemanticChange) -> Option<YamlValue> {
+    let mut value = context.module.as_ref()?.value.clone();
+    apply_semantic_change_to_module(&mut value, change);
+    Some(value)
+}
+
+fn final_implementation_value(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+) -> Option<YamlValue> {
+    let implementation = context.implementation.as_ref()?;
+    let mut value = implementation.value.clone();
+    if let Some(machine_change) =
+        semantic_machine_change_to_machine_change(change, Some(implementation))
+    {
+        apply_machine_change_to_manifest(&mut value, &machine_change);
+    }
+    if let Some(functions) = change
+        .semantic_functions
+        .as_ref()
+        .filter(|request| semantic_functions_change_has_operations(request))
+    {
+        let declarations = final_semantic_function_declarations_from_value(&value, functions);
+        set_yaml_sequence_path(&mut value, &["semantic_functions"], declarations);
+    }
+    Some(value)
+}
+
+fn validate_change_keys(
+    target: &Path,
+    category: &str,
+    existing: &BTreeSet<String>,
+    replace: Option<Vec<String>>,
+    add: &[String],
+    remove: &[String],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut changed = BTreeSet::new();
+    let replacement = replace.as_ref();
+    if let Some(items) = replacement {
+        for key in items {
+            if !changed.insert(key.clone()) {
+                diagnostics.push(error(
+                    format!("semantic.{category}-duplicate"),
+                    target,
+                    format!("{category} `{key}` occurs more than once in `set`"),
+                ));
+            }
+        }
+    }
+    let base = replacement
+        .map(|items| items.iter().cloned().collect::<BTreeSet<_>>())
+        .unwrap_or_else(|| existing.clone());
+    for key in remove {
+        if !base.contains(key) {
+            diagnostics.push(error(
+                format!("semantic.{category}-remove-missing"),
+                target,
+                format!("{category} `{key}` does not exist in the selected base"),
+            ));
+        }
+        if !changed.insert(key.clone()) {
+            diagnostics.push(error(
+                format!("semantic.{category}-duplicate-change"),
+                target,
+                format!("{category} `{key}` is changed more than once"),
+            ));
+        }
+    }
+    let after_removal = base
+        .difference(&remove.iter().cloned().collect())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for key in add {
+        if after_removal.contains(key) {
+            diagnostics.push(error(
+                format!("semantic.{category}-add-exists"),
+                target,
+                format!("{category} `{key}` already exists"),
+            ));
+        }
+        if !changed.insert(key.clone()) {
+            diagnostics.push(error(
+                format!("semantic.{category}-duplicate-change"),
+                target,
+                format!("{category} `{key}` is changed more than once"),
+            ));
+        }
+    }
+}
+
+fn validate_semantic_artifacts(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(request) = change
+        .artifacts
+        .as_ref()
+        .filter(|request| semantic_artifacts_change_has_operations(request))
+    else {
+        return;
+    };
+    let Some(module) = context.module.as_ref() else {
+        diagnostics.push(error(
+            "semantic.artifact-module-missing",
+            &context.target,
+            "artifact declarations require an owning module",
+        ));
+        return;
+    };
+    let existing = typed_yaml_sequence::<SemanticArtifact>(&module.value, &["artifacts"])
+        .into_iter()
+        .map(|item| item.name)
+        .collect::<BTreeSet<_>>();
+    validate_change_keys(
+        &context.target,
+        "artifact",
+        &existing,
+        request
+            .replace
+            .as_ref()
+            .map(|items| items.iter().map(|item| item.name.clone()).collect()),
+        &request
+            .add
+            .iter()
+            .map(|item| item.name.clone())
+            .collect::<Vec<_>>(),
+        &request.remove,
+        diagnostics,
+    );
+    let final_module = final_module_value(context, change).unwrap_or_else(|| module.value.clone());
+    let invariant_ids = get_path(&final_module, &["invariants"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| get_str(item, &["id"]).map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let planned_contracts = change
+        .contracts
+        .as_ref()
+        .into_iter()
+        .flat_map(|contracts| contracts.add.iter().chain(&contracts.replace))
+        .map(semantic_contract_path)
+        .collect::<BTreeSet<_>>();
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    let final_items = final_semantic_artifacts(&module.value, request);
+    let mut names = BTreeSet::new();
+    for artifact in final_items {
+        if !is_stable_semantic_id(&artifact.name) || !names.insert(artifact.name.clone()) {
+            diagnostics.push(error(
+                "semantic.artifact-invalid",
+                &context.target,
+                format!(
+                    "artifact `{}` must have a unique stable semantic name",
+                    artifact.name
+                ),
+            ));
+        }
+        if artifact.version.trim().is_empty()
+            || !matches!(
+                artifact.direction.as_str(),
+                "provided" | "required" | "internal"
+            )
+            || !is_safe_relative_artifact_path(&artifact.contract)
+        {
+            diagnostics.push(error(
+                "semantic.artifact-invalid",
+                &context.target,
+                format!(
+                    "artifact `{}` requires a version, direction provided|required|internal, and safe contract path",
+                    artifact.name
+                ),
+            ));
+        }
+        if !base.join(&artifact.contract).is_file()
+            && !planned_contracts.contains(&artifact.contract)
+        {
+            diagnostics.push(error(
+                "semantic.artifact-contract-missing",
+                &context.target,
+                format!(
+                    "artifact `{}` references missing contract `{}`",
+                    artifact.name, artifact.contract
+                ),
+            ));
+        }
+        for invariant in &artifact.invariants {
+            if !invariant_ids.contains(invariant) {
+                diagnostics.push(error(
+                    "semantic.artifact-invariant-missing",
+                    &context.target,
+                    format!(
+                        "artifact `{}` references undeclared invariant `{invariant}`",
+                        artifact.name
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn validate_semantic_transformations(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(request) = change
+        .transformations
+        .as_ref()
+        .filter(|request| semantic_transformations_change_has_operations(request))
+    else {
+        return;
+    };
+    let Some(module) = context.module.as_ref() else {
+        diagnostics.push(error(
+            "semantic.transformation-module-missing",
+            &context.target,
+            "transformation declarations require an owning module",
+        ));
+        return;
+    };
+    let existing =
+        typed_yaml_sequence::<SemanticTransformation>(&module.value, &["transformations"])
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<BTreeSet<_>>();
+    validate_change_keys(
+        &context.target,
+        "transformation",
+        &existing,
+        request
+            .replace
+            .as_ref()
+            .map(|items| items.iter().map(|item| item.name.clone()).collect()),
+        &request
+            .add
+            .iter()
+            .map(|item| item.name.clone())
+            .collect::<Vec<_>>(),
+        &request.remove,
+        diagnostics,
+    );
+    let final_module = final_module_value(context, change).unwrap_or_else(|| module.value.clone());
+    let artifacts = typed_yaml_sequence::<SemanticArtifact>(&final_module, &["artifacts"])
+        .into_iter()
+        .map(|item| item.name)
+        .collect::<BTreeSet<_>>();
+    let properties = module_property_promises_by_id(&final_module)
+        .into_keys()
+        .collect::<BTreeSet<_>>();
+    let final_implementation = final_implementation_value(context, change);
+    let semantic_functions = final_implementation
+        .as_ref()
+        .and_then(|value| get_path(value, &["semantic_functions"]))
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| get_str(item, &["id"]).map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let rejections = final_implementation
+        .as_ref()
+        .map(|value| get_string_array(value, &["architecture", "machine", "rejections"]))
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut names = BTreeSet::new();
+    for transformation in final_semantic_transformations(&module.value, request) {
+        if !is_stable_semantic_id(&transformation.name)
+            || !names.insert(transformation.name.clone())
+        {
+            diagnostics.push(error(
+                "semantic.transformation-invalid",
+                &context.target,
+                format!(
+                    "transformation `{}` must have a unique stable semantic name",
+                    transformation.name
+                ),
+            ));
+        }
+        for artifact in [&transformation.input, &transformation.output] {
+            if !artifacts.contains(artifact) {
+                diagnostics.push(error(
+                    "semantic.transformation-artifact-missing",
+                    &context.target,
+                    format!(
+                        "transformation `{}` references undeclared artifact `{artifact}`",
+                        transformation.name
+                    ),
+                ));
+            }
+        }
+        if !semantic_functions.contains(&transformation.semantic_function) {
+            diagnostics.push(error(
+                "semantic.transformation-function-missing",
+                &context.target,
+                format!(
+                    "transformation `{}` references undeclared semantic function `{}`",
+                    transformation.name, transformation.semantic_function
+                ),
+            ));
+        }
+        for rejection in &transformation.rejections {
+            if !rejections.contains(rejection) {
+                diagnostics.push(error(
+                    "semantic.transformation-rejection-missing",
+                    &context.target,
+                    format!(
+                        "transformation `{}` references undeclared rejection `{rejection}`",
+                        transformation.name
+                    ),
+                ));
+            }
+        }
+        for property in &transformation.properties {
+            if !properties.contains(property) {
+                diagnostics.push(error(
+                    "semantic.transformation-property-missing",
+                    &context.target,
+                    format!(
+                        "transformation `{}` references undeclared property `{property}`",
+                        transformation.name
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn validate_semantic_authorities(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(request) = change
+        .authorities
+        .as_ref()
+        .filter(|request| semantic_authorities_change_has_operations(request))
+    else {
+        return;
+    };
+    let Some(module) = context.module.as_ref() else {
+        diagnostics.push(error(
+            "semantic.authority-module-missing",
+            &context.target,
+            "authority declarations require an owning module",
+        ));
+        return;
+    };
+    let existing = typed_yaml_sequence::<SemanticAuthority>(&module.value, &["authorities"])
+        .into_iter()
+        .map(|item| item.id)
+        .collect::<BTreeSet<_>>();
+    validate_change_keys(
+        &context.target,
+        "authority",
+        &existing,
+        request
+            .replace
+            .as_ref()
+            .map(|items| items.iter().map(|item| item.id.clone()).collect()),
+        &request
+            .add
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>(),
+        &request.remove,
+        diagnostics,
+    );
+    let mut ids = BTreeSet::new();
+    for authority in final_semantic_authorities(&module.value, request) {
+        if !is_stable_semantic_id(&authority.id)
+            || !ids.insert(authority.id.clone())
+            || !matches!(authority.kind.as_str(), "privileged" | "unsafe" | "foreign")
+            || authority.capabilities.is_empty()
+            || authority.rationale.trim().is_empty()
+        {
+            diagnostics.push(error(
+                "semantic.authority-invalid",
+                &context.target,
+                format!(
+                    "authority `{}` requires a unique stable id, kind privileged|unsafe|foreign, capabilities, and rationale",
+                    authority.id
+                ),
+            ));
+        }
+    }
+}
+
+fn semantic_protocol_for_contract(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    reference: &str,
+) -> Option<SemanticProtocol> {
+    if let Some(contract) = change
+        .contracts
+        .as_ref()
+        .into_iter()
+        .flat_map(|contracts| contracts.add.iter().chain(&contracts.replace))
+        .find(|contract| semantic_contract_path(contract) == reference)
+    {
+        return contract.protocol.clone();
+    }
+    let value = load_yaml_value(&spec_target_base(context).join(reference)).ok()?;
+    get_path(&value, &["semantics", "protocol"])
+        .and_then(|value| serde_yaml::from_value(value.clone()).ok())
+}
+
+fn validate_protocol_bindings(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(request) = change
+        .protocol_bindings
+        .as_ref()
+        .filter(|request| protocol_bindings_change_has_operations(request))
+    else {
+        return;
+    };
+    let Some(implementation) = context.implementation.as_ref() else {
+        diagnostics.push(error(
+            "semantic.protocol-binding-implementation-missing",
+            &context.target,
+            "protocol bindings require an implementation binding",
+        ));
+        return;
+    };
+    let existing = typed_yaml_sequence::<ProtocolBinding>(
+        &implementation.value,
+        &["architecture", "protocol_bindings"],
+    )
+    .into_iter()
+    .map(|item| item.name)
+    .collect::<BTreeSet<_>>();
+    validate_change_keys(
+        &context.target,
+        "protocol-binding",
+        &existing,
+        request
+            .replace
+            .as_ref()
+            .map(|items| items.iter().map(|item| item.name.clone()).collect()),
+        &request
+            .add
+            .iter()
+            .map(|item| item.name.clone())
+            .collect::<Vec<_>>(),
+        &request.remove,
+        diagnostics,
+    );
+    let final_implementation =
+        final_implementation_value(context, change).unwrap_or_else(|| implementation.value.clone());
+    let categories = [
+        ("command", "commands"),
+        ("observed-event", "observed_events"),
+        ("event", "events"),
+        ("reply", "replies"),
+        ("rejection", "rejections"),
+    ];
+    let mut names = BTreeSet::new();
+    for binding in final_protocol_bindings(&implementation.value, request) {
+        if !is_stable_semantic_id(&binding.name) || !names.insert(binding.name.clone()) {
+            diagnostics.push(error(
+                "semantic.protocol-binding-invalid",
+                &context.target,
+                format!(
+                    "protocol binding `{}` must have a unique stable name",
+                    binding.name
+                ),
+            ));
+        }
+        if !is_safe_relative_artifact_path(&binding.contract) {
+            diagnostics.push(error(
+                "semantic.protocol-binding-contract-invalid",
+                &context.target,
+                format!(
+                    "protocol binding `{}` must reference a module-relative contract",
+                    binding.name
+                ),
+            ));
+            continue;
+        }
+        let Some(protocol) = semantic_protocol_for_contract(context, change, &binding.contract)
+        else {
+            diagnostics.push(error(
+                "semantic.protocol-binding-contract-missing",
+                &context.target,
+                format!(
+                    "protocol binding `{}` references a contract without protocol semantics: `{}`",
+                    binding.name, binding.contract
+                ),
+            ));
+            continue;
+        };
+        if !protocol.participants.contains(&binding.participant) {
+            diagnostics.push(error(
+                "semantic.protocol-participant-missing",
+                &context.target,
+                format!(
+                    "protocol binding `{}` maps undeclared participant `{}`",
+                    binding.name, binding.participant
+                ),
+            ));
+        }
+        let messages = protocol
+            .messages
+            .iter()
+            .map(|message| (message.id.as_str(), message))
+            .collect::<BTreeMap<_, _>>();
+        let mut mapped = BTreeSet::new();
+        for mapping in &binding.mappings {
+            if !matches!(mapping.direction.as_str(), "send" | "receive") {
+                diagnostics.push(error(
+                    "semantic.protocol-direction-invalid",
+                    &context.target,
+                    format!(
+                        "protocol mapping `{}` uses direction `{}` instead of send|receive",
+                        mapping.message, mapping.direction
+                    ),
+                ));
+            }
+            let Some(message) = messages.get(mapping.message.as_str()) else {
+                diagnostics.push(error(
+                    "semantic.protocol-message-missing",
+                    &context.target,
+                    format!(
+                        "protocol binding `{}` maps undeclared message `{}`",
+                        binding.name, mapping.message
+                    ),
+                ));
+                continue;
+            };
+            let expected_participant = if mapping.direction == "send" {
+                &message.from
+            } else {
+                &message.to
+            };
+            if expected_participant != &binding.participant {
+                diagnostics.push(error(
+                    "semantic.protocol-direction-mismatch",
+                    &context.target,
+                    format!(
+                        "participant `{}` cannot {} message `{}` ({} -> {})",
+                        binding.participant,
+                        mapping.direction,
+                        message.id,
+                        message.from,
+                        message.to
+                    ),
+                ));
+            }
+            let machine_category = match (message.kind.as_str(), mapping.direction.as_str()) {
+                ("command", "receive") => "command",
+                ("command", "send") => "command",
+                ("event", "receive") => "observed-event",
+                ("event", "send") => "event",
+                ("reply", _) => "reply",
+                ("rejection", _) => "rejection",
+                _ => "",
+            };
+            let Some((_, field)) = categories
+                .iter()
+                .find(|(category, _)| *category == machine_category)
+            else {
+                diagnostics.push(error(
+                    "semantic.protocol-message-kind-invalid",
+                    &context.target,
+                    format!(
+                        "protocol message `{}` has unsupported kind `{}`",
+                        message.id, message.kind
+                    ),
+                ));
+                continue;
+            };
+            let cases =
+                get_string_array(&final_implementation, &["architecture", "machine", field]);
+            if !cases.contains(&mapping.machine_case) {
+                diagnostics.push(error(
+                    "semantic.protocol-machine-case-missing",
+                    &context.target,
+                    format!(
+                        "protocol message `{}` maps undeclared machine case `{}`",
+                        mapping.message, mapping.machine_case
+                    ),
+                ));
+            }
+            if !mapped.insert((mapping.message.clone(), mapping.direction.clone())) {
+                diagnostics.push(error(
+                    "semantic.protocol-mapping-duplicate",
+                    &context.target,
+                    format!(
+                        "protocol message `{}` direction `{}` is mapped more than once",
+                        mapping.message, mapping.direction
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn validate_authority_bindings(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(request) = change
+        .authority_bindings
+        .as_ref()
+        .filter(|request| authority_bindings_change_has_operations(request))
+    else {
+        return;
+    };
+    let (Some(module), Some(implementation)) =
+        (context.module.as_ref(), context.implementation.as_ref())
+    else {
+        diagnostics.push(error(
+            "semantic.authority-binding-owner-missing",
+            &context.target,
+            "authority bindings require both module and implementation manifests",
+        ));
+        return;
+    };
+    let final_module = final_module_value(context, change).unwrap_or_else(|| module.value.clone());
+    let authorities = typed_yaml_sequence::<SemanticAuthority>(&final_module, &["authorities"])
+        .into_iter()
+        .map(|item| item.id)
+        .collect::<BTreeSet<_>>();
+    let final_implementation =
+        final_implementation_value(context, change).unwrap_or_else(|| implementation.value.clone());
+    let roles = get_path(&final_implementation, &["architecture", "roles"])
+        .and_then(YamlValue::as_mapping)
+        .into_iter()
+        .flat_map(|mapping| mapping.keys().filter_map(YamlValue::as_str))
+        .collect::<BTreeSet<_>>();
+    let existing = typed_yaml_sequence::<AuthorityBinding>(
+        &implementation.value,
+        &["architecture", "authority_bindings"],
+    )
+    .into_iter()
+    .map(|item| item.authority)
+    .collect::<BTreeSet<_>>();
+    validate_change_keys(
+        &context.target,
+        "authority-binding",
+        &existing,
+        request
+            .replace
+            .as_ref()
+            .map(|items| items.iter().map(|item| item.authority.clone()).collect()),
+        &request
+            .add
+            .iter()
+            .map(|item| item.authority.clone())
+            .collect::<Vec<_>>(),
+        &request.remove,
+        diagnostics,
+    );
+    let mut seen = BTreeSet::new();
+    for binding in final_authority_bindings(&implementation.value, request) {
+        if !authorities.contains(&binding.authority) || !seen.insert(binding.authority.clone()) {
+            diagnostics.push(error(
+                "semantic.authority-binding-invalid",
+                &context.target,
+                format!(
+                    "authority binding `{}` must reference one unique declared authority",
+                    binding.authority
+                ),
+            ));
+        }
+        for role in &binding.roles {
+            if !roles.contains(role.as_str()) {
+                diagnostics.push(error(
+                    "semantic.authority-role-missing",
+                    &context.target,
+                    format!(
+                        "authority `{}` references undeclared role `{role}`",
+                        binding.authority
+                    ),
+                ));
+            }
+        }
+        if binding.roles.is_empty()
+            || property_harness_reference_parts(&binding.safe_facade).is_none()
+        {
+            diagnostics.push(error(
+                "semantic.authority-without-safe-facade",
+                &context.target,
+                format!(
+                    "authority `{}` requires role ownership and an exact safe `path#symbol` facade",
+                    binding.authority
+                ),
+            ));
+        }
+        if binding.evidence.is_empty()
+            || binding
+                .evidence
+                .iter()
+                .any(|path| !is_safe_relative_artifact_path(path))
+        {
+            diagnostics.push(error(
+                "semantic.authority-without-evidence",
+                &context.target,
+                format!(
+                    "authority `{}` requires module-relative containment evidence",
+                    binding.authority
                 ),
             ));
         }
@@ -33622,6 +36600,7 @@ fn semantic_machine_change_to_machine_change(
             replies: machine.replies.clone(),
             rejections: machine.rejections.clone(),
             effect_protocols: machine.effect_protocols.clone(),
+            resource_protocols: machine.resource_protocols.clone(),
         },
         transitions: machine.transitions.clone(),
         roles: change.roles.clone(),
@@ -33712,6 +36691,19 @@ fn planned_spec_apply_writes(
             writes.push(implementation.path.display().to_string());
         }
     }
+    if change
+        .protocol_bindings
+        .as_ref()
+        .is_some_and(protocol_bindings_change_has_operations)
+        || change
+            .authority_bindings
+            .as_ref()
+            .is_some_and(authority_bindings_change_has_operations)
+    {
+        if let Some(implementation) = &context.implementation {
+            writes.push(implementation.path.display().to_string());
+        }
+    }
     if let (Some(implementation), Some(machine_change)) =
         (context.implementation.as_ref(), machine_change)
     {
@@ -33769,7 +36761,15 @@ fn apply_semantic_change(
         || change
             .binding_dependencies
             .as_ref()
-            .is_some_and(binding_dependencies_change_has_operations);
+            .is_some_and(binding_dependencies_change_has_operations)
+        || change
+            .protocol_bindings
+            .as_ref()
+            .is_some_and(protocol_bindings_change_has_operations)
+        || change
+            .authority_bindings
+            .as_ref()
+            .is_some_and(authority_bindings_change_has_operations);
     if let Some(module) = &mut context.module {
         apply_semantic_change_to_module(&mut module.value, change);
         write_yaml_manifest(module)?;
@@ -33831,6 +36831,34 @@ fn apply_semantic_change(
             &previous,
             &final_dependencies,
         )?;
+    }
+    if let (Some(implementation), Some(bindings)) = (
+        context.implementation.as_mut(),
+        change
+            .protocol_bindings
+            .as_ref()
+            .filter(|change| protocol_bindings_change_has_operations(change)),
+    ) {
+        let final_items = final_protocol_bindings(&implementation.value, bindings);
+        set_yaml_sequence_path(
+            &mut implementation.value,
+            &["architecture", "protocol_bindings"],
+            final_items.iter().map(protocol_binding_yaml).collect(),
+        );
+    }
+    if let (Some(implementation), Some(bindings)) = (
+        context.implementation.as_mut(),
+        change
+            .authority_bindings
+            .as_ref()
+            .filter(|change| authority_bindings_change_has_operations(change)),
+    ) {
+        let final_items = final_authority_bindings(&implementation.value, bindings);
+        set_yaml_sequence_path(
+            &mut implementation.value,
+            &["architecture", "authority_bindings"],
+            final_items.iter().map(authority_binding_yaml).collect(),
+        );
     }
     if implementation_changed {
         let Some(implementation) = context.implementation.as_ref() else {
@@ -34152,6 +37180,45 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
     if let Some(properties) = &change.properties {
         apply_semantic_property_changes_to_module(value, properties);
     }
+    if let Some(artifacts) = change
+        .artifacts
+        .as_ref()
+        .filter(|change| semantic_artifacts_change_has_operations(change))
+    {
+        let final_items = final_semantic_artifacts(value, artifacts);
+        set_yaml_sequence_path(
+            value,
+            &["artifacts"],
+            final_items.iter().map(semantic_artifact_yaml).collect(),
+        );
+    }
+    if let Some(transformations) = change
+        .transformations
+        .as_ref()
+        .filter(|change| semantic_transformations_change_has_operations(change))
+    {
+        let final_items = final_semantic_transformations(value, transformations);
+        set_yaml_sequence_path(
+            value,
+            &["transformations"],
+            final_items
+                .iter()
+                .map(semantic_transformation_yaml)
+                .collect(),
+        );
+    }
+    if let Some(authorities) = change
+        .authorities
+        .as_ref()
+        .filter(|change| semantic_authorities_change_has_operations(change))
+    {
+        let final_items = final_semantic_authorities(value, authorities);
+        set_yaml_sequence_path(
+            value,
+            &["authorities"],
+            final_items.iter().map(semantic_authority_yaml).collect(),
+        );
+    }
     if let Some(evidence) = &change.evidence {
         for item in &evidence.add {
             append_unique_yaml_string_path(
@@ -34460,6 +37527,51 @@ fn semantic_property_yaml(property: &SemanticPropertyChange) -> YamlValue {
             ),
         );
     }
+    if let Some(temporal) = &property.temporal {
+        mapping.insert(
+            yaml_key("temporal"),
+            semantic_temporal_property_yaml(temporal),
+        );
+    }
+    YamlValue::Mapping(mapping)
+}
+
+fn semantic_temporal_property_yaml(temporal: &SemanticTemporalProperty) -> YamlValue {
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(
+        yaml_key("pattern"),
+        YamlValue::String(temporal.pattern.clone()),
+    );
+    mapping.insert(yaml_key("scope"), YamlValue::String(temporal.scope.clone()));
+    if let Some(trigger) = &temporal.trigger {
+        mapping.insert(yaml_key("trigger"), YamlValue::String(trigger.clone()));
+    }
+    mapping.insert(
+        yaml_key("condition"),
+        YamlValue::String(temporal.condition.clone()),
+    );
+    if let Some(bound) = &temporal.bound {
+        let mut bound_mapping = serde_yaml::Mapping::new();
+        if let Some(transitions) = bound.transitions {
+            bound_mapping.insert(
+                yaml_key("transitions"),
+                YamlValue::Number(serde_yaml::Number::from(transitions)),
+            );
+        }
+        if let Some(metric) = &bound.metric {
+            bound_mapping.insert(yaml_key("metric"), YamlValue::String(metric.clone()));
+        }
+        if let Some(value) = bound.value {
+            bound_mapping.insert(
+                yaml_key("value"),
+                YamlValue::Number(serde_yaml::Number::from(value)),
+            );
+        }
+        if let Some(unit) = &bound.unit {
+            bound_mapping.insert(yaml_key("unit"), YamlValue::String(unit.clone()));
+        }
+        mapping.insert(yaml_key("bound"), YamlValue::Mapping(bound_mapping));
+    }
     YamlValue::Mapping(mapping)
 }
 
@@ -34628,6 +37740,14 @@ fn render_semantic_contract(contract: &SemanticContractChange) -> String {
     }
     let _ = writeln!(out, "compatibility:");
     let _ = writeln!(out, "  policy: backward-compatible-within-major");
+    if let Some(protocol) = &contract.protocol {
+        let _ = writeln!(out, "semantics:");
+        let _ = writeln!(out, "  protocol:");
+        let rendered = serde_yaml::to_string(protocol).unwrap_or_default();
+        for line in rendered.lines() {
+            let _ = writeln!(out, "    {line}");
+        }
+    }
     out
 }
 
@@ -35311,6 +38431,19 @@ fn print_spec_apply_report(report: &SpecApplyReport) {
                 "  - {} [{}; {}] -> {}",
                 function.id, function.kind, function.purity, function.symbol
             );
+        }
+    }
+    for (label, values) in [
+        ("final_artifacts", &report.final_artifacts),
+        ("final_transformations", &report.final_transformations),
+        ("final_authorities", &report.final_authorities),
+        ("final_protocol_bindings", &report.final_protocol_bindings),
+        ("final_authority_bindings", &report.final_authority_bindings),
+    ] {
+        if values.is_empty() {
+            println!("{label}: <none>");
+        } else {
+            println!("{label}: {}", values.join(", "));
         }
     }
     if !report.diagnostics.is_empty() {
@@ -37005,6 +40138,13 @@ struct ModuleIndexEntry {
 }
 
 #[derive(Clone, Debug)]
+struct ImplementationIndexEntry {
+    module: String,
+    path: PathBuf,
+    value: YamlValue,
+}
+
+#[derive(Clone, Debug)]
 struct ProvidedRequirement {
     module: String,
     group: String,
@@ -37031,6 +40171,7 @@ struct CompositionExport {
 fn compose_system(root: &Path) -> Result<ComposeReport> {
     let targets = discover_targets(root, vec![], vec![], vec![], vec![], vec![], vec![])?;
     let mut modules = BTreeMap::new();
+    let mut implementations = BTreeMap::new();
     let mut systems = Vec::new();
     let mut context_maps = Vec::new();
     let mut findings = Vec::new();
@@ -37077,6 +40218,19 @@ fn compose_system(root: &Path) -> Result<ComposeReport> {
             }
             Some("rms/system/v0.1") => systems.push(manifest),
             Some("rms/context-map/v0.1") => context_maps.push(manifest),
+            Some("rms/implementation/v0.1") => {
+                let module = get_str(&manifest.value, &["module"])
+                    .unwrap_or("<unknown>")
+                    .to_string();
+                implementations.insert(
+                    module.clone(),
+                    ImplementationIndexEntry {
+                        module,
+                        path: target,
+                        value: manifest.value,
+                    },
+                );
+            }
             _ => {}
         }
     }
@@ -37112,6 +40266,8 @@ fn compose_system(root: &Path) -> Result<ComposeReport> {
     compose_recursive_modules(&modules, &provided_requirements, &mut findings);
     compose_proof_delegations(&modules, &mut findings);
     compose_shape_direction(&modules, &provided_requirements, &mut findings);
+    compose_artifact_contracts(&modules, &mut findings);
+    compose_protocol_contracts(&modules, &implementations, &mut findings);
     compose_module_cycles(&modules, &mut findings);
 
     let result = compose_result(&findings);
@@ -37817,6 +40973,268 @@ fn compose_shape_direction(
     for module in modules.values() {
         check_module_shape_direction(module, modules, provided_requirements, findings);
     }
+}
+
+fn contract_identity(base: &Path, reference: &str) -> Option<(String, String)> {
+    let value = load_yaml_value(&base.join(reference)).ok()?;
+    let name = get_str(&value, &["name"])?.to_string();
+    let version = get_path(&value, &["version"])
+        .and_then(yaml_scalar_string)
+        .unwrap_or_else(|| "1".to_string());
+    Some((name, version))
+}
+
+fn compose_artifact_contracts(
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let providers = modules
+        .values()
+        .flat_map(|module| {
+            typed_yaml_sequence::<SemanticArtifact>(&module.value, &["artifacts"])
+                .into_iter()
+                .filter(|artifact| artifact.direction == "provided")
+                .map(move |artifact| (module, artifact))
+        })
+        .collect::<Vec<_>>();
+    for consumer in modules.values() {
+        for required in typed_yaml_sequence::<SemanticArtifact>(&consumer.value, &["artifacts"])
+            .into_iter()
+            .filter(|artifact| artifact.direction == "required")
+        {
+            let candidates = providers
+                .iter()
+                .filter(|(_, artifact)| artifact.name == required.name)
+                .collect::<Vec<_>>();
+            if candidates.is_empty() {
+                findings.push(compose_finding(
+                    ComposeStatus::Unresolved,
+                    "composition.artifact-provider-missing",
+                    Some(consumer.name.clone()),
+                    None,
+                    Some(required.name.clone()),
+                    format!("required artifact `{}` has no provider", required.name),
+                ));
+                continue;
+            }
+            let consumer_base = consumer.path.parent().unwrap_or_else(|| Path::new("."));
+            let required_contract = contract_identity(consumer_base, &required.contract);
+            let compatible = candidates
+                .iter()
+                .filter(|(provider, artifact)| {
+                    if artifact.version != required.version {
+                        return false;
+                    }
+                    let provider_base = provider.path.parent().unwrap_or_else(|| Path::new("."));
+                    contract_identity(provider_base, &artifact.contract) == required_contract
+                })
+                .collect::<Vec<_>>();
+            match compatible.as_slice() {
+                [] => findings.push(compose_finding(
+                    ComposeStatus::Incompatible,
+                    "composition.artifact-contract-mismatch",
+                    Some(consumer.name.clone()),
+                    None,
+                    Some(required.name.clone()),
+                    format!(
+                        "artifact `{}` has providers, but none match version `{}` and contract identity {:?}",
+                        required.name, required.version, required_contract
+                    ),
+                )),
+                [(provider, _)] => findings.push(compose_finding(
+                    ComposeStatus::Satisfied,
+                    "composition.artifact-contract",
+                    Some(consumer.name.clone()),
+                    Some(provider.name.clone()),
+                    Some(required.name.clone()),
+                    format!(
+                        "artifact `{}` version `{}` composes through matching contract identity",
+                        required.name, required.version
+                    ),
+                )),
+                _ => findings.push(compose_finding(
+                    ComposeStatus::ReviewRequired,
+                    "composition.artifact-provider-ambiguous",
+                    Some(consumer.name.clone()),
+                    None,
+                    Some(required.name.clone()),
+                    format!(
+                        "artifact `{}` has {} compatible providers; dependency routing must select one",
+                        required.name,
+                        compatible.len()
+                    ),
+                )),
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ComposedProtocolBinding {
+    module: String,
+    binding: ProtocolBinding,
+    protocol: SemanticProtocol,
+    identity: (String, String),
+}
+
+fn compose_protocol_contracts(
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+    implementations: &BTreeMap<String, ImplementationIndexEntry>,
+    findings: &mut Vec<ComposeFinding>,
+) {
+    let mut bindings = Vec::new();
+    for implementation in implementations.values() {
+        let base = implementation
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        for binding in typed_yaml_sequence::<ProtocolBinding>(
+            &implementation.value,
+            &["architecture", "protocol_bindings"],
+        ) {
+            let Ok(contract) = load_yaml_value(&base.join(&binding.contract)) else {
+                continue;
+            };
+            let Some(protocol) = get_path(&contract, &["semantics", "protocol"])
+                .and_then(|value| serde_yaml::from_value::<SemanticProtocol>(value.clone()).ok())
+            else {
+                continue;
+            };
+            let identity = (
+                get_str(&contract, &["name"])
+                    .unwrap_or("<unknown>")
+                    .to_string(),
+                get_path(&contract, &["version"])
+                    .and_then(yaml_scalar_string)
+                    .unwrap_or_else(|| "1".to_string()),
+            );
+            bindings.push(ComposedProtocolBinding {
+                module: implementation.module.clone(),
+                binding,
+                protocol,
+                identity,
+            });
+        }
+    }
+    let identities = bindings
+        .iter()
+        .map(|binding| binding.identity.clone())
+        .collect::<BTreeSet<_>>();
+    for identity in identities {
+        let grouped = bindings
+            .iter()
+            .filter(|binding| binding.identity == identity)
+            .collect::<Vec<_>>();
+        let Some(canonical) = grouped.first().map(|binding| &binding.protocol) else {
+            continue;
+        };
+        let canonical_yaml = serde_yaml::to_string(canonical).unwrap_or_default();
+        if grouped.iter().any(|binding| {
+            serde_yaml::to_string(&binding.protocol).unwrap_or_default() != canonical_yaml
+        }) {
+            findings.push(compose_finding(
+                ComposeStatus::Incompatible,
+                "composition.protocol-contract-mismatch",
+                None,
+                None,
+                Some(identity.0.clone()),
+                format!(
+                    "protocol `{}` version `{}` has inconsistent automata across module contracts",
+                    identity.0, identity.1
+                ),
+            ));
+            continue;
+        }
+        for participant in &canonical.participants {
+            let owners = grouped
+                .iter()
+                .filter(|binding| &binding.binding.participant == participant)
+                .collect::<Vec<_>>();
+            match owners.as_slice() {
+                [] => findings.push(compose_finding(
+                    ComposeStatus::Unresolved,
+                    "composition.protocol-participant-unbound",
+                    None,
+                    None,
+                    Some(participant.clone()),
+                    format!(
+                        "protocol `{}` participant `{participant}` has no implementation binding",
+                        identity.0
+                    ),
+                )),
+                [_] => {}
+                _ => findings.push(compose_finding(
+                    ComposeStatus::Incompatible,
+                    "composition.protocol-participant-ambiguous",
+                    None,
+                    None,
+                    Some(participant.clone()),
+                    format!(
+                        "protocol `{}` participant `{participant}` is bound by multiple implementations",
+                        identity.0
+                    ),
+                )),
+            }
+        }
+        for message in &canonical.messages {
+            let senders = grouped
+                .iter()
+                .filter(|binding| binding.binding.participant == message.from)
+                .flat_map(|binding| {
+                    binding
+                        .binding
+                        .mappings
+                        .iter()
+                        .filter(|mapping| {
+                            mapping.message == message.id && mapping.direction == "send"
+                        })
+                        .map(move |_| binding.module.as_str())
+                })
+                .collect::<Vec<_>>();
+            let receivers = grouped
+                .iter()
+                .filter(|binding| binding.binding.participant == message.to)
+                .flat_map(|binding| {
+                    binding
+                        .binding
+                        .mappings
+                        .iter()
+                        .filter(|mapping| {
+                            mapping.message == message.id && mapping.direction == "receive"
+                        })
+                        .map(move |_| binding.module.as_str())
+                })
+                .collect::<Vec<_>>();
+            if senders.len() == 1 && receivers.len() == 1 {
+                findings.push(compose_finding(
+                    ComposeStatus::Satisfied,
+                    "composition.protocol-message-route",
+                    Some(receivers[0].to_string()),
+                    Some(senders[0].to_string()),
+                    Some(message.id.clone()),
+                    format!(
+                        "protocol message `{}` has one sender and one receiver",
+                        message.id
+                    ),
+                ));
+            } else {
+                findings.push(compose_finding(
+                    ComposeStatus::Incompatible,
+                    "composition.protocol-message-route",
+                    receivers.first().map(|module| (*module).to_string()),
+                    senders.first().map(|module| (*module).to_string()),
+                    Some(message.id.clone()),
+                    format!(
+                        "protocol message `{}` requires exactly one sender and one receiver; found {} sender(s), {} receiver(s)",
+                        message.id,
+                        senders.len(),
+                        receivers.len()
+                    ),
+                ));
+            }
+        }
+    }
+    let _ = modules;
 }
 
 fn check_module_shape_direction(
@@ -39866,6 +43284,7 @@ fn render_scaffold_plan_prompt(request: &AddModuleRequest, shape: ScaffoldShape)
         "- Keep representation separate from transitions and boundary parsing."
     )?;
     writeln!(out, "- Keep external effects behind ports or adapters.")?;
+    writeln!(out, "- Identify versioned artifacts and transformations, cross-module protocol automata, resource lifecycles, privileged/unsafe/foreign authority boundaries, and temporal properties before proposing binding files.")?;
     writeln!(out, "- Return advisory output only; canonical architecture must be reflected in manifests, contracts, implementation bindings, and evidence.")?;
     Ok(out)
 }
@@ -41188,6 +44607,7 @@ fn render_machine_architecture_yaml(model: &BindingScaffoldModel, binding: &str)
             let _ = writeln!(out, "        atomicity: one-request-one-result");
         }
     }
+    let _ = writeln!(out, "    resource_protocols: []");
     let _ = writeln!(out, "    transition_function: transition");
     let _ = writeln!(out, "    transitions:");
     if model.declares_effects {
@@ -44009,7 +47429,7 @@ Core rule:
 
 | Change | Required RMS gate before source edits |
 | --- | --- |
-| Meaning, law, contract, property, effect, evidence | `rms spec plan/apply/check` |
+| Meaning, law, contract, property, artifact, protocol, resource, authority, effect, evidence | `rms spec plan/apply/check` |
 | State, command, observed event, effect result, transition | `rms spec apply` or focused `rms machine apply/check` |
 | App, CLI, UI, HTTP, batch, executable entrypoint | `rms surface apply/check` |
 | Module boundary or public capability | `rms design` then `rms add-module` or `rms add-capability` |
@@ -44040,6 +47460,11 @@ Machine rules:
 - Composite parent laws may use `verification.delegations` only when the contained provider, provider law/property, public export, and concrete evidence all resolve.
 - Fixed examples are a deterministic corpus, not an open-ended fuzz realization. A `generated-property` harness must construct cases from a declared input space rather than return a fixed literal collection. `generated-property`, `deterministic-exhaustive`, `coverage-fuzzer`, and `model-checker` realizations name an exact binding `path#symbol` harness.
 - Property evidence emitted by `rms spec apply` is an obligation, not proof. Replace it with the exact executed command, observed result, and counterexample or coverage summary before production audit. Revise property semantics through `properties.set/remove`, not direct manifest edits.
+- Public cross-module conversations use contract protocol automata. Each participant is bound once, each message has one sender and receiver mapping, and system traces preserve envelope identity, correlation, and causation across the handoff.
+- Versioned artifacts declare provided, required, or internal contracts. Transformations name input/output artifacts, explicit rejections, exact semantic functions, and preserving properties.
+- Resources whose lifetime affects correctness declare ownership and acquire/use/release/transfer automata. Every reachable terminal product path closes or transfers each resource.
+- Privileged, unsafe, and foreign operations occur only in declared authority roles behind exact safe facade symbols and evidence.
+- Always, eventually, precedence, exclusion, at-most-once, bounded-response, and resource-closure claims are temporal properties with scope-appropriate realizations.
 
 You can:
 
@@ -44051,7 +47476,7 @@ You can:
 
 You cannot:
 
-- hand-create laws, contracts, public commands, states, events, effects, effect results, transitions, semantic roles, semantic-function bindings, runnable surfaces, public entrypoints, or evidence obligations;
+- hand-create laws, contracts, artifacts, transformations, protocol/resource automata, authority boundaries, public commands, states, events, effects, effect results, transitions, semantic roles, semantic-function bindings, runnable surfaces, public entrypoints, or evidence obligations;
 - implement real product behavior only in an undeclared runnable surface while the declared machine remains generic;
 - bypass another module's public contract or a module's declared public entrypoint;
 - import another module's private role files such as representation, transition, parser, adapter internals, or native package exports that bypass the RMS public facade;
@@ -44078,7 +47503,7 @@ Use these advisory workbench commands when they match the task:
 - `rms evolve-contract <module.yaml> --task "<task>"`
 - `rms evidence <module.yaml> --task "<task>"`
 - `rms refactor <module.yaml> --task "<task>"`
-- `rms spec plan <module.yaml|implementation.yaml> --task "<task>"` when a change needs new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, semantic-function bindings, public entrypoints, binding dependencies, or evidence obligations
+- `rms spec plan <module.yaml|implementation.yaml> --task "<task>"` when a change needs new laws, contracts, artifacts, transformations, protocols, resource lifecycles, authority boundaries, temporal properties, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, semantic-function bindings, public entrypoints, binding dependencies, or evidence obligations
 - `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics, record and hash-seal the exact applied change, and automatically supersede every currently active semantic revision; use `semantic_functions.add/set/remove` for exact binding symbols, authority owners, purity, discharged promises, and evidence; `binding_dependencies` names RMS modules and lets the binding adapter realize native dependency metadata; use `contracts.set` with `direction: provided|required` to replace generated provider or consumer contract scaffolds without transferring ownership; use `set`, `remove`, and explicit `supersedes` only for additional non-local branches instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
 - `rms spec check <module.yaml|implementation.yaml>` after semantic changes
 - `rms machine plan/apply/check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct
@@ -44122,11 +47547,17 @@ Before writing implementation code, make the user's intent concrete enough to en
 - Public surface gate: generated capability contracts are scaffold obligations, not production semantics. Replace them through `rms spec apply` with `contracts.set` before implementation. Public commands in `module.yaml` must be represented by the declared implementation surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
 - Reuse gate: reusable modules publish capabilities and contracts first and expose one declared public facade. `rms package` builds, verifies, records the concrete result, rebuilds, and verifies the final artifact; expected-result prose alone is not proof. Consumers must require the capability contract and import only the public facade.
 - Property gate: laws that say always, never, bounded, ordered, normalized, parsed, generated, impossible, or must not happen should declare semantic properties with input spaces, oracles, evidence, and counterexample replay policy before relying on binding tests.
+- Universal system questions: identify artifacts and transformations, ordered cross-module messages, resource ownership and closure, elevated authority, and always/eventually/bounded guarantees before choosing files.
 - Intent: restate the behavior in the owning context's language and name what must never happen.
 - ADTs and values: define closed variants, validated values, commands, states, events, and accepted/rejected result types.
 - State and transitions: define accepted transitions, rejected transitions, terminal states, transition records, and replayable traces when behavior depends on order or lifecycle.
 - Traceable machine: workflows orchestrate; machines execute; commands ask; events report; effects touch the world; projections observe; journals explain; replay reproduces; first-bad-transition evidence points to the fix.
 - Messages and outputs: keep command, event, effect, and effect-result envelopes explicit; transition outputs should name next state, emitted events, commands, effects, and reply.
+- Protocols: declare public multi-module conversations as closed participant/message/state automata, then bind each machine case as one send or receive.
+- Resources: declare acquire/use/release/transfer protocols for files, handles, memory regions, transactions, locks, processes, devices, or any other lifetime-sensitive resource.
+- Artifacts: declare versioned inputs/outputs and transformation contracts separately from in-memory machine state.
+- Authority: contain privileged, unsafe, and foreign operations behind declared safe facades.
+- Temporal proof: encode always, eventually, ordering, exclusion, at-most-once, and bounded-response claims as properties with a matching exhaustive, model-checking, static, sanitizer, or benchmark realization.
 - Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
 - Numeric safety: if validated values represent counts, money, quantities, rates, sizes, scores, or other numeric facts, choose checked, saturating, bounded, or explicitly proven arithmetic before implementation.
 - Edge cases first: decide invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, numeric overflow or rounding, and not-applicable cases.
@@ -44179,6 +47610,7 @@ Run the smallest checks that prove the changed promise:
 - `rms surface check <implementation.yaml> --strict` when runnable app, UI, CLI, browser, HTTP, batch, or executable entrypoints exist.
 - `rms structure <implementation.yaml>` when an implementation binding exists and inner roles changed.
 - `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, or `rms trace diagnose <trace-bundle>` when local transition evidence exists.
+- `rms trace stitch <trace-bundle>...` when a scenario crosses module boundaries; diagnose the saved system trace to locate the first broken handoff.
 - `rms property check <module.yaml|implementation.yaml>`, `rms property run <implementation.yaml>`, or `rms property replay <counterexample.yaml>` when laws, parsers, numeric bounds, reusable modules, or generated counterexamples are involved.
 - `rms verify <implementation.yaml>` when the module has an implementation binding, or `rms verify <composite-module.yaml>` for composite rollups.
 - `rms package <module.yaml>` when a module is intended for reuse outside its current owner; it records concrete package proof. Use `rms verify-package <package-dir>` for an independent recheck.
@@ -44299,6 +47731,15 @@ fn yaml_string_sequence(values: &[String]) -> YamlValue {
         values
             .iter()
             .map(|value| YamlValue::String(value.clone()))
+            .collect(),
+    )
+}
+
+fn yaml_mapping_value<const N: usize>(entries: [(&str, YamlValue); N]) -> YamlValue {
+    YamlValue::Mapping(
+        entries
+            .into_iter()
+            .map(|(key, value)| (yaml_key(key), value))
             .collect(),
     )
 }
@@ -45500,6 +48941,9 @@ import struct ExternalKit.Widget
         assert!(agents.contains("do not substitute one module for convenience"));
         assert!(agents.contains("Never repair `module.yaml`"));
         assert!(agents.contains("Do not inspect sibling projects"));
+        assert!(agents.contains("Public cross-module conversations use contract protocol automata"));
+        assert!(agents.contains("Resources whose lifetime affects correctness declare ownership"));
+        assert!(agents.contains("Privileged, unsafe, and foreign operations occur only"));
         assert!(agents.contains("Completion is binary"));
         assert!(agents.contains("choose semantic shape before file layout"));
         assert!(agents.contains("Default split for any capability"));
@@ -45519,6 +48963,7 @@ import struct ExternalKit.Widget
         assert!(agents.contains("Do not use role-derived inner names"));
         assert!(agents.contains("rms structure <implementation.yaml>"));
         assert!(agents.contains("rms trace check <trace-bundle>"));
+        assert!(agents.contains("rms trace stitch <trace-bundle>"));
         assert!(agents.contains("rms audit --root . --strict"));
         assert!(agents.contains("<Domain>Machine"));
         assert!(agents.contains("evidence.placeholder"));
@@ -52264,6 +55709,10 @@ architecture:
         assert!(rendered.contains("Candidate split"));
         assert!(rendered.contains("## Semantic Structure Before Code"));
         assert!(rendered.contains("Traceable machine rule"));
+        assert!(rendered.contains("Artifacts and transformations"));
+        assert!(rendered.contains("Public protocols"));
+        assert!(rendered.contains("Resource ownership"));
+        assert!(rendered.contains("Temporal proof"));
         assert!(rendered.contains("first-bad-transition evidence"));
         assert!(rendered.contains("Edge cases first"));
         assert!(rendered.contains("### Recommended Module Tree"));
@@ -55579,6 +59028,14 @@ verification:
         assert!(semantic.contains("atomicity: one-request-one-result"));
         assert!(semantic.contains("driver_function:"));
         assert!(semantic.contains("binding_dependencies:"));
+        assert!(semantic.contains("artifacts:"));
+        assert!(semantic.contains("transformations:"));
+        assert!(semantic.contains("authorities:"));
+        assert!(semantic.contains("protocol_bindings:"));
+        assert!(semantic.contains("authority_bindings:"));
+        assert!(semantic.contains("resource_protocols:"));
+        assert!(semantic.contains("optional `temporal:"));
+        assert!(semantic.contains("public protocol automaton"));
         assert!(semantic.contains("RMS module ids, not language package spellings"));
         assert!(semantic.contains("semantic_functions:"));
         assert!(semantic.contains("`semantic_functions.add[]` and `semantic_functions.set[]`"));
@@ -55601,6 +59058,7 @@ verification:
         assert!(machine.contains("Prefer `set` when replacing generated scaffold semantics"));
         assert!(machine.contains("Do not inspect sibling projects, prior dogfood runs"));
         assert!(machine.contains("driver_function:"));
+        assert!(machine.contains("resource_protocols:"));
         assert!(machine.contains("exact scalar `executor_symbol`"));
         assert!(
             machine.contains("`kind: effect_executor` must include the exact declared `effect`")
@@ -55630,6 +59088,8 @@ verification:
 
         fs::remove_dir_all(&root).unwrap();
         assert!(rendered.contains("semantic_functions: null"));
+        assert!(rendered.contains("protocol_bindings: null"));
+        assert!(rendered.contains("authority_bindings: null"));
         assert!(rendered.contains("machine: null"));
         assert!(rendered.contains("roles: null"));
         assert!(rendered.contains("surfaces: null"));
@@ -55754,6 +59214,7 @@ evidence:
         fs::remove_dir_all(&root).unwrap();
         assert!(rendered.contains("Prompt: rms.intent@v1"));
         assert!(rendered.contains("Think before code"));
+        assert!(rendered.contains("which artifacts cross boundaries or change form"));
         assert!(rendered.contains("Normalized stories and accepted interpretation"));
         assert!(rendered.contains("Canonical artifacts to update before implementation"));
         assert!(rendered.contains("Implementation gate result"));
@@ -57722,6 +61183,810 @@ runs:
 
         fs::remove_dir_all(&root).unwrap();
         assert!(error.contains("version drift"));
+    }
+
+    #[test]
+    fn semantic_change_applies_artifact_authority_protocol_and_temporal_sections() {
+        let source = r#"
+spec: rms/semantic-change/v0.1
+artifacts:
+  add:
+    - name: source-unit
+      version: v1
+      direction: internal
+      contract: contracts/source-unit.v1.yaml
+      invariants: [source-is-valid]
+transformations:
+  add:
+    - name: lower-source
+      input: source-unit
+      output: source-unit
+      semantic_function: lower-source
+      rejections: [InvalidSource]
+      properties: [lowering-preserves-validity]
+authorities:
+  add:
+    - id: native-backend
+      kind: foreign
+      capabilities: [emit-native-code]
+      rationale: Native emission crosses a foreign ABI.
+protocol_bindings:
+  add:
+    - name: compile-client
+      contract: contracts/compile.v1.yaml
+      participant: compiler
+      mappings:
+        - machine_case: Compile
+          message: compile-requested
+          direction: receive
+authority_bindings:
+  add:
+    - authority: native-backend
+      roles: [effect_executor]
+      safe_facade: src/backend.rs#emit_native
+      evidence: [verification/laws/native_backend.md]
+properties:
+  add:
+    - id: lowering-preserves-validity
+      proves: source-is-valid
+      kind: property
+      input_space: {kind: finite-source-grammar}
+      oracle: [every accepted source lowers to a valid artifact]
+      evidence: {kind: property, path: verification/properties/lowering.md}
+      realizations:
+        - profile: ci
+          strategy: model-checker
+          command: property-ci
+          harness: src/properties.rs#check_lowering
+      temporal:
+        pattern: always
+        scope: artifact
+        condition: accepted source artifacts remain valid through lowering
+"#;
+        let change: SemanticChange = serde_yaml::from_str(source).unwrap();
+        assert_eq!(
+            change.artifacts.as_ref().unwrap().add[0].name,
+            "source-unit"
+        );
+        assert_eq!(
+            change.authorities.as_ref().unwrap().add[0].id,
+            "native-backend"
+        );
+        assert_eq!(
+            change.properties.as_ref().unwrap().add[0]
+                .temporal
+                .as_ref()
+                .unwrap()
+                .pattern,
+            "always"
+        );
+    }
+
+    #[test]
+    fn spec_apply_writes_universal_semantics_to_canonical_artifacts() {
+        let root = unique_test_dir("spec-apply-universal");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/transform.mjs"),
+            "export function lowerSource(value) { return value; }\nexport function checkLowering() { return true; }\nexport function transition(input) { return { next_state: 'Ready', events: [], commands: [], effects: [], reply: 'Accepted', rejection: null }; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/backend.mjs"),
+            "export function emitNative(value) { return value; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: compiler-stage
+  version: 0.1.0
+  kind: library
+  purpose: Transform validated source artifacts.
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides: {commands: [], queries: [], events: [], capabilities: []}
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: []
+compatibility: {policy: backward-compatible-within-major}
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: compiler-stage
+binding: js
+source: {root: ., public_entrypoint: src/transform.mjs}
+commands:
+  build: node --check src/transform.mjs
+  verify: node --check src/transform.mjs
+  property-ci: node --check src/transform.mjs
+toolchain: {runner: node}
+dependencies: {allowed_processes: [node]}
+architecture:
+  shape: domain-engine
+  public_modules: [src/transform.mjs]
+  machine:
+    name: CompilerStageMachine
+    mode: stateless-decision-machine
+    transition_signature: input-only
+    stateless_justification: A source artifact is transformed independently.
+    types:
+      state: CompilerStageState
+      command: CompilerStageCommand
+      event: CompilerStageEvent
+      reply: CompilerStageReply
+      rejection: CompilerStageRejection
+      transition: CompilerStageTransition
+      transition_record: CompilerStageTransitionRecord
+    states: [Ready]
+    commands: [Compile]
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: []
+    replies: [Accepted]
+    rejections: [InvalidSource]
+    effect_protocols: []
+    resource_protocols: []
+    transition_function: transition
+    transitions:
+      - {case: Compile, from: Ready, on: Compile, to: Ready, reply: Accepted}
+  roles:
+    transition: [src/transform.mjs]
+    transformation: [src/transform.mjs]
+    effect_executor: [src/backend.mjs]
+semantic_functions: []
+"#,
+        )
+        .unwrap();
+
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent:
+  summary: Declare compiler artifacts, protocol, foreign authority, and temporal proof.
+contracts:
+  add:
+    - name: source-unit
+      version: v1
+      command: ValidateSource
+      meaning: A validated source unit accepted by this compiler stage.
+      accepts: [validated source unit]
+      ensures: [the source artifact has a stable versioned contract]
+      rejects: [invalid source]
+    - name: compile
+      version: v1
+      command: Compile
+      meaning: Request compilation of one validated source unit.
+      accepts: [compile request]
+      ensures: [the request is classified by the public protocol]
+      rejects: [invalid source]
+      protocol:
+        participants: [client, compiler]
+        messages:
+          - {id: compile-requested, kind: command, from: client, to: compiler}
+        states: [Ready, Requested]
+        initial_state: Ready
+        terminal_states: [Requested]
+        transitions:
+          - {from: Ready, on: compile-requested, to: Requested}
+artifacts:
+  add:
+    - name: source-unit
+      version: v1
+      direction: internal
+      contract: contracts/source-unit.v1.yaml
+      invariants: []
+transformations:
+  add:
+    - name: lower-source
+      input: source-unit
+      output: source-unit
+      semantic_function: lower-source
+      rejections: [InvalidSource]
+      properties: [lowering-preserves-validity]
+authorities:
+  add:
+    - id: native-backend
+      kind: foreign
+      capabilities: [emit-native-code]
+      rationale: Native emission crosses a foreign ABI.
+properties:
+  add:
+    - id: lowering-preserves-validity
+      proves: source-unit
+      kind: property
+      input_space: {kind: finite-source-grammar}
+      operation: lower one accepted source artifact
+      oracle: [every accepted source lowers to a valid artifact]
+      evidence: {kind: property, path: verification/properties/lowering.md}
+      counterexamples: {path: verification/fuzz/counterexamples/lowering}
+      realizations:
+        - {profile: ci, strategy: model-checker, command: property-ci, harness: src/transform.mjs#checkLowering}
+      temporal:
+        pattern: always
+        scope: artifact
+        condition: accepted source artifacts remain valid through lowering
+semantic_functions:
+  add:
+    - id: lower-source
+      symbol: src/transform.mjs#lowerSource
+      kind: transformation
+      purity: pure
+      evidence: {properties: [verification/properties/lowering.md]}
+    - id: emit-native
+      symbol: src/backend.mjs#emitNative
+      kind: effect-executor
+      purity: effectful
+      authorities: [native-backend]
+      evidence: {laws: [verification/laws/native_backend.md]}
+protocol_bindings:
+  add:
+    - name: compiler-participant
+      contract: contracts/compile.v1.yaml
+      participant: compiler
+      mappings:
+        - {machine_case: Compile, message: compile-requested, direction: receive}
+authority_bindings:
+  add:
+    - authority: native-backend
+      roles: [effect_executor]
+      safe_facade: src/backend.mjs#emitNative
+      evidence: [verification/laws/native_backend.md]
+evidence:
+  add:
+    - {kind: contract, proves: source-unit, path: verification/contracts/source_unit.md}
+    - {kind: contract, proves: compile, path: verification/contracts/compile.md}
+    - {kind: law, proves: native-backend, path: verification/laws/native_backend.md}
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let module = load_manifest(&root.join("module.yaml")).unwrap();
+        let implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let compile_contract = load_manifest(&root.join("contracts/compile.v1.yaml")).unwrap();
+        let records = fs::read_dir(root.join("verification/changes"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .count();
+        assert_eq!(get_str(&module.value, &["artifacts", "0", "name"]), None);
+        assert_eq!(
+            typed_yaml_sequence::<SemanticArtifact>(&module.value, &["artifacts"])[0].name,
+            "source-unit"
+        );
+        assert_eq!(
+            typed_yaml_sequence::<SemanticTransformation>(&module.value, &["transformations"])[0]
+                .semantic_function,
+            "lower-source"
+        );
+        assert_eq!(
+            typed_yaml_sequence::<SemanticAuthority>(&module.value, &["authorities"])[0].id,
+            "native-backend"
+        );
+        assert_eq!(
+            get_str(
+                &compile_contract.value,
+                &["semantics", "protocol", "initial_state"]
+            ),
+            Some("Ready")
+        );
+        assert_eq!(
+            typed_yaml_sequence::<ProtocolBinding>(
+                &implementation.value,
+                &["architecture", "protocol_bindings"]
+            )[0]
+            .participant,
+            "compiler"
+        );
+        assert_eq!(
+            typed_yaml_sequence::<AuthorityBinding>(
+                &implementation.value,
+                &["architecture", "authority_bindings"]
+            )[0]
+            .authority,
+            "native-backend"
+        );
+        assert_eq!(records, 1);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resource_protocol_detects_terminal_path_leak() {
+        let value: YamlValue = serde_yaml::from_str(
+            r#"
+spec: rms/implementation/v0.1
+module: resource-fixture
+binding: executable
+source: {root: ., public_entrypoint: run.sh}
+commands: {build: "true", verify: "true"}
+architecture:
+  shape: workflow
+  machine:
+    name: ResourceFixtureMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    types: {}
+    states: [Ready, Holding, Done]
+    commands: [Start]
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: [Closed]
+    replies: [Accepted]
+    rejections: []
+    effect_protocols: []
+    resource_protocols:
+      - resource: workspace-handle
+        ownership: exclusive
+        states: [Free, Held, Released]
+        initial_state: Free
+        terminal_states: [Released]
+        transitions:
+          - {from: Free, on: Start, trigger_kind: command, operation: acquire, to: Held}
+    transition_function: transition
+    transitions:
+      - {case: start, from: Ready, on: Start, to: Holding, reply: Accepted}
+      - {case: close, from: Holding, on: Closed, to: Done, reply: Accepted}
+  roles: {}
+"#,
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value,
+        };
+        let change = current_machine_change_for_validation(&manifest).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_machine_resource_protocols(&manifest, &change, &mut diagnostics);
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.resource-not-closed-on-terminal-path"
+        }));
+    }
+
+    #[test]
+    fn resource_protocol_accepts_acquire_and_release_product_path() {
+        let value: YamlValue = serde_yaml::from_str(
+            r#"
+spec: rms/implementation/v0.1
+module: resource-fixture
+binding: executable
+source: {root: ., public_entrypoint: run.sh}
+commands: {build: "true", verify: "true"}
+architecture:
+  shape: workflow
+  machine:
+    name: ResourceFixtureMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    types: {}
+    states: [Ready, Holding, Done]
+    commands: [Start]
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: [Closed]
+    replies: [Accepted]
+    rejections: []
+    effect_protocols: []
+    resource_protocols:
+      - resource: workspace-handle
+        ownership: exclusive
+        states: [Free, Held, Released]
+        initial_state: Free
+        terminal_states: [Released]
+        transitions:
+          - {from: Free, on: Start, trigger_kind: command, operation: acquire, to: Held}
+          - {from: Held, on: Closed, trigger_kind: effect-result, operation: release, to: Released}
+    transition_function: transition
+    transitions:
+      - {case: start, from: Ready, on: Start, to: Holding, reply: Accepted}
+      - {case: close, from: Holding, on: Closed, to: Done, reply: Accepted}
+  roles: {}
+"#,
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value,
+        };
+        let change = current_machine_change_for_validation(&manifest).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_machine_resource_protocols(&manifest, &change, &mut diagnostics);
+        assert_no_error_diagnostics(&diagnostics);
+    }
+
+    #[test]
+    fn authority_check_rejects_unsafe_source_outside_bound_role() {
+        let root = unique_test_dir("authority-containment");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/transition.rs"),
+            "pub unsafe fn bypass() {}\n",
+        )
+        .unwrap();
+        let value: YamlValue = serde_yaml::from_str(
+            r#"
+spec: rms/implementation/v0.1
+module: authority-fixture
+binding: rust
+source: {root: ., public_entrypoint: src/transition.rs}
+commands: {build: "true", verify: "true"}
+architecture:
+  shape: domain-engine
+  roles:
+    transition: [src/transition.rs]
+    effect_executor: [src/backend.rs]
+"#,
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: root.join("implementation.yaml"),
+            value,
+        };
+        let mut diagnostics = Vec::new();
+        inspect_privileged_source_containment(
+            &manifest,
+            &BTreeSet::from(["native-backend".to_string()]),
+            &BTreeSet::from(["src/backend.rs".to_string()]),
+            &mut diagnostics,
+        );
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.privileged-operation-outside-authority-role"
+        }));
+    }
+
+    #[test]
+    fn authority_check_ignores_unsafe_syntax_inside_rust_strings() {
+        let root = unique_test_dir("authority-string-literal");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/transition.rs"),
+            "pub fn describe() -> &'static str { \"pub unsafe fn bypass() {}\" }\n",
+        )
+        .unwrap();
+        let value: YamlValue = serde_yaml::from_str(
+            r#"
+spec: rms/implementation/v0.1
+module: authority-fixture
+binding: rust
+source: {root: ., public_entrypoint: src/transition.rs}
+commands: {build: "true", verify: "true"}
+architecture:
+  shape: domain-engine
+  roles:
+    transition: [src/transition.rs]
+"#,
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: root.join("implementation.yaml"),
+            value,
+        };
+        let mut diagnostics = Vec::new();
+        inspect_privileged_source_containment(
+            &manifest,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &mut diagnostics,
+        );
+        fs::remove_dir_all(&root).unwrap();
+        assert!(!diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.authority-undeclared"
+                || diagnostic.check == "structure.privileged-operation-outside-authority-role"
+        }));
+    }
+
+    #[test]
+    fn temporal_property_rejects_corpus_only_finite_proof() {
+        let manifest = loaded_module_manifest(
+            "module.yaml",
+            "spec: rms/module/v0.1\nmodule: {name: temporal, version: 0.1.0, kind: library, purpose: test}\n",
+        );
+        let target = PropertyTargetReport {
+            id: "eventually-done".to_string(),
+            kind: "property".to_string(),
+            proves: Some("eventually-done".to_string()),
+            input_space: Some("finite".to_string()),
+            oracle: vec!["done is eventually reached".to_string()],
+            command: Some("property".to_string()),
+            evidence: Some("verification/properties/eventually.md".to_string()),
+            counterexamples: None,
+            realizations: vec![PropertyRealization {
+                profile: "smoke".to_string(),
+                strategy: "deterministic-corpus".to_string(),
+                command: "property".to_string(),
+                harness: None,
+                exhaustive: false,
+            }],
+            temporal: Some(SemanticTemporalProperty {
+                pattern: "eventually".to_string(),
+                scope: "machine".to_string(),
+                trigger: Some("Start".to_string()),
+                condition: "Done is reached".to_string(),
+                bound: None,
+            }),
+            status: "declared".to_string(),
+        };
+        let mut diagnostics = Vec::new();
+        validate_temporal_target_report(&manifest, &target, &mut diagnostics);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "evidence.temporal-realization-mismatch" }));
+    }
+
+    #[test]
+    fn compose_matches_required_and_provided_artifact_contracts() {
+        let root = unique_test_dir("artifact-compose");
+        for module in ["producer", "consumer"] {
+            fs::create_dir_all(root.join(module).join("contracts")).unwrap();
+            fs::write(
+                root.join(module).join("contracts/object.v1.yaml"),
+                "spec: rms/contract/v0.1\nname: object\nversion: 1\nkind: schema\nmeaning: compiled object\n",
+            )
+            .unwrap();
+        }
+        let producer: YamlValue = serde_yaml::from_str(
+            "module: {name: producer}\nartifacts: [{name: object, version: v1, direction: provided, contract: contracts/object.v1.yaml}]\n",
+        )
+        .unwrap();
+        let consumer: YamlValue = serde_yaml::from_str(
+            "module: {name: consumer}\nartifacts: [{name: object, version: v1, direction: required, contract: contracts/object.v1.yaml}]\n",
+        )
+        .unwrap();
+        let modules = BTreeMap::from([
+            (
+                "producer".to_string(),
+                ModuleIndexEntry {
+                    name: "producer".to_string(),
+                    path: root.join("producer/module.yaml"),
+                    value: producer,
+                },
+            ),
+            (
+                "consumer".to_string(),
+                ModuleIndexEntry {
+                    name: "consumer".to_string(),
+                    path: root.join("consumer/module.yaml"),
+                    value: consumer,
+                },
+            ),
+        ]);
+        let mut findings = Vec::new();
+        compose_artifact_contracts(&modules, &mut findings);
+        fs::remove_dir_all(&root).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.check == "composition.artifact-contract"
+                && finding.status == ComposeStatus::Satisfied
+        }));
+    }
+
+    #[test]
+    fn compose_requires_one_protocol_owner_and_route_per_message() {
+        let root = unique_test_dir("protocol-compose");
+        let contract = r#"spec: rms/contract/v0.1
+name: compile
+version: 1
+kind: command
+meaning: Compile one source unit.
+semantics:
+  protocol:
+    participants: [client, compiler]
+    messages:
+      - {id: compile-requested, kind: command, from: client, to: compiler}
+    states: [Ready, Requested]
+    initial_state: Ready
+    terminal_states: [Requested]
+    transitions:
+      - {from: Ready, on: compile-requested, to: Requested}
+"#;
+        for module in ["client", "compiler"] {
+            fs::create_dir_all(root.join(module).join("contracts")).unwrap();
+            fs::write(
+                root.join(module).join("contracts/compile.v1.yaml"),
+                contract,
+            )
+            .unwrap();
+        }
+        let client: YamlValue = serde_yaml::from_str(
+            r#"architecture:
+  protocol_bindings:
+    - name: compile-client
+      contract: contracts/compile.v1.yaml
+      participant: client
+      mappings:
+        - {machine_case: RequestCompile, message: compile-requested, direction: send}
+"#,
+        )
+        .unwrap();
+        let compiler: YamlValue = serde_yaml::from_str(
+            r#"architecture:
+  protocol_bindings:
+    - name: compile-provider
+      contract: contracts/compile.v1.yaml
+      participant: compiler
+      mappings:
+        - {machine_case: Compile, message: compile-requested, direction: receive}
+"#,
+        )
+        .unwrap();
+        let implementations = BTreeMap::from([
+            (
+                "client".to_string(),
+                ImplementationIndexEntry {
+                    module: "client".to_string(),
+                    path: root.join("client/implementation.yaml"),
+                    value: client.clone(),
+                },
+            ),
+            (
+                "compiler".to_string(),
+                ImplementationIndexEntry {
+                    module: "compiler".to_string(),
+                    path: root.join("compiler/implementation.yaml"),
+                    value: compiler,
+                },
+            ),
+        ]);
+        let mut findings = Vec::new();
+        compose_protocol_contracts(&BTreeMap::new(), &implementations, &mut findings);
+        assert!(findings.iter().any(|finding| {
+            finding.check == "composition.protocol-message-route"
+                && finding.status == ComposeStatus::Satisfied
+        }));
+        assert!(!findings.iter().any(|finding| {
+            finding.check.starts_with("composition.protocol-")
+                && matches!(
+                    finding.status,
+                    ComposeStatus::Incompatible | ComposeStatus::Unresolved
+                )
+        }));
+
+        let missing_receiver: YamlValue = serde_yaml::from_str(
+            r#"architecture:
+  protocol_bindings:
+    - name: compile-provider
+      contract: contracts/compile.v1.yaml
+      participant: compiler
+      mappings: []
+"#,
+        )
+        .unwrap();
+        let incomplete = BTreeMap::from([
+            (
+                "client".to_string(),
+                ImplementationIndexEntry {
+                    module: "client".to_string(),
+                    path: root.join("client/implementation.yaml"),
+                    value: client,
+                },
+            ),
+            (
+                "compiler".to_string(),
+                ImplementationIndexEntry {
+                    module: "compiler".to_string(),
+                    path: root.join("compiler/implementation.yaml"),
+                    value: missing_receiver,
+                },
+            ),
+        ]);
+        let mut incomplete_findings = Vec::new();
+        compose_protocol_contracts(&BTreeMap::new(), &incomplete, &mut incomplete_findings);
+        fs::remove_dir_all(&root).unwrap();
+        assert!(incomplete_findings.iter().any(|finding| {
+            finding.check == "composition.protocol-message-route"
+                && finding.status == ComposeStatus::Incompatible
+        }));
+    }
+
+    #[test]
+    fn trace_stitch_reports_first_cross_module_handoff() {
+        let root = unique_test_dir("trace-stitch");
+        fs::create_dir_all(&root).unwrap();
+        let sender = root.join("sender.yaml");
+        let receiver = root.join("receiver.yaml");
+        fs::write(
+            &sender,
+            r#"spec: rms/trace-bundle/v0.1
+machine: SenderMachine
+records:
+  - scenario_start: true
+    state_before: Ready
+    input: Start
+    state_after: Done
+    output:
+      events: []
+      commands:
+        - protocol_message: compile-requested
+          command_id: command-1
+          source_machine: SenderMachine
+          target_machine: ReceiverMachine
+          correlation_id: flow-1
+          causation_id: root-1
+          sequence: 1
+      effects: []
+      reply: Accepted
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &receiver,
+            r#"spec: rms/trace-bundle/v0.1
+machine: ReceiverMachine
+records:
+  - scenario_start: true
+    state_before: Ready
+    input:
+      protocol_message: compile-requested
+      command_id: command-1
+      source_machine: SenderMachine
+      target_machine: ReceiverMachine
+      correlation_id: flow-1
+      causation_id: root-1
+      sequence: 1
+    state_after: Done
+    output: {events: [], commands: [], effects: [], reply: Accepted}
+"#,
+        )
+        .unwrap();
+        let report = build_system_trace_report(&[sender, receiver]).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, "pass", "{:#?}", report.diagnostics);
+        assert!(report.first_bad_handoff.is_none());
+        assert_eq!(report.messages.len(), 2);
+    }
+
+    #[test]
+    fn trace_stitch_diagnoses_missing_receiver() {
+        let root = unique_test_dir("trace-stitch-broken");
+        fs::create_dir_all(&root).unwrap();
+        let sender = root.join("sender.yaml");
+        fs::write(
+            &sender,
+            r#"spec: rms/trace-bundle/v0.1
+machine: SenderMachine
+records:
+  - scenario_start: true
+    state_before: Ready
+    input: Start
+    state_after: Done
+    output:
+      events: []
+      commands:
+        - protocol_message: compile-requested
+          command_id: command-1
+          source_machine: SenderMachine
+          target_machine: ReceiverMachine
+          correlation_id: flow-1
+          causation_id: root-1
+      effects: []
+      reply: Accepted
+"#,
+        )
+        .unwrap();
+        let report = build_system_trace_report(&[sender]).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, "fail");
+        assert!(report.first_bad_handoff.is_some());
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "trace.system-handoff-broken" }));
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {

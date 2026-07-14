@@ -25,6 +25,10 @@ description: Change an RMS public contract safely; use for commands, queries, ev
    - ordering;
    - consistency;
    - timeout and retry behavior.
+   - artifact version and transformation compatibility;
+   - protocol participants, messages, legal ordering, and terminal states;
+   - resource ownership or temporal guarantees exposed to consumers;
+   - privileged, unsafe, or foreign authority assumptions.
 6. Preserve the existing version when compatibility can be maintained cleanly.
 7. Introduce a new version for breaking changes.
 8. Define migration, coexistence, translation, and deprecation behavior.

@@ -2,31 +2,25 @@ spec: rms/contract/v0.1
 name: "check-machine-structure"
 version: 1
 kind: command
-meaning: "Check whether an implementation binding faithfully realizes its canonical semantic machine, exact live transition-record path, message envelopes, effect protocols, and total transition behavior."
+meaning: "Check whether an implementation faithfully realizes its canonical machine, protocols, resource lifecycles, authority boundaries, exact transition path, message envelopes, and total behavior."
 preconditions:
   - id: "accepts-1"
-    statement: "a readable RMS implementation binding"
+    statement: "A readable RMS implementation with inspectable source or explicitly opaque executable evidence."
   - id: "accepts-2"
-    statement: "inspectable Rust, Swift, or JavaScript role source, or explicitly opaque executable evidence"
-  - id: "accepts-3"
-    statement: "declared machine types, variants, roles, effects, traces, and runnable surfaces"
+    statement: "Declared machine cases, protocol bindings, resource protocols, authorities, roles, effects, traces, and runnable surfaces."
 postconditions:
   - id: "ensures-1"
-    statement: "reports binding container types separately from semantic variants and input categories"
+    statement: "Resource operations are checked against acquisition, ownership, use, transfer, release, failure, and terminal-disposition semantics."
   - id: "ensures-2"
-    statement: "checks exact transition-record and driver callables for effectful stateful machines"
+    statement: "Privileged operations are constrained to declared authority roles and safe facades."
   - id: "ensures-3"
-    statement: "checks declared command, event, effect, and effect-result envelopes are represented when applicable"
-  - id: "ensures-4"
-    statement: "checks live drivers retain full records and transition arithmetic over represented inputs is checked or bounded"
+    statement: "Machine types, semantic cases, inputs, effects, records, and live driver paths remain binding-realized."
 failure_categories:
   - id: "rejects-1"
-    statement: "collapsed type and case declarations or missing state-plus-input signatures"
+    statement: "Resource use before acquisition, use after release, double release, terminal leaks, or unconsumed transfer."
   - id: "rejects-2"
-    statement: "missing envelope representation, transition-record construction, or complete live record retention"
+    statement: "Undeclared authority, privileged operations outside authority roles, missing safe facades, or missing evidence."
   - id: "rejects-3"
-    statement: "unclassified inputs, incomplete effect protocols, result paths that bypass transitions, or executor-owned orchestration"
-  - id: "rejects-4"
-    statement: "unchecked transition arithmetic that can panic, trap, wrap, or silently lose a represented input"
+    statement: "Collapsed variants, incomplete protocols, result paths bypassing transitions, or executor-owned orchestration."
 compatibility:
   policy: backward-compatible-within-major

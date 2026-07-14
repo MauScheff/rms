@@ -553,6 +553,159 @@ architecture:
       - profile: smoke
         strategy: deterministic-corpus
         command: verify
+    - id: protocol-composition-closure
+      proves: module-protocols-compose-by-contract
+      kind: conformance
+      subject: cross-module protocol bindings
+      input_space:
+        fixtures: compatible, unmatched, ambiguous, direction-invalid, and automaton-mismatched message routes
+      operation: compose every participant and message binding with its public protocol contract
+      oracle:
+      - every protocol participant has one implementation owner
+      - every public message has one compatible sender and receiver mapping
+      - mismatched automata, ownership, direction, and routes fail
+      evidence:
+        path: verification/properties/protocol_composition_closure.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/protocol-composition
+      realizations:
+      - profile: smoke
+        strategy: model-checker
+        command: verify
+        harness: src/main.rs#compose_protocol_contracts
+      temporal:
+        pattern: always
+        scope: composition
+        trigger: null
+        condition: every public protocol message has exactly one compatible sender and receiver
+        bound: null
+    - id: resource-lifecycle-closure
+      proves: resource-lifecycles-close-on-terminal-paths
+      kind: conformance
+      subject: machine and resource product automata
+      input_space:
+        fixtures: acquire-use-release, use-before-acquire, double-release, transfer, and terminal-leak graphs
+      operation: explore the reachable finite product of machine and resource states
+      oracle:
+      - all reachable operations respect resource ownership and lifecycle state
+      - every reachable terminal product state closes or transfers the resource
+      evidence:
+        path: verification/properties/resource_lifecycle_closure.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/resource-lifecycle
+      realizations:
+      - profile: smoke
+        strategy: model-checker
+        command: verify
+        harness: src/main.rs#validate_machine_resource_protocols
+      temporal:
+        pattern: resource-closure
+        scope: resource
+        trigger: null
+        condition: every acquired resource reaches a declared terminal disposition on every terminal machine path
+        bound: null
+    - id: artifact-transformation-compatibility
+      proves: artifact-transformations-preserve-declared-contracts
+      kind: conformance
+      subject: artifact transformation edges
+      input_space:
+        fixtures: compatible versions, missing artifacts, incompatible contracts, and ambiguous providers
+      operation: compare every required artifact with all declared providers
+      oracle:
+      - compatible artifact name version and contract identity compose
+      - missing incompatible and ambiguous artifact edges fail
+      evidence:
+        path: verification/properties/artifact_transformation_compatibility.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/artifact-transformations
+      realizations:
+      - profile: smoke
+        strategy: model-checker
+        command: verify
+        harness: src/main.rs#compose_artifact_contracts
+      temporal:
+        pattern: always
+        scope: artifact
+        trigger: null
+        condition: every required artifact resolves to exactly one compatible provider contract
+        bound: null
+    - id: authority-containment
+      proves: privileged-authority-is-explicit-and-contained
+      kind: conformance
+      subject: authority declarations and binding roles
+      input_space:
+        fixtures: declared authority role, undeclared privileged operation, missing safe facade, and misplaced elevated source
+      operation: statically inspect privileged operations against canonical authority ownership
+      oracle:
+      - declared elevated operations confined to authority roles and safe facades pass
+      - undeclared or misplaced elevated operations fail
+      evidence:
+        path: verification/properties/authority_containment.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/authority-containment
+      realizations:
+      - profile: smoke
+        strategy: static-analyzer
+        command: verify
+        harness: src/main.rs#inspect_privileged_source_containment
+      temporal:
+        pattern: always
+        scope: platform
+        trigger: null
+        condition: every privileged unsafe or foreign operation remains inside its declared authority role
+        bound: null
+    - id: temporal-realization-conformance
+      proves: temporal-properties-have-matching-realizations
+      kind: conformance
+      subject: structured temporal and bounded properties
+      input_space:
+        fixtures: finite always, eventually, precedence, exclusion, at-most-once, bounded-response, resource-closure, and platform-budget claims
+      operation: compare every temporal pattern and scope with its declared proof realization
+      oracle:
+      - finite semantic scopes require exhaustive or model-checking realization
+      - runtime and platform scopes require a model checker static analyzer sanitizer or benchmark
+      - bounded-response claims carry exactly one complete bound
+      evidence:
+        path: verification/properties/temporal_realization_conformance.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/temporal-properties
+      realizations:
+      - profile: smoke
+        strategy: model-checker
+        command: verify
+        harness: src/main.rs#validate_temporal_target_report
+      temporal:
+        pattern: always
+        scope: composition
+        trigger: null
+        condition: every declared temporal property uses a realization capable of proving its scope and bound
+        bound: null
+    - id: cross-module-trace-causation
+      proves: system-traces-preserve-message-causation
+      kind: conformance
+      subject: stitched transition bundles
+      input_space:
+        fixtures: valid causal chains, missing causes, missing receivers, wrong participants, and duplicate handoffs
+      operation: stitch every protocol envelope by identity correlation causation endpoints and sequence
+      oracle:
+      - every logical handoff has one matching send and receive
+      - every non-root cause resolves within the same correlation
+      - the first invalid handoff is deterministic
+      evidence:
+        path: verification/properties/cross_module_trace_causation.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/system-traces
+      realizations:
+      - profile: smoke
+        strategy: model-checker
+        command: verify
+        harness: src/main.rs#build_system_trace_report
+      temporal:
+        pattern: precedence
+        scope: composition
+        trigger: protocol message is received
+        condition: a matching causally prior send exists in the same correlation
+        bound: null
   messages:
     command_envelope:
     - command_id
@@ -1519,10 +1672,7 @@ semantic_functions:
     - semantic-contract-revisions-are-cli-applied
     - canonical-semantics-match-cli-applied-revision
     - semantic-function-bindings-are-cli-applied
-    assumptions: []
   assumptions:
-    requires: []
-    maintains: []
     ensures:
     - contract add, set, and remove operations update canonical module references, files, and semantic-change records together
     - semantic-function add, set, and remove operations update implementation bindings and sealed semantic-change records together
@@ -1604,9 +1754,111 @@ semantic_functions:
   symbol: execute_rms_workbench_effect
   kind: effect-executor
   purity: effectful
+- id: compose-protocol-contracts
+  symbol: compose_protocol_contracts
+  kind: decision
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/compose-rms-system.v1.yaml
+    invariants:
+    - module-protocols-compose-by-contract
+  assumptions:
+    ensures:
+    - every discovered protocol participant and message route is checked
+  evidence:
+    laws:
+    - verification/laws/module_protocols_compose_by_contract.md
+    properties:
+    - verification/properties/protocol_composition_closure.md
+- id: compose-artifact-contracts
+  symbol: compose_artifact_contracts
+  kind: decision
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/compose-rms-system.v1.yaml
+    invariants:
+    - artifact-transformations-preserve-declared-contracts
+  assumptions:
+    ensures:
+    - every required artifact is compared with all declared providers
+  evidence:
+    laws:
+    - verification/laws/artifact_transformations_preserve_declared_contracts.md
+    properties:
+    - verification/properties/artifact_transformation_compatibility.md
+- id: validate-resource-protocols
+  symbol: validate_machine_resource_protocols
+  kind: decision
+  purity: pure
+  discharges:
+    contracts:
+    - contracts/check-machine-structure.v1.yaml
+    invariants:
+    - resource-lifecycles-close-on-terminal-paths
+  assumptions:
+    ensures:
+    - reachable machine and resource product states are explored to closure
+  evidence:
+    laws:
+    - verification/laws/resource_lifecycles_close_on_terminal_paths.md
+    properties:
+    - verification/properties/resource_lifecycle_closure.md
+- id: inspect-authority-containment
+  symbol: inspect_privileged_source_containment
+  kind: parser
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/check-machine-structure.v1.yaml
+    invariants:
+    - privileged-authority-is-explicit-and-contained
+  assumptions:
+    ensures:
+    - inspectable elevated operations are compared with declared authority role paths
+  evidence:
+    laws:
+    - verification/laws/privileged_authority_is_explicit_and_contained.md
+    properties:
+    - verification/properties/authority_containment.md
+- id: validate-temporal-properties
+  symbol: validate_temporal_target_report
+  kind: decision
+  purity: pure
+  discharges:
+    contracts:
+    - contracts/check-semantic-properties.v1.yaml
+    invariants:
+    - temporal-properties-have-matching-realizations
+  assumptions:
+    ensures:
+    - each temporal scope and bound is paired with a capable realization
+  evidence:
+    laws:
+    - verification/laws/temporal_properties_have_matching_realizations.md
+    properties:
+    - verification/properties/temporal_realization_conformance.md
+- id: stitch-system-traces
+  symbol: build_system_trace_report
+  kind: projector
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/inspect-trace-bundle.v1.yaml
+    invariants:
+    - system-traces-preserve-message-causation
+  assumptions:
+    ensures:
+    - each extracted envelope and causal edge is checked and the first bad handoff is retained
+  evidence:
+    laws:
+    - verification/laws/system_traces_preserve_message_causation.md
+    properties:
+    - verification/properties/cross_module_trace_causation.md
 x-rms:
   semantic_revision:
-    digest: sha256:5bfa87ea47ed4edd410f24b2febda3597d834fac785b6bf7078a2e5f81a97b25
-    change_record: verification/changes/expose-truthful-trace-rejection-boundary-effect-property-realization-and-runnable-machine-checks-through-rms-public-contracts-f177ab616ddc.yaml
+    digest: sha256:e00ac3c9e035537c6fe48af70774963702b1bff7c14c7102f930c31be8a0ed54
+    change_record: verification/changes/make-canonical-semantic-rendering-panic-free-and-inspect-rust-authority-boundaries-from-syntax-rather-than-incidental-text-7ea4d5e3cfd4.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:f177ab616ddc3136088ce48964882a7f3b72629803b65a3038b3a239725c9fcd
+    change_record_digest: sha256:7ea4d5e3cfd442f036d66859282ae40f9306163e72336752f3247c4cc1098aac

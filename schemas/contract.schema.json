@@ -57,6 +57,11 @@
     },
     "semantics": {
       "type": "object",
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/protocol"
+        }
+      },
       "additionalProperties": true
     },
     "schema": {
@@ -120,6 +125,60 @@
         }
       },
       "additionalProperties": true
+    },
+    "protocol": {
+      "type": "object",
+      "required": ["participants", "messages", "states", "initial_state", "terminal_states", "transitions"],
+      "properties": {
+        "participants": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$" },
+          "minItems": 2,
+          "uniqueItems": true
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "kind", "from", "to"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+              "kind": { "enum": ["command", "event", "reply", "rejection"] },
+              "from": { "type": "string" },
+              "to": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "states": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "initial_state": { "type": "string" },
+        "terminal_states": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "on", "to"],
+            "properties": {
+              "from": { "type": "string" },
+              "on": { "type": "string" },
+              "to": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

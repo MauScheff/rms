@@ -1,0 +1,68 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/bind-universal-protocol-resource-artifact-authority-temporal-and-system-trace-semantics-to-their-exact-deterministic-implementations-and-proof-realizations-e05d482c5995.yaml
+intent:
+  summary: Make canonical semantic rendering panic-free and inspect Rust authority boundaries from syntax rather than incidental text.
+laws: null
+contracts: null
+properties: null
+semantic_functions:
+  add: []
+  set:
+  - id: semantic-change-apply-command
+    symbol: run_spec_apply
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/apply-semantic-change.v1.yaml
+      invariants:
+      - semantic-contract-revisions-are-cli-applied
+      - canonical-semantics-match-cli-applied-revision
+      - semantic-function-bindings-are-cli-applied
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - contract add, set, and remove operations update canonical module references, files, and semantic-change records together
+      - semantic-function add, set, and remove operations update implementation bindings and sealed semantic-change records together
+    evidence:
+      contracts:
+      - verification/contracts/apply_semantic_change.md
+      laws:
+      - verification/laws/semantic_function_bindings_are_cli_applied.md
+      traces:
+      - verification/traces/semantic_change_record.yaml
+  - id: inspect-authority-containment
+    symbol: inspect_privileged_source_containment
+    kind: parser
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/check-machine-structure.v1.yaml
+      invariants:
+      - privileged-authority-is-explicit-and-contained
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - inspectable elevated operations are compared with declared authority role paths
+    evidence:
+      laws:
+      - verification/laws/privileged_authority_is_explicit_and_contained.md
+      properties:
+      - verification/properties/authority_containment.md
+  remove: []
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

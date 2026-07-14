@@ -85,6 +85,7 @@ rms structure <implementation.yaml> [--json]
 rms trace check <trace-bundle.yaml|json> [--json]
 rms trace replay <trace-bundle.yaml|json> [--json]
 rms trace diagnose <trace-bundle.yaml|json> [--json]
+rms trace stitch <trace-bundle.yaml|json>... [--output <system-trace.yaml|json>] [--json]
 rms run list [--root <path>] [--run-root <directory>]
 rms run latest [--root <path>] [--run-root <directory>]
 rms run inspect <run-id-or-path> [--root <path>] [--run-root <directory>]
@@ -139,7 +140,7 @@ rms spec check <module.yaml|implementation.yaml> [--strict] [--json]
 rms spec diff <module.yaml|implementation.yaml> [--json]
 ```
 
-Use this when meaning changes. Run `--dry-run`, inspect the complete `final_machine`, and stop if product variants or branches are missing. Apply records the exact semantic change and seals a normalized digest of `module.yaml`, local contracts, and `implementation.yaml`. Strict audit recomputes that digest, so direct canonical edits fail even after commit.
+Use this when meaning changes. Run `--dry-run`, inspect the complete final semantic model, and stop if product variants or branches are missing. The same change may declare artifacts, transformations, public contract protocols, resource protocols, privileged/unsafe/foreign authorities, temporal properties, protocol bindings, and authority bindings. Apply records the exact semantic change and seals a normalized digest of `module.yaml`, local contracts, and `implementation.yaml`. Strict audit recomputes that digest, so direct canonical edits fail even after commit.
 
 The semantic-change format is language-neutral and may include a nested machine change:
 
@@ -303,7 +304,7 @@ The generic executable binding declares `binding: executable` in `implementation
 
 The first compatibility checker is manifest-level. It classifies public surface removals and contract path changes as breaking, additive public surface changes as compatible additive, and profile/effect/capability/policy changes as requiring operational review.
 
-The first composition checker is manifest-level. It checks required module presence, required capability providers, capability contract compatibility, context-map relationships when both sides are named contexts, externally satisfied capability effects, and direct module dependency cycles.
+The composition checker is semantic and language-neutral. It checks required module presence, required capability providers, capability contract compatibility, context-map relationships, externally satisfied effects, dependency cycles, versioned artifact providers, public protocol automaton agreement, participant ownership, and exactly one sender/receiver route per protocol message.
 
 ### `audit`
 
@@ -315,9 +316,9 @@ Prints a focused inner-structure report for an `implementation.yaml`. The report
 
 ### `trace`
 
-Checks, replays, and diagnoses local trace bundles without requiring a runtime. A trace bundle is a JSON or YAML evidence file with `spec: rms/trace-bundle/v0.1` and a `records`, `transitions`, or `journal` array. Each record may include `state_before`, `input`, `output`, `state_after`, `source`, and record-level diagnostics.
+Checks, replays, diagnoses, and stitches recorded trace bundles without requiring a runtime. A local trace bundle is a JSON or YAML evidence file with `spec: rms/trace-bundle/v0.1` and a `records`, `transitions`, or `journal` array. Each record may include `state_before`, `input`, `output`, `state_after`, `source`, and record-level diagnostics.
 
-`rms trace check` validates recorded structure, transition output, state continuity, and envelope completeness when envelopes are present. `rms trace replay` reconstructs the recorded timeline from local evidence. `rms trace diagnose` identifies the first structurally bad transition when the recorded data is sufficient. These commands inspect files only; they do not route messages, dispatch effects, or impose a runtime framework.
+`rms trace check` validates recorded structure, transition output, state continuity, and envelope completeness when envelopes are present. `rms trace replay` reconstructs the recorded timeline from local evidence. `rms trace stitch` joins public-message sends and receives across bundles into `rms/system-trace/v0.1`, enforcing one matching handoff and causal continuity per correlation. `rms trace diagnose` accepts either local or stitched traces and identifies the first bad transition or handoff. These commands inspect files only; they do not route messages, dispatch effects, or impose a runtime framework.
 
 `rms verify <implementation.yaml>` also checks declared local trace bundles from `architecture.roles.replay_bundle`, `architecture.roles.trace_evidence`, semantic-function `evidence.traces`, and `verification/traces/`. Native build/test commands remain the binding's responsibility; trace bundle checking is RMS's structural evidence layer.
 
@@ -534,7 +535,7 @@ Operationally incompatible change
 
 ### `compose`
 
-Checks whether declared requirements can be satisfied by available providers, including contract versions, operational semantics, service constraints, allowed effects, and forbidden dependency cycles.
+Checks whether declared requirements can be satisfied by available providers, including contract versions, artifact contracts, public protocol routes, operational semantics, service constraints, allowed effects, and forbidden dependency cycles.
 
 For recursive module trees, compose also checks declared containment, child visibility, parent exports, and export backing. A parent export must be published in the parent `provides` section and backed by the named child module's public `provides` entry. Consumers outside a parent boundary cannot depend directly on a child marked `internal`.
 
