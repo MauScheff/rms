@@ -70,8 +70,11 @@ rms audit --root . --strict
 rms release check --root .
 rms context examples/minimal/module.yaml --task "change payment capture behavior"
 rms atlas examples/minimal/module.yaml --output dist/rms-atlas/minimal
+rms view --root . --watch
 rms conformance examples/minimal/module.yaml --implementation examples/minimal/implementation.yaml --strict
 ```
+
+`rms view` is the experimental system-wide semantic explorer. It serves a loopback-only, read-only projection with Understand, Trace, Change, Debug, and Verify journeys. The viewer reuses canonical module-atlas projections, declares missing links as gaps, and never becomes a writable architecture surface.
 
 Before publishing or sharing this CLI, run:
 

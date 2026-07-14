@@ -1,0 +1,50 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/add-an-experimental-local-read-only-system-semantic-viewer-derived-entirely-from-canonical-rms-artifacts-409ff60c0f78.yaml
+intent:
+  summary: Separate pure viewer request classification from the effectful loopback server adapter.
+laws: null
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions:
+  add: []
+  set:
+  - id: parse-rms-view-request
+    symbol: src/viewer_request.rs#parse_view_request
+    kind: parser
+    purity: pure
+    discharges:
+      contracts: []
+      invariants:
+      - system-viewer-is-derived-and-read-only
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - Accepted requests are read-only GET or HEAD routes from the closed viewer route table.
+    evidence:
+      properties:
+      - verification/properties/system_viewer_read_only.md
+  remove: []
+machine: null
+roles:
+  set: []
+  add:
+  - kind: parser
+    effect: null
+    binding_hint: null
+    path: src/viewer_request.rs
+  remove:
+  - kind: parser
+    path: src/viewer.rs
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

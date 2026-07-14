@@ -1,0 +1,24 @@
+spec: rms/contract/v0.1
+name: "view-rms-system"
+version: 1
+kind: command
+meaning: "Serve a local read-only semantic explorer for an RMS system with deterministic module projections, guided inspection modes, live refresh, and semantic diff."
+preconditions:
+  - id: "accepts-1"
+    statement: "A repository root containing one or more readable canonical RMS module manifests."
+  - id: "accepts-2"
+    statement: "An optional loopback port and browser-open preference."
+postconditions:
+  - id: "ensures-1"
+    statement: "The viewer projects system modules, public contracts, machines, effects, evidence, traces, source references, and explicit gaps without inventing semantic topology."
+  - id: "ensures-2"
+    statement: "Understand, Trace, Change, Debug, and Verify modes use stable semantic identifiers and deterministic source-backed focus data."
+  - id: "ensures-3"
+    statement: "Snapshot refresh detects added, removed, and changed semantic identifiers without writing canonical artifacts."
+  - id: "ensures-4"
+    statement: "The HTTP boundary accepts only read-only GET and HEAD requests on the loopback listener."
+failure_categories:
+  - id: "rejects-1"
+    statement: "Roots with no canonical RMS modules, invalid canonical manifests, unsupported HTTP methods or paths, and unavailable loopback ports."
+compatibility:
+  policy: backward-compatible-within-major

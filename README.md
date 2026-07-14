@@ -8,6 +8,8 @@ The result is software shaped for reliability by default: explicit modules, ADTs
 
 RMS owns semantics. Agents fill declared roles. The CLI proves the result.
 
+For a conceptual tour before the command reference, read [RMS, Explained](EXPLAINED.md).
+
 ```text
 Model meaning.
 Constrain change.
@@ -505,6 +507,14 @@ rms atlas examples/commerce/payments.module.yaml \
   --root examples/commerce \
   --output dist/rms-atlas/payments
 ```
+
+Explore an entire RMS system in the experimental read-only web viewer:
+
+```bash
+rms view --root . --watch
+```
+
+The explorer binds only to loopback and derives its topology from canonical RMS artifacts. Understand, Trace, Change, Debug, and Verify modes connect module ownership, public contracts, machines, effects, evidence, source references, and explicit semantic gaps without becoming a second source of architecture. `--watch` refreshes the projection and shows semantic additions, changes, and removals by stable identifier. Use `--no-open` for headless environments and `--port <port>` to choose the loopback port.
 
 Emit a conformance report:
 

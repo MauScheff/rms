@@ -1,0 +1,199 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/make-semantic-apply-validate-only-the-computed-final-candidate-and-use-one-language-neutral-grammar-for-artifact-and-transformation-identifiers-8bdddb49d464.yaml
+intent:
+  summary: Add an experimental local read-only system semantic viewer derived entirely from canonical RMS artifacts.
+laws:
+  add:
+  - id: system-viewer-is-derived-and-read-only
+    statement: The local semantic viewer derives every visible node, edge, trace, gap, status, and source reference from canonical RMS artifacts and exposes no route that mutates project files or semantic authority.
+    kind: boundary-integrity
+    authority: parser
+    enforced_by: parse-rms-view-request
+  set: []
+  remove: []
+contracts:
+  add:
+  - name: view-rms-system
+    direction: provided
+    version: '1'
+    command: view-rms-system
+    meaning: Serve a local read-only semantic explorer for an RMS system with deterministic module projections, guided inspection modes, live refresh, and semantic diff.
+    accepts:
+    - A repository root containing one or more readable canonical RMS module manifests.
+    - An optional loopback port and browser-open preference.
+    ensures:
+    - The viewer projects system modules, public contracts, machines, effects, evidence, traces, source references, and explicit gaps without inventing semantic topology.
+    - Understand, Trace, Change, Debug, and Verify modes use stable semantic identifiers and deterministic source-backed focus data.
+    - Snapshot refresh detects added, removed, and changed semantic identifiers without writing canonical artifacts.
+    - The HTTP boundary accepts only read-only GET and HEAD requests on the loopback listener.
+    rejects:
+    - Roots with no canonical RMS modules, invalid canonical manifests, unsupported HTTP methods or paths, and unavailable loopback ports.
+    protocol: null
+  set: []
+  remove: []
+properties:
+  add:
+  - id: system-viewer-read-only-route-property
+    proves: system-viewer-is-derived-and-read-only
+    kind: property
+    subject: null
+    input_space:
+      description: The finite cross-product of supported and unsupported HTTP methods with every registered and unknown viewer route.
+      bounds: All GET, HEAD, POST, PUT, PATCH, DELETE, and OPTIONS cases over the viewer route table.
+    preconditions:
+    - Requests have a syntactically readable HTTP request line.
+    operation:
+      semantic_function: parse-rms-view-request
+      input: HTTP method and request target
+    oracle:
+    - Only GET and HEAD requests for registered viewer assets or snapshot endpoints are accepted.
+    - Every mutating method and unknown path is rejected without invoking filesystem writes or semantic apply commands.
+    evidence:
+      kind: property
+      path: verification/properties/system_viewer_read_only.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: deterministic-exhaustive
+      command: properties
+      generator: src/viewer.rs#generate_view_route_cases
+      runner: src/viewer.rs#property_system_viewer_routes_are_read_only
+      exhaustive: true
+    temporal: null
+  set: []
+  remove: []
+trace_producers: null
+semantic_functions:
+  add:
+  - id: parse-rms-view-request
+    symbol: src/viewer.rs#parse_view_request
+    kind: parser
+    purity: pure
+    discharges:
+      contracts: []
+      invariants:
+      - system-viewer-is-derived-and-read-only
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - Accepted requests are read-only GET or HEAD routes from the closed viewer route table.
+    evidence:
+      properties:
+      - verification/properties/system_viewer_read_only.md
+  - id: view-rms-system-command
+    symbol: src/viewer.rs#run_view
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/view-rms-system.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      - system-viewer-is-derived-and-read-only
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - System topology and focus data are regenerated from canonical manifests and existing deterministic module atlas projections.
+      - The listener binds only to loopback and publishes no write endpoint.
+    evidence:
+      contracts:
+      - verification/contracts/view_rms_system.md
+  set: []
+  remove: []
+machine:
+  mode: boundary-machine
+  justification: null
+  transition_signature: state-and-input
+  driver_function: drive_rms_workbench
+  transition_record_function: transition_record
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add:
+    - ViewRmsSystem
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+  resource_protocols:
+    set: null
+    add: []
+    remove: []
+  transitions:
+    set: null
+    add: []
+    remove: []
+roles:
+  set: []
+  add:
+  - kind: parser
+    effect: null
+    binding_hint: null
+    path: src/viewer.rs
+  - kind: adapter
+    effect: null
+    binding_hint: null
+    path: src/viewer.rs
+  - kind: runnable_surface
+    effect: null
+    binding_hint: null
+    path: src/viewer_app.js
+  - kind: runnable_surface
+    effect: null
+    binding_hint: null
+    path: src/viewer_template.html
+  remove: []
+evidence:
+  add:
+  - kind: contract
+    proves: view-rms-system
+    path: verification/contracts/view_rms_system.md
+  - kind: law
+    proves: system-viewer-is-derived-and-read-only
+    path: verification/laws/system_viewer_is_derived_and_read_only.md
+  - kind: property
+    proves: system-viewer-is-derived-and-read-only
+    path: verification/properties/system_viewer_read_only.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

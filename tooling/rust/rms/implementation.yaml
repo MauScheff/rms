@@ -751,6 +751,31 @@ architecture:
         strategy: deterministic-corpus
         command: properties
         runner: src/main.rs#spec_apply_repairs_schema_invalid_current_artifact_state
+    - id: system-viewer-read-only-route-property
+      proves: system-viewer-is-derived-and-read-only
+      kind: property
+      input_space:
+        description: The finite cross-product of supported and unsupported HTTP methods with every registered and unknown viewer route.
+        bounds: All GET, HEAD, POST, PUT, PATCH, DELETE, and OPTIONS cases over the viewer route table.
+      preconditions:
+      - Requests have a syntactically readable HTTP request line.
+      operation:
+        semantic_function: parse-rms-view-request
+        input: HTTP method and request target
+      oracle:
+      - Only GET and HEAD requests for registered viewer assets or snapshot endpoints are accepted.
+      - Every mutating method and unknown path is rejected without invoking filesystem writes or semantic apply commands.
+      evidence:
+        path: verification/properties/system_viewer_read_only.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-exhaustive
+        command: properties
+        generator: src/viewer_request.rs#generate_view_route_cases
+        runner: src/viewer_request.rs#property_system_viewer_routes_are_read_only
+        exhaustive: true
   messages:
     command_envelope:
     - command_id
@@ -868,6 +893,7 @@ architecture:
     - VerifyImplementation
     - AddRmsBinding
     - RunTraceProducers
+    - ViewRmsSystem
     observed_events: []
     events:
     - CommandCompleted
@@ -926,8 +952,10 @@ architecture:
     - src/main.rs
     parser:
     - src/main.rs
+    - src/viewer_request.rs
     adapter:
     - src/main.rs
+    - src/viewer.rs
     effect_executor:
     - src/effect_executor.rs
     transition_record:
@@ -943,6 +971,8 @@ architecture:
     - verification/traces/semantic_change_record.yaml
     runnable_surface:
     - src/main.rs
+    - src/viewer_app.js
+    - src/viewer_template.html
     machine_driver:
     - src/main.rs
     trace_producer:
@@ -1982,9 +2012,40 @@ semantic_functions:
   evidence:
     laws:
     - verification/laws/semantic_apply_validates_final_candidate.md
+- id: parse-rms-view-request
+  symbol: src/viewer_request.rs#parse_view_request
+  kind: parser
+  purity: pure
+  discharges:
+    invariants:
+    - system-viewer-is-derived-and-read-only
+  assumptions:
+    ensures:
+    - Accepted requests are read-only GET or HEAD routes from the closed viewer route table.
+  evidence:
+    properties:
+    - verification/properties/system_viewer_read_only.md
+- id: view-rms-system-command
+  symbol: src/viewer.rs#run_view
+  kind: projector
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/view-rms-system.v1.yaml
+    invariants:
+    - canonical-artifacts-remain-authoritative
+    - diagnostics-are-evidence-not-authority
+    - system-viewer-is-derived-and-read-only
+  assumptions:
+    ensures:
+    - System topology and focus data are regenerated from canonical manifests and existing deterministic module atlas projections.
+    - The listener binds only to loopback and publishes no write endpoint.
+  evidence:
+    contracts:
+    - verification/contracts/view_rms_system.md
 x-rms:
   semantic_revision:
-    digest: sha256:0d7ca99632a87422390c2aae4dcbb56acf8f019585939548538238cb2421d2ba
-    change_record: verification/changes/make-semantic-apply-validate-only-the-computed-final-candidate-and-use-one-language-neutral-grammar-for-artifact-and-transformation-identifiers-8bdddb49d464.yaml
+    digest: sha256:3e4baf2632a5ba71fcdf12880aee05845ce00c9152d89fcf7442f122b4c99652
+    change_record: verification/changes/bind-the-viewer-read-only-property-generator-and-runner-to-the-pure-request-parser-role-13415f35abba.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:8bdddb49d464a68ff517063d67d23da37349b0fbb7488d86e71f8366fd8396ec
+    change_record_digest: sha256:13415f35abbabd055d7a6f8ad99f1b38cce9152c9e283ce64183136885c24059

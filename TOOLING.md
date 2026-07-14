@@ -37,6 +37,7 @@ rms review <module> [--diff <git-spec>] [--impact]
 rms impact [<git-spec>]
 rms gate [<git-spec>]
 rms atlas <module>
+rms view [--root <path>] [--watch] [--port <port>] [--no-open]
 rms structure <implementation>
 rms trace check <trace-bundle>
 rms trace replay <trace-bundle>
@@ -81,6 +82,7 @@ rms review <module.yaml> [--diff <git-spec>] [--impact] [--ai|--provider codex] 
 rms impact [<git-spec>] [--root <path>] [--json]
 rms gate [<git-spec>] [--root <path>] [--dry-run] [--json]
 rms atlas <module.yaml> [--root <path>] [--output <directory>] [--force]
+rms view [--root <path>] [--watch] [--port <port>] [--no-open]
 rms structure <implementation.yaml> [--json]
 rms trace run <implementation.yaml> [--profile smoke|ci|nightly] [--record] [--dry-run] [--json] [--timeout-seconds <seconds>]
 rms trace check <trace-bundle.yaml|json> [--json]
@@ -497,6 +499,26 @@ Direct dependency contracts
 Relevant decisions
 Verification commands
 ```
+
+### `view`
+
+Serves an experimental local semantic explorer for every RMS module discovered under a root:
+
+```bash
+rms view --root . --watch
+```
+
+The listener binds only to `127.0.0.1`. Its closed HTTP surface serves the application, a health response, and a read-only canonical snapshot; unsupported methods and paths are rejected. The system projection reuses deterministic module-atlas data, then adds only relationships that canonical composition, module requirements, or matched capability contracts declare. Missing providers and missing semantic links remain visible gaps instead of inferred topology.
+
+The five inspection journeys answer different questions:
+
+- Understand: purpose, ownership, public surfaces, and composition.
+- Trace: commands, transitions, effects, outcomes, evidence, and gaps.
+- Change: semantic objects likely to move for a requested behavior change.
+- Debug: diagnostics and the first missing or contradictory semantic link.
+- Verify: laws, evidence, traces, diagnostics, and source references.
+
+`--watch` periodically rebuilds the projection and the client reports additions, changes, and removals using stable semantic identifiers. The viewer is derived evidence, not semantic authority, and exposes no edit or apply endpoint. Use `--no-open` in headless environments and `--port 0` to request an available loopback port.
 
 ### `atlas`
 

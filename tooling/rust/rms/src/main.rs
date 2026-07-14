@@ -24,6 +24,8 @@ use toml::Value as TomlValue;
 use walkdir::WalkDir;
 
 mod effect_executor;
+mod viewer;
+mod viewer_request;
 
 const VALIDATOR_NAME: &str = "rms";
 const VALIDATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -800,6 +802,25 @@ enum Commands {
         force: bool,
     },
 
+    /// Serve an experimental read-only semantic explorer for an RMS system.
+    View {
+        /// Repository or system root used to discover canonical RMS modules.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Loopback port for the local viewer. Use 0 to select an available port.
+        #[arg(long, default_value_t = 7337)]
+        port: u16,
+
+        /// Poll canonical artifacts and show semantic changes while the viewer is open.
+        #[arg(long)]
+        watch: bool,
+
+        /// Do not open the system browser after the listener starts.
+        #[arg(long)]
+        no_open: bool,
+    },
+
     /// Emit a conformance report for a module.
     Conformance {
         /// Path to module.yaml or *.module.yaml.
@@ -1362,6 +1383,7 @@ enum RmsWorkbenchCommand {
     CheckReleaseReadiness,
     BuildContextPacket,
     BuildModuleAtlas,
+    ViewRmsSystem,
     InspectImplementationStructure,
     InspectTraceBundle,
     PlanMachineChange,
@@ -6782,6 +6804,12 @@ fn main() -> Result<()> {
             output,
             force,
         } => run_atlas(&module, &root, output.as_deref(), force),
+        Commands::View {
+            root,
+            port,
+            watch,
+            no_open,
+        } => viewer::run_view(&root, port, watch, !no_open),
         Commands::Conformance {
             module,
             implementation,
@@ -20702,6 +20730,7 @@ fn rust_type_exists(summary: &RustTypingSummary, symbol: &str) -> bool {
 }
 
 fn rust_symbol_exists(summary: &RustTypingSummary, symbol: &str) -> bool {
+    let symbol = symbol.rsplit_once('#').map_or(symbol, |(_, name)| name);
     if summary.functions.contains(symbol) {
         return true;
     }
@@ -59374,12 +59403,15 @@ pub fn run_plan(_state: WidgetState, _input: WidgetInput) -> WidgetTransition {
     #[test]
     fn rust_semantic_functions_accept_method_symbols() {
         let mut summary = RustTypingSummary::default();
+        summary.functions.insert("parse_widget".to_string());
         summary
             .impl_methods
             .insert("Widget".to_string(), BTreeSet::from(["new".to_string()]));
 
+        assert!(rust_symbol_exists(&summary, "src/parser.rs#parse_widget"));
         assert!(rust_symbol_exists(&summary, "Widget::new"));
         assert!(rust_symbol_exists(&summary, "crate::widget::Widget::new"));
+        assert!(rust_symbol_exists(&summary, "src/widget.rs#Widget::new"));
         assert!(!rust_symbol_exists(&summary, "Widget::missing"));
     }
 

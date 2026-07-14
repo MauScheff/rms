@@ -175,6 +175,8 @@ provides:
     contract: contracts/add-rms-binding.v1.yaml
   - name: run-trace-producers
     contract: contracts/run-trace-producers.v1.yaml
+  - name: view-rms-system
+    contract: contracts/view-rms-system.v1.yaml
   queries:
   - name: inspect-module
     contract: contracts/inspect-module.v1.yaml
@@ -532,6 +534,11 @@ invariants:
   kind: consistency
   authority: parser
   enforced_by: semantic-change-final-candidate-validator
+- id: system-viewer-is-derived-and-read-only
+  statement: The local semantic viewer derives every visible node, edge, trace, gap, status, and source reference from canonical RMS artifacts and exposes no route that mutates project files or semantic authority.
+  kind: boundary-integrity
+  authority: parser
+  enforced_by: parse-rms-view-request
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -628,6 +635,7 @@ verification:
   - verification/laws/reusable_package_proof_is_current.md
   - verification/laws/active_evidence_references_current_semantics.md
   - verification/laws/semantic_apply_validates_final_candidate.md
+  - verification/laws/system_viewer_is_derived_and_read_only.md
   contracts:
   - verification/contracts
   - verification/contracts/add_rms_capability.md
@@ -656,6 +664,7 @@ verification:
   - verification/contracts/inspect_trace_bundle.md
   - verification/contracts/design_rms_system.md
   - verification/contracts/run_trace_producers.md
+  - verification/contracts/view_rms_system.md
   scenarios:
   - verification/scenarios
   - verification/scenarios/reusable_module_package.md
@@ -698,15 +707,16 @@ verification:
   - verification/properties/property_realization_runner_conformance.md
   - verification/properties/generated_property_realization_truthfulness.md
   - verification/properties/semantic_final_candidate_repair_conformance.md
+  - verification/properties/system_viewer_read_only.md
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Make semantic apply validate only the computed final candidate and use one language-neutral grammar for artifact and transformation identifiers.
+  last_semantic_intent: Bind the viewer read-only property generator and runner to the pure request parser role.
   semantic_revision:
-    digest: sha256:0d7ca99632a87422390c2aae4dcbb56acf8f019585939548538238cb2421d2ba
-    change_record: verification/changes/make-semantic-apply-validate-only-the-computed-final-candidate-and-use-one-language-neutral-grammar-for-artifact-and-transformation-identifiers-8bdddb49d464.yaml
+    digest: sha256:3e4baf2632a5ba71fcdf12880aee05845ce00c9152d89fcf7442f122b4c99652
+    change_record: verification/changes/bind-the-viewer-read-only-property-generator-and-runner-to-the-pure-request-parser-role-13415f35abba.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:8bdddb49d464a68ff517063d67d23da37349b0fbb7488d86e71f8366fd8396ec
+    change_record_digest: sha256:13415f35abbabd055d7a6f8ad99f1b38cce9152c9e283ce64183136885c24059
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-cli-applied-revision
@@ -1405,6 +1415,31 @@ properties:
     strategy: deterministic-corpus
     command: properties
     runner: src/main.rs#spec_apply_repairs_schema_invalid_current_artifact_state
+- id: system-viewer-read-only-route-property
+  proves: system-viewer-is-derived-and-read-only
+  kind: property
+  input_space:
+    description: The finite cross-product of supported and unsupported HTTP methods with every registered and unknown viewer route.
+    bounds: All GET, HEAD, POST, PUT, PATCH, DELETE, and OPTIONS cases over the viewer route table.
+  preconditions:
+  - Requests have a syntactically readable HTTP request line.
+  operation:
+    semantic_function: parse-rms-view-request
+    input: HTTP method and request target
+  oracle:
+  - Only GET and HEAD requests for registered viewer assets or snapshot endpoints are accepted.
+  - Every mutating method and unknown path is rejected without invoking filesystem writes or semantic apply commands.
+  evidence:
+    path: verification/properties/system_viewer_read_only.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: deterministic-exhaustive
+    command: properties
+    generator: src/viewer_request.rs#generate_view_route_cases
+    runner: src/viewer_request.rs#property_system_viewer_routes_are_read_only
+    exhaustive: true
 fuzz_targets:
 - id: rms-cli-malformed-artifacts-produce-diagnostics
   proves: canonical-artifacts-remain-authoritative

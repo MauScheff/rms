@@ -1,0 +1,52 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/separate-pure-viewer-request-classification-from-the-effectful-loopback-server-adapter-89938345346c.yaml
+intent:
+  summary: Bind the viewer read-only property generator and runner to the pure request parser role.
+laws: null
+contracts: null
+properties:
+  add: []
+  set:
+  - id: system-viewer-read-only-route-property
+    proves: system-viewer-is-derived-and-read-only
+    kind: property
+    subject: null
+    input_space:
+      description: The finite cross-product of supported and unsupported HTTP methods with every registered and unknown viewer route.
+      bounds: All GET, HEAD, POST, PUT, PATCH, DELETE, and OPTIONS cases over the viewer route table.
+    preconditions:
+    - Requests have a syntactically readable HTTP request line.
+    operation:
+      semantic_function: parse-rms-view-request
+      input: HTTP method and request target
+    oracle:
+    - Only GET and HEAD requests for registered viewer assets or snapshot endpoints are accepted.
+    - Every mutating method and unknown path is rejected without invoking filesystem writes or semantic apply commands.
+    evidence:
+      kind: property
+      path: verification/properties/system_viewer_read_only.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: deterministic-exhaustive
+      command: properties
+      generator: src/viewer_request.rs#generate_view_route_cases
+      runner: src/viewer_request.rs#property_system_viewer_routes_are_read_only
+      exhaustive: true
+    temporal: null
+  remove: []
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
