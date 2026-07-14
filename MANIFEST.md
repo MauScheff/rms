@@ -392,7 +392,7 @@ transformations:
     properties: [lowering-preserves-validity]
 ```
 
-`direction` is `provided`, `required`, or `internal`. Composition matches required artifacts to one provider by semantic name, version, and contract identity.
+`direction` is `provided`, `required`, or `internal`. Artifact and transformation identifiers use the same language-neutral stable-ID grammar as other RMS semantics: begin with a letter or underscore, then use letters, digits, hyphens, or underscores. Composition matches required artifacts to one provider by semantic name, version, and contract identity.
 
 ### `authorities`
 

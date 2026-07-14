@@ -1,0 +1,67 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/align-the-rejected-semantic-change-record-transition-with-its-typed-reply-and-rejection-output-620c10d5c826.yaml
+intent:
+  summary: Make semantic apply validate only the computed final candidate and use one language-neutral grammar for artifact and transformation identifiers.
+laws:
+  add: []
+  set:
+  - id: semantic-apply-validates-final-candidate
+    statement: Semantic, machine, and surface apply use the same language-neutral identifier grammar as schema validation and validate one computed final canonical candidate before dry-run reporting or writes, including repairs of invalid current state.
+    kind: consistency
+    authority: parser
+    enforced_by: semantic-change-final-candidate-validator
+  remove: []
+contracts: null
+properties:
+  add:
+  - id: semantic-final-candidate-repair-conformance
+    proves: semantic-apply-validates-final-candidate
+    kind: property
+    subject: null
+    input_space:
+      current_manifest: a schema-invalid module manifest
+      corrective_change: a semantic change whose final artifacts and transformations are valid
+      semantic_ids: stable identifiers containing hyphens or underscores
+    preconditions:
+    - the current manifest can still be parsed as YAML
+    - the corrective change replaces every invalid semantic item
+    operation:
+      semantic_function: validate_semantic_change
+      input: current manifest plus corrective semantic change
+    oracle:
+    - semantic apply and JSON Schema accept the same stable language-neutral identifiers
+    - invalid current state does not block a valid computed final candidate
+    - dry-run and write mode validate the same final candidate
+    evidence:
+      kind: property
+      path: verification/properties/semantic_final_candidate_repair_conformance.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: properties
+      generator: null
+      runner: src/main.rs#spec_apply_repairs_schema_invalid_current_artifact_state
+      exhaustive: false
+    temporal: null
+  set: []
+  remove: []
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: semantic-apply-validates-final-candidate
+    path: verification/laws/semantic_apply_validates_final_candidate.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

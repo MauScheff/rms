@@ -725,6 +725,32 @@ architecture:
         strategy: deterministic-corpus
         command: properties
         runner: src/main.rs#open_fuzz_claim_rejects_fixed_corpus_realization
+    - id: semantic-final-candidate-repair-conformance
+      proves: semantic-apply-validates-final-candidate
+      kind: property
+      input_space:
+        current_manifest: a schema-invalid module manifest
+        corrective_change: a semantic change whose final artifacts and transformations are valid
+        semantic_ids: stable identifiers containing hyphens or underscores
+      preconditions:
+      - the current manifest can still be parsed as YAML
+      - the corrective change replaces every invalid semantic item
+      operation:
+        semantic_function: validate_semantic_change
+        input: current manifest plus corrective semantic change
+      oracle:
+      - semantic apply and JSON Schema accept the same stable language-neutral identifiers
+      - invalid current state does not block a valid computed final candidate
+      - dry-run and write mode validate the same final candidate
+      evidence:
+        path: verification/properties/semantic_final_candidate_repair_conformance.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: properties
+        runner: src/main.rs#spec_apply_repairs_schema_invalid_current_artifact_state
   messages:
     command_envelope:
     - command_id
@@ -1958,7 +1984,7 @@ semantic_functions:
     - verification/laws/semantic_apply_validates_final_candidate.md
 x-rms:
   semantic_revision:
-    digest: sha256:202f5f8be722472113718b1d9ef01956b2997399f9df653848013ddbf2fecbea
-    change_record: verification/changes/align-the-rejected-semantic-change-record-transition-with-its-typed-reply-and-rejection-output-620c10d5c826.yaml
+    digest: sha256:0d7ca99632a87422390c2aae4dcbb56acf8f019585939548538238cb2421d2ba
+    change_record: verification/changes/make-semantic-apply-validate-only-the-computed-final-candidate-and-use-one-language-neutral-grammar-for-artifact-and-transformation-identifiers-8bdddb49d464.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:620c10d5c826b96df03a1d527de14602a905153539e12e9a086a605f85e19792
+    change_record_digest: sha256:8bdddb49d464a68ff517063d67d23da37349b0fbb7488d86e71f8366fd8396ec

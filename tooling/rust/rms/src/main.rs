@@ -6123,7 +6123,7 @@ fn parse_config_timeout_seconds(value: u64, field: &str) -> Result<u64> {
     Ok(value)
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct LoadedManifest {
     path: PathBuf,
     value: YamlValue,
@@ -34468,12 +34468,6 @@ fn run_spec_apply(
         parse_semantic_change(change_json, change_yaml, change_file)?,
     );
     let mut diagnostics = Vec::new();
-    if let Some(module) = &context.module {
-        validate_against_embedded_schema(module, &mut diagnostics);
-    }
-    if let Some(implementation) = &context.implementation {
-        validate_against_embedded_schema(implementation, &mut diagnostics);
-    }
     diagnostics.extend(validate_semantic_change(&context, &change));
     let machine_change =
         semantic_machine_change_to_machine_change(&change, context.implementation.as_ref());
@@ -34487,6 +34481,13 @@ fn run_spec_apply(
             &context.target,
             "semantic change includes machine structure but no sibling implementation.yaml was found",
         ));
+    }
+    let candidate = spec_apply_candidate_context(&context, &change, machine_change.as_ref())?;
+    if let Some(module) = &candidate.module {
+        validate_against_embedded_schema(module, &mut diagnostics);
+    }
+    if let Some(implementation) = &candidate.implementation {
+        validate_against_embedded_schema(implementation, &mut diagnostics);
     }
 
     let writes = planned_spec_apply_writes(&context, &change, machine_change.as_ref());
@@ -34614,7 +34615,7 @@ fn run_spec_apply(
         .any(|diagnostic| diagnostic.severity == Severity::Error);
 
     if !has_errors && !dry_run {
-        apply_semantic_change(&mut context, &change, machine_change.as_ref())?;
+        apply_semantic_change(&mut context, &candidate, &change, machine_change.as_ref())?;
     }
 
     let report = SpecApplyReport {
@@ -35534,6 +35535,7 @@ fn dogfood_skip_scan_path(path: &Path) -> bool {
     })
 }
 
+#[derive(Clone, Debug)]
 struct SpecTargetContext {
     target: PathBuf,
     module: Option<LoadedManifest>,
@@ -36313,6 +36315,37 @@ fn binding_dependencies_before_dedup(
     dependencies.retain(|dependency| !change.remove.iter().any(|item| item == dependency));
     dependencies.extend(change.add.iter().cloned());
     dependencies
+}
+
+fn apply_binding_dependency_manifest(
+    implementation: &mut LoadedManifest,
+    previous: &[String],
+    final_dependencies: &[String],
+) -> Result<()> {
+    match get_str(&implementation.value, &["binding"]) {
+        Some("rust") => realize_binding_dependency_metadata(
+            &mut implementation.value,
+            previous,
+            final_dependencies,
+            "allowed_external_crates",
+            |name| name.to_string(),
+        ),
+        Some("swift") => realize_binding_dependency_metadata(
+            &mut implementation.value,
+            previous,
+            final_dependencies,
+            "allowed_external_modules",
+            sanitize_swift_target_name,
+        ),
+        Some("js" | "executable") => set_yaml_string_sequence_path(
+            &mut implementation.value,
+            &["dependencies", "local_modules"],
+            final_dependencies,
+        ),
+        Some(other) => bail!("unsupported scaffold binding `{other}`"),
+        None => bail!("implementation binding is missing `binding`"),
+    }
+    Ok(())
 }
 
 fn validate_binding_dependencies(
@@ -38398,6 +38431,134 @@ fn semantic_machine_change_to_machine_change(
     })
 }
 
+fn semantic_change_modifies_implementation(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    machine_change: Option<&MachineChange>,
+) -> bool {
+    machine_change.is_some()
+        || (context.implementation.is_some()
+            && change.properties.as_ref().is_some_and(|properties| {
+                !properties.add.is_empty()
+                    || !properties.replace.is_empty()
+                    || !properties.remove.is_empty()
+            }))
+        || change
+            .trace_producers
+            .as_ref()
+            .is_some_and(trace_producers_change_has_operations)
+        || change
+            .semantic_functions
+            .as_ref()
+            .is_some_and(semantic_functions_change_has_operations)
+        || change
+            .surfaces
+            .as_ref()
+            .is_some_and(semantic_surfaces_change_has_operations)
+        || change
+            .binding_dependencies
+            .as_ref()
+            .is_some_and(binding_dependencies_change_has_operations)
+        || change
+            .protocol_bindings
+            .as_ref()
+            .is_some_and(protocol_bindings_change_has_operations)
+        || change
+            .authority_bindings
+            .as_ref()
+            .is_some_and(authority_bindings_change_has_operations)
+}
+
+fn spec_apply_candidate_context(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    machine_change: Option<&MachineChange>,
+) -> Result<SpecTargetContext> {
+    let mut candidate = context.clone();
+    if let Some(module) = candidate.module.as_mut() {
+        apply_semantic_change_to_module(&mut module.value, change);
+    }
+    if let Some(implementation) = candidate.implementation.as_mut() {
+        if let Some(machine_change) = machine_change {
+            apply_machine_change_to_manifest(&mut implementation.value, machine_change);
+        }
+        if let Some(properties) = change.properties.as_ref() {
+            apply_semantic_property_changes_to_implementation(
+                &mut implementation.value,
+                properties,
+            );
+        }
+        if let Some(producers) = change
+            .trace_producers
+            .as_ref()
+            .filter(|producers| trace_producers_change_has_operations(producers))
+        {
+            let final_producers = final_trace_producers(implementation, producers);
+            set_yaml_sequence_path(
+                &mut implementation.value,
+                &["architecture", "trace", "producers"],
+                final_producers.iter().map(trace_producer_yaml).collect(),
+            );
+        }
+        if let Some(functions) = change
+            .semantic_functions
+            .as_ref()
+            .filter(|functions| semantic_functions_change_has_operations(functions))
+        {
+            let declarations = final_semantic_function_declarations(implementation, functions);
+            set_yaml_sequence_path(
+                &mut implementation.value,
+                &["semantic_functions"],
+                declarations,
+            );
+        }
+        if let Some(surfaces) = change.surfaces.as_ref() {
+            let declarations = final_surface_declarations(implementation, surfaces);
+            for declaration in &declarations {
+                ensure_declared_smoke_command(&mut implementation.value, declaration);
+            }
+            set_surface_declarations(&mut implementation.value, &declarations);
+        }
+        if let Some(dependencies) = change
+            .binding_dependencies
+            .as_ref()
+            .filter(|dependencies| binding_dependencies_change_has_operations(dependencies))
+        {
+            let previous = existing_binding_dependencies(implementation);
+            let final_dependencies = final_binding_dependencies(implementation, dependencies);
+            apply_binding_dependency_manifest(implementation, &previous, &final_dependencies)?;
+        }
+        if let Some(bindings) = change
+            .protocol_bindings
+            .as_ref()
+            .filter(|change| protocol_bindings_change_has_operations(change))
+        {
+            let final_items = final_protocol_bindings(&implementation.value, bindings);
+            set_yaml_sequence_path(
+                &mut implementation.value,
+                &["architecture", "protocol_bindings"],
+                final_items.iter().map(protocol_binding_yaml).collect(),
+            );
+        }
+        if let Some(bindings) = change
+            .authority_bindings
+            .as_ref()
+            .filter(|change| authority_bindings_change_has_operations(change))
+        {
+            let final_items = final_authority_bindings(&implementation.value, bindings);
+            set_yaml_sequence_path(
+                &mut implementation.value,
+                &["architecture", "authority_bindings"],
+                final_items.iter().map(authority_binding_yaml).collect(),
+            );
+        }
+        if semantic_change_modifies_implementation(context, change, machine_change) {
+            prepare_declared_proof_manifest(implementation)?;
+        }
+    }
+    Ok(candidate)
+}
+
 fn planned_spec_apply_writes(
     context: &SpecTargetContext,
     change: &SemanticChange,
@@ -38549,143 +38710,61 @@ fn planned_spec_apply_writes(
 
 fn apply_semantic_change(
     context: &mut SpecTargetContext,
+    candidate: &SpecTargetContext,
     change: &SemanticChange,
     machine_change: Option<&MachineChange>,
 ) -> Result<()> {
-    let implementation_changed = machine_change.is_some()
-        || (context.implementation.is_some()
-            && change.properties.as_ref().is_some_and(|properties| {
-                !properties.add.is_empty()
-                    || !properties.replace.is_empty()
-                    || !properties.remove.is_empty()
-            }))
-        || change
-            .trace_producers
-            .as_ref()
-            .is_some_and(trace_producers_change_has_operations)
-        || change
-            .semantic_functions
-            .as_ref()
-            .is_some_and(semantic_functions_change_has_operations)
-        || change
-            .surfaces
-            .as_ref()
-            .is_some_and(semantic_surfaces_change_has_operations)
-        || change
-            .binding_dependencies
-            .as_ref()
-            .is_some_and(binding_dependencies_change_has_operations)
-        || change
-            .protocol_bindings
-            .as_ref()
-            .is_some_and(protocol_bindings_change_has_operations)
-        || change
-            .authority_bindings
-            .as_ref()
-            .is_some_and(authority_bindings_change_has_operations);
-    if let Some(module) = &mut context.module {
-        apply_semantic_change_to_module(&mut module.value, change);
+    let implementation_changed =
+        semantic_change_modifies_implementation(context, change, machine_change);
+    let previous_dependencies = context
+        .implementation
+        .as_ref()
+        .map(existing_binding_dependencies)
+        .unwrap_or_default();
+    if let (Some(module), Some(candidate_module)) =
+        (context.module.as_mut(), candidate.module.as_ref())
+    {
+        module.value = candidate_module.value.clone();
         write_yaml_manifest(module)?;
         write_semantic_contracts_and_evidence(module, change)?;
+    }
+    if let (Some(implementation), Some(candidate_implementation)) = (
+        context.implementation.as_mut(),
+        candidate.implementation.as_ref(),
+    ) {
+        implementation.value = candidate_implementation.value.clone();
     }
     if let (Some(implementation), Some(machine_change)) =
         (context.implementation.as_mut(), machine_change)
     {
-        apply_machine_change_to_manifest(&mut implementation.value, machine_change);
         write_machine_apply_placeholders(implementation, machine_change)?;
     }
-    if let (Some(implementation), Some(properties)) =
-        (context.implementation.as_mut(), change.properties.as_ref())
-    {
-        apply_semantic_property_changes_to_implementation(&mut implementation.value, properties);
-    }
-    if let (Some(implementation), Some(producers)) = (
-        context.implementation.as_mut(),
-        change
-            .trace_producers
-            .as_ref()
-            .filter(|producers| trace_producers_change_has_operations(producers)),
-    ) {
-        let final_producers = final_trace_producers(implementation, producers);
-        set_yaml_sequence_path(
-            &mut implementation.value,
-            &["architecture", "trace", "producers"],
-            final_producers.iter().map(trace_producer_yaml).collect(),
-        );
-    }
-    if let (Some(implementation), Some(functions)) = (
-        context.implementation.as_mut(),
-        change
-            .semantic_functions
-            .as_ref()
-            .filter(|functions| semantic_functions_change_has_operations(functions)),
-    ) {
-        let declarations = final_semantic_function_declarations(implementation, functions);
-        set_yaml_sequence_path(
-            &mut implementation.value,
-            &["semantic_functions"],
-            declarations,
-        );
-    }
-    if let (Some(implementation), Some(surfaces)) =
+    if let (Some(implementation), Some(_surfaces)) =
         (context.implementation.as_mut(), change.surfaces.as_ref())
     {
-        let declarations = final_surface_declarations(implementation, surfaces);
-        for declaration in &declarations {
-            ensure_declared_smoke_command(&mut implementation.value, declaration);
-        }
-        set_surface_declarations(&mut implementation.value, &declarations);
+        let declarations = architecture_surface_declarations(implementation);
         for declaration in &declarations {
             write_surface_scaffold_files(implementation, declaration)?;
             write_surface_usage_document(implementation, declaration)?;
             write_surface_evidence_placeholders(implementation, declaration)?;
         }
     }
-    if let (Some(implementation), Some(dependencies)) = (
+    if let (Some(implementation), Some(_dependencies)) = (
         context.implementation.as_mut(),
         change
             .binding_dependencies
             .as_ref()
             .filter(|dependencies| binding_dependencies_change_has_operations(dependencies)),
     ) {
-        let previous = existing_binding_dependencies(implementation);
-        let final_dependencies = final_binding_dependencies(implementation, dependencies);
+        let final_dependencies = existing_binding_dependencies(implementation);
         let binding = get_str(&implementation.value, &["binding"])
             .ok_or_else(|| anyhow!("implementation binding is missing `binding`"))?
             .to_string();
         binding_adapter(&binding)?.realize_local_dependencies(
             implementation,
-            &previous,
+            &previous_dependencies,
             &final_dependencies,
         )?;
-    }
-    if let (Some(implementation), Some(bindings)) = (
-        context.implementation.as_mut(),
-        change
-            .protocol_bindings
-            .as_ref()
-            .filter(|change| protocol_bindings_change_has_operations(change)),
-    ) {
-        let final_items = final_protocol_bindings(&implementation.value, bindings);
-        set_yaml_sequence_path(
-            &mut implementation.value,
-            &["architecture", "protocol_bindings"],
-            final_items.iter().map(protocol_binding_yaml).collect(),
-        );
-    }
-    if let (Some(implementation), Some(bindings)) = (
-        context.implementation.as_mut(),
-        change
-            .authority_bindings
-            .as_ref()
-            .filter(|change| authority_bindings_change_has_operations(change)),
-    ) {
-        let final_items = final_authority_bindings(&implementation.value, bindings);
-        set_yaml_sequence_path(
-            &mut implementation.value,
-            &["architecture", "authority_bindings"],
-            final_items.iter().map(authority_binding_yaml).collect(),
-        );
     }
     if implementation_changed {
         if let Some(implementation) = context.implementation.as_mut() {
@@ -45036,7 +45115,9 @@ fn binding_adapter(binding: &str) -> Result<&'static dyn BindingAdapter> {
     }
 }
 
-fn realize_declared_proof_commands(implementation: &mut LoadedManifest) -> Result<()> {
+fn prepare_declared_proof_manifest(
+    implementation: &mut LoadedManifest,
+) -> Result<&'static dyn BindingAdapter> {
     let binding = get_str(&implementation.value, &["binding"])
         .ok_or_else(|| anyhow!("implementation binding is missing `binding`"))?
         .to_string();
@@ -45081,6 +45162,25 @@ fn realize_declared_proof_commands(implementation: &mut LoadedManifest) -> Resul
             );
         }
     }
+    if binding == "rust" && !trace_producers_from_implementation(implementation).is_empty() {
+        let mut allowed = get_string_array(
+            &implementation.value,
+            &["dependencies", "allowed_external_crates"],
+        );
+        if !allowed.iter().any(|dependency| dependency == "serde_json") {
+            allowed.push("serde_json".to_string());
+            set_yaml_string_sequence_path(
+                &mut implementation.value,
+                &["dependencies", "allowed_external_crates"],
+                &allowed,
+            );
+        }
+    }
+    Ok(adapter)
+}
+
+fn realize_declared_proof_commands(implementation: &mut LoadedManifest) -> Result<()> {
+    let adapter = prepare_declared_proof_manifest(implementation)?;
     adapter.realize_proof_support(implementation)
 }
 
@@ -64443,6 +64543,158 @@ evidence:
             "native-backend"
         );
         assert_eq!(records, 1);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn spec_apply_repairs_schema_invalid_current_artifact_state() {
+        let root = unique_test_dir("spec-apply-final-candidate-repair");
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("contracts/source-unit.v1.yaml"),
+            render_capability_contract("source-unit", "versioned source artifact"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/transform.mjs"),
+            "export function lowerSource(value) { return value; }\nexport function transition(input) { return { next_state: 'Ready', events: [], commands: [], effects: [], reply: 'Accepted', rejection: null }; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: final-candidate-repair
+  version: 0.1.0
+  kind: library
+  purpose: Exercise corrective semantic apply.
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides: {commands: [], queries: [], events: [], capabilities: []}
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: []
+artifacts:
+  - name: invalid artifact
+    version: v1
+    direction: internal
+    contract: contracts/source-unit.v1.yaml
+    invariants: []
+transformations:
+  - name: invalid transformation
+    input: invalid artifact
+    output: invalid artifact
+    semantic_function: lower-source
+    rejections: []
+    properties: []
+compatibility: {policy: backward-compatible-within-major}
+verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: final-candidate-repair
+binding: js
+source: {root: ., public_entrypoint: src/transform.mjs}
+commands:
+  build: node --check src/transform.mjs
+  verify: node --check src/transform.mjs
+toolchain: {runner: node}
+dependencies: {allowed_processes: [node]}
+architecture:
+  shape: domain-engine
+  public_modules: [src/transform.mjs]
+  machine:
+    name: FinalCandidateRepairMachine
+    mode: stateless-decision-machine
+    transition_signature: input-only
+    stateless_justification: Each artifact is transformed independently.
+    types:
+      state: FinalCandidateRepairState
+      command: FinalCandidateRepairCommand
+      event: FinalCandidateRepairEvent
+      reply: FinalCandidateRepairReply
+      rejection: FinalCandidateRepairRejection
+      transition: FinalCandidateRepairTransition
+      transition_record: FinalCandidateRepairTransitionRecord
+    states: [Ready]
+    commands: [Transform]
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: []
+    replies: [Accepted]
+    rejections: [InvalidSource]
+    effect_protocols: []
+    resource_protocols: []
+    transition_function: transition
+    transitions:
+      - {case: Transform, from: Ready, on: Transform, to: Ready, reply: Accepted}
+  roles:
+    transition: [src/transform.mjs]
+    transformation: [src/transform.mjs]
+semantic_functions:
+  - id: lower-source
+    symbol: src/transform.mjs#lowerSource
+    kind: transformation
+    purity: pure
+"#,
+        )
+        .unwrap();
+
+        let change = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent:
+  summary: Replace invalid current artifact declarations with one valid final model.
+artifacts:
+  set:
+    - name: source-unit
+      version: v1
+      direction: internal
+      contract: contracts/source-unit.v1.yaml
+      invariants: []
+transformations:
+  set:
+    - name: lower-source
+      input: source-unit
+      output: source-unit
+      semantic_function: lower-source
+      rejections: []
+      properties: []
+"#;
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let parsed_change: SemanticChange = serde_yaml::from_str(change).unwrap();
+        let semantic_diagnostics = validate_semantic_change(&context, &parsed_change);
+        assert!(
+            semantic_diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != Severity::Error),
+            "{semantic_diagnostics:#?}"
+        );
+        let before = fs::read_to_string(root.join("module.yaml")).unwrap();
+        run_spec_apply(&root.join("module.yaml"), None, Some(change), None, true).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("module.yaml")).unwrap(),
+            before
+        );
+
+        run_spec_apply(&root.join("module.yaml"), None, Some(change), None, false).unwrap();
+        let module = load_manifest(&root.join("module.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_against_embedded_schema(&module, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(
+            typed_yaml_sequence::<SemanticArtifact>(&module.value, &["artifacts"])[0].name,
+            "source-unit"
+        );
+        assert_eq!(
+            typed_yaml_sequence::<SemanticTransformation>(&module.value, &["transformations"])[0]
+                .name,
+            "lower-source"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
