@@ -1,0 +1,36 @@
+spec: rms/semantic-change/v0.1
+module: examples/tic-tac-toe/modules/tic-tac-toe-cli/implementation.yaml
+supersedes:
+- verification/changes/migrate-malformed-input-fuzz-proof-to-an-exact-generated-case-producer-and-executable-runner-129a49f4d11b.yaml
+intent:
+  summary: Regenerate tic-tac-toe boundary traces from command and effect-result transition records.
+laws: null
+contracts: null
+properties: null
+trace_producers:
+  set: null
+  add:
+  - id: tic-tac-toe-boundary-transitions
+    profile: smoke
+    bundle: verification/traces/boundary_parse.yaml
+    command: trace
+    runner: tests/trace-producer.mjs#produceTransitionTrace
+  remove: []
+semantic_functions: null
+machine: null
+roles:
+  set: []
+  add:
+  - kind: trace_producer
+    effect: null
+    binding_hint: null
+    path: tests/trace-producer.mjs
+  remove: []
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

@@ -17,8 +17,9 @@ raw_cli_input:
 Binding realization:
 
 - Strategy: `generated-property`.
-- Harness: `src/parser.mjs#generateMalformedInputCases`.
-- The harness constructs 17 malformed values across whitespace, range, shape, and runtime-type categories; the binding test consumes every generated value.
+- Generator: `src/parser.mjs#generateMalformedInputCases`.
+- Runner: `tests/boundary-smoke.mjs#runMalformedInputProperty`.
+- The generator constructs 64 malformed values across whitespace and out-of-board coordinate categories; the runner consumes every generated value through the declared boundary operation and assertion oracle.
 
 Oracle:
 

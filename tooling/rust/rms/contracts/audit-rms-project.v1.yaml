@@ -2,17 +2,19 @@ spec: rms/contract/v0.1
 name: "audit-rms-project"
 version: 1
 kind: command
-meaning: "Audit a committed RMS project for production blockers across semantic revision integrity, protocol and artifact composition, resource closure, authority containment, properties, traces, implementation structure, evidence, and provenance."
+meaning: "Audit a committed RMS project for production blockers and regenerate every deterministic smoke proof from the committed implementation."
 preconditions:
   - id: "accepts-1"
-    statement: "A canonical RMS project root with an optional strict production policy."
+    statement: "A canonical RMS project root with an optional strict production policy, proof timeout, or proof dry-run."
 postconditions:
   - id: "ensures-1"
-    statement: "The report distinguishes pass, failure, review-required, and not-applicable outcomes with source provenance."
+    statement: "Strict mode regenerates trace, property, and reusable-package proofs and compares them with committed canonical evidence."
   - id: "ensures-2"
-    statement: "Strict mode rejects unresolved protocol routes, resource leaks, undeclared authority, artifact incompatibility, unrealized temporal claims, broken system traces, semantic drift, and placeholder evidence."
+    statement: "Proof dry-run lists executable commands but cannot produce a production pass."
+  - id: "ensures-3"
+    statement: "Production-file mutation caused by a proof command is detected and rejected."
 failure_categories:
   - id: "rejects-1"
-    statement: "Invalid roots, unreadable artifacts, or production claims whose required evidence cannot be evaluated."
+    statement: "Invalid roots, stale or hand-authored proof, proof timeout, source mutation, stale package output, semantic drift, placeholder evidence, or uncommitted production claims."
 compatibility:
   policy: backward-compatible-within-major

@@ -2,17 +2,19 @@ spec: rms/contract/v0.1
 name: "run-semantic-properties"
 version: 1
 kind: command
-meaning: Run binding commands selected by the declared property or fuzz realization profile without changing the semantic claim.
+meaning: "Execute each semantic property realization independently through its exact runner, generator, operation, and oracle."
 preconditions:
   - id: "accepts-1"
-    statement: "implementation target with a property or fuzz realization whose command resolves through the binding"
+    statement: "An implementation binding with one or more realizations for the requested smoke, CI, or nightly profile."
+  - id: "accepts-2"
+    statement: "Exact runner metadata and generator metadata for generated or exhaustive strategies."
 postconditions:
-  - id: explicit-outcome
-    statement: "The command returns an explicit accepted or rejected outcome."
-  - id: selected-profile-only
-    statement: The command runs only realizations matching the requested profile and reports the declared strategy.
+  - id: "ensures-1"
+    statement: "Shared shell commands still execute once per property and receive the requested property and runner identities."
+  - id: "ensures-2"
+    statement: "Reports identify each property, strategy, runner, result, output, and counterexample independently."
 failure_categories:
   - id: "rejects-1"
-    statement: "missing declared property or fuzz verification command"
+    statement: "Missing runners or generators, fixed corpora mislabeled as generated coverage, commands that cannot select the requested runner, timeout, failed oracle, or unexecuted realizations."
 compatibility:
   policy: backward-compatible-within-major

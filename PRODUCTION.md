@@ -107,7 +107,7 @@ rms spec apply <module.yaml|implementation.yaml> --change-yaml '<semantic-change
 rms spec check <module.yaml|implementation.yaml>
 ```
 
-Inspect `final_machine` before source edits. Product variants must replace generic scaffold cases, every transition must name its semantic case, and every ordering/safety/bounded/parser/numeric law must have a matching property. Contract operations use `direction: provided` for module-owned surfaces and `direction: required` for consumer expectations; do not publish a dependency contract to make it editable. Non-corpus property realizations name an exact binding `path#symbol` harness, and a generated-property harness must generate rather than return fixed examples. Generated property evidence is production-blocking until an executed command and observed result replace the obligation. Spec, machine, and surface apply record their change and reseal canonical semantics. Machine apply does not manufacture replay evidence; traces must come from implemented transition paths and match the exact canonical outputs. Direct changes to module, local contract, or implementation semantics invalidate the seal and fail strict audit. Public domain values keep private fields and validated constructors; `allowed_public_field_structs` is limited to declared envelopes and transition/provenance records.
+Inspect `final_machine` before source edits. Product variants must replace generic scaffold cases, every transition must name its semantic case, and every ordering/safety/bounded/parser/numeric law must have a matching property. Contract operations use `direction: provided` for module-owned surfaces and `direction: required` for consumer expectations; do not publish a dependency contract to make it editable. Every property realization names an exact runner; generated or exhaustive strategies also name a generator, and the runner must execute the generator, semantic operation, and oracle. Spec, machine, and surface apply record their change and reseal canonical semantics. Machine apply does not manufacture replay evidence: a declared producer must call the real transition-record path, and `rms trace run --record` is the only supported way to update active bundles. Direct changes to canonical semantics invalidate the seal and fail strict audit.
 
 Before implementation, also classify the universal system semantics: versioned artifacts and transformations, ordered cross-module protocols, resource ownership and closure, privileged/unsafe/foreign authority, and always/eventually/bounded temporal guarantees. Declare only the structures the product actually needs, but never leave these concerns implicit when correctness depends on them.
 
@@ -155,6 +155,10 @@ Before completion:
 ```bash
 rms validate --root .
 rms compose --root .
+# For each implementation with executable proofs:
+rms trace run <implementation.yaml> --profile smoke --record
+rms trace run <implementation.yaml> --profile smoke
+rms property run <implementation.yaml> --profile smoke
 rms gate --root .
 git add .
 git commit -m "Implement RMS candidate"
@@ -181,7 +185,7 @@ During work in progress, evidence may be temporary. Before production:
 - replace “local workspace,” “before first git commit,” “source revision: unknown,” and scaffold language;
 - rerun `rms audit --root . --strict`.
 
-Strict audit intentionally fails outside a git checkout or when active evidence is unpinned.
+Strict audit intentionally fails outside a git checkout or when active evidence is unpinned. It executes declared deterministic smoke proofs as trusted project code, compares regenerated traces and reusable packages with committed artifacts, and fails if a proof command mutates a production file. Inspect the command plan first with `rms audit --root . --strict --dry-run` when needed; dry-run cannot produce a production pass.
 Strict audit also fails when production-relevant implementation, manifest, contract, evidence, role, or agent-guidance files are dirty or untracked. Commit the production candidate before claiming `rms audit --root . --strict` as release evidence.
 
 Repository-root strict audit treats checked-in `examples/` as illustrative by default. Use `rms audit --root . --strict --include-examples` when examples are part of the production claim, or audit an examples subdirectory directly when that example is the target.

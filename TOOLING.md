@@ -82,6 +82,7 @@ rms impact [<git-spec>] [--root <path>] [--json]
 rms gate [<git-spec>] [--root <path>] [--dry-run] [--json]
 rms atlas <module.yaml> [--root <path>] [--output <directory>] [--force]
 rms structure <implementation.yaml> [--json]
+rms trace run <implementation.yaml> [--profile smoke|ci|nightly] [--record] [--dry-run] [--json] [--timeout-seconds <seconds>]
 rms trace check <trace-bundle.yaml|json> [--json]
 rms trace replay <trace-bundle.yaml|json> [--json]
 rms trace diagnose <trace-bundle.yaml|json> [--json]
@@ -97,7 +98,7 @@ rms check-compat <old-module.yaml> <new-module.yaml>
 rms package <module.yaml> [--output <directory>]
 rms verify-package <package-directory>
 rms conformance <module.yaml> [--implementation implementation.yaml] [--strict]
-rms audit --root <path> [--strict] [--include-examples] [--json]
+rms audit --root <path> [--strict] [--include-examples] [--dry-run] [--proof-timeout-seconds <seconds>] [--json]
 rms verify <implementation.yaml|composite-module.yaml>
 ```
 
@@ -263,7 +264,7 @@ roles:
 
 Agents may add small private pure helpers inside declared pure role files. Private IO helpers are not allowed in pure roles; IO must be represented as declared effects plus effect results and executed only in adapter, port, or effect-executor roles. Inspectable boundary IO requires machine effects, typed results, atomic protocols, and dedicated executor ownership. Effectful stateful machines declare exact machine-driver and transition-record callables. Each executor role names its exact effect and uses a dedicated role path separate from transition and machine-driver code. Each protocol binds an exact executor symbol and a matching effectful `effect-executor` semantic function. Atomicity is checked per protocol: one-request executors contain no control loop, while aggregate executors require their own justification and evidence. Reusable IO mechanics may live in a private `effect_support` role, but that role cannot construct machine state or transitions, call the driver, or serve as a public/runnable entrypoint. Effect-emitting runnable surfaces delegate to an exact callable that reaches the driver. The driver retains complete records, advances from `state_after`, executes `output.effects`, and owns the complete repeated transition/effect/result cycle; surfaces, adapters, and executors do not loop around a one-step driver or own follow-up, retry, compensation, stop/continue policy, or state progression. Expected failures remain typed in transition `rejection`; trace records must match their canonical case's exact state change and outputs.
 
-Property realization names are claims, not labels of convenience. Use `deterministic-corpus` for fixed examples, `deterministic-exhaustive` only for complete finite spaces, `generated-property` for generated cases, and `coverage-fuzzer` for coverage-guided fuzzing. Every non-corpus realization declares an exact relative `path#symbol` harness; inspectable bindings prove that symbol exists. A generated-property harness that returns a fixed literal collection is still a corpus. Strict audit rejects open-ended fuzz claims backed only by a corpus or a decorative realization label.
+Property realization names are claims, not labels of convenience. Use `deterministic-corpus` for fixed examples, `deterministic-exhaustive` only for complete finite spaces, `generated-property` for generated cases, and `coverage-fuzzer` for coverage-guided fuzzing. Every realization declares an exact relative `path#symbol` runner. Generated-property and deterministic-exhaustive strategies also declare a generator. Inspectable bindings prove that the runner calls its generator, a declared semantic operation, and a binding-native oracle. A fixed literal collection is still a corpus.
 
 Use `properties.add`, `properties.set`, and `properties.remove` through `rms spec apply` to revise property semantics. RMS synchronizes module properties with implementation realization metadata. Newly generated property evidence is deliberately an unmet obligation: it blocks strict production claims until it is replaced with the exact command, observed result, and replay or coverage summary.
 
@@ -308,7 +309,7 @@ The composition checker is semantic and language-neutral. It checks required mod
 
 ### `audit`
 
-Aggregates project-readiness findings from validation, composition, semantic revision integrity, implementation structure, trace coverage, compatibility, and provenance. Strict mode rejects direct canonical drift, changed or missing revision records, broken supersession chains, unnamed or unreplayed transition cases, uncovered workflow events, risk-bearing laws without properties, public domain-field bypasses, unresolved runnable delegation, and existing evidence/provenance blockers.
+Aggregates project-readiness findings from validation, composition, semantic revision integrity, implementation structure, trace coverage, compatibility, and provenance. Strict mode also executes deterministic smoke trace and property proofs from committed code, rebuilds reusable packages, compares existing package output, and fails when proof commands mutate production files. `--dry-run` lists proof commands but cannot produce a production pass.
 
 ### `structure`
 
@@ -316,9 +317,9 @@ Prints a focused inner-structure report for an `implementation.yaml`. The report
 
 ### `trace`
 
-Checks, replays, diagnoses, and stitches recorded trace bundles without requiring a runtime. A local trace bundle is a JSON or YAML evidence file with `spec: rms/trace-bundle/v0.1` and a `records`, `transitions`, or `journal` array. Each record may include `state_before`, `input`, `output`, `state_after`, `source`, and record-level diagnostics.
+Generates, checks, replays, diagnoses, and stitches transition records without requiring a runtime. A local trace bundle is a JSON or YAML evidence file with `spec: rms/trace-bundle/v0.1` and a `records`, `transitions`, or `journal` array. Each record may include `state_before`, `input`, `output`, `state_after`, `source`, and record-level diagnostics.
 
-`rms trace check` validates recorded structure, transition output, state continuity, and envelope completeness when envelopes are present. `rms trace replay` reconstructs the recorded timeline from local evidence. `rms trace stitch` joins public-message sends and receives across bundles into `rms/system-trace/v0.1`, enforcing one matching handoff and causal continuity per correlation. `rms trace diagnose` accepts either local or stitched traces and identifies the first bad transition or handoff. These commands inspect files only; they do not route messages, dispatch effects, or impose a runtime framework.
+`rms trace run` executes each declared producer with `RMS_TRACE_RUNNER` and a temporary `RMS_TRACE_OUTPUT`. Producers must call the declared transition-record function and serialize returned records. Normal mode validates generated bundles and compares their canonical values with committed evidence; `--record` is the only supported way to replace active bundles; `--dry-run` prints commands and output paths without executing project code. `rms trace check` validates recorded structure, transition output, state continuity, and envelope completeness. `replay`, `stitch`, and `diagnose` remain file-based diagnostics and do not impose a runtime framework.
 
 `rms verify <implementation.yaml>` also checks declared local trace bundles from `architecture.roles.replay_bundle`, `architecture.roles.trace_evidence`, semantic-function `evidence.traces`, and `verification/traces/`. Native build/test commands remain the binding's responsibility; trace bundle checking is RMS's structural evidence layer.
 
@@ -559,15 +560,15 @@ Checks and runs semantic property/fuzz evidence. RMS properties are language-neu
 
 ```bash
 rms property check <module.yaml|implementation.yaml> [--strict] [--json]
-rms property run <implementation.yaml> [--profile smoke|ci|nightly] [--json]
+rms property run <implementation.yaml> [--profile smoke|ci|nightly] [--dry-run] [--json] [--timeout-seconds <seconds>]
 rms property replay <counterexample.yaml> [--json]
 ```
 
-`check` reports missing input spaces, oracles, evidence, property/fuzz commands, and unreplayable counterexamples. `run` delegates to `commands.properties` and `commands.fuzz` declared by the implementation binding. `replay` validates `rms/property-counterexample/v0.1` metadata and runs its replay command when present.
+`check` reports missing input spaces, generators, runners, operation calls, oracles, evidence, property/fuzz commands, and unreplayable counterexamples. `run` executes every realization independently and sets `RMS_PROPERTY_ID`, `RMS_PROPERTY_RUNNER`, and `RMS_PROPERTY_GENERATOR`, even when several realizations share one command. It captures the exact failing property and command output. `replay` validates `rms/property-counterexample/v0.1` metadata and runs its replay command when present.
 
 ### `package`
 
-Assembles and verifies a portable module package directory from the canonical manifest, referenced contracts and evidence, sibling implementation binding when present, declared implementation role files and public facade, generated conformance report, and `PACKAGE.json` metadata with source revision, validator identity, included files, sizes, and SHA-256 checksums. For a reusable module, the command records the concrete result in declared package evidence, rebuilds with that proof, and verifies the final artifact. The resulting directory may be archived or used as an input to another registry or artifact system.
+Assembles and verifies a portable module package directory from the canonical manifest, referenced contracts and evidence, sibling implementation binding when present, declared implementation role files and public facade, generated conformance report, and `PACKAGE.json` metadata with source revision, validator identity, included files, sizes, and SHA-256 checksums. For a reusable module, the command records the concrete result in declared package evidence, rebuilds with that proof, and verifies the final artifact. Strict audit independently rebuilds reusable packages in a temporary directory and rejects an existing package whose payload manifest is stale. The resulting directory may be archived or used as an input to another registry or artifact system.
 
 Reusable modules are defined by RMS semantics, not by a language package manager. A reusable provider should declare `provides.capabilities[]` with a contract, expose one public facade in `implementation.yaml`, include package/reuse evidence, and route native package exports to that facade. Expected-result prose is only an obligation; the recorded `rms package` pass is proof. Consumer modules declare `requires.capabilities[]` with the expected contract and revise that expectation using `contracts.set` with `direction: required`; this does not publish or transfer provider ownership. Consumers should not import provider `representation`, `transition`, parser, adapter, or port internals. Local implementation links are changed through language-neutral `binding_dependencies`; binding adapters realize native allowlists and package metadata.
 

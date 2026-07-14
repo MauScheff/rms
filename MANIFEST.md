@@ -708,7 +708,9 @@ Invariant entries declare `authority` as `representation`, `constructor`, `parse
 
 Composite modules may declare `verification.delegations[]` with `proves`, `provider_module`, `provider_law`, `provider_property`, `through_export`, and `evidence`. The record discharges a parent property obligation only when `rms compose` resolves every link.
 
-Ordering, safety, bounded, normalization, parser, and numeric laws also declare semantic properties with input spaces and oracles. A fixed example corpus does not satisfy an open-ended generated-property or coverage-fuzzer claim. Every non-corpus realization binds an exact relative `path#symbol` harness, and generated property evidence remains an obligation until an executed command and observed result replace it.
+Ordering, safety, bounded, normalization, parser, and numeric laws also declare semantic properties with input spaces and oracles. A fixed example corpus does not satisfy an open-ended generated-property or coverage-fuzzer claim. Every executable realization binds an exact relative `path#symbol` runner; generated-property and deterministic-exhaustive strategies also bind a generator. The runner calls the generator when required, executes a declared semantic operation, and applies an oracle. Generated property evidence remains an obligation until that exact realization executes.
+
+Production trace bundles declare `architecture.trace.producers[]` with a profile, bundle, command, and exact runner. Inspectable runners call `architecture.machine.transition_record_function` and serialize returned records. `rms trace run --record` validates before replacing committed bundles; normal runs regenerate into temporary paths and compare canonical values. Strict audit reruns smoke producers and property realizations from committed code, rebuilds reusable packages, and rejects proof commands that mutate production files.
 
 ### Applied Semantic Revision
 

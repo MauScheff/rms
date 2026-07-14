@@ -1,139 +1,245 @@
-spec: rms/trace-bundle/v0.1
-machine: TicTacToeBoundaryMachine
-records:
-  - id: request-valid-move
-    state_before: AwaitingInput
-    input:
-      command_id: run-move-1
-      target_machine: TicTacToeBoundaryMachine
-      correlation_id: game-1
-      causation_id: user-1
-      idempotency_key: game-1-move-1
-      command:
-        tag: RunMove
-        text: A1
-    output:
-      next_state: AwaitingRulesResult
-      events:
-        - event_id: move-parsed-1
-          source_machine: TicTacToeBoundaryMachine
-          correlation_id: game-1
-          causation_id: run-move-1
-          sequence: 1
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event: { tag: MoveParsed }
-        - event_id: rules-requested-1
-          source_machine: TicTacToeBoundaryMachine
-          correlation_id: game-1
-          causation_id: run-move-1
-          sequence: 2
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event: { tag: RulesInvocationRequested }
-      commands: []
-      effects:
-        - effect_id: rules-bridge-1
-          requester: TicTacToeBoundaryMachine
-          correlation_id: game-1
-          causation_id: run-move-1
-          idempotency_key: game-1-move-1
-          effect: { tag: InvokeRulesBridge }
-      reply: null
-      rejection: null
-    state_after: AwaitingRulesResult
-    source:
-      file: src/transition.mjs
-      function: transitionRecord
-      branch: RunMove
-  - id: complete-valid-move
-    state_before: AwaitingRulesResult
-    input:
-      effect_id: rules-bridge-1
-      requester: TicTacToeBoundaryMachine
-      correlation_id: game-1
-      causation_id: run-move-1
-      status: succeeded
-      effect_result: { tag: RulesBridgeSucceeded }
-    output:
-      next_state: AwaitingInput
-      events:
-        - event_id: rules-completed-1
-          source_machine: TicTacToeBoundaryMachine
-          correlation_id: game-1
-          causation_id: rules-bridge-1
-          sequence: 3
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event: { tag: RulesInvocationCompleted }
-      commands: []
-      effects: []
-      reply: { tag: Accepted }
-      rejection: null
-    state_after: AwaitingInput
-    source:
-      file: src/transition.mjs
-      function: transitionRecord
-      branch: RulesBridgeSucceeded
-  - id: reject-malformed-coordinate
-    scenario_start: true
-    state_before: AwaitingInput
-    input:
-      command_id: run-move-malformed
-      target_machine: TicTacToeBoundaryMachine
-      correlation_id: malformed-1
-      causation_id: user-2
-      idempotency_key: null
-      command:
-        tag: RunMove
-        text: ""
-    output:
-      next_state: AwaitingInput
-      events:
-        - event_id: run-rejected-1
-          source_machine: TicTacToeBoundaryMachine
-          correlation_id: malformed-1
-          causation_id: run-move-malformed
-          sequence: 1
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event: { tag: RunRejected }
-      commands: []
-      effects: []
-      reply: null
-      rejection: { tag: MalformedInput }
-    state_after: AwaitingInput
-    source:
-      file: src/transition.mjs
-      function: transitionRecord
-      branch: RunRejected
-  - id: reject-rules-bridge-failure
-    scenario_start: true
-    state_before: AwaitingRulesResult
-    input:
-      effect_id: rules-bridge-failed-1
-      requester: TicTacToeBoundaryMachine
-      correlation_id: game-failed
-      causation_id: run-move-failed
-      status: failed
-      effect_result: { tag: RulesBridgeFailed }
-    output:
-      next_state: AwaitingInput
-      events:
-        - event_id: run-rejected-failed
-          source_machine: TicTacToeBoundaryMachine
-          correlation_id: game-failed
-          causation_id: rules-bridge-failed-1
-          sequence: 1
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event: { tag: RunRejected }
-      commands: []
-      effects: []
-      reply: null
-      rejection: { tag: RulesBridgeFailure }
-    state_after: AwaitingInput
-    source:
-      file: src/transition.mjs
-      function: transitionRecord
-      branch: RulesBridgeFailed
+{
+  "spec": "rms/trace-bundle/v0.1",
+  "machine": "TicTacToeBoundaryMachine",
+  "records": [
+    {
+      "scenario_start": true,
+      "tag": "TicTacToeBoundaryTransitionRecord",
+      "state_before": {
+        "tag": "AwaitingInput",
+        "acceptedMoveIndexes": []
+      },
+      "state_after": {
+        "tag": "AwaitingRulesResult",
+        "acceptedMoveIndexes": [],
+        "move": {
+          "tag": "ParsedMove",
+          "cell": {
+            "tag": "Cell",
+            "row": 0,
+            "column": 0,
+            "index": 0
+          }
+        }
+      },
+      "input": {
+        "tag": "Command",
+        "command": {
+          "tag": "RunMove",
+          "text": "A1"
+        }
+      },
+      "output": {
+        "tag": "TicTacToeBoundaryTransition",
+        "next_state": {
+          "tag": "AwaitingRulesResult",
+          "acceptedMoveIndexes": [],
+          "move": {
+            "tag": "ParsedMove",
+            "cell": {
+              "tag": "Cell",
+              "row": 0,
+              "column": 0,
+              "index": 0
+            }
+          }
+        },
+        "events": [
+          {
+            "tag": "MoveParsed",
+            "move": {
+              "tag": "ParsedMove",
+              "cell": {
+                "tag": "Cell",
+                "row": 0,
+                "column": 0,
+                "index": 0
+              }
+            }
+          },
+          {
+            "tag": "RulesInvocationRequested"
+          }
+        ],
+        "commands": [],
+        "effects": [
+          {
+            "tag": "InvokeRulesBridge",
+            "acceptedMoveIndexes": [],
+            "move": {
+              "tag": "ParsedMove",
+              "cell": {
+                "tag": "Cell",
+                "row": 0,
+                "column": 0,
+                "index": 0
+              }
+            }
+          }
+        ],
+        "reply": null,
+        "rejection": null
+      },
+      "source": {
+        "file": "src/transition.mjs",
+        "function": "transitionRecord",
+        "branch": "RunMove"
+      }
+    },
+    {
+      "scenario_start": false,
+      "tag": "TicTacToeBoundaryTransitionRecord",
+      "state_before": {
+        "tag": "AwaitingRulesResult",
+        "acceptedMoveIndexes": [],
+        "move": {
+          "tag": "ParsedMove",
+          "cell": {
+            "tag": "Cell",
+            "row": 0,
+            "column": 0,
+            "index": 0
+          }
+        }
+      },
+      "state_after": {
+        "tag": "AwaitingInput",
+        "acceptedMoveIndexes": [
+          0
+        ]
+      },
+      "input": {
+        "tag": "EffectResult",
+        "effectResult": {
+          "tag": "RulesBridgeSucceeded",
+          "result": {
+            "outcome": {
+              "tag": "Accepted"
+            }
+          }
+        }
+      },
+      "output": {
+        "tag": "TicTacToeBoundaryTransition",
+        "next_state": {
+          "tag": "AwaitingInput",
+          "acceptedMoveIndexes": [
+            0
+          ]
+        },
+        "events": [
+          {
+            "tag": "RulesInvocationCompleted"
+          }
+        ],
+        "commands": [],
+        "effects": [],
+        "reply": {
+          "tag": "Accepted",
+          "value": {
+            "outcome": {
+              "tag": "Accepted"
+            }
+          }
+        },
+        "rejection": null
+      },
+      "source": {
+        "file": "src/transition.mjs",
+        "function": "transitionRecord",
+        "branch": "RulesBridgeSucceeded"
+      }
+    },
+    {
+      "scenario_start": true,
+      "tag": "TicTacToeBoundaryTransitionRecord",
+      "state_before": {
+        "tag": "AwaitingInput",
+        "acceptedMoveIndexes": []
+      },
+      "state_after": {
+        "tag": "AwaitingInput",
+        "acceptedMoveIndexes": []
+      },
+      "input": {
+        "tag": "Command",
+        "command": {
+          "tag": "RunMove",
+          "text": ""
+        }
+      },
+      "output": {
+        "tag": "TicTacToeBoundaryTransition",
+        "next_state": {
+          "tag": "AwaitingInput",
+          "acceptedMoveIndexes": []
+        },
+        "events": [
+          {
+            "tag": "RunRejected",
+            "reason": "MalformedInput"
+          }
+        ],
+        "commands": [],
+        "effects": [],
+        "reply": null,
+        "rejection": "MalformedInput"
+      },
+      "source": {
+        "file": "src/transition.mjs",
+        "function": "transitionRecord",
+        "branch": "RunRejected"
+      }
+    },
+    {
+      "scenario_start": true,
+      "tag": "TicTacToeBoundaryTransitionRecord",
+      "state_before": {
+        "tag": "AwaitingRulesResult",
+        "acceptedMoveIndexes": [],
+        "move": {
+          "tag": "ParsedMove",
+          "cell": {
+            "tag": "Cell",
+            "row": 0,
+            "column": 0,
+            "index": 0
+          }
+        }
+      },
+      "state_after": {
+        "tag": "AwaitingInput",
+        "acceptedMoveIndexes": []
+      },
+      "input": {
+        "tag": "EffectResult",
+        "effectResult": {
+          "tag": "RulesBridgeFailed",
+          "reason": "bridge unavailable"
+        }
+      },
+      "output": {
+        "tag": "TicTacToeBoundaryTransition",
+        "next_state": {
+          "tag": "AwaitingInput",
+          "acceptedMoveIndexes": []
+        },
+        "events": [
+          {
+            "tag": "RunRejected",
+            "reason": "RulesBridgeFailure"
+          }
+        ],
+        "commands": [],
+        "effects": [],
+        "reply": null,
+        "rejection": "RulesBridgeFailure"
+      },
+      "source": {
+        "file": "src/transition.mjs",
+        "function": "transitionRecord",
+        "branch": "RulesBridgeFailed"
+      }
+    }
+  ]
+}

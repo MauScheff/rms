@@ -2,22 +2,22 @@
 
 Promise:
 
-- Law `non-corpus-property-realization-is-code-backed` requires generated, exhaustive, coverage-guided, and model-checking claims to name an exact binding harness.
+- Law `non-corpus-property-realization-is-code-backed` requires generated, exhaustive, coverage-guided, and model-checking claims to name exact binding generators and runners.
 
 Scenario:
 
-- Check a generated-property realization with no harness.
-- Check a realization whose `path#symbol` reference names a missing source symbol.
-- Check a deterministic corpus with no harness and a generated realization with an existing Rust function.
+- Check generated-property realizations with a missing generator, missing runner, or unresolved runner symbol.
+- Check a runner that calls an algorithmic generator, the declared operation, and an assertion oracle.
+- Check a fixed literal collection mislabeled as generated-property.
 
 Command/tool:
 
-- `cargo test --manifest-path tooling/rust/rms/Cargo.toml property_realizations_require_existing_non_corpus_harness_symbols`
+- `cargo test --manifest-path tooling/rust/rms/Cargo.toml property_realizations_require_generators_runners_operations_and_oracles`
 
 Observed result:
 
 - The regression test passed.
-- RMS emitted `evidence.property-realization-harness-missing` for the absent reference and `structure.property-realization-harness-symbol-missing` for the absent symbol.
-- The deterministic corpus and existing `src/property.rs#generate_values` harness produced no harness diagnostic.
+- RMS emitted distinct generator, runner, operation, and oracle diagnostics for incomplete realizations.
+- The complete runner over `src/property.rs#generate_values` passed, while the fixed generator was classified as a deterministic corpus.
 
 Source revision: resolved and recorded by `rms audit --strict` for the committed release candidate.

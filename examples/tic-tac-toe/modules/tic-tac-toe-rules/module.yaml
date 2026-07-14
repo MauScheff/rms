@@ -79,7 +79,8 @@ x-scaffold:
   - law-evidence
 x-rms:
   semantic_revision:
-    digest: sha256:0e740083afb07c11e575d888eedbebe3114fe2f5e8e1e1a32b676a83465c9215
-    change_record: verification/machine-changes/machine-change-d095cdfe55af.yaml
-    applied_by: rms machine apply
-    change_record_digest: sha256:d095cdfe55af61196a05dbd15c7387325011eed5507b9f07768c3de2e86f8a5c
+    digest: sha256:7bb10b36b1faf3d5dc350d85fe89b9de5754d77a656e88b651e52e26eef55867
+    change_record: verification/changes/finalize-tic-tac-toe-rule-executable-trace-proof-support-a464339ee337.yaml
+    applied_by: rms spec apply
+    change_record_digest: sha256:a464339ee33769d30df67b3c9bbc1955b76709dba6de774c6b87c47e0da975d0
+  last_semantic_intent: Finalize tic-tac-toe rule executable trace proof support.

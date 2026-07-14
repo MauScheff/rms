@@ -1,56 +1,48 @@
-spec: rms/trace-bundle/v0.1
-machine: RustExampleMachine
-records:
-  - id: describe-widget-accepted
-    state_before: Ready
-    input:
-      command_id: describe-widget-1
-      target_machine: RustExampleMachine
-      correlation_id: rust-example-correlation-1
-      causation_id: user-request-1
-      idempotency_key: null
-      command:
-        tag: Describe
-        widget_name: example
-    output:
-      next_state: Ready
-      events:
-        - event:
-            tag: WidgetDescribed
-      commands: []
-      effects: []
-      reply:
-        tag: Description
-        description: example
-      rejection: null
-    state_after: Ready
-    source:
-      file: src/widget.rs
-      function: transition_record
-      branch: DescribeWidget
-  - id: widget-constructor-rejected-empty-name
-    state_before: Ready
-    input:
-      command_id: construct-widget-1
-      target_machine: RustExampleMachine
-      correlation_id: rust-example-correlation-2
-      causation_id: user-request-2
-      idempotency_key: null
-      command:
-        tag: RejectEmptyName
-        name: ""
-    output:
-      next_state: Ready
-      events:
-        - event:
-            tag: WidgetRejected
-      commands: []
-      effects: []
-      reply: null
-      rejection:
-        tag: EmptyWidgetName
-    state_after: Ready
-    source:
-      file: src/widget.rs
-      function: transition_record
-      branch: RejectEmptyWidgetName
+{
+  "machine": "RustExampleMachine",
+  "records": [
+    {
+      "input": "Describe { widget: Widget { name: \"example\" } }",
+      "output": {
+        "commands": [],
+        "effects": [],
+        "events": [
+          "WidgetDescribed"
+        ],
+        "next_state": "Ready",
+        "rejection": null,
+        "reply": "Description(\"example\")"
+      },
+      "scenario_start": true,
+      "source": {
+        "branch": "DescribeWidget",
+        "file": "src/widget.rs",
+        "function": "transition_record"
+      },
+      "state_after": "Ready",
+      "state_before": "Ready"
+    },
+    {
+      "input": "RejectEmptyName { name: \"\" }",
+      "output": {
+        "commands": [],
+        "effects": [],
+        "events": [
+          "WidgetRejected"
+        ],
+        "next_state": "Ready",
+        "rejection": "EmptyWidgetName",
+        "reply": null
+      },
+      "scenario_start": true,
+      "source": {
+        "branch": "RejectEmptyWidgetName",
+        "file": "src/widget.rs",
+        "function": "transition_record"
+      },
+      "state_after": "Ready",
+      "state_before": "Ready"
+    }
+  ],
+  "spec": "rms/trace-bundle/v0.1"
+}

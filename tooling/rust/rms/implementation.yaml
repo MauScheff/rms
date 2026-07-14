@@ -9,6 +9,8 @@ commands:
   verify: cargo test --manifest-path Cargo.toml
   format: cargo fmt --manifest-path Cargo.toml --check
   fuzz: cargo test --manifest-path Cargo.toml schema_validation_reports_shape_errors
+  properties: cargo test --manifest-path Cargo.toml "${RMS_PROPERTY_RUNNER##*#}"
+  trace: cargo test --manifest-path Cargo.toml "${RMS_TRACE_RUNNER##*#}"
 toolchain:
   cargo_manifest: Cargo.toml
   package: rms
@@ -48,8 +50,9 @@ architecture:
       realizations:
       - profile: smoke
         strategy: generated-property
-        command: fuzz
-        harness: src/main.rs#generate_malformed_artifact_cases
+        command: properties
+        generator: src/main.rs#generate_malformed_artifact_cases
+        runner: src/main.rs#schema_validation_reports_shape_errors
     properties:
     - id: canonical-semantic-revision-drift-is-rejected
       proves: canonical-semantics-match-cli-applied-revision
@@ -68,7 +71,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#semantic_revision_detects_direct_canonical_manifest_drift
     - id: declared-transition-cases-have-replay
       proves: transition-cases-are-declared-and-replayed
       kind: property
@@ -86,7 +90,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#strict_trace_coverage_requires_each_named_case_and_workflow_event
     - id: public-domain-field-bypass-is-rejected
       proves: public-domain-values-preserve-validity
       kind: property
@@ -104,7 +109,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#rust_typing_rejects_public_domain_field_allowlist_bypass
     - id: risk-law-property-link-is-required
       proves: risk-bearing-laws-have-semantic-properties
       kind: property
@@ -122,7 +128,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#risk_bearing_law_requires_matching_semantic_property
     - id: runnable-delegation-resolves-to-declared-role
       proves: runnable-delegation-has-semantic-owner
       kind: property
@@ -140,7 +147,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#runnable_surface_requires_declared_delegate_role_and_effect_policy
     - id: gate-pass-requires-structural-preflight
       proves: gate-pass-has-no-known-production-blockers
       kind: property
@@ -160,7 +168,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#gate_preflight_ignores_only_final_worktree_provenance
     - id: binding-transition-types-match-canonical-machine
       proves: binding-transition-signature-realizes-canonical-types
       kind: property
@@ -179,7 +188,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#rust_typing_accepts_declared_stateful_representation
     - id: init-establishes-git-worktree
       proves: bootstrap-creates-provenance-worktree
       kind: property
@@ -198,7 +208,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#init_scaffold_generates_valid_system_artifacts
     - id: semantic-plan-prompt-is-actionable-without-external-examples
       proves: semantic-plan-schema-is-self-contained
       kind: property
@@ -218,7 +229,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#semantic_only_plan_keeps_implementation_sections_null
     - id: transition-case-source-conformance
       proves: transition-cases-are-code-backed
       kind: conformance
@@ -241,7 +253,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: fuzz
+        command: properties
+        runner: src/main.rs#structure_rejects_transition_case_drift_and_unreachable_states
     - id: generated-output-discovery-is-excluded
       proves: generated-package-output-is-derived
       kind: conformance
@@ -262,7 +275,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: fuzz
+        command: properties
+        runner: src/main.rs#generated_package_output_is_not_rediscovered_as_live_project_semantics
     - id: effectful-driver-preserves-transition-records
       proves: runnable-effects-are-transition-driven
       kind: conformance
@@ -282,7 +296,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#js_binding_rejects_output_only_effectful_machine_driver
     - id: message-envelope-binding-conformance
       proves: declared-message-envelopes-are-binding-realized
       kind: conformance
@@ -302,7 +317,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#js_binding_rejects_declared_message_envelope_without_representation
     - id: transition-arithmetic-totality
       proves: transition-arithmetic-is-total
       kind: conformance
@@ -322,7 +338,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#rust_transition_arithmetic_distinguishes_unchecked_and_checked_indices
     - id: property-evidence-placeholder-detection
       proves: property-evidence-obligation-is-not-proof
       kind: property
@@ -340,26 +357,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
-    - id: property-realization-harness-conformance
-      proves: non-corpus-property-realization-is-code-backed
-      kind: property
-      input_space:
-        description: Property realization fixtures spanning fixed corpus, exhaustive enumeration, generated cases, coverage fuzzing, and model checking.
-      operation:
-        command: check-property-evidence
-      oracle:
-      - Non-corpus realization without an exact harness is rejected.
-      - Inspectable bindings reject a declared harness symbol absent from source.
-      - Deterministic corpus remains valid without a harness.
-      evidence:
-        path: verification/properties/property_realization_harness_conformance.md
-      counterexamples:
-        path: verification/fuzz/counterexamples/property-harness
-      realizations:
-      - profile: smoke
-        strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#strict_audit_fresh_scaffold_has_no_placeholder_evidence
     - id: semantic-property-declarations-have-oracles
       proves: semantic-properties-are-canonical-reliability-evidence
       kind: invariant
@@ -380,7 +379,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#risk_bearing_law_requires_matching_semantic_property
     - id: protocol-aware-executor-control-flow
       proves: effect-executor-analysis-respects-protocol-atomicity
       kind: conformance
@@ -400,7 +400,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#aggregate_executor_loop_is_not_rejected_by_unrelated_atomic_protocol
     - id: composite-proof-delegation-resolution
       proves: composite-laws-may-delegate-proof-through-exports
       kind: conformance
@@ -423,7 +424,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#composite_proof_delegation_resolves_child_law_property_and_export
     - id: effect-support-ownership-boundary
       proves: shared-effect-support-cannot-own-workflow
       kind: conformance
@@ -445,7 +447,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#effect_support_is_private_mechanism_not_machine_progression
     - id: runnable-usage-and-smoke-resolution
       proves: runnable-surfaces-have-usage-and-smoke-proof
       kind: conformance
@@ -467,7 +470,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#verify_executes_declared_runnable_smoke_command
     - id: canonical-transition-trace-conformance
       proves: trace-records-conform-to-canonical-transitions
       kind: conformance
@@ -484,7 +488,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#trace_bundle_rejects_outputs_that_do_not_match_the_canonical_case
     - id: typed-transition-rejection-conformance
       proves: expected-rejections-remain-typed
       kind: conformance
@@ -501,7 +506,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#js_transition_rejection_channel_may_use_a_declared_output_factory
     - id: boundary-effect-protocol-conformance
       proves: effectful-boundaries-use-explicit-protocols
       kind: conformance
@@ -518,24 +524,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
-    - id: generated-property-harness-truthfulness
-      proves: generated-property-claims-use-generators
-      kind: conformance
-      input_space:
-        fixtures: generated harnesses and fixed literal case providers across inspectable bindings
-      operation: inspect non-corpus realization harness bodies
-      oracle:
-      - generator-backed harnesses pass
-      - fixed literal arrays labeled generated-property fail
-      evidence:
-        path: verification/properties/generated_property_harness_truthfulness.md
-      counterexamples:
-        path: verification/fuzz/counterexamples/property-truthfulness
-      realizations:
-      - profile: smoke
-        strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#inspectable_boundary_io_requires_a_protocol_and_exact_surface_callable
     - id: runnable-machine-reachability
       proves: runnable-surfaces-execute-declared-machines
       kind: conformance
@@ -552,7 +542,8 @@ architecture:
       realizations:
       - profile: smoke
         strategy: deterministic-corpus
-        command: verify
+        command: properties
+        runner: src/main.rs#runnable_surface_requires_declared_delegate_role_and_effect_policy
     - id: protocol-composition-closure
       proves: module-protocols-compose-by-contract
       kind: conformance
@@ -571,14 +562,12 @@ architecture:
       realizations:
       - profile: smoke
         strategy: model-checker
-        command: verify
-        harness: src/main.rs#compose_protocol_contracts
+        command: properties
+        runner: src/main.rs#compose_requires_one_protocol_owner_and_route_per_message
       temporal:
         pattern: always
         scope: composition
-        trigger: null
         condition: every public protocol message has exactly one compatible sender and receiver
-        bound: null
     - id: resource-lifecycle-closure
       proves: resource-lifecycles-close-on-terminal-paths
       kind: conformance
@@ -596,14 +585,12 @@ architecture:
       realizations:
       - profile: smoke
         strategy: model-checker
-        command: verify
-        harness: src/main.rs#validate_machine_resource_protocols
+        command: properties
+        runner: src/main.rs#resource_protocol_detects_terminal_path_leak
       temporal:
         pattern: resource-closure
         scope: resource
-        trigger: null
         condition: every acquired resource reaches a declared terminal disposition on every terminal machine path
-        bound: null
     - id: artifact-transformation-compatibility
       proves: artifact-transformations-preserve-declared-contracts
       kind: conformance
@@ -621,14 +608,12 @@ architecture:
       realizations:
       - profile: smoke
         strategy: model-checker
-        command: verify
-        harness: src/main.rs#compose_artifact_contracts
+        command: properties
+        runner: src/main.rs#compose_matches_required_and_provided_artifact_contracts
       temporal:
         pattern: always
         scope: artifact
-        trigger: null
         condition: every required artifact resolves to exactly one compatible provider contract
-        bound: null
     - id: authority-containment
       proves: privileged-authority-is-explicit-and-contained
       kind: conformance
@@ -646,14 +631,12 @@ architecture:
       realizations:
       - profile: smoke
         strategy: static-analyzer
-        command: verify
-        harness: src/main.rs#inspect_privileged_source_containment
+        command: properties
+        runner: src/main.rs#authority_check_rejects_unsafe_source_outside_bound_role
       temporal:
         pattern: always
         scope: platform
-        trigger: null
         condition: every privileged unsafe or foreign operation remains inside its declared authority role
-        bound: null
     - id: temporal-realization-conformance
       proves: temporal-properties-have-matching-realizations
       kind: conformance
@@ -672,14 +655,12 @@ architecture:
       realizations:
       - profile: smoke
         strategy: model-checker
-        command: verify
-        harness: src/main.rs#validate_temporal_target_report
+        command: properties
+        runner: src/main.rs#temporal_property_rejects_corpus_only_finite_proof
       temporal:
         pattern: always
         scope: composition
-        trigger: null
         condition: every declared temporal property uses a realization capable of proving its scope and bound
-        bound: null
     - id: cross-module-trace-causation
       proves: system-traces-preserve-message-causation
       kind: conformance
@@ -698,14 +679,52 @@ architecture:
       realizations:
       - profile: smoke
         strategy: model-checker
-        command: verify
-        harness: src/main.rs#build_system_trace_report
+        command: properties
+        runner: src/main.rs#trace_stitch_reports_first_cross_module_handoff
       temporal:
         pattern: precedence
         scope: composition
         trigger: protocol message is received
         condition: a matching causally prior send exists in the same correlation
-        bound: null
+    - id: property-realization-runner-conformance
+      proves: non-corpus-property-realization-is-code-backed
+      kind: property
+      input_space:
+        description: Property realization fixtures spanning fixed corpus, exhaustive enumeration, generated cases, coverage fuzzing, and model checking.
+      operation:
+        command: check-property-execution
+      oracle:
+      - Every realization without an exact runner is rejected.
+      - Generated and exhaustive realizations without an exact generator are rejected.
+      - Inspectable bindings reject absent runner or generator symbols.
+      - A runner must call its generator when declared, execute an operation, and apply an oracle.
+      evidence:
+        path: verification/properties/property_realization_runner_conformance.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/property-runner
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: properties
+        runner: src/main.rs#property_realizations_require_generators_runners_operations_and_oracles
+    - id: generated-property-realization-truthfulness
+      proves: generated-property-claims-use-generators
+      kind: conformance
+      input_space:
+        fixtures: generated case providers and fixed literal collections across inspectable bindings
+      operation: inspect generated-property generators and their exact runners
+      oracle:
+      - runners that call non-literal generators and execute an oracle pass
+      - fixed literal collections labeled generated-property fail
+      evidence:
+        path: verification/properties/generated_property_realization_truthfulness.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/property-truthfulness
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: properties
+        runner: src/main.rs#open_fuzz_claim_rejects_fixed_corpus_realization
   messages:
     command_envelope:
     - command_id
@@ -746,6 +765,12 @@ architecture:
     timeline_projection: verification/traces/semantic_change_record.yaml
     replay_bundle: verification/traces/semantic_change_record.yaml
     first_bad_transition: source-provenance-from-transition-record
+    producers:
+    - id: rms-workbench-semantic-change
+      profile: smoke
+      bundle: verification/traces/semantic_change_record.yaml
+      command: trace
+      runner: src/main.rs#produce_rms_workbench_trace
   machine:
     name: RmsWorkbenchMachine
     mode: boundary-machine
@@ -816,6 +841,7 @@ architecture:
     - ValidateRmsArtifacts
     - VerifyImplementation
     - AddRmsBinding
+    - RunTraceProducers
     observed_events: []
     events:
     - CommandCompleted
@@ -860,9 +886,11 @@ architecture:
       on: SemanticChangeRecordWriteRejected
       to: Ready
       case: SemanticChangeRecordWriteRejected
+      reply: SemanticChangeRejected
       rejection: SemanticChangeRecordWriteFailed
     driver_function: drive_rms_workbench
     transition_record_function: transition_record
+    resource_protocols: []
   roles:
     representation:
     - src/main.rs
@@ -890,6 +918,8 @@ architecture:
     runnable_surface:
     - src/main.rs
     machine_driver:
+    - src/main.rs
+    trace_producer:
     - src/main.rs
   representation:
     closed_variants:
@@ -926,6 +956,14 @@ architecture:
     - verification/boundaries/runnable_surface_routes_through_boundary.md
     usage_document: README.md
     smoke_command: verify
+  allowed_public_field_structs:
+  - RmsBoundarySourceProvenance
+  - RmsWorkbenchCommandEnvelope
+  - RmsWorkbenchEffectEnvelope
+  - RmsWorkbenchEffectResultEnvelope
+  - RmsWorkbenchEventEnvelope
+  - RmsWorkbenchTransition
+  - RmsWorkbenchTransitionRecord
 semantic_functions:
 - id: validate-rms-artifacts-command
   symbol: run_validate
@@ -1724,12 +1762,12 @@ semantic_functions:
     - generated-property-claims-use-generators
   assumptions:
     ensures:
-    - non-corpus harness claims are inspected for truthful case generation
+    - non-corpus generator and runner claims are inspected for truthful case generation, operation execution, and oracle evaluation
   evidence:
     contracts:
     - verification/contracts/check_semantic_properties.md
     properties:
-    - verification/properties/generated_property_harness_truthfulness.md
+    - verification/properties/generated_property_realization_truthfulness.md
 - id: semantic-property-run-command
   symbol: run_property_run
   kind: interpreter
@@ -1856,9 +1894,71 @@ semantic_functions:
     - verification/laws/system_traces_preserve_message_causation.md
     properties:
     - verification/properties/cross_module_trace_causation.md
+- id: run-trace-producers-command
+  symbol: execute_trace_producers
+  kind: effect-executor
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/run-trace-producers.v1.yaml
+    invariants:
+    - trace-evidence-is-execution-derived
+  evidence:
+    contracts:
+    - verification/contracts/run_trace_producers.md
+    laws:
+    - verification/laws/trace_evidence_is_execution_derived.md
+- id: run-semantic-properties-command
+  symbol: execute_property_realizations
+  kind: effect-executor
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/run-semantic-properties.v1.yaml
+    invariants:
+    - property-realizations-execute-exact-runners
+  evidence:
+    contracts:
+    - verification/contracts/run_semantic_properties.md
+    laws:
+    - verification/laws/property_realizations_execute_exact_runners.md
+- id: strict-audit-proof-executor
+  symbol: append_executable_proof_audit_checks
+  kind: effect-executor
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/audit-rms-project.v1.yaml
+    invariants:
+    - strict-audit-regenerates-smoke-proofs
+    - reusable-package-proof-is-current
+  evidence:
+    laws:
+    - verification/laws/strict_audit_regenerates_smoke_proofs.md
+    - verification/laws/reusable_package_proof_is_current.md
+- id: active-evidence-reference-validator
+  symbol: validate_active_evidence_semantic_references
+  kind: parser
+  purity: pure
+  discharges:
+    invariants:
+    - active-evidence-references-current-semantics
+  evidence:
+    laws:
+    - verification/laws/active_evidence_references_current_semantics.md
+- id: semantic-change-final-candidate-validator
+  symbol: validate_semantic_change
+  kind: parser
+  purity: pure
+  discharges:
+    invariants:
+    - semantic-apply-validates-final-candidate
+  evidence:
+    laws:
+    - verification/laws/semantic_apply_validates_final_candidate.md
 x-rms:
   semantic_revision:
-    digest: sha256:e00ac3c9e035537c6fe48af70774963702b1bff7c14c7102f930c31be8a0ed54
-    change_record: verification/changes/make-canonical-semantic-rendering-panic-free-and-inspect-rust-authority-boundaries-from-syntax-rather-than-incidental-text-7ea4d5e3cfd4.yaml
+    digest: sha256:202f5f8be722472113718b1d9ef01956b2997399f9df653848013ddbf2fecbea
+    change_record: verification/changes/align-the-rejected-semantic-change-record-transition-with-its-typed-reply-and-rejection-output-620c10d5c826.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:7ea4d5e3cfd442f036d66859282ae40f9306163e72336752f3247c4cc1098aac
+    change_record_digest: sha256:620c10d5c826b96df03a1d527de14602a905153539e12e9a086a605f85e19792

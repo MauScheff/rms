@@ -1,0 +1,89 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/declare-the-rms-workbench-trace-producer-as-an-owned-implementation-role-d0586946f044.yaml
+intent:
+  summary: Remove legacy property harness terminology and make generators, exact runners, operations, and oracles independently explicit.
+laws:
+  add: []
+  set:
+  - id: non-corpus-property-realization-is-code-backed
+    statement: Every property realization names an exact binding runner; generated and exhaustive realizations also name a generator, and the runner executes the operation and oracle.
+    kind: binding-conformance
+    authority: parser
+    enforced_by: semantic-property-check-command
+  remove: []
+contracts: null
+properties:
+  add:
+  - id: property-realization-runner-conformance
+    proves: non-corpus-property-realization-is-code-backed
+    kind: property
+    subject: null
+    input_space:
+      description: Property realization fixtures spanning fixed corpus, exhaustive enumeration, generated cases, coverage fuzzing, and model checking.
+    preconditions: []
+    operation:
+      command: check-property-execution
+    oracle:
+    - Every realization without an exact runner is rejected.
+    - Generated and exhaustive realizations without an exact generator are rejected.
+    - Inspectable bindings reject absent runner or generator symbols.
+    - A runner must call its generator when declared, execute an operation, and apply an oracle.
+    evidence:
+      kind: property
+      path: verification/properties/property_realization_runner_conformance.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/property-runner
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: properties
+      generator: null
+      runner: src/main.rs#property_realizations_require_generators_runners_operations_and_oracles
+      exhaustive: false
+    temporal: null
+  - id: generated-property-realization-truthfulness
+    proves: generated-property-claims-use-generators
+    kind: conformance
+    subject: null
+    input_space:
+      fixtures: generated case providers and fixed literal collections across inspectable bindings
+    preconditions: []
+    operation: inspect generated-property generators and their exact runners
+    oracle:
+    - runners that call non-literal generators and execute an oracle pass
+    - fixed literal collections labeled generated-property fail
+    evidence:
+      kind: property
+      path: verification/properties/generated_property_realization_truthfulness.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/property-truthfulness
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: properties
+      generator: null
+      runner: src/main.rs#open_fuzz_claim_rejects_fixed_corpus_realization
+      exhaustive: false
+    temporal: null
+  set: []
+  remove:
+  - property-realization-harness-conformance
+  - generated-property-harness-truthfulness
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: non-corpus-property-realization-is-code-backed
+    path: verification/laws/non_corpus_property_realization_is_code_backed.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

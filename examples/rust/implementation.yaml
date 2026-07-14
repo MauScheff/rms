@@ -8,12 +8,14 @@ commands:
   build: cargo build --manifest-path Cargo.toml
   verify: cargo test --manifest-path Cargo.toml
   format: cargo fmt --manifest-path Cargo.toml --check
+  trace: cargo test --manifest-path Cargo.toml "${RMS_TRACE_RUNNER##*#}"
 toolchain:
   cargo_manifest: Cargo.toml
   package: rms-rust-example
 dependencies:
   allowed_external_crates:
   - serde
+  - serde_json
 architecture:
   shape: domain-engine
   reliability:
@@ -63,6 +65,12 @@ architecture:
     timeline_projection: verification/traces/transition_trace.yaml
     replay_bundle: verification/traces/transition_trace.yaml
     first_bad_transition: source-provenance-from-transition-record
+    producers:
+    - id: rust-example-transitions
+      profile: smoke
+      bundle: verification/traces/transition_trace.yaml
+      command: trace
+      runner: tests/trace_producer.rs#produce_transition_trace
   machine:
     name: RustExampleMachine
     mode: stateless-decision-machine
@@ -112,6 +120,7 @@ architecture:
       - WidgetRejected
       rejection: EmptyWidgetName
     transition_record_function: transition_record
+    resource_protocols: []
   roles:
     representation:
     - src/widget.rs
@@ -130,6 +139,8 @@ architecture:
     trace_evidence:
     - verification/scenarios/widget_acceptance
     - verification/traces/transition_trace.yaml
+    trace_producer:
+    - tests/trace_producer.rs
   representation:
     closed_variants:
     - DescribeWidgetCommand
@@ -180,7 +191,7 @@ semantic_functions:
   purity: pure
 x-rms:
   semantic_revision:
-    digest: sha256:53feff2e6f311dacde2540be742ec5f7744bc3badf41540ceaf25641d02f4492
-    change_record: verification/machine-changes/machine-change-faaeb0469a51.yaml
-    applied_by: rms machine apply
-    change_record_digest: sha256:faaeb0469a511d0ce39067cb4cfb408c0acee7ce7d48f01c9239621fed0dfef6
+    digest: sha256:3f14c9f1928728de52b154d3947f132666812ac86d89962ce008c669c8d0d18d
+    change_record: verification/changes/finalize-rust-example-executable-trace-proof-support-e25b0c632f02.yaml
+    applied_by: rms spec apply
+    change_record_digest: sha256:e25b0c632f02be878df2f670a0f94e49e61b0d46b73667edfb0a9fcfe3a15a32

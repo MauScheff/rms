@@ -8,6 +8,7 @@ commands:
   build: sh scripts/build.sh
   verify: sh scripts/smoke.sh
   fuzz: node tests/boundary-smoke.mjs
+  trace: node --input-type=module -e 'import { pathToFileURL } from "node:url"; const [path, name] = process.env.RMS_TRACE_RUNNER.split("#"); const module = await import(pathToFileURL(path)); await module[name]();'
 toolchain:
   runner: node
 dependencies:
@@ -45,7 +46,8 @@ architecture:
       - profile: smoke
         strategy: generated-property
         command: fuzz
-        harness: src/parser.mjs#generateMalformedInputCases
+        generator: src/parser.mjs#generateMalformedInputCases
+        runner: tests/boundary-smoke.mjs#runMalformedInputProperty
   messages:
     command_envelope:
     - command_id
@@ -86,6 +88,12 @@ architecture:
     timeline_projection: verification/traces/boundary_parse.yaml
     replay_bundle: verification/traces/boundary_parse.yaml
     first_bad_transition: source-provenance-from-transition-record
+    producers:
+    - id: tic-tac-toe-boundary-transitions
+      profile: smoke
+      bundle: verification/traces/boundary_parse.yaml
+      command: trace
+      runner: tests/trace-producer.mjs#produceTransitionTrace
   machine:
     name: TicTacToeBoundaryMachine
     mode: boundary-machine
@@ -172,6 +180,7 @@ architecture:
       rejection: RulesBridgeFailure
     driver_function: driveMachine
     transition_record_function: transitionRecord
+    resource_protocols: []
   roles:
     representation:
     - src/representation.mjs
@@ -200,6 +209,8 @@ architecture:
     - src/adapter.mjs
     machine_driver:
     - src/machine_driver.mjs
+    trace_producer:
+    - tests/trace-producer.mjs
   representation:
     closed_variants:
     - TicTacToeBoundaryState
@@ -314,7 +325,7 @@ semantic_functions:
   purity: effectful
 x-rms:
   semantic_revision:
-    digest: sha256:fbdb2bcfd5fd0fafab00db54dead69a91af5f4b46a83476b2dfab925a2e1faf2
-    change_record: verification/surface-changes/tic-tac-toe-cli-cli-6fa824952574.yaml
-    change_record_digest: sha256:6fa824952574f7a9b1cc845c2ca09bc27c03f1ef4706a4fbf51efa94f9480558
-    applied_by: rms surface apply
+    digest: sha256:0194a982827784b2046b3b7e74fc05fb7dbf4594faf52e31af4a8a175d6ca502
+    change_record: verification/changes/regenerate-tic-tac-toe-boundary-traces-from-command-and-effect-result-transition-records-23e17a4c20b7.yaml
+    change_record_digest: sha256:23e17a4c20b7f4469da40206cef8eee6cd69ebd8783ae916dc0842a8bf7f38ae
+    applied_by: rms spec apply

@@ -26,12 +26,13 @@ description: Implement a feature, fix, or refactor in an RMS project while prese
    - command, event, effect, and effect-result envelopes;
    - transition output, transition records, journal, timeline projection, replay bundle, and first-bad-transition evidence;
    - semantic properties with input spaces, preconditions, operations, oracles, evidence, and counterexample replay policy for broad laws;
-   - fuzz-style targets for parser, boundary, generated-input, numeric, or external-result surfaces where malformed or adversarial input matters; non-corpus realizations name an exact binding `path#symbol` harness, and untouched generated property evidence remains an unmet obligation;
+   - fuzz-style targets for parser, boundary, generated-input, numeric, or external-result surfaces where malformed or adversarial input matters; every realization names an exact runner, generated or exhaustive strategies name a generator, and the runner executes the semantic operation and oracle;
    - transition boundaries;
    - parser, port, adapter, trace, and evidence roles.
    - binding type mappings separately from semantic alternatives;
    - one classified input ADT over commands, observed events, and effect results for stateful machines;
    - one-request-one-result effect protocols whenever outcomes can alter subsequent decisions.
+   - execution-derived trace producers that call the real transition-record path and serialize returned records rather than copying declarations.
    - versioned artifacts and transformations when data changes form or crosses a module boundary;
    - public protocol automata for ordered cross-module conversations;
    - resource ownership automata for acquire/use/release/transfer lifecycles;

@@ -44,7 +44,8 @@ verification:
   - verification/traces
 x-rms:
   semantic_revision:
-    digest: sha256:5337e5d5bf12c1c5dd00f8320174148bf24b67ff0275d971ae10d1564d3e93fa
-    change_record: verification/machine-changes/machine-change-faaeb0469a51.yaml
-    applied_by: rms machine apply
-    change_record_digest: sha256:faaeb0469a511d0ce39067cb4cfb408c0acee7ce7d48f01c9239621fed0dfef6
+    digest: sha256:24d2333fe45ec8834470cee4e17669f667d8f519da3bfd945e6a356dfe1c56ae
+    change_record: verification/changes/regenerate-the-swift-example-transition-trace-from-its-real-transition-record-function-e9c0a4e65d6f.yaml
+    applied_by: rms spec apply
+    change_record_digest: sha256:e9c0a4e65d6fed949126d0af7873b3ddff1f86f7a35bc8718ab94d589f4a6366
+  last_semantic_intent: Regenerate the Swift example transition trace from its real transition-record function.

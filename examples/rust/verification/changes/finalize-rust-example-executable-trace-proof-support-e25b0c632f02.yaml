@@ -1,0 +1,29 @@
+spec: rms/semantic-change/v0.1
+module: examples/rust/implementation.yaml
+supersedes:
+- verification/changes/regenerate-the-rust-example-transition-trace-from-its-real-transition-record-function-838be3d7f297.yaml
+intent:
+  summary: Finalize Rust example executable trace proof support.
+laws: null
+contracts: null
+properties: null
+trace_producers:
+  set:
+  - id: rust-example-transitions
+    profile: smoke
+    bundle: verification/traces/transition_trace.yaml
+    command: trace
+    runner: tests/trace_producer.rs#produce_transition_trace
+  add: []
+  remove: []
+semantic_functions: null
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

@@ -1,236 +1,132 @@
-spec: rms/trace-bundle/v0.1
-machine: TicTacToeMachine
-records:
-  - id: accept-opening-move
-    state_before:
-      board: [null, null, null, null, null, null, null, null, null]
-      status:
-        tag: InProgress
-        next: X
-    input:
-      command_id: place-mark-1
-      target_machine: TicTacToeMachine
-      correlation_id: tic-tac-toe-rules-correlation-1
-      causation_id: user-request-1
-      idempotency_key: game-1-cell-0
-      command:
-        tag: PlaceMark
-        cell:
-          row: 0
-          column: 0
-          index: 0
-    output:
-      next_state:
-        board: [X, null, null, null, null, null, null, null, null]
-        status:
-          tag: InProgress
-          next: O
-      events:
-        - event_id: mark-placed-1
-          source_machine: TicTacToeMachine
-          correlation_id: tic-tac-toe-rules-correlation-1
-          causation_id: place-mark-1
-          sequence: 1
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event:
-            tag: MarkPlaced
-      commands: []
-      effects: []
-      reply:
-        tag: Accepted
-        state:
-          board: [X, null, null, null, null, null, null, null, null]
-          status:
-            tag: InProgress
-            next: O
-      rejection: null
-    state_after:
-      board: [X, null, null, null, null, null, null, null, null]
-      status:
-        tag: InProgress
-        next: O
-    source:
-      file: src/transition.rs
-      function: transition_record
-      branch: PlaceMarkContinues
-  - id: reject-occupied-cell
-    state_before:
-      board: [X, null, null, null, null, null, null, null, null]
-      status:
-        tag: InProgress
-        next: O
-    input:
-      command_id: place-mark-2
-      target_machine: TicTacToeMachine
-      correlation_id: tic-tac-toe-rules-correlation-1
-      causation_id: place-mark-1
-      idempotency_key: game-1-cell-0
-      command:
-        tag: PlaceMark
-        cell:
-          row: 0
-          column: 0
-          index: 0
-    output:
-      next_state:
-        board: [X, null, null, null, null, null, null, null, null]
-        status:
-          tag: InProgress
-          next: O
-      events:
-        - event_id: move-rejected-1
-          source_machine: TicTacToeMachine
-          correlation_id: tic-tac-toe-rules-correlation-1
-          causation_id: place-mark-2
-          sequence: 2
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event:
-            tag: MoveRejected
-      commands: []
-      effects: []
-      reply: null
-      rejection:
-        tag: CellOccupied
-    state_after:
-      board: [X, null, null, null, null, null, null, null, null]
-      status:
-        tag: InProgress
-        next: O
-    source:
-      file: src/transition.rs
-      function: transition_record
-      branch: RejectOccupiedCell
-  - id: accept-winning-move
-    scenario_start: true
-    state_before: InProgress
-    input:
-      command_id: place-mark-win
-      target_machine: TicTacToeMachine
-      correlation_id: tic-tac-toe-win
-      causation_id: prior-move
-      idempotency_key: game-win-cell-2
-      command:
-        tag: PlaceMark
-    output:
-      next_state: Won
-      events:
-        - event_id: mark-placed-win
-          source_machine: TicTacToeMachine
-          correlation_id: tic-tac-toe-win
-          causation_id: place-mark-win
-          sequence: 1
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event:
-            tag: MarkPlaced
-      commands: []
-      effects: []
-      reply:
-        tag: Accepted
-      rejection: null
-    state_after: Won
-    source:
-      file: src/transition.rs
-      function: transition_record
-      branch: PlaceMarkWins
-  - id: accept-drawing-move
-    scenario_start: true
-    state_before: InProgress
-    input:
-      command_id: place-mark-draw
-      target_machine: TicTacToeMachine
-      correlation_id: tic-tac-toe-draw
-      causation_id: prior-move
-      idempotency_key: game-draw-cell-8
-      command:
-        tag: PlaceMark
-    output:
-      next_state: Draw
-      events:
-        - event_id: mark-placed-draw
-          source_machine: TicTacToeMachine
-          correlation_id: tic-tac-toe-draw
-          causation_id: place-mark-draw
-          sequence: 1
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event:
-            tag: MarkPlaced
-      commands: []
-      effects: []
-      reply:
-        tag: Accepted
-      rejection: null
-    state_after: Draw
-    source:
-      file: src/transition.rs
-      function: transition_record
-      branch: PlaceMarkDraws
-  - id: reject-move-after-win
-    scenario_start: true
-    state_before: Won
-    input:
-      command_id: place-mark-after-win
-      target_machine: TicTacToeMachine
-      correlation_id: tic-tac-toe-terminal-win
-      causation_id: winning-move
-      idempotency_key: game-win-cell-3
-      command:
-        tag: PlaceMark
-    output:
-      next_state: Won
-      events:
-        - event_id: move-rejected-win
-          source_machine: TicTacToeMachine
-          correlation_id: tic-tac-toe-terminal-win
-          causation_id: place-mark-after-win
-          sequence: 1
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event:
-            tag: MoveRejected
-      commands: []
-      effects: []
-      reply: null
-      rejection:
-        tag: GameAlreadyTerminal
-    state_after: Won
-    source:
-      file: src/transition.rs
-      function: transition_record
-      branch: RejectMoveAfterWin
-  - id: reject-move-after-draw
-    scenario_start: true
-    state_before: Draw
-    input:
-      command_id: place-mark-after-draw
-      target_machine: TicTacToeMachine
-      correlation_id: tic-tac-toe-terminal-draw
-      causation_id: drawing-move
-      idempotency_key: game-draw-cell-0
-      command:
-        tag: PlaceMark
-    output:
-      next_state: Draw
-      events:
-        - event_id: move-rejected-draw
-          source_machine: TicTacToeMachine
-          correlation_id: tic-tac-toe-terminal-draw
-          causation_id: place-mark-after-draw
-          sequence: 1
-          schema_version: 1
-          occurred_at: explicit-clock-not-recorded
-          event:
-            tag: MoveRejected
-      commands: []
-      effects: []
-      reply: null
-      rejection:
-        tag: GameAlreadyTerminal
-    state_after: Draw
-    source:
-      file: src/transition.rs
-      function: transition_record
-      branch: RejectMoveAfterDraw
+{
+  "machine": "TicTacToeMachine",
+  "records": [
+    {
+      "input": "Command(PlaceMark { cell: Cell { index: 0 } })",
+      "output": {
+        "commands": [],
+        "effects": [],
+        "events": [
+          "MarkPlaced"
+        ],
+        "next_state": "InProgress { board: Board { cells: [Some(X), None, None, None, None, None, None, None, None] }, next: O }",
+        "rejection": null,
+        "reply": "Accepted { state: InProgress { board: Board { cells: [Some(X), None, None, None, None, None, None, None, None] }, next: O } }"
+      },
+      "scenario_start": true,
+      "source": {
+        "branch": "PlaceMarkContinues",
+        "file": "src/transition.rs",
+        "function": "transition_record"
+      },
+      "state_after": "InProgress { board: Board { cells: [Some(X), None, None, None, None, None, None, None, None] }, next: O }",
+      "state_before": "InProgress { board: Board { cells: [None, None, None, None, None, None, None, None, None] }, next: X }"
+    },
+    {
+      "input": "Command(PlaceMark { cell: Cell { index: 0 } })",
+      "output": {
+        "commands": [],
+        "effects": [],
+        "events": [
+          "MoveRejected"
+        ],
+        "next_state": "InProgress { board: Board { cells: [Some(X), None, None, None, None, None, None, None, None] }, next: O }",
+        "rejection": "CellOccupied",
+        "reply": null
+      },
+      "scenario_start": false,
+      "source": {
+        "branch": "RejectOccupiedCell",
+        "file": "src/transition.rs",
+        "function": "transition_record"
+      },
+      "state_after": "InProgress { board: Board { cells: [Some(X), None, None, None, None, None, None, None, None] }, next: O }",
+      "state_before": "InProgress { board: Board { cells: [Some(X), None, None, None, None, None, None, None, None] }, next: O }"
+    },
+    {
+      "input": "Command(PlaceMark { cell: Cell { index: 2 } })",
+      "output": {
+        "commands": [],
+        "effects": [],
+        "events": [
+          "MarkPlaced"
+        ],
+        "next_state": "Won { board: Board { cells: [Some(X), Some(X), Some(X), Some(O), Some(O), None, None, None, None] }, winner: X, line: [Cell { index: 0 }, Cell { index: 1 }, Cell { index: 2 }] }",
+        "rejection": null,
+        "reply": "Accepted { state: Won { board: Board { cells: [Some(X), Some(X), Some(X), Some(O), Some(O), None, None, None, None] }, winner: X, line: [Cell { index: 0 }, Cell { index: 1 }, Cell { index: 2 }] } }"
+      },
+      "scenario_start": true,
+      "source": {
+        "branch": "PlaceMarkWins",
+        "file": "src/transition.rs",
+        "function": "transition_record"
+      },
+      "state_after": "Won { board: Board { cells: [Some(X), Some(X), Some(X), Some(O), Some(O), None, None, None, None] }, winner: X, line: [Cell { index: 0 }, Cell { index: 1 }, Cell { index: 2 }] }",
+      "state_before": "InProgress { board: Board { cells: [Some(X), Some(X), None, Some(O), Some(O), None, None, None, None] }, next: X }"
+    },
+    {
+      "input": "Command(PlaceMark { cell: Cell { index: 5 } })",
+      "output": {
+        "commands": [],
+        "effects": [],
+        "events": [
+          "MoveRejected"
+        ],
+        "next_state": "Won { board: Board { cells: [Some(X), Some(X), Some(X), Some(O), Some(O), None, None, None, None] }, winner: X, line: [Cell { index: 0 }, Cell { index: 1 }, Cell { index: 2 }] }",
+        "rejection": "GameAlreadyTerminal",
+        "reply": null
+      },
+      "scenario_start": false,
+      "source": {
+        "branch": "RejectMoveAfterWin",
+        "file": "src/transition.rs",
+        "function": "transition_record"
+      },
+      "state_after": "Won { board: Board { cells: [Some(X), Some(X), Some(X), Some(O), Some(O), None, None, None, None] }, winner: X, line: [Cell { index: 0 }, Cell { index: 1 }, Cell { index: 2 }] }",
+      "state_before": "Won { board: Board { cells: [Some(X), Some(X), Some(X), Some(O), Some(O), None, None, None, None] }, winner: X, line: [Cell { index: 0 }, Cell { index: 1 }, Cell { index: 2 }] }"
+    },
+    {
+      "input": "Command(PlaceMark { cell: Cell { index: 8 } })",
+      "output": {
+        "commands": [],
+        "effects": [],
+        "events": [
+          "MarkPlaced"
+        ],
+        "next_state": "Draw { board: Board { cells: [Some(X), Some(O), Some(X), Some(X), Some(O), Some(O), Some(O), Some(X), Some(X)] } }",
+        "rejection": null,
+        "reply": "Accepted { state: Draw { board: Board { cells: [Some(X), Some(O), Some(X), Some(X), Some(O), Some(O), Some(O), Some(X), Some(X)] } } }"
+      },
+      "scenario_start": true,
+      "source": {
+        "branch": "PlaceMarkDraws",
+        "file": "src/transition.rs",
+        "function": "transition_record"
+      },
+      "state_after": "Draw { board: Board { cells: [Some(X), Some(O), Some(X), Some(X), Some(O), Some(O), Some(O), Some(X), Some(X)] } }",
+      "state_before": "InProgress { board: Board { cells: [Some(X), Some(O), Some(X), Some(X), Some(O), Some(O), Some(O), Some(X), None] }, next: X }"
+    },
+    {
+      "input": "Command(PlaceMark { cell: Cell { index: 0 } })",
+      "output": {
+        "commands": [],
+        "effects": [],
+        "events": [
+          "MoveRejected"
+        ],
+        "next_state": "Draw { board: Board { cells: [Some(X), Some(O), Some(X), Some(X), Some(O), Some(O), Some(O), Some(X), Some(X)] } }",
+        "rejection": "GameAlreadyTerminal",
+        "reply": null
+      },
+      "scenario_start": false,
+      "source": {
+        "branch": "RejectMoveAfterDraw",
+        "file": "src/transition.rs",
+        "function": "transition_record"
+      },
+      "state_after": "Draw { board: Board { cells: [Some(X), Some(O), Some(X), Some(X), Some(O), Some(O), Some(O), Some(X), Some(X)] } }",
+      "state_before": "Draw { board: Board { cells: [Some(X), Some(O), Some(X), Some(X), Some(O), Some(O), Some(O), Some(X), Some(X)] } }"
+    }
+  ],
+  "spec": "rms/trace-bundle/v0.1"
+}

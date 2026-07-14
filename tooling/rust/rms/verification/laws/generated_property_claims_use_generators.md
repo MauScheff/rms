@@ -10,10 +10,10 @@ Scenario:
 
 Command/tool:
 
-- `cargo test --manifest-path tooling/rust/rms/Cargo.toml property_realizations_require_existing_non_corpus_harness_symbols`
+- `cargo test --manifest-path tooling/rust/rms/Cargo.toml property_realizations_require_generators_runners_operations_and_oracles`
 
 Expected result:
 
-- RMS reports `evidence.property-realization-fixed-corpus`; missing harnesses and symbols remain separately diagnosed.
+- RMS reports `evidence.property-realization-fixed-corpus`; missing generators, runners, operations, and oracles remain separately diagnosed.
 
 Source revision: recorded by git commit or strict audit provenance before production use.

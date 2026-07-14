@@ -1,0 +1,29 @@
+spec: rms/semantic-change/v0.1
+module: examples/tic-tac-toe/modules/tic-tac-toe-rules/implementation.yaml
+supersedes:
+- verification/changes/regenerate-tic-tac-toe-rule-traces-from-every-real-transition-record-case-8be777ae4850.yaml
+intent:
+  summary: Finalize tic-tac-toe rule executable trace proof support.
+laws: null
+contracts: null
+properties: null
+trace_producers:
+  set:
+  - id: tic-tac-toe-rule-transitions
+    profile: smoke
+    bundle: verification/traces/transition_trace.yaml
+    command: trace
+    runner: tests/trace_producer.rs#produce_transition_trace
+  add: []
+  remove: []
+semantic_functions: null
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

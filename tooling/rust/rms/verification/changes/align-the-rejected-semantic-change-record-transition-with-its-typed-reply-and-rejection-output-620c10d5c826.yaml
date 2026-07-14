@@ -1,0 +1,102 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/bind-executable-proof-and-final-candidate-laws-to-exact-rms-authority-functions-while-replacing-harness-terminology-with-generator-and-runner-semantics-23032ff46d61.yaml
+intent:
+  summary: Align the rejected semantic-change record transition with its typed reply and rejection output.
+laws: null
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions: null
+machine:
+  mode: ''
+  justification: null
+  transition_signature: null
+  driver_function: null
+  transition_record_function: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+  resource_protocols:
+    set: null
+    add: []
+    remove: []
+  transitions:
+    set:
+    - from: Ready
+      on: ApplySemanticChange
+      to: WritingSemanticChangeRecord
+      case: ApplySemanticChange
+      events: []
+      commands: []
+      effects:
+      - WriteSemanticChangeRecord
+      reply: null
+      rejection: null
+      no_reply_justification: semantic change record write is pending
+    - from: WritingSemanticChangeRecord
+      on: SemanticChangeRecordWritten
+      to: Ready
+      case: SemanticChangeRecordWritten
+      events:
+      - SemanticChangeRecorded
+      commands: []
+      effects: []
+      reply: SemanticChangeApplied
+      rejection: null
+      no_reply_justification: null
+    - from: WritingSemanticChangeRecord
+      on: SemanticChangeRecordWriteRejected
+      to: Ready
+      case: SemanticChangeRecordWriteRejected
+      events: []
+      commands: []
+      effects: []
+      reply: SemanticChangeRejected
+      rejection: SemanticChangeRecordWriteFailed
+      no_reply_justification: null
+    add: []
+    remove: []
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

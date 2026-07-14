@@ -1,0 +1,35 @@
+spec: rms/semantic-change/v0.1
+module: examples/tic-tac-toe/modules/tic-tac-toe-rules/implementation.yaml
+supersedes: []
+intent:
+  summary: Regenerate tic-tac-toe rule traces from every real transition-record case.
+laws: null
+contracts: null
+properties: null
+trace_producers:
+  set: null
+  add:
+  - id: tic-tac-toe-rule-transitions
+    profile: smoke
+    bundle: verification/traces/transition_trace.yaml
+    command: trace
+    runner: tests/trace_producer.rs#produce_transition_trace
+  remove: []
+semantic_functions: null
+machine: null
+roles:
+  set: []
+  add:
+  - kind: trace_producer
+    effect: null
+    binding_hint: null
+    path: tests/trace_producer.rs
+  remove: []
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

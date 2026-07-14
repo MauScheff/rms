@@ -95,7 +95,8 @@ fuzz_targets:
   - profile: smoke
     strategy: generated-property
     command: fuzz
-    harness: src/parser.mjs#generateMalformedInputCases
+    generator: src/parser.mjs#generateMalformedInputCases
+    runner: tests/boundary-smoke.mjs#runMalformedInputProperty
 x-scaffold:
   shape: boundary-adapter
   roles:
@@ -106,8 +107,8 @@ x-scaffold:
   - boundary-evidence
 x-rms:
   semantic_revision:
-    digest: sha256:fbdb2bcfd5fd0fafab00db54dead69a91af5f4b46a83476b2dfab925a2e1faf2
-    change_record: verification/surface-changes/tic-tac-toe-cli-cli-6fa824952574.yaml
-    change_record_digest: sha256:6fa824952574f7a9b1cc845c2ca09bc27c03f1ef4706a4fbf51efa94f9480558
-    applied_by: rms surface apply
-  last_semantic_intent: Bind the boundary malformed-input fuzz claim to an exact generated-case harness.
+    digest: sha256:0194a982827784b2046b3b7e74fc05fb7dbf4594faf52e31af4a8a175d6ca502
+    change_record: verification/changes/regenerate-tic-tac-toe-boundary-traces-from-command-and-effect-result-transition-records-23e17a4c20b7.yaml
+    change_record_digest: sha256:23e17a4c20b7f4469da40206cef8eee6cd69ebd8783ae916dc0842a8bf7f38ae
+    applied_by: rms spec apply
+  last_semantic_intent: Regenerate tic-tac-toe boundary traces from command and effect-result transition records.

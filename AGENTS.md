@@ -44,7 +44,7 @@ Machine rules:
 - Every declared lifecycle state is reachable from `initial_state` through canonical transitions. Do not make a state look covered by starting a trace inside an otherwise unreachable state.
 - Replay provenance names the declared transition role source file and the exact canonical case. An evidence YAML file is not transition source code.
 - Transition outputs carry expected failures in an explicit typed `rejection` channel. Do not erase rejection variants into replies, status strings, dummy success values, or provenance branch names.
-- Replay records must match the canonical case's state change and exact events, commands, effects, reply, and rejection. Generate records from the real transition path; copying declarations into synthetic trace YAML is not execution evidence.
+- Replay records must match the canonical case's state change and exact events, commands, effects, reply, and rejection. Do not hand-author active trace records. A declared trace producer must call the real transition-record path, serialize the returned records, and regenerate the committed bundle through `rms trace run --record`.
 - An effect executor performs one declared request and returns one declared result. Each exact protocol `executor_symbol` names its effect in the RMS role declaration and is bound as an effectful `effect-executor` semantic function. Keep its role path separate from transition and machine-driver code. Transitions own sequencing, retry, compensation, stop/continue policy, and state progression.
 - Atomicity belongs to each exact effect protocol. Aggregate iteration requires aggregate justification and evidence; shared IO mechanics belong in a private `effect_support` role that cannot construct machine state, call transitions/drivers, or become public/runnable.
 - Every effectful stateful machine declares exact `driver_function` and `transition_record_function` callables. The driver retains complete transition records, advances from `state_after`, executes `output.effects`, and feeds typed results back as inputs.
@@ -55,7 +55,7 @@ Machine rules:
 - Runnable surface delegation names an exact callable, not only a role or source file, so RMS can prove the live app reaches the declared machine.
 - Every runnable surface declares a concrete `usage_document` and an implementation `smoke_command` key; `rms verify` executes the resolved smoke command.
 - Composite parent laws may use `verification.delegations` only when the contained provider, provider law/property, public export, and concrete evidence all resolve.
-- Fixed examples are a deterministic corpus, not an open-ended fuzz realization. A `generated-property` harness must construct cases from a declared input space rather than return a fixed literal collection. `generated-property`, `deterministic-exhaustive`, `coverage-fuzzer`, and `model-checker` realizations name an exact binding `path#symbol` harness.
+- Fixed examples are a deterministic corpus, not an open-ended fuzz realization. A property generator constructs cases from the declared input space; its exact runner executes the semantic operation and oracle. Every realization names a `path#symbol` runner, and generated or exhaustive strategies also name a `path#symbol` generator.
 - Property evidence emitted by `rms spec apply` is an obligation, not proof. Replace it with the exact executed command, observed result, and counterexample or coverage summary before production audit. Revise property semantics through `properties.set/remove`, not direct manifest edits.
 - Public cross-module conversations use contract protocol automata. Each participant is bound once, each message has one sender and receiver mapping, and system traces preserve envelope identity, correlation, and causation across the handoff.
 - Versioned artifacts declare provided, required, or internal contracts. Transformations name input/output artifacts, explicit rejections, exact semantic functions, and preserving properties.
@@ -192,7 +192,7 @@ Before writing implementation code, make the user's intent concrete enough to en
 
 Completion is binary:
 
-1. Run focused native, spec, machine, surface, property, trace, and package checks that apply.
+1. Run focused native, spec, machine, surface, property, trace, and package checks that apply. Record execution-derived traces with `rms trace run <implementation.yaml> --profile smoke --record`, then rerun without `--record` to compare them. Run every smoke property realization with `rms property run <implementation.yaml> --profile smoke`.
 2. Run `rms gate --root .`; continue working if it exits nonzero or reports a failed check.
 3. Commit the candidate.
 4. Run `rms audit --root . --strict`; continue working if it exits nonzero.
@@ -207,6 +207,7 @@ Run the smallest checks that prove the changed promise:
 - `rms surface check <implementation.yaml> --strict` when runnable app, UI, CLI, browser, HTTP, batch, or executable entrypoints exist.
 - `rms structure <implementation.yaml>` when an implementation binding exists and inner roles changed.
 - `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, or `rms trace diagnose <trace-bundle>` when local transition evidence exists.
+- `rms trace run <implementation.yaml> --profile smoke --record` after implementing transition behavior, followed by `rms trace run <implementation.yaml> --profile smoke` to prove the committed bundle matches fresh execution.
 - `rms trace stitch <trace-bundle>...` when a scenario crosses module boundaries; diagnose the saved system trace to locate the first broken handoff.
 - `rms property check <module.yaml|implementation.yaml>`, `rms property run <implementation.yaml>`, or `rms property replay <counterexample.yaml>` when laws, parsers, numeric bounds, reusable modules, or generated counterexamples are involved.
 - `rms verify <implementation.yaml>` when the module has an implementation binding, or `rms verify <composite-module.yaml>` for composite rollups.
@@ -214,7 +215,7 @@ Run the smallest checks that prove the changed promise:
 - `rms gate --root .` when reviewing a working-tree change.
 - `rms audit --root . --strict` before claiming production-ready RMS software.
 
-Strict audit requires a git source revision. Commit the production candidate before treating strict audit as release evidence.
+Strict audit requires a git source revision. Commit the production candidate before treating strict audit as release evidence. Strict audit executes declared smoke proof commands against committed code, compares regenerated traces and reusable packages, runs each property realization independently, and fails if a proof command mutates production files.
 
 For stateful or workflow behavior, include transition records, golden timeline tests, replay bundles, and first-bad-transition diagnostics when they apply.
 

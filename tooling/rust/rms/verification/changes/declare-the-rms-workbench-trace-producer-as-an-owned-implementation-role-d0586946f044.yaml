@@ -1,0 +1,28 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/bind-every-rms-smoke-property-and-active-trace-to-an-exact-executable-runner-over-the-committed-implementation-a9f54c89091a.yaml
+intent:
+  summary: Declare the RMS workbench trace producer as an owned implementation role.
+laws: null
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles:
+  set: []
+  add:
+  - kind: trace_producer
+    effect: null
+    binding_hint: null
+    path: src/main.rs
+  remove: []
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
