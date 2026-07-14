@@ -44,6 +44,7 @@ records:
           status:
             tag: InProgress
             next: O
+      rejection: null
     state_after:
       board: [X, null, null, null, null, null, null, null, null]
       status:
@@ -89,9 +90,9 @@ records:
             tag: MoveRejected
       commands: []
       effects: []
-      reply:
-        tag: Rejected
-        reason: CellOccupied
+      reply: null
+      rejection:
+        tag: CellOccupied
     state_after:
       board: [X, null, null, null, null, null, null, null, null]
       status:
@@ -128,6 +129,7 @@ records:
       effects: []
       reply:
         tag: Accepted
+      rejection: null
     state_after: Won
     source:
       file: src/transition.rs
@@ -160,6 +162,7 @@ records:
       effects: []
       reply:
         tag: Accepted
+      rejection: null
     state_after: Draw
     source:
       file: src/transition.rs
@@ -190,9 +193,9 @@ records:
             tag: MoveRejected
       commands: []
       effects: []
-      reply:
-        tag: Rejected
-        reason: GameAlreadyTerminal
+      reply: null
+      rejection:
+        tag: GameAlreadyTerminal
     state_after: Won
     source:
       file: src/transition.rs
@@ -223,9 +226,9 @@ records:
             tag: MoveRejected
       commands: []
       effects: []
-      reply:
-        tag: Rejected
-        reason: GameAlreadyTerminal
+      reply: null
+      rejection:
+        tag: GameAlreadyTerminal
     state_after: Draw
     source:
       file: src/transition.rs

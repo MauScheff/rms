@@ -1,20 +1,26 @@
 spec: rms/contract/v0.1
-name: check-runnable-surface
+name: "check-runnable-surface"
 version: 1
 kind: command
-meaning: Check that runnable app, UI, CLI, browser, HTTP, batch, or executable surfaces route outside input through declared RMS boundary roles.
+meaning: "Prove that a runnable surface routes through declared RMS boundaries and executes the declared machine path with usable launch documentation evidence and smoke commands."
 preconditions:
-  - id: implementation-readable
-    statement: "The target `implementation.yaml` is readable and parseable."
+  - id: "accepts-1"
+    statement: "an implementation binding with declared runnable surfaces"
+  - id: "accepts-2"
+    statement: "inspectable surface delegate and machine transition or driver symbols where supported"
 postconditions:
-  - id: surface-report-produced
-    statement: The command reports structure diagnostics for missing declarations, disconnected entrypoints, private role access, duplicated domain logic, and missing evidence.
-  - id: strict-promotes-production-blockers
-    statement: "`--strict` fails when runnable surfaces bypass declared RMS boundary roles."
+  - id: "ensures-1"
+    statement: "entrypoints and launch assets route through the declared boundary"
+  - id: "ensures-2"
+    statement: "machine-shaped runnable modules reach their canonical transition or driver on the live call path"
+  - id: "ensures-3"
+    statement: "usage documents exist and smoke command keys resolve"
 failure_categories:
-  - id: invalid-implementation
-    statement: The target file is not an RMS implementation binding.
-  - id: strict-finding
-    statement: Strict mode found a production-blocking runnable surface diagnostic.
+  - id: "rejects-1"
+    statement: "private domain access or duplicated decisions"
+  - id: "rejects-2"
+    statement: "a decorative machine not reached by the runnable path"
+  - id: "rejects-3"
+    statement: "missing wiring evidence usage documentation or smoke commands"
 compatibility:
   policy: backward-compatible-within-major

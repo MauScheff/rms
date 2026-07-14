@@ -40,6 +40,7 @@ records:
           idempotency_key: game-1-move-1
           effect: { tag: InvokeRulesBridge }
       reply: null
+      rejection: null
     state_after: AwaitingRulesResult
     source:
       file: src/transition.mjs
@@ -68,6 +69,7 @@ records:
       commands: []
       effects: []
       reply: { tag: Accepted }
+      rejection: null
     state_after: AwaitingInput
     source:
       file: src/transition.mjs
@@ -98,7 +100,8 @@ records:
           event: { tag: RunRejected }
       commands: []
       effects: []
-      reply: { tag: Rejected, reason: MalformedInput }
+      reply: null
+      rejection: { tag: MalformedInput }
     state_after: AwaitingInput
     source:
       file: src/transition.mjs
@@ -127,7 +130,8 @@ records:
           event: { tag: RunRejected }
       commands: []
       effects: []
-      reply: { tag: Rejected, reason: RulesBridgeFailure }
+      reply: null
+      rejection: { tag: RulesBridgeFailure }
     state_after: AwaitingInput
     source:
       file: src/transition.mjs

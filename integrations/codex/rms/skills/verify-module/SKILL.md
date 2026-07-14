@@ -31,7 +31,7 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - untrusted or versioned input is validated before domain entry;
    - public read models or result structs without public constructors are declared in `architecture.allowed_missing_constructors` only when they are produced by a named query/projector with evidence;
    - lifecycle/order-dependent behavior has a state model, transition table, or transition function;
-   - traceable behavior declares message envelopes, transition output, transition records, replay support, and first-bad-transition evidence where applicable; an applied transition declaration is not itself replay evidence.
+   - traceable behavior declares message envelopes, transition output, transition records, replay support, and first-bad-transition evidence where applicable; expected failures remain in a typed transition rejection channel, records match the canonical case's exact outputs, and an applied transition declaration or synthetic copy of it is not replay evidence.
    - machine semantic lists contain actual alternatives while binding container names appear only under `architecture.machine.types`.
    - stateful machines have one state-plus-input transition; every transition input is exactly one command, observed event, or effect result.
    - every transition has a stable semantic case; every declared case occurs in declared transition source, no source-only branch escapes canonical semantics, every lifecycle state is reachable from `initial_state`, and each case appears in replay evidence whose provenance names that source file and branch.
@@ -42,7 +42,9 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - semantic roles, state variants, commands, events, effects, effect results, semantic-function authority bindings, public entrypoints, and evidence roles are declared in canonical artifacts rather than invented by direct source or manifest edits; active non-composition invariants have a matching function owner and active semantic-change records reflect the exact binding.
    - public commands in `module.yaml` are represented by the declared implementation machine, parser, adapter, transition, representation, or semantic functions.
    - runnable app, browser, UI, CLI, HTTP, batch, and executable surfaces are declared and route through declared public entrypoints, parsers, adapters, or boundary machines instead of importing or duplicating pure/private decision roles directly.
-   - runnable delegation resolves to a declared role or concrete symbol and declares boundary effects or a no-effect justification.
+   - runnable delegation resolves to an exact callable symbol when inspectable, declares boundary effects or a no-effect justification, references an existing usage document, and resolves a smoke command that `rms verify` executes. Inspectable boundary IO has machine effects, typed results, atomic protocols, and dedicated executor ownership.
+   - aggregate control flow is accepted only for the exact protocol that declares aggregate atomicity, justification, and evidence; shared effect-support code remains private and does not construct states or transitions.
+   - composite proof delegations resolve parent law, contained provider, provider law/property, public export, and concrete evidence without duplicating child properties in the parent.
    - public domain structs cannot bypass validated construction through `allowed_public_field_structs`; only envelopes and transition/provenance records use that exemption.
    - strict audit reports `semantic.revision-integrity`; a clean Git commit alone is not proof when canonical semantics changed outside RMS apply.
    - reusable modules declare `provides.capabilities[]`, expose one RMS public facade, include package/reuse evidence, and have no consumers importing private representation, transition, parser, adapter, or port internals.

@@ -14,5 +14,6 @@ description: Check or design the composition of RMS modules by matching capabili
 7. Confirm the host permits the provider's effects and required capabilities.
 8. Check dependency direction and reject forbidden or ownership-breaking cycles.
 9. Confirm the provider passes the required conformance suite.
-10. When replacing a stateful implementation, verify export, migration, coexistence, rollback, and cutover behavior.
-11. Produce a composition result listing satisfied, incompatible, unresolved, and not-applicable requirements.
+10. When a composite parent repeats an exported child law, use `verification.delegations` rather than inventing a duplicate parent property. Confirm the parent law, contained provider, provider law, provider property, public export, and concrete parent evidence all resolve through `rms compose`.
+11. When replacing a stateful implementation, verify export, migration, coexistence, rollback, and cutover behavior.
+12. Produce a composition result listing satisfied, incompatible, unresolved, and not-applicable requirements.

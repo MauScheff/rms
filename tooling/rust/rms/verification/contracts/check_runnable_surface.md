@@ -16,5 +16,6 @@ Expected result:
 - Copied decision logic in runnable surfaces reports `structure.runnable-surface-domain-logic-duplication`.
 - Generated browser surfaces route host HTML through launch script, declared controller, and boundary adapter.
 - Launch scripts that duplicate domain decisions still fail runnable-surface diagnostics.
+- Missing usage documents and unresolved smoke command keys fail strict surface checks.
 
 Source revision: recorded by git commit or strict audit provenance before production use.

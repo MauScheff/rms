@@ -1,0 +1,329 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/bind-the-four-generic-reliability-guarantees-to-their-exact-deterministic-rms-command-owners-b3f359bb8362.yaml
+intent:
+  summary: Reject decorative machines, synthetic traces, hidden boundary IO, erased rejections, and fixed-corpus property claims exposed by blind task-spool dogfood.
+laws:
+  add:
+  - id: trace-records-conform-to-canonical-transitions
+    statement: Trace evidence matches the canonical transition case input, state movement, emitted events, effects, reply, and rejection rather than merely naming the case.
+    kind: evidence-integrity
+    authority: parser
+    enforced_by: trace-bundle-check-command
+  - id: expected-rejections-remain-typed
+    statement: A machine with declared rejection variants carries an explicit rejection channel in its transition output and does not encode rejection only in source-branch strings or unrelated replies.
+    kind: invariant
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  - id: effectful-boundaries-use-explicit-protocols
+    statement: Inspectable boundary IO is represented by declared effects, typed effect results, atomic effect protocols, and effect executors instead of being hidden inside runnable adapters.
+    kind: invariant
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  - id: generated-property-claims-use-generators
+    statement: A generated-property realization executes a case generator or property engine; a fixed literal collection is classified as a deterministic corpus.
+    kind: evidence-integrity
+    authority: parser
+    enforced_by: semantic-property-check-command
+  - id: runnable-surfaces-execute-declared-machines
+    statement: A runnable surface for a machine-shaped module reaches the declared transition or machine driver on its live execution path rather than leaving the declared machine as evidence-only code.
+    kind: invariant
+    authority: parser
+    enforced_by: check-runnable-surface-command
+  set: []
+  remove: []
+contracts:
+  add: []
+  set: []
+  remove: []
+properties:
+  add:
+  - id: canonical-transition-trace-conformance
+    proves: trace-records-conform-to-canonical-transitions
+    kind: conformance
+    subject: null
+    input_space:
+      fixtures: trace records with matching and mismatching case outputs
+    preconditions: []
+    operation: compare each trace record with the owning canonical transition case
+    oracle:
+    - matching input state output and rejection semantics pass
+    - missing events effects replies or typed rejections fail
+    evidence:
+      kind: property
+      path: verification/properties/canonical_transition_trace_conformance.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/trace-conformance
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  - id: typed-transition-rejection-conformance
+    proves: expected-rejections-remain-typed
+    kind: conformance
+    subject: null
+    input_space:
+      fixtures: inspectable transition output types with and without explicit rejection fields
+    preconditions: []
+    operation: inspect the binding-native transition type against canonical output declarations
+    oracle:
+    - declared rejection variants require an explicit rejection output field
+    - branch-only rejection encoding fails
+    evidence:
+      kind: property
+      path: verification/properties/typed_transition_rejection_conformance.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/typed-rejections
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  - id: boundary-effect-protocol-conformance
+    proves: effectful-boundaries-use-explicit-protocols
+    kind: conformance
+    subject: null
+    input_space:
+      fixtures: boundary adapters with declared and hidden filesystem process clock and network IO
+    preconditions: []
+    operation: inspect boundary source roles and canonical effect protocols
+    oracle:
+    - inspectable IO requires declared effects results protocol and executor ownership
+    - pure no-effect boundaries remain valid
+    evidence:
+      kind: property
+      path: verification/properties/boundary_effect_protocol_conformance.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/boundary-effects
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  - id: generated-property-harness-truthfulness
+    proves: generated-property-claims-use-generators
+    kind: conformance
+    subject: null
+    input_space:
+      fixtures: generated harnesses and fixed literal case providers across inspectable bindings
+    preconditions: []
+    operation: inspect non-corpus realization harness bodies
+    oracle:
+    - generator-backed harnesses pass
+    - fixed literal arrays labeled generated-property fail
+    evidence:
+      kind: property
+      path: verification/properties/generated_property_harness_truthfulness.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/property-truthfulness
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  - id: runnable-machine-reachability
+    proves: runnable-surfaces-execute-declared-machines
+    kind: conformance
+    subject: null
+    input_space:
+      fixtures: runnable delegates that reach or bypass their declared transition or driver
+    preconditions: []
+    operation: inspect the binding call graph from surface delegate to machine execution
+    oracle:
+    - live surface paths reach the canonical machine function
+    - evidence-only decorative machine paths fail
+    evidence:
+      kind: property
+      path: verification/properties/runnable_machine_reachability.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/runnable-machine
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  set: []
+  remove: []
+semantic_functions:
+  add: []
+  set:
+  - id: inspect-implementation-structure-command
+    symbol: run_structure
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/inspect-implementation-structure.v1.yaml
+      invariants:
+      - diagnostics-are-evidence-not-authority
+      - public-domain-values-preserve-validity
+      - effect-executor-analysis-respects-protocol-atomicity
+      - shared-effect-support-cannot-own-workflow
+      - expected-rejections-remain-typed
+      - effectful-boundaries-use-explicit-protocols
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - structure diagnostics derive from canonical declarations and inspectable binding source
+      - transition rejection fields and boundary effect protocols remain explicit
+    evidence:
+      contracts:
+      - verification/contracts/inspect_implementation_structure.md
+      properties:
+      - verification/properties/typed_transition_rejection_conformance.md
+      - verification/properties/boundary_effect_protocol_conformance.md
+  - id: trace-bundle-check-command
+    symbol: run_trace_check
+    kind: parser
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/inspect-trace-bundle.v1.yaml
+      invariants:
+      - diagnostics-are-evidence-not-authority
+      - trace-records-conform-to-canonical-transitions
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - trace checks are local and compare records with canonical transition cases when discoverable
+    evidence:
+      contracts:
+      - verification/contracts/inspect_trace_bundle.md
+      properties:
+      - verification/properties/canonical_transition_trace_conformance.md
+  - id: semantic-property-check-command
+    symbol: run_property_check
+    kind: parser
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/check-semantic-properties.v1.yaml
+      invariants:
+      - semantic-properties-are-canonical-reliability-evidence
+      - fuzz-realization-matches-semantic-claim
+      - risk-bearing-laws-have-semantic-properties
+      - generated-property-claims-use-generators
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - non-corpus harness claims are inspected for truthful case generation
+    evidence:
+      contracts:
+      - verification/contracts/check_semantic_properties.md
+      properties:
+      - verification/properties/generated_property_harness_truthfulness.md
+  - id: check-runnable-surface-command
+    symbol: run_surface_check
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/check-runnable-surface.v1.yaml
+      invariants:
+      - runnable-surfaces-enter-through-boundaries
+      - diagnostics-are-evidence-not-authority
+      - runnable-delegation-has-semantic-owner
+      - runnable-surfaces-have-usage-and-smoke-proof
+      - runnable-surfaces-execute-declared-machines
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - runnable surfaces resolve boundary wiring evidence usage smoke and live machine reachability
+    evidence:
+      contracts:
+      - verification/contracts/check_runnable_surface.md
+      laws:
+      - verification/laws/runnable_surfaces_have_usage_and_smoke_proof.md
+      properties:
+      - verification/properties/runnable_machine_reachability.md
+  remove: []
+machine:
+  mode: ''
+  justification: null
+  transition_signature: null
+  driver_function: null
+  transition_record_function: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+  transitions:
+    set: null
+    add: []
+    remove: []
+roles:
+  set: []
+  add: []
+  remove: []
+evidence:
+  add:
+  - kind: law
+    proves: trace-records-conform-to-canonical-transitions
+    path: verification/laws/trace_records_conform_to_canonical_transitions.md
+  - kind: law
+    proves: expected-rejections-remain-typed
+    path: verification/laws/expected_rejections_remain_typed.md
+  - kind: law
+    proves: effectful-boundaries-use-explicit-protocols
+    path: verification/laws/effectful_boundaries_use_explicit_protocols.md
+  - kind: law
+    proves: generated-property-claims-use-generators
+    path: verification/laws/generated_property_claims_use_generators.md
+  - kind: law
+    proves: runnable-surfaces-execute-declared-machines
+    path: verification/laws/runnable_surfaces_execute_declared_machines.md
+surfaces:
+  add: []
+  set: null
+  remove: []
+binding_dependencies:
+  set: null
+  add: []
+  remove: []

@@ -1,30 +1,26 @@
 spec: rms/contract/v0.1
-name: verify-implementation
+name: "verify-implementation"
 version: 1
 kind: command
-meaning: Verify an RMS implementation binding or a composite module rollup.
+meaning: "Verify an implementation binding or composite rollup, including native tests, trace bundles, and declared runnable smoke commands."
 preconditions:
-  - id: verifiable-target
-    statement: The target is either an implementation binding with commands.verify or a composite module manifest.
+  - id: "accepts-1"
+    statement: "an implementation binding with commands.verify"
+  - id: "accepts-2"
+    statement: "a composite module with verifiable children"
 postconditions:
-  - id: implementation-binding-valid
-    statement: Before running the declared verification command, the CLI validates the implementation binding, including declared inner-machine symbols that the binding claims are present in source.
-  - id: native-command-result-preserved
-    statement: The CLI exits with an error when the declared verification command fails.
-  - id: declared-trace-bundles-checked
-    statement: After a native implementation verification command passes, the CLI checks declared local JSON/YAML trace bundles from implementation roles, semantic-function trace evidence, and `verification/traces`.
-  - id: composite-rollup-checked
-    statement: For composite modules, the CLI checks manifest validity, repository composition, parent scenario evidence, and contained child implementation verification when child bindings are present.
+  - id: "ensures-1"
+    statement: "native verification succeeds"
+  - id: "ensures-2"
+    statement: "declared trace bundles replay successfully"
+  - id: "ensures-3"
+    statement: "every distinct runnable smoke command executes successfully"
+  - id: "ensures-4"
+    statement: "composite verification rolls up children and composition evidence"
 failure_categories:
-  - id: implementation-binding-invalid
-    statement: The implementation binding is invalid or declares source-level structure that cannot be found in the implementation.
-  - id: missing-verify-command
-    statement: The implementation binding does not declare commands.verify.
-  - id: verification-failed
-    statement: The declared verification command exits unsuccessfully.
-  - id: trace-bundle-invalid
-    statement: A declared trace bundle cannot be parsed or contains structural trace errors.
-  - id: composite-rollup-failed
-    statement: Composite module validation, composition, parent scenario evidence, or a contained child implementation verification fails.
+  - id: "rejects-1"
+    statement: "invalid binding structure"
+  - id: "rejects-2"
+    statement: "failed native verification, trace replay, or runnable smoke execution"
 compatibility:
   policy: backward-compatible-within-major

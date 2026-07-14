@@ -22,6 +22,7 @@ records:
       reply:
         tag: Description
         description: example
+      rejection: null
     state_after: Ready
     source:
       file: src/widget.rs
@@ -45,9 +46,9 @@ records:
             tag: WidgetRejected
       commands: []
       effects: []
-      reply:
-        tag: Rejected
-        reason: EmptyWidgetName
+      reply: null
+      rejection:
+        tag: EmptyWidgetName
     state_after: Ready
     source:
       file: src/widget.rs

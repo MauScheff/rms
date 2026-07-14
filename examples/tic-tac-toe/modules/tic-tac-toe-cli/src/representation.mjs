@@ -142,7 +142,7 @@ export const TicTacToeBoundaryRejection = Object.freeze({
   IllegalTransition: "IllegalTransition",
 });
 
-export function transitionOutput(nextState, events, effects, reply) {
+export function transitionOutput(nextState, events, effects, reply, rejection = null) {
   return Object.freeze({
     tag: "TicTacToeBoundaryTransition",
     next_state: nextState,
@@ -150,6 +150,7 @@ export function transitionOutput(nextState, events, effects, reply) {
     commands: Object.freeze([]),
     effects: Object.freeze(effects),
     reply,
+    rejection: rejection,
   });
 }
 

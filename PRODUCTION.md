@@ -36,7 +36,9 @@ A project is ready for production pilot use when all requirements hold:
 | Semantic changes are gated | New laws, contracts, states, commands, events, effects, transitions, semantic roles, semantic-function authority bindings, public entrypoints, and evidence obligations are introduced through `rms spec apply`, then checked with `rms spec check`. |
 | Canonical revision is intact | Strict audit reports `semantic.revision-integrity`; the exact applied record digest matches, superseded records still exist, and a clean commit does not hide direct manifest or history edits after RMS apply. |
 | Transition branches are code-backed and replayed | Every declared case exists in the declared transition source, no source-only branch escapes canonical semantics, every lifecycle state is reachable, and strict audit finds matching state/input/destination/source-file/source-branch evidence plus declared workflow events. |
+| Transition evidence is truthful | Expected failures use the typed transition rejection channel, and each execution-derived trace record matches its canonical case's exact state change, events, commands, effects, reply, and rejection. |
 | Effect execution is trace-complete | Every effectful stateful machine declares exact driver and transition-record functions plus executor semantic functions. Live execution retains complete records, advances from `state_after`, executes `output.effects`, and owns the repeated cycle. |
+| Boundary IO is explicit | Inspectable boundary filesystem, process, network, clock, randomness, or persistence work is declared as effects with typed results, atomic protocols, and dedicated executors. Runnable surfaces name exact callables into that machine path. |
 | Machine inputs are total | Arithmetic over represented indices, counts, attempts, offsets, lengths, and sequences is checked or bounded; extreme inputs produce explicit rejection instead of overflow, panic, or trap. |
 | Message declarations are real | Every declared command, event, effect, and effect-result envelope has a binding-native representation. |
 
@@ -77,7 +79,7 @@ rms add-capability ./modules/<capability> \
   --boundary-binding js
 ```
 
-For app, tool, UI, CLI, browser, HTTP, batch, mobile, desktop, executable, local-first, runnable, or smoke-test intents, the boundary module exposes a declared runnable surface. Delegation resolves to an existing role or concrete symbol, and the surface declares boundary effects or a precise no-effect justification.
+For app, tool, UI, CLI, browser, HTTP, batch, mobile, desktop, executable, local-first, runnable, or smoke-test intents, the boundary module exposes a declared runnable surface. Delegation resolves to an existing role or concrete symbol, the surface declares boundary effects or a precise no-effect justification, and it names an existing usage document plus a smoke command that `rms verify` executes.
 
 Use `rms add-module` only when the module is truly standalone or when the semantic shape is already clear:
 
@@ -101,7 +103,7 @@ rms spec apply <module.yaml|implementation.yaml> --change-yaml '<semantic-change
 rms spec check <module.yaml|implementation.yaml>
 ```
 
-Inspect `final_machine` before source edits. Product variants must replace generic scaffold cases, every transition must name its semantic case, and every ordering/safety/bounded/parser/numeric law must have a matching property. Contract operations use `direction: provided` for module-owned surfaces and `direction: required` for consumer expectations; do not publish a dependency contract to make it editable. Non-corpus property realizations name an exact binding `path#symbol` harness, and generated property evidence is production-blocking until an executed command and observed result replace the obligation. Spec, machine, and surface apply record their change and reseal canonical semantics. Machine apply does not manufacture replay evidence; traces must come from implemented transition paths. Direct changes to module, local contract, or implementation semantics invalidate the seal and fail strict audit. Public domain values keep private fields and validated constructors; `allowed_public_field_structs` is limited to declared envelopes and transition/provenance records.
+Inspect `final_machine` before source edits. Product variants must replace generic scaffold cases, every transition must name its semantic case, and every ordering/safety/bounded/parser/numeric law must have a matching property. Contract operations use `direction: provided` for module-owned surfaces and `direction: required` for consumer expectations; do not publish a dependency contract to make it editable. Non-corpus property realizations name an exact binding `path#symbol` harness, and a generated-property harness must generate rather than return fixed examples. Generated property evidence is production-blocking until an executed command and observed result replace the obligation. Spec, machine, and surface apply record their change and reseal canonical semantics. Machine apply does not manufacture replay evidence; traces must come from implemented transition paths and match the exact canonical outputs. Direct changes to module, local contract, or implementation semantics invalidate the seal and fail strict audit. Public domain values keep private fields and validated constructors; `allowed_public_field_structs` is limited to declared envelopes and transition/provenance records.
 
 ## Existing Project Flow
 

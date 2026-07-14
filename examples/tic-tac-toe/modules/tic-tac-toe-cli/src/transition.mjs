@@ -5,7 +5,6 @@ import {
   awaitingRulesResult,
   invokeRulesBridge,
   moveParsed,
-  rejected,
   rulesInvocationCompleted,
   rulesInvocationRequested,
   runRejected,
@@ -26,7 +25,8 @@ export function transitionRecord(state, input) {
         state,
         [runRejected(parsed.reason)],
         [],
-        rejected(parsed.reason),
+        null,
+        parsed.reason,
       );
       return makeTransitionRecord(state, input, output, "RunRejected");
     }
@@ -59,7 +59,8 @@ export function transitionRecord(state, input) {
         awaitingInput(state.acceptedMoveIndexes),
         [runRejected(TicTacToeBoundaryRejection.RulesBridgeFailure)],
         [],
-        rejected(TicTacToeBoundaryRejection.RulesBridgeFailure),
+        null,
+        TicTacToeBoundaryRejection.RulesBridgeFailure,
       );
       return makeTransitionRecord(state, input, output, "RulesBridgeFailed");
     }
@@ -69,7 +70,8 @@ export function transitionRecord(state, input) {
     state,
     [runRejected(TicTacToeBoundaryRejection.IllegalTransition)],
     [],
-    rejected(TicTacToeBoundaryRejection.IllegalTransition),
+    null,
+    TicTacToeBoundaryRejection.IllegalTransition,
   );
   return makeTransitionRecord(state, input, output, "IllegalTransition");
 }

@@ -1,0 +1,19 @@
+name: rms-cli-cli
+kind: runnable-boundary
+surface: cli
+entrypoint: src/main.rs
+launch_entrypoint: null
+launch_scripts: []
+launch_script: null
+delegates_to:
+  role: adapter
+  symbol: src/main.rs#main
+  command: validate-rms-artifacts
+effects:
+- process-runner
+- filesystem
+no_effects_justification: null
+evidence:
+- verification/boundaries/runnable_surface_routes_through_boundary.md
+usage_document: README.md
+smoke_command: verify

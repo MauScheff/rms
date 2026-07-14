@@ -25,6 +25,7 @@ records:
           effect:
             tag: RmsWorkbenchEffect.WriteSemanticChangeRecord
       reply: null
+      rejection: null
     state_after: WritingSemanticChangeRecord
     source:
       file: src/main.rs
@@ -56,6 +57,7 @@ records:
       effects: []
       reply:
         tag: RmsWorkbenchReply.SemanticChangeApplied
+      rejection: null
     state_after: Ready
     source:
       file: src/main.rs
@@ -85,6 +87,7 @@ records:
           effect:
             tag: RmsWorkbenchEffect.WriteSemanticChangeRecord
       reply: null
+      rejection: null
     state_after: WritingSemanticChangeRecord
     source:
       file: src/main.rs
@@ -105,8 +108,7 @@ records:
       events: []
       commands: []
       effects: []
-      reply:
-        tag: RmsWorkbenchReply.SemanticChangeRejected
+      reply: null
       rejection:
         tag: RmsWorkbenchRejection.SemanticChangeRecordWriteFailed
     state_after: Ready

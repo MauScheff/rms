@@ -2,29 +2,29 @@ spec: rms/contract/v0.1
 name: "inspect-implementation-structure"
 version: 1
 kind: command
-meaning: "Print and validate the canonical inner structure and live trace path realized by an RMS implementation binding."
+meaning: "Print and validate canonical inner structure, typed outcomes, effect ownership, and live machine realization for an RMS implementation binding."
 preconditions:
   - id: "accepts-1"
     statement: "a readable RMS implementation binding with inspectable or explicitly opaque source"
   - id: "accepts-2"
-    statement: "canonical machine, message, role, trace, surface, and semantic-function declarations"
+    statement: "canonical machine message role trace surface effect-protocol and semantic-function declarations"
 postconditions:
   - id: "ensures-1"
-    statement: "the report distinguishes binding container types from semantic variants and named transition cases"
+    statement: "binding container types remain distinct from semantic variants and named transition cases"
   - id: "ensures-2"
-    statement: "stateful inspectable machines expose exact state-and-input transition and transition-record callables"
+    statement: "declared rejection variants have an explicit transition-output rejection channel"
   - id: "ensures-3"
-    statement: "effectful drivers retain complete records, advance from state_after, execute output effects, and feed typed results back as inputs"
+    statement: "inspectable boundary IO is owned by declared effects typed results protocols and executors"
   - id: "ensures-4"
-    statement: "declared envelopes, total transition arithmetic, runnable delegation, and role ownership are checked against canonical declarations"
+    statement: "stateful machines expose exact state-and-input transition and transition-record callables"
 failure_categories:
   - id: "rejects-1"
-    statement: "missing declared symbols or roles, transition signature or return drift, and incomplete live record execution"
+    statement: "missing declared symbols roles transition fields or live semantic ownership"
   - id: "rejects-2"
-    statement: "undeclared semantic source ownership, invalid public domain representation, or undeclared effects"
+    statement: "hidden boundary IO or undeclared effect protocols"
   - id: "rejects-3"
-    statement: "declared message envelopes absent from source or unchecked arithmetic over represented transition values"
+    statement: "rejection variants erased into branch strings or unrelated replies"
   - id: "rejects-4"
-    statement: "malformed machine, trace, driver, effect protocol, or surface structure"
+    statement: "malformed machine driver effect protocol trace or surface structure"
 compatibility:
   policy: backward-compatible-within-major

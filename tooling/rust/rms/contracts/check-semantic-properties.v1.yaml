@@ -2,17 +2,23 @@ spec: rms/contract/v0.1
 name: "check-semantic-properties"
 version: 1
 kind: command
-meaning: Check language-neutral property and fuzz declarations, including whether their realization strategy can support the declared input-space claim.
+meaning: "Check language-neutral property and fuzz declarations and whether each binding realization truthfully supports the declared input-space claim."
 preconditions:
   - id: "accepts-1"
     statement: "module or implementation target with semantic property declarations"
+  - id: "accepts-2"
+    statement: "deterministic corpus exhaustive generated coverage-guided or model-checker realization metadata"
 postconditions:
-  - id: explicit-outcome
-    statement: "The command returns an explicit accepted or rejected outcome."
-  - id: realization-is-truthful
-    statement: Fixed corpora, finite exhaustive checks, generated properties, and coverage-guided fuzzers remain distinct; an open-ended fuzz target cannot be satisfied by a fixed corpus.
+  - id: "ensures-1"
+    statement: "every property returns an explicit accepted or rejected conformance result"
+  - id: "ensures-2"
+    statement: "fixed corpora exhaustive spaces generated properties and coverage fuzzers remain distinct"
+  - id: "ensures-3"
+    statement: "generated-property harnesses perform generation rather than return only a fixed literal collection"
 failure_categories:
   - id: "rejects-1"
-    statement: "property missing input space, oracle, evidence, realization, command, or replayable counterexample metadata"
+    statement: "missing input space oracle evidence command harness or replayable counterexample metadata"
+  - id: "rejects-2"
+    statement: "generated-property or fuzz claims backed only by fixed literal cases"
 compatibility:
   policy: backward-compatible-within-major

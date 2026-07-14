@@ -1,0 +1,89 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/expose-runnable-usage-and-smoke-verification-plus-composite-proof-delegation-through-rms-public-command-contracts-dd24668c2c2a.yaml
+intent:
+  summary: Bind the four generic reliability guarantees to their exact deterministic RMS command owners.
+laws: null
+contracts: null
+properties: null
+semantic_functions:
+  add: []
+  set:
+  - id: inspect-implementation-structure-command
+    symbol: run_structure
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/inspect-implementation-structure.v1.yaml
+      invariants:
+      - diagnostics-are-evidence-not-authority
+      - public-domain-values-preserve-validity
+      - effect-executor-analysis-respects-protocol-atomicity
+      - shared-effect-support-cannot-own-workflow
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - structure diagnostics are derived from canonical declarations and inspectable binding source
+      - protocol atomicity is checked against each exact executor
+      - private effect support cannot own machine progression or public surfaces
+    evidence:
+      contracts:
+      - verification/contracts/inspect_implementation_structure.md
+      laws:
+      - verification/laws/effect_executor_analysis_respects_protocol_atomicity.md
+      - verification/laws/shared_effect_support_cannot_own_workflow.md
+  - id: compose-rms-system-command
+    symbol: run_compose
+    kind: interpreter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/compose-rms-system.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - composite-laws-may-delegate-proof-through-exports
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - dependencies contracts containment exports and proof delegations resolve from canonical artifacts
+    evidence:
+      contracts:
+      - verification/contracts/compose_rms_system.md
+      laws:
+      - verification/laws/composite_laws_may_delegate_proof_through_exports.md
+  - id: check-runnable-surface-command
+    symbol: run_surface_check
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/check-runnable-surface.v1.yaml
+      invariants:
+      - runnable-surfaces-enter-through-boundaries
+      - diagnostics-are-evidence-not-authority
+      - runnable-delegation-has-semantic-owner
+      - runnable-surfaces-have-usage-and-smoke-proof
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - runnable surfaces resolve boundary wiring evidence usage documents and smoke command keys
+    evidence:
+      contracts:
+      - verification/contracts/check_runnable_surface.md
+      laws:
+      - verification/laws/runnable_surfaces_have_usage_and_smoke_proof.md
+  remove: []
+machine: null
+roles: null
+evidence:
+  add: []
+surfaces: null
+binding_dependencies: null

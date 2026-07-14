@@ -22,6 +22,7 @@ records:
       reply:
         tag: Description
         description: example
+      rejection: null
     state_after: Ready
     source:
       file: Sources/RmsSwiftExample/RmsSwiftExample.swift
@@ -45,9 +46,9 @@ records:
             tag: WidgetRejected
       commands: []
       effects: []
-      reply:
-        tag: Rejected
-        reason: EmptySwiftWidgetName
+      reply: null
+      rejection:
+        tag: EmptyWidgetName
     state_after: Ready
     source:
       file: Sources/RmsSwiftExample/RmsSwiftExample.swift

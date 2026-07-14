@@ -20,7 +20,8 @@ pub struct TicTacToeTransition {
     pub events: Vec<TicTacToeEvent>,
     pub commands: Vec<Command>,
     pub effects: Vec<()>,
-    pub reply: TransitionOutcome,
+    pub reply: Option<TransitionOutcome>,
+    pub rejection: Option<MoveRejection>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,9 +48,16 @@ pub fn transition_record(state: Game, input: TicTacToeInput) -> TicTacToeTransit
     let state_before = state;
     let TicTacToeInput::Command(command) = input;
     let (reply, branch) = apply_command(state, command);
-    let (next_state, event) = match reply {
-        TransitionOutcome::Accepted { state } => (state, TicTacToeEvent::MarkPlaced),
-        TransitionOutcome::Rejected { state, .. } => (state, TicTacToeEvent::MoveRejected),
+    let (next_state, event, reply, rejection) = match reply {
+        TransitionOutcome::Accepted { state } => (
+            state,
+            TicTacToeEvent::MarkPlaced,
+            Some(TransitionOutcome::Accepted { state }),
+            None,
+        ),
+        TransitionOutcome::Rejected { state, reason } => {
+            (state, TicTacToeEvent::MoveRejected, None, Some(reason))
+        }
     };
     let output = TicTacToeTransition {
         next_state,
@@ -57,6 +65,7 @@ pub fn transition_record(state: Game, input: TicTacToeInput) -> TicTacToeTransit
         commands: Vec::new(),
         effects: Vec::new(),
         reply,
+        rejection,
     };
     TicTacToeTransitionRecord {
         state_before,
@@ -134,7 +143,15 @@ pub fn replay(commands: impl IntoIterator<Item = Command>) -> Trace {
     let mut outcomes = Vec::new();
 
     for command in commands {
-        let outcome = transition(state, TicTacToeInput::Command(command)).reply;
+        let output = transition(state, TicTacToeInput::Command(command));
+        let outcome = match (output.reply, output.rejection) {
+            (Some(reply), _) => reply,
+            (None, Some(reason)) => TransitionOutcome::Rejected {
+                state: output.next_state,
+                reason,
+            },
+            (None, None) => break,
+        };
         if let TransitionOutcome::Accepted { state: next } = outcome {
             state = next;
         }
@@ -205,7 +222,8 @@ mod tests {
             Game::new(),
             TicTacToeInput::Command(Command::PlaceMark { cell: cell(0) }),
         )
-        .reply;
+        .reply
+        .expect("first move should return an accepted reply");
 
         let TransitionOutcome::Accepted { state } = outcome else {
             panic!("first move should be accepted");
@@ -220,7 +238,8 @@ mod tests {
             Game::new(),
             TicTacToeInput::Command(Command::PlaceMark { cell: cell(0) }),
         )
-        .reply;
+        .reply
+        .expect("first move should return an accepted reply");
         let TransitionOutcome::Accepted { state } = first else {
             panic!("first move should be accepted");
         };
@@ -228,16 +247,11 @@ mod tests {
         let second = transition(
             state,
             TicTacToeInput::Command(Command::PlaceMark { cell: cell(0) }),
-        )
-        .reply;
-
-        assert_eq!(
-            second,
-            TransitionOutcome::Rejected {
-                state,
-                reason: MoveRejection::CellOccupied
-            }
         );
+
+        assert_eq!(second.reply, None);
+        assert_eq!(second.rejection, Some(MoveRejection::CellOccupied));
+        assert_eq!(second.next_state, state);
     }
 
     #[test]

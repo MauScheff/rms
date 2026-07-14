@@ -381,6 +381,178 @@ architecture:
       - profile: smoke
         strategy: deterministic-corpus
         command: verify
+    - id: protocol-aware-executor-control-flow
+      proves: effect-executor-analysis-respects-protocol-atomicity
+      kind: conformance
+      subject: implementations with atomic and aggregate effect protocols
+      input_space:
+        fixtures:
+        - atomic executor with a control loop
+        - aggregate executor with a control loop beside an atomic protocol
+      operation: run implementation structure inspection
+      oracle:
+      - the atomic executor loop is rejected
+      - the declared aggregate executor loop is not rejected because of an unrelated atomic protocol
+      evidence:
+        path: verification/properties/protocol_aware_executor_control_flow.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/protocol-aware-executor
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: composite-proof-delegation-resolution
+      proves: composite-laws-may-delegate-proof-through-exports
+      kind: conformance
+      subject: composite law delegations to child modules
+      input_space:
+        fixtures:
+        - valid exported child law and property
+        - missing provider law
+        - missing provider property
+        - missing export
+        - missing concrete evidence
+      operation: validate and compose the RMS module tree
+      oracle:
+      - a fully resolved delegation satisfies the parent property obligation
+      - every broken link produces a deterministic diagnostic
+      evidence:
+        path: verification/properties/composite_proof_delegation.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/composite-proof-delegation
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: effect-support-ownership-boundary
+      proves: shared-effect-support-cannot-own-workflow
+      kind: conformance
+      subject: declared shared effect-support source roles
+      input_space:
+        fixtures:
+        - private shared IO mechanism helper
+        - helper constructing machine state
+        - helper calling transition or driver
+        - helper exposed as runnable or public facade
+      operation: inspect declared source roles and reachable binding symbols
+      oracle:
+      - private mechanism support passes
+      - state progression workflow and public exposure fail
+      evidence:
+        path: verification/properties/effect_support_ownership.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/effect-support
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: runnable-usage-and-smoke-resolution
+      proves: runnable-surfaces-have-usage-and-smoke-proof
+      kind: conformance
+      subject: runnable surface declarations and implementation commands
+      input_space:
+        fixtures:
+        - surface with existing usage document and smoke command
+        - missing usage document
+        - unknown smoke command
+        - failing smoke command
+      operation: apply check and verify the runnable surface
+      oracle:
+      - complete declarations pass and verification executes smoke
+      - missing metadata unknown commands and failing smoke fail deterministically
+      evidence:
+        path: verification/properties/runnable_usage_and_smoke.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/runnable-usage-smoke
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: canonical-transition-trace-conformance
+      proves: trace-records-conform-to-canonical-transitions
+      kind: conformance
+      input_space:
+        fixtures: trace records with matching and mismatching case outputs
+      operation: compare each trace record with the owning canonical transition case
+      oracle:
+      - matching input state output and rejection semantics pass
+      - missing events effects replies or typed rejections fail
+      evidence:
+        path: verification/properties/canonical_transition_trace_conformance.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/trace-conformance
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: typed-transition-rejection-conformance
+      proves: expected-rejections-remain-typed
+      kind: conformance
+      input_space:
+        fixtures: inspectable transition output types with and without explicit rejection fields
+      operation: inspect the binding-native transition type against canonical output declarations
+      oracle:
+      - declared rejection variants require an explicit rejection output field
+      - branch-only rejection encoding fails
+      evidence:
+        path: verification/properties/typed_transition_rejection_conformance.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/typed-rejections
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: boundary-effect-protocol-conformance
+      proves: effectful-boundaries-use-explicit-protocols
+      kind: conformance
+      input_space:
+        fixtures: boundary adapters with declared and hidden filesystem process clock and network IO
+      operation: inspect boundary source roles and canonical effect protocols
+      oracle:
+      - inspectable IO requires declared effects results protocol and executor ownership
+      - pure no-effect boundaries remain valid
+      evidence:
+        path: verification/properties/boundary_effect_protocol_conformance.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/boundary-effects
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: generated-property-harness-truthfulness
+      proves: generated-property-claims-use-generators
+      kind: conformance
+      input_space:
+        fixtures: generated harnesses and fixed literal case providers across inspectable bindings
+      operation: inspect non-corpus realization harness bodies
+      oracle:
+      - generator-backed harnesses pass
+      - fixed literal arrays labeled generated-property fail
+      evidence:
+        path: verification/properties/generated_property_harness_truthfulness.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/property-truthfulness
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+    - id: runnable-machine-reachability
+      proves: runnable-surfaces-execute-declared-machines
+      kind: conformance
+      input_space:
+        fixtures: runnable delegates that reach or bypass their declared transition or driver
+      operation: inspect the binding call graph from surface delegate to machine execution
+      oracle:
+      - live surface paths reach the canonical machine function
+      - evidence-only decorative machine paths fail
+      evidence:
+        path: verification/properties/runnable_machine_reachability.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/runnable-machine
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
   messages:
     command_envelope:
     - command_id
@@ -599,6 +771,8 @@ architecture:
     - filesystem
     evidence:
     - verification/boundaries/runnable_surface_routes_through_boundary.md
+    usage_document: README.md
+    smoke_command: verify
 semantic_functions:
 - id: validate-rms-artifacts-command
   symbol: run_validate
@@ -900,14 +1074,15 @@ semantic_functions:
     - contracts/compose-rms-system.v1.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
+    - composite-laws-may-delegate-proof-through-exports
   assumptions:
     ensures:
-    - composition findings are derived from discovered system, context-map, module, requirement, capability, containment, visibility, and export declarations
-    - recursive parent exports remain invalid unless the parent publishes the surface and the child provides the backing surface
-    - semantic shape direction smells are reported as review-required findings without failing composition
+    - dependencies contracts containment exports and proof delegations resolve from canonical artifacts
   evidence:
     contracts:
     - verification/contracts/compose_rms_system.md
+    laws:
+    - verification/laws/composite_laws_may_delegate_proof_through_exports.md
 - id: route-rms-work-command
   symbol: run_route
   kind: projector
@@ -1125,17 +1300,20 @@ semantic_functions:
     invariants:
     - diagnostics-are-evidence-not-authority
     - public-domain-values-preserve-validity
+    - effect-executor-analysis-respects-protocol-atomicity
+    - shared-effect-support-cannot-own-workflow
+    - expected-rejections-remain-typed
+    - effectful-boundaries-use-explicit-protocols
   assumptions:
     ensures:
-    - structure reports are derived from the target implementation binding and validator diagnostics
-    - missing machine, role, parser, transition, envelope, trace, replay, first-bad-transition, and evidence obligations are advisory findings rather than hidden architectural authority
-    - parser role aliases are normalized for checks while original role declarations remain visible in reports
-    - unchecked arithmetic in declared roles is flagged when modules declare numeric validated values
-    - declared inspectable source symbols that are not found are reported as validation-backed structure errors
-    - generated reports identify the implementation, module, binding, shape, declared machine roles, message envelopes, transition output, trace roles, role paths, and focused diagnostics
+    - structure diagnostics derive from canonical declarations and inspectable binding source
+    - transition rejection fields and boundary effect protocols remain explicit
   evidence:
     contracts:
     - verification/contracts/inspect_implementation_structure.md
+    properties:
+    - verification/properties/typed_transition_rejection_conformance.md
+    - verification/properties/boundary_effect_protocol_conformance.md
 - id: trace-bundle-check-command
   symbol: run_trace_check
   kind: parser
@@ -1145,13 +1323,15 @@ semantic_functions:
     - contracts/inspect-trace-bundle.v1.yaml
     invariants:
     - diagnostics-are-evidence-not-authority
+    - trace-records-conform-to-canonical-transitions
   assumptions:
     ensures:
-    - trace checks read local JSON or YAML trace bundles and report structural diagnostics without executing module business logic or requiring a runtime
-    - trace checks validate transition records, output shape, timeline continuity, and envelope completeness when envelopes are present
+    - trace checks are local and compare records with canonical transition cases when discoverable
   evidence:
     contracts:
     - verification/contracts/inspect_trace_bundle.md
+    properties:
+    - verification/properties/canonical_transition_trace_conformance.md
 - id: trace-bundle-replay-command
   symbol: run_trace_replay
   kind: projector
@@ -1211,13 +1391,18 @@ semantic_functions:
     - runnable-surfaces-enter-through-boundaries
     - diagnostics-are-evidence-not-authority
     - runnable-delegation-has-semantic-owner
+    - runnable-surfaces-have-usage-and-smoke-proof
+    - runnable-surfaces-execute-declared-machines
   assumptions:
     ensures:
-    - runnable surface diagnostics are derived from implementation declarations and declared source roles
-    - strict mode fails when surfaces are missing, disconnected, duplicate domain logic, access private roles, or lack evidence
+    - runnable surfaces resolve boundary wiring evidence usage smoke and live machine reachability
   evidence:
     contracts:
     - verification/contracts/check_runnable_surface.md
+    laws:
+    - verification/laws/runnable_surfaces_have_usage_and_smoke_proof.md
+    properties:
+    - verification/properties/runnable_machine_reachability.md
 - id: package-module-command
   symbol: run_package
   kind: adapter
@@ -1386,9 +1571,15 @@ semantic_functions:
     - semantic-properties-are-canonical-reliability-evidence
     - fuzz-realization-matches-semantic-claim
     - risk-bearing-laws-have-semantic-properties
+    - generated-property-claims-use-generators
+  assumptions:
+    ensures:
+    - non-corpus harness claims are inspected for truthful case generation
   evidence:
     contracts:
     - verification/contracts/check_semantic_properties.md
+    properties:
+    - verification/properties/generated_property_harness_truthfulness.md
 - id: semantic-property-run-command
   symbol: run_property_run
   kind: interpreter
@@ -1415,7 +1606,7 @@ semantic_functions:
   purity: effectful
 x-rms:
   semantic_revision:
-    digest: sha256:067f690b890842c96c1308fe4be9f27a62ac308bf43557c6132c91822d62b716
-    change_record: verification/changes/preserve-provided-and-required-capability-contract-ownership-during-canonical-semantic-revision-fc420b7c3897.yaml
+    digest: sha256:5bfa87ea47ed4edd410f24b2febda3597d834fac785b6bf7078a2e5f81a97b25
+    change_record: verification/changes/expose-truthful-trace-rejection-boundary-effect-property-realization-and-runnable-machine-checks-through-rms-public-contracts-f177ab616ddc.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:fc420b7c38973f39a8a26f83e81f186b406c24deee7eba47f982cf1a45433397
+    change_record_digest: sha256:f177ab616ddc3136088ce48964882a7f3b72629803b65a3038b3a239725c9fcd

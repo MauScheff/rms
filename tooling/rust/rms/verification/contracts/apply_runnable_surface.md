@@ -14,5 +14,6 @@ Expected result:
 - Concrete boundary evidence is created for the delegation promise.
 - Browser surfaces generate missing thin launch assets: controller entrypoint, launch script, and host HTML.
 - The launch script imports the declared controller, and the controller delegates to the declared boundary adapter/public entrypoint.
+- Surface application records or generates a product usage document and resolves a declared smoke command key.
 
 Source revision: recorded by git commit or strict audit provenance before production use.

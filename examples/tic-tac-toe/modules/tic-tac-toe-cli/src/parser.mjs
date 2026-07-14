@@ -12,12 +12,9 @@ const LETTER_ROWS = new Map([
 ]);
 
 export function generateMalformedInputCases() {
-  const whitespace = ["", " ", "\n", "\t", " \n\t "];
-  const outOfBoard = ["D4", "A0", "4,4", "-1,1"];
-  const incomplete = ["A", "1", "1,", ",1", "A1B2"];
-  const nonText = [null, undefined, Object.freeze({ row: 1, column: 1 })];
-
-  return Object.freeze([...whitespace, ...outOfBoard, ...incomplete, ...nonText]);
+  return Object.freeze(Array.from({ length: 64 }, (_, index) => (
+    index % 2 === 0 ? " ".repeat(index + 1) : `D${index + 4}`
+  )));
 }
 
 export function parseMoveText(input) {

@@ -1,0 +1,93 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/make-executor-analysis-protocol-aware-support-delegated-composite-proof-constrain-shared-effect-support-and-require-runnable-usage-and-smoke-verification-5ce5db663632.yaml
+intent:
+  summary: Expose runnable usage and smoke verification plus composite proof delegation through RMS public command contracts.
+laws: null
+contracts:
+  add: []
+  set:
+  - name: apply-runnable-surface
+    direction: provided
+    version: v1
+    command: ApplyRunnableSurface
+    meaning: Validate and apply a runnable surface with boundary delegation, usage documentation, and an executable smoke command key.
+    accepts:
+    - an implementation binding and a language-neutral runnable surface declaration
+    - a safe module-relative entrypoint, usage document, evidence path, and declared smoke command key
+    ensures:
+    - architecture surfaces and runnable roles are updated canonically
+    - a missing default smoke command is derived from the binding verify command
+    - a concrete usage document and surface evidence are created or preserved
+    - dry-run reports the final declaration and planned writes without mutation
+    rejects:
+    - unsupported surface kinds or hosts
+    - unsafe artifact paths
+    - missing boundary delegation, effect policy, or smoke command
+  - name: check-runnable-surface
+    direction: provided
+    version: v1
+    command: CheckRunnableSurface
+    meaning: Prove that a runnable surface routes through declared RMS boundaries and has usable launch, documentation, evidence, and smoke paths.
+    accepts:
+    - an implementation binding with declared runnable surfaces
+    ensures:
+    - entrypoints and launch assets route through the declared boundary
+    - usage documents exist and smoke command keys resolve
+    - strict mode promotes runnable production blockers to failure
+    rejects:
+    - private domain access or duplicated decisions
+    - missing wiring, evidence, usage documentation, or smoke commands
+  - name: verify-implementation
+    direction: provided
+    version: v1
+    command: VerifyImplementation
+    meaning: Verify an implementation binding or composite rollup, including native tests, trace bundles, and declared runnable smoke commands.
+    accepts:
+    - an implementation binding with commands.verify
+    - a composite module with verifiable children
+    ensures:
+    - native verification succeeds
+    - declared trace bundles replay successfully
+    - every distinct runnable smoke command executes successfully
+    - composite verification rolls up children and composition evidence
+    rejects:
+    - invalid binding structure
+    - failed native verification, trace replay, or runnable smoke execution
+  - name: compose-rms-system
+    direction: provided
+    version: v1
+    command: ComposeRmsSystem
+    meaning: Resolve RMS dependencies, contracts, recursive exports, and explicit composite proof delegations.
+    accepts:
+    - a root containing canonical RMS module and composition artifacts
+    ensures:
+    - dependencies and contracts resolve to compatible providers
+    - recursive exports are backed by contained modules
+    - each proof delegation resolves its parent law, child law and property, export, and concrete evidence
+    rejects:
+    - unresolved providers or incompatible contracts
+    - broken containment or export ownership
+    - incomplete or false composite proof delegation
+  remove: []
+properties: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: apply-runnable-surface
+    path: verification/contracts/apply_runnable_surface.md
+  - kind: contract
+    proves: check-runnable-surface
+    path: verification/contracts/check_runnable_surface.md
+  - kind: contract
+    proves: verify-implementation
+    path: verification/contracts/verify_implementation.md
+  - kind: contract
+    proves: compose-rms-system
+    path: verification/contracts/compose_rms_system.md
+surfaces: null
+binding_dependencies: null

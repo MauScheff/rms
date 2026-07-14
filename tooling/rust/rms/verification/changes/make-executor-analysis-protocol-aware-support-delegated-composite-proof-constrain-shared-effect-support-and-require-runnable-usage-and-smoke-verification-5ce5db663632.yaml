@@ -1,0 +1,157 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/preserve-provided-and-required-capability-contract-ownership-during-canonical-semantic-revision-fc420b7c3897.yaml
+intent:
+  summary: Make executor analysis protocol-aware, support delegated composite proof, constrain shared effect support, and require runnable usage and smoke verification.
+laws:
+  add:
+  - id: effect-executor-analysis-respects-protocol-atomicity
+    statement: Control-flow diagnostics apply to the exact executor of each one-request-one-result protocol and do not reject declared aggregate executors merely because another protocol is atomic.
+    kind: safety
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  - id: composite-laws-may-delegate-proof-through-exports
+    statement: A composite may discharge an exported law through a named child law and property only when the provider, public export, and concrete evidence resolve.
+    kind: invariant
+    authority: composition
+    enforced_by: compose-rms-system-command
+  - id: shared-effect-support-cannot-own-workflow
+    statement: Shared effect-support roles may implement reusable IO mechanism policy but cannot own machine state progression, transition outputs, retries, compensation, or runnable public behavior.
+    kind: ordering
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  - id: runnable-surfaces-have-usage-and-smoke-proof
+    statement: Every runnable surface names a concrete usage document and a declared smoke command that RMS verification executes.
+    kind: invariant
+    authority: parser
+    enforced_by: check-runnable-surface-command
+  set: []
+  remove: []
+contracts: null
+properties:
+  add:
+  - id: protocol-aware-executor-control-flow
+    proves: effect-executor-analysis-respects-protocol-atomicity
+    kind: conformance
+    subject: implementations with atomic and aggregate effect protocols
+    input_space:
+      fixtures:
+      - atomic executor with a control loop
+      - aggregate executor with a control loop beside an atomic protocol
+    preconditions: []
+    operation: run implementation structure inspection
+    oracle:
+    - the atomic executor loop is rejected
+    - the declared aggregate executor loop is not rejected because of an unrelated atomic protocol
+    evidence:
+      kind: property
+      path: verification/properties/protocol_aware_executor_control_flow.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/protocol-aware-executor
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  - id: composite-proof-delegation-resolution
+    proves: composite-laws-may-delegate-proof-through-exports
+    kind: conformance
+    subject: composite law delegations to child modules
+    input_space:
+      fixtures:
+      - valid exported child law and property
+      - missing provider law
+      - missing provider property
+      - missing export
+      - missing concrete evidence
+    preconditions: []
+    operation: validate and compose the RMS module tree
+    oracle:
+    - a fully resolved delegation satisfies the parent property obligation
+    - every broken link produces a deterministic diagnostic
+    evidence:
+      kind: property
+      path: verification/properties/composite_proof_delegation.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/composite-proof-delegation
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  - id: effect-support-ownership-boundary
+    proves: shared-effect-support-cannot-own-workflow
+    kind: conformance
+    subject: declared shared effect-support source roles
+    input_space:
+      fixtures:
+      - private shared IO mechanism helper
+      - helper constructing machine state
+      - helper calling transition or driver
+      - helper exposed as runnable or public facade
+    preconditions: []
+    operation: inspect declared source roles and reachable binding symbols
+    oracle:
+    - private mechanism support passes
+    - state progression workflow and public exposure fail
+    evidence:
+      kind: property
+      path: verification/properties/effect_support_ownership.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/effect-support
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  - id: runnable-usage-and-smoke-resolution
+    proves: runnable-surfaces-have-usage-and-smoke-proof
+    kind: conformance
+    subject: runnable surface declarations and implementation commands
+    input_space:
+      fixtures:
+      - surface with existing usage document and smoke command
+      - missing usage document
+      - unknown smoke command
+      - failing smoke command
+    preconditions: []
+    operation: apply check and verify the runnable surface
+    oracle:
+    - complete declarations pass and verification executes smoke
+    - missing metadata unknown commands and failing smoke fail deterministically
+    evidence:
+      kind: property
+      path: verification/properties/runnable_usage_and_smoke.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/runnable-usage-smoke
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: verify
+      harness: null
+      exhaustive: false
+  set: []
+  remove: []
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: effect-executor-analysis-respects-protocol-atomicity
+    path: verification/laws/effect_executor_analysis_respects_protocol_atomicity.md
+  - kind: law
+    proves: composite-laws-may-delegate-proof-through-exports
+    path: verification/laws/composite_laws_may_delegate_proof_through_exports.md
+  - kind: law
+    proves: shared-effect-support-cannot-own-workflow
+    path: verification/laws/shared_effect_support_cannot_own_workflow.md
+  - kind: law
+    proves: runnable-surfaces-have-usage-and-smoke-proof
+    path: verification/laws/runnable_surfaces_have_usage_and_smoke_proof.md
+surfaces: null
+binding_dependencies: null

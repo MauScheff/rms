@@ -57,7 +57,6 @@ public enum SwiftExampleRejection: Equatable {
 
 public enum DescribeSwiftWidgetReply: Equatable {
     case description(String)
-    case rejected(reason: SwiftExampleRejection)
 }
 
 public struct SwiftExampleTransition: Equatable {
@@ -65,7 +64,8 @@ public struct SwiftExampleTransition: Equatable {
     public let events: [SwiftExampleEvent]
     public let commands: [DescribeSwiftWidgetCommand]
     public let effects: [Never]
-    public let reply: DescribeSwiftWidgetReply
+    public let reply: DescribeSwiftWidgetReply?
+    public let rejection: SwiftExampleRejection?
 }
 
 public struct SwiftExampleTransitionRecord: Equatable {
@@ -95,18 +95,19 @@ public func transition(_ command: DescribeSwiftWidgetCommand) -> SwiftExampleTra
 public func transitionRecord(_ command: DescribeSwiftWidgetCommand) -> SwiftExampleTransitionRecord {
     let stateBefore = SwiftExampleState.ready
     let event: SwiftExampleEvent
-    let reply: DescribeSwiftWidgetReply
+    let reply: DescribeSwiftWidgetReply?
+    let rejection: SwiftExampleRejection?
     let branch: String
     switch command {
     case .describe(let widget):
         event = .widgetDescribed
         reply = .description(describeWidget(widget))
+        rejection = nil
         branch = "DescribeWidget"
     case .rejectEmptyName(let name):
         event = .widgetRejected
-        reply = .rejected(
-            reason: SwiftWidget(name) == nil ? .emptyWidgetName : .expectedEmptyName
-        )
+        reply = nil
+        rejection = SwiftWidget(name) == nil ? .emptyWidgetName : .expectedEmptyName
         branch = "RejectEmptyWidgetName"
     }
     let output = SwiftExampleTransition(
@@ -114,7 +115,8 @@ public func transitionRecord(_ command: DescribeSwiftWidgetCommand) -> SwiftExam
         events: [event],
         commands: [],
         effects: [],
-        reply: reply
+        reply: reply,
+        rejection: rejection
     )
     return SwiftExampleTransitionRecord(
         stateBefore: stateBefore,

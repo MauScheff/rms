@@ -1,0 +1,159 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/reject-decorative-machines-synthetic-traces-hidden-boundary-io-erased-rejections-and-fixed-corpus-property-claims-exposed-by-blind-task-spool-dogfood-e835208ec557.yaml
+intent:
+  summary: Expose truthful trace, rejection, boundary effect, property realization, and runnable machine checks through RMS public contracts.
+laws:
+  add: []
+  set: []
+  remove: []
+contracts:
+  add: []
+  set:
+  - name: inspect-implementation-structure
+    direction: provided
+    version: '1'
+    command: structure
+    meaning: Print and validate canonical inner structure, typed outcomes, effect ownership, and live machine realization for an RMS implementation binding.
+    accepts:
+    - a readable RMS implementation binding with inspectable or explicitly opaque source
+    - canonical machine message role trace surface effect-protocol and semantic-function declarations
+    ensures:
+    - binding container types remain distinct from semantic variants and named transition cases
+    - declared rejection variants have an explicit transition-output rejection channel
+    - inspectable boundary IO is owned by declared effects typed results protocols and executors
+    - stateful machines expose exact state-and-input transition and transition-record callables
+    rejects:
+    - missing declared symbols roles transition fields or live semantic ownership
+    - hidden boundary IO or undeclared effect protocols
+    - rejection variants erased into branch strings or unrelated replies
+    - malformed machine driver effect protocol trace or surface structure
+  - name: inspect-trace-bundle
+    direction: provided
+    version: '1'
+    command: trace
+    meaning: Check replay and diagnose local RMS transition records including conformance to canonical machine cases when an owning implementation is discoverable.
+    accepts:
+    - a readable RMS JSON or YAML trace bundle
+    - optional discoverable owning implementation with canonical transition declarations
+    ensures:
+    - local replay reconstructs state input outputs and source provenance without requiring an RMS runtime
+    - records match canonical case input state movement events effects reply and rejection when canonical semantics are available
+    - diagnosis identifies the first structurally or semantically bad transition
+    rejects:
+    - unreadable or invalid trace syntax
+    - state discontinuity or output-state mismatch
+    - trace output that contradicts its named canonical transition case
+  - name: check-semantic-properties
+    direction: provided
+    version: '1'
+    command: property
+    meaning: Check language-neutral property and fuzz declarations and whether each binding realization truthfully supports the declared input-space claim.
+    accepts:
+    - module or implementation target with semantic property declarations
+    - deterministic corpus exhaustive generated coverage-guided or model-checker realization metadata
+    ensures:
+    - every property returns an explicit accepted or rejected conformance result
+    - fixed corpora exhaustive spaces generated properties and coverage fuzzers remain distinct
+    - generated-property harnesses perform generation rather than return only a fixed literal collection
+    rejects:
+    - missing input space oracle evidence command harness or replayable counterexample metadata
+    - generated-property or fuzz claims backed only by fixed literal cases
+  - name: check-runnable-surface
+    direction: provided
+    version: '1'
+    command: surface
+    meaning: Prove that a runnable surface routes through declared RMS boundaries and executes the declared machine path with usable launch documentation evidence and smoke commands.
+    accepts:
+    - an implementation binding with declared runnable surfaces
+    - inspectable surface delegate and machine transition or driver symbols where supported
+    ensures:
+    - entrypoints and launch assets route through the declared boundary
+    - machine-shaped runnable modules reach their canonical transition or driver on the live call path
+    - usage documents exist and smoke command keys resolve
+    rejects:
+    - private domain access or duplicated decisions
+    - a decorative machine not reached by the runnable path
+    - missing wiring evidence usage documentation or smoke commands
+  remove: []
+properties:
+  add: []
+  set: []
+  remove: []
+semantic_functions:
+  add: []
+  set: []
+  remove: []
+machine:
+  mode: ''
+  justification: null
+  transition_signature: null
+  driver_function: null
+  transition_record_function: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+  transitions:
+    set: null
+    add: []
+    remove: []
+roles:
+  set: []
+  add: []
+  remove: []
+evidence:
+  add:
+  - kind: contract
+    proves: inspect-implementation-structure
+    path: verification/contracts/inspect_implementation_structure.md
+  - kind: contract
+    proves: inspect-trace-bundle
+    path: verification/contracts/inspect_trace_bundle.md
+  - kind: contract
+    proves: check-semantic-properties
+    path: verification/contracts/check_semantic_properties.md
+  - kind: contract
+    proves: check-runnable-surface
+    path: verification/contracts/check_runnable_surface.md
+surfaces:
+  add: []
+  set: null
+  remove: []
+binding_dependencies:
+  set: null
+  add: []
+  remove: []

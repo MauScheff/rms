@@ -1,24 +1,28 @@
 spec: rms/contract/v0.1
-name: apply-runnable-surface
+name: "apply-runnable-surface"
 version: 1
 kind: command
-meaning: Validate and apply a runnable surface declaration to an implementation binding's canonical architecture roles and evidence.
+meaning: "Validate and apply a runnable surface with boundary delegation, usage documentation, and an executable smoke command key."
 preconditions:
-  - id: implementation-readable
-    statement: "The target `implementation.yaml` is readable and parseable."
-  - id: surface-declaration-supplied
-    statement: The caller supplies kind, surface, entrypoint, delegated role or symbol, and public command.
+  - id: "accepts-1"
+    statement: "an implementation binding and a language-neutral runnable surface declaration"
+  - id: "accepts-2"
+    statement: "a safe module-relative entrypoint, usage document, evidence path, and declared smoke command key"
 postconditions:
-  - id: canonical-surface-recorded
-    statement: "Successful non-dry-run application records `architecture.surfaces` and `architecture.roles.runnable_surface`."
-  - id: evidence-recorded
-    statement: Runnable surface evidence is created or preserved and names the boundary delegation promise.
-  - id: dry-run-does-not-write
-    statement: "`--dry-run` reports planned writes and diagnostics without mutating artifacts."
+  - id: "ensures-1"
+    statement: "architecture surfaces and runnable roles are updated canonically"
+  - id: "ensures-2"
+    statement: "a missing default smoke command is derived from the binding verify command"
+  - id: "ensures-3"
+    statement: "a concrete usage document and surface evidence are created or preserved"
+  - id: "ensures-4"
+    statement: "dry-run reports the final declaration and planned writes without mutation"
 failure_categories:
-  - id: invalid-surface-kind
-    statement: The declaration uses an unsupported surface kind or host surface.
-  - id: unsafe-entrypoint
-    statement: The entrypoint or evidence path is not a safe module-relative artifact path.
+  - id: "rejects-1"
+    statement: "unsupported surface kinds or hosts"
+  - id: "rejects-2"
+    statement: "unsafe artifact paths"
+  - id: "rejects-3"
+    statement: "missing boundary delegation, effect policy, or smoke command"
 compatibility:
   policy: backward-compatible-within-major

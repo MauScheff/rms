@@ -22,7 +22,8 @@ final class RmsSwiftExampleTests: XCTestCase {
                 events: [.widgetDescribed],
                 commands: [],
                 effects: [],
-                reply: .description("example")
+                reply: .description("example"),
+                rejection: nil
             )
         )
     }

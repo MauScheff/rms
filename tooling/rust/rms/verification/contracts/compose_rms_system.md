@@ -16,5 +16,6 @@ Executable coverage:
 - `shape_direction_warns_when_domain_requires_boundary_adapter` verifies a domain engine depending on a boundary adapter is reported for review.
 - `shape_direction_warns_when_domain_declares_boundary_profile_or_effects` verifies a domain engine with boundary profile or declared effects is reported for review and appears in conformance checks.
 - `shape_direction_warns_when_composite_declares_effects` verifies a composite parent with declared effects is reported for review.
+- `composite_proof_delegation_resolves_child_law_property_and_export` verifies a parent law can delegate to an exported child property and that a broken provider property fails composition.
 
 Provider execution is not involved; composition is deterministic over discovered canonical artifacts.

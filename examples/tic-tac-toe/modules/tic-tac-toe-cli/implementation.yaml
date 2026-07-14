@@ -240,6 +240,8 @@ architecture:
     - local-cli-io
     evidence:
     - verification/boundaries/runnable_surface_routes_through_boundary.md
+    usage_document: README.md
+    smoke_command: verify
   allowed_public_field_structs:
   - TicTacToeBoundaryCommandEnvelope
   - TicTacToeBoundaryEffectEnvelope
@@ -312,7 +314,7 @@ semantic_functions:
   purity: effectful
 x-rms:
   semantic_revision:
-    digest: sha256:46e913f954413572dc009a655f5a4dbd356a4224d19340e46fb8d1041af4ee02
-    change_record: verification/changes/bind-the-boundary-malformed-input-fuzz-claim-to-an-exact-generated-case-harness-84b0e745f2e7.yaml
-    change_record_digest: sha256:84b0e745f2e7a708ded6eae0358183ad47d1dc85139110f9168baa3a4447ae67
-    applied_by: rms spec apply
+    digest: sha256:fbdb2bcfd5fd0fafab00db54dead69a91af5f4b46a83476b2dfab925a2e1faf2
+    change_record: verification/surface-changes/tic-tac-toe-cli-cli-6fa824952574.yaml
+    change_record_digest: sha256:6fa824952574f7a9b1cc845c2ca09bc27c03f1ef4706a4fbf51efa94f9480558
+    applied_by: rms surface apply

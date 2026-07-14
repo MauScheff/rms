@@ -72,7 +72,6 @@ pub enum RustExampleRejection {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DescribeWidgetReply {
     Description(String),
-    Rejected { reason: RustExampleRejection },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -81,7 +80,8 @@ pub struct RustExampleTransition {
     pub events: Vec<RustExampleEvent>,
     pub commands: Vec<DescribeWidgetCommand>,
     pub effects: Vec<()>,
-    pub reply: DescribeWidgetReply,
+    pub reply: Option<DescribeWidgetReply>,
+    pub rejection: Option<RustExampleRejection>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -114,10 +114,13 @@ pub fn transition(command: DescribeWidgetCommand) -> RustExampleTransition {
 
 pub fn transition_record(command: DescribeWidgetCommand) -> RustExampleTransitionRecord {
     let state_before = RustExampleState::Ready;
-    let (event, reply, branch) = match &command {
+    let (event, reply, rejection, branch) = match &command {
         DescribeWidgetCommand::Describe { widget } => (
             RustExampleEvent::WidgetDescribed,
-            DescribeWidgetReply::Description(describe_widget(widget).to_string()),
+            Some(DescribeWidgetReply::Description(
+                describe_widget(widget).to_string(),
+            )),
+            None,
             "DescribeWidget",
         ),
         DescribeWidgetCommand::RejectEmptyName { name } => {
@@ -128,7 +131,8 @@ pub fn transition_record(command: DescribeWidgetCommand) -> RustExampleTransitio
             };
             (
                 RustExampleEvent::WidgetRejected,
-                DescribeWidgetReply::Rejected { reason },
+                None,
+                Some(reason),
                 "RejectEmptyWidgetName",
             )
         }
@@ -140,6 +144,7 @@ pub fn transition_record(command: DescribeWidgetCommand) -> RustExampleTransitio
         commands: Vec::new(),
         effects: Vec::new(),
         reply,
+        rejection,
     };
     RustExampleTransitionRecord {
         state_before,
@@ -191,7 +196,8 @@ mod tests {
                 events: vec![RustExampleEvent::WidgetDescribed],
                 commands: Vec::new(),
                 effects: Vec::new(),
-                reply: DescribeWidgetReply::Description("example".to_string()),
+                reply: Some(DescribeWidgetReply::Description("example".to_string())),
+                rejection: None,
             }
         );
     }
