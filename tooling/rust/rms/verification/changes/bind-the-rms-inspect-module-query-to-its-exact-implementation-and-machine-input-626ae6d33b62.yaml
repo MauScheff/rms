@@ -1,0 +1,50 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/bind-every-rms-public-command-and-required-capability-into-the-cross-layer-semantic-system-graph-a4e4e05c60d1.yaml
+intent:
+  summary: Bind the RMS inspect-module query to its exact implementation and machine input.
+laws: null
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions:
+  add:
+  - id: inspect-module-query
+    symbol: src/main.rs#print_module_brief
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/inspect-module.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      assumptions: []
+    evidence:
+      laws:
+      - verification/laws/canonical_artifacts_remain_authoritative.md
+  set: []
+  remove: []
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings:
+  set: null
+  add:
+  - id: inspect-module-public
+    public_kind: query
+    public_name: inspect-module
+    contract: contracts/inspect-module.v1.yaml
+    semantic_function: inspect-module-query
+    machine_inputs:
+    - InspectModule
+    machine_outputs: []
+  remove: []
+dependency_behavior_bindings: null

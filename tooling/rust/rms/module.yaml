@@ -539,6 +539,21 @@ invariants:
   kind: boundary-integrity
   authority: parser
   enforced_by: parse-rms-view-request
+- id: semantic-system-graph-is-cross-layer-and-source-backed
+  statement: Every semantic system graph includes applicable outer module declarations, inner implementation machines and roles, contracts, executable proof declarations, and exact source provenance without treating a derived projection as authority.
+  kind: projection-integrity
+  authority: parser
+  enforced_by: view-rms-system-command
+- id: semantic-gap-applicability-matches-module-shape
+  statement: Semantic completeness findings are required only when the module shape, profiles, machine mode, or declared behavior creates the corresponding obligation; non-applicable boundary, lifecycle, effect, event, or proof stages are never reported as missing.
+  kind: projection-integrity
+  authority: parser
+  enforced_by: view-rms-system-command
+- id: public-behavior-bindings-close-contract-to-machine-path
+  statement: Every implemented public command and required capability resolves through an exact implementation entrypoint or port to declared machine inputs and typed outcomes, with every reported edge carrying canonical source provenance.
+  kind: semantic-closure
+  authority: parser
+  enforced_by: view-rms-system-command
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -636,6 +651,9 @@ verification:
   - verification/laws/active_evidence_references_current_semantics.md
   - verification/laws/semantic_apply_validates_final_candidate.md
   - verification/laws/system_viewer_is_derived_and_read_only.md
+  - verification/laws/semantic_system_graph.md
+  - verification/laws/semantic_gap_applicability.md
+  - verification/laws/public_behavior_binding_closure.md
   contracts:
   - verification/contracts
   - verification/contracts/add_rms_capability.md
@@ -665,6 +683,8 @@ verification:
   - verification/contracts/design_rms_system.md
   - verification/contracts/run_trace_producers.md
   - verification/contracts/view_rms_system.md
+  - verification/contracts/init_rms_system_adoption.md
+  - verification/contracts/init_rms_system_managed_adoption.md
   scenarios:
   - verification/scenarios
   - verification/scenarios/reusable_module_package.md
@@ -711,12 +731,12 @@ verification:
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Bind the viewer read-only property generator and runner to the pure request parser role.
+  last_semantic_intent: Bind the init-rms-system public behavior to the exact adapter that implements strict initialization and explicit repository adoption.
   semantic_revision:
-    digest: sha256:3e4baf2632a5ba71fcdf12880aee05845ce00c9152d89fcf7442f122b4c99652
-    change_record: verification/changes/bind-the-viewer-read-only-property-generator-and-runner-to-the-pure-request-parser-role-13415f35abba.yaml
+    digest: sha256:9aa724a4710ca5f5ff13c22b1d2bcd86462c8146a5f4de5fb2fee3001e992285
+    change_record: verification/changes/bind-the-init-rms-system-public-behavior-to-the-exact-adapter-that-implements-strict-initialization-and-explicit-repository-adoption-115978496d7d.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:13415f35abbabd055d7a6f8ad99f1b38cce9152c9e283ce64183136885c24059
+    change_record_digest: sha256:115978496d7da6697d79b4489234bcb6ffa18ed22281ff84763f4c0583030914
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-cli-applied-revision
@@ -1463,3 +1483,6 @@ fuzz_targets:
     command: properties
     generator: src/main.rs#generate_malformed_artifact_cases
     runner: src/main.rs#schema_validation_reports_shape_errors
+artifacts: []
+transformations: []
+authorities: []

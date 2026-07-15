@@ -1,0 +1,146 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/allow-rms-initialization-to-safely-adopt-an-existing-repository-without-overwriting-user-owned-or-compatible-canonical-files-95446a441374.yaml
+intent:
+  summary: Preserve project-owned document content during adoption while installing idempotent RMS-managed agent and ignore sections that remain safe under later agent synchronization.
+laws:
+  add: []
+  set: []
+  remove: []
+contracts:
+  add: []
+  set:
+  - name: init-rms-system
+    direction: provided
+    version: '1'
+    command: init-rms-system
+    meaning: Initialize a new RMS workspace or safely adopt an existing repository by preserving project-owned content, maintaining explicit RMS-owned guidance sections, and creating only missing bootstrap artifacts.
+    accepts:
+    - a writable empty target for strict initialization
+    - a writable existing repository when adopt mode is explicit
+    - valid system name, purpose, version, and optional context names
+    ensures:
+    - strict initialization refuses every existing managed path before writing
+    - adoption validates existing canonical RMS manifests before writing
+    - adoption preserves an existing glossary byte-for-byte
+    - adoption preserves all project-owned content outside explicit RMS-managed sections
+    - adoption installs or refreshes an idempotent RMS-managed section in existing agent guidance and ignore files
+    - later RMS agent synchronization refreshes only the RMS-managed section in adopted agent guidance
+    - adoption creates only missing RMS bootstrap artifacts
+    - collision preflight completes before any RMS artifact is written
+    - each managed path is reported as created, adopted, or updated and conflicts abort the operation
+    - a target outside an existing Git worktree is initialized as a Git worktree without nesting repositories
+    - completion guidance requires a candidate commit and successful strict audit
+    rejects:
+    - adopt mode encounters an invalid or incompatible existing canonical RMS manifest
+    - an existing RMS-managed skill conflicts with the embedded canonical skill
+    - an existing RMS-managed document section has malformed or duplicate boundary markers
+    - target input is invalid or unwritable
+    - required provenance setup cannot be established
+    protocol: null
+  remove: []
+properties:
+  add: []
+  set: []
+  remove: []
+trace_producers: null
+semantic_functions:
+  add: []
+  set: []
+  remove: []
+machine:
+  mode: ''
+  justification: null
+  transition_signature: null
+  driver_function: null
+  transition_record_function: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+  resource_protocols:
+    set: null
+    add: []
+    remove: []
+  transitions:
+    set: null
+    add: []
+    remove: []
+roles:
+  set: []
+  add: []
+  remove: []
+evidence:
+  add:
+  - kind: contract
+    proves: init-rms-system
+    path: verification/contracts/init_rms_system_managed_adoption.md
+surfaces:
+  add: []
+  set: null
+  remove: []
+binding_dependencies:
+  set: null
+  add: []
+  remove: []
+artifacts:
+  set: []
+  add: []
+  remove: []
+transformations:
+  set: []
+  add: []
+  remove: []
+authorities:
+  set: []
+  add: []
+  remove: []
+protocol_bindings:
+  set: []
+  add: []
+  remove: []
+authority_bindings:
+  set: []
+  add: []
+  remove: []
+public_behavior_bindings:
+  set: null
+  add: []
+  remove: []
+dependency_behavior_bindings:
+  set: null
+  add: []
+  remove: []

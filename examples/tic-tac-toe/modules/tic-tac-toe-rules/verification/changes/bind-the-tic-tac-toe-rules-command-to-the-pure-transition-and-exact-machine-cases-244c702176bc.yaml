@@ -1,0 +1,40 @@
+spec: rms/semantic-change/v0.1
+module: examples/tic-tac-toe/modules/tic-tac-toe-rules/module.yaml
+supersedes:
+- verification/changes/finalize-tic-tac-toe-rule-executable-trace-proof-support-a464339ee337.yaml
+intent:
+  summary: Bind the Tic-Tac-Toe rules command to the pure transition and exact machine cases.
+laws: null
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings:
+  set: null
+  add:
+  - id: apply-move-public
+    public_kind: command
+    public_name: apply-move
+    contract: contracts/apply-move.v1.yaml
+    semantic_function: transition-model
+    machine_inputs:
+    - PlaceMark
+    machine_outputs:
+    - MarkPlaced
+    - MoveRejected
+    - Accepted
+    - Rejected
+    - CellOccupied
+    - GameAlreadyTerminal
+  remove: []
+dependency_behavior_bindings: null

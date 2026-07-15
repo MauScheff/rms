@@ -1,0 +1,138 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/preserve-project-owned-document-content-during-adoption-while-installing-idempotent-rms-managed-agent-and-ignore-sections-that-remain-safe-under-later-agent-synchronization-9ae47df1f674.yaml
+intent:
+  summary: Bind the init-rms-system public behavior to the exact adapter that implements strict initialization and explicit repository adoption.
+laws:
+  add: []
+  set: []
+  remove: []
+contracts:
+  add: []
+  set: []
+  remove: []
+properties:
+  add: []
+  set: []
+  remove: []
+trace_producers: null
+semantic_functions:
+  add: []
+  set:
+  - id: init-rms-system-command
+    symbol: run_init_with_adopt
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/init-rms-system.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - strict initialization remains collision-intolerant
+      - explicit adoption preflights canonical compatibility and managed content before writing
+      - project-owned content outside RMS-managed sections is preserved
+      - generated or updated agent and workbench artifacts route future work through RMS canonical manifests and the shared CLI
+    evidence:
+      contracts:
+      - verification/contracts/init_rms_system.md
+      - verification/contracts/init_rms_system_managed_adoption.md
+  remove: []
+machine:
+  mode: ''
+  justification: null
+  transition_signature: null
+  driver_function: null
+  transition_record_function: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add: []
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+  resource_protocols:
+    set: null
+    add: []
+    remove: []
+  transitions:
+    set: null
+    add: []
+    remove: []
+roles:
+  set: []
+  add: []
+  remove: []
+evidence:
+  add: []
+surfaces:
+  add: []
+  set: null
+  remove: []
+binding_dependencies:
+  set: null
+  add: []
+  remove: []
+artifacts:
+  set: []
+  add: []
+  remove: []
+transformations:
+  set: []
+  add: []
+  remove: []
+authorities:
+  set: []
+  add: []
+  remove: []
+protocol_bindings:
+  set: []
+  add: []
+  remove: []
+authority_bindings:
+  set: []
+  add: []
+  remove: []
+public_behavior_bindings:
+  set: null
+  add: []
+  remove: []
+dependency_behavior_bindings:
+  set: null
+  add: []
+  remove: []

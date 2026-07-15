@@ -16,6 +16,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
    - declared effects and required capabilities;
    - profiles and operational semantics;
    - compatibility policy and active consumers.
+   - exact public contract-to-function-to-machine bindings and required capability consumer-to-provider bindings.
    - artifact contracts and transformations, cross-module protocol automata, resource lifecycles, authority containment, and temporal properties.
 5. Classify the refactor target:
    - unclear ownership or misplaced concept;

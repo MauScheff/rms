@@ -74,7 +74,7 @@ rms view --root . --watch
 rms conformance examples/minimal/module.yaml --implementation examples/minimal/implementation.yaml --strict
 ```
 
-`rms view` is the experimental system-wide semantic explorer. It serves a loopback-only, read-only projection with Understand, Trace, Change, Debug, and Verify journeys. The viewer reuses canonical module-atlas projections, declares missing links as gaps, and never becomes a writable architecture surface.
+`rms view` is the experimental system-wide semantic explorer. It serves a loopback-only, read-only cross-layer graph built from modules, contracts, implementation machines, semantic functions, exact public/dependency behavior bindings, traces, evidence, and source provenance. Six focused views cover system topology, behavior paths, machines, proof chains, gap triage, and execution-derived debug timelines. Stable deep links, search, source-backed inspection, and live refresh preserve exact semantic identities. Shape-aware obligations distinguish required gaps and unresolved links from recommendations and non-applicable stages.
 
 Before publishing or sharing this CLI, run:
 
@@ -90,7 +90,7 @@ rms audit --root <project> --strict
 
 The quickstart is in `../../../QUICKSTART.md`, the self-hosted walkthrough is in `../../../DOGFOOD.md`, and the release process is in `../../../RELEASE.md` from the repository root.
 
-`rms init` writes the canonical system artifacts plus `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore`. It initializes Git when the target is not already inside a worktree, then directs the agent to commit the bootstrap before product work. Completion is binary: `rms gate --root .` must pass, the candidate must be committed, and `rms audit --root . --strict` must pass.
+`rms init` writes the canonical system artifacts plus `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore`. It initializes Git when the target is not already inside a worktree, then directs the agent to commit the bootstrap before product work. For repositories with existing documents, `rms init --adopt` preflights all collisions, preserves the glossary and project-owned document content, installs idempotent RMS-managed guidance and ignore sections, validates existing RMS manifests, and creates only missing artifacts. It is not an overwrite mode. Completion is binary: `rms gate --root .` must pass, the candidate must be committed, and `rms audit --root . --strict` must pass.
 
 `rms add-module` writes `module.yaml`, a module `README.md`, `contracts/README.md`, guided verification directories, and an optional Rust, Swift, or executable binding. The generated guidance routes future work through canonical artifacts without defining module-specific semantics.
 

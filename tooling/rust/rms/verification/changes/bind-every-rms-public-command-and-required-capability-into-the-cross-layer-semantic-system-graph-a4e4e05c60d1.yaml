@@ -1,0 +1,449 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/declare-a-dedicated-pure-semantic-system-graph-projection-role-shared-by-deterministic-checks-and-read-only-inspection-surfaces-46fa52e8d0c3.yaml
+intent:
+  summary: Bind every RMS public command and required capability into the cross-layer semantic system graph.
+laws: null
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions:
+  add:
+  - id: effect-protocol-binding-check
+    symbol: src/main.rs#validate_machine_effect_protocols
+    kind: parser
+    purity: pure
+    discharges:
+      contracts: []
+      invariants:
+      - effect-protocols-bind-exact-executors
+      assumptions: []
+    evidence:
+      laws:
+      - verification/laws/exact_effect_executor_binding.md
+  set: []
+  remove: []
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings:
+  set:
+  - id: validate-rms-artifacts-public
+    public_kind: command
+    public_name: validate-rms-artifacts
+    contract: contracts/validate-rms-artifacts.v1.yaml
+    semantic_function: validate-rms-artifacts-command
+    machine_inputs:
+    - ValidateRmsArtifacts
+    machine_outputs: []
+  - id: explain-module-public
+    public_kind: command
+    public_name: explain-module
+    contract: contracts/explain-module.v1.yaml
+    semantic_function: explain-module-command
+    machine_inputs:
+    - ExplainModule
+    machine_outputs: []
+  - id: diagnose-rms-environment-public
+    public_kind: command
+    public_name: diagnose-rms-environment
+    contract: contracts/diagnose-rms-environment.v1.yaml
+    semantic_function: diagnose-rms-environment-command
+    machine_inputs:
+    - DiagnoseRmsEnvironment
+    machine_outputs: []
+  - id: render-workbench-prompt-public
+    public_kind: command
+    public_name: render-workbench-prompt
+    contract: contracts/render-workbench-prompt.v1.yaml
+    semantic_function: render-workbench-prompt-command
+    machine_inputs:
+    - RenderWorkbenchPrompt
+    machine_outputs: []
+  - id: plan-module-change-public
+    public_kind: command
+    public_name: plan-module-change
+    contract: contracts/plan-module-change.v1.yaml
+    semantic_function: workbench-prompt-renderer
+    machine_inputs:
+    - PlanModuleChange
+    machine_outputs: []
+  - id: design-rms-system-public
+    public_kind: command
+    public_name: design-rms-system
+    contract: contracts/design-rms-system.v1.yaml
+    semantic_function: design-rms-system-command
+    machine_inputs:
+    - DesignRmsSystem
+    machine_outputs: []
+  - id: compose-rms-system-public
+    public_kind: command
+    public_name: compose-rms-system
+    contract: contracts/compose-rms-system.v1.yaml
+    semantic_function: compose-rms-system-command
+    machine_inputs:
+    - ComposeRmsSystem
+    machine_outputs: []
+  - id: route-rms-work-public
+    public_kind: command
+    public_name: route-rms-work
+    contract: contracts/route-rms-work.v1.yaml
+    semantic_function: route-rms-work-command
+    machine_inputs:
+    - RouteRmsWork
+    machine_outputs: []
+  - id: review-module-diff-public
+    public_kind: command
+    public_name: review-module-diff
+    contract: contracts/review-module-diff.v1.yaml
+    semantic_function: workbench-prompt-renderer
+    machine_inputs:
+    - ReviewModuleDiff
+    machine_outputs: []
+  - id: analyze-git-impact-public
+    public_kind: command
+    public_name: analyze-git-impact
+    contract: contracts/analyze-git-impact.v1.yaml
+    semantic_function: analyze-git-impact-command
+    machine_inputs:
+    - AnalyzeGitImpact
+    machine_outputs: []
+  - id: gate-rms-change-public
+    public_kind: command
+    public_name: gate-rms-change
+    contract: contracts/gate-rms-change.v1.yaml
+    semantic_function: gate-rms-change-command
+    machine_inputs:
+    - GateRmsChange
+    machine_outputs: []
+  - id: audit-rms-project-public
+    public_kind: command
+    public_name: audit-rms-project
+    contract: contracts/audit-rms-project.v1.yaml
+    semantic_function: audit-rms-project-command
+    machine_inputs:
+    - AuditRmsProject
+    machine_outputs: []
+  - id: refactor-module-workbench-public
+    public_kind: command
+    public_name: refactor-module-workbench
+    contract: contracts/refactor-module-workbench.v1.yaml
+    semantic_function: workbench-prompt-renderer
+    machine_inputs:
+    - RefactorModuleWorkbench
+    machine_outputs: []
+  - id: implement-module-workbench-public
+    public_kind: command
+    public_name: implement-module-workbench
+    contract: contracts/implement-module-workbench.v1.yaml
+    semantic_function: workbench-prompt-renderer
+    machine_inputs:
+    - ImplementModuleWorkbench
+    machine_outputs: []
+  - id: capture-intent-workbench-public
+    public_kind: command
+    public_name: capture-intent-workbench
+    contract: contracts/capture-intent-workbench.v1.yaml
+    semantic_function: render-workbench-prompt-command
+    machine_inputs:
+    - CaptureIntentWorkbench
+    machine_outputs: []
+  - id: evolve-contract-workbench-public
+    public_kind: command
+    public_name: evolve-contract-workbench
+    contract: contracts/evolve-contract-workbench.v1.yaml
+    semantic_function: workbench-prompt-renderer
+    machine_inputs:
+    - EvolveContractWorkbench
+    machine_outputs: []
+  - id: evidence-workbench-public
+    public_kind: command
+    public_name: evidence-workbench
+    contract: contracts/evidence-workbench.v1.yaml
+    semantic_function: workbench-prompt-renderer
+    machine_inputs:
+    - EvidenceWorkbench
+    machine_outputs: []
+  - id: list-workbench-runs-public
+    public_kind: command
+    public_name: list-workbench-runs
+    contract: contracts/list-workbench-runs.v1.yaml
+    semantic_function: list-workbench-runs-command
+    machine_inputs:
+    - ListWorkbenchRuns
+    machine_outputs: []
+  - id: inspect-workbench-run-public
+    public_kind: command
+    public_name: inspect-workbench-run
+    contract: contracts/inspect-workbench-run.v1.yaml
+    semantic_function: inspect-workbench-run-command
+    machine_inputs:
+    - InspectWorkbenchRun
+    machine_outputs: []
+  - id: inspect-latest-workbench-run-public
+    public_kind: command
+    public_name: inspect-latest-workbench-run
+    contract: contracts/latest-workbench-run.v1.yaml
+    semantic_function: latest-workbench-run-command
+    machine_inputs:
+    - InspectLatestWorkbenchRun
+    machine_outputs: []
+  - id: init-workbench-config-public
+    public_kind: command
+    public_name: init-workbench-config
+    contract: contracts/init-workbench-config.v1.yaml
+    semantic_function: workbench-config-init-command
+    machine_inputs:
+    - InitWorkbenchConfig
+    machine_outputs: []
+  - id: configure-agent-integration-public
+    public_kind: command
+    public_name: configure-agent-integration
+    contract: contracts/configure-agent-integration.v1.yaml
+    semantic_function: agent-integration-command
+    machine_inputs:
+    - ConfigureAgentIntegration
+    machine_outputs: []
+  - id: init-rms-system-public
+    public_kind: command
+    public_name: init-rms-system
+    contract: contracts/init-rms-system.v1.yaml
+    semantic_function: init-rms-system-command
+    machine_inputs:
+    - InitRmsSystem
+    machine_outputs: []
+  - id: add-rms-module-public
+    public_kind: command
+    public_name: add-rms-module
+    contract: contracts/add-rms-module.v1.yaml
+    semantic_function: add-rms-module-command
+    machine_inputs:
+    - AddRmsModule
+    machine_outputs: []
+  - id: add-rms-capability-public
+    public_kind: command
+    public_name: add-rms-capability
+    contract: contracts/add-rms-capability.v1.yaml
+    semantic_function: add-rms-capability-command
+    machine_inputs:
+    - AddRmsCapability
+    machine_outputs: []
+  - id: check-release-readiness-public
+    public_kind: command
+    public_name: check-release-readiness
+    contract: contracts/release-check.v1.yaml
+    semantic_function: release-check-command
+    machine_inputs:
+    - CheckReleaseReadiness
+    machine_outputs: []
+  - id: build-context-packet-public
+    public_kind: command
+    public_name: build-context-packet
+    contract: contracts/build-context-packet.v1.yaml
+    semantic_function: build-context-packet-command
+    machine_inputs:
+    - BuildContextPacket
+    machine_outputs: []
+  - id: build-module-atlas-public
+    public_kind: command
+    public_name: build-module-atlas
+    contract: contracts/build-module-atlas.v1.yaml
+    semantic_function: build-module-atlas-command
+    machine_inputs:
+    - BuildModuleAtlas
+    machine_outputs: []
+  - id: inspect-implementation-structure-public
+    public_kind: command
+    public_name: inspect-implementation-structure
+    contract: contracts/inspect-implementation-structure.v1.yaml
+    semantic_function: inspect-implementation-structure-command
+    machine_inputs:
+    - InspectImplementationStructure
+    machine_outputs: []
+  - id: inspect-trace-bundle-public
+    public_kind: command
+    public_name: inspect-trace-bundle
+    contract: contracts/inspect-trace-bundle.v1.yaml
+    semantic_function: trace-bundle-check-command
+    machine_inputs:
+    - InspectTraceBundle
+    machine_outputs: []
+  - id: plan-machine-change-public
+    public_kind: command
+    public_name: plan-machine-change
+    contract: contracts/plan-machine-change.v1.yaml
+    semantic_function: machine-change-plan-command
+    machine_inputs:
+    - PlanMachineChange
+    machine_outputs: []
+  - id: apply-machine-change-public
+    public_kind: command
+    public_name: apply-machine-change
+    contract: contracts/apply-machine-change.v1.yaml
+    semantic_function: machine-change-apply-command
+    machine_inputs:
+    - ApplyMachineChange
+    machine_outputs: []
+  - id: plan-semantic-change-public
+    public_kind: command
+    public_name: plan-semantic-change
+    contract: contracts/plan-semantic-change.v1.yaml
+    semantic_function: semantic-change-plan-command
+    machine_inputs:
+    - PlanSemanticChange
+    machine_outputs: []
+  - id: apply-semantic-change-public
+    public_kind: command
+    public_name: apply-semantic-change
+    contract: contracts/apply-semantic-change.v1.yaml
+    semantic_function: semantic-change-apply-command
+    machine_inputs:
+    - ApplySemanticChange
+    machine_outputs: []
+  - id: check-semantic-change-public
+    public_kind: command
+    public_name: check-semantic-change
+    contract: contracts/check-semantic-change.v1.yaml
+    semantic_function: semantic-change-check-command
+    machine_inputs:
+    - CheckSemanticChange
+    machine_outputs: []
+  - id: diff-semantic-change-public
+    public_kind: command
+    public_name: diff-semantic-change
+    contract: contracts/diff-semantic-change.v1.yaml
+    semantic_function: semantic-change-diff-command
+    machine_inputs:
+    - DiffSemanticChange
+    machine_outputs: []
+  - id: check-machine-structure-public
+    public_kind: command
+    public_name: check-machine-structure
+    contract: contracts/check-machine-structure.v1.yaml
+    semantic_function: machine-structure-check-command
+    machine_inputs:
+    - CheckMachineStructure
+    machine_outputs: []
+  - id: diff-machine-structure-public
+    public_kind: command
+    public_name: diff-machine-structure
+    contract: contracts/diff-machine-structure.v1.yaml
+    semantic_function: machine-structure-diff-command
+    machine_inputs:
+    - DiffMachineStructure
+    machine_outputs: []
+  - id: apply-runnable-surface-public
+    public_kind: command
+    public_name: apply-runnable-surface
+    contract: contracts/apply-runnable-surface.v1.yaml
+    semantic_function: apply-runnable-surface-command
+    machine_inputs:
+    - ApplyRunnableSurface
+    machine_outputs: []
+  - id: check-runnable-surface-public
+    public_kind: command
+    public_name: check-runnable-surface
+    contract: contracts/check-runnable-surface.v1.yaml
+    semantic_function: check-runnable-surface-command
+    machine_inputs:
+    - CheckRunnableSurface
+    machine_outputs: []
+  - id: package-module-public
+    public_kind: command
+    public_name: package-module
+    contract: contracts/package-module.v1.yaml
+    semantic_function: package-module-command
+    machine_inputs:
+    - PackageModule
+    machine_outputs: []
+  - id: verify-implementation-public
+    public_kind: command
+    public_name: verify-implementation
+    contract: contracts/verify-implementation.v1.yaml
+    semantic_function: verify-implementation-command
+    machine_inputs:
+    - VerifyImplementation
+    machine_outputs: []
+  - id: check-semantic-properties-public
+    public_kind: command
+    public_name: check-semantic-properties
+    contract: contracts/check-semantic-properties.v1.yaml
+    semantic_function: semantic-property-check-command
+    machine_inputs:
+    - CheckSemanticProperties
+    machine_outputs: []
+  - id: run-semantic-properties-public
+    public_kind: command
+    public_name: run-semantic-properties
+    contract: contracts/run-semantic-properties.v1.yaml
+    semantic_function: semantic-property-run-command
+    machine_inputs:
+    - RunSemanticProperties
+    machine_outputs: []
+  - id: replay-property-counterexample-public
+    public_kind: command
+    public_name: replay-property-counterexample
+    contract: contracts/replay-property-counterexample.v1.yaml
+    semantic_function: property-counterexample-replay-command
+    machine_inputs:
+    - ReplayPropertyCounterexample
+    machine_outputs: []
+  - id: add-rms-binding-public
+    public_kind: command
+    public_name: add-rms-binding
+    contract: contracts/add-rms-binding.v1.yaml
+    semantic_function: add-rms-binding-command
+    machine_inputs:
+    - AddRmsBinding
+    machine_outputs: []
+  - id: run-trace-producers-public
+    public_kind: command
+    public_name: run-trace-producers
+    contract: contracts/run-trace-producers.v1.yaml
+    semantic_function: run-trace-producers-command
+    machine_inputs:
+    - RunTraceProducers
+    machine_outputs: []
+  - id: view-rms-system-public
+    public_kind: command
+    public_name: view-rms-system
+    contract: contracts/view-rms-system.v1.yaml
+    semantic_function: view-rms-system-command
+    machine_inputs:
+    - ViewRmsSystem
+    machine_outputs: []
+  add: []
+  remove: []
+dependency_behavior_bindings:
+  set:
+  - id: filesystem-provider
+    capability: filesystem
+    contract: null
+    consumer: src/main.rs#load_manifest
+    resolution: external
+    provider_module: null
+    provider_contract: null
+  - id: process-runner-provider
+    capability: process-runner
+    contract: null
+    consumer: src/main.rs#execute_codex_provider
+    resolution: external
+    provider_module: null
+    provider_contract: null
+  - id: git-revision-provider
+    capability: git-revision-provider
+    contract: null
+    consumer: src/main.rs#source_revision
+    resolution: external
+    provider_module: null
+    provider_contract: null
+  add: []
+  remove: []

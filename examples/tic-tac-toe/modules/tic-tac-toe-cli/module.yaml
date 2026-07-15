@@ -29,6 +29,7 @@ requires:
   - name: tic-tac-toe-rules
   capabilities:
   - name: apply-move
+    contract: contracts/apply-move.v1.yaml
 invariants: []
 effects:
 - name: local-cli-io
@@ -65,6 +66,7 @@ verification:
   - verification/laws/boundary_parse.md
   contracts:
   - verification/contracts
+  - verification/contracts/apply_move_dependency.md
   scenarios:
   - verification/scenarios
   boundaries:
@@ -107,8 +109,8 @@ x-scaffold:
   - boundary-evidence
 x-rms:
   semantic_revision:
-    digest: sha256:0194a982827784b2046b3b7e74fc05fb7dbf4594faf52e31af4a8a175d6ca502
-    change_record: verification/changes/regenerate-tic-tac-toe-boundary-traces-from-command-and-effect-result-transition-records-23e17a4c20b7.yaml
-    change_record_digest: sha256:23e17a4c20b7f4469da40206cef8eee6cd69ebd8783ae916dc0842a8bf7f38ae
+    digest: sha256:1696791eaa87a19839c23d957bad8b57bc233e12b7ca1b2e47225edeb151ce76
+    change_record: verification/changes/bind-the-tic-tac-toe-cli-command-and-its-rules-dependency-through-exact-boundary-symbols-1411830423e3.yaml
+    change_record_digest: sha256:1411830423e3ad531b0b2205e8bc6621b9d004f7e62eda2922adbf054bdc5047
     applied_by: rms spec apply
-  last_semantic_intent: Regenerate tic-tac-toe boundary traces from command and effect-result transition records.
+  last_semantic_intent: Bind the Tic-Tac-Toe CLI command and its rules dependency through exact boundary symbols.

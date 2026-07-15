@@ -1,0 +1,28 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/make-rms-build-one-cross-layer-semantic-system-graph-classify-completeness-by-applicable-module-obligations-and-require-exact-public-and-dependency-behavior-bindings-before-presenting-or-approving-semantic-closure-e881350d4761.yaml
+intent:
+  summary: Declare a dedicated pure semantic-system graph projection role shared by deterministic checks and read-only inspection surfaces.
+laws: null
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles:
+  set: []
+  add:
+  - kind: timeline_projection
+    effect: null
+    binding_hint: language-neutral-semantic-graph
+    path: src/semantic_graph.rs
+  remove: []
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

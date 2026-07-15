@@ -1,0 +1,70 @@
+spec: rms/semantic-change/v0.1
+module: examples/swift/module.yaml
+supersedes:
+- verification/changes/regenerate-the-swift-example-transition-trace-from-its-real-transition-record-function-e9c0a4e65d6f.yaml
+intent:
+  summary: Bind Swift widget construction and the public query into the semantic proof chain.
+laws: null
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions:
+  add:
+  - id: swift-widget-constructor
+    symbol: SwiftWidget.init
+    kind: constructor
+    purity: pure
+    discharges:
+      contracts: []
+      invariants:
+      - accepted-swift-widget-has-name
+      assumptions: []
+    evidence:
+      laws:
+      - verification/laws/accepted_swift_widget_has_name
+  - id: describe-swift-widget-query
+    symbol: describeWidget
+    kind: projector
+    purity: pure
+    discharges:
+      contracts:
+      - contracts/describe-swift-widget.v1.yaml
+      invariants:
+      - accepted-swift-widget-has-name
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/describe_swift_widget
+      laws:
+      - verification/laws/accepted_swift_widget_has_name
+  set: []
+  remove: []
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings:
+  set: null
+  add:
+  - id: describe-swift-widget-public
+    public_kind: query
+    public_name: describe-swift-widget
+    contract: contracts/describe-swift-widget.v1.yaml
+    semantic_function: describe-swift-widget-query
+    machine_inputs:
+    - Describe
+    - RejectEmptyName
+    machine_outputs:
+    - WidgetDescribed
+    - WidgetRejected
+    - Description
+    - EmptyWidgetName
+    - ExpectedEmptyName
+  remove: []
+dependency_behavior_bindings: null

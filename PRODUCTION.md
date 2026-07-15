@@ -64,6 +64,21 @@ git add .
 git commit -m "Initialize RMS project"
 ```
 
+For an existing repository, do not temporarily remove or overwrite project documents. Adopt it explicitly, inspect the per-file report, and commit the resulting bootstrap as its own provenance baseline:
+
+```bash
+rms init . \
+  --name <project-name> \
+  --purpose "<one sentence>" \
+  --adopt
+
+git diff -- GLOSSARY.md AGENTS.md .gitignore
+git add .
+git commit -m "Adopt RMS project structure"
+```
+
+The glossary should remain byte-for-byte unchanged. Existing agent instructions and ignore rules should remain intact outside their clearly marked RMS-managed sections. Resolve canonical manifest, malformed-marker, or managed-skill conflicts explicitly; do not bypass adoption with a move-and-restore sequence.
+
 Before choosing modules:
 
 ```bash

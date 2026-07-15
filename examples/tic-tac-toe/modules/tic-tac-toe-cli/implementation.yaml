@@ -261,6 +261,34 @@ architecture:
   - TicTacToeBoundarySourceProvenance
   - TicTacToeBoundaryTransition
   - TicTacToeBoundaryTransitionRecord
+  public_behavior_bindings:
+  - id: play-tic-tac-toe-public
+    public_kind: command
+    public_name: play-tic-tac-toe
+    contract: contracts/play-tic-tac-toe.v1.yaml
+    semantic_function: rules-port-adapter-reply
+    machine_inputs:
+    - RunMove
+    machine_outputs:
+    - MoveParsed
+    - RulesInvocationRequested
+    - RulesInvocationCompleted
+    - RunRejected
+    - InvokeRulesBridge
+    - Accepted
+    - Rejected
+    - MalformedInput
+    - OutOfBoard
+    - RulesBridgeFailure
+    - IllegalTransition
+  dependency_behavior_bindings:
+  - id: apply-move-provider
+    capability: apply-move
+    contract: contracts/apply-move.v1.yaml
+    consumer: src/ports.mjs#createRulesEffectExecutor
+    resolution: module
+    provider_module: tic-tac-toe-rules
+    provider_contract: contracts/apply-move.v1.yaml
 semantic_functions:
 - id: cell-parser
   symbol: src/representation.mjs#makeCell
@@ -325,7 +353,7 @@ semantic_functions:
   purity: effectful
 x-rms:
   semantic_revision:
-    digest: sha256:0194a982827784b2046b3b7e74fc05fb7dbf4594faf52e31af4a8a175d6ca502
-    change_record: verification/changes/regenerate-tic-tac-toe-boundary-traces-from-command-and-effect-result-transition-records-23e17a4c20b7.yaml
-    change_record_digest: sha256:23e17a4c20b7f4469da40206cef8eee6cd69ebd8783ae916dc0842a8bf7f38ae
+    digest: sha256:1696791eaa87a19839c23d957bad8b57bc233e12b7ca1b2e47225edeb151ce76
+    change_record: verification/changes/bind-the-tic-tac-toe-cli-command-and-its-rules-dependency-through-exact-boundary-symbols-1411830423e3.yaml
+    change_record_digest: sha256:1411830423e3ad531b0b2205e8bc6621b9d004f7e62eda2922adbf054bdc5047
     applied_by: rms spec apply

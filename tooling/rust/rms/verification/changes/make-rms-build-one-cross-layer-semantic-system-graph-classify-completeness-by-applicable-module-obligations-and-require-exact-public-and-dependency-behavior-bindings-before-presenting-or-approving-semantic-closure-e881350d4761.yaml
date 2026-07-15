@@ -1,0 +1,104 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/bind-the-viewer-read-only-property-generator-and-runner-to-the-pure-request-parser-role-13415f35abba.yaml
+intent:
+  summary: Make RMS build one cross-layer semantic system graph, classify completeness by applicable module obligations, and require exact public and dependency behavior bindings before presenting or approving semantic closure.
+laws:
+  add:
+  - id: semantic-system-graph-is-cross-layer-and-source-backed
+    statement: Every semantic system graph includes applicable outer module declarations, inner implementation machines and roles, contracts, executable proof declarations, and exact source provenance without treating a derived projection as authority.
+    kind: projection-integrity
+    authority: parser
+    enforced_by: view-rms-system-command
+  - id: semantic-gap-applicability-matches-module-shape
+    statement: Semantic completeness findings are required only when the module shape, profiles, machine mode, or declared behavior creates the corresponding obligation; non-applicable boundary, lifecycle, effect, event, or proof stages are never reported as missing.
+    kind: projection-integrity
+    authority: parser
+    enforced_by: view-rms-system-command
+  - id: public-behavior-bindings-close-contract-to-machine-path
+    statement: Every implemented public command and required capability resolves through an exact implementation entrypoint or port to declared machine inputs and typed outcomes, with every reported edge carrying canonical source provenance.
+    kind: semantic-closure
+    authority: parser
+    enforced_by: view-rms-system-command
+  set: []
+  remove: []
+contracts:
+  add: []
+  set:
+  - name: view-rms-system
+    direction: provided
+    version: '1'
+    command: view-rms-system
+    meaning: Serve a local read-only projection of the complete cross-layer RMS semantic system graph with shape-aware completeness findings and stable source provenance.
+    accepts:
+    - A repository root containing one or more readable canonical RMS module manifests.
+    - Optional loopback port, browser-open, and live-refresh preferences.
+    ensures:
+    - The projection combines module ownership and contracts with implementation machines, roles, semantic functions, effects, proof declarations, and source references.
+    - Public and required behavior paths use exact declared bindings instead of inferred name similarity.
+    - Completeness findings distinguish required gaps, unresolved links, recommendations, and non-applicable stages from module shape and declared behavior.
+    - Snapshot refresh detects added, removed, and changed stable semantic identifiers without writing canonical artifacts.
+    - The HTTP boundary accepts only read-only GET and HEAD requests on the loopback listener.
+    rejects:
+    - Roots with no canonical RMS modules, invalid canonical artifacts, unresolved required implementation bindings, unsupported HTTP methods or paths, and unavailable loopback ports.
+    protocol: null
+  remove: []
+properties: null
+trace_producers: null
+semantic_functions:
+  add: []
+  set:
+  - id: view-rms-system-command
+    symbol: src/viewer.rs#run_view
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/view-rms-system.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      - system-viewer-is-derived-and-read-only
+      - semantic-system-graph-is-cross-layer-and-source-backed
+      - semantic-gap-applicability-matches-module-shape
+      - public-behavior-bindings-close-contract-to-machine-path
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - System graph nodes and edges are regenerated only from canonical RMS artifacts.
+      - Completeness findings are selected from applicable obligations rather than a universal trace template.
+      - The listener binds only to loopback and publishes no write endpoint.
+    evidence:
+      contracts:
+      - verification/contracts/view_rms_system.md
+      laws:
+      - verification/laws/semantic_system_graph.md
+      - verification/laws/semantic_gap_applicability.md
+      - verification/laws/public_behavior_binding_closure.md
+  remove: []
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: view-rms-system
+    path: verification/contracts/view_rms_system.md
+  - kind: law
+    proves: semantic-system-graph-is-cross-layer-and-source-backed
+    path: verification/laws/semantic_system_graph.md
+  - kind: law
+    proves: semantic-gap-applicability-matches-module-shape
+    path: verification/laws/semantic_gap_applicability.md
+  - kind: law
+    proves: public-behavior-bindings-close-contract-to-machine-path
+    path: verification/laws/public_behavior_binding_closure.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null

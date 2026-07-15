@@ -24,6 +24,7 @@ use toml::Value as TomlValue;
 use walkdir::WalkDir;
 
 mod effect_executor;
+mod semantic_graph;
 mod viewer;
 mod viewer_request;
 
@@ -955,6 +956,10 @@ enum Commands {
         /// Initial bounded context names.
         #[arg(long = "context")]
         context: Vec<String>,
+
+        /// Adopt an existing repository without overwriting compatible files.
+        #[arg(long)]
+        adopt: bool,
     },
 
     /// Scaffold a new RMS module directory.
@@ -1110,6 +1115,8 @@ struct StructureReport {
     messages: StructureMessagesReport,
     transition: StructureTransitionReport,
     trace: StructureTraceReport,
+    public_behavior_bindings: Vec<PublicBehaviorBinding>,
+    dependency_behavior_bindings: Vec<DependencyBehaviorBinding>,
     roles: Vec<StructureRoleReport>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -1294,6 +1301,8 @@ struct SpecApplyReport {
     final_authorities: Vec<String>,
     final_protocol_bindings: Vec<String>,
     final_authority_bindings: Vec<String>,
+    final_public_behavior_bindings: Vec<String>,
+    final_dependency_behavior_bindings: Vec<String>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -1699,6 +1708,10 @@ struct SemanticChange {
     protocol_bindings: Option<ProtocolBindingsChange>,
     #[serde(default)]
     authority_bindings: Option<AuthorityBindingsChange>,
+    #[serde(default)]
+    public_behavior_bindings: Option<PublicBehaviorBindingsChange>,
+    #[serde(default)]
+    dependency_behavior_bindings: Option<DependencyBehaviorBindingsChange>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1833,6 +1846,57 @@ struct AuthorityBinding {
     evidence: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PublicBehaviorBindingsChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<PublicBehaviorBinding>>,
+    #[serde(default)]
+    add: Vec<PublicBehaviorBinding>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PublicBehaviorBinding {
+    id: String,
+    public_kind: String,
+    public_name: String,
+    contract: String,
+    semantic_function: String,
+    #[serde(default)]
+    machine_inputs: Vec<String>,
+    #[serde(default)]
+    machine_outputs: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DependencyBehaviorBindingsChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<DependencyBehaviorBinding>>,
+    #[serde(default)]
+    add: Vec<DependencyBehaviorBinding>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DependencyBehaviorBinding {
+    id: String,
+    capability: String,
+    #[serde(default)]
+    contract: Option<String>,
+    consumer: String,
+    resolution: String,
+    #[serde(default)]
+    provider_module: Option<String>,
+    #[serde(default)]
+    provider_contract: Option<String>,
+}
+
 fn typed_yaml_sequence<T: DeserializeOwned>(value: &YamlValue, path: &[&str]) -> Vec<T> {
     get_path(value, path)
         .and_then(YamlValue::as_sequence)
@@ -1920,6 +1984,57 @@ fn authority_binding_yaml(item: &AuthorityBinding) -> YamlValue {
     ])
 }
 
+fn public_behavior_binding_yaml(item: &PublicBehaviorBinding) -> YamlValue {
+    yaml_mapping_value([
+        ("id", YamlValue::String(item.id.clone())),
+        ("public_kind", YamlValue::String(item.public_kind.clone())),
+        ("public_name", YamlValue::String(item.public_name.clone())),
+        ("contract", YamlValue::String(item.contract.clone())),
+        (
+            "semantic_function",
+            YamlValue::String(item.semantic_function.clone()),
+        ),
+        ("machine_inputs", yaml_string_sequence(&item.machine_inputs)),
+        (
+            "machine_outputs",
+            yaml_string_sequence(&item.machine_outputs),
+        ),
+    ])
+}
+
+fn dependency_behavior_binding_yaml(item: &DependencyBehaviorBinding) -> YamlValue {
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(yaml_key("id"), YamlValue::String(item.id.clone()));
+    mapping.insert(
+        yaml_key("capability"),
+        YamlValue::String(item.capability.clone()),
+    );
+    if let Some(contract) = &item.contract {
+        mapping.insert(yaml_key("contract"), YamlValue::String(contract.clone()));
+    }
+    mapping.insert(
+        yaml_key("consumer"),
+        YamlValue::String(item.consumer.clone()),
+    );
+    mapping.insert(
+        yaml_key("resolution"),
+        YamlValue::String(item.resolution.clone()),
+    );
+    if let Some(provider_module) = &item.provider_module {
+        mapping.insert(
+            yaml_key("provider_module"),
+            YamlValue::String(provider_module.clone()),
+        );
+    }
+    if let Some(provider_contract) = &item.provider_contract {
+        mapping.insert(
+            yaml_key("provider_contract"),
+            YamlValue::String(provider_contract.clone()),
+        );
+    }
+    YamlValue::Mapping(mapping)
+}
+
 fn semantic_artifacts_change_has_operations(change: &SemanticArtifactsChange) -> bool {
     change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty()
 }
@@ -2002,6 +2117,42 @@ fn final_authority_bindings(
         &change.remove,
         &change.add,
         |item| item.authority.as_str(),
+    )
+}
+
+fn public_behavior_bindings_change_has_operations(change: &PublicBehaviorBindingsChange) -> bool {
+    change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty()
+}
+
+fn final_public_behavior_bindings(
+    value: &YamlValue,
+    change: &PublicBehaviorBindingsChange,
+) -> Vec<PublicBehaviorBinding> {
+    final_named_changes(
+        typed_yaml_sequence(value, &["architecture", "public_behavior_bindings"]),
+        change.replace.as_ref(),
+        &change.remove,
+        &change.add,
+        |item| item.id.as_str(),
+    )
+}
+
+fn dependency_behavior_bindings_change_has_operations(
+    change: &DependencyBehaviorBindingsChange,
+) -> bool {
+    change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty()
+}
+
+fn final_dependency_behavior_bindings(
+    value: &YamlValue,
+    change: &DependencyBehaviorBindingsChange,
+) -> Vec<DependencyBehaviorBinding> {
+    final_named_changes(
+        typed_yaml_sequence(value, &["architecture", "dependency_behavior_bindings"]),
+        change.replace.as_ref(),
+        &change.remove,
+        &change.add,
+        |item| item.id.as_str(),
     )
 }
 
@@ -3942,6 +4093,7 @@ impl PromptKind {
                 "Classify the change as private implementation, invariant/domain policy, public contract, dependency/effect, state/migration, or workflow.",
                 "Name affected invariants, effects, compatibility promises, and recovery paths.",
                 "Choose semantic shape before file layout: representation, message envelopes, transition outputs, transition records, ports, adapters, trace roles, and evidence.",
+                "Close every affected public behavior as contract -> discharging semantic function -> classified machine inputs/outputs -> evidence, and every required capability as exact consumer -> provider contract or explicit external boundary.",
                 "Choose representation obligations: closed variants, validated constructors, explicit results, boundary schemas, or lifecycle state when behavior depends on order.",
                 "Keep binding container names separate from semantic alternatives: `types.state` names the ADT; `states` names its cases.",
                 "Classify every machine input as exactly one command, observed event, or effect result, and name illegal state/input combinations.",
@@ -3963,6 +4115,7 @@ impl PromptKind {
                 "Name semantic cases rather than Rust, Swift, JS, Python, or other binding type names; bindings realize the cases later.",
                 "For each effect, decide whether individual outcomes alter later decisions; if they do, use one-request-one-result protocols and transition-owned orchestration.",
                 "Define public protocol automata, resource lifecycle automata, artifact transformations, authority boundaries, and temporal proof obligations whenever the intent contains those semantics.",
+                "For every proposed public command, query, or capability, name its exact contract, semantic-function owner, machine cases, and evidence; for every required capability, name its exact consumer and provider resolution.",
                 "Treat inspectable boundary IO as declared effects with typed results and an executor, and require runnable surfaces to delegate to an exact callable that reaches the machine.",
                 "Define focused evidence: laws, contract scenarios, boundary parser tests, numeric boundary tests, runtime monitor trigger/non-trigger cases, transition records, replay bundles, first-bad-transition proof, fuzz/property checks, recovery, or reconciliation.",
                 "Treat provider output and generated plans as advisory evidence until reflected in canonical artifacts.",
@@ -3981,6 +4134,7 @@ impl PromptKind {
                 "Find behavioral regressions, boundary violations, undeclared effects or dependencies, compatibility drift, missing evidence, and stale canonical artifacts.",
                 "Flag collapsed semantic variants, stateful transitions that omit state or classified input, effect results that bypass transition, executor-owned retry or sequencing, and corpus-only evidence presented as fuzzing.",
                 "Flag typed rejections erased into replies or provenance strings, synthetic traces that do not match canonical outputs, boundary IO without effect protocols, and runnable delegation that names only a file.",
+                "Flag implemented public behavior without one exact contract-to-function-to-machine binding, and required capabilities without an exact consumer-to-provider binding.",
                 "Flag cross-module messages without protocol bindings, terminal resource leaks, undeclared privileged/unsafe/foreign operations, unversioned artifact transformations, and temporal claims backed by the wrong proof strategy.",
                 "Prioritize findings by severity and include file or artifact references when possible.",
                 "Do not treat generated prose, issue text, or incidental implementation shape as architectural authority.",
@@ -4006,6 +4160,7 @@ impl PromptKind {
                 "Update public contracts or manifests first when public meaning changes.",
                 "Update linked intent, decision, contract, law, and evidence records together when accepted semantics evolve.",
                 "Name affected invariants, contracts, effects, compatibility promises, and recovery paths.",
+                "Keep the semantic chain complete: public contract -> discharging semantic function -> classified machine cases -> proof, and required capability -> exact consumer -> matching provider contract or explicit external boundary.",
                 "Separate domain decisions from external effects where practical.",
                 "Keep private helpers pure inside pure role files; model IO as declared effects/effect-results executed only in adapter, port, or effect-executor roles.",
                 "For reusable modules, keep RMS capabilities/contracts and the declared public facade as the import surface; native package manifests are binding evidence only.",
@@ -4027,6 +4182,7 @@ impl PromptKind {
                 "Ask only the questions needed to resolve product, domain, ownership, source-of-truth, lifecycle, compatibility, or operational ambiguity.",
                 "Synthesize accepted intent into candidate contracts, laws, invariants, glossary terms, ownership, effects, compatibility impact, and proof lanes.",
                 "Enumerate accepted command, observed-event, and effect-result cases plus illegal transitions before proposing code.",
+                "Identify the exact semantic-function owner and machine cases for each public behavior, plus the exact consumer and provider resolution for each required capability.",
                 "Ask whether each external outcome can change the next decision; model such outcomes as typed effect results rather than executor control flow.",
                 "Ask which artifacts cross boundaries or change form, which modules exchange ordered messages, which resources require ownership closure, which operations need elevated authority, and which facts must always or eventually hold.",
                 "Separate raw conversation notes from accepted rationale; raw prompt output is evidence, not semantic authority.",
@@ -4379,7 +4535,7 @@ fn write_agent_guidance(
     overwrite_guidance: bool,
     write_config: bool,
 ) -> Result<()> {
-    write_agent_file(&root.join("AGENTS.md"), INIT_AGENTS_MD, overwrite_guidance)?;
+    write_primary_agent_guidance(&root.join("AGENTS.md"), overwrite_guidance)?;
     if target == AgentTarget::Claude {
         write_agent_file(&root.join("CLAUDE.md"), INIT_CLAUDE_MD, overwrite_guidance)?;
     }
@@ -4393,6 +4549,25 @@ fn write_agent_guidance(
         )?;
     }
     Ok(())
+}
+
+fn write_primary_agent_guidance(path: &Path, overwrite: bool) -> Result<()> {
+    if overwrite && path.exists() {
+        let existing = fs::read_to_string(path)
+            .with_context(|| format!("failed to read `{}`", path.display()))?;
+        if existing.contains(RMS_MANAGED_AGENTS_START) || existing.contains(RMS_MANAGED_AGENTS_END)
+        {
+            let merged = merge_managed_section(
+                &existing,
+                RMS_MANAGED_AGENTS_START,
+                RMS_MANAGED_AGENTS_END,
+                INIT_ADOPTED_AGENTS_BLOCK,
+            )?;
+            return fs::write(path, merged)
+                .with_context(|| format!("failed to write `{}`", path.display()));
+        }
+    }
+    write_agent_file(path, INIT_AGENTS_MD, overwrite)
 }
 
 fn write_agent_file(path: &Path, contents: &str, overwrite: bool) -> Result<()> {
@@ -6859,7 +7034,8 @@ fn main() -> Result<()> {
             purpose,
             version,
             context,
-        } => run_init(&path, &name, &purpose, &version, &context),
+            adopt,
+        } => run_init_with_adopt(&path, &name, &purpose, &version, &context, adopt),
         Commands::AddModule {
             path,
             name,
@@ -6987,6 +7163,12 @@ fn collect_validation_diagnostics(
     implementations: Vec<PathBuf>,
     conformance_reports: Vec<PathBuf>,
 ) -> Result<Vec<Diagnostic>> {
+    let full_root_scan = modules.is_empty()
+        && systems.is_empty()
+        && context_maps.is_empty()
+        && contracts.is_empty()
+        && implementations.is_empty()
+        && conformance_reports.is_empty();
     let targets = discover_targets(
         root,
         modules,
@@ -7008,6 +7190,10 @@ fn collect_validation_diagnostics(
                 message: error.to_string(),
             }),
         }
+    }
+
+    if full_root_scan {
+        diagnostics.extend(semantic_graph::semantic_system_graph_diagnostics(root)?);
     }
 
     Ok(diagnostics)
@@ -7079,10 +7265,10 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
             "Use `rms audit --root {}` and `--strict` before claiming production-ready RMS software.",
             root.display()
         ),
-        "Use `rms spec plan|apply|check <module.yaml|implementation.yaml>` when product meaning needs new laws, contracts, states, transitions, semantic-function authority bindings, runnable surfaces, effects, or evidence obligations.".to_string(),
+        "Use `rms spec plan|apply|check <module.yaml|implementation.yaml>` when product meaning needs new laws, contracts, states, transitions, semantic-function authority bindings, public/dependency behavior bindings, runnable surfaces, effects, or evidence obligations.".to_string(),
         "Use `rms machine plan|apply|check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct.".to_string(),
         "Use `rms surface apply|check <implementation.yaml>` when app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints are added or changed.".to_string(),
-        "Use `rms structure <implementation.yaml>` to inspect declared machine, role, and evidence structure.".to_string(),
+        "Use `rms structure <implementation.yaml>` to inspect declared machine, role, behavior-binding, and evidence structure.".to_string(),
         "Use `rms trace check|replay|diagnose <trace-bundle>` to inspect local transition evidence without a runtime.".to_string(),
         "Use `rms property check|run|replay <target>` to inspect semantic property/fuzz evidence and replay generated counterexamples.".to_string(),
         "Use `rms verify <implementation.yaml>` when an implementation binding declares verification, or `rms verify <composite-module.yaml>` for composite rollups.".to_string(),
@@ -28579,6 +28765,76 @@ fn append_semantic_change_implementation_reflection_checks(
         }
     }
 
+    if let Some(bindings) = &change.public_behavior_bindings {
+        let declared = typed_yaml_sequence::<PublicBehaviorBinding>(
+            implementation,
+            &["architecture", "public_behavior_bindings"],
+        );
+        for binding in bindings.add.iter().chain(bindings.replace.iter().flatten()) {
+            if !declared.contains(binding) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    implementation_path,
+                    format!(
+                        "semantic-change `{}` declares public behavior binding `{}`, but `implementation.yaml` does not contain the exact binding",
+                        change_path.display(), binding.id
+                    ),
+                );
+            }
+        }
+        for id in &bindings.remove {
+            if declared.iter().any(|binding| &binding.id == id) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    implementation_path,
+                    format!(
+                        "semantic-change `{}` removes public behavior binding `{id}`, but `implementation.yaml` still declares it",
+                        change_path.display()
+                    ),
+                );
+            }
+        }
+    }
+
+    if let Some(bindings) = &change.dependency_behavior_bindings {
+        let declared = typed_yaml_sequence::<DependencyBehaviorBinding>(
+            implementation,
+            &["architecture", "dependency_behavior_bindings"],
+        );
+        for binding in bindings.add.iter().chain(bindings.replace.iter().flatten()) {
+            if !declared.contains(binding) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    implementation_path,
+                    format!(
+                        "semantic-change `{}` declares dependency behavior binding `{}`, but `implementation.yaml` does not contain the exact binding",
+                        change_path.display(), binding.id
+                    ),
+                );
+            }
+        }
+        for id in &bindings.remove {
+            if declared.iter().any(|binding| &binding.id == id) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    implementation_path,
+                    format!(
+                        "semantic-change `{}` removes dependency behavior binding `{id}`, but `implementation.yaml` still declares it",
+                        change_path.display()
+                    ),
+                );
+            }
+        }
+    }
+
     let Some(machine) = &change.machine else {
         return;
     };
@@ -30235,6 +30491,14 @@ fn build_structure_report(implementation: &Path) -> Result<StructureReport> {
         messages: structure_messages_report(&manifest.value),
         transition: structure_transition_report(&manifest.value),
         trace: structure_trace_report(&manifest.value),
+        public_behavior_bindings: typed_yaml_sequence(
+            &manifest.value,
+            &["architecture", "public_behavior_bindings"],
+        ),
+        dependency_behavior_bindings: typed_yaml_sequence(
+            &manifest.value,
+            &["architecture", "dependency_behavior_bindings"],
+        ),
         roles: structure_role_report(&manifest.value),
         diagnostics: focused_diagnostics,
     })
@@ -30513,6 +30777,41 @@ fn print_structure_report(report: &StructureReport) {
             .as_deref()
             .unwrap_or("<missing>")
     );
+    println!("behavior_bindings:");
+    if report.public_behavior_bindings.is_empty() {
+        println!("  public: <not declared>");
+    } else {
+        for binding in &report.public_behavior_bindings {
+            println!(
+                "  public {} `{}`: {} -> {} -> inputs [{}], outputs [{}]",
+                binding.public_kind,
+                binding.public_name,
+                binding.contract,
+                binding.semantic_function,
+                binding.machine_inputs.join(", "),
+                binding.machine_outputs.join(", ")
+            );
+        }
+    }
+    if report.dependency_behavior_bindings.is_empty() {
+        println!("  required: <not declared>");
+    } else {
+        for binding in &report.dependency_behavior_bindings {
+            let provider = if binding.resolution == "module" {
+                format!(
+                    "{} ({})",
+                    binding.provider_module.as_deref().unwrap_or("<missing>"),
+                    binding.provider_contract.as_deref().unwrap_or("<missing>")
+                )
+            } else {
+                "external".to_string()
+            };
+            println!(
+                "  required `{}`: {} -> {}",
+                binding.capability, binding.consumer, provider
+            );
+        }
+    }
     println!("roles:");
     if report.roles.is_empty() {
         println!("  <missing>");
@@ -34353,6 +34652,14 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "  add: []")?;
         writeln!(out, "  set: []")?;
         writeln!(out, "  remove: []")?;
+        writeln!(out, "public_behavior_bindings:")?;
+        writeln!(out, "  add: []")?;
+        writeln!(out, "  set: null")?;
+        writeln!(out, "  remove: []")?;
+        writeln!(out, "dependency_behavior_bindings:")?;
+        writeln!(out, "  add: []")?;
+        writeln!(out, "  set: null")?;
+        writeln!(out, "  remove: []")?;
         let mode = get_str(&implementation.value, &["architecture", "machine", "mode"])
             .unwrap_or("stateful-transition-machine");
         let signature = get_str(
@@ -34425,6 +34732,8 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "semantic_functions: null")?;
         writeln!(out, "protocol_bindings: null")?;
         writeln!(out, "authority_bindings: null")?;
+        writeln!(out, "public_behavior_bindings: null")?;
+        writeln!(out, "dependency_behavior_bindings: null")?;
         writeln!(out, "machine: null")?;
         writeln!(out, "roles: null")?;
         writeln!(out, "surfaces: null")?;
@@ -34434,7 +34743,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact: `laws.add[]` and `laws.set[]` use scalar strings `id`, `statement`, `kind`, `authority`, and `enforced_by`. `contracts.add[]` and `contracts.set[]` use scalar strings `name`, optional `direction: provided|required`, `version`, `command`, and `meaning`, plus non-empty string lists `accepts`, `ensures`, and `rejects`; cross-module conversations add `protocol` with participants, closed messages, states, initial/terminal states, and transitions. `artifacts` declare `name`, `version`, `direction: provided|required|internal`, `contract`, and invariant ids. `transformations` declare input/output artifact names, an exact semantic function, rejection cases, and property ids. `authorities` declare an `id`, `kind: privileged|unsafe|foreign`, capabilities, and rationale. `properties.add[]` and `properties.set[]` use scalar strings `id`, `proves`, and `kind`; structured `input_space` and `operation`; string lists `preconditions` and non-empty `oracle`; `evidence: {{kind: property, path: <relative-path>}}` (or kind `fuzz` for a fuzz property); `counterexamples: {{path: <relative-path>}}`; `realizations: [{{profile, strategy, command, generator, runner}}]`, where `generator` is required for generated-property and deterministic-exhaustive strategies and `runner` is always required; and optional `temporal: {{pattern, scope, trigger, condition, bound}}`. `trace_producers.add[]` and `trace_producers.set[]` use scalar `id`, `profile`, `bundle`, `command`, and exact `runner`; removals contain producer ids. `properties.remove[]` contains existing property ids. `semantic_functions.add[]` and `semantic_functions.set[]` use scalar `id`, exact binding `symbol`, `kind`, and `purity`; optional string-list mappings under `discharges` and `assumptions`; optional declared `authorities`; and non-empty categorized evidence paths. `semantic_functions.remove[]` contains existing function ids. `evidence.add[]` uses scalar strings `kind`, `proves`, and `path`.")?;
+    writeln!(out, "Item shapes and cardinalities are exact: `laws.add[]` and `laws.set[]` use scalar strings `id`, `statement`, `kind`, `authority`, and `enforced_by`. `contracts.add[]` and `contracts.set[]` use scalar strings `name`, optional `direction: provided|required`, `version`, `command`, and `meaning`, plus non-empty string lists `accepts`, `ensures`, and `rejects`; cross-module conversations add `protocol` with participants, closed messages, states, initial/terminal states, and transitions. `artifacts` declare `name`, `version`, `direction: provided|required|internal`, `contract`, and invariant ids. `transformations` declare input/output artifact names, an exact semantic function, rejection cases, and property ids. `authorities` declare an `id`, `kind: privileged|unsafe|foreign`, capabilities, and rationale. `properties.add[]` and `properties.set[]` use scalar strings `id`, `proves`, and `kind`; structured `input_space` and `operation`; string lists `preconditions` and non-empty `oracle`; `evidence: {{kind: property, path: <relative-path>}}` (or kind `fuzz` for a fuzz property); `counterexamples: {{path: <relative-path>}}`; `realizations: [{{profile, strategy, command, generator, runner}}]`, where `generator` is required for generated-property and deterministic-exhaustive strategies and `runner` is always required; and optional `temporal: {{pattern, scope, trigger, condition, bound}}`. `trace_producers.add[]` and `trace_producers.set[]` use scalar `id`, `profile`, `bundle`, `command`, and exact `runner`; removals contain producer ids. `properties.remove[]` contains existing property ids. `semantic_functions.add[]` and `semantic_functions.set[]` use scalar `id`, exact binding `symbol`, `kind`, and `purity`; optional string-list mappings under `discharges` and `assumptions`; optional declared `authorities`; and non-empty categorized evidence paths. `semantic_functions.remove[]` contains existing function ids. `public_behavior_bindings` connect `id`, `public_kind: command|query|capability`, `public_name`, `contract`, `semantic_function`, and exact semantic `machine_inputs`/`machine_outputs`. `dependency_behavior_bindings` connect `id`, required `capability`, optional required `contract`, exact local `consumer: path#symbol`, and `resolution: module|external`; module resolution also names `provider_module` and `provider_contract`. `evidence.add[]` uses scalar strings `kind`, `proves`, and `path`.")?;
     writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module.")?;
     writeln!(out, "`rms spec apply` automatically adds every currently active semantic revision to `supersedes` and hash-seals the exact new record. Use explicit `supersedes` only for additional branches that are not locally discoverable. Applied records are append-only: never edit or delete them.")?;
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
@@ -34639,6 +34948,42 @@ fn run_spec_apply(
         .into_iter()
         .map(|item| item.authority)
         .collect();
+    let final_public_behavior_bindings = context
+        .implementation
+        .as_ref()
+        .map(|implementation| {
+            change.public_behavior_bindings.as_ref().map_or_else(
+                || {
+                    typed_yaml_sequence::<PublicBehaviorBinding>(
+                        &implementation.value,
+                        &["architecture", "public_behavior_bindings"],
+                    )
+                },
+                |request| final_public_behavior_bindings(&implementation.value, request),
+            )
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    let final_dependency_behavior_bindings = context
+        .implementation
+        .as_ref()
+        .map(|implementation| {
+            change.dependency_behavior_bindings.as_ref().map_or_else(
+                || {
+                    typed_yaml_sequence::<DependencyBehaviorBinding>(
+                        &implementation.value,
+                        &["architecture", "dependency_behavior_bindings"],
+                    )
+                },
+                |request| final_dependency_behavior_bindings(&implementation.value, request),
+            )
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
     let has_errors = diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == Severity::Error);
@@ -34660,6 +35005,8 @@ fn run_spec_apply(
         final_authorities,
         final_protocol_bindings,
         final_authority_bindings,
+        final_public_behavior_bindings,
+        final_dependency_behavior_bindings,
         diagnostics,
     };
     print_spec_apply_report(&report);
@@ -35720,6 +36067,14 @@ fn validate_semantic_change(
         .authority_bindings
         .as_ref()
         .is_some_and(authority_bindings_change_has_operations);
+    let has_public_behavior_bindings = change
+        .public_behavior_bindings
+        .as_ref()
+        .is_some_and(public_behavior_bindings_change_has_operations);
+    let has_dependency_behavior_bindings = change
+        .dependency_behavior_bindings
+        .as_ref()
+        .is_some_and(dependency_behavior_bindings_change_has_operations);
     let has_machine =
         semantic_machine_change_requests_change(change, context.implementation.as_ref());
     if !has_laws
@@ -35736,11 +36091,13 @@ fn validate_semantic_change(
         && !has_authorities
         && !has_protocol_bindings
         && !has_authority_bindings
+        && !has_public_behavior_bindings
+        && !has_dependency_behavior_bindings
     {
         diagnostics.push(error(
             "semantic-change.empty",
             &context.target,
-            "semantic change must revise laws, contracts, properties, trace producers, semantic functions, machine structure, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, or evidence obligations",
+            "semantic change must revise laws, contracts, properties, trace producers, semantic functions, machine structure, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, behavior bindings, or evidence obligations",
         ));
     }
 
@@ -35762,6 +36119,8 @@ fn validate_semantic_change(
     validate_semantic_authorities(context, change, &mut diagnostics);
     validate_protocol_bindings(context, change, &mut diagnostics);
     validate_authority_bindings(context, change, &mut diagnostics);
+    validate_public_behavior_bindings(context, change, &mut diagnostics);
+    validate_dependency_behavior_bindings(context, change, &mut diagnostics);
     diagnostics
 }
 
@@ -38339,6 +38698,358 @@ fn validate_authority_bindings(
     }
 }
 
+fn declared_public_behaviors(value: &YamlValue) -> BTreeMap<(String, String), String> {
+    let mut result = BTreeMap::new();
+    for (kind, section) in [
+        ("command", "commands"),
+        ("query", "queries"),
+        ("capability", "capabilities"),
+    ] {
+        let Some(items) = get_path(value, &["provides", section]).and_then(YamlValue::as_sequence)
+        else {
+            continue;
+        };
+        for item in items {
+            let Some(name) = get_str(item, &["name"]) else {
+                continue;
+            };
+            let contract = get_str(item, &["contract"]).unwrap_or_default();
+            result.insert((kind.to_string(), name.to_string()), contract.to_string());
+        }
+    }
+    result
+}
+
+fn declared_required_capabilities(value: &YamlValue) -> BTreeMap<String, Option<String>> {
+    let mut result = BTreeMap::new();
+    let Some(items) =
+        get_path(value, &["requires", "capabilities"]).and_then(YamlValue::as_sequence)
+    else {
+        return result;
+    };
+    for item in items {
+        if let Some(name) = get_str(item, &["name"]) {
+            result.insert(
+                name.to_string(),
+                get_str(item, &["contract"]).map(ToString::to_string),
+            );
+        }
+    }
+    result
+}
+
+fn validate_public_behavior_bindings(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(request) = change
+        .public_behavior_bindings
+        .as_ref()
+        .filter(|request| public_behavior_bindings_change_has_operations(request))
+    else {
+        return;
+    };
+    let (Some(module), Some(implementation)) =
+        (context.module.as_ref(), context.implementation.as_ref())
+    else {
+        diagnostics.push(error(
+            "semantic.public-binding-owner-missing",
+            &context.target,
+            "public behavior bindings require both module and implementation manifests",
+        ));
+        return;
+    };
+    let existing = typed_yaml_sequence::<PublicBehaviorBinding>(
+        &implementation.value,
+        &["architecture", "public_behavior_bindings"],
+    )
+    .into_iter()
+    .map(|item| item.id)
+    .collect::<BTreeSet<_>>();
+    validate_change_keys(
+        &context.target,
+        "public-behavior-binding",
+        &existing,
+        request
+            .replace
+            .as_ref()
+            .map(|items| items.iter().map(|item| item.id.clone()).collect()),
+        &request
+            .add
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>(),
+        &request.remove,
+        diagnostics,
+    );
+
+    let final_module = final_module_value(context, change).unwrap_or_else(|| module.value.clone());
+    let final_implementation =
+        final_implementation_value(context, change).unwrap_or_else(|| implementation.value.clone());
+    let publics = declared_public_behaviors(&final_module);
+    let semantic_functions = get_path(&final_implementation, &["semantic_functions"])
+        .and_then(YamlValue::as_sequence)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let machine_inputs = ["commands", "observed_events", "effect_results"]
+        .into_iter()
+        .flat_map(|field| {
+            get_string_array(&final_implementation, &["architecture", "machine", field])
+        })
+        .collect::<BTreeSet<_>>();
+    let machine_outputs = ["events", "effects", "replies", "rejections"]
+        .into_iter()
+        .flat_map(|field| {
+            get_string_array(&final_implementation, &["architecture", "machine", field])
+        })
+        .collect::<BTreeSet<_>>();
+    let has_machine = get_path(&final_implementation, &["architecture", "machine"]).is_some();
+    let mut ids = BTreeSet::new();
+    let mut public_keys = BTreeSet::new();
+    for binding in final_public_behavior_bindings(&implementation.value, request) {
+        let key = (binding.public_kind.clone(), binding.public_name.clone());
+        if !is_stable_semantic_id(&binding.id)
+            || !ids.insert(binding.id.clone())
+            || !public_keys.insert(key.clone())
+            || !matches!(
+                binding.public_kind.as_str(),
+                "command" | "query" | "capability"
+            )
+        {
+            diagnostics.push(error(
+                "semantic.public-binding-invalid",
+                &context.target,
+                format!(
+                    "public behavior binding `{}` must have a unique stable id and public target",
+                    binding.id
+                ),
+            ));
+            continue;
+        }
+        let Some(contract) = publics.get(&key) else {
+            diagnostics.push(error(
+                "semantic.public-binding-target-missing",
+                &context.target,
+                format!(
+                    "public behavior binding `{}` references undeclared {} `{}`",
+                    binding.id, binding.public_kind, binding.public_name
+                ),
+            ));
+            continue;
+        };
+        if contract != &binding.contract {
+            diagnostics.push(error(
+                "semantic.public-binding-contract-mismatch",
+                &context.target,
+                format!(
+                    "public behavior binding `{}` names contract `{}`, but the public declaration names `{contract}`",
+                    binding.id, binding.contract
+                ),
+            ));
+        }
+        let Some(function) = semantic_functions
+            .iter()
+            .find(|item| get_str(item, &["id"]) == Some(binding.semantic_function.as_str()))
+        else {
+            diagnostics.push(error(
+                "semantic.public-binding-function-missing",
+                &context.target,
+                format!(
+                    "public behavior binding `{}` references undeclared semantic function `{}`",
+                    binding.id, binding.semantic_function
+                ),
+            ));
+            continue;
+        };
+        if !get_string_array(function, &["discharges", "contracts"]).contains(&binding.contract) {
+            diagnostics.push(error(
+                "semantic.public-binding-contract-undischarged",
+                &context.target,
+                format!(
+                    "semantic function `{}` does not discharge public contract `{}`",
+                    binding.semantic_function, binding.contract
+                ),
+            ));
+        }
+        let unknown_inputs = binding
+            .machine_inputs
+            .iter()
+            .filter(|item| !machine_inputs.contains(*item))
+            .cloned()
+            .collect::<Vec<_>>();
+        let unknown_outputs = binding
+            .machine_outputs
+            .iter()
+            .filter(|item| !machine_outputs.contains(*item))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unknown_inputs.is_empty() || !unknown_outputs.is_empty() {
+            diagnostics.push(error(
+                "semantic.public-binding-machine-case-missing",
+                &context.target,
+                format!(
+                    "public behavior binding `{}` references undeclared machine inputs [{}] or outputs [{}]",
+                    binding.id,
+                    unknown_inputs.join(", "),
+                    unknown_outputs.join(", ")
+                ),
+            ));
+        }
+        if has_machine
+            && matches!(binding.public_kind.as_str(), "command" | "query")
+            && binding.machine_inputs.is_empty()
+        {
+            diagnostics.push(error(
+                "semantic.public-input-unreachable",
+                &context.target,
+                format!(
+                    "public {} `{}` has no declared machine input path",
+                    binding.public_kind, binding.public_name
+                ),
+            ));
+        }
+    }
+}
+
+fn validate_dependency_behavior_bindings(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(request) = change
+        .dependency_behavior_bindings
+        .as_ref()
+        .filter(|request| dependency_behavior_bindings_change_has_operations(request))
+    else {
+        return;
+    };
+    let (Some(module), Some(implementation)) =
+        (context.module.as_ref(), context.implementation.as_ref())
+    else {
+        diagnostics.push(error(
+            "semantic.dependency-binding-owner-missing",
+            &context.target,
+            "dependency behavior bindings require both module and implementation manifests",
+        ));
+        return;
+    };
+    let existing = typed_yaml_sequence::<DependencyBehaviorBinding>(
+        &implementation.value,
+        &["architecture", "dependency_behavior_bindings"],
+    )
+    .into_iter()
+    .map(|item| item.id)
+    .collect::<BTreeSet<_>>();
+    validate_change_keys(
+        &context.target,
+        "dependency-behavior-binding",
+        &existing,
+        request
+            .replace
+            .as_ref()
+            .map(|items| items.iter().map(|item| item.id.clone()).collect()),
+        &request
+            .add
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>(),
+        &request.remove,
+        diagnostics,
+    );
+
+    let final_module = final_module_value(context, change).unwrap_or_else(|| module.value.clone());
+    let required = declared_required_capabilities(&final_module);
+    let mut ids = BTreeSet::new();
+    let mut capabilities = BTreeSet::new();
+    for binding in final_dependency_behavior_bindings(&implementation.value, request) {
+        if !is_stable_semantic_id(&binding.id)
+            || !ids.insert(binding.id.clone())
+            || !capabilities.insert(binding.capability.clone())
+        {
+            diagnostics.push(error(
+                "semantic.dependency-binding-invalid",
+                &context.target,
+                format!(
+                    "dependency behavior binding `{}` must have a unique stable id and capability",
+                    binding.id
+                ),
+            ));
+            continue;
+        }
+        let Some(required_contract) = required.get(&binding.capability) else {
+            diagnostics.push(error(
+                "semantic.dependency-binding-target-missing",
+                &context.target,
+                format!(
+                    "dependency behavior binding `{}` references undeclared required capability `{}`",
+                    binding.id, binding.capability
+                ),
+            ));
+            continue;
+        };
+        if required_contract.as_ref() != binding.contract.as_ref() {
+            diagnostics.push(error(
+                "semantic.dependency-binding-contract-mismatch",
+                &context.target,
+                format!(
+                    "dependency behavior binding `{}` does not match the required contract for `{}`",
+                    binding.id, binding.capability
+                ),
+            ));
+        }
+        if binding_reference_parts(&binding.consumer).is_none() {
+            diagnostics.push(error(
+                "semantic.dependency-binding-consumer-invalid",
+                &context.target,
+                format!(
+                    "dependency behavior binding `{}` requires an exact module-relative `path#symbol` consumer",
+                    binding.id
+                ),
+            ));
+        }
+        match binding.resolution.as_str() {
+            "module" => {
+                if binding.provider_module.as_deref().is_none_or(str::is_empty)
+                    || binding
+                        .provider_contract
+                        .as_deref()
+                        .is_none_or(str::is_empty)
+                {
+                    diagnostics.push(error(
+                        "semantic.dependency-binding-provider-missing",
+                        &context.target,
+                        format!(
+                            "module dependency binding `{}` requires provider_module and provider_contract",
+                            binding.id
+                        ),
+                    ));
+                }
+            }
+            "external" => {
+                if binding.provider_module.is_some() || binding.provider_contract.is_some() {
+                    diagnostics.push(error(
+                        "semantic.dependency-binding-provider-invalid",
+                        &context.target,
+                        format!(
+                            "external dependency binding `{}` must not name an RMS module provider",
+                            binding.id
+                        ),
+                    ));
+                }
+            }
+            _ => diagnostics.push(error(
+                "semantic.dependency-binding-resolution-invalid",
+                &context.target,
+                format!(
+                    "dependency behavior binding `{}` must use resolution `module` or `external`",
+                    binding.id
+                ),
+            )),
+        }
+    }
+}
+
 fn validate_semantic_surfaces(
     context: &SpecTargetContext,
     change: &SemanticChange,
@@ -38496,6 +39207,14 @@ fn semantic_change_modifies_implementation(
             .authority_bindings
             .as_ref()
             .is_some_and(authority_bindings_change_has_operations)
+        || change
+            .public_behavior_bindings
+            .as_ref()
+            .is_some_and(public_behavior_bindings_change_has_operations)
+        || change
+            .dependency_behavior_bindings
+            .as_ref()
+            .is_some_and(dependency_behavior_bindings_change_has_operations)
 }
 
 fn spec_apply_candidate_context(
@@ -38579,6 +39298,36 @@ fn spec_apply_candidate_context(
                 &mut implementation.value,
                 &["architecture", "authority_bindings"],
                 final_items.iter().map(authority_binding_yaml).collect(),
+            );
+        }
+        if let Some(bindings) = change
+            .public_behavior_bindings
+            .as_ref()
+            .filter(|change| public_behavior_bindings_change_has_operations(change))
+        {
+            let final_items = final_public_behavior_bindings(&implementation.value, bindings);
+            set_yaml_sequence_path(
+                &mut implementation.value,
+                &["architecture", "public_behavior_bindings"],
+                final_items
+                    .iter()
+                    .map(public_behavior_binding_yaml)
+                    .collect(),
+            );
+        }
+        if let Some(bindings) = change
+            .dependency_behavior_bindings
+            .as_ref()
+            .filter(|change| dependency_behavior_bindings_change_has_operations(change))
+        {
+            let final_items = final_dependency_behavior_bindings(&implementation.value, bindings);
+            set_yaml_sequence_path(
+                &mut implementation.value,
+                &["architecture", "dependency_behavior_bindings"],
+                final_items
+                    .iter()
+                    .map(dependency_behavior_binding_yaml)
+                    .collect(),
             );
         }
         if semantic_change_modifies_implementation(context, change, machine_change) {
@@ -38680,6 +39429,14 @@ fn planned_spec_apply_writes(
             .authority_bindings
             .as_ref()
             .is_some_and(authority_bindings_change_has_operations)
+        || change
+            .public_behavior_bindings
+            .as_ref()
+            .is_some_and(public_behavior_bindings_change_has_operations)
+        || change
+            .dependency_behavior_bindings
+            .as_ref()
+            .is_some_and(dependency_behavior_bindings_change_has_operations)
     {
         if let Some(implementation) = &context.implementation {
             writes.push(implementation.path.display().to_string());
@@ -40403,6 +41160,14 @@ fn print_spec_apply_report(report: &SpecApplyReport) {
         ("final_authorities", &report.final_authorities),
         ("final_protocol_bindings", &report.final_protocol_bindings),
         ("final_authority_bindings", &report.final_authority_bindings),
+        (
+            "final_public_behavior_bindings",
+            &report.final_public_behavior_bindings,
+        ),
+        (
+            "final_dependency_behavior_bindings",
+            &report.final_dependency_behavior_bindings,
+        ),
     ] {
         if values.is_empty() {
             println!("{label}: <none>");
@@ -44020,12 +44785,53 @@ fn print_compat_report(report: &CompatReport) {
     }
 }
 
+#[cfg(test)]
 fn run_init(
     path: &Path,
     name: &str,
     purpose: &str,
     version: &str,
     contexts: &[String],
+) -> Result<()> {
+    run_init_with_adopt(path, name, purpose, version, contexts, false)
+}
+
+#[derive(Clone, Copy)]
+enum InitExistingPolicy {
+    Preserve,
+    AgentGuidance,
+    GitIgnore,
+    SystemManifest,
+    ContextMapManifest,
+    WorkbenchConfig,
+    ExactManaged,
+}
+
+struct InitArtifact {
+    relative_path: PathBuf,
+    contents: String,
+    existing_policy: InitExistingPolicy,
+}
+
+#[derive(Clone, Copy)]
+enum InitArtifactStatus {
+    Created,
+    Adopted,
+    Updated,
+}
+
+struct InitWrittenFile {
+    path: PathBuf,
+    previous: Option<Vec<u8>>,
+}
+
+fn run_init_with_adopt(
+    path: &Path,
+    name: &str,
+    purpose: &str,
+    version: &str,
+    contexts: &[String],
+    adopt: bool,
 ) -> Result<()> {
     fs::create_dir_all(path)
         .with_context(|| format!("failed to create init directory `{}`", path.display()))?;
@@ -44035,32 +44841,380 @@ fn run_init(
         contexts.to_vec()
     };
 
-    write_new_file(
-        &path.join("system.yaml"),
-        &render_system_yaml(name, purpose, version, &contexts),
+    let mut artifacts = init_artifacts(name, purpose, version, &contexts);
+    let statuses = preflight_init(
+        path,
+        &mut artifacts,
+        adopt,
+        name,
+        purpose,
+        version,
+        &contexts,
     )?;
-    write_new_file(
-        &path.join("context-map.yaml"),
-        &render_context_map_yaml(&contexts),
-    )?;
-    write_new_file(&path.join("GLOSSARY.md"), &render_glossary_md(name))?;
-    write_new_file(&path.join("AGENTS.md"), INIT_AGENTS_MD)?;
-    write_new_file(&path.join(".gitignore"), INIT_GITIGNORE)?;
-    write_new_file(
-        &path.join(WORKBENCH_CONFIG_PATH),
-        &render_workbench_config(Provider::Codex, None, Path::new(DEFAULT_RUN_ROOT)),
-    )?;
-    scaffold_agent_skills(path)?;
-    let git_initialized = ensure_init_git_worktree(path)?;
+    let mut written = Vec::new();
+    for (artifact, status) in artifacts.iter().zip(&statuses) {
+        if matches!(
+            status,
+            InitArtifactStatus::Created | InitArtifactStatus::Updated
+        ) {
+            let target = path.join(&artifact.relative_path);
+            let previous = if matches!(status, InitArtifactStatus::Updated) {
+                Some(
+                    fs::read(&target)
+                        .with_context(|| format!("failed to read `{}`", target.display()))?,
+                )
+            } else {
+                None
+            };
+            let write_result = if previous.is_some() {
+                fs::write(&target, &artifact.contents)
+                    .with_context(|| format!("failed to write `{}`", target.display()))
+            } else {
+                write_new_file(&target, &artifact.contents)
+            };
+            if let Err(error) = write_result {
+                if let Some(previous) = &previous {
+                    let _ = fs::write(&target, previous);
+                }
+                rollback_init_files(path, &written);
+                return Err(error);
+            }
+            written.push(InitWrittenFile {
+                path: target,
+                previous,
+            });
+        }
+    }
+    let git_initialized = match ensure_init_git_worktree(path) {
+        Ok(initialized) => initialized,
+        Err(error) => {
+            rollback_init_files(path, &written);
+            return Err(error);
+        }
+    };
 
     println!("initialized RMS system at {}", path.display());
+    for (artifact, status) in artifacts.iter().zip(&statuses) {
+        let status = match status {
+            InitArtifactStatus::Created => "created",
+            InitArtifactStatus::Adopted => "adopted",
+            InitArtifactStatus::Updated => "updated",
+        };
+        println!("{status}: {}", artifact.relative_path.display());
+    }
     if git_initialized {
         println!("initialized Git worktree at {}", path.display());
+    }
+    if adopt
+        && statuses.iter().zip(&artifacts).any(|(status, artifact)| {
+            !matches!(status, InitArtifactStatus::Created)
+                && artifact.relative_path == Path::new("AGENTS.md")
+        })
+    {
+        println!(
+            "adoption note: project-owned AGENTS.md content was preserved and RMS guidance is maintained only inside its marked section"
+        );
     }
     println!(
         "bootstrap provenance: before product work, run `git add . && git commit -m \"Initial RMS project\"`; completion then requires `rms gate --root .`, a candidate commit, and `rms audit --root . --strict` to exit successfully"
     );
     Ok(())
+}
+
+fn init_artifacts(
+    name: &str,
+    purpose: &str,
+    version: &str,
+    contexts: &[String],
+) -> Vec<InitArtifact> {
+    let mut artifacts = vec![
+        InitArtifact {
+            relative_path: PathBuf::from("system.yaml"),
+            contents: render_system_yaml(name, purpose, version, contexts),
+            existing_policy: InitExistingPolicy::SystemManifest,
+        },
+        InitArtifact {
+            relative_path: PathBuf::from("context-map.yaml"),
+            contents: render_context_map_yaml(contexts),
+            existing_policy: InitExistingPolicy::ContextMapManifest,
+        },
+        InitArtifact {
+            relative_path: PathBuf::from("GLOSSARY.md"),
+            contents: render_glossary_md(name),
+            existing_policy: InitExistingPolicy::Preserve,
+        },
+        InitArtifact {
+            relative_path: PathBuf::from("AGENTS.md"),
+            contents: INIT_AGENTS_MD.to_string(),
+            existing_policy: InitExistingPolicy::AgentGuidance,
+        },
+        InitArtifact {
+            relative_path: PathBuf::from(".gitignore"),
+            contents: INIT_GITIGNORE.to_string(),
+            existing_policy: InitExistingPolicy::GitIgnore,
+        },
+        InitArtifact {
+            relative_path: PathBuf::from(WORKBENCH_CONFIG_PATH),
+            contents: render_workbench_config(Provider::Codex, None, Path::new(DEFAULT_RUN_ROOT)),
+            existing_policy: InitExistingPolicy::WorkbenchConfig,
+        },
+    ];
+    artifacts.extend(
+        INIT_AGENT_SKILLS
+            .iter()
+            .map(|(relative_path, contents)| InitArtifact {
+                relative_path: Path::new(".agents").join("skills").join(relative_path),
+                contents: (*contents).to_string(),
+                existing_policy: InitExistingPolicy::ExactManaged,
+            }),
+    );
+    artifacts
+}
+
+fn preflight_init(
+    root: &Path,
+    artifacts: &mut [InitArtifact],
+    adopt: bool,
+    name: &str,
+    purpose: &str,
+    version: &str,
+    contexts: &[String],
+) -> Result<Vec<InitArtifactStatus>> {
+    let existing = artifacts
+        .iter()
+        .filter(|artifact| root.join(&artifact.relative_path).exists())
+        .collect::<Vec<_>>();
+    if !adopt && !existing.is_empty() {
+        let paths = existing
+            .iter()
+            .map(|artifact| format!("`{}`", root.join(&artifact.relative_path).display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("refusing to overwrite existing file(s): {paths}; pass `--adopt` to preserve compatible files and create only missing RMS artifacts");
+    }
+
+    let mut conflicts = Vec::new();
+    let mut statuses = Vec::with_capacity(artifacts.len());
+    for artifact in artifacts {
+        let target = root.join(&artifact.relative_path);
+        if !target.exists() {
+            statuses.push(InitArtifactStatus::Created);
+            continue;
+        }
+        if !target.is_file() {
+            conflicts.push(format!(
+                "{} exists but is not a regular file",
+                artifact.relative_path.display()
+            ));
+            statuses.push(InitArtifactStatus::Adopted);
+            continue;
+        }
+
+        let mut status = InitArtifactStatus::Adopted;
+        let validation = match artifact.existing_policy {
+            InitExistingPolicy::Preserve => fs::read(&target)
+                .map(|_| ())
+                .with_context(|| format!("failed to read `{}`", target.display())),
+            InitExistingPolicy::AgentGuidance => fs::read_to_string(&target)
+                .with_context(|| format!("failed to read `{}`", target.display()))
+                .and_then(|existing| {
+                    if existing == INIT_AGENTS_MD {
+                        return Ok(());
+                    }
+                    let merged = merge_managed_section(
+                        &existing,
+                        RMS_MANAGED_AGENTS_START,
+                        RMS_MANAGED_AGENTS_END,
+                        INIT_ADOPTED_AGENTS_BLOCK,
+                    )?;
+                    if merged != existing {
+                        artifact.contents = merged;
+                        status = InitArtifactStatus::Updated;
+                    }
+                    Ok(())
+                }),
+            InitExistingPolicy::GitIgnore => fs::read_to_string(&target)
+                .with_context(|| format!("failed to read `{}`", target.display()))
+                .and_then(|existing| {
+                    if existing == INIT_GITIGNORE {
+                        return Ok(());
+                    }
+                    let merged = merge_managed_section(
+                        &existing,
+                        RMS_MANAGED_GITIGNORE_START,
+                        RMS_MANAGED_GITIGNORE_END,
+                        INIT_ADOPTED_GITIGNORE_BLOCK,
+                    )?;
+                    if merged != existing {
+                        artifact.contents = merged;
+                        status = InitArtifactStatus::Updated;
+                    }
+                    Ok(())
+                }),
+            InitExistingPolicy::SystemManifest => {
+                validate_adopted_system(&target, name, purpose, version, contexts)
+            }
+            InitExistingPolicy::ContextMapManifest => validate_adopted_manifest(
+                &target,
+                "rms/context-map/v0.1",
+            )
+            .map(|_| ()),
+            InitExistingPolicy::WorkbenchConfig => load_workbench_config(root).map(|_| ()),
+            InitExistingPolicy::ExactManaged => fs::read(&target)
+                .with_context(|| format!("failed to read `{}`", target.display()))
+                .and_then(|existing| {
+                    if existing == artifact.contents.as_bytes() {
+                        Ok(())
+                    } else {
+                        bail!(
+                            "RMS-managed skill differs from the current embedded skill; use `rms agent sync` deliberately after adoption"
+                        )
+                    }
+                }),
+        };
+        if let Err(error) = validation {
+            conflicts.push(format!("{}: {error:#}", artifact.relative_path.display()));
+        }
+        statuses.push(status);
+    }
+
+    if !conflicts.is_empty() {
+        bail!(
+            "RMS adoption found conflict(s) and wrote nothing:\n- {}",
+            conflicts.join("\n- ")
+        );
+    }
+    Ok(statuses)
+}
+
+fn validate_adopted_manifest(path: &Path, expected_spec: &str) -> Result<LoadedManifest> {
+    let manifest = load_manifest(path)?;
+    let actual_spec = get_str(&manifest.value, &["spec"]).unwrap_or("<missing>");
+    if actual_spec != expected_spec {
+        bail!("expected `{expected_spec}`, found `{actual_spec}`");
+    }
+    let mut diagnostics = Vec::new();
+    validate_loaded_manifest(&manifest, &mut diagnostics);
+    let errors = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .map(|diagnostic| format!("{}: {}", diagnostic.check, diagnostic.message))
+        .collect::<Vec<_>>();
+    if !errors.is_empty() {
+        bail!(
+            "existing canonical manifest is invalid: {}",
+            errors.join("; ")
+        );
+    }
+    Ok(manifest)
+}
+
+fn validate_adopted_system(
+    path: &Path,
+    name: &str,
+    purpose: &str,
+    version: &str,
+    contexts: &[String],
+) -> Result<()> {
+    let manifest = validate_adopted_manifest(path, "rms/system/v0.1")?;
+    let expected = [
+        (
+            "system.name",
+            get_str(&manifest.value, &["system", "name"]),
+            name,
+        ),
+        (
+            "system.purpose",
+            get_str(&manifest.value, &["system", "purpose"]),
+            purpose,
+        ),
+        (
+            "system.version",
+            get_str(&manifest.value, &["system", "version"]),
+            version,
+        ),
+    ];
+    for (field, actual, requested) in expected {
+        if actual != Some(requested) {
+            bail!(
+                "existing `{field}` is `{}`, but init requested `{requested}`",
+                actual.unwrap_or("<missing>")
+            );
+        }
+    }
+    let existing_contexts = get_string_array(&manifest.value, &["contexts"]);
+    if existing_contexts != contexts {
+        bail!(
+            "existing contexts {:?} do not match requested contexts {:?}",
+            existing_contexts,
+            contexts
+        );
+    }
+    Ok(())
+}
+
+fn rollback_init_files(root: &Path, written: &[InitWrittenFile]) {
+    let mut parents = BTreeSet::new();
+    for file in written.iter().rev() {
+        if let Some(previous) = &file.previous {
+            let _ = fs::write(&file.path, previous);
+        } else {
+            let _ = fs::remove_file(&file.path);
+        }
+        let mut parent = file.path.parent();
+        while let Some(directory) = parent {
+            if directory == root {
+                break;
+            }
+            parents.insert(directory.to_path_buf());
+            parent = directory.parent();
+        }
+    }
+    let mut parents = parents.into_iter().collect::<Vec<_>>();
+    parents.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for directory in parents {
+        let _ = fs::remove_dir(directory);
+    }
+}
+
+fn merge_managed_section(
+    existing: &str,
+    start: &str,
+    end: &str,
+    managed_block: &str,
+) -> Result<String> {
+    let starts = existing
+        .match_indices(start)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let ends = existing
+        .match_indices(end)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    match (starts.as_slice(), ends.as_slice()) {
+        ([], []) => {
+            let mut merged = existing.to_string();
+            if !merged.is_empty() && !merged.ends_with('\n') {
+                merged.push('\n');
+            }
+            if !merged.is_empty() && !merged.ends_with("\n\n") {
+                merged.push('\n');
+            }
+            merged.push_str(managed_block);
+            Ok(merged)
+        }
+        ([start_index], [end_index]) if start_index < end_index => {
+            let end_index = end_index + end.len();
+            let mut merged = String::with_capacity(
+                existing.len() - (end_index - start_index) + managed_block.len(),
+            );
+            merged.push_str(&existing[..*start_index]);
+            merged.push_str(managed_block.trim_end_matches('\n'));
+            merged.push_str(&existing[end_index..]);
+            Ok(merged)
+        }
+        _ => bail!("malformed or duplicate RMS-managed section markers `{start}` and `{end}`"),
+    }
 }
 
 fn ensure_init_git_worktree(path: &Path) -> Result<bool> {
@@ -44086,16 +45240,6 @@ fn ensure_init_git_worktree(path: &Path) -> Result<bool> {
         );
     }
     Ok(true)
-}
-
-fn scaffold_agent_skills(path: &Path) -> Result<()> {
-    for (relative_path, contents) in INIT_AGENT_SKILLS {
-        write_new_file(
-            &path.join(".agents").join("skills").join(relative_path),
-            contents,
-        )?;
-    }
-    Ok(())
 }
 
 #[derive(Clone)]
@@ -44530,6 +45674,14 @@ fn scaffold_capability_domain_child(
         ScaffoldShape::DomainEngine,
         binding,
     )?;
+    if let Some(binding) = binding {
+        configure_scaffold_public_behavior_binding(
+            path,
+            binding,
+            ScaffoldShape::DomainEngine,
+            domain_command,
+        )?;
+    }
     Ok(())
 }
 
@@ -44615,7 +45767,121 @@ fn scaffold_capability_boundary_child(
         ScaffoldShape::BoundaryAdapter,
         binding,
     )?;
+    if let Some(binding) = binding {
+        configure_scaffold_public_behavior_binding(
+            path,
+            binding,
+            ScaffoldShape::BoundaryAdapter,
+            public_command,
+        )?;
+        configure_scaffold_dependency_behavior_binding(
+            path,
+            binding,
+            domain_child,
+            domain_command,
+        )?;
+    }
     Ok(())
+}
+
+fn configure_scaffold_public_behavior_binding(
+    module_path: &Path,
+    binding: &str,
+    shape: ScaffoldShape,
+    public_command: &str,
+) -> Result<()> {
+    let path = module_path.join("implementation.yaml");
+    let mut implementation = load_manifest(&path)?;
+    let module = load_manifest(&module_path.join("module.yaml"))?;
+    let semantic_function = if binding == "js" && shape == ScaffoldShape::BoundaryAdapter {
+        "boundary-adapter"
+    } else if binding == "executable" {
+        "executable-semantic-smoke"
+    } else {
+        "transition-model"
+    };
+    let public_behaviors = declared_public_behaviors(&module.value)
+        .into_iter()
+        .filter(|((_, name), _)| name == public_command)
+        .collect::<Vec<_>>();
+    if let Some(functions) = get_path_mut(&mut implementation.value, &["semantic_functions"])
+        .and_then(YamlValue::as_sequence_mut)
+    {
+        if let Some(function) = functions
+            .iter_mut()
+            .find(|item| get_str(item, &["id"]) == Some(semantic_function))
+        {
+            for (_, contract) in &public_behaviors {
+                append_unique_yaml_string_path(function, &["discharges", "contracts"], contract);
+            }
+        }
+    }
+    let behaviors = public_behaviors
+        .into_iter()
+        .map(
+            |((public_kind, public_name), contract)| PublicBehaviorBinding {
+                id: if public_kind == "command" {
+                    format!("{}-public", semantic_id_segment(&public_name))
+                } else {
+                    format!(
+                        "{}-{}-public",
+                        semantic_id_segment(&public_name),
+                        semantic_id_segment(&public_kind)
+                    )
+                },
+                public_kind,
+                public_name,
+                contract,
+                semantic_function: semantic_function.to_string(),
+                machine_inputs: vec!["Accept".to_string()],
+                machine_outputs: Vec::new(),
+            },
+        )
+        .collect::<Vec<_>>();
+    set_yaml_sequence_path(
+        &mut implementation.value,
+        &["architecture", "public_behavior_bindings"],
+        behaviors.iter().map(public_behavior_binding_yaml).collect(),
+    );
+    write_yaml_manifest(&implementation)
+}
+
+fn configure_scaffold_dependency_behavior_binding(
+    module_path: &Path,
+    binding: &str,
+    provider_module: &str,
+    capability: &str,
+) -> Result<()> {
+    let path = module_path.join("implementation.yaml");
+    let mut implementation = load_manifest(&path)?;
+    let consumer = match binding {
+        "rust" => "src/transition.rs#transition".to_string(),
+        "swift" => {
+            let target = sanitize_swift_target_name(
+                get_str(&implementation.value, &["module"]).unwrap_or("Module"),
+            );
+            format!("Sources/{target}/Transition.swift#transition")
+        }
+        "js" => "src/adapter.mjs#handleBoundaryInput".to_string(),
+        "executable" => "scripts/smoke.sh#run".to_string(),
+        other => bail!("unsupported scaffold binding `{other}`"),
+    };
+    let contract = format!("contracts/{}.v1.yaml", contract_file_stem(capability));
+    let behavior = DependencyBehaviorBinding {
+        id: format!("{}-provider", semantic_id_segment(capability)),
+        capability: capability.to_string(),
+        contract: Some(contract.clone()),
+        consumer,
+        resolution: "module".to_string(),
+        provider_module: Some(provider_module.to_string()),
+        provider_contract: Some(contract),
+    };
+    set_yaml_sequence_path(
+        &mut implementation.value,
+        &["architecture", "dependency_behavior_bindings"],
+        vec![dependency_behavior_binding_yaml(&behavior)],
+    );
+    write_yaml_manifest(&implementation)
 }
 
 fn scaffold_runnable_surface_if_inferred(
@@ -49685,6 +50951,32 @@ fn write_file_if_missing(path: &Path, contents: &str) -> Result<()> {
 }
 
 const INIT_GITIGNORE: &str = ".DS_Store\ntarget/\ndist/\n.rms/runs/\n.rms/dogfood/\n";
+const RMS_MANAGED_AGENTS_START: &str = "<!-- RMS managed guidance: begin -->";
+const RMS_MANAGED_AGENTS_END: &str = "<!-- RMS managed guidance: end -->";
+const INIT_ADOPTED_AGENTS_BLOCK: &str = r#"<!-- RMS managed guidance: begin -->
+## RMS Integration
+
+This repository follows Reliable Modular Systems. Existing project instructions remain authoritative outside this managed section.
+
+- RMS owns semantics and architecture; agents fill declared role bodies.
+- Use `rms design`, `rms spec apply`, `rms machine apply`, and `rms surface apply` before creating or changing their corresponding architecture.
+- Do not hand-edit RMS manifests, contracts, semantic roles, machine variants, runnable surfaces, or evidence obligations.
+- Keep pure helpers pure. Represent IO as declared effects and typed effect results in effectful roles.
+- Use the project-local workflows under `.agents/skills/`.
+- Before completion, pass `rms gate --root .`, commit the candidate, then pass `rms audit --root . --strict`.
+
+<!-- RMS managed guidance: end -->
+"#;
+const RMS_MANAGED_GITIGNORE_START: &str = "# RMS managed ignores: begin";
+const RMS_MANAGED_GITIGNORE_END: &str = "# RMS managed ignores: end";
+const INIT_ADOPTED_GITIGNORE_BLOCK: &str = r#"# RMS managed ignores: begin
+.DS_Store
+target/
+dist/
+.rms/runs/
+.rms/dogfood/
+# RMS managed ignores: end
+"#;
 
 const INIT_AGENTS_MD: &str = r#"# Agent Instructions
 
@@ -49702,7 +50994,7 @@ Core rule:
 
 ## Non-Negotiable Execution
 
-1. In a fresh standalone project, run `rms init`, then commit the generated bootstrap so later semantic and source drift has a provenance baseline.
+1. In a fresh standalone project, run `rms init`. In an existing repository with project-owned documents, run `rms init --adopt`; never move, overwrite, or restore documents around initialization. Commit the generated or adopted bootstrap so later semantic and source drift has a provenance baseline.
 2. Run `rms design` before choosing the first module tree. When its deterministic hints recommend a recursive capability, use `rms add-capability`; choose explicit implementation bindings for work that will produce code. Omit binding flags only for an intentionally semantic-only scaffold, and use `rms add-binding` before machine or surface work if a binding was deferred; do not substitute one module for convenience.
 3. Never repair `module.yaml`, `implementation.yaml`, contracts, machine structure, surfaces, or evidence declarations by direct editing. Use the applicable RMS apply command. If RMS cannot express the required change, stop and report the RMS gap instead of bypassing the gate.
 4. Use the current project, rendered RMS prompts, and deterministic RMS diagnostics as planning context. Do not inspect sibling projects, prior dogfood runs, RMS source, or generated examples outside the project to infer a change schema or borrow semantics.
@@ -49721,10 +51013,13 @@ Core rule:
 | Implementation realization for a semantic-only module | `rms add-binding <module.yaml> --binding <binding>` |
 | Local implementation dependency | `rms spec apply` with language-neutral `binding_dependencies` |
 | Semantic function owner, symbol, purity, or discharged promise | `rms spec apply` with `semantic_functions.add/set/remove` |
+| Public contract-to-machine path or required capability consumer | `rms spec apply` with `public_behavior_bindings` or `dependency_behavior_bindings` |
 | Declared role body only | Edit the role body, then verify |
 
 Machine rules:
 
+- Every implemented public command, query, and capability has exactly one `architecture.public_behavior_bindings` entry connecting its contract to a discharging semantic function and classified machine inputs/outputs.
+- Every implemented required capability has exactly one `architecture.dependency_behavior_bindings` entry naming its exact local `path#symbol` consumer and either a matching RMS provider contract or an explicit external resolution.
 - `architecture.machine.types` names binding containers; semantic lists name actual cases.
 - Stateful, boundary, workflow, storage, integration, and projection machines use `transition(state, input)`.
 - The input ADT closes over commands, observed events, and effect results; each case belongs to exactly one category.
@@ -49789,7 +51084,7 @@ Use these advisory workbench commands when they match the task:
 - `rms evidence <module.yaml> --task "<task>"`
 - `rms refactor <module.yaml> --task "<task>"`
 - `rms spec plan <module.yaml|implementation.yaml> --task "<task>"` when a change needs new laws, contracts, artifacts, transformations, protocols, resource lifecycles, authority boundaries, temporal properties, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, semantic-function bindings, public entrypoints, binding dependencies, or evidence obligations
-- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics, record and hash-seal the exact applied change, and automatically supersede every currently active semantic revision; use `semantic_functions.add/set/remove` for exact binding symbols, authority owners, purity, discharged promises, and evidence; `binding_dependencies` names RMS modules and lets the binding adapter realize native dependency metadata; use `contracts.set` with `direction: provided|required` to replace generated provider or consumer contract scaffolds without transferring ownership; use `set`, `remove`, and explicit `supersedes` only for additional non-local branches instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
+- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics, record and hash-seal the exact applied change, and automatically supersede every currently active semantic revision; use `semantic_functions.add/set/remove` for exact binding symbols, authority owners, purity, discharged promises, and evidence; use `public_behavior_bindings` to close public contracts into semantic functions and machine cases; use `dependency_behavior_bindings` to close required capabilities through exact consumers into matching module providers or explicit external boundaries; `binding_dependencies` names RMS modules and lets the binding adapter realize native dependency metadata; use `contracts.set` with `direction: provided|required` to replace generated provider or consumer contract scaffolds without transferring ownership; use `set`, `remove`, and explicit `supersedes` only for additional non-local branches instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
 - `rms spec check <module.yaml|implementation.yaml>` after semantic changes
 - `rms machine plan/apply/check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct
 - `rms surface apply/check <implementation.yaml>` when adding or changing app, UI, CLI, browser, HTTP, batch, or executable entrypoints; browser-style surfaces should distinguish controller `entrypoint` from host `launch_entrypoint`, and declare intentional local launch scripts with `--launch-script`
@@ -49827,6 +51122,7 @@ Naming rule: choose module and inner role names from product/capability language
 
 Before writing implementation code, make the user's intent concrete enough to encode:
 
+- Semantic closure: connect each public behavior through contract -> semantic-function authority -> classified machine cases -> properties/evidence, and connect each required capability through an exact local consumer -> provider contract or explicit external boundary. Missing and unresolved links are production gaps; shape-inapplicable stages are not.
 - Semantic gate: do not hand-create laws, contracts, semantic roles, semantic-function bindings, states, commands, events, effects, transition functions, parsers, runnable surfaces, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply` and `rms surface apply`, then edit the declared role bodies. Use `semantic_functions.add/set/remove` when an authority owner, exact symbol, purity, discharged promise, or evidence binding changes. Use semantic `set` and `remove` operations instead of manual manifest surgery. `rms spec apply` automatically closes every currently active semantic revision; use explicit `supersedes` only for additional non-local branches. Never edit or delete an applied change record.
 - Apply gate: run semantic or machine apply with `--dry-run` first. Do not write product code while `final_machine` still contains generic scaffold variants or omits real branches. Machine apply preserves evidence roles but does not generate replay proof; update and replay them from implemented paths. Direct edits after apply invalidate the semantic revision and strict audit.
 - Public surface gate: generated capability contracts are scaffold obligations, not production semantics. Replace them through `rms spec apply` with `contracts.set` before implementation. Public commands in `module.yaml` must be represented by the declared implementation surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
@@ -51405,6 +52701,200 @@ import struct ExternalKit.Widget
         assert!(worktree.status.success());
         assert_eq!(discovered, expected);
         assert!(!nested_repository);
+    }
+
+    #[test]
+    fn init_adopt_preserves_existing_documents_and_creates_only_missing_artifacts() {
+        let root = unique_test_dir("init-adopt-documents");
+        fs::create_dir_all(&root).unwrap();
+        let glossary = b"# Existing Language\n\nA project-owned glossary.\n";
+        let agents = b"# Existing Agent Instructions\n\nKeep this project policy.\n";
+        let gitignore = b"vendor/\n";
+        fs::write(root.join("GLOSSARY.md"), glossary).unwrap();
+        fs::write(root.join("AGENTS.md"), agents).unwrap();
+        fs::write(root.join(".gitignore"), gitignore).unwrap();
+
+        run_init_with_adopt(
+            &root,
+            "adopted-system",
+            "Adopt an existing project safely.",
+            "0.1.0",
+            &[String::from("adopted")],
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(root.join("GLOSSARY.md")).unwrap(), glossary);
+        let adopted_agents = fs::read(root.join("AGENTS.md")).unwrap();
+        let adopted_gitignore = fs::read(root.join(".gitignore")).unwrap();
+        assert!(adopted_agents.starts_with(agents));
+        assert!(adopted_gitignore.starts_with(gitignore));
+        assert_eq!(
+            String::from_utf8_lossy(&adopted_agents)
+                .matches(RMS_MANAGED_AGENTS_START)
+                .count(),
+            1
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&adopted_gitignore)
+                .matches(RMS_MANAGED_GITIGNORE_START)
+                .count(),
+            1
+        );
+        assert!(root.join("system.yaml").is_file());
+        assert!(root.join("context-map.yaml").is_file());
+        assert!(root.join(".rms/config.yaml").is_file());
+        assert!(root.join(".agents/skills/README.md").is_file());
+        assert!(root.join(".git").is_dir());
+
+        run_agent_sync(&root, AgentTarget::Codex).unwrap();
+        let synced_agents = fs::read(root.join("AGENTS.md")).unwrap();
+        assert!(synced_agents.starts_with(agents));
+        assert_eq!(
+            String::from_utf8_lossy(&synced_agents)
+                .matches(RMS_MANAGED_AGENTS_START)
+                .count(),
+            1
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn init_adopt_accepts_an_already_compatible_rms_workspace() {
+        let root = unique_test_dir("init-adopt-compatible");
+        let contexts = vec![String::from("existing")];
+        run_init(
+            &root,
+            "existing-system",
+            "Exercise idempotent RMS adoption.",
+            "0.1.0",
+            &contexts,
+        )
+        .unwrap();
+        let before = fs::read(root.join("system.yaml")).unwrap();
+
+        run_init_with_adopt(
+            &root,
+            "existing-system",
+            "Exercise idempotent RMS adoption.",
+            "0.1.0",
+            &contexts,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(root.join("system.yaml")).unwrap(), before);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn init_without_adopt_refuses_existing_documents_before_writing() {
+        let root = unique_test_dir("init-strict-existing");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("GLOSSARY.md"), "# Existing\n").unwrap();
+
+        let error = run_init(
+            &root,
+            "strict-system",
+            "Keep strict initialization strict.",
+            "0.1.0",
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("refusing to overwrite existing file"));
+        assert!(error.contains("--adopt"));
+        assert!(!root.join("system.yaml").exists());
+        assert!(!root.join("context-map.yaml").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn init_adopt_conflict_preflight_writes_nothing() {
+        let root = unique_test_dir("init-adopt-conflict");
+        let conflicting_skill = root.join(".agents/skills/verify-module/SKILL.md");
+        fs::create_dir_all(conflicting_skill.parent().unwrap()).unwrap();
+        fs::write(&conflicting_skill, "project-specific replacement\n").unwrap();
+        fs::write(root.join("GLOSSARY.md"), "# Existing\n").unwrap();
+
+        let error = run_init_with_adopt(
+            &root,
+            "conflicted-system",
+            "Reject conflicts before writing.",
+            "0.1.0",
+            &[],
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("RMS adoption found conflict(s) and wrote nothing"));
+        assert!(error.contains("verify-module/SKILL.md"));
+        assert!(!root.join("system.yaml").exists());
+        assert!(!root.join("context-map.yaml").exists());
+        assert!(!root.join(".rms/config.yaml").exists());
+        assert_eq!(
+            fs::read_to_string(&conflicting_skill).unwrap(),
+            "project-specific replacement\n"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn init_adopt_rejects_incompatible_canonical_manifests_before_writing() {
+        let root = unique_test_dir("init-adopt-invalid-manifest");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("system.yaml"),
+            "spec: another/system\nsystem:\n  name: unrelated\n",
+        )
+        .unwrap();
+        let before = fs::read(root.join("system.yaml")).unwrap();
+
+        let error = run_init_with_adopt(
+            &root,
+            "adopted-system",
+            "Reject unrelated canonical files.",
+            "0.1.0",
+            &[],
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("expected `rms/system/v0.1`"));
+        assert_eq!(fs::read(root.join("system.yaml")).unwrap(), before);
+        assert!(!root.join("context-map.yaml").exists());
+        assert!(!root.join("GLOSSARY.md").exists());
+        assert!(!root.join(".rms/config.yaml").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn managed_section_merge_preserves_outside_content_and_is_idempotent() {
+        let existing = "before\n<!-- RMS managed guidance: begin -->\nstale\n<!-- RMS managed guidance: end -->\nafter\n";
+        let merged = merge_managed_section(
+            existing,
+            RMS_MANAGED_AGENTS_START,
+            RMS_MANAGED_AGENTS_END,
+            INIT_ADOPTED_AGENTS_BLOCK,
+        )
+        .unwrap();
+        let repeated = merge_managed_section(
+            &merged,
+            RMS_MANAGED_AGENTS_START,
+            RMS_MANAGED_AGENTS_END,
+            INIT_ADOPTED_AGENTS_BLOCK,
+        )
+        .unwrap();
+
+        assert!(merged.starts_with("before\n"));
+        assert!(merged.ends_with("\nafter\n"));
+        assert_eq!(merged, repeated);
+        assert_eq!(merged.matches(RMS_MANAGED_AGENTS_START).count(), 1);
+        assert_eq!(merged.matches(RMS_MANAGED_AGENTS_END).count(), 1);
     }
 
     #[test]
@@ -60221,6 +61711,7 @@ verification:
             .join("modules/play-game-cli/verification/contracts/parser_to_domain_command.md")
             .exists();
         let report = compose_system(&root).unwrap();
+        let graph_diagnostics = semantic_graph::semantic_system_graph_diagnostics(&root).unwrap();
         let mut diagnostics = Vec::new();
         let mut semantic_diagnostics = Vec::new();
         for file in [
@@ -60255,6 +61746,16 @@ verification:
             boundary_implementation.contains("name: \"PlayGameBoundaryMachine\"")
                 || boundary_implementation.contains("name: PlayGameBoundaryMachine")
         );
+        assert!(domain_implementation.contains("public_behavior_bindings:"));
+        assert!(domain_implementation.contains("id: resolve-move-public"));
+        assert!(domain_implementation.contains("id: resolve-move-capability-public"));
+        assert!(domain_implementation.contains("semantic_function: transition-model"));
+        assert!(boundary_implementation.contains("public_behavior_bindings:"));
+        assert!(boundary_implementation.contains("id: play-game-public"));
+        assert!(boundary_implementation.contains("dependency_behavior_bindings:"));
+        assert!(boundary_implementation.contains("id: resolve-move-provider"));
+        assert!(boundary_implementation.contains("consumer: src/adapter.mjs#handleBoundaryInput"));
+        assert!(boundary_implementation.contains("provider_module: play-game-rules"));
         assert!(has_parent_export_evidence);
         assert!(has_transition_trace_evidence);
         assert!(has_accepted_rejected_evidence);
@@ -60274,6 +61775,18 @@ verification:
                 .iter()
                 .all(|diagnostic| diagnostic.check != "semantic.law-without-evidence"),
             "{semantic_diagnostics:#?}"
+        );
+        assert!(
+            graph_diagnostics.iter().all(|diagnostic| {
+                !matches!(
+                    diagnostic.check.as_str(),
+                    "semantic.public-binding-missing"
+                        | "semantic.public-binding-invalid"
+                        | "semantic.public-input-unreachable"
+                        | "semantic.required-capability-binding-missing"
+                )
+            }),
+            "{graph_diagnostics:#?}"
         );
     }
 
@@ -60318,6 +61831,107 @@ verification:
         assert!(cargo.contains("path = \"../mini-xargs-domain\""));
         assert!(diagnostics.iter().all(|diagnostic| {
             diagnostic.check != "implementation.rust.dependencies.allowlist"
+        }));
+    }
+
+    #[test]
+    fn spec_apply_gates_public_and_dependency_behavior_bindings() {
+        let root = unique_test_dir("spec-behavior-bindings");
+        run_init(
+            &root,
+            "behavior-binding-fixture",
+            "Exercise exact public and dependency behavior bindings.",
+            "0.1.0",
+            &["fixture".to_string()],
+        )
+        .unwrap();
+        run_add_capability(AddCapabilityRequest {
+            path: root.join("modules/play-game"),
+            name: "play-game".to_string(),
+            purpose: "Expose a local playable game command.".to_string(),
+            public_command: Some("play-game".to_string()),
+            domain_child: None,
+            boundary_child: None,
+            domain_command: Some("resolve-move".to_string()),
+            domain_binding: Some("js".to_string()),
+            boundary_binding: Some("js".to_string()),
+        })
+        .unwrap();
+        let boundary = root.join("modules/play-game-boundary");
+        let change = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent:
+  summary: Bind the public command and required capability to exact implementation paths.
+public_behavior_bindings:
+  set:
+    - id: play-game-public-v2
+      public_kind: command
+      public_name: play-game
+      contract: contracts/play-game.v1.yaml
+      semantic_function: boundary-adapter
+      machine_inputs: [Accept]
+      machine_outputs: []
+dependency_behavior_bindings:
+  set:
+    - id: resolve-move-provider-v2
+      capability: resolve-move
+      contract: contracts/resolve-move.v1.yaml
+      consumer: src/adapter.mjs#handleBoundaryInput
+      resolution: module
+      provider_module: play-game-domain
+      provider_contract: contracts/resolve-move.v1.yaml
+"#;
+        run_spec_apply(
+            &boundary.join("module.yaml"),
+            None,
+            Some(change),
+            None,
+            true,
+        )
+        .unwrap();
+        run_spec_apply(
+            &boundary.join("module.yaml"),
+            None,
+            Some(change),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let implementation = fs::read_to_string(boundary.join("implementation.yaml")).unwrap();
+        assert!(implementation.contains("id: play-game-public-v2"));
+        assert!(implementation.contains("id: resolve-move-provider-v2"));
+
+        let invalid = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent:
+  summary: Demonstrate that unclassified machine inputs are rejected.
+public_behavior_bindings:
+  set:
+    - id: play-game-public-v3
+      public_kind: command
+      public_name: play-game
+      contract: contracts/play-game.v1.yaml
+      semantic_function: boundary-adapter
+      machine_inputs: [MissingCommand]
+      machine_outputs: []
+"#;
+        let context = load_spec_target(&boundary.join("module.yaml")).unwrap();
+        let parsed = parse_semantic_change(None, Some(invalid), None).unwrap();
+        let diagnostics = validate_semantic_change(&context, &parsed);
+        let rejected = run_spec_apply(
+            &boundary.join("module.yaml"),
+            None,
+            Some(invalid),
+            None,
+            true,
+        )
+        .is_err();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rejected);
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "semantic.public-binding-machine-case-missing"
         }));
     }
 

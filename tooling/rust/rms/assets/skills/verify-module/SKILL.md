@@ -15,6 +15,9 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - no private-state access;
    - no undeclared effects;
    - no business concepts added to the technical kernel without justification.
+   - every implemented public behavior has exactly one valid `public_behavior_bindings` chain;
+   - every implemented required capability has exactly one valid `dependency_behavior_bindings` chain;
+   - shape-inapplicable stages are reported as `not-applicable`, while missing or unresolved applicable links remain failures.
 7. Run declared evidence:
    - laws;
    - contracts;

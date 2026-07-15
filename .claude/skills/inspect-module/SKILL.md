@@ -26,13 +26,20 @@ description: Inspect an RMS module before planning or changing it; use when owne
    - effects and operational semantics;
    - compatibility policy;
    - verification evidence;
+   - each public command/query/capability's exact contract -> semantic function -> classified machine cases -> evidence path;
+   - each required capability's exact local consumer and module-provider contract or explicit external resolution;
    - representation obligations for closed variants, validated values, boundary schemas, and lifecycle state;
    - suspected gaps or drift.
    - binding type mappings versus actual semantic alternatives;
    - canonical input categories and effect request/result protocols;
    - exact machine driver, transition-record, and effect executor symbols, plus whether live execution retains complete records and each effect-emitting runnable surface reaches that driver and leaves the complete repeated transition/effect/result cycle inside it even when public and machine command names differ;
-   - declared transition cases versus source branches, lifecycle-state reachability from `initial_state`, and whether trace provenance names the declared transition source rather than an evidence artifact;
+   - declared transition cases versus source branches, lifecycle-state reachability from `initial_state`, whether expected failures remain in a typed transition rejection channel, and whether execution-derived traces name the transition source and match each case's exact outputs rather than copying declarations;
    - whether any executor hides sequencing, retry, compensation, or state progression.
+   - declared artifacts and transformations, including version and compatibility ownership;
+   - public protocol participants/message mappings and whether composition closes every route;
+   - resource protocols and terminal-path closure;
+   - privileged, unsafe, or foreign authority bindings and exact safe facades;
+   - temporal properties and whether each realization can prove its declared scope.
 8. For a proposed task, identify the owning module and the smallest affected contract surface.
 9. Identify whether the task should use:
    - an ADT, sealed variant, or enum for closed alternatives;

@@ -21,6 +21,7 @@ Every retained artifact should serve a current manifest promise, public contract
    - invariants and laws;
    - declared effects and required capabilities;
    - profiles and operational semantics;
+   - artifact contracts and transformations, public protocols, resource ownership, authority boundaries, and temporal guarantees;
    - compatibility policy, deprecations, and active consumers;
    - verification evidence and operational recovery paths.
 4. Build a semantic root set from the canonical artifacts:
@@ -28,6 +29,7 @@ Every retained artifact should serve a current manifest promise, public contract
    - public contracts, invariants, and schemas;
    - glossary entries and active linked decisions;
    - implementation binding and declared source roots;
+   - public behavior bindings and dependency behavior bindings that keep contracts reachable from implementation symbols;
    - verification evidence, runbooks, migrations, and compatibility material.
 5. Inventory candidate artifacts inside the owning boundary:
    - implementation files and internal helpers;
@@ -53,6 +55,7 @@ Every retained artifact should serve a current manifest promise, public contract
    - state/status fields without lifecycle-dependent behavior;
    - semantic lists containing container type names instead of cases;
    - effect lifecycle types with no declared effects, or executor loops that conceal transition policy;
+   - protocol mappings with no public message, resource states unreachable from product behavior, authority roles with no privileged operation, and temporal claims with no matching realization;
    - folders, modules, or classes created around nouns rather than ownership, invariants, contracts, or replaceability;
    - speculative extension points not tied to an active decision;
    - comments or docs that restate obsolete behavior.

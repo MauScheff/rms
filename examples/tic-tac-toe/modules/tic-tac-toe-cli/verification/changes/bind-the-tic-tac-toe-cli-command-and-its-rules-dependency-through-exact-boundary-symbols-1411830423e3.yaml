@@ -1,0 +1,74 @@
+spec: rms/semantic-change/v0.1
+module: examples/tic-tac-toe/modules/tic-tac-toe-cli/module.yaml
+supersedes:
+- verification/changes/regenerate-tic-tac-toe-boundary-traces-from-command-and-effect-result-transition-records-23e17a4c20b7.yaml
+intent:
+  summary: Bind the Tic-Tac-Toe CLI command and its rules dependency through exact boundary symbols.
+laws: null
+contracts:
+  add: []
+  set:
+  - name: apply-move
+    direction: required
+    version: v1
+    command: apply-move
+    meaning: Delegate a validated board-cell move to the Tic-Tac-Toe rules provider through its public contract.
+    accepts:
+    - a validated board-cell move command
+    ensures:
+    - the provider returns an explicit accepted move or domain rejection
+    rejects:
+    - provider contract incompatibility
+    protocol: null
+  remove: []
+properties: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: apply-move
+    path: verification/contracts/apply_move_dependency.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings:
+  set: null
+  add:
+  - id: play-tic-tac-toe-public
+    public_kind: command
+    public_name: play-tic-tac-toe
+    contract: contracts/play-tic-tac-toe.v1.yaml
+    semantic_function: rules-port-adapter-reply
+    machine_inputs:
+    - RunMove
+    machine_outputs:
+    - MoveParsed
+    - RulesInvocationRequested
+    - RulesInvocationCompleted
+    - RunRejected
+    - InvokeRulesBridge
+    - Accepted
+    - Rejected
+    - MalformedInput
+    - OutOfBoard
+    - RulesBridgeFailure
+    - IllegalTransition
+  remove: []
+dependency_behavior_bindings:
+  set: null
+  add:
+  - id: apply-move-provider
+    capability: apply-move
+    contract: contracts/apply-move.v1.yaml
+    consumer: src/ports.mjs#createRulesEffectExecutor
+    resolution: module
+    provider_module: tic-tac-toe-rules
+    provider_contract: contracts/apply-move.v1.yaml
+  remove: []

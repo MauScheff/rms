@@ -149,14 +149,53 @@ architecture:
     - SwiftExampleState
     - SwiftExampleTransition
     - SwiftExampleTransitionRecord
+  public_behavior_bindings:
+  - id: describe-swift-widget-public
+    public_kind: query
+    public_name: describe-swift-widget
+    contract: contracts/describe-swift-widget.v1.yaml
+    semantic_function: describe-swift-widget-query
+    machine_inputs:
+    - Describe
+    - RejectEmptyName
+    machine_outputs:
+    - WidgetDescribed
+    - WidgetRejected
+    - Description
+    - EmptyWidgetName
+    - ExpectedEmptyName
 x-rms:
   semantic_revision:
-    digest: sha256:24d2333fe45ec8834470cee4e17669f667d8f519da3bfd945e6a356dfe1c56ae
-    change_record: verification/changes/regenerate-the-swift-example-transition-trace-from-its-real-transition-record-function-e9c0a4e65d6f.yaml
+    digest: sha256:86435b350f54fb65da6c19f1c447af6f29df9cfe5a3047d225c5c4a6bf5f800d
+    change_record: verification/changes/bind-swift-widget-construction-and-the-public-query-into-the-semantic-proof-chain-198cf497147e.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:e9c0a4e65d6fed949126d0af7873b3ddff1f86f7a35bc8718ab94d589f4a6366
+    change_record_digest: sha256:198cf497147e8dcfd2e340172a814bb7c8ecf8715f1e46761a2ca4a97c50a577
 semantic_functions:
 - id: transition-model
   symbol: transition
   kind: transition
   purity: pure
+- id: swift-widget-constructor
+  symbol: SwiftWidget.init
+  kind: constructor
+  purity: pure
+  discharges:
+    invariants:
+    - accepted-swift-widget-has-name
+  evidence:
+    laws:
+    - verification/laws/accepted_swift_widget_has_name
+- id: describe-swift-widget-query
+  symbol: describeWidget
+  kind: projector
+  purity: pure
+  discharges:
+    contracts:
+    - contracts/describe-swift-widget.v1.yaml
+    invariants:
+    - accepted-swift-widget-has-name
+  evidence:
+    contracts:
+    - verification/contracts/describe_swift_widget
+    laws:
+    - verification/laws/accepted_swift_widget_has_name

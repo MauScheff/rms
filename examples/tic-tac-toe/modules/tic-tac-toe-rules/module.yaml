@@ -79,8 +79,8 @@ x-scaffold:
   - law-evidence
 x-rms:
   semantic_revision:
-    digest: sha256:7bb10b36b1faf3d5dc350d85fe89b9de5754d77a656e88b651e52e26eef55867
-    change_record: verification/changes/finalize-tic-tac-toe-rule-executable-trace-proof-support-a464339ee337.yaml
+    digest: sha256:abc6947f025da51cb83840919a5224c3882e76e4a52711470f21cf2439edad0d
+    change_record: verification/changes/bind-the-tic-tac-toe-rules-command-to-the-pure-transition-and-exact-machine-cases-244c702176bc.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:a464339ee33769d30df67b3c9bbc1955b76709dba6de774c6b87c47e0da975d0
-  last_semantic_intent: Finalize tic-tac-toe rule executable trace proof support.
+    change_record_digest: sha256:244c702176bc51eef5223c99a246c3c26ce526e79b996405d3d19c4044ca8054
+  last_semantic_intent: Bind the Tic-Tac-Toe rules command to the pure transition and exact machine cases.

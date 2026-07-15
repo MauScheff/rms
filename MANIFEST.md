@@ -614,6 +614,20 @@ architecture:
       - src/transition.ts
     effect_executor:
       - src/effects.ts
+  public_behavior_bindings:
+    - id: authorize-payment-public
+      public_kind: command
+      public_name: authorize-payment
+      contract: contracts/authorize-payment.yaml
+      semantic_function: authorize-payment-decision
+      machine_inputs: [AuthorizePayment]
+      machine_outputs: [AuthorizationAccepted, AuthorizationRejected, InvalidPaymentRequest]
+  dependency_behavior_bindings:
+    - id: payment-gateway-provider
+      capability: payment-gateway
+      contract: contracts/payment-gateway.yaml
+      consumer: src/effects.ts#executePaymentProvider
+      resolution: external
 
 semantic_functions:
   - id: authorize-payment-decision
@@ -652,6 +666,8 @@ Required filesystem, network, and credential permissions
 Schema/code-generation commands
 Runtime adapter registration
 Semantic function declarations
+Public contract-to-function-to-machine bindings
+Required capability consumer-to-provider bindings
 ```
 
 It must not redefine domain meaning or compatibility promises.
@@ -672,6 +688,8 @@ Product meaning changes move through `rms spec apply` before code. The canonical
 | `properties.*.temporal` | Optional always, eventually, precedence, exclusion, at-most-once, bounded-response, resource-closure, or bounded-resource property semantics. |
 | `protocol_bindings.add/set/remove` | Implementation ownership and send/receive mapping for public contract protocol messages. |
 | `authority_bindings.add/set/remove` | Implementation roles, exact safe facade, and evidence for declared elevated authority. |
+| `public_behavior_bindings.add/set/remove` | One exact path from each implemented public command, query, or capability contract through a discharging semantic function into classified machine inputs and outputs. |
+| `dependency_behavior_bindings.add/set/remove` | One exact path from each implemented required capability through a local `path#symbol` consumer into a matching RMS module provider contract or explicit external resolution. |
 | `machine` | Optional machine section reused from `rms/machine-change/v0.1` for states, inputs, outputs, transitions, and inner roles. |
 | `surfaces.add` | Runnable surface declarations for app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints that adapt outside input into declared RMS commands. Browser-style surfaces may include a controller `entrypoint`, a host `launch_entrypoint`, and checked local `launch_scripts`. |
 | `evidence.add` | Required proof lanes for laws, contracts, transitions, effects, scenarios, traces, or boundary behavior. |

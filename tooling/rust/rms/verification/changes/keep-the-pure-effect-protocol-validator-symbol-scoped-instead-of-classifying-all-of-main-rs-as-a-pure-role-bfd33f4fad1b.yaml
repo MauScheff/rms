@@ -1,0 +1,38 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/bind-the-rms-inspect-module-query-to-its-exact-implementation-and-machine-input-626ae6d33b62.yaml
+intent:
+  summary: Keep the pure effect protocol validator symbol-scoped instead of classifying all of main.rs as a pure role.
+laws: null
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions:
+  add: []
+  set:
+  - id: effect-protocol-binding-check
+    symbol: validate_machine_effect_protocols
+    kind: parser
+    purity: pure
+    discharges:
+      contracts: []
+      invariants:
+      - effect-protocols-bind-exact-executors
+      assumptions: []
+    evidence:
+      laws:
+      - verification/laws/exact_effect_executor_binding.md
+  remove: []
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

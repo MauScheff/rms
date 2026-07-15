@@ -135,6 +135,16 @@
           "items": { "$ref": "#/$defs/authorityBinding" },
           "uniqueItems": true
         },
+        "public_behavior_bindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/publicBehaviorBinding" },
+          "uniqueItems": true
+        },
+        "dependency_behavior_bindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyBehaviorBinding" },
+          "uniqueItems": true
+        },
         "state_type": false,
         "transition_function": false
       },
@@ -381,6 +391,70 @@
           "uniqueItems": true
         }
       },
+      "additionalProperties": false
+    },
+    "publicBehaviorBinding": {
+      "type": "object",
+      "required": [
+        "id",
+        "public_kind",
+        "public_name",
+        "contract",
+        "semantic_function",
+        "machine_inputs",
+        "machine_outputs"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "public_kind": { "enum": ["command", "query", "capability"] },
+        "public_name": { "type": "string", "minLength": 1 },
+        "contract": { "type": "string", "minLength": 1 },
+        "semantic_function": { "type": "string", "minLength": 1 },
+        "machine_inputs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "machine_outputs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "dependencyBehaviorBinding": {
+      "type": "object",
+      "required": ["id", "capability", "consumer", "resolution"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "capability": { "type": "string", "minLength": 1 },
+        "contract": { "type": "string", "minLength": 1 },
+        "consumer": {
+          "type": "string",
+          "pattern": "^[^#]+#[^#]+$"
+        },
+        "resolution": { "enum": ["module", "external"] },
+        "provider_module": { "type": "string", "minLength": 1 },
+        "provider_contract": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "resolution": { "const": "module" } },
+            "required": ["resolution"]
+          },
+          "then": { "required": ["provider_module", "provider_contract"] },
+          "else": {
+            "not": {
+              "anyOf": [
+                { "required": ["provider_module"] },
+                { "required": ["provider_contract"] }
+              ]
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "semanticFunction": {

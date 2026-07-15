@@ -1,0 +1,16 @@
+spec: rms/contract/v0.1
+name: "apply-move"
+version: 1
+kind: command
+meaning: "Delegate a validated board-cell move to the Tic-Tac-Toe rules provider through its public contract."
+preconditions:
+  - id: "accepts-1"
+    statement: "a validated board-cell move command"
+postconditions:
+  - id: "ensures-1"
+    statement: "the provider returns an explicit accepted move or domain rejection"
+failure_categories:
+  - id: "rejects-1"
+    statement: "provider contract incompatibility"
+compatibility:
+  policy: backward-compatible-within-major

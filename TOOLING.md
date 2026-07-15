@@ -22,7 +22,7 @@ The command names below are recommended, not normative:
 rms inspect <module>
 rms context <module> [--task <task>]
 rms route <module> --task <task>
-rms init <path>
+rms init <path> [--adopt]
 rms add-module <path>
 rms validate [module|contract|implementation]
 rms diagnose [system]
@@ -64,7 +64,7 @@ The current reference implementation lives at `tooling/rust/rms` and implements 
 ```bash
 rms validate --root <path>
 rms validate --contract <contract.yaml>
-rms init <path> --name <system> --purpose <purpose>
+rms init <path> --name <system> --purpose <purpose> [--adopt]
 rms add-module <path> --name <module> --purpose <purpose> [--shape domain-engine|boundary-adapter|workflow|storage-adapter|integration-adapter|composite] [--binding rust|swift|js|executable]
 rms add-capability <path> --name <capability> --purpose <purpose> [--domain-binding rust|swift|js|executable] [--boundary-binding rust|swift|js|executable]
 rms add-binding <module.yaml|module-directory> --binding rust|swift|js|executable
@@ -119,6 +119,8 @@ Scaffolds a new RMS system with:
 The command also establishes provenance: it initializes Git when the target is outside a worktree and reuses an existing parent worktree without creating a nested repository. Commit the generated bootstrap before product work.
 
 Generated agent and workbench files are operational guidance. They must route future work through RMS manifests, contracts, and the shared CLI; they do not create module semantics. The command refuses to overwrite existing files.
+
+For an existing repository, `--adopt` changes collision handling without becoming a force mode. RMS validates the complete candidate first, preserves the glossary byte-for-byte, and maintains explicit idempotent sections inside existing agent guidance and ignore files while preserving all surrounding project-owned content. It creates only missing bootstrap artifacts and reports `created`, `adopted`, or `updated` per path. Existing RMS canonical manifests must validate and match the requested system identity. Existing embedded skill paths must match the current embedded skills; otherwise adoption stops and directs the user to make agent synchronization an explicit follow-up. Any conflict aborts before RMS writes an artifact.
 
 ### `add-module`
 
@@ -176,6 +178,15 @@ semantic_functions:
         invariants: [payment-failure-releases-inventory]
       evidence:
         traces: [verification/traces/payment_failure_release.yaml]
+public_behavior_bindings:
+  add:
+    - id: resolve-checkout-public
+      public_kind: command
+      public_name: resolve-checkout
+      contract: contracts/resolve-checkout.v1.yaml
+      semantic_function: checkout-transition
+      machine_inputs: [ResolveCheckout]
+      machine_outputs: [CheckoutStatus, IllegalTransition]
 evidence:
   add:
     - kind: trace
@@ -183,7 +194,7 @@ evidence:
       path: verification/traces/payment_failure_release.yaml
 ```
 
-`semantic_functions.add/set/remove` is the architecture gate for exact binding symbols, authority ownership, purity, discharged contracts or invariants, assumptions, and categorized evidence. Dry-run prints `final_semantic_functions`; agents edit the declared function body afterward, but do not repair `implementation.yaml.semantic_functions` directly.
+`semantic_functions.add/set/remove` is the architecture gate for exact binding symbols, authority ownership, purity, discharged contracts or invariants, assumptions, and categorized evidence. `public_behavior_bindings` closes each implemented public contract through one semantic function into classified machine inputs and outputs. `dependency_behavior_bindings` closes each implemented required capability through one exact local `path#symbol` consumer into either a matching module provider/contract or an explicit external resolution. Dry-run prints all four final sections; agents edit declared function bodies afterward, but do not repair implementation bindings directly.
 
 Contract operations carry semantic ownership. `direction: provided` targets commands or capabilities owned by the module; `direction: required` targets the consumer expectation in `requires.capabilities`. Existing `set` and `remove` operations may omit direction only when exactly one direction exists. RMS rejects an implicit `contracts.add` that would turn an existing requirement into a provider surface, and it preserves a contract file while another canonical reference still uses it.
 
@@ -508,17 +519,20 @@ Serves an experimental local semantic explorer for every RMS module discovered u
 rms view --root . --watch
 ```
 
-The listener binds only to `127.0.0.1`. Its closed HTTP surface serves the application, a health response, and a read-only canonical snapshot; unsupported methods and paths are rejected. The system projection reuses deterministic module-atlas data, then adds only relationships that canonical composition, module requirements, or matched capability contracts declare. Missing providers and missing semantic links remain visible gaps instead of inferred topology.
+The listener binds only to `127.0.0.1`. Its closed HTTP surface serves the application, a health response, and a read-only canonical snapshot; unsupported methods and paths are rejected. The snapshot contains one `rms/semantic-system-graph/v0.1` projection derived from `module.yaml`, contracts, `implementation.yaml`, machine cases, semantic functions, behavior bindings, traces, evidence, and source references. It never infers a contract-to-code route from similar names.
 
-The five inspection journeys answer different questions:
+Every graph obligation has one status: `satisfied`, `required-gap`, `unresolved-link`, `recommendation`, or `not-applicable`. Applicability comes from module shape and declared behavior. Missing boundary, lifecycle, or effect stages are therefore gaps only when that module actually owns those semantics.
 
-- Understand: purpose, ownership, public surfaces, and composition.
-- Trace: commands, transitions, effects, outcomes, evidence, and gaps.
-- Change: semantic objects likely to move for a requested behavior change.
-- Debug: diagnostics and the first missing or contradictory semantic link.
-- Verify: laws, evidence, traces, diagnostics, and source references.
+The six focused views answer different questions:
 
-`--watch` periodically rebuilds the projection and the client reports additions, changes, and removals using stable semantic identifiers. The viewer is derived evidence, not semantic authority, and exposes no edit or apply endpoint. Use `--no-open` in headless environments and `--port 0` to request an available loopback port.
+- System map: purpose, ownership, public surfaces, composition, and dependency direction.
+- Behavior paths: exact contract-to-code and consumer-to-provider routes.
+- Machines: states, classified inputs, transition cases, outputs, and effect ownership.
+- Proof chains: laws and public promises through authority, realization, traces, and evidence.
+- Gap triage: required gaps, unresolved links, recommendations, satisfaction, and applicability.
+- Debug timeline: execution-derived records, state changes, outputs, and rejection points.
+
+Every selected graph object has a stable URL. Search covers labels, identifiers, canonical details, and source paths; browser history restores view and selection. `--watch` periodically rebuilds the projection and reports additions, changes, and removals using stable semantic identifiers. The viewer is derived evidence, not semantic authority, and exposes no edit or apply endpoint. Use `--no-open` in headless environments and `--port 0` to request an available loopback port.
 
 ### `atlas`
 

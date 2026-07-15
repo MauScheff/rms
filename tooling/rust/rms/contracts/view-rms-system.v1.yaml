@@ -2,23 +2,31 @@ spec: rms/contract/v0.1
 name: "view-rms-system"
 version: 1
 kind: command
-meaning: "Serve a local read-only semantic explorer for an RMS system with deterministic module projections, guided inspection modes, live refresh, and semantic diff."
+meaning: "Serve a local read-only, navigable projection of the complete cross-layer RMS semantic system graph with stable deep links, shape-aware completeness, and canonical source provenance."
 preconditions:
   - id: "accepts-1"
     statement: "A repository root containing one or more readable canonical RMS module manifests."
   - id: "accepts-2"
-    statement: "An optional loopback port and browser-open preference."
+    statement: "Optional loopback port, browser-open, and live-refresh preferences."
+  - id: "accepts-3"
+    statement: "Read-only browser navigation state naming a supported view, stable graph node, module, status filter, or search query."
 postconditions:
   - id: "ensures-1"
-    statement: "The viewer projects system modules, public contracts, machines, effects, evidence, traces, source references, and explicit gaps without inventing semantic topology."
+    statement: "The projection combines module ownership and contracts with implementation machines, roles, semantic functions, effects, proof declarations, and source references."
   - id: "ensures-2"
-    statement: "Understand, Trace, Change, Debug, and Verify modes use stable semantic identifiers and deterministic source-backed focus data."
+    statement: "Public and required behavior paths use exact declared bindings instead of inferred name similarity."
   - id: "ensures-3"
-    statement: "Snapshot refresh detects added, removed, and changed semantic identifiers without writing canonical artifacts."
+    statement: "System, behavior, machine, proof, gap, and debug views are deterministic selectors over one canonical semantic graph and never invent UI-only semantic edges."
   - id: "ensures-4"
+    statement: "Stable deep links restore the selected view and graph object while preserving the backend status vocabulary: satisfied, required-gap, unresolved-link, recommendation, and not-applicable."
+  - id: "ensures-5"
+    statement: "Every selected node, edge, or obligation exposes its exact canonical relationship, applicability reason, and source references."
+  - id: "ensures-6"
+    statement: "Snapshot refresh detects added, removed, changed, and newly unresolved stable semantic identifiers without writing canonical artifacts or silently changing a surviving selection."
+  - id: "ensures-7"
     statement: "The HTTP boundary accepts only read-only GET and HEAD requests on the loopback listener."
 failure_categories:
   - id: "rejects-1"
-    statement: "Roots with no canonical RMS modules, invalid canonical manifests, unsupported HTTP methods or paths, and unavailable loopback ports."
+    statement: "Roots with no canonical RMS modules, invalid canonical artifacts, unresolved required implementation bindings, unsupported HTTP methods or paths, unavailable loopback ports, and deep links to absent semantic identifiers."
 compatibility:
   policy: backward-compatible-within-major

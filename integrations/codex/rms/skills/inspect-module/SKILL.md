@@ -26,6 +26,8 @@ description: Inspect an RMS module before planning or changing it; use when owne
    - effects and operational semantics;
    - compatibility policy;
    - verification evidence;
+   - each public command/query/capability's exact contract -> semantic function -> classified machine cases -> evidence path;
+   - each required capability's exact local consumer and module-provider contract or explicit external resolution;
    - representation obligations for closed variants, validated values, boundary schemas, and lifecycle state;
    - suspected gaps or drift.
    - binding type mappings versus actual semantic alternatives;

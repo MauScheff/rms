@@ -1,0 +1,40 @@
+spec: rms/semantic-change/v0.1
+module: examples/rust/module.yaml
+supersedes:
+- verification/changes/finalize-rust-example-executable-trace-proof-support-e25b0c632f02.yaml
+intent:
+  summary: Bind the Rust example public query to its semantic function and machine inputs.
+laws: null
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings:
+  set: null
+  add:
+  - id: describe-widget-public
+    public_kind: query
+    public_name: describe-widget
+    contract: contracts/describe-widget.v1.yaml
+    semantic_function: describe-widget-query
+    machine_inputs:
+    - Describe
+    - RejectEmptyName
+    machine_outputs:
+    - WidgetDescribed
+    - WidgetRejected
+    - Description
+    - EmptyWidgetName
+    - ExpectedEmptyName
+  remove: []
+dependency_behavior_bindings: null

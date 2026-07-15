@@ -1,0 +1,50 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/keep-the-pure-effect-protocol-validator-symbol-scoped-instead-of-classifying-all-of-main-rs-as-a-pure-role-bfd33f4fad1b.yaml
+intent:
+  summary: Make the read-only RMS semantic explorer directly navigable through the canonical system graph, with stable deep links, source-backed explanations, faithful status presentation, and focused system, behavior, machine, proof, gap, and debug views.
+laws: null
+contracts:
+  add: []
+  set:
+  - name: view-rms-system
+    direction: provided
+    version: v1
+    command: view-rms-system
+    meaning: Serve a local read-only, navigable projection of the complete cross-layer RMS semantic system graph with stable deep links, shape-aware completeness, and canonical source provenance.
+    accepts:
+    - A repository root containing one or more readable canonical RMS module manifests.
+    - Optional loopback port, browser-open, and live-refresh preferences.
+    - Read-only browser navigation state naming a supported view, stable graph node, module, status filter, or search query.
+    ensures:
+    - The projection combines module ownership and contracts with implementation machines, roles, semantic functions, effects, proof declarations, and source references.
+    - Public and required behavior paths use exact declared bindings instead of inferred name similarity.
+    - System, behavior, machine, proof, gap, and debug views are deterministic selectors over one canonical semantic graph and never invent UI-only semantic edges.
+    - 'Stable deep links restore the selected view and graph object while preserving the backend status vocabulary: satisfied, required-gap, unresolved-link, recommendation, and not-applicable.'
+    - Every selected node, edge, or obligation exposes its exact canonical relationship, applicability reason, and source references.
+    - Snapshot refresh detects added, removed, changed, and newly unresolved stable semantic identifiers without writing canonical artifacts or silently changing a surviving selection.
+    - The HTTP boundary accepts only read-only GET and HEAD requests on the loopback listener.
+    rejects:
+    - Roots with no canonical RMS modules, invalid canonical artifacts, unresolved required implementation bindings, unsupported HTTP methods or paths, unavailable loopback ports, and deep links to absent semantic identifiers.
+    protocol: null
+  remove: []
+properties: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: view-rms-system
+    path: verification/contracts/view_rms_system.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

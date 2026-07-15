@@ -44,8 +44,8 @@ verification:
   - verification/traces
 x-rms:
   semantic_revision:
-    digest: sha256:3f14c9f1928728de52b154d3947f132666812ac86d89962ce008c669c8d0d18d
-    change_record: verification/changes/finalize-rust-example-executable-trace-proof-support-e25b0c632f02.yaml
+    digest: sha256:2996f574c1891820803e73ed1b29e0224023010a040a015265fd688bc429555a
+    change_record: verification/changes/bind-the-rust-example-public-query-to-its-semantic-function-and-machine-inputs-40c5d86784e4.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:e25b0c632f02be878df2f670a0f94e49e61b0d46b73667edfb0a9fcfe3a15a32
-  last_semantic_intent: Finalize Rust example executable trace proof support.
+    change_record_digest: sha256:40c5d86784e420a621607d24976d77216d5e9eaacb0483adb972b973290b5652
+  last_semantic_intent: Bind the Rust example public query to its semantic function and machine inputs.

@@ -25,10 +25,14 @@ description: Change an RMS public contract safely; use for commands, queries, ev
    - ordering;
    - consistency;
    - timeout and retry behavior.
+   - artifact version and transformation compatibility;
+   - protocol participants, messages, legal ordering, and terminal states;
+   - resource ownership or temporal guarantees exposed to consumers;
+   - privileged, unsafe, or foreign authority assumptions.
 6. Preserve the existing version when compatibility can be maintained cleanly.
 7. Introduce a new version for breaking changes.
 8. Define migration, coexistence, translation, and deprecation behavior.
-9. Apply the semantic change before implementation when the public surface changes. Use `contracts.set` to revise an existing contract, `contracts.add` for a new version or command, and `contracts.remove` only when its public surface is intentionally removed. Contract entries must state product-specific meaning, accepted inputs, guaranteed outcomes, and explicit rejection categories. Public commands, command variants, parser behavior, adapters, entrypoints, effects, effect results, and evidence obligations must be reflected in `module.yaml`, contracts, and `implementation.yaml`; do not change them only in source.
+9. Apply the semantic change before implementation when a provided or required contract changes. Use `contracts.set` with `direction: provided|required` to revise the module's provider surface or consumer expectation without transferring ownership. Direction may be omitted only when one existing direction is unambiguous. Use `contracts.add` for a genuinely new contract and `contracts.remove` only when the selected provider or consumer reference is intentionally removed. Contract entries must state product-specific meaning, accepted inputs, guaranteed outcomes, and explicit rejection categories. Revise the corresponding `public_behavior_bindings` or `dependency_behavior_bindings` in the same semantic change so no old contract-to-code route survives. Public commands, required capabilities, command variants, parser behavior, adapters, entrypoints, effects, effect results, and evidence obligations must be reflected in `module.yaml`, contracts, and `implementation.yaml`; do not change them only in source.
    - Keep binding type names under `architecture.machine.types` and public semantic alternatives in the machine lists.
    - When a changed effect outcome can alter subsequent behavior, add the typed result and follow-up transition to the contract change; do not encode the policy in the executor.
 10. Update provider and consumer contract evidence.

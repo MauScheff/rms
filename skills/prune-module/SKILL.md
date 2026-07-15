@@ -29,6 +29,7 @@ Every retained artifact should serve a current manifest promise, public contract
    - public contracts, invariants, and schemas;
    - glossary entries and active linked decisions;
    - implementation binding and declared source roots;
+   - public behavior bindings and dependency behavior bindings that keep contracts reachable from implementation symbols;
    - verification evidence, runbooks, migrations, and compatibility material.
 5. Inventory candidate artifacts inside the owning boundary:
    - implementation files and internal helpers;

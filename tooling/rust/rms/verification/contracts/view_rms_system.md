@@ -3,31 +3,30 @@
 Promise:
 
 - `rms view` serves a local semantic explorer derived from discovered RMS modules.
-- The snapshot exposes module topology, semantic objects, traces, evidence, source references, diagnostics, and explicit gaps.
+- The snapshot exposes one cross-layer semantic graph spanning module topology, contracts, implementation machines, semantic functions, exact behavior bindings, traces, evidence, source references, diagnostics, and shape-aware obligations.
+- The application presents system, behavior, machine, proof, gap, and debug views without inventing a second semantic model.
+- Stable deep links, search, browser history, live refresh, and source-backed inspectors preserve exact graph identities and status vocabulary.
 - The server binds to loopback and rejects unsupported routes and mutating methods.
 
 Scenario:
 
-- Build the viewer from this repository, serve its root in watch mode, inspect the five journeys in a browser, and probe the closed HTTP route table.
+- Build the viewer projection from this repository and verify that inner machine semantics, cross-layer bindings, obligation status, and source provenance are present without inferred name-based links.
 
 Command/tool:
 
 ```bash
 cargo test --manifest-path tooling/rust/rms/Cargo.toml viewer --no-fail-fast
-target/debug/rms view --root . --watch --no-open --port 0
-curl -i http://127.0.0.1:<port>/api/snapshot
-curl -I http://127.0.0.1:<port>/api/health
-curl -i -X POST http://127.0.0.1:<port>/api/snapshot
-curl -i http://127.0.0.1:<port>/unknown
+cargo test --manifest-path tooling/rust/rms/Cargo.toml semantic_graph --no-fail-fast
+cargo run --manifest-path tooling/rust/rms/Cargo.toml -- validate --root . --json
+node /tmp/rms-viewer-playwright.mjs
 ```
-
-The in-app browser exercised Understand, Trace, Change, Debug, and Verify at desktop and 390-pixel mobile widths.
 
 Observed result:
 
-- The repository projected 9 canonical modules, 3 declared relationships, 505 semantic objects, 58 guided traces, and 42 explicit gaps.
-- `GET /api/snapshot` and `HEAD /api/health` returned `200`.
-- `POST /api/snapshot` returned `405`; an unknown route returned `404`.
-- Browser inspection found no console errors or horizontal overflow.
+- The repository graph includes module and implementation nodes, domain-named machines, semantic cases, exact public/dependency behavior bindings, proof edges, and stable source references.
+- Pure and composite module stages that do not own boundary, lifecycle, or effect semantics are `not-applicable`, not false gaps.
+- Missing, stale, or unresolved contract-to-machine and consumer-to-provider links surface as deterministic validation diagnostics.
+- Playwright exercised all six views at 1440x900, 1024x768, and 390x844; deep-link refresh and browser history preserved selection, compact navigation and inspectors remained usable, no viewport overflow occurred, and no browser errors were emitted.
+- The projection and application remain read-only; navigation never becomes semantic authority.
 
 Source revision: resolved from the committed candidate by `rms audit --root . --strict`.

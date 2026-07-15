@@ -204,9 +204,9 @@ Canonical artifacts are designed for deterministic tools, but people should not 
 rms view --root . --watch
 ```
 
-It presents the same committed semantics through five questions: What exists? How does behavior flow? What should change? Where did a bad state first appear? What proves the claims? The viewer connects modules, contracts, machines, effects, traces, evidence, diagnostics, and source references while keeping unknown links visible as gaps.
+It presents the same committed semantics as one cross-layer graph. A public behavior is not merely a command name: it is a source-backed path from contract to semantic-function authority to classified machine cases to proof. A required capability is a path from an exact consumer symbol to a matching module provider contract or an explicit external boundary. Missing applicable links remain gaps; stages that do not apply to a module's shape are labeled `not-applicable` rather than treated as defects.
 
-The explorer is deliberately read-only. It derives its model from canonical artifacts and cannot edit them, so a convenient visual projection never becomes a competing source of truth.
+The explorer is deliberately read-only. It derives its model from canonical artifacts and cannot edit them, so a convenient visual projection never becomes a competing source of truth. System, behavior, machine, proof, gap, and debug views are different lenses over the same graph. Stable URLs and source-backed inspectors let a person share an exact semantic object without copying or paraphrasing its meaning.
 
 ## The Normal Workflow
 

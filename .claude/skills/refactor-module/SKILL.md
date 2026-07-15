@@ -16,6 +16,8 @@ Use this skill when the requested outcome is better internal shape, clearer boun
    - declared effects and required capabilities;
    - profiles and operational semantics;
    - compatibility policy and active consumers.
+   - exact public contract-to-function-to-machine bindings and required capability consumer-to-provider bindings.
+   - artifact contracts and transformations, cross-module protocol automata, resource lifecycles, authority containment, and temporal properties.
 5. Classify the refactor target:
    - unclear ownership or misplaced concept;
    - weak domain representation;
@@ -37,6 +39,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
    - Stateful machines use one input ADT and one `transition(state, input)` path for commands, observed events, and effect results.
    - Every transition branch has a stable semantic case mirrored by replay source provenance. Declared cases occur in declared transition source, source-only branches are first added through RMS semantics, every lifecycle state is reachable from `initial_state`, and provenance names the actual transition source file.
    - Effectful stateful machines declare exact driver and transition-record functions, and each effect protocol declares an exact executor symbol plus an effectful `effect-executor` semantic function. Runnable effect paths reach the driver; the driver stores complete records and owns the complete repeated transition/effect/result cycle. Move output-only histories, outer loops around one-step drivers, retry, compensation, and stop/continue policy out of surfaces, adapters, and executors and into the machine path, even when public and machine command names differ.
+   - Preserve one public protocol automaton across modules, close every resource on terminal paths, keep elevated operations behind declared safe facades, and retain proof strategies that match temporal scope.
 9. Preserve module boundaries:
    - do not move private state across ownership boundaries;
    - do not expose private implementation as public contract;

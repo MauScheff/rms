@@ -9,10 +9,11 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use super::semantic_graph::{build_semantic_system_graph, SemanticSystemGraph};
 use super::viewer_request::{parse_view_request, ViewRoute};
 use super::{
-    build_module_atlas, discover_module_manifests, get_path, get_str, source_revision,
-    stable_atlas_id, validate_loaded_manifest, AtlasDocument, Diagnostic, LoadedManifest, Severity,
+    build_module_atlas, discover_module_manifests, get_str, source_revision, stable_atlas_id,
+    validate_loaded_manifest, AtlasDocument, Diagnostic, LoadedManifest, Severity,
     VALIDATOR_VERSION,
 };
 
@@ -25,6 +26,7 @@ pub(super) struct SystemViewDocument {
     spec: &'static str,
     source: SystemViewSource,
     system: SystemViewSummary,
+    graph: SemanticSystemGraph,
     journeys: Vec<SystemViewJourney>,
     modules: Vec<SystemViewModule>,
     relationships: Vec<SystemViewRelationship>,
@@ -157,31 +159,35 @@ pub(super) fn build_system_view(root: &Path, watch: bool) -> Result<SystemViewDo
         bail!("RMS viewer rejected {error_count} canonical validation error(s)");
     }
 
-    let relationships = build_system_relationships(root, &manifests);
-    let mut gaps = relationship_gaps(root, &manifests, &relationships);
+    let graph = build_semantic_system_graph(root)?;
+    let relationships = build_system_relationships(&graph);
+    let mut gaps = Vec::new();
+    for obligation in &graph.obligations {
+        if !matches!(obligation.status, "required-gap" | "unresolved-link") {
+            continue;
+        }
+        let source = obligation.source_refs.first();
+        gaps.push(SystemViewGap {
+            id: obligation.id.clone(),
+            module_id: obligation.module_id.clone(),
+            kind: "semantic-obligation",
+            title: obligation.title.clone(),
+            detail: obligation.detail.clone(),
+            source: SystemViewSourceRef {
+                role: "semantic-system-graph",
+                path: source
+                    .map(|source| source.path.clone())
+                    .unwrap_or_else(|| ".".to_string()),
+            },
+        });
+    }
     let mut modules = Vec::new();
-    let mut semantic_node_count = 0usize;
+    let semantic_node_count = graph.nodes.len();
     let mut trace_count = 0usize;
 
     for manifest in &manifests {
         let atlas = build_module_atlas(manifest, root)?;
-        semantic_node_count = semantic_node_count.saturating_add(atlas.nodes.len());
         trace_count = trace_count.saturating_add(atlas.traces.len());
-        for trace in &atlas.traces {
-            for gap in &trace.gaps {
-                gaps.push(SystemViewGap {
-                    id: format!("{}:{}", atlas.module.id, gap.id),
-                    module_id: atlas.module.id.clone(),
-                    kind: "semantic-trace",
-                    title: gap.title.clone(),
-                    detail: gap.body.clone(),
-                    source: SystemViewSourceRef {
-                        role: "module-manifest",
-                        path: relative_path(root, &manifest.path),
-                    },
-                });
-            }
-        }
         modules.push(SystemViewModule {
             id: atlas.module.id.clone(),
             name: atlas.module.name.clone(),
@@ -217,6 +223,7 @@ pub(super) fn build_system_view(root: &Path, watch: bool) -> Result<SystemViewDo
             authority: "read-only projection of canonical RMS artifacts",
         },
         system,
+        graph,
         journeys: view_journeys(),
         modules,
         relationships,
@@ -302,181 +309,76 @@ fn write_response(
     Ok(())
 }
 
-fn build_system_relationships(
-    root: &Path,
-    manifests: &[LoadedManifest],
-) -> Vec<SystemViewRelationship> {
+fn build_system_relationships(graph: &SemanticSystemGraph) -> Vec<SystemViewRelationship> {
+    let nodes = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect::<BTreeMap<_, _>>();
     let mut relationships = Vec::new();
     let mut seen = BTreeSet::new();
-    let module_ids = manifests
-        .iter()
-        .map(|manifest| (module_name(manifest), module_id(manifest)))
-        .collect::<BTreeMap<_, _>>();
-    let mut capability_owners: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for manifest in manifests {
-        for capability in named_sequence(&manifest.value, &["provides", "capabilities"]) {
-            capability_owners
-                .entry(capability)
-                .or_default()
-                .push(module_id(manifest));
-        }
-    }
-
-    for manifest in manifests {
-        let from = module_id(manifest);
-        let source = relative_path(root, &manifest.path);
-        for child in named_sequence(&manifest.value, &["composition", "contains"]) {
-            if let Some(to) = module_ids.get(&child) {
-                push_relationship(
-                    &mut relationships,
-                    &mut seen,
-                    "contains",
-                    &from,
-                    to,
-                    &child,
-                    &source,
-                );
+    for edge in &graph.edges {
+        let Some(from_node) = nodes.get(edge.from.as_str()) else {
+            continue;
+        };
+        let Some(to_node) = nodes.get(edge.to.as_str()) else {
+            continue;
+        };
+        let relationship = match edge.kind.as_str() {
+            "contains" | "requires-module"
+                if from_node.kind == "module" && to_node.kind == "module" =>
+            {
+                Some((edge.kind.as_str(), edge.from.as_str(), edge.to.as_str()))
             }
-        }
-        for required in named_sequence(&manifest.value, &["requires", "modules"]) {
-            if let Some(to) = module_ids.get(&required) {
-                push_relationship(
-                    &mut relationships,
-                    &mut seen,
-                    "requires-module",
-                    &from,
-                    to,
-                    &required,
-                    &source,
-                );
+            "exports" if from_node.kind == "module" => {
+                Some(("exports", edge.from.as_str(), to_node.module_id.as_str()))
             }
-        }
-        for capability in named_sequence(&manifest.value, &["requires", "capabilities"]) {
-            if let Some(owners) = capability_owners.get(&capability) {
-                for owner in owners {
-                    push_relationship(
-                        &mut relationships,
-                        &mut seen,
-                        "requires-capability",
-                        &from,
-                        owner,
-                        &capability,
-                        &source,
-                    );
-                }
+            "delegates-to"
+                if from_node.kind == "dependency-behavior-binding" && to_node.kind == "module" =>
+            {
+                Some((
+                    "requires-capability",
+                    from_node.module_id.as_str(),
+                    edge.to.as_str(),
+                ))
             }
+            _ => None,
+        };
+        let Some((kind, from, to)) = relationship else {
+            continue;
+        };
+        let id = stable_atlas_id("system-edge", &format!("{kind}:{from}:{to}:{}", edge.label));
+        if !seen.insert(id.clone()) {
+            continue;
         }
-    }
-    relationships.sort_by(|left, right| left.id.cmp(&right.id));
-    relationships
-}
-
-fn push_relationship(
-    relationships: &mut Vec<SystemViewRelationship>,
-    seen: &mut BTreeSet<String>,
-    kind: &'static str,
-    from: &str,
-    to: &str,
-    label: &str,
-    source: &str,
-) {
-    let id = stable_atlas_id("system-edge", &format!("{kind}:{from}:{to}:{label}"));
-    if seen.insert(id.clone()) {
+        let source = edge.source_refs.first();
         relationships.push(SystemViewRelationship {
             id,
-            kind,
+            kind: match kind {
+                "contains" => "contains",
+                "requires-module" => "requires-module",
+                "exports" => "exports",
+                _ => "requires-capability",
+            },
             from: from.to_string(),
             to: to.to_string(),
-            label: label.to_string(),
+            label: edge.label.clone(),
             source: SystemViewSourceRef {
-                role: "module-manifest",
-                path: source.to_string(),
+                role: "semantic-system-graph",
+                path: source
+                    .map(|source| source.path.clone())
+                    .unwrap_or_else(|| ".".to_string()),
             },
         });
     }
-}
-
-fn relationship_gaps(
-    root: &Path,
-    manifests: &[LoadedManifest],
-    relationships: &[SystemViewRelationship],
-) -> Vec<SystemViewGap> {
-    let connected = relationships
-        .iter()
-        .map(|relationship| (relationship.from.clone(), relationship.label.clone()))
-        .collect::<BTreeSet<_>>();
-    let mut gaps = Vec::new();
-    for manifest in manifests {
-        let module_id = module_id(manifest);
-        let source = relative_path(root, &manifest.path);
-        for required in named_sequence(&manifest.value, &["requires", "modules"]) {
-            if !connected.contains(&(module_id.clone(), required.clone())) {
-                gaps.push(SystemViewGap {
-                    id: stable_atlas_id(
-                        "system-gap",
-                        &format!("{module_id}:required-module:{required}"),
-                    ),
-                    module_id: module_id.clone(),
-                    kind: "unresolved-module",
-                    title: format!("Unresolved module: {required}"),
-                    detail:
-                        "The canonical requirement has no discovered provider in this viewer root."
-                            .to_string(),
-                    source: SystemViewSourceRef {
-                        role: "module-manifest",
-                        path: source.clone(),
-                    },
-                });
-            }
-        }
-        for capability in named_sequence(&manifest.value, &["requires", "capabilities"]) {
-            if !connected.contains(&(module_id.clone(), capability.clone())) {
-                gaps.push(SystemViewGap {
-                    id: stable_atlas_id(
-                        "system-gap",
-                        &format!("{module_id}:required-capability:{capability}"),
-                    ),
-                    module_id: module_id.clone(),
-                    kind: "unresolved-capability",
-                    title: format!("Unresolved capability: {capability}"),
-                    detail:
-                        "The canonical requirement has no discovered provider in this viewer root."
-                            .to_string(),
-                    source: SystemViewSourceRef {
-                        role: "module-manifest",
-                        path: source.clone(),
-                    },
-                });
-            }
-        }
-    }
-    gaps
-}
-
-fn named_sequence(value: &YamlValue, path: &[&str]) -> Vec<String> {
-    get_path(value, path)
-        .and_then(YamlValue::as_sequence)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    item.as_str()
-                        .map(ToOwned::to_owned)
-                        .or_else(|| get_str(item, &["name"]).map(ToOwned::to_owned))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    relationships.sort_by(|left, right| left.id.cmp(&right.id));
+    relationships
 }
 
 fn module_name(manifest: &LoadedManifest) -> String {
     get_str(&manifest.value, &["module", "name"])
         .unwrap_or("unnamed-module")
         .to_string()
-}
-
-fn module_id(manifest: &LoadedManifest) -> String {
-    format!("module:{}", module_name(manifest))
 }
 
 fn system_identity(root: &Path, module_count: usize) -> (String, Option<String>) {
@@ -577,6 +479,83 @@ mod tests {
         assert_eq!(view.spec, "rms/view/v0.1");
         assert!(view.modules.iter().any(|module| module.name == "rms-cli"));
         assert!(view.system.semantic_node_count > 0);
+        assert_eq!(view.graph.spec, "rms/semantic-system-graph/v0.1");
+        assert!(view.graph.nodes.iter().any(|node| node.kind == "machine"));
+        assert!(view.graph.nodes.iter().any(|node| {
+            node.kind == "public-behavior-binding" && node.module_id.contains("rms-cli")
+        }));
+        assert!(view.relationships.iter().any(|relationship| {
+            relationship.kind == "requires-capability"
+                && relationship.from.contains("tic-tac-toe-cli")
+                && relationship.to.contains("tic-tac-toe-rules")
+        }));
+        assert!(!view.gaps.iter().any(|gap| gap.title.contains("apply-move")));
+        assert!(view.graph.obligations.iter().any(|obligation| {
+            obligation.kind == "effects" && obligation.status == "not-applicable"
+        }));
+        assert!(view
+            .graph
+            .obligations
+            .iter()
+            .filter(|obligation| obligation.status == "not-applicable")
+            .all(|obligation| !view.gaps.iter().any(|gap| gap.id == obligation.id)));
         assert_eq!(view.source.refresh_ms, 0);
+    }
+
+    #[test]
+    fn viewer_model_preserves_exact_graph_paths_statuses_diffs_and_deep_links() {
+        let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/viewer_app.js");
+        let script = r#"
+const assert = require('node:assert/strict');
+const model = require(process.argv[1]);
+const snapshot = {
+  graph: {
+    nodes: [
+      { id: 'module:orders', module_id: 'module:orders', kind: 'module', label: 'orders', summary: 'Own orders', source_refs: [] },
+      { id: 'public:create-order', module_id: 'module:orders', kind: 'public-command', label: 'create-order', summary: 'Create one order', source_refs: [] },
+      { id: 'binding:create-order', module_id: 'module:orders', kind: 'public-behavior-binding', label: 'create-order binding', summary: 'Exact binding', source_refs: [] },
+      { id: 'function:create-order', module_id: 'module:orders', kind: 'semantic-function', label: 'createOrder', summary: 'Pure owner', source_refs: [] },
+      { id: 'command:create-order', module_id: 'module:orders', kind: 'command', label: 'CreateOrder', summary: 'Machine input', source_refs: [] },
+    ],
+    edges: [
+      { id: 'edge:1', from: 'public:create-order', to: 'binding:create-order', kind: 'bound-by', label: 'bound by', source_refs: [] },
+      { id: 'edge:2', from: 'binding:create-order', to: 'function:create-order', kind: 'implemented-by', label: 'implemented by', source_refs: [] },
+      { id: 'edge:3', from: 'binding:create-order', to: 'command:create-order', kind: 'accepts-input', label: 'accepts input', source_refs: [] },
+    ],
+    obligations: [
+      { id: 'obligation:gap', module_id: 'module:orders', kind: 'proof', status: 'required-gap', title: 'Proof missing', detail: 'Needs executable proof', source_refs: [] },
+      { id: 'obligation:na', module_id: 'module:orders', kind: 'effects', status: 'not-applicable', title: 'Effects', detail: 'Pure module', source_refs: [] },
+    ],
+  },
+};
+const index = model.buildIndex(snapshot);
+assert.deepEqual(model.neighborhood(index, 'public:create-order').map((item) => item.node.id), [
+  'public:create-order', 'binding:create-order', 'function:create-order', 'command:create-order'
+]);
+assert.equal(model.moduleStatus(index, 'module:orders'), 'required-gap');
+assert.equal(model.obligations(index, { status: 'not-applicable' })[0].id, 'obligation:na');
+assert.ok(model.nodes(index, { query: 'CreateOrder' }).some((node) => node.id === 'command:create-order'));
+const location = { pathname: '/', search: '?view=machines&node=command%3Acreate-order&module=module%3Aorders&status=required-gap&q=order' };
+const state = model.parseUrl(location);
+assert.equal(state.view, 'machines');
+assert.equal(state.nodeId, 'command:create-order');
+assert.equal(model.parseUrl({ search: model.urlFor(state, location).slice(1) }).status, 'required-gap');
+const changed = structuredClone(snapshot);
+changed.graph.nodes[4].summary = 'Changed machine input';
+changed.graph.nodes.push({ id: 'state:ready', module_id: 'module:orders', kind: 'state', label: 'Ready', summary: 'Ready', source_refs: [] });
+changed.graph.obligations = changed.graph.obligations.slice(1);
+assert.deepEqual(model.semanticDiff(snapshot, changed), { added: 1, changed: 1, removed: 1, unresolved: 0 });
+"#;
+        let output = Command::new("node")
+            .args(["-e", script])
+            .arg(&app)
+            .output()
+            .expect("node must execute the viewer model test");
+        assert!(
+            output.status.success(),
+            "viewer model test failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
