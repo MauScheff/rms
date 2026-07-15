@@ -131,8 +131,6 @@ provides:
     contract: contracts/add-rms-module.v1.yaml
   - name: add-rms-capability
     contract: contracts/add-rms-capability.v1.yaml
-  - name: check-release-readiness
-    contract: contracts/release-check.v1.yaml
   - name: build-context-packet
     contract: contracts/build-context-packet.v1.yaml
   - name: build-module-atlas
@@ -177,6 +175,10 @@ provides:
     contract: contracts/run-trace-producers.v1.yaml
   - name: view-rms-system
     contract: contracts/view-rms-system.v1.yaml
+  - name: recommend-next-rms-work
+    contract: contracts/recommend-next-rms-work.v1.yaml
+  - name: release-check
+    contract: contracts/release-check.v1.yaml
   queries:
   - name: inspect-module
     contract: contracts/inspect-module.v1.yaml
@@ -685,6 +687,11 @@ verification:
   - verification/contracts/view_rms_system.md
   - verification/contracts/init_rms_system_adoption.md
   - verification/contracts/init_rms_system_managed_adoption.md
+  - verification/contracts/recommend_next_rms_work.md
+  - verification/contracts/diagnose_repository_and_skill_sources.md
+  - verification/contracts/configure_agent_commit_authority.md
+  - verification/contracts/init_commit_authority.md
+  - verification/contracts/release_guidance_distribution.md
   scenarios:
   - verification/scenarios
   - verification/scenarios/reusable_module_package.md
@@ -701,7 +708,6 @@ verification:
   - verification/properties/runnable_delegation_owner.md
   - verification/properties/gate_completion_integrity.md
   - verification/properties/binding_transition_signature.md
-  - verification/properties/init_git_provenance.md
   - verification/properties/semantic_plan_self_containment.md
   - verification/properties/transition_case_source_conformance.md
   - verification/properties/generated_output_discovery.md
@@ -728,15 +734,16 @@ verification:
   - verification/properties/generated_property_realization_truthfulness.md
   - verification/properties/semantic_final_candidate_repair_conformance.md
   - verification/properties/system_viewer_read_only.md
+  - verification/properties/init_git_provenance.md
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Bind the init-rms-system public behavior to the exact adapter that implements strict initialization and explicit repository adoption.
+  last_semantic_intent: Make RMS agent readiness deterministic through prospective next-work prescriptions, accurate repository and skill-source diagnosis, explicit commit authority, compact managed guidance, and mechanically checked distributions.
   semantic_revision:
-    digest: sha256:9aa724a4710ca5f5ff13c22b1d2bcd86462c8146a5f4de5fb2fee3001e992285
-    change_record: verification/changes/bind-the-init-rms-system-public-behavior-to-the-exact-adapter-that-implements-strict-initialization-and-explicit-repository-adoption-115978496d7d.yaml
+    digest: sha256:7fc9c9c78055eec5f01118f24f393b8387a6754a93239568226b5a212f38d0ac
+    change_record: verification/changes/make-rms-agent-readiness-deterministic-through-prospective-next-work-prescriptions-accurate-repository-and-skill-source-diagnosis-explicit-commit-authority-compact-managed-guidance-and-mechanically-checked-distributions-807a06ea16ba.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:115978496d7da6697d79b4489234bcb6ffa18ed22281ff84763f4c0583030914
+    change_record_digest: sha256:807a06ea16bac99ff18ce7665575110cf23bfbe463b9e46e9dda2a4054520230
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-cli-applied-revision
@@ -874,26 +881,6 @@ properties:
     strategy: deterministic-corpus
     command: properties
     runner: src/main.rs#rust_typing_accepts_declared_stateful_representation
-- id: init-establishes-git-worktree
-  proves: bootstrap-creates-provenance-worktree
-  kind: property
-  input_space: fresh directories outside Git and target directories already nested inside an existing Git worktree
-  preconditions:
-  - git is available and generated RMS files are absent
-  operation: run rms init and inspect the target repository root
-  oracle:
-  - fresh standalone target becomes a Git worktree
-  - nested target continues to use its existing parent worktree without a nested .git directory
-  - generated guidance names commit plus strict audit as production completion
-  evidence:
-    path: verification/properties/init_git_provenance.md
-  counterexamples:
-    path: verification/fuzz/counterexamples
-  realizations:
-  - profile: smoke
-    strategy: deterministic-corpus
-    command: properties
-    runner: src/main.rs#init_scaffold_generates_valid_system_artifacts
 - id: semantic-plan-prompt-is-actionable-without-external-examples
   proves: semantic-plan-schema-is-self-contained
   kind: property
@@ -1460,6 +1447,28 @@ properties:
     generator: src/viewer_request.rs#generate_view_route_cases
     runner: src/viewer_request.rs#property_system_viewer_routes_are_read_only
     exhaustive: true
+- id: init-establishes-git-worktree
+  proves: bootstrap-creates-provenance-worktree
+  kind: property
+  input_space: fresh directories outside Git and target directories already nested inside an existing Git worktree
+  preconditions:
+  - git is available and generated RMS files are absent
+  operation: run rms init and inspect the target repository root and generated completion guidance
+  oracle:
+  - fresh standalone target becomes a Git worktree
+  - nested target continues to use its existing parent worktree without a nested .git directory
+  - successful initialization reports bootstrap prepared; provenance baseline pending authorized commit
+  - generated guidance states that commits are required evidence rather than implied authority
+  - when commit authority is absent the bootstrap remains pending and production readiness is not claimed
+  evidence:
+    path: verification/properties/init_git_provenance.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: deterministic-corpus
+    command: properties
+    runner: src/main.rs#init_scaffold_generates_valid_system_artifacts
 fuzz_targets:
 - id: rms-cli-malformed-artifacts-produce-diagnostics
   proves: canonical-artifacts-remain-authoritative

@@ -41,6 +41,8 @@ rms --version
 rms diagnose
 rms diagnose --json
 rms init ./my-system --name my-system --purpose "Build reliable modular software" --context core
+rms next --task "add a validated public command" --root ./my-system
+rms next --task "add a validated public command" --root . --module examples/minimal/module.yaml --json
 rms config init
 rms plan examples/minimal/module.yaml --task "add a public command"
 rms implement examples/minimal/module.yaml --task "add a public command"
@@ -84,13 +86,27 @@ rms release check --root .
 
 Before claiming an RMS-generated project is production-ready, follow the production-pilot workflow in `../../../PRODUCTION.md` and run:
 
+```text
+focused checks → gate → authorized candidate commit → strict audit
+```
+
 ```bash
+rms gate --root <project>
+# Authorized manual candidate commit
 rms audit --root <project> --strict
 ```
 
 The quickstart is in `../../../QUICKSTART.md`, the self-hosted walkthrough is in `../../../DOGFOOD.md`, and the release process is in `../../../RELEASE.md` from the repository root.
 
-`rms init` writes the canonical system artifacts plus `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore`. It initializes Git when the target is not already inside a worktree, then directs the agent to commit the bootstrap before product work. For repositories with existing documents, `rms init --adopt` preflights all collisions, preserves the glossary and project-owned document content, installs idempotent RMS-managed guidance and ignore sections, validates existing RMS manifests, and creates only missing artifacts. It is not an overwrite mode. Completion is binary: `rms gate --root .` must pass, the candidate must be committed, and `rms audit --root . --strict` must pass.
+The onboarding order is `init → authorized bootstrap commit → design → recommended scaffold`.
+
+`rms init` writes the canonical system artifacts plus `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore`. It initializes Git when the target is not already inside a worktree, then prescribes an authorized bootstrap commit before `rms design` and the recommended scaffold. For repositories with existing documents, `rms init --adopt` preflights all collisions, preserves the glossary and project-owned document content, installs idempotent RMS-managed guidance and ignore sections, validates existing RMS manifests, and creates only missing artifacts. It is not an overwrite mode.
+
+`rms next --task "<intent>"` constructs a deterministic, prospective report without editing files, invoking a provider, running checks, or granting source-edit or commit authority. It classifies repository shape, selects a module only from unambiguous canonical evidence, classifies the task lane, renders safely escaped command arguments, and preserves commit actions as manual authorization steps. It exits successfully whenever it can construct a report, including bootstrap, design, and owner-ambiguity states.
+
+`rms diagnose` summarizes skill sources detected on disk; `rms agent diagnose` reports their detailed origins, configuration, digests, and equivalence. Neither command can observe the current thread's injected skill catalog. `runtime_activation` is therefore `unknown` and precedence is `host-defined`; detected does not mean runtime-active.
+
+Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness. The pending states are `bootstrap prepared; provenance baseline pending authorized commit` and `candidate prepared; strict audit pending authorized commit`.
 
 `rms add-module` writes `module.yaml`, a module `README.md`, `contracts/README.md`, guided verification directories, and an optional Rust, Swift, or executable binding. The generated guidance routes future work through canonical artifacts without defining module-specific semantics.
 

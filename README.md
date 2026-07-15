@@ -117,7 +117,7 @@ For a guided first pass, use `QUICKSTART.md`. For a self-hosted RMS walkthrough,
 The golden path is:
 
 ```text
-init -> bootstrap commit -> design -> add-capability with bindings -> spec/surface apply -> implement declared roles -> gate -> candidate commit -> strict audit
+init → authorized bootstrap commit → design → recommended scaffold → spec/surface apply → implement declared roles → focused checks → gate → authorized candidate commit → strict audit
 ```
 
 Create a new RMS system:
@@ -129,7 +129,16 @@ rms init ./my-system \
   --context core
 ```
 
-This creates `system.yaml`, `context-map.yaml`, `GLOSSARY.md`, `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore`. Outside an existing worktree it also runs `git init`; inside one it reuses the existing repository. Commit this bootstrap before product work so semantic and source drift have a baseline. The generated agent and workbench files are adapters over the RMS manifests and CLI; they are not a second source of architecture.
+This creates `system.yaml`, `context-map.yaml`, `GLOSSARY.md`, `AGENTS.md`, `.rms/config.yaml`, `.agents/skills/`, and `.gitignore`. Outside an existing worktree it also runs `git init`; inside one it reuses the existing repository. The generated agent and workbench files are adapters over the RMS manifests and CLI; they are not a second source of architecture.
+
+Establish the bootstrap provenance baseline before product design when Git writes are authorized:
+
+```bash
+git -C ./my-system add .
+git -C ./my-system commit -m "Initialize RMS project"
+```
+
+Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness. Report an unauthorized bootstrap as `bootstrap prepared; provenance baseline pending authorized commit`; report an unauthorized production candidate as `candidate prepared; strict audit pending authorized commit`.
 
 To adopt a repository that already contains project documents, use the explicit preservation mode:
 
@@ -142,36 +151,30 @@ rms init . \
 
 Adoption preflights the complete bootstrap before writing. It preserves `GLOSSARY.md` byte-for-byte, preserves project-owned content in `AGENTS.md` and `.gitignore`, and appends an explicit RMS-managed section to the latter two files. Those sections are idempotent and may be refreshed by RMS without rewriting surrounding content. Adoption validates compatible existing RMS manifests and workbench configuration, creates only missing files, and reports every path as `created`, `adopted`, or `updated`. Conflicting canonical manifests, malformed managed markers, or RMS-managed skills abort with no RMS artifact writes. Do not move existing documents out of the repository or use an overwrite workaround.
 
-Add a module with an implementation binding:
+After inspecting a successful adoption, create its authorized bootstrap provenance commit before design. The same pending-authority policy applies as for a fresh initialization.
+
+Ask RMS for the next prospective work prescription, then design before choosing a module tree:
 
 ```bash
-rms design --root ./my-system \
-  --task "browser-playable Snake game"
+rms next --task "<product intent>" \
+  --root ./my-system
 
+rms design --root ./my-system \
+  --task "<product intent>"
+```
+
+Follow the design result and choose one scaffold alternative. For a genuinely standalone module with an implementation binding:
+
+```bash
 rms add-module ./my-system/modules/widget \
   --name widget \
   --purpose "Own validated widgets" \
   --kind library \
   --shape domain-engine \
   --binding rust
-
-rms add-module ./my-system/modules/swift-widget \
-  --name swift-widget \
-  --purpose "Own validated Swift widgets" \
-  --kind library \
-  --shape domain-engine \
-  --binding swift
-
-rms add-module ./my-system/modules/snake-web \
-  --name snake-web \
-  --purpose "Expose the Snake game as an executable surface" \
-  --kind adapter \
-  --profile boundary \
-  --shape boundary-adapter \
-  --binding js
 ```
 
-Treat deterministic design hints as the scaffold decision. When they recommend a composite/domain/boundary capability tree, use `rms add-capability`; use one module only for explicit library-only intent or a canonically recorded single-module exception.
+Alternatively, when design recommends a composite/domain/boundary capability tree, use `rms add-capability`; do not substitute one module for convenience. Use one module only for explicit standalone intent or a canonically recorded single-module exception.
 
 Add a recursive capability tree when one public capability needs a composite parent plus domain and boundary children:
 
@@ -362,6 +365,8 @@ rms gate HEAD~1..HEAD --json
 ```
 
 `rms gate` runs affected verification plus a strict semantic and structural preflight. It exits nonzero for missing semantic revisions, invalid machine/effect/trace structure, failed verification, or a missing source revision. It defers only clean-commit worktree checks to the final strict audit; a gate pass is not production proof until the candidate is committed and `rms audit --root . --strict` also passes.
+
+The completion order is `focused checks → gate → authorized candidate commit → strict audit`. If Git authority is absent, do not execute or imply the commit; report the pending state instead.
 
 Inspect a module:
 
@@ -593,7 +598,8 @@ For Codex:
 - Use `rms agent plugin sync --target codex` after upgrading RMS so Codex reloads the packaged plugin skills.
 - Use the plugin wrapper in `integrations/codex/rms` only when installable distribution is useful; it is optional convenience packaging, not a semantic dependency.
 - Package skills from canonical `skills/` for plugin releases.
-- Make the agent use the shared `rms` CLI: `diagnose`, `design`, `explain`, `route`, `plan`, `implement`, `evolve-contract`, `evidence`, `refactor`, `review`, `prompt`, `run`, `machine`, `trace`, `config`, `context`, `validate`, `compose`, `check-compat`, `verify`, `conformance`, and `audit`.
+- Make the agent start with `rms next --task "<intent>" --root .` when it needs a deterministic owner and work prescription, then use the shared `rms` CLI for the prescribed workflow.
+- Treat skill-source output from `rms diagnose` and detailed origins from `rms agent diagnose` as detected installations only. RMS cannot claim that a source is active in the current agent thread; runtime activation remains unknown and precedence is host-defined.
 - Use hooks only to call the shared `rms` CLI.
 
 For Claude Code:

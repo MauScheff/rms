@@ -1,19 +1,30 @@
 spec: rms/contract/v0.1
-name: diagnose-rms-environment
+name: "diagnose-rms-environment"
 version: 1
 kind: command
-meaning: Report local RMS readiness, manifest validation status, optional workbench config status, run-record readiness, native tool availability, and optional AI-provider command availability.
+meaning: "Report deterministic RMS readiness from observable repository shape, canonical validation, workbench configuration, run records, native tools, providers, guidance state, and detected skill sources without claiming runtime activation."
+preconditions:
+  - id: "accepts-1"
+    statement: "a readable repository or workspace root"
+  - id: "accepts-2"
+    statement: "optional machine-readable output selection"
 postconditions:
-  - id: readiness-is-diagnostic
-    statement: The report describes observed local readiness and does not change RMS artifacts.
-  - id: config-is-readiness-evidence
-    statement: Optional `.rms/config.yaml` values are reported as provider, provider-timeout, and run-record defaults, not as module semantics.
-  - id: json-shares-text-facts
-    statement: Machine-readable diagnose output is derived from the same readiness observations as text output.
+  - id: "ensures-1"
+    statement: "repository shape uses the same classification model as recommend-next-rms-work"
+  - id: "ensures-2"
+    statement: "root-level system and context artifacts are reported as not-applicable for shapes that do not own them while partial canonical roots remain missing or invalid"
+  - id: "ensures-3"
+    statement: "skill reporting distinguishes detected sources from runtime-active skills"
+  - id: "ensures-4"
+    statement: "detected skill summaries use deterministic ordering and host-defined precedence with unknown runtime activation"
+  - id: "ensures-5"
+    statement: "machine-readable and text output derive from the same observations"
+  - id: "ensures-6"
+    statement: "diagnostic evidence does not mutate or redefine canonical RMS semantics"
 failure_categories:
-  - id: unreadable-root
-    statement: The requested root cannot be traversed for RMS artifacts.
-  - id: invalid-config
-    statement: Invalid workbench config is reported as diagnostic readiness evidence.
+  - id: "rejects-1"
+    statement: "the requested root cannot be traversed for repository evidence"
+  - id: "rejects-2"
+    statement: "report construction cannot represent an unreadable canonical artifact truthfully"
 compatibility:
   policy: backward-compatible-within-major

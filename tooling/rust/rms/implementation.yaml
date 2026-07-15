@@ -190,26 +190,6 @@ architecture:
         strategy: deterministic-corpus
         command: properties
         runner: src/main.rs#rust_typing_accepts_declared_stateful_representation
-    - id: init-establishes-git-worktree
-      proves: bootstrap-creates-provenance-worktree
-      kind: property
-      input_space: fresh directories outside Git and target directories already nested inside an existing Git worktree
-      preconditions:
-      - git is available and generated RMS files are absent
-      operation: run rms init and inspect the target repository root
-      oracle:
-      - fresh standalone target becomes a Git worktree
-      - nested target continues to use its existing parent worktree without a nested .git directory
-      - generated guidance names commit plus strict audit as production completion
-      evidence:
-        path: verification/properties/init_git_provenance.md
-      counterexamples:
-        path: verification/fuzz/counterexamples
-      realizations:
-      - profile: smoke
-        strategy: deterministic-corpus
-        command: properties
-        runner: src/main.rs#init_scaffold_generates_valid_system_artifacts
     - id: semantic-plan-prompt-is-actionable-without-external-examples
       proves: semantic-plan-schema-is-self-contained
       kind: property
@@ -776,6 +756,28 @@ architecture:
         generator: src/viewer_request.rs#generate_view_route_cases
         runner: src/viewer_request.rs#property_system_viewer_routes_are_read_only
         exhaustive: true
+    - id: init-establishes-git-worktree
+      proves: bootstrap-creates-provenance-worktree
+      kind: property
+      input_space: fresh directories outside Git and target directories already nested inside an existing Git worktree
+      preconditions:
+      - git is available and generated RMS files are absent
+      operation: run rms init and inspect the target repository root and generated completion guidance
+      oracle:
+      - fresh standalone target becomes a Git worktree
+      - nested target continues to use its existing parent worktree without a nested .git directory
+      - successful initialization reports bootstrap prepared; provenance baseline pending authorized commit
+      - generated guidance states that commits are required evidence rather than implied authority
+      - when commit authority is absent the bootstrap remains pending and production readiness is not claimed
+      evidence:
+        path: verification/properties/init_git_provenance.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: properties
+        runner: src/main.rs#init_scaffold_generates_valid_system_artifacts
   messages:
     command_envelope:
     - command_id
@@ -894,6 +896,7 @@ architecture:
     - AddRmsBinding
     - RunTraceProducers
     - ViewRmsSystem
+    - RecommendNextRmsWork
     observed_events: []
     events:
     - CommandCompleted
@@ -1220,14 +1223,6 @@ architecture:
     machine_inputs:
     - AddRmsCapability
     machine_outputs: []
-  - id: check-release-readiness-public
-    public_kind: command
-    public_name: check-release-readiness
-    contract: contracts/release-check.v1.yaml
-    semantic_function: release-check-command
-    machine_inputs:
-    - CheckReleaseReadiness
-    machine_outputs: []
   - id: build-context-packet-public
     public_kind: command
     public_name: build-context-packet
@@ -1412,6 +1407,22 @@ architecture:
     machine_inputs:
     - InspectModule
     machine_outputs: []
+  - id: release-check-public
+    public_kind: command
+    public_name: release-check
+    contract: contracts/release-check.v1.yaml
+    semantic_function: release-check-command
+    machine_inputs:
+    - CheckReleaseReadiness
+    machine_outputs: []
+  - id: recommend-next-rms-work-public
+    public_kind: command
+    public_name: recommend-next-rms-work
+    contract: contracts/recommend-next-rms-work.v1.yaml
+    semantic_function: recommend-next-rms-work-command
+    machine_inputs:
+    - RecommendNextRmsWork
+    machine_outputs: []
   dependency_behavior_bindings:
   - id: filesystem-provider
     capability: filesystem
@@ -1471,13 +1482,19 @@ semantic_functions:
     contracts:
     - contracts/diagnose-rms-environment.v1.yaml
     invariants:
+    - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
   assumptions:
+    maintains:
+    - diagnostic output never grants architecture or runtime activation authority
     ensures:
-    - diagnostic output reports repository, config, provider, run-record, and validation readiness without redefining RMS semantics
+    - repository shape and canonical readiness use the shared repository profile
+    - skill reporting describes detected sources, digests, equivalence, and configured state with unknown runtime activation and host-defined precedence
+    - text and JSON facts remain aligned
   evidence:
     contracts:
     - verification/contracts/diagnose_rms_environment.md
+    - verification/contracts/diagnose_repository_and_skill_sources.md
 - id: workbench-config-resolver
   symbol: resolve_prompt_run_options
   kind: adapter
@@ -1527,13 +1544,17 @@ semantic_functions:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
   assumptions:
+    maintains:
+    - project-owned guidance and unrelated local skills remain preserved
     ensures:
-    - project-local agent guidance is generated from embedded RMS assets
-    - Codex plugins and global skills remain optional adapters rather than semantic dependencies
-    - synchronization refreshes generated guidance without overwriting existing workbench config
+    - generated guidance is sourced from managed crate assets
+    - diagnosis classifies managed guidance state and detected skill origins deterministically
+    - synchronization refreshes canonical managed distributions without claiming runtime activation
+    - commit evidence is prescribed only under task and host authorization
   evidence:
     contracts:
     - verification/contracts/configure_agent_integration.md
+    - verification/contracts/configure_agent_commit_authority.md
 - id: agent-plugin-command
   symbol: run_agent_plugin_install
   kind: adapter
@@ -1563,15 +1584,18 @@ semantic_functions:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
   assumptions:
+    maintains:
+    - strict initialization remains collision-intolerant and adoption preserves project-owned content
     ensures:
-    - strict initialization remains collision-intolerant
-    - explicit adoption preflights canonical compatibility and managed content before writing
-    - project-owned content outside RMS-managed sections is preserved
-    - generated or updated agent and workbench artifacts route future work through RMS canonical manifests and the shared CLI
+    - managed guidance is generated from canonical assets
+    - initialization reports bootstrap prepared; provenance baseline pending authorized commit
+    - onboarding routes from initialization through authorized provenance commit and design before scaffolding
+    - initialization does not itself grant Git authority
   evidence:
     contracts:
     - verification/contracts/init_rms_system.md
     - verification/contracts/init_rms_system_managed_adoption.md
+    - verification/contracts/init_commit_authority.md
 - id: add-rms-module-command
   symbol: run_add_module
   kind: adapter
@@ -1641,17 +1665,18 @@ semantic_functions:
     contracts:
     - contracts/release-check.v1.yaml
     invariants:
+    - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
   assumptions:
+    maintains:
+    - release checks remain provider-independent
     ensures:
-    - release readiness is derived from deterministic repository checks and does not invoke optional AI providers
-    - release package, module, and plugin versions are checked for consistency before artifacts are accepted
-    - release-mode binary artifacts are built, smoke-tested outside `cargo run`, and checked through a temporary PATH install
-    - clean-room dogfood initializes project-local agent guidance, recursive capability scaffolding, route recommendations, context packets, composite verification, and gate execution from the installed release binary
-    - Codex plugin packaging is checked against canonical skill source
+    - release readiness includes guidance assets, managed skill distributions, root guidance, onboarding order, completion order, and installed next-command smoke
+    - unrelated local skills do not cause distribution drift failures
   evidence:
     contracts:
     - verification/contracts/release_check.md
+    - verification/contracts/release_guidance_distribution.md
 - id: codex-plugin-sync-validator
   symbol: validate_codex_plugin_sync
   kind: parser
@@ -2482,9 +2507,31 @@ semantic_functions:
   evidence:
     laws:
     - verification/laws/canonical_artifacts_remain_authoritative.md
+- id: recommend-next-rms-work-command
+  symbol: run_next
+  kind: projector
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/recommend-next-rms-work.v1.yaml
+    invariants:
+    - canonical-artifacts-remain-authoritative
+    - diagnostics-are-evidence-not-authority
+  assumptions:
+    requires:
+    - the requested task intent is prospective and nonblank
+    maintains:
+    - no repository files or provider state are mutated
+    ensures:
+    - repository classification, owner selection, task lane, skill origins, context, and ordered next steps are derived deterministically from observable evidence
+    - task advice does not inherit unrelated working-tree impact
+    - candidate commits remain manual authorization steps
+  evidence:
+    contracts:
+    - verification/contracts/recommend_next_rms_work.md
 x-rms:
   semantic_revision:
-    digest: sha256:9aa724a4710ca5f5ff13c22b1d2bcd86462c8146a5f4de5fb2fee3001e992285
-    change_record: verification/changes/bind-the-init-rms-system-public-behavior-to-the-exact-adapter-that-implements-strict-initialization-and-explicit-repository-adoption-115978496d7d.yaml
+    digest: sha256:7fc9c9c78055eec5f01118f24f393b8387a6754a93239568226b5a212f38d0ac
+    change_record: verification/changes/make-rms-agent-readiness-deterministic-through-prospective-next-work-prescriptions-accurate-repository-and-skill-source-diagnosis-explicit-commit-authority-compact-managed-guidance-and-mechanically-checked-distributions-807a06ea16ba.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:115978496d7da6697d79b4489234bcb6ffa18ed22281ff84763f4c0583030914
+    change_record_digest: sha256:807a06ea16bac99ff18ce7665575110cf23bfbe463b9e46e9dda2a4054520230

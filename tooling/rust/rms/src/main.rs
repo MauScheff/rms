@@ -36,6 +36,15 @@ const DEFAULT_DOGFOOD_PHASE_TIMEOUT_SECONDS: u64 = 3600;
 const DEFAULT_PROOF_TIMEOUT_SECONDS: u64 = 300;
 const WORKBENCH_CONFIG_PATH: &str = ".rms/config.yaml";
 const CODEX_PLUGIN_PATH: &str = "integrations/codex/rms";
+const COMMIT_AUTHORITY_POLICY: &str = "Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness.";
+const BOOTSTRAP_PENDING_AUTHORIZED_COMMIT: &str =
+    "bootstrap prepared; provenance baseline pending authorized commit";
+const CANDIDATE_PENDING_AUTHORIZED_COMMIT: &str =
+    "candidate prepared; strict audit pending authorized commit";
+const RMS_FULL_GUIDANCE_SIGNATURE: &str = "<!-- RMS generated full guidance -->";
+const RMS_CLAUDE_GUIDANCE_SIGNATURE: &str = "<!-- RMS generated Claude guidance -->";
+const RMS_MANAGED_CLAUDE_START: &str = "<!-- RMS managed Claude guidance: begin -->";
+const RMS_MANAGED_CLAUDE_END: &str = "<!-- RMS managed Claude guidance: end -->";
 const REQUIRED_VERIFICATION_CATEGORIES: [&str; 4] =
     ["laws", "contracts", "scenarios", "boundaries"];
 const OPTIONAL_VERIFICATION_CATEGORIES: [&str; 5] =
@@ -226,6 +235,25 @@ enum Commands {
         root: PathBuf,
 
         /// Emit a machine-readable readiness report.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Prescribe the deterministic next RMS work for a prospective task.
+    Next {
+        /// Prospective task intent to classify and route.
+        #[arg(long)]
+        task: String,
+
+        /// Repository, system, or workspace root to inspect.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Explicit owning module manifest. This wins over inferred ownership.
+        #[arg(long)]
+        module: Option<PathBuf>,
+
+        /// Emit the shared report as machine-readable JSON.
         #[arg(long)]
         json: bool,
     },
@@ -1366,6 +1394,7 @@ enum RmsWorkbenchCommand {
     ValidateRmsArtifacts,
     ExplainModule,
     DiagnoseRmsEnvironment,
+    RecommendNextRmsWork,
     RenderWorkbenchPrompt,
     PlanModuleChange,
     DesignRmsSystem,
@@ -3860,12 +3889,90 @@ struct LoadedWorkbenchConfig {
     value: WorkbenchConfig,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RepositoryKind {
+    SystemRoot,
+    ModuleRoot,
+    SystemContainer,
+    MultiSystemWorkspace,
+    ModuleWorkspace,
+    Uninitialized,
+}
+
+impl RepositoryKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SystemRoot => "system-root",
+            Self::ModuleRoot => "module-root",
+            Self::SystemContainer => "system-container",
+            Self::MultiSystemWorkspace => "multi-system-workspace",
+            Self::ModuleWorkspace => "module-workspace",
+            Self::Uninitialized => "uninitialized",
+        }
+    }
+
+    fn owns_root_system_context(self) -> bool {
+        self == Self::SystemRoot
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RepositoryProfile {
+    kind: RepositoryKind,
+    root: String,
+    canonical_files: Vec<ReadinessItem>,
+    system_manifests: Vec<String>,
+    module_manifests: Vec<String>,
+    top_level_modules: Vec<String>,
+    has_project_content: bool,
+}
+
+struct BuiltRepositoryProfile {
+    report: RepositoryProfile,
+    modules: BTreeMap<String, ModuleIndexEntry>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SkillSourceReport {
+    runtime_activation: &'static str,
+    precedence: &'static str,
+    sources: Vec<SkillSource>,
+    informational: usize,
+    review_required: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SkillSource {
+    origin: String,
+    scope: String,
+    path: String,
+    configured_state: String,
+    digest: Option<String>,
+    embedded_equivalence: String,
+    runtime_activation: &'static str,
+    precedence: &'static str,
+    status: String,
+    remediation: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SkillSourceSummary {
+    detected: usize,
+    informational: usize,
+    review_required: usize,
+    runtime_activation: &'static str,
+    precedence: &'static str,
+}
+
 #[derive(Debug, Serialize)]
 struct DiagnoseReport {
     validator: &'static str,
     version: &'static str,
     root: String,
-    repository: Vec<ReadinessItem>,
+    repository: RepositoryProfile,
+    skill_sources: SkillSourceSummary,
     config: ConfigReadiness,
     codex_plugin_cache: CodexPluginCacheReadiness,
     manifest_counts: BTreeMap<String, usize>,
@@ -3876,7 +3983,7 @@ struct DiagnoseReport {
     guidance: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct ReadinessItem {
     name: String,
     path: String,
@@ -3893,6 +4000,7 @@ struct AgentIntegrationReport {
     config: ConfigReadiness,
     target_tool: Option<CommandReadiness>,
     plugin_required: bool,
+    skill_sources: SkillSourceReport,
     guidance: Vec<String>,
 }
 
@@ -3941,7 +4049,7 @@ struct ConfigReadiness {
     message: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct ValidationReadiness {
     status: String,
     errors: usize,
@@ -4537,7 +4645,7 @@ fn write_agent_guidance(
 ) -> Result<()> {
     write_primary_agent_guidance(&root.join("AGENTS.md"), overwrite_guidance)?;
     if target == AgentTarget::Claude {
-        write_agent_file(&root.join("CLAUDE.md"), INIT_CLAUDE_MD, overwrite_guidance)?;
+        write_claude_guidance(&root.join("CLAUDE.md"), overwrite_guidance)?;
     }
     sync_agent_skills(root, target, overwrite_guidance)?;
     let config_path = root.join(WORKBENCH_CONFIG_PATH);
@@ -4555,6 +4663,13 @@ fn write_primary_agent_guidance(path: &Path, overwrite: bool) -> Result<()> {
     if overwrite && path.exists() {
         let existing = fs::read_to_string(path)
             .with_context(|| format!("failed to read `{}`", path.display()))?;
+        if existing == INIT_AGENTS_MD {
+            return Ok(());
+        }
+        if existing.contains(RMS_FULL_GUIDANCE_SIGNATURE) {
+            return fs::write(path, INIT_AGENTS_MD)
+                .with_context(|| format!("failed to write `{}`", path.display()));
+        }
         if existing.contains(RMS_MANAGED_AGENTS_START) || existing.contains(RMS_MANAGED_AGENTS_END)
         {
             let merged = merge_managed_section(
@@ -4566,8 +4681,35 @@ fn write_primary_agent_guidance(path: &Path, overwrite: bool) -> Result<()> {
             return fs::write(path, merged)
                 .with_context(|| format!("failed to write `{}`", path.display()));
         }
+        let merged = merge_managed_section(
+            &existing,
+            RMS_MANAGED_AGENTS_START,
+            RMS_MANAGED_AGENTS_END,
+            INIT_ADOPTED_AGENTS_BLOCK,
+        )?;
+        return fs::write(path, merged)
+            .with_context(|| format!("failed to write `{}`", path.display()));
     }
     write_agent_file(path, INIT_AGENTS_MD, overwrite)
+}
+
+fn write_claude_guidance(path: &Path, overwrite: bool) -> Result<()> {
+    if overwrite && path.exists() {
+        let existing = fs::read_to_string(path)
+            .with_context(|| format!("failed to read `{}`", path.display()))?;
+        if existing == INIT_CLAUDE_MD {
+            return Ok(());
+        }
+        let merged = merge_managed_section(
+            &existing,
+            RMS_MANAGED_CLAUDE_START,
+            RMS_MANAGED_CLAUDE_END,
+            INIT_CLAUDE_MD,
+        )?;
+        return fs::write(path, merged)
+            .with_context(|| format!("failed to write `{}`", path.display()));
+    }
+    write_agent_file(path, INIT_CLAUDE_MD, overwrite)
 }
 
 fn write_agent_file(path: &Path, contents: &str, overwrite: bool) -> Result<()> {
@@ -4593,8 +4735,10 @@ fn sync_agent_skills(root: &Path, target: AgentTarget, overwrite: bool) -> Resul
 
 fn build_agent_integration_report(root: &Path, target: AgentTarget) -> AgentIntegrationReport {
     let local_skills = agent_skills_readiness(root, target);
+    let agent_instructions = agent_guidance_readiness(&root.join("AGENTS.md"));
     let config = diagnose_config(root);
     let target_tool = Some(target.target_tool());
+    let skill_sources = detect_skill_sources(root, home_dir().ok().as_deref());
     let mut guidance = vec![
         "The RMS CLI is sufficient; plugins and global skills are optional adapters.".to_string(),
         format!(
@@ -4621,18 +4765,35 @@ fn build_agent_integration_report(root: &Path, target: AgentTarget) -> AgentInte
         );
     }
 
+    if matches!(
+        agent_instructions.status.as_str(),
+        "drifted" | "malformed" | "unmanaged" | "missing"
+    ) {
+        guidance.push(format!(
+            "Project guidance is {}; run `rms agent sync --target {} --root .` when RMS may manage it.",
+            agent_instructions.status,
+            target.label()
+        ));
+    }
+    guidance.push(COMMIT_AUTHORITY_POLICY.to_string());
+
     AgentIntegrationReport {
         target: target.label().to_string(),
         root: root.display().to_string(),
-        agent_instructions: file_readiness("AGENTS.md", &root.join("AGENTS.md")),
+        agent_instructions,
         target_instructions: match target {
             AgentTarget::Codex => None,
-            AgentTarget::Claude => Some(file_readiness("CLAUDE.md", &root.join("CLAUDE.md"))),
+            AgentTarget::Claude => Some(exact_managed_file_readiness(
+                "CLAUDE.md",
+                &root.join("CLAUDE.md"),
+                INIT_CLAUDE_MD,
+            )),
         },
         local_skills,
         config,
         target_tool,
         plugin_required: false,
+        skill_sources,
         guidance,
     }
 }
@@ -4673,6 +4834,286 @@ fn agent_skills_readiness(root: &Path, target: AgentTarget) -> AgentSkillsReadin
         drifted,
         extra,
     }
+}
+
+fn detect_skill_sources(root: &Path, home: Option<&Path>) -> SkillSourceReport {
+    let embedded_digest = embedded_skill_set_digest();
+    let mut sources = vec![SkillSource {
+        origin: "embedded-rms".to_string(),
+        scope: "binary".to_string(),
+        path: "rms://embedded/skills".to_string(),
+        configured_state: "built-in".to_string(),
+        digest: Some(embedded_digest.clone()),
+        embedded_equivalence: "canonical".to_string(),
+        runtime_activation: "unknown",
+        precedence: "host-defined",
+        status: "informational".to_string(),
+        remediation: None,
+    }];
+
+    sources.push(filesystem_skill_source(
+        "project-codex",
+        "project",
+        &root.join(".agents/skills"),
+        None,
+        "run `rms agent sync --target codex --root .`",
+        &embedded_digest,
+    ));
+    sources.push(filesystem_skill_source(
+        "project-claude",
+        "project",
+        &root.join(".claude/skills"),
+        None,
+        "run `rms agent sync --target claude --root .`",
+        &embedded_digest,
+    ));
+
+    if let Some(home) = home {
+        for (origin, path) in [
+            ("user-codex", home.join(".codex/skills")),
+            ("user-claude", home.join(".claude/skills")),
+            ("user-agents", home.join(".agents/skills")),
+        ] {
+            sources.push(filesystem_skill_source(
+                origin,
+                "user",
+                &path,
+                None,
+                "synchronize or remove the divergent direct RMS skill copy",
+                &embedded_digest,
+            ));
+        }
+
+        let marketplace_path = home.join(".agents/plugins/marketplace.json");
+        let installed_status = codex_plugin_installed_status_at_home(home, "rms", "personal");
+        let marketplace_configured = match marketplace_plugin_presence(&marketplace_path, "rms") {
+            MarketplacePluginPresence::Present => {
+                format!("marketplace-entry;{installed_status}")
+            }
+            MarketplacePluginPresence::MissingEntry => {
+                format!("marketplace-entry-missing;{installed_status}")
+            }
+            MarketplacePluginPresence::Missing => {
+                format!("marketplace-missing;{installed_status}")
+            }
+            MarketplacePluginPresence::Malformed => {
+                format!("marketplace-malformed;{installed_status}")
+            }
+            MarketplacePluginPresence::Unreadable => {
+                format!("marketplace-unreadable;{installed_status}")
+            }
+        };
+        let plugin_root = marketplace_rms_plugin_root(&marketplace_path)
+            .unwrap_or_else(|| home.join("plugins/rms"));
+        sources.push(filesystem_skill_source(
+            "personal-marketplace",
+            "plugin",
+            &plugin_root.join("skills"),
+            Some(marketplace_configured),
+            "run `rms agent plugin sync --target codex`",
+            &embedded_digest,
+        ));
+
+        let cache_root = home.join(".codex/plugins/cache/personal/rms");
+        match fs::read_dir(&cache_root) {
+            Ok(entries) => {
+                let mut versions = entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.path().is_dir())
+                    .map(|entry| entry.path())
+                    .collect::<Vec<_>>();
+                versions.sort();
+                for version in versions {
+                    let label = version
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("<unknown>");
+                    sources.push(filesystem_skill_source(
+                        &format!("plugin-cache:{label}"),
+                        "plugin-cache",
+                        &version.join("skills"),
+                        Some(codex_plugin_installed_status_at_home(
+                            home, "rms", "personal",
+                        )),
+                        "run `rms agent plugin sync --target codex`, then start a new host thread",
+                        &embedded_digest,
+                    ));
+                }
+            }
+            Err(_) => sources.push(SkillSource {
+                origin: "plugin-cache".to_string(),
+                scope: "plugin-cache".to_string(),
+                path: cache_root.display().to_string(),
+                configured_state: "missing".to_string(),
+                digest: None,
+                embedded_equivalence: "unavailable".to_string(),
+                runtime_activation: "unknown",
+                precedence: "host-defined",
+                status: "informational".to_string(),
+                remediation: None,
+            }),
+        }
+    } else {
+        sources.push(SkillSource {
+            origin: "user-home".to_string(),
+            scope: "user".to_string(),
+            path: "<HOME-unavailable>".to_string(),
+            configured_state: "unknown".to_string(),
+            digest: None,
+            embedded_equivalence: "unavailable".to_string(),
+            runtime_activation: "unknown",
+            precedence: "host-defined",
+            status: "informational".to_string(),
+            remediation: None,
+        });
+    }
+
+    sources.sort_by(|left, right| {
+        left.origin
+            .cmp(&right.origin)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let informational = sources
+        .iter()
+        .filter(|source| source.status == "informational")
+        .count();
+    let review_required = sources
+        .iter()
+        .filter(|source| source.status == "review-required")
+        .count();
+    SkillSourceReport {
+        runtime_activation: "unknown",
+        precedence: "host-defined",
+        sources,
+        informational,
+        review_required,
+    }
+}
+
+fn filesystem_skill_source(
+    origin: &str,
+    scope: &str,
+    path: &Path,
+    configured_state: Option<String>,
+    remediation: &str,
+    embedded_digest: &str,
+) -> SkillSource {
+    let observation = observe_skill_set(path, embedded_digest);
+    let configured_state = configured_state.unwrap_or_else(|| {
+        if path.is_dir() && observation.equivalence == "unavailable" {
+            "no-rms-copy".to_string()
+        } else if path.is_dir() {
+            "detected".to_string()
+        } else {
+            "not-configured".to_string()
+        }
+    });
+    let configured_inconsistency = configured_state.contains("marketplace-malformed")
+        || configured_state.contains("marketplace-unreadable")
+        || ((configured_state.starts_with("marketplace-entry;")
+            || configured_state.contains("installed-enabled")
+            || configured_state.contains("installed-disabled"))
+            && observation.equivalence == "unavailable");
+    let status = if configured_inconsistency
+        || matches!(
+            observation.equivalence.as_str(),
+            "divergent" | "incomplete" | "unreadable"
+        ) {
+        "review-required"
+    } else {
+        "informational"
+    };
+    SkillSource {
+        origin: origin.to_string(),
+        scope: scope.to_string(),
+        path: path.display().to_string(),
+        configured_state,
+        digest: observation.digest,
+        embedded_equivalence: observation.equivalence,
+        runtime_activation: "unknown",
+        precedence: "host-defined",
+        status: status.to_string(),
+        remediation: (status == "review-required").then(|| remediation.to_string()),
+    }
+}
+
+struct SkillSetObservation {
+    digest: Option<String>,
+    equivalence: String,
+}
+
+fn observe_skill_set(root: &Path, embedded_digest: &str) -> SkillSetObservation {
+    if !root.is_dir() {
+        return SkillSetObservation {
+            digest: None,
+            equivalence: "unavailable".to_string(),
+        };
+    }
+    let mut hasher = Sha256::new();
+    let mut complete = true;
+    let mut readable = true;
+    let mut present = 0usize;
+    for (relative_path, _) in INIT_AGENT_SKILLS {
+        hasher.update(relative_path.as_bytes());
+        hasher.update([0]);
+        match fs::read(root.join(relative_path)) {
+            Ok(bytes) => {
+                present += 1;
+                hasher.update(bytes);
+            }
+            Err(error) => {
+                complete = false;
+                readable &= error.kind() == std::io::ErrorKind::NotFound;
+                hasher.update(format!("<{}>", error.kind()).as_bytes());
+            }
+        }
+        hasher.update([0xff]);
+    }
+    if present == 0 {
+        return SkillSetObservation {
+            digest: None,
+            equivalence: "unavailable".to_string(),
+        };
+    }
+    let digest = format!("sha256:{:x}", hasher.finalize());
+    let equivalence = if complete && digest == embedded_digest {
+        "equivalent"
+    } else if !complete && readable {
+        "incomplete"
+    } else if !readable {
+        "unreadable"
+    } else {
+        "divergent"
+    };
+    SkillSetObservation {
+        digest: Some(digest),
+        equivalence: equivalence.to_string(),
+    }
+}
+
+fn embedded_skill_set_digest() -> String {
+    let mut hasher = Sha256::new();
+    for (relative_path, contents) in INIT_AGENT_SKILLS {
+        hasher.update(relative_path.as_bytes());
+        hasher.update([0]);
+        hasher.update(contents.as_bytes());
+        hasher.update([0xff]);
+    }
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn marketplace_rms_plugin_root(marketplace_path: &Path) -> Option<PathBuf> {
+    let source = fs::read_to_string(marketplace_path).ok()?;
+    let value = serde_json::from_str::<JsonValue>(&source).ok()?;
+    let relative = value
+        .get("plugins")?
+        .as_array()?
+        .iter()
+        .find(|plugin| plugin.get("name").and_then(JsonValue::as_str) == Some("rms"))?
+        .get("source")?
+        .get("path")?
+        .as_str()?;
+    Some(marketplace_source_root(marketplace_path).join(relative))
 }
 
 fn collect_agent_skill_files(root: &Path, path: &Path, output: &mut Vec<String>) -> Result<()> {
@@ -4723,6 +5164,34 @@ fn print_agent_integration_report(report: &AgentIntegrationReport) {
     print_string_list("missing skills", &report.local_skills.missing);
     print_string_list("drifted skills", &report.local_skills.drifted);
     print_string_list("extra skills", &report.local_skills.extra);
+    println!();
+
+    println!("## Detected RMS Skill Origins");
+    println!(
+        "Runtime activation: {}",
+        report.skill_sources.runtime_activation
+    );
+    println!("Precedence: {}", report.skill_sources.precedence);
+    for source in &report.skill_sources.sources {
+        println!(
+            "- {} scope={} configured={} equivalence={} status={} path={}",
+            source.origin,
+            source.scope,
+            source.configured_state,
+            source.embedded_equivalence,
+            source.status,
+            source.path
+        );
+        println!(
+            "  digest={} runtime_activation={} precedence={}",
+            source.digest.as_deref().unwrap_or("<none>"),
+            source.runtime_activation,
+            source.precedence
+        );
+        if let Some(remediation) = &source.remediation {
+            println!("  remediation: {remediation}");
+        }
+    }
     println!();
 
     println!("## Workbench Config");
@@ -5076,12 +5545,12 @@ fn build_agent_plugin_report(
     marketplace_path: Option<&Path>,
 ) -> Result<AgentPluginReport> {
     let paths = agent_plugin_paths(marketplace_path)?;
-    let marketplace_status = if marketplace_has_plugin(&paths.marketplace_path, "rms") {
-        "present"
-    } else if paths.marketplace_path.exists() {
-        "missing-entry"
-    } else {
-        "missing"
+    let marketplace_status = match marketplace_plugin_presence(&paths.marketplace_path, "rms") {
+        MarketplacePluginPresence::Present => "present",
+        MarketplacePluginPresence::MissingEntry => "missing-entry",
+        MarketplacePluginPresence::Missing => "missing",
+        MarketplacePluginPresence::Malformed => "malformed",
+        MarketplacePluginPresence::Unreadable => "unreadable",
     };
     let plugin_status = if validate_generated_codex_plugin(&paths.plugin_root).is_ok() {
         "present"
@@ -5090,7 +5559,15 @@ fn build_agent_plugin_report(
     } else {
         "missing"
     };
-    let installed_status = codex_plugin_installed_status("rms", "personal");
+    let installed_status = if marketplace_path.is_some() {
+        codex_plugin_installed_status_at_home(
+            &marketplace_source_root(&paths.marketplace_path),
+            "rms",
+            "personal",
+        )
+    } else {
+        codex_plugin_installed_status("rms", "personal")
+    };
     let mut guidance = vec![
         "Project-local RMS guidance remains sufficient; plugin installation is optional.".to_string(),
         "Use `rms agent plugin install --target codex` to write the personal plugin and run `codex plugin add rms@personal`.".to_string(),
@@ -5153,6 +5630,8 @@ fn codex_plugin_cache_readiness() -> CodexPluginCacheReadiness {
             stale_versions.push(version);
         }
     }
+    matching_versions.sort();
+    stale_versions.sort();
     let status = match (matching_versions.is_empty(), stale_versions.is_empty()) {
         (true, true) => "missing",
         (false, true) => "present",
@@ -5174,28 +5653,52 @@ fn codex_plugin_cached_skills_match_embedded(cache_version_root: &Path) -> bool 
     })
 }
 
-fn marketplace_has_plugin(marketplace_path: &Path, name: &str) -> bool {
-    let Ok(source) = fs::read_to_string(marketplace_path) else {
-        return false;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MarketplacePluginPresence {
+    Present,
+    MissingEntry,
+    Missing,
+    Malformed,
+    Unreadable,
+}
+
+fn marketplace_plugin_presence(marketplace_path: &Path, name: &str) -> MarketplacePluginPresence {
+    let source = match fs::read_to_string(marketplace_path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return MarketplacePluginPresence::Missing;
+        }
+        Err(_) => return MarketplacePluginPresence::Unreadable,
     };
-    let Ok(value) = serde_json::from_str::<JsonValue>(&source) else {
-        return false;
+    let value = match serde_json::from_str::<JsonValue>(&source) {
+        Ok(value) => value,
+        Err(_) => return MarketplacePluginPresence::Malformed,
     };
-    value
-        .get("plugins")
-        .and_then(JsonValue::as_array)
-        .map(|plugins| {
-            plugins
-                .iter()
-                .any(|plugin| plugin.get("name").and_then(JsonValue::as_str) == Some(name))
-        })
-        .unwrap_or(false)
+    let Some(plugins) = value.get("plugins").and_then(JsonValue::as_array) else {
+        return MarketplacePluginPresence::Malformed;
+    };
+    if plugins
+        .iter()
+        .any(|plugin| plugin.get("name").and_then(JsonValue::as_str) == Some(name))
+    {
+        MarketplacePluginPresence::Present
+    } else {
+        MarketplacePluginPresence::MissingEntry
+    }
 }
 
 fn codex_plugin_installed_status(plugin_name: &str, marketplace_name: &str) -> String {
     let Ok(home) = home_dir() else {
         return "unknown".to_string();
     };
+    codex_plugin_installed_status_at_home(&home, plugin_name, marketplace_name)
+}
+
+fn codex_plugin_installed_status_at_home(
+    home: &Path,
+    plugin_name: &str,
+    marketplace_name: &str,
+) -> String {
     let config_path = home.join(".codex/config.toml");
     let Ok(config) = load_toml(&config_path) else {
         return "unknown".to_string();
@@ -5345,7 +5848,7 @@ fn run_release_check(root: &Path, skip_cargo_package: bool) -> Result<()> {
             ),
         )?;
     }
-    run_release_plugin_check(root, &rms_exe)?;
+    run_release_plugin_check(root, &release_binary_path(root))?;
 
     println!();
     println!("pass: release check");
@@ -5556,7 +6059,14 @@ fn run_release_plugin_check(root: &Path, rms_exe: &Path) -> Result<()> {
     println!("## codex plugin wrapper");
     validate_codex_plugin_sync(root)?;
     validate_embedded_skill_assets(root)?;
-    run_release_agent_distribution_smoke(rms_exe)?;
+    validate_guidance_and_documentation_distribution(root)?;
+    let rms_exe = fs::canonicalize(rms_exe).with_context(|| {
+        format!(
+            "failed to resolve release binary `{}` before agent distribution smoke",
+            rms_exe.display()
+        )
+    })?;
+    run_release_agent_distribution_smoke(&rms_exe)?;
     println!("pass");
     println!();
     Ok(())
@@ -5580,6 +6090,23 @@ fn run_release_binary_smoke(root: &Path) -> Result<()> {
     run_release_step(
         "release binary diagnose",
         command_with_args(&binary, &["diagnose", "--root", ".", "--json"], root),
+    )?;
+    run_release_step(
+        "release binary next",
+        command_with_args(
+            &binary,
+            &[
+                "next",
+                "--root",
+                ".",
+                "--module",
+                "tooling/rust/rms/module.yaml",
+                "--task",
+                "inspect RMS readiness",
+                "--json",
+            ],
+            root,
+        ),
     )?;
     run_release_step(
         "release binary validate minimal",
@@ -5637,11 +6164,27 @@ fn run_release_install_smoke(root: &Path, binary: &Path) -> Result<()> {
                 &bin_dir,
             )?,
         )?;
+        let next_args = release_install_next_args();
+        run_release_step(
+            "clean-room installed binary next",
+            command_with_path("rms", &next_args, root, &bin_dir)?,
+        )?;
         Ok(())
     })();
 
     let _ = fs::remove_dir_all(&temp);
     result
+}
+
+fn release_install_next_args() -> [&'static str; 6] {
+    [
+        "next",
+        "--root",
+        "examples/minimal",
+        "--task",
+        "inspect the example module",
+        "--json",
+    ]
 }
 
 fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
@@ -5730,6 +6273,44 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
                 root,
                 &bin_dir,
             )?,
+        )?;
+        run_release_step(
+            "clean-room dogfood next before design",
+            command_with_path(
+                "rms",
+                &[
+                    "next",
+                    "--root",
+                    app_arg.as_str(),
+                    "--task",
+                    "browser-playable Tic Tac Toe game",
+                    "--json",
+                ],
+                root,
+                &bin_dir,
+            )?,
+        )?;
+        run_release_step(
+            "clean-room dogfood stage authorized bootstrap",
+            command_with_args("git", &["-C", app_arg.as_str(), "add", "."], root),
+        )?;
+        run_release_step(
+            "clean-room dogfood authorized bootstrap commit",
+            command_with_args(
+                "git",
+                &[
+                    "-c",
+                    "user.name=RMS Release Check",
+                    "-c",
+                    "user.email=rms-release@example.invalid",
+                    "-C",
+                    app_arg.as_str(),
+                    "commit",
+                    "-m",
+                    "Initialize RMS bootstrap",
+                ],
+                root,
+            ),
         )?;
         run_release_step(
             "clean-room dogfood design",
@@ -6027,8 +6608,18 @@ fn ensure_output_contains(label: &str, output: &str, needle: &str) -> Result<()>
 fn assert_clean_room_dogfood_artifacts(app: &Path) -> Result<()> {
     ensure_file_contains(
         &app.join("AGENTS.md"),
-        "Default split for any capability",
+        "rms next --task",
         "Codex/agent RMS guidance",
+    )?;
+    ensure_file_contains(
+        &app.join("AGENTS.md"),
+        COMMIT_AUTHORITY_POLICY,
+        "Codex/agent Git authority guidance",
+    )?;
+    ensure_file_contains(
+        &app.join("AGENTS.md"),
+        BOOTSTRAP_PENDING_AUTHORIZED_COMMIT,
+        "Codex/agent bootstrap pending guidance",
     )?;
     ensure_file_contains(
         &app.join(".rms/config.yaml"),
@@ -6144,34 +6735,263 @@ fn validate_codex_plugin_sync(root: &Path) -> Result<()> {
 }
 
 fn validate_embedded_skill_assets(root: &Path) -> Result<()> {
-    compare_skill_file(
-        &root.join("skills/README.md"),
-        &root.join("tooling/rust/rms/assets/skills/README.md"),
-        "embedded skills README",
+    let canonical_root = root.join("skills");
+    let canonical = collect_distribution_files(&canonical_root)?;
+    let embedded_paths = INIT_AGENT_SKILLS
+        .iter()
+        .map(|(relative_path, _)| PathBuf::from(relative_path))
+        .collect::<BTreeSet<_>>();
+    let canonical_paths = canonical.keys().cloned().collect::<BTreeSet<_>>();
+    if embedded_paths != canonical_paths {
+        bail!("embedded crate skill file set is out of sync with canonical skills");
+    }
+    for (relative_path, embedded) in INIT_AGENT_SKILLS {
+        let actual = canonical
+            .get(Path::new(relative_path))
+            .ok_or_else(|| anyhow!("canonical skill distribution is missing `{relative_path}`"))?;
+        if actual.as_slice() != embedded.as_bytes() {
+            bail!("embedded crate skill `{relative_path}` is out of sync with canonical skills");
+        }
+    }
+    validate_exact_distribution(
+        &canonical,
+        &root.join("tooling/rust/rms/assets/skills"),
+        "embedded skill distribution",
     )?;
-    compare_skill_file(
-        &root.join("skills/README.md"),
-        &root.join("integrations/codex/rms/skills/README.md"),
-        "Codex plugin skills README",
+    validate_exact_distribution(
+        &canonical,
+        &root.join("integrations/codex/rms/skills"),
+        "Codex plugin skill distribution",
     )?;
-    for skill in CANONICAL_SKILLS {
-        let canonical = root.join("skills").join(skill).join("SKILL.md");
-        compare_skill_file(
-            &canonical,
-            &root
-                .join("tooling/rust/rms/assets/skills")
-                .join(skill)
-                .join("SKILL.md"),
-            &format!("embedded skill `{skill}`"),
-        )?;
-        compare_skill_file(
-            &canonical,
-            &root
-                .join("integrations/codex/rms/skills")
-                .join(skill)
-                .join("SKILL.md"),
-            &format!("Codex plugin skill `{skill}`"),
-        )?;
+    validate_distribution_subset(
+        &canonical,
+        &root.join(".agents/skills"),
+        "project Codex skill distribution",
+    )?;
+    validate_distribution_subset(
+        &canonical,
+        &root.join(".claude/skills"),
+        "project Claude skill distribution",
+    )?;
+    Ok(())
+}
+
+fn collect_distribution_files(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
+    let mut files = BTreeMap::new();
+    for entry in WalkDir::new(root).follow_links(false) {
+        let entry = entry.with_context(|| format!("failed to traverse `{}`", root.display()))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(root)
+            .with_context(|| format!("failed to relativize `{}`", entry.path().display()))?
+            .to_path_buf();
+        let contents = fs::read(entry.path())
+            .with_context(|| format!("failed to read `{}`", entry.path().display()))?;
+        files.insert(relative, contents);
+    }
+    Ok(files)
+}
+
+fn validate_exact_distribution(
+    canonical: &BTreeMap<PathBuf, Vec<u8>>,
+    copy_root: &Path,
+    label: &str,
+) -> Result<()> {
+    let copy = collect_distribution_files(copy_root)?;
+    if copy.keys().collect::<Vec<_>>() != canonical.keys().collect::<Vec<_>>() {
+        bail!("{label} file set is out of sync with canonical skills");
+    }
+    validate_distribution_contents(canonical, &copy, label)
+}
+
+fn validate_distribution_subset(
+    canonical: &BTreeMap<PathBuf, Vec<u8>>,
+    copy_root: &Path,
+    label: &str,
+) -> Result<()> {
+    let copy = collect_distribution_files(copy_root)?;
+    validate_distribution_contents(canonical, &copy, label)?;
+    let managed_roots = canonical
+        .keys()
+        .filter_map(|path| path.components().next())
+        .map(|component| component.as_os_str().to_os_string())
+        .collect::<BTreeSet<_>>();
+    for relative_path in copy.keys().filter(|path| !canonical.contains_key(*path)) {
+        if relative_path
+            .components()
+            .next()
+            .is_some_and(|component| managed_roots.contains(component.as_os_str()))
+        {
+            bail!(
+                "{label} contains stale managed residue `{}`",
+                relative_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_distribution_contents(
+    canonical: &BTreeMap<PathBuf, Vec<u8>>,
+    copy: &BTreeMap<PathBuf, Vec<u8>>,
+    label: &str,
+) -> Result<()> {
+    for (relative_path, expected) in canonical {
+        let Some(actual) = copy.get(relative_path) else {
+            bail!("{label} is missing `{}`", relative_path.display());
+        };
+        if actual != expected {
+            bail!(
+                "{label} file `{}` is out of sync with canonical skills",
+                relative_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_guidance_and_documentation_distribution(root: &Path) -> Result<()> {
+    let full_asset = root.join("tooling/rust/rms/assets/guidance/agents-full.md");
+    let adopted_asset = root.join("tooling/rust/rms/assets/guidance/agents-adopted-block.md");
+    let claude_asset = root.join("tooling/rust/rms/assets/guidance/claude.md");
+    compare_skill_file(&full_asset, &root.join("AGENTS.md"), "root AGENTS guidance")?;
+    compare_skill_file(
+        &claude_asset,
+        &root.join("CLAUDE.md"),
+        "root Claude guidance",
+    )?;
+    let full = fs::read_to_string(&full_asset)
+        .with_context(|| format!("failed to read `{}`", full_asset.display()))?;
+    if full != INIT_AGENTS_MD {
+        bail!("full managed AGENTS guidance asset drifted from the embedded crate asset");
+    }
+    if full.lines().count() > 100 || full.len() > 12 * 1024 {
+        bail!("full managed AGENTS guidance exceeds 100 lines or 12 KiB");
+    }
+    let sections = full
+        .lines()
+        .filter_map(|line| line.strip_prefix("## "))
+        .collect::<Vec<_>>();
+    if sections
+        != [
+            "Authority",
+            "Start / Route",
+            "Change Gate",
+            "Hard Boundaries",
+            "Completion",
+        ]
+    {
+        bail!("full managed AGENTS guidance must contain exactly the five canonical sections");
+    }
+    for required in [
+        COMMIT_AUTHORITY_POLICY,
+        BOOTSTRAP_PENDING_AUTHORIZED_COMMIT,
+        CANDIDATE_PENDING_AUTHORIZED_COMMIT,
+    ] {
+        if !full.contains(required) {
+            bail!("full managed AGENTS guidance is missing `{required}`");
+        }
+    }
+    let adopted = fs::read_to_string(&adopted_asset)
+        .with_context(|| format!("failed to read `{}`", adopted_asset.display()))?;
+    if adopted != INIT_ADOPTED_AGENTS_BLOCK {
+        bail!("adopted AGENTS guidance asset drifted from the embedded crate asset");
+    }
+    if !adopted.contains(RMS_MANAGED_AGENTS_START)
+        || !adopted.contains(RMS_MANAGED_AGENTS_END)
+        || !adopted.contains(COMMIT_AUTHORITY_POLICY)
+        || !adopted.contains(BOOTSTRAP_PENDING_AUTHORIZED_COMMIT)
+        || !adopted.contains(CANDIDATE_PENDING_AUTHORIZED_COMMIT)
+    {
+        bail!("adopted managed guidance asset is malformed or incomplete");
+    }
+    let claude = fs::read_to_string(&claude_asset)
+        .with_context(|| format!("failed to read `{}`", claude_asset.display()))?;
+    if claude != INIT_CLAUDE_MD {
+        bail!("Claude guidance asset drifted from the embedded crate asset");
+    }
+    if !claude.contains(RMS_CLAUDE_GUIDANCE_SIGNATURE)
+        || !claude.contains(RMS_MANAGED_CLAUDE_START)
+        || !claude.contains(RMS_MANAGED_CLAUDE_END)
+    {
+        bail!("Claude guidance asset is missing its managed identity markers");
+    }
+    let sync_script = fs::read_to_string(root.join("scripts/sync-rms-agent-distributions.sh"))?;
+    for required in [
+        "tooling/rust/rms/assets/skills",
+        "integrations/codex/rms/skills",
+        ".agents/skills",
+        ".claude/skills",
+        "agents-full.md",
+        "claude.md",
+    ] {
+        if !sync_script.contains(required) {
+            bail!("managed distribution sync script is missing `{required}`");
+        }
+    }
+    if sync_script.contains("rm -rf") || sync_script.contains("rm -r") {
+        bail!("managed distribution sync script must preserve unrelated local skills");
+    }
+    let wrapper = fs::read_to_string(root.join("integrations/codex/rms/scripts/sync-skills.sh"))?;
+    if !wrapper.contains("scripts/sync-rms-agent-distributions.sh") || !wrapper.contains("exec sh")
+    {
+        bail!("legacy plugin sync entrypoint is not a compatibility wrapper");
+    }
+
+    let quickstart = fs::read_to_string(root.join("QUICKSTART.md"))?;
+    ensure_document_markers(
+        "QUICKSTART.md",
+        &quickstart,
+        &[
+            "rms init",
+            "authorized bootstrap commit",
+            "rms design",
+            "rms add-module",
+        ],
+    )?;
+    if quickstart.contains("--domain-child") || quickstart.contains("--boundary-child") {
+        bail!("QUICKSTART.md must not prescribe default capability child-name overrides");
+    }
+    if !quickstart.contains("rms add-capability") {
+        bail!("QUICKSTART.md must present recursive capability scaffolding as an alternative");
+    }
+    let production = fs::read_to_string(root.join("PRODUCTION.md"))?;
+    if !production.contains("focused checks → gate → authorized candidate commit → strict audit")
+    {
+        bail!("PRODUCTION.md must preserve focused proof, gate, authorized commit, strict audit ordering");
+    }
+    ensure_document_markers(
+        "PRODUCTION.md",
+        &production,
+        &[
+            "focused checks",
+            "rms gate --root .",
+            "authorized candidate commit",
+            "rms audit --root . --strict",
+        ],
+    )?;
+    for document in ["README.md", "TOOLING.md", "integrations/CODEX.md"] {
+        let contents = fs::read_to_string(root.join(document))?;
+        if !contents.contains("rms next")
+            || !(contents.contains("runtime activation") || contents.contains("runtime_activation"))
+            || !contents.contains("Git commits are required evidence")
+        {
+            bail!("{document} is missing deterministic next, skill activation, or Git authority guidance");
+        }
+    }
+    Ok(())
+}
+
+fn ensure_document_markers(label: &str, contents: &str, markers: &[&str]) -> Result<()> {
+    let mut cursor = 0usize;
+    for marker in markers {
+        let Some(offset) = contents[cursor..].find(marker) else {
+            bail!("{label} is missing ordered marker `{marker}`");
+        };
+        cursor += offset + marker.len();
     }
     Ok(())
 }
@@ -6197,9 +7017,16 @@ fn run_release_agent_distribution_smoke(rms_exe: &Path) -> Result<()> {
             .unwrap_or(0)
     ));
     let project = temp.join("project");
+    let adopted_project = temp.join("adopted-project");
     let marketplace = temp.join("marketplace.json");
     fs::create_dir_all(&project)
         .with_context(|| format!("failed to create `{}`", project.display()))?;
+    fs::create_dir_all(&adopted_project)
+        .with_context(|| format!("failed to create `{}`", adopted_project.display()))?;
+    fs::write(
+        adopted_project.join("AGENTS.md"),
+        "# Project-owned guidance\n\nKeep this policy.\n",
+    )?;
     let result = (|| -> Result<()> {
         run_release_step(
             "agent init codex",
@@ -6215,6 +7042,24 @@ fn run_release_agent_distribution_smoke(rms_exe: &Path) -> Result<()> {
                 rms_exe,
                 &["agent", "sync", "--target", "codex", "--root", "."],
                 &project,
+            ),
+        )?;
+        run_release_step(
+            "agent init claude",
+            command_with_args(
+                rms_exe,
+                &[
+                    "agent", "init", "--target", "claude", "--root", ".", "--force",
+                ],
+                &project,
+            ),
+        )?;
+        run_release_step(
+            "agent sync adopted guidance",
+            command_with_args(
+                rms_exe,
+                &["agent", "sync", "--target", "codex", "--root", "."],
+                &adopted_project,
             ),
         )?;
         run_release_step(
@@ -6254,6 +7099,31 @@ fn run_release_agent_distribution_smoke(rms_exe: &Path) -> Result<()> {
             &project.join(".agents/skills/implement-change/SKILL.md"),
             "temp project Codex RMS skill",
         )?;
+        if fs::read_to_string(project.join("AGENTS.md"))? != INIT_AGENTS_MD {
+            bail!(
+                "release binary generated full AGENTS guidance that differs from its crate asset"
+            );
+        }
+        if fs::read_to_string(project.join("CLAUDE.md"))? != INIT_CLAUDE_MD {
+            bail!("release binary generated Claude guidance that differs from its crate asset");
+        }
+        for (relative_path, contents) in INIT_AGENT_SKILLS {
+            for skill_root in [
+                project.join(".agents/skills"),
+                project.join(".claude/skills"),
+                temp.join("plugins/rms/skills"),
+            ] {
+                if fs::read_to_string(skill_root.join(relative_path))? != *contents {
+                    bail!("release binary generated drifted skill `{relative_path}`");
+                }
+            }
+        }
+        let adopted = fs::read_to_string(adopted_project.join("AGENTS.md"))?;
+        if !adopted.starts_with("# Project-owned guidance\n\nKeep this policy.\n")
+            || !adopted.contains(INIT_ADOPTED_AGENTS_BLOCK)
+        {
+            bail!("release binary did not preserve project guidance with the exact adopted block");
+        }
         ensure_file_exists(&marketplace, "temp Codex marketplace")?;
         Ok(())
     })();
@@ -6383,6 +7253,12 @@ fn main() -> Result<()> {
             run_explain(&subject, module.as_deref(), &root, &options)
         }
         Commands::Diagnose { root, json } => run_diagnose(&root, json),
+        Commands::Next {
+            task,
+            root,
+            module,
+            json,
+        } => run_next(&root, module.as_deref(), &task, json),
         Commands::Prompt {
             kind,
             module,
@@ -7209,7 +8085,238 @@ fn run_diagnose(root: &Path, json_output: bool) -> Result<()> {
     Ok(())
 }
 
+fn build_repository_profile(root: &Path) -> Result<BuiltRepositoryProfile> {
+    let metadata = fs::metadata(root)
+        .with_context(|| format!("failed to inspect repository root `{}`", root.display()))?;
+    if !metadata.is_dir() {
+        bail!("repository root `{}` is not a directory", root.display());
+    }
+    let entries = fs::read_dir(root)
+        .with_context(|| format!("failed to read repository root `{}`", root.display()))?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let has_project_content = entries.iter().any(|entry| entry.file_name() != ".git");
+
+    let mut system_paths = BTreeSet::new();
+    let mut module_paths = BTreeSet::new();
+    let mut canonical_candidates = BTreeMap::<PathBuf, &'static str>::new();
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(discovery_entry_is_in_scope)
+    {
+        let entry = entry
+            .with_context(|| format!("failed to traverse repository root `{}`", root.display()))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let expected = if file_name == "system.yaml" || file_name.ends_with(".system.yaml") {
+            system_paths.insert(path.to_path_buf());
+            Some("rms/system/v0.1")
+        } else if file_name == "module.yaml" || file_name.ends_with(".module.yaml") {
+            module_paths.insert(path.to_path_buf());
+            Some("rms/module/v0.1")
+        } else if file_name == "context-map.yaml" {
+            Some("rms/context-map/v0.1")
+        } else if file_name == "implementation.yaml" {
+            Some("rms/implementation/v0.1")
+        } else if path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            == Some("contracts")
+            && path.extension().and_then(|extension| extension.to_str()) == Some("yaml")
+        {
+            Some("rms/contract/v0.1")
+        } else {
+            None
+        };
+        if let Some(expected) = expected {
+            canonical_candidates.insert(path.to_path_buf(), expected);
+        }
+    }
+
+    let mut diagnostics = Vec::new();
+    let mut modules = BTreeMap::new();
+    for (path, expected_spec) in &canonical_candidates {
+        match load_manifest(path) {
+            Ok(manifest) => {
+                let actual = get_str(&manifest.value, &["spec"]);
+                if actual != Some(*expected_spec) {
+                    diagnostics.push(Diagnostic {
+                        severity: Severity::Error,
+                        check: "repository.canonical-spec".to_string(),
+                        path: path.display().to_string(),
+                        message: format!(
+                            "canonical path expects spec `{expected_spec}`, found `{}`",
+                            actual.unwrap_or("<missing>")
+                        ),
+                    });
+                    continue;
+                }
+                if *expected_spec == "rms/module/v0.1" {
+                    let Some(name) =
+                        get_str(&manifest.value, &["module", "name"]).map(ToString::to_string)
+                    else {
+                        diagnostics.push(Diagnostic {
+                            severity: Severity::Error,
+                            check: "repository.module-name".to_string(),
+                            path: path.display().to_string(),
+                            message: "module manifest has no stable module.name".to_string(),
+                        });
+                        continue;
+                    };
+                    if let Some(previous) = modules.insert(
+                        name.clone(),
+                        ModuleIndexEntry {
+                            name: name.clone(),
+                            path: path.to_path_buf(),
+                            value: manifest.value,
+                        },
+                    ) {
+                        diagnostics.push(Diagnostic {
+                            severity: Severity::Error,
+                            check: "repository.duplicate-module".to_string(),
+                            path: path.display().to_string(),
+                            message: format!(
+                                "module name `{name}` is also declared at `{}`",
+                                previous.path.display()
+                            ),
+                        });
+                    }
+                }
+            }
+            Err(error) => diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                check: "repository.canonical-unreadable".to_string(),
+                path: path.display().to_string(),
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    let root_system = root.join("system.yaml");
+    let root_context = root.join("context-map.yaml");
+    let partial_or_full_system_root = root_system.exists() || root_context.exists();
+    let direct_modules = module_paths
+        .iter()
+        .filter(|path| path.parent() == Some(root))
+        .count();
+    let kind = if partial_or_full_system_root {
+        RepositoryKind::SystemRoot
+    } else if system_paths.len() > 1 {
+        RepositoryKind::MultiSystemWorkspace
+    } else if system_paths.len() == 1 {
+        RepositoryKind::SystemContainer
+    } else if direct_modules == 1 {
+        RepositoryKind::ModuleRoot
+    } else if !module_paths.is_empty() {
+        RepositoryKind::ModuleWorkspace
+    } else {
+        RepositoryKind::Uninitialized
+    };
+
+    let contained = composition_children(&modules)
+        .into_iter()
+        .map(|child| child.name)
+        .collect::<BTreeSet<_>>();
+    let top_level_modules = modules
+        .values()
+        .filter(|module| !contained.contains(&module.name))
+        .map(|module| module.path.display().to_string())
+        .collect::<Vec<_>>();
+    let applicable = kind.owns_root_system_context();
+    let mut canonical_files = vec![
+        canonical_root_readiness("system.yaml", &root_system, applicable, "rms/system/v0.1"),
+        canonical_root_readiness(
+            "context-map.yaml",
+            &root_context,
+            applicable,
+            "rms/context-map/v0.1",
+        ),
+        file_readiness("GLOSSARY.md", &root.join("GLOSSARY.md")),
+        agent_guidance_readiness(&root.join("AGENTS.md")),
+        file_readiness(WORKBENCH_CONFIG_PATH, &root.join(WORKBENCH_CONFIG_PATH)),
+    ];
+    canonical_files.push(ReadinessItem {
+        name: "git source revision".to_string(),
+        path: root.display().to_string(),
+        status: source_revision(root).unwrap_or_else(|| "missing".to_string()),
+    });
+
+    Ok(BuiltRepositoryProfile {
+        report: RepositoryProfile {
+            kind,
+            root: root.display().to_string(),
+            canonical_files,
+            system_manifests: system_paths
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            module_manifests: module_paths
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            top_level_modules,
+            has_project_content,
+        },
+        modules,
+        diagnostics,
+    })
+}
+
+fn canonical_root_readiness(
+    label: &str,
+    path: &Path,
+    applicable: bool,
+    expected_spec: &str,
+) -> ReadinessItem {
+    let status = if !path.exists() {
+        if applicable {
+            "missing"
+        } else {
+            "not-applicable"
+        }
+        .to_string()
+    } else {
+        match load_manifest(path) {
+            Ok(manifest) if get_str(&manifest.value, &["spec"]) == Some(expected_spec) => {
+                "present".to_string()
+            }
+            _ => "invalid".to_string(),
+        }
+    };
+    ReadinessItem {
+        name: label.to_string(),
+        path: path.display().to_string(),
+        status,
+    }
+}
+
+fn append_unique_diagnostics(target: &mut Vec<Diagnostic>, additions: Vec<Diagnostic>) {
+    for diagnostic in additions {
+        if !target.iter().any(|existing| {
+            existing.check == diagnostic.check
+                && existing.path == diagnostic.path
+                && existing.message == diagnostic.message
+        }) {
+            target.push(diagnostic);
+        }
+    }
+    target.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.check.cmp(&right.check))
+            .then_with(|| left.message.cmp(&right.message))
+    });
+}
+
 fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
+    let profile = build_repository_profile(root)?;
     let targets = discover_targets(
         root,
         Vec::new(),
@@ -7228,7 +8335,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
         *counts.entry(spec).or_default() += 1;
     }
 
-    let diagnostics = collect_validation_diagnostics(
+    let mut diagnostics = collect_validation_diagnostics(
         root,
         Vec::new(),
         Vec::new(),
@@ -7237,6 +8344,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
         Vec::new(),
         Vec::new(),
     )?;
+    append_unique_diagnostics(&mut diagnostics, profile.diagnostics.clone());
     let errors = diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.severity == Severity::Error)
@@ -7248,9 +8356,11 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
 
     let config = diagnose_config(root);
     let run_records = diagnose_run_records(root, &config.run_directory);
+    let detected_skill_sources = detect_skill_sources(root, home_dir().ok().as_deref());
 
     let source_revision = source_revision(root);
     let mut guidance = vec![
+        "Use `rms next --task \"<intent>\" --root .` for a deterministic work prescription.".to_string(),
         "Use `rms explain <module>` before asking broad questions about a module.".to_string(),
         "Use `rms config init` when you want checked-in or local workbench provider defaults.".to_string(),
         "Use `rms explain --ai` or `--provider codex` only when provider execution is intended.".to_string(),
@@ -7274,34 +8384,34 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
         "Use `rms verify <implementation.yaml>` when an implementation binding declares verification, or `rms verify <composite-module.yaml>` for composite rollups.".to_string(),
     ];
     if source_revision.is_none() {
-        guidance.push(
-            "Strict audit cannot pass until the project has a git source revision; run `git init` if needed, then `git add . && git commit -m \"Initial RMS project\"` before the production audit.".to_string(),
-        );
+        guidance.push(BOOTSTRAP_PENDING_AUTHORIZED_COMMIT.to_string());
     }
+    guidance.push(COMMIT_AUTHORITY_POLICY.to_string());
+
+    let skill_sources = SkillSourceSummary {
+        detected: detected_skill_sources.sources.len(),
+        informational: detected_skill_sources.informational,
+        review_required: detected_skill_sources.review_required,
+        runtime_activation: detected_skill_sources.runtime_activation,
+        precedence: detected_skill_sources.precedence,
+    };
 
     Ok(DiagnoseReport {
         validator: VALIDATOR_NAME,
         version: VALIDATOR_VERSION,
         root: root.display().to_string(),
-        repository: vec![
-            file_readiness("system.yaml", &root.join("system.yaml")),
-            file_readiness("context-map.yaml", &root.join("context-map.yaml")),
-            file_readiness("AGENTS.md", &root.join("AGENTS.md")),
-            file_readiness(WORKBENCH_CONFIG_PATH, &root.join(WORKBENCH_CONFIG_PATH)),
-            ReadinessItem {
-                name: "git source revision".to_string(),
-                path: root.display().to_string(),
-                status: source_revision.unwrap_or_else(|| "missing".to_string()),
-            },
-        ],
+        repository: profile.report,
+        skill_sources,
         config,
         codex_plugin_cache: codex_plugin_cache_readiness(),
         manifest_counts: counts,
         validation: ValidationReadiness {
-            status: if diagnostics.is_empty() {
-                "pass".to_string()
-            } else {
+            status: if errors > 0 {
+                "fail".to_string()
+            } else if warnings > 0 {
                 "review-required".to_string()
+            } else {
+                "pass".to_string()
             },
             errors,
             warnings,
@@ -7329,9 +8439,12 @@ fn print_diagnose_report(report: &DiagnoseReport) {
     println!();
 
     println!("## Repository");
-    for item in &report.repository {
+    println!("Kind: {}", report.repository.kind.label());
+    for item in &report.repository.canonical_files {
         println!("{}: {}", item.name, item.status);
     }
+    println!("Systems: {}", report.repository.system_manifests.len());
+    println!("Modules: {}", report.repository.module_manifests.len());
     let total_manifests: usize = report.manifest_counts.values().sum();
     println!(
         "RMS manifests: {}",
@@ -7344,6 +8457,21 @@ fn print_diagnose_report(report: &DiagnoseReport) {
     for (spec, count) in &report.manifest_counts {
         println!("- {spec}: {count}");
     }
+    println!();
+
+    println!("## Detected RMS Skill Sources");
+    println!("Detected: {}", report.skill_sources.detected);
+    println!("Informational: {}", report.skill_sources.informational);
+    println!("Review required: {}", report.skill_sources.review_required);
+    println!(
+        "Runtime activation: {}",
+        report.skill_sources.runtime_activation
+    );
+    println!("Precedence: {}", report.skill_sources.precedence);
+    println!(
+        "Detailed origins: `rms agent diagnose --root {}`",
+        report.root
+    );
     println!();
 
     println!("## Config");
@@ -7469,6 +8597,80 @@ fn file_readiness(label: &str, path: &Path) -> ReadinessItem {
         } else {
             "missing".to_string()
         },
+    }
+}
+
+fn agent_guidance_readiness(path: &Path) -> ReadinessItem {
+    let status = match fs::read_to_string(path) {
+        Ok(source) if source == INIT_AGENTS_MD => "exact-current",
+        Ok(source) => {
+            let starts = source.matches(RMS_MANAGED_AGENTS_START).count();
+            let ends = source.matches(RMS_MANAGED_AGENTS_END).count();
+            if starts == 0 && ends == 0 {
+                if source.contains(RMS_FULL_GUIDANCE_SIGNATURE) {
+                    "drifted"
+                } else {
+                    "unmanaged"
+                }
+            } else if starts != 1 || ends != 1 {
+                "malformed"
+            } else {
+                match merge_managed_section(
+                    &source,
+                    RMS_MANAGED_AGENTS_START,
+                    RMS_MANAGED_AGENTS_END,
+                    INIT_ADOPTED_AGENTS_BLOCK,
+                ) {
+                    Ok(merged) if merged == source => "managed-current",
+                    Ok(_) => "drifted",
+                    Err(_) => "malformed",
+                }
+            }
+        }
+        Err(_) if path.exists() => "malformed",
+        Err(_) => "missing",
+    };
+    ReadinessItem {
+        name: "AGENTS.md".to_string(),
+        path: path.display().to_string(),
+        status: status.to_string(),
+    }
+}
+
+fn exact_managed_file_readiness(label: &str, path: &Path, expected: &str) -> ReadinessItem {
+    let status = match fs::read_to_string(path) {
+        Ok(source) if source == expected => "exact-current",
+        Ok(source) => {
+            let starts = source.matches(RMS_MANAGED_CLAUDE_START).count();
+            let ends = source.matches(RMS_MANAGED_CLAUDE_END).count();
+            if starts == 0 && ends == 0 {
+                if source.contains(RMS_CLAUDE_GUIDANCE_SIGNATURE) {
+                    "drifted"
+                } else {
+                    "unmanaged"
+                }
+            } else if starts != 1 || ends != 1 {
+                "malformed"
+            } else {
+                match merge_managed_section(
+                    &source,
+                    RMS_MANAGED_CLAUDE_START,
+                    RMS_MANAGED_CLAUDE_END,
+                    expected,
+                ) {
+                    Ok(merged) if merged == source => "managed-current",
+                    Ok(_) => "drifted",
+                    Err(_) => "malformed",
+                }
+            }
+        }
+        Err(_) if path.exists() => "malformed",
+        Err(_) => "missing",
+    };
+    ReadinessItem {
+        name: label.to_string(),
+        path: path.display().to_string(),
+        status: status.to_string(),
     }
 }
 
@@ -24410,6 +25612,1582 @@ fn print_context_packet(manifest: &LoadedManifest, root: &Path, task: Option<&st
     println!("- Declare new dependencies, effects, profile obligations, and recovery paths.");
     println!("- Verify declared laws, contracts, scenarios, and boundaries that the task affects.");
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum NextResult {
+    Ready,
+    BootstrapRequired,
+    DesignRequired,
+    NeedsOwner,
+    Blocked,
+}
+
+impl NextResult {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::BootstrapRequired => "bootstrap-required",
+            Self::DesignRequired => "design-required",
+            Self::NeedsOwner => "needs-owner",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum TaskLane {
+    ReadOnly,
+    Design,
+    Semantic,
+    Surface,
+    SemanticPlusSurface,
+    ImplementationCandidate,
+    Undetermined,
+}
+
+impl TaskLane {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::Design => "design",
+            Self::Semantic => "semantic",
+            Self::Surface => "surface",
+            Self::SemanticPlusSurface => "semantic-plus-surface",
+            Self::ImplementationCandidate => "implementation-candidate",
+            Self::Undetermined => "undetermined",
+        }
+    }
+
+    fn prepares_candidate(self) -> bool {
+        self != Self::ReadOnly
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct TaskClassification {
+    lane: TaskLane,
+    confidence: String,
+    reasons: Vec<String>,
+    prospective: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum OwnerStatus {
+    Selected,
+    Ambiguous,
+    None,
+    Invalid,
+}
+
+impl OwnerStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Selected => "selected",
+            Self::Ambiguous => "ambiguous",
+            Self::None => "none",
+            Self::Invalid => "invalid",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct OwnerResolution {
+    status: OwnerStatus,
+    reason: String,
+    selected: Option<RouteModuleSummary>,
+    candidates: Vec<RouteCandidate>,
+    route: Vec<String>,
+    warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct NextContext {
+    files: Vec<ReadinessItem>,
+    implementation: Option<String>,
+    declared_roles: Vec<DeclaredRolePath>,
+    edit_authority: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DeclaredRolePath {
+    role: String,
+    path: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum NextStepKind {
+    Executable,
+    Manual,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct NextStep {
+    kind: NextStepKind,
+    description: String,
+    program: Option<String>,
+    args: Vec<String>,
+    display: Option<String>,
+    cwd: Option<String>,
+    authorization: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct NextStepGroup {
+    phase: String,
+    steps: Vec<NextStep>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CompletionPrescription {
+    order: Vec<String>,
+    commit_authority: String,
+    policy: &'static str,
+    pending_state: Option<&'static str>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct NextReport {
+    result: NextResult,
+    task: String,
+    root: String,
+    repository: RepositoryProfile,
+    validation: ValidationReadiness,
+    owner: OwnerResolution,
+    task_classification: TaskClassification,
+    context: NextContext,
+    warnings: Vec<String>,
+    blockers: Vec<String>,
+    steps: Vec<NextStepGroup>,
+    skill_sources: SkillSourceReport,
+    completion: CompletionPrescription,
+}
+
+fn run_next(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    task: &str,
+    json_output: bool,
+) -> Result<()> {
+    let report = build_next_report(root, explicit_module, task)?;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_next_report(&report);
+    }
+    Ok(())
+}
+
+fn build_next_report(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    task: &str,
+) -> Result<NextReport> {
+    let task = task.trim();
+    if task.is_empty() {
+        bail!("`--task` must contain a nonblank prospective intent");
+    }
+    let root = fs::canonicalize(root)
+        .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
+    let profile = build_repository_profile(&root)?;
+    let classification = classify_prospective_task(task);
+    let mut diagnostics = collect_validation_diagnostics(
+        &root,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )?;
+    append_unique_diagnostics(&mut diagnostics, profile.diagnostics.clone());
+    let errors = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .count();
+    let warnings_count = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+        .count();
+    let validation = ValidationReadiness {
+        status: if errors > 0 {
+            "fail".to_string()
+        } else if warnings_count > 0 {
+            "review-required".to_string()
+        } else {
+            "pass".to_string()
+        },
+        errors,
+        warnings: warnings_count,
+        diagnostics,
+    };
+
+    let mut owner = resolve_next_owner(&root, explicit_module, task, &profile.modules, errors > 0)?;
+    let context = build_next_context(&root, &profile.report, owner.selected.as_ref())?;
+    let skill_sources = detect_skill_sources(&root, home_dir().ok().as_deref());
+    let mut warnings = owner.warnings.clone();
+    for diagnostic in validation
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+    {
+        warnings.push(format!(
+            "{} [{}]: {}",
+            diagnostic.path, diagnostic.check, diagnostic.message
+        ));
+    }
+    if skill_sources.review_required > 0 {
+        warnings.push(format!(
+            "{} detected RMS skill source(s) diverge from or incompletely mirror the embedded set; runtime activation remains unknown",
+            skill_sources.review_required
+        ));
+    }
+    warnings.sort();
+    warnings.dedup();
+
+    let mut blockers = validation
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .map(|diagnostic| {
+            format!(
+                "{} [{}]: {}",
+                diagnostic.path, diagnostic.check, diagnostic.message
+            )
+        })
+        .collect::<Vec<_>>();
+    if owner.status == OwnerStatus::Invalid {
+        blockers.push(owner.reason.clone());
+    }
+    blockers.sort();
+    blockers.dedup();
+
+    let result = if !blockers.is_empty() {
+        NextResult::Blocked
+    } else if profile.report.kind == RepositoryKind::Uninitialized {
+        NextResult::BootstrapRequired
+    } else if profile.report.module_manifests.is_empty() {
+        NextResult::DesignRequired
+    } else if matches!(owner.status, OwnerStatus::Ambiguous | OwnerStatus::None) {
+        NextResult::NeedsOwner
+    } else if matches!(
+        classification.lane,
+        TaskLane::Design | TaskLane::Undetermined
+    ) {
+        NextResult::DesignRequired
+    } else {
+        NextResult::Ready
+    };
+
+    if result == NextResult::Blocked && owner.status == OwnerStatus::Selected {
+        owner.warnings.push(
+            "owner evidence is advisory until the blocking canonical diagnostics are resolved"
+                .to_string(),
+        );
+    }
+    let steps = build_next_steps(
+        &root,
+        task,
+        result,
+        &profile.report,
+        &classification,
+        &owner,
+        &context,
+    )?;
+    let prepares_candidate = classification.lane.prepares_candidate()
+        || matches!(
+            result,
+            NextResult::BootstrapRequired | NextResult::DesignRequired
+        );
+    let provenance_pending = repository_provenance_pending(&profile.report);
+    let completion = CompletionPrescription {
+        order: vec![
+            "focused proof".to_string(),
+            "rms gate".to_string(),
+            "authorized candidate commit".to_string(),
+            "strict audit".to_string(),
+        ],
+        commit_authority: "unknown; task and host policy must authorize Git writes".to_string(),
+        policy: COMMIT_AUTHORITY_POLICY,
+        pending_state: prepares_candidate.then_some(
+            if result == NextResult::BootstrapRequired || provenance_pending {
+                BOOTSTRAP_PENDING_AUTHORIZED_COMMIT
+            } else {
+                CANDIDATE_PENDING_AUTHORIZED_COMMIT
+            },
+        ),
+    };
+
+    Ok(NextReport {
+        result,
+        task: task.to_string(),
+        root: root.display().to_string(),
+        repository: profile.report,
+        validation,
+        owner,
+        task_classification: classification,
+        context,
+        warnings,
+        blockers,
+        steps,
+        skill_sources,
+        completion,
+    })
+}
+
+fn classify_prospective_task(task: &str) -> TaskClassification {
+    let read_terms = score_keywords(
+        task,
+        &[
+            "inspect",
+            "explain",
+            "diagnose",
+            "report",
+            "review",
+            "audit",
+            "verify",
+            "check",
+            "summarize",
+            "understand",
+            "show",
+            "list",
+        ],
+    );
+    let mutation_terms = score_keywords(
+        task,
+        &[
+            "add",
+            "change",
+            "create",
+            "implement",
+            "fix",
+            "refactor",
+            "remove",
+            "update",
+            "build",
+            "migrate",
+            "evolve",
+            "rename",
+            "replace",
+        ],
+    );
+    let design_terms = score_keywords(
+        task,
+        &[
+            "design",
+            "architecture",
+            "module",
+            "capability",
+            "bounded-context",
+            "split",
+            "boundary",
+            "scaffold",
+            "new-module",
+            "new-capability",
+        ],
+    );
+    let semantic_terms = score_keywords(
+        task,
+        &[
+            "semantic",
+            "meaning",
+            "law",
+            "invariant",
+            "contract",
+            "property",
+            "state",
+            "transition",
+            "command",
+            "event",
+            "effect",
+            "protocol",
+            "resource",
+            "authority",
+            "artifact",
+            "rejection",
+            "compatibility",
+        ],
+    );
+    let surface_terms = score_keywords(
+        task,
+        &[
+            "surface",
+            "cli",
+            "ui",
+            "browser",
+            "http",
+            "endpoint",
+            "route",
+            "screen",
+            "form",
+            "app",
+            "executable",
+            "command-line",
+            "api",
+        ],
+    );
+    let implementation_terms = score_keywords(
+        task,
+        &[
+            "implementation",
+            "code",
+            "body",
+            "helper",
+            "performance",
+            "bug",
+            "test",
+            "parser",
+            "render",
+            "formatting",
+        ],
+    ) + mutation_terms;
+
+    let mut reasons = Vec::new();
+    let lane = if read_terms > 0 && mutation_terms == 0 {
+        reasons.push(
+            "task uses inspection or proof language without a source-change verb".to_string(),
+        );
+        TaskLane::ReadOnly
+    } else if design_terms > 0
+        && (task_mentions_token(task, "design")
+            || task_mentions_token(task, "scaffold")
+            || task_mentions_token(task, "split")
+            || (mutation_terms > 0
+                && (task_mentions_token(task, "module")
+                    || task_mentions_token(task, "capability")
+                    || task_mentions_token(task, "bounded-context"))))
+    {
+        reasons.push("task may change module or capability boundaries".to_string());
+        TaskLane::Design
+    } else if semantic_terms > 0 && surface_terms > 0 {
+        reasons
+            .push("task combines semantic meaning with a runnable or public surface".to_string());
+        TaskLane::SemanticPlusSurface
+    } else if semantic_terms > 0 {
+        reasons.push(
+            "task names RMS-owned meaning, machine, contract, or evidence structure".to_string(),
+        );
+        TaskLane::Semantic
+    } else if surface_terms > 0 {
+        reasons.push("task names a runnable, UI, CLI, HTTP, or other boundary surface".to_string());
+        TaskLane::Surface
+    } else if implementation_terms > 0 {
+        reasons
+            .push("task appears confined to an existing declared implementation role".to_string());
+        TaskLane::ImplementationCandidate
+    } else {
+        reasons.push("task language does not determine a safe RMS change lane".to_string());
+        TaskLane::Undetermined
+    };
+    let signal = match lane {
+        TaskLane::ReadOnly => read_terms,
+        TaskLane::Design => design_terms,
+        TaskLane::Semantic => semantic_terms,
+        TaskLane::Surface => surface_terms,
+        TaskLane::SemanticPlusSurface => semantic_terms + surface_terms,
+        TaskLane::ImplementationCandidate => implementation_terms,
+        TaskLane::Undetermined => 0,
+    };
+    TaskClassification {
+        lane,
+        confidence: if signal >= 3 {
+            "high"
+        } else if signal > 0 {
+            "medium"
+        } else {
+            "low"
+        }
+        .to_string(),
+        reasons,
+        prospective: true,
+    }
+}
+
+fn resolve_next_owner(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    task: &str,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+    canonical_blocked: bool,
+) -> Result<OwnerResolution> {
+    let contained = composition_children(modules)
+        .into_iter()
+        .map(|child| child.name)
+        .collect::<BTreeSet<_>>();
+    let mut top_level = modules
+        .values()
+        .filter(|module| !contained.contains(&module.name))
+        .cloned()
+        .collect::<Vec<_>>();
+    top_level.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let (initial_path, reason, candidates) = if let Some(explicit) = explicit_module {
+        let path = if explicit.exists() {
+            explicit.to_path_buf()
+        } else {
+            let rooted = root.join(explicit);
+            if rooted.exists() {
+                rooted
+            } else {
+                bail!("explicit module `{}` cannot be read", explicit.display());
+            }
+        };
+        let path = fs::canonicalize(&path)
+            .with_context(|| format!("failed to resolve explicit module `{}`", path.display()))?;
+        fs::read_to_string(&path)
+            .with_context(|| format!("failed to read explicit module `{}`", path.display()))?;
+        match load_manifest(&path) {
+            Ok(manifest) if get_str(&manifest.value, &["spec"]) == Some("rms/module/v0.1") => (
+                Some(path),
+                "explicit --module override".to_string(),
+                Vec::new(),
+            ),
+            Ok(_) => {
+                return Ok(OwnerResolution {
+                    status: OwnerStatus::Invalid,
+                    reason: format!(
+                        "explicit module `{}` is not an rms/module/v0.1 manifest",
+                        path.display()
+                    ),
+                    selected: None,
+                    candidates: Vec::new(),
+                    route: Vec::new(),
+                    warnings: Vec::new(),
+                });
+            }
+            Err(error) => {
+                return Ok(OwnerResolution {
+                    status: OwnerStatus::Invalid,
+                    reason: format!("invalid explicit module `{}`: {error}", path.display()),
+                    selected: None,
+                    candidates: Vec::new(),
+                    route: Vec::new(),
+                    warnings: Vec::new(),
+                });
+            }
+        }
+    } else if let Some(direct) = modules
+        .values()
+        .find(|module| module.path == root.join("module.yaml"))
+    {
+        (
+            Some(direct.path.clone()),
+            "direct root module".to_string(),
+            vec![owner_candidate(task, direct)],
+        )
+    } else if top_level.len() == 1 {
+        (
+            Some(top_level[0].path.clone()),
+            "sole top-level module".to_string(),
+            vec![owner_candidate(task, &top_level[0])],
+        )
+    } else {
+        let mut ranked = top_level
+            .iter()
+            .map(|module| owner_candidate(task, module))
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| left.module.name.cmp(&right.module.name))
+        });
+        let unique = unique_top_route(&ranked).map(|candidate| candidate.module.path.clone());
+        let reason = if unique.is_some() {
+            "unique positive prospective task match"
+        } else if ranked.is_empty() {
+            "no module manifests were discovered"
+        } else if ranked.first().is_some_and(|candidate| candidate.score > 0) {
+            "task matches multiple top-level modules equally"
+        } else {
+            "task has no positive top-level module match"
+        };
+        (unique.map(PathBuf::from), reason.to_string(), ranked)
+    };
+
+    let Some(initial_path) = initial_path else {
+        return Ok(OwnerResolution {
+            status: if candidates.is_empty() {
+                OwnerStatus::None
+            } else {
+                OwnerStatus::Ambiguous
+            },
+            reason,
+            selected: None,
+            candidates,
+            route: Vec::new(),
+            warnings: vec![
+                "RMS will not guess through an ownership tie or a non-positive match".to_string(),
+            ],
+        });
+    };
+
+    if canonical_blocked {
+        let selected = load_manifest(&initial_path)
+            .ok()
+            .and_then(|manifest| route_summary_from_manifest(&manifest));
+        return Ok(OwnerResolution {
+            status: selected
+                .as_ref()
+                .map(|_| OwnerStatus::Selected)
+                .unwrap_or(OwnerStatus::Invalid),
+            reason,
+            selected,
+            candidates,
+            route: vec![initial_path.display().to_string()],
+            warnings: Vec::new(),
+        });
+    }
+
+    route_next_owner(root, task, initial_path, reason, candidates)
+}
+
+fn owner_candidate(task: &str, module: &ModuleIndexEntry) -> RouteCandidate {
+    let mut reasons = Vec::new();
+    let mut score = score_route_candidate(task, module, &mut reasons);
+    if task_mentions_module(task, &module.name) {
+        score += 6;
+        reasons.push(format!("task names module `{}`", module.name));
+    }
+    let declared_match = score_declared_module_language(task, &module.value);
+    if declared_match > 0 {
+        score += declared_match;
+        reasons.push(format!(
+            "task matches {declared_match} declared purpose, ownership, or public-surface term(s)"
+        ));
+    }
+    if reasons.is_empty() {
+        reasons.push("no positive prospective task-language match".to_string());
+    }
+    RouteCandidate {
+        module: route_module_summary(module, None),
+        score,
+        reasons,
+    }
+}
+
+fn score_declared_module_language(task: &str, value: &YamlValue) -> i32 {
+    let mut declared = Vec::new();
+    if let Some(purpose) = get_str(value, &["module", "purpose"]) {
+        declared.push(purpose.to_string());
+    }
+    for path in [
+        &["owns", "concepts"][..],
+        &["owns", "data"][..],
+        &["owns", "decisions"][..],
+    ] {
+        declared.extend(get_string_array(value, path));
+    }
+    declared.extend(
+        public_surface_names(value)
+            .into_iter()
+            .map(|(_, name)| name),
+    );
+    let words = declared
+        .iter()
+        .flat_map(|text| {
+            semantic_id_segment(text)
+                .split('-')
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|word| word.len() > 3)
+        .collect::<BTreeSet<_>>();
+    words
+        .iter()
+        .filter(|word| task_mentions_token(task, word))
+        .count()
+        .min(4) as i32
+}
+
+fn route_next_owner(
+    root: &Path,
+    task: &str,
+    mut path: PathBuf,
+    reason: String,
+    mut candidates: Vec<RouteCandidate>,
+) -> Result<OwnerResolution> {
+    let mut visited = BTreeSet::new();
+    let mut route = Vec::new();
+    let mut warnings = Vec::new();
+    loop {
+        let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if !visited.insert(key) {
+            return Ok(OwnerResolution {
+                status: OwnerStatus::Invalid,
+                reason: format!(
+                    "composite ownership route contains a cycle at `{}`",
+                    path.display()
+                ),
+                selected: None,
+                candidates,
+                route,
+                warnings,
+            });
+        }
+        route.push(path.display().to_string());
+        let report = match build_route_report(&path, root, task) {
+            Ok(report) => report,
+            Err(error) => {
+                return Ok(OwnerResolution {
+                    status: OwnerStatus::Invalid,
+                    reason: format!("failed to route owner from `{}`: {error}", path.display()),
+                    selected: None,
+                    candidates,
+                    route,
+                    warnings,
+                });
+            }
+        };
+        warnings.extend(report.warnings);
+        match report.result {
+            RouteResult::TargetOnly => {
+                return Ok(OwnerResolution {
+                    status: OwnerStatus::Selected,
+                    reason,
+                    selected: report.recommendation.or(Some(report.target)),
+                    candidates,
+                    route,
+                    warnings,
+                });
+            }
+            RouteResult::Routed => {
+                let Some(recommendation) = report.recommendation else {
+                    return Ok(OwnerResolution {
+                        status: OwnerStatus::Invalid,
+                        reason: "routed report omitted its recommendation".to_string(),
+                        selected: None,
+                        candidates,
+                        route,
+                        warnings,
+                    });
+                };
+                candidates = report.candidates;
+                path = PathBuf::from(recommendation.path);
+            }
+            RouteResult::Ambiguous => {
+                return Ok(OwnerResolution {
+                    status: OwnerStatus::Ambiguous,
+                    reason: "recursive composite route is ambiguous".to_string(),
+                    selected: None,
+                    candidates: report.candidates,
+                    route,
+                    warnings,
+                });
+            }
+        }
+    }
+}
+
+fn route_summary_from_manifest(manifest: &LoadedManifest) -> Option<RouteModuleSummary> {
+    Some(RouteModuleSummary {
+        name: get_str(&manifest.value, &["module", "name"])?.to_string(),
+        path: manifest.path.display().to_string(),
+        kind: get_str(&manifest.value, &["module", "kind"])
+            .unwrap_or("<missing>")
+            .to_string(),
+        shape: route_shape(&manifest.value),
+        visibility: None,
+    })
+}
+
+fn build_next_context(
+    root: &Path,
+    profile: &RepositoryProfile,
+    selected: Option<&RouteModuleSummary>,
+) -> Result<NextContext> {
+    let mut files = profile.canonical_files.clone();
+    let mut implementation = None;
+    let mut declared_roles = Vec::new();
+    let Some(selected) = selected else {
+        return Ok(NextContext {
+            files,
+            implementation,
+            declared_roles,
+            edit_authority: "No source-edit authority is granted until an owning module and its declared roles resolve.".to_string(),
+        });
+    };
+    let module_path = PathBuf::from(&selected.path);
+    files.push(ReadinessItem {
+        name: "owning module".to_string(),
+        path: selected.path.clone(),
+        status: "present".to_string(),
+    });
+    if let Ok(module) = load_manifest(&module_path) {
+        let base = module_path.parent().unwrap_or(root);
+        let mut contract_references = BTreeSet::new();
+        collect_contract_paths(&module.value, &mut |path| {
+            contract_references.insert(path.to_string());
+        });
+        for reference in contract_references {
+            let path = base.join(&reference);
+            files.push(ReadinessItem {
+                name: "public or required contract".to_string(),
+                path: path.display().to_string(),
+                status: if path.exists() {
+                    "present".to_string()
+                } else {
+                    "missing".to_string()
+                },
+            });
+        }
+        let implementation_path = base.join("implementation.yaml");
+        if implementation_path.exists() {
+            implementation = Some(implementation_path.display().to_string());
+            files.push(ReadinessItem {
+                name: "implementation binding".to_string(),
+                path: implementation_path.display().to_string(),
+                status: if load_manifest(&implementation_path).is_ok() {
+                    "present".to_string()
+                } else {
+                    "invalid".to_string()
+                },
+            });
+            if let Ok(binding) = load_manifest(&implementation_path) {
+                if let Some(roles) = get_path(&binding.value, &["architecture", "roles"])
+                    .and_then(YamlValue::as_mapping)
+                {
+                    for (role, paths) in roles {
+                        let Some(role) = role.as_str() else {
+                            continue;
+                        };
+                        let Some(paths) = paths.as_sequence() else {
+                            continue;
+                        };
+                        for path in paths.iter().filter_map(YamlValue::as_str) {
+                            declared_roles.push(DeclaredRolePath {
+                                role: role.to_string(),
+                                path: base.join(path).display().to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    files.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    files.dedup_by(|left, right| left.path == right.path && left.name == right.name);
+    declared_roles.sort_by(|left, right| {
+        left.role
+            .cmp(&right.role)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok(NextContext {
+        files,
+        implementation,
+        edit_authority: if declared_roles.is_empty() {
+            "No declared implementation role path is available; do not edit source until RMS declares one."
+                .to_string()
+        } else {
+            "Only the listed RMS-declared role bodies are candidate edit locations after the required declaration gate succeeds."
+                .to_string()
+        },
+        declared_roles,
+    })
+}
+
+fn build_next_steps(
+    root: &Path,
+    task: &str,
+    result: NextResult,
+    repository: &RepositoryProfile,
+    classification: &TaskClassification,
+    owner: &OwnerResolution,
+    context: &NextContext,
+) -> Result<Vec<NextStepGroup>> {
+    let cwd = Some(root.display().to_string());
+    let mut inspect = vec![executable_next_step(
+        "Inspect repository and RMS readiness",
+        "rms",
+        vec![
+            "diagnose".to_string(),
+            "--root".to_string(),
+            root.display().to_string(),
+        ],
+        cwd.clone(),
+    )];
+    if let Some(selected) = &owner.selected {
+        inspect.push(executable_next_step(
+            "Inspect the selected owning module",
+            "rms",
+            vec!["explain".to_string(), selected.path.clone()],
+            cwd.clone(),
+        ));
+        if owner.route.len() > 1 {
+            inspect.push(executable_next_step(
+                "Reproduce recursive composite routing evidence",
+                "rms",
+                vec![
+                    "route".to_string(),
+                    owner.route[0].clone(),
+                    "--root".to_string(),
+                    root.display().to_string(),
+                    "--task".to_string(),
+                    task.to_string(),
+                ],
+                cwd.clone(),
+            ));
+        }
+        inspect.push(executable_next_step(
+            "Build the bounded implementation context packet",
+            "rms",
+            vec![
+                "context".to_string(),
+                selected.path.clone(),
+                "--root".to_string(),
+                root.display().to_string(),
+                "--task".to_string(),
+                task.to_string(),
+            ],
+            cwd.clone(),
+        ));
+    } else if result == NextResult::NeedsOwner {
+        inspect.push(manual_next_step(
+            "Choose an owner from the ranked candidates, then rerun `rms next` with `--module`; do not guess through a tie.",
+            None,
+        ));
+    }
+
+    let mut declare = Vec::new();
+    let mut implement = Vec::new();
+    if result != NextResult::BootstrapRequired
+        && result != NextResult::Blocked
+        && result != NextResult::NeedsOwner
+        && classification.lane.prepares_candidate()
+        && repository_provenance_pending(repository)
+    {
+        declare.push(manual_next_step(
+            BOOTSTRAP_PENDING_AUTHORIZED_COMMIT,
+            Some("Before design or implementation, the existing RMS bootstrap requires explicit task and host Git authority to establish its provenance baseline."),
+        ));
+    }
+    if result == NextResult::BootstrapRequired {
+        let mut name = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(semantic_id_segment)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "rms-system".to_string());
+        if name
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
+        {
+            name = format!("system-{name}");
+        }
+        let mut args = vec![
+            "init".to_string(),
+            root.display().to_string(),
+            "--name".to_string(),
+            name,
+            "--purpose".to_string(),
+            markdown_inline(task),
+        ];
+        if repository.has_project_content {
+            args.push("--adopt".to_string());
+        }
+        declare.push(executable_next_step(
+            if repository.has_project_content {
+                "Adopt the existing uninitialized repository without overwriting project-owned content"
+            } else {
+                "Initialize the fresh RMS system"
+            },
+            "rms",
+            args,
+            cwd.clone(),
+        ));
+        declare.push(manual_next_step(
+            BOOTSTRAP_PENDING_AUTHORIZED_COMMIT,
+            Some("Requires explicit task and host Git authority; record the generated/adopted bootstrap as the provenance baseline."),
+        ));
+        declare.push(design_step(root, task));
+        implement.push(scaffold_choice_step());
+    } else if result == NextResult::DesignRequired {
+        declare.push(design_step(root, task));
+        implement.push(scaffold_choice_step());
+    } else if result == NextResult::Blocked {
+        declare.push(manual_next_step(
+            "Resolve the reported canonical blockers through the applicable RMS command before implementation.",
+            None,
+        ));
+    } else if result == NextResult::NeedsOwner {
+        declare.push(manual_next_step(
+            "No declaration is safe until the owning module is selected explicitly.",
+            None,
+        ));
+    } else if let Some(selected) = &owner.selected {
+        let semantic_target = context
+            .implementation
+            .clone()
+            .unwrap_or_else(|| selected.path.clone());
+        match classification.lane {
+            TaskLane::ReadOnly => declare.push(manual_next_step(
+                "This is a read-only lane; do not apply semantic or source changes.",
+                None,
+            )),
+            TaskLane::Design => {
+                declare.push(design_step(root, task));
+                implement.push(scaffold_choice_step());
+            }
+            TaskLane::Semantic | TaskLane::SemanticPlusSurface => {
+                declare.push(executable_next_step(
+                    "Plan the canonical semantic change",
+                    "rms",
+                    vec![
+                        "spec".to_string(),
+                        "plan".to_string(),
+                        semantic_target.clone(),
+                        "--root".to_string(),
+                        root.display().to_string(),
+                        "--task".to_string(),
+                        task.to_string(),
+                    ],
+                    cwd.clone(),
+                ));
+                declare.push(manual_next_step(
+                    "Apply one reviewed semantic-change object with `rms spec apply ... --dry-run`, then apply it without `--dry-run` and pass `rms spec check`.",
+                    None,
+                ));
+                if classification.lane == TaskLane::SemanticPlusSurface {
+                    declare.push(manual_next_step(
+                        "Declare the runnable surface through `rms surface apply --dry-run` and `rms surface apply` after semantic ownership is correct.",
+                        None,
+                    ));
+                }
+            }
+            TaskLane::Surface => declare.push(manual_next_step(
+                "Declare the exact runnable surface with `rms surface apply --dry-run`, then apply and check it; do not add an undeclared entrypoint.",
+                None,
+            )),
+            TaskLane::ImplementationCandidate => declare.push(manual_next_step(
+                "Confirm the task changes only existing declared role bodies; escalate to `rms spec plan` if meaning or architecture changes.",
+                None,
+            )),
+            TaskLane::Undetermined => declare.push(executable_next_step(
+                "Resolve the undetermined semantic shape before editing",
+                "rms",
+                vec![
+                    "design".to_string(),
+                    "--root".to_string(),
+                    root.display().to_string(),
+                    "--task".to_string(),
+                    task.to_string(),
+                ],
+                cwd.clone(),
+            )),
+        }
+        if classification.lane != TaskLane::ReadOnly && classification.lane != TaskLane::Design {
+            implement.push(executable_next_step(
+                "Render bounded implementation guidance for the selected owner",
+                "rms",
+                vec![
+                    "implement".to_string(),
+                    selected.path.clone(),
+                    "--root".to_string(),
+                    root.display().to_string(),
+                    "--task".to_string(),
+                    task.to_string(),
+                ],
+                cwd.clone(),
+            ));
+            implement.push(manual_next_step(
+                "Fill only RMS-declared role bodies and keep every boundary effect and dependency inside its declared authority.",
+                None,
+            ));
+        }
+    }
+
+    let verify =
+        build_focused_verification_steps(root, owner.selected.as_ref(), context, classification)?;
+    let mut complete = Vec::new();
+    if result != NextResult::Blocked && result != NextResult::NeedsOwner {
+        complete.push(executable_next_step(
+            "Run the deterministic change gate after focused proof",
+            "rms",
+            vec![
+                "gate".to_string(),
+                "--root".to_string(),
+                root.display().to_string(),
+            ],
+            cwd.clone(),
+        ));
+        if classification.lane.prepares_candidate()
+            || matches!(
+                result,
+                NextResult::BootstrapRequired | NextResult::DesignRequired
+            )
+        {
+            complete.push(manual_next_step(
+                CANDIDATE_PENDING_AUTHORIZED_COMMIT,
+                Some("Candidate commit is manual and requires explicit task and host Git authority; this report never emits an executable Git commit command."),
+            ));
+            complete.push(executable_next_step(
+                "Run strict audit against the authorized committed candidate",
+                "rms",
+                vec![
+                    "audit".to_string(),
+                    "--root".to_string(),
+                    root.display().to_string(),
+                    "--strict".to_string(),
+                ],
+                cwd,
+            ));
+        }
+    }
+
+    Ok(vec![
+        NextStepGroup {
+            phase: "inspect".to_string(),
+            steps: inspect,
+        },
+        NextStepGroup {
+            phase: "declare".to_string(),
+            steps: declare,
+        },
+        NextStepGroup {
+            phase: "implement".to_string(),
+            steps: implement,
+        },
+        NextStepGroup {
+            phase: "verify".to_string(),
+            steps: verify,
+        },
+        NextStepGroup {
+            phase: "complete".to_string(),
+            steps: complete,
+        },
+    ])
+}
+
+fn repository_provenance_pending(repository: &RepositoryProfile) -> bool {
+    repository
+        .canonical_files
+        .iter()
+        .find(|item| item.name == "git source revision")
+        .is_none_or(|item| item.status == "missing")
+}
+
+fn design_step(root: &Path, task: &str) -> NextStep {
+    executable_next_step(
+        "Design semantic shape and module boundaries before scaffolding",
+        "rms",
+        vec![
+            "design".to_string(),
+            "--root".to_string(),
+            root.display().to_string(),
+            "--task".to_string(),
+            task.to_string(),
+        ],
+        Some(root.display().to_string()),
+    )
+}
+
+fn scaffold_choice_step() -> NextStep {
+    manual_next_step(
+        "Follow the design result with exactly one alternative: `rms add-module` for a standalone module, or `rms add-capability` for a recursive capability. Use explicit bindings for code and omit child-name overrides unless product language supplied them.",
+        None,
+    )
+}
+
+fn build_focused_verification_steps(
+    root: &Path,
+    selected: Option<&RouteModuleSummary>,
+    context: &NextContext,
+    classification: &TaskClassification,
+) -> Result<Vec<NextStep>> {
+    let Some(selected) = selected else {
+        return Ok(Vec::new());
+    };
+    let module_path = PathBuf::from(&selected.path);
+    let module = match load_manifest(&module_path) {
+        Ok(module) => module,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let module_base = module_path.parent().unwrap_or(root);
+    let cwd = Some(module_base.display().to_string());
+    let mut steps = Vec::new();
+    if let Some(implementation_path) = context.implementation.as_deref().map(PathBuf::from) {
+        if let Ok(implementation) = load_manifest(&implementation_path) {
+            for key in ["format", "verify"] {
+                if let Some(command) = get_str(&implementation.value, &["commands", key]) {
+                    steps.push(executable_next_step(
+                        &format!("Run declared implementation {key} proof"),
+                        "sh",
+                        vec!["-lc".to_string(), command.to_string()],
+                        cwd.clone(),
+                    ));
+                }
+            }
+            if matches!(
+                classification.lane,
+                TaskLane::Semantic | TaskLane::SemanticPlusSurface | TaskLane::Design
+            ) {
+                steps.push(executable_next_step(
+                    "Check the applied semantic revision",
+                    "rms",
+                    vec![
+                        "spec".to_string(),
+                        "check".to_string(),
+                        implementation_path.display().to_string(),
+                    ],
+                    cwd.clone(),
+                ));
+            }
+            steps.push(executable_next_step(
+                "Check canonical machine representation",
+                "rms",
+                vec![
+                    "machine".to_string(),
+                    "check".to_string(),
+                    implementation_path.display().to_string(),
+                ],
+                cwd.clone(),
+            ));
+            let has_surfaces = get_path(&implementation.value, &["architecture", "surfaces"])
+                .and_then(YamlValue::as_sequence)
+                .is_some_and(|items| !items.is_empty());
+            if has_surfaces
+                || matches!(
+                    classification.lane,
+                    TaskLane::Surface | TaskLane::SemanticPlusSurface
+                )
+            {
+                steps.push(executable_next_step(
+                    "Check runnable surfaces strictly",
+                    "rms",
+                    vec![
+                        "surface".to_string(),
+                        "check".to_string(),
+                        implementation_path.display().to_string(),
+                        "--strict".to_string(),
+                    ],
+                    cwd.clone(),
+                ));
+            }
+            steps.push(executable_next_step(
+                "Inspect declared implementation structure",
+                "rms",
+                vec![
+                    "structure".to_string(),
+                    implementation_path.display().to_string(),
+                ],
+                cwd.clone(),
+            ));
+
+            let has_properties = get_path(&module.value, &["properties"])
+                .and_then(YamlValue::as_sequence)
+                .is_some_and(|items| !items.is_empty())
+                || get_path(
+                    &implementation.value,
+                    &["architecture", "reliability", "properties"],
+                )
+                .and_then(YamlValue::as_sequence)
+                .is_some_and(|items| !items.is_empty())
+                || get_path(
+                    &implementation.value,
+                    &["architecture", "reliability", "fuzz_targets"],
+                )
+                .and_then(YamlValue::as_sequence)
+                .is_some_and(|items| !items.is_empty());
+            if has_properties {
+                steps.push(executable_next_step(
+                    "Check semantic property obligations",
+                    "rms",
+                    vec![
+                        "property".to_string(),
+                        "check".to_string(),
+                        implementation_path.display().to_string(),
+                    ],
+                    cwd.clone(),
+                ));
+                steps.push(executable_next_step(
+                    "Execute smoke property realizations",
+                    "rms",
+                    vec![
+                        "property".to_string(),
+                        "run".to_string(),
+                        implementation_path.display().to_string(),
+                        "--profile".to_string(),
+                        "smoke".to_string(),
+                    ],
+                    cwd.clone(),
+                ));
+            }
+            for trace in get_string_array(&module.value, &["verification", "traces"])
+                .into_iter()
+                .filter(|path| path.ends_with(".yaml") || path.ends_with(".yml"))
+            {
+                steps.push(executable_next_step(
+                    "Check declared transition trace evidence",
+                    "rms",
+                    vec![
+                        "trace".to_string(),
+                        "check".to_string(),
+                        module_base.join(trace).display().to_string(),
+                    ],
+                    cwd.clone(),
+                ));
+            }
+            steps.push(executable_next_step(
+                "Run the implementation verification contract",
+                "rms",
+                vec![
+                    "verify".to_string(),
+                    implementation_path.display().to_string(),
+                ],
+                cwd.clone(),
+            ));
+        }
+    } else {
+        steps.push(executable_next_step(
+            "Check module semantics without an implementation binding",
+            "rms",
+            vec![
+                "spec".to_string(),
+                "check".to_string(),
+                module_path.display().to_string(),
+            ],
+            cwd.clone(),
+        ));
+    }
+    if get_path(&module.value, &["provides", "capabilities"])
+        .and_then(YamlValue::as_sequence)
+        .is_some_and(|items| !items.is_empty())
+    {
+        steps.push(executable_next_step(
+            "Build and independently verify the reusable module package",
+            "rms",
+            vec!["package".to_string(), module_path.display().to_string()],
+            cwd,
+        ));
+    }
+    Ok(steps)
+}
+
+fn executable_next_step(
+    description: &str,
+    program: &str,
+    args: Vec<String>,
+    cwd: Option<String>,
+) -> NextStep {
+    let display = std::iter::once(program)
+        .chain(args.iter().map(String::as_str))
+        .map(shell_arg)
+        .collect::<Vec<_>>()
+        .join(" ");
+    NextStep {
+        kind: NextStepKind::Executable,
+        description: description.to_string(),
+        program: Some(program.to_string()),
+        args,
+        display: Some(display),
+        cwd,
+        authorization: None,
+    }
+}
+
+fn manual_next_step(description: &str, authorization: Option<&str>) -> NextStep {
+    NextStep {
+        kind: NextStepKind::Manual,
+        description: description.to_string(),
+        program: None,
+        args: Vec::new(),
+        display: None,
+        cwd: None,
+        authorization: authorization.map(ToString::to_string),
+    }
+}
+
+fn print_next_report(report: &NextReport) {
+    print!("{}", render_next_report(report));
+}
+
+fn render_next_report(report: &NextReport) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# RMS Next\n");
+    let _ = writeln!(out, "Result: {}", report.result.label());
+    let _ = writeln!(out, "Task: {}", report.task);
+    let _ = writeln!(out, "Root: {}", report.root);
+    let _ = writeln!(out, "Repository kind: {}", report.repository.kind.label());
+    let _ = writeln!(
+        out,
+        "Has project content: {}",
+        report.repository.has_project_content
+    );
+    let _ = writeln!(
+        out,
+        "System manifests: {:?}",
+        report.repository.system_manifests
+    );
+    let _ = writeln!(
+        out,
+        "Module manifests: {:?}",
+        report.repository.module_manifests
+    );
+    let _ = writeln!(
+        out,
+        "Top-level modules: {:?}",
+        report.repository.top_level_modules
+    );
+    for item in &report.repository.canonical_files {
+        let _ = writeln!(
+            out,
+            "Repository file: name={:?} status={} path={:?}",
+            item.name, item.status, item.path
+        );
+    }
+    let _ = writeln!(
+        out,
+        "Validation: {} (errors: {}, warnings: {})",
+        report.validation.status, report.validation.errors, report.validation.warnings
+    );
+    for diagnostic in &report.validation.diagnostics {
+        let _ = writeln!(
+            out,
+            "- diagnostic severity={} check={:?} path={:?} message={:?}",
+            severity_label(diagnostic.severity),
+            diagnostic.check,
+            diagnostic.path,
+            diagnostic.message
+        );
+    }
+    let _ = writeln!(
+        out,
+        "Task lane: {} (confidence: {}, prospective: {})",
+        report.task_classification.lane.label(),
+        report.task_classification.confidence,
+        report.task_classification.prospective
+    );
+    for reason in &report.task_classification.reasons {
+        let _ = writeln!(out, "- task reason: {reason}");
+    }
+
+    let _ = writeln!(out, "\n## Owner");
+    let _ = writeln!(out, "Status: {}", report.owner.status.label());
+    let _ = writeln!(out, "Reason: {}", report.owner.reason);
+    if let Some(selected) = &report.owner.selected {
+        let _ = writeln!(
+            out,
+            "Selected: name={:?} path={:?} kind={:?} shape={:?} visibility={:?}",
+            selected.name, selected.path, selected.kind, selected.shape, selected.visibility
+        );
+    }
+    let _ = writeln!(out, "Route: {:?}", report.owner.route);
+    for warning in &report.owner.warnings {
+        let _ = writeln!(out, "- owner warning: {warning}");
+    }
+    for candidate in &report.owner.candidates {
+        let _ = writeln!(
+            out,
+            "- candidate name={:?} score={} path={:?} kind={:?} shape={:?} visibility={:?}",
+            candidate.module.name,
+            candidate.score,
+            candidate.module.path,
+            candidate.module.kind,
+            candidate.module.shape,
+            candidate.module.visibility
+        );
+        for reason in &candidate.reasons {
+            let _ = writeln!(out, "  - reason: {reason}");
+        }
+    }
+
+    let _ = writeln!(out, "\n## Canonical Context and Declared Roles");
+    for file in &report.context.files {
+        let _ = writeln!(
+            out,
+            "- file name={:?} status={} path={:?}",
+            file.name, file.status, file.path
+        );
+    }
+    let _ = writeln!(out, "Implementation: {:?}", report.context.implementation);
+    for role in &report.context.declared_roles {
+        let _ = writeln!(out, "- role name={:?} path={:?}", role.role, role.path);
+    }
+    let _ = writeln!(out, "Edit authority: {}", report.context.edit_authority);
+
+    let _ = writeln!(out, "\nWarnings: {:?}", report.warnings);
+    let _ = writeln!(out, "Blockers: {:?}", report.blockers);
+    let _ = writeln!(out, "\n## Ordered Prescription");
+    for group in &report.steps {
+        let _ = writeln!(out, "### {}", group.phase);
+        if group.steps.is_empty() {
+            let _ = writeln!(out, "- not-applicable");
+        }
+        for step in &group.steps {
+            match step.kind {
+                NextStepKind::Executable => {
+                    let _ = writeln!(out, "- kind: executable");
+                    let _ = writeln!(out, "  description: {}", step.description);
+                    let _ = writeln!(
+                        out,
+                        "  program: {}",
+                        step.program.as_deref().unwrap_or("<missing>")
+                    );
+                    let _ = writeln!(out, "  args: {:?}", step.args);
+                    let _ = writeln!(
+                        out,
+                        "  display: {}",
+                        step.display.as_deref().unwrap_or("<missing>")
+                    );
+                    let _ = writeln!(out, "  cwd: {}", step.cwd.as_deref().unwrap_or("<none>"));
+                }
+                NextStepKind::Manual => {
+                    let _ = writeln!(out, "- kind: manual");
+                    let _ = writeln!(out, "  description: {}", step.description);
+                    let _ = writeln!(out, "  authorization: {:?}", step.authorization);
+                }
+            }
+        }
+    }
+
+    let _ = writeln!(out, "\n## Detected Skill Sources");
+    let _ = writeln!(
+        out,
+        "Summary: informational={} review-required={}",
+        report.skill_sources.informational, report.skill_sources.review_required
+    );
+    let _ = writeln!(
+        out,
+        "Runtime activation: {}",
+        report.skill_sources.runtime_activation
+    );
+    let _ = writeln!(out, "Precedence: {}", report.skill_sources.precedence);
+    for source in &report.skill_sources.sources {
+        let _ = writeln!(
+            out,
+            "- origin={:?} scope={:?} path={:?} configured={:?} digest={:?} equivalence={:?} runtime_activation={} precedence={} status={} remediation={:?}",
+            source.origin,
+            source.scope,
+            source.path,
+            source.configured_state,
+            source.digest,
+            source.embedded_equivalence,
+            source.runtime_activation,
+            source.precedence,
+            source.status,
+            source.remediation
+        );
+    }
+
+    let _ = writeln!(out, "\n## Completion and Git Authority");
+    let _ = writeln!(out, "Order: {}", report.completion.order.join(" → "));
+    let _ = writeln!(
+        out,
+        "Commit authority: {}",
+        report.completion.commit_authority
+    );
+    let _ = writeln!(out, "Pending state: {:?}", report.completion.pending_state);
+    let _ = writeln!(out, "{}", report.completion.policy);
+    out
 }
 
 fn run_route(module: &Path, root: &Path, task: &str, json_output: bool) -> Result<()> {
@@ -44915,10 +47693,18 @@ fn run_init_with_adopt(
             "adoption note: project-owned AGENTS.md content was preserved and RMS guidance is maintained only inside its marked section"
         );
     }
-    println!(
-        "bootstrap provenance: before product work, run `git add . && git commit -m \"Initial RMS project\"`; completion then requires `rms gate --root .`, a candidate commit, and `rms audit --root . --strict` to exit successfully"
-    );
+    for line in init_completion_lines() {
+        println!("{line}");
+    }
     Ok(())
+}
+
+fn init_completion_lines() -> [&'static str; 3] {
+    [
+        BOOTSTRAP_PENDING_AUTHORIZED_COMMIT,
+        COMMIT_AUTHORITY_POLICY,
+        "onboarding order: init -> authorized bootstrap commit -> `rms design --root . --task <intent>` -> recommended scaffold",
+    ]
 }
 
 fn init_artifacts(
@@ -50953,20 +53739,7 @@ fn write_file_if_missing(path: &Path, contents: &str) -> Result<()> {
 const INIT_GITIGNORE: &str = ".DS_Store\ntarget/\ndist/\n.rms/runs/\n.rms/dogfood/\n";
 const RMS_MANAGED_AGENTS_START: &str = "<!-- RMS managed guidance: begin -->";
 const RMS_MANAGED_AGENTS_END: &str = "<!-- RMS managed guidance: end -->";
-const INIT_ADOPTED_AGENTS_BLOCK: &str = r#"<!-- RMS managed guidance: begin -->
-## RMS Integration
-
-This repository follows Reliable Modular Systems. Existing project instructions remain authoritative outside this managed section.
-
-- RMS owns semantics and architecture; agents fill declared role bodies.
-- Use `rms design`, `rms spec apply`, `rms machine apply`, and `rms surface apply` before creating or changing their corresponding architecture.
-- Do not hand-edit RMS manifests, contracts, semantic roles, machine variants, runnable surfaces, or evidence obligations.
-- Keep pure helpers pure. Represent IO as declared effects and typed effect results in effectful roles.
-- Use the project-local workflows under `.agents/skills/`.
-- Before completion, pass `rms gate --root .`, commit the candidate, then pass `rms audit --root . --strict`.
-
-<!-- RMS managed guidance: end -->
-"#;
+const INIT_ADOPTED_AGENTS_BLOCK: &str = include_str!("../assets/guidance/agents-adopted-block.md");
 const RMS_MANAGED_GITIGNORE_START: &str = "# RMS managed ignores: begin";
 const RMS_MANAGED_GITIGNORE_END: &str = "# RMS managed ignores: end";
 const INIT_ADOPTED_GITIGNORE_BLOCK: &str = r#"# RMS managed ignores: begin
@@ -50978,242 +53751,9 @@ dist/
 # RMS managed ignores: end
 "#;
 
-const INIT_AGENTS_MD: &str = r#"# Agent Instructions
+const INIT_AGENTS_MD: &str = include_str!("../assets/guidance/agents-full.md");
 
-This repository follows Reliable Modular Systems.
-
-RMS artifacts are the architectural source of truth. Do not infer ownership, effects, dependencies, compatibility, or recovery behavior from incidental code shape when manifests or contracts say otherwise.
-
-Product intent is enough input from the user. Convert natural language into RMS semantics by asking only necessary clarifying questions, surfacing edge cases, naming what must never happen, and encoding the result in canonical artifacts before code.
-
-Core rule:
-
-- RMS owns semantics and architecture.
-- Agents fill declared roles.
-- Bugs should become diagnosable bad states.
-
-## Non-Negotiable Execution
-
-1. In a fresh standalone project, run `rms init`. In an existing repository with project-owned documents, run `rms init --adopt`; never move, overwrite, or restore documents around initialization. Commit the generated or adopted bootstrap so later semantic and source drift has a provenance baseline.
-2. Run `rms design` before choosing the first module tree. When its deterministic hints recommend a recursive capability, use `rms add-capability`; choose explicit implementation bindings for work that will produce code. Omit binding flags only for an intentionally semantic-only scaffold, and use `rms add-binding` before machine or surface work if a binding was deferred; do not substitute one module for convenience.
-3. Never repair `module.yaml`, `implementation.yaml`, contracts, machine structure, surfaces, or evidence declarations by direct editing. Use the applicable RMS apply command. If RMS cannot express the required change, stop and report the RMS gap instead of bypassing the gate.
-4. Use the current project, rendered RMS prompts, and deterministic RMS diagnostics as planning context. Do not inspect sibling projects, prior dogfood runs, RMS source, or generated examples outside the project to infer a change schema or borrow semantics.
-5. Fill only declared role bodies after the semantic apply succeeds.
-6. Before completion, `rms gate --root .` must exit zero with no failed check. A warning or `review-required` item is an obligation to resolve or report, never permission to collapse the recommended architecture.
-7. Commit the candidate, then `rms audit --root . --strict` must exit zero. Do not describe the project as complete or production-ready unless both commands succeeded in that order.
-
-## Change Gate
-
-| Change | Required RMS gate before source edits |
-| --- | --- |
-| Meaning, law, contract, property, artifact, protocol, resource, authority, effect, evidence | `rms spec plan/apply/check` |
-| State, command, observed event, effect result, transition | `rms spec apply` or focused `rms machine apply/check` |
-| App, CLI, UI, HTTP, batch, executable entrypoint | `rms surface apply/check` |
-| Module boundary or public capability | `rms design` then `rms add-module` or `rms add-capability` |
-| Implementation realization for a semantic-only module | `rms add-binding <module.yaml> --binding <binding>` |
-| Local implementation dependency | `rms spec apply` with language-neutral `binding_dependencies` |
-| Semantic function owner, symbol, purity, or discharged promise | `rms spec apply` with `semantic_functions.add/set/remove` |
-| Public contract-to-machine path or required capability consumer | `rms spec apply` with `public_behavior_bindings` or `dependency_behavior_bindings` |
-| Declared role body only | Edit the role body, then verify |
-
-Machine rules:
-
-- Every implemented public command, query, and capability has exactly one `architecture.public_behavior_bindings` entry connecting its contract to a discharging semantic function and classified machine inputs/outputs.
-- Every implemented required capability has exactly one `architecture.dependency_behavior_bindings` entry naming its exact local `path#symbol` consumer and either a matching RMS provider contract or an explicit external resolution.
-- `architecture.machine.types` names binding containers; semantic lists name actual cases.
-- Stateful, boundary, workflow, storage, integration, and projection machines use `transition(state, input)`.
-- The input ADT closes over commands, observed events, and effect results; each case belongs to exactly one category.
-- Every canonical transition declares a stable `case`, and every implemented transition branch is declared. Distinct outcomes for the same state/input are separate named cases; declaration-only and source-only branches are drift.
-- Every declared lifecycle state is reachable from `initial_state` through canonical transitions. Do not make a state look covered by starting a trace inside an otherwise unreachable state.
-- Replay provenance names the declared transition role source file and the exact canonical case. An evidence YAML file is not transition source code.
-- Transition outputs carry expected failures in an explicit typed `rejection` channel. Do not erase rejection variants into replies, status strings, dummy success values, or provenance branch names.
-- Replay records must match the canonical case's state change and exact events, commands, effects, reply, and rejection. Do not hand-author active trace records. A declared trace producer must call the real transition-record path, serialize the returned records, and regenerate the committed bundle through `rms trace run --record`.
-- An effect executor performs one declared request and returns one declared result. Each exact protocol `executor_symbol` names its effect in the RMS role declaration and is bound as an effectful `effect-executor` semantic function. Keep its role path separate from transition and machine-driver code. Transitions own sequencing, retry, compensation, stop/continue policy, and state progression.
-- Atomicity belongs to each exact effect protocol. Aggregate iteration requires aggregate justification and evidence; shared IO mechanics belong in a private `effect_support` role that cannot construct machine state, call transitions/drivers, or become public/runnable.
-- Every effectful stateful machine declares exact `driver_function` and `transition_record_function` callables. The driver retains complete transition records, advances from `state_after`, executes `output.effects`, and feeds typed results back as inputs.
-- Every declared command, event, effect, and effect-result envelope has a binding-native type or tagged constructor; declarations without binding representation are drift.
-- Arithmetic over represented transition inputs, including indices, counters, attempts, offsets, lengths, and sequence values, is checked or bounded so extreme inputs become explicit rejection rather than overflow, panic, or trap.
-- Every effect-emitting runnable surface delegates to an exact callable that reaches the machine driver. The driver owns the complete repeated transition/effect/result cycle until reply, rejection, or a declared waiting state; surfaces and adapters must not loop around a one-step driver, even when public and machine command names differ.
-- Inspectable boundary IO is a declared effect protocol with typed results and a dedicated executor. Do not perform filesystem, process, network, clock, randomness, or persistence work directly inside a parser, pure transition, runnable controller, or undecorated adapter helper.
-- Runnable surface delegation names an exact callable, not only a role or source file, so RMS can prove the live app reaches the declared machine.
-- Every runnable surface declares a concrete `usage_document` and an implementation `smoke_command` key; `rms verify` executes the resolved smoke command.
-- Composite parent laws may use `verification.delegations` only when the contained provider, provider law/property, public export, and concrete evidence all resolve.
-- Fixed examples are a deterministic corpus, not an open-ended fuzz realization. A `generated-property` generator constructs cases from a declared input space rather than returning a fixed literal collection. Every realization names an exact binding `path#symbol` runner; generated-property and deterministic-exhaustive realizations also name a generator. The runner executes the operation and oracle.
-- Property evidence emitted by `rms spec apply` is an obligation, not proof. Replace it with the exact executed command, observed result, and counterexample or coverage summary before production audit. Revise property semantics through `properties.set/remove`, not direct manifest edits.
-- Public cross-module conversations use contract protocol automata. Each participant is bound once, each message has one sender and receiver mapping, and system traces preserve envelope identity, correlation, and causation across the handoff.
-- Versioned artifacts declare provided, required, or internal contracts. Transformations name input/output artifacts, explicit rejections, exact semantic functions, and preserving properties.
-- Resources whose lifetime affects correctness declare ownership and acquire/use/release/transfer automata. Every reachable terminal product path closes or transfers each resource.
-- Privileged, unsafe, and foreign operations occur only in declared authority roles behind exact safe facade symbols and evidence.
-- Always, eventually, precedence, exclusion, at-most-once, bounded-response, and resource-closure claims are temporal properties with scope-appropriate realizations.
-
-You can:
-
-- edit bodies inside RMS-declared role files;
-- add small private pure helpers inside declared pure role files;
-- add effectful helper code only inside declared adapter, port, or effect-executor roles;
-- import another module only through its declared public facade or contract-shaped entrypoint;
-- use provider-backed RMS prompts as advisory planning input.
-
-You cannot:
-
-- hand-create laws, contracts, artifacts, transformations, protocol/resource automata, authority boundaries, public commands, states, events, effects, effect results, transitions, semantic roles, semantic-function bindings, runnable surfaces, public entrypoints, or evidence obligations;
-- implement real product behavior only in an undeclared runnable surface while the declared machine remains generic;
-- bypass another module's public contract or a module's declared public entrypoint;
-- import another module's private role files such as representation, transition, parser, adapter internals, or native package exports that bypass the RMS public facade;
-- treat provider output, generated reports, or command logs as semantic authority until RMS canonical artifacts reflect them.
-- treat generated package, build, dependency, or atlas output as live project semantics; author canonical artifacts only in source-owned module paths.
-
-## Before Changing Behavior
-
-1. Run `rms diagnose`.
-2. Identify the owning module for the requested behavior.
-3. Run `rms explain <module.yaml>` to understand ownership, public surface, effects, invariants, compatibility, and verification evidence.
-4. Run `rms route <module.yaml> --task "<task>"` when the target may be a composite parent or recursive module tree.
-5. Run `rms context <module.yaml> --task "<task>"` before implementation work.
-6. Read the target `module.yaml`, public contracts, direct dependency contracts, applicable glossary entries, and implementation binding.
-
-Use these advisory workbench commands when they match the task:
-
-- Fresh intent-only project: after `rms init`, run `rms design --root . --task "<task>"` before choosing `rms add-module` or `rms add-capability`.
-- Implemented project: pass `--binding` to `rms add-module`, or both `--domain-binding` and `--boundary-binding` to `rms add-capability`; use `rms add-binding` only when an intentionally semantic-only module later gains code.
-- `rms design --root . --task "<task>"` before module boundaries or semantic shapes are fixed
-- `rms route <module.yaml> --task "<task>"` before implementing against a composite parent
-- `rms plan <module.yaml> --task "<task>"`
-- `rms implement <module.yaml> --task "<task>"`
-- `rms evolve-contract <module.yaml> --task "<task>"`
-- `rms evidence <module.yaml> --task "<task>"`
-- `rms refactor <module.yaml> --task "<task>"`
-- `rms spec plan <module.yaml|implementation.yaml> --task "<task>"` when a change needs new laws, contracts, artifacts, transformations, protocols, resource lifecycles, authority boundaries, temporal properties, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, semantic-function bindings, public entrypoints, binding dependencies, or evidence obligations
-- `rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'` or `--change-yaml '<yaml>'` to update canonical semantics, record and hash-seal the exact applied change, and automatically supersede every currently active semantic revision; use `semantic_functions.add/set/remove` for exact binding symbols, authority owners, purity, discharged promises, and evidence; use `public_behavior_bindings` to close public contracts into semantic functions and machine cases; use `dependency_behavior_bindings` to close required capabilities through exact consumers into matching module providers or explicit external boundaries; `binding_dependencies` names RMS modules and lets the binding adapter realize native dependency metadata; use `contracts.set` with `direction: provided|required` to replace generated provider or consumer contract scaffolds without transferring ownership; use `set`, `remove`, and explicit `supersedes` only for additional non-local branches instead of hand-editing manifests or old change records; provider output is advisory until this succeeds
-- `rms spec check <module.yaml|implementation.yaml>` after semantic changes
-- `rms machine plan/apply/check <implementation.yaml>` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct
-- `rms surface apply/check <implementation.yaml>` when adding or changing app, UI, CLI, browser, HTTP, batch, or executable entrypoints; browser-style surfaces should distinguish controller `entrypoint` from host `launch_entrypoint`, and declare intentional local launch scripts with `--launch-script`
-- In semantic-change objects, keep `surfaces.set: null` when surfaces are unchanged. Remove intentional surfaces by name; an empty replacement is rejected because it can erase runnable entrypoints accidentally.
-- `rms structure <implementation.yaml>` when implementation inner roles, machine declarations, or evidence placeholders are unclear
-- `rms review <module.yaml> --impact`
-
-Provider-backed prompts are opt-in. Use `--provider codex` or `--ai` only when an external Codex run is intended.
-
-## Adding Modules
-
-When creating a new capability, choose semantic shape before file layout:
-
-- `domain-engine`: pure decisions, closed variants, validated values, transition records, laws, and replay bundles.
-- `boundary-adapter`: parsers, boundary validation, ports, effect adapters, and boundary/contract tests.
-- `runtime-monitor`: observed runtime inputs, derived facts or streams, trigger decisions, monitor authority, and runtime evidence.
-- `workflow`: commands, states, events, deadlines, compensation, recovery evidence.
-- `storage-adapter`: persistence ports, failure categories, migration and recovery evidence.
-- `integration-adapter`: external service boundary, retries, idempotency, reconciliation evidence.
-- `composite`: contained submodules, public exports, visibility boundaries, composition evidence.
-
-Use `rms add-capability <path> --name <name> --purpose "<purpose>" --domain-binding <binding> --boundary-binding <binding>` when a public capability should be implemented as a recursive tree with a composite parent, domain child, and boundary child. Prefer this over a single module when the intent combines a runnable surface or untrusted input with invariant-bearing planning, ordering, batching, filtering, policy, lifecycle decisions, or external effects. Omit bindings only when the requested output is deliberately semantic-only; attach them later with `rms add-binding <child>/module.yaml --binding <binding>` rather than copying a scratch scaffold.
-
-If the user intent says app, tool, CLI, local-first reference app, runnable, or smoke test, declare a runnable surface through RMS. A library-only boundary is acceptable only when the product intent is explicitly library-only. Runnable surfaces stay thin, but boundary machines still use explicit state-plus-input transitions; product lifecycle belongs in the owning domain or workflow machine.
-
-If a pure/domain module is meant to be reused like a library or Lego block, declare the reusable capability in `provides.capabilities[]`, keep a single public code facade in `implementation.yaml`, and add package/reuse evidence. RMS says what is reusable; native package files only say how a binding imports it.
-
-Use `rms add-module <path> --name <name> --purpose "<purpose>" --shape <shape> --binding <binding>` when scaffolding one module. Bindings realize semantic roles idiomatically; they do not define the semantics.
-
-Default split for any capability: put invariant-bearing decisions in a `domain-engine`, and put untrusted input, output, UI, CLI, network, storage, time, randomness, external services, and other effects in adapters.
-
-Naming rule: choose module and inner role names from product/capability language. When using `rms add-capability`, omit `--domain-child` and `--boundary-child` unless the user supplied semantic child names; the CLI defaults to neutral `-domain` and `-boundary` paths. Do not invent child names or machine names from role/surface words such as `rules`, `engine`, `adapter`, `cli`, `web`, `rust`, `swift`, or `js` unless those words are genuinely part of the domain language.
-
-## Semantic Structure Before Code
-
-Before writing implementation code, make the user's intent concrete enough to encode:
-
-- Semantic closure: connect each public behavior through contract -> semantic-function authority -> classified machine cases -> properties/evidence, and connect each required capability through an exact local consumer -> provider contract or explicit external boundary. Missing and unresolved links are production gaps; shape-inapplicable stages are not.
-- Semantic gate: do not hand-create laws, contracts, semantic roles, semantic-function bindings, states, commands, events, effects, transition functions, parsers, runnable surfaces, public entrypoints, or evidence obligations. Use RMS CLI commands, especially `rms spec apply` and `rms surface apply`, then edit the declared role bodies. Use `semantic_functions.add/set/remove` when an authority owner, exact symbol, purity, discharged promise, or evidence binding changes. Use semantic `set` and `remove` operations instead of manual manifest surgery. `rms spec apply` automatically closes every currently active semantic revision; use explicit `supersedes` only for additional non-local branches. Never edit or delete an applied change record.
-- Apply gate: run semantic or machine apply with `--dry-run` first. Do not write product code while `final_machine` still contains generic scaffold variants or omits real branches. Machine apply preserves evidence roles but does not generate replay proof; update and replay them from implemented paths. Direct edits after apply invalidate the semantic revision and strict audit.
-- Public surface gate: generated capability contracts are scaffold obligations, not production semantics. Replace them through `rms spec apply` with `contracts.set` before implementation. Public commands in `module.yaml` must be represented by the declared implementation surface. A runnable surface adapts outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals. Generic `Accept`/`Reject` scaffold commands are not implemented product semantics.
-- Reuse gate: reusable modules publish capabilities and contracts first and expose one declared public facade. `rms package` builds, verifies, records the concrete result, rebuilds, and verifies the final artifact; expected-result prose alone is not proof. Consumers must require the capability contract and import only the public facade.
-- Property gate: laws that say always, never, bounded, ordered, normalized, parsed, generated, impossible, or must not happen should declare semantic properties with input spaces, oracles, evidence, and counterexample replay policy before relying on binding tests.
-- Universal system questions: identify artifacts and transformations, ordered cross-module messages, resource ownership and closure, elevated authority, and always/eventually/bounded guarantees before choosing files.
-- Intent: restate the behavior in the owning context's language and name what must never happen.
-- ADTs and values: define closed variants, validated values, commands, states, events, and accepted/rejected result types.
-- State and transitions: define accepted transitions, rejected transitions, terminal states, transition records, and replayable traces when behavior depends on order or lifecycle.
-- Traceable machine: workflows orchestrate; machines execute; commands ask; events report; effects touch the world; projections observe; journals explain; replay reproduces; first-bad-transition evidence points to the fix.
-- Messages and outputs: keep command, event, effect, and effect-result envelopes explicit; transition outputs should name next state, emitted events, commands, effects, and reply.
-- Protocols: declare public multi-module conversations as closed participant/message/state automata, then bind each machine case as one send or receive.
-- Resources: declare acquire/use/release/transfer protocols for files, handles, memory regions, transactions, locks, processes, devices, or any other lifetime-sensitive resource.
-- Artifacts: declare versioned inputs/outputs and transformation contracts separately from in-memory machine state.
-- Authority: contain privileged, unsafe, and foreign operations behind declared safe facades.
-- Temporal proof: encode always, eventually, ordering, exclusion, at-most-once, and bounded-response claims as properties with a matching exhaustive, model-checking, static, sanitizer, or benchmark realization.
-- Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.
-- Numeric safety: if validated values represent counts, money, quantities, rates, sizes, scores, or other numeric facts, choose checked, saturating, bounded, or explicitly proven arithmetic before implementation.
-- Edge cases first: decide invalid commands, impossible variants, invalid constructors, malformed inputs, illegal transitions, stale or conflicting state, duplicate or out-of-order external facts, numeric overflow or rounding, and not-applicable cases.
-- Property-first proof: convert broad laws into semantic properties; bindings may use native libraries or deterministic generated cases, but RMS owns the input space, oracle, evidence path, and replayable counterexample shape.
-- External truth: decide what happens when an external outcome is unknown, duplicate, stale, partial, conflicting, delayed, or later corrected. Declare reconciliation, recovery, retry, compensation, or convergence evidence before relying on that behavior.
-- Only then fill implementation files, tests, and evidence.
-
-## While Implementing
-
-- Keep changes inside the owning module boundary.
-- Edit bodies inside RMS-declared role files. Add small private pure helpers inside declared pure role files when useful.
-- Do not add private IO helpers in pure roles. Filesystem, network, clocks, randomness, environment, processes, provider calls, and external services must be declared effects with effect results and executed only in adapter, port, or effect-executor roles.
-- For effectful stateful behavior, keep the execution chain explicit: runnable callable -> machine driver -> pure transition record -> exact one-request executor -> typed effect result -> machine driver. The driver retains complete records, advances from `state_after`, and owns the whole repeated cycle; do not put an outer lifecycle loop in the runnable surface.
-- When new semantic structure is needed, run `rms spec plan/apply/check` instead of inventing files or naming schemes directly. Use `rms machine plan/apply/check` only for focused inner-machine edits after laws, contracts, and evidence obligations are already correct.
-- Change public contracts or manifests before code when public meaning changes.
-- Declare new effects, dependencies, profiles, state, migration, compatibility impact, and recovery paths before relying on them.
-- Make representation first-class: closed variants, validated values, commands, states, events, and accepted/rejected result types belong in an explicit role or unit.
-- Use domain-named role suffixes for generated or declared ADTs where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, and `<Domain>Rejection`.
-- Do not use role-derived inner names such as `<Domain>RulesMachine`, `<Domain>AdapterMachine`, `<Domain>CliMachine`, or `<Domain>WebMachine`; prefer `<Domain>Machine` for pure decisions and `<Domain>BoundaryMachine` only when a boundary state/transition role is useful.
-- Keep pure transitions separate from representation definitions, and keep boundary parsing separate from both.
-- Replace generated role files incrementally. Do not delete a declared role file and leave the project invalid while hand-building a replacement; add the replacement first or keep the old file until `rms structure <implementation.yaml>` and the binding's syntax check can run.
-- When replacing generated role code, use RMS apply commands so `architecture.roles`, `architecture.machine`, `architecture.representation`, and `semantic_functions` name the actual files and symbols. Do not repair these canonical declarations by direct manifest editing.
-- Prefer ADTs, sealed variants, enums, opaque values, validated constructors, explicit result/rejection types, schemas at untrusted boundaries, and focused tests.
-- Do not add domain structs to `allowed_public_field_structs` to silence constructor diagnostics. That exemption is only for declared envelopes, transition outputs, transition records, and source-provenance records; domain values keep private fields and validated constructors.
-- Use state machines or transition functions when behavior depends on lifecycle or order; illegal transitions must be rejected or made unrepresentable.
-- Keep projections passive: they may derive facts and timelines from observed inputs, but they must not emit workflow commands or mutate another module's state.
-- Keep workflow choreography explicit in the workflow transition model, subscription registry, effect lifecycle, inbox/outbox, or declared adapter boundary rather than hidden in listener chains.
-- Keep runnable surfaces connected to the declared RMS boundary. If `public/app.*`, `src/cli.*`, routes, mobile views, or similar files are the real product surface, declare them with `rms surface apply` and route them through the declared adapter/public entrypoint instead of importing or duplicating pure/private decision code directly. Browser launch files should reference the declared controller entrypoint rather than bypassing it. Any local browser script loaded by the launch file is part of the surface; it must import/call the declared controller or adapter, not carry a copied parser, generator, transition, or domain decision implementation.
-- Runnable surface delegation names an existing `architecture.roles` role or a concrete source symbol, and the surface declares boundary effects or a precise no-effect justification.
-- Keep reusable-module consumers on the declared public facade. Do not import `transition`, `representation`, parser internals, or adapter internals from another module even if the language package manager makes the path reachable.
-- Do not edit another module's private implementation to bypass its public contract.
-- Treat generated reports, diffs, and provider output as evidence, not architecture.
-
-## Before Completion
-
-Completion is binary:
-
-1. Run focused native, spec, machine, surface, property, trace, and package checks that apply. Record execution-derived traces with `rms trace run <implementation.yaml> --profile smoke --record`, then rerun without `--record` to compare them. Run every smoke property realization with `rms property run <implementation.yaml> --profile smoke`.
-2. Run `rms gate --root .`; continue working if it exits nonzero or reports a failed check.
-3. Commit the candidate.
-4. Run `rms audit --root . --strict`; continue working if it exits nonzero.
-5. Only then report completion, including the exact checks run.
-
-Run the smallest checks that prove the changed promise:
-
-- `rms validate --root .`
-- `rms compose --root .`
-- `rms spec check <module.yaml|implementation.yaml>` after semantic changes.
-- `rms machine check <implementation.yaml>` when an implementation binding exists.
-- `rms surface check <implementation.yaml> --strict` when runnable app, UI, CLI, browser, HTTP, batch, or executable entrypoints exist.
-- `rms structure <implementation.yaml>` when an implementation binding exists and inner roles changed.
-- `rms trace check <trace-bundle>`, `rms trace replay <trace-bundle>`, or `rms trace diagnose <trace-bundle>` when local transition evidence exists.
-- `rms trace run <implementation.yaml> --profile smoke --record` after implementing transition behavior, followed by `rms trace run <implementation.yaml> --profile smoke` to prove the committed bundle matches fresh execution.
-- `rms trace stitch <trace-bundle>...` when a scenario crosses module boundaries; diagnose the saved system trace to locate the first broken handoff.
-- `rms property check <module.yaml|implementation.yaml>`, `rms property run <implementation.yaml>`, or `rms property replay <counterexample.yaml>` when laws, parsers, numeric bounds, reusable modules, or generated counterexamples are involved.
-- `rms verify <implementation.yaml>` when the module has an implementation binding, or `rms verify <composite-module.yaml>` for composite rollups.
-- `rms package <module.yaml>` when a module is intended for reuse outside its current owner; it records concrete package proof. Use `rms verify-package <package-dir>` for an independent recheck.
-- `rms gate --root .` when reviewing a working-tree change.
-- `rms audit --root . --strict` before claiming production-ready RMS software.
-
-Strict audit requires a git source revision. Commit the production candidate before treating strict audit as release evidence. Strict audit executes declared smoke proof commands against committed code, compares regenerated traces and reusable packages, runs each property realization independently, and fails if a proof command mutates production files.
-
-For stateful or workflow behavior, include transition records, golden timeline tests, replay bundles, and first-bad-transition diagnostics when they apply.
-
-Do not declare an implemented module done while `rms validate --root .` reports `semantic.contract-scaffold-active`, `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only` for that module. Replace scaffold contracts through `contracts.set` and replace scaffold evidence with concrete law, contract, boundary, scenario, trace, runtime, recovery, or reconciliation evidence. Evidence must not describe its source as a current filesystem snapshot or a repository without a Git revision; strict audit resolves the committed candidate revision.
-
-Report remaining manual obligations explicitly, especially compatibility review, missing evidence, undeclared effects, or partial conformance.
-"#;
-
-const INIT_CLAUDE_MD: &str = r#"@AGENTS.md
-
-# Claude Code Adapter
-
-Use the repository's RMS skills when their descriptions match the task. Treat deterministic validation, contracts, and CI as authoritative over conversational instructions.
-"#;
+const INIT_CLAUDE_MD: &str = include_str!("../assets/guidance/claude.md");
 
 const CODEX_PLUGIN_README: &str = r#"# Codex Plugin Wrapper
 
@@ -52620,41 +55160,34 @@ import struct ExternalKit.Widget
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
         assert!(git_initialized);
-        assert!(agents.contains("RMS artifacts are the architectural source of truth"));
-        assert!(agents.contains("Product intent is enough input from the user"));
-        assert!(agents.contains("rms design --root . --task"));
-        assert!(agents.contains("Non-Negotiable Execution"));
-        assert!(agents.contains("do not substitute one module for convenience"));
-        assert!(agents.contains("Never repair `module.yaml`"));
-        assert!(agents.contains("Do not inspect sibling projects"));
-        assert!(agents.contains("Public cross-module conversations use contract protocol automata"));
-        assert!(agents.contains("Resources whose lifetime affects correctness declare ownership"));
-        assert!(agents.contains("Privileged, unsafe, and foreign operations occur only"));
-        assert!(agents.contains("Completion is binary"));
-        assert!(agents.contains("choose semantic shape before file layout"));
-        assert!(agents.contains("Default split for any capability"));
-        assert!(agents.contains("Naming rule"));
-        assert!(agents.contains("omit `--domain-child`"));
-        assert!(agents.contains("Semantic Structure Before Code"));
-        assert!(agents.contains("Numeric safety"));
-        assert!(agents.contains("Edge cases first"));
-        assert!(agents.contains("External truth"));
-        assert!(agents.contains("Traceable machine"));
-        assert!(agents.contains("command, event, effect, and effect-result envelopes"));
-        assert!(agents.contains("exact `driver_function`"));
-        assert!(agents.contains("exact protocol `executor_symbol`"));
-        assert!(agents.contains("runnable callable -> machine driver -> pure transition"));
-        assert!(agents.contains("Keep projections passive"));
-        assert!(agents.contains("Make representation first-class"));
-        assert!(agents.contains("Do not use role-derived inner names"));
-        assert!(agents.contains("rms structure <implementation.yaml>"));
-        assert!(agents.contains("rms trace check <trace-bundle>"));
-        assert!(agents.contains("rms trace stitch <trace-bundle>"));
+        assert_eq!(agents, INIT_AGENTS_MD);
+        assert_eq!(
+            agents
+                .lines()
+                .filter_map(|line| line.strip_prefix("## "))
+                .collect::<Vec<_>>(),
+            [
+                "Authority",
+                "Start / Route",
+                "Change Gate",
+                "Hard Boundaries",
+                "Completion",
+            ]
+        );
+        assert!(agents.lines().count() <= 100);
+        assert!(agents.len() <= 12 * 1024);
+        assert!(agents.contains("rms next --task"));
+        assert!(agents.contains(COMMIT_AUTHORITY_POLICY));
+        assert!(agents.contains(BOOTSTRAP_PENDING_AUTHORIZED_COMMIT));
+        assert!(agents.contains(CANDIDATE_PENDING_AUTHORIZED_COMMIT));
+        assert!(agents.contains("rms init [--adopt]` → authorized bootstrap commit → `rms design"));
+        assert!(agents.contains("rms add-module` for a standalone module"));
+        assert!(agents.contains("`rms add-capability` for a recommended recursive capability"));
+        assert!(
+            agents.contains("focused native/spec/machine/surface/property/trace/package checks")
+        );
+        assert!(agents.contains("authorized candidate commit"));
         assert!(agents.contains("rms audit --root . --strict"));
-        assert!(agents.contains("<Domain>Machine"));
-        assert!(agents.contains("evidence.placeholder"));
-        assert!(agents.contains("rms route <module.yaml> --task"));
-        assert!(agents.contains("rms context <module.yaml> --task"));
         assert!(gitignore.contains(".rms/runs/"));
         assert!(gitignore.contains(".rms/dogfood/"));
         assert!(config_text.contains("# write_scope: module"));
@@ -52701,6 +55234,77 @@ import struct ExternalKit.Widget
         assert!(worktree.status.success());
         assert_eq!(discovered, expected);
         assert!(!nested_repository);
+    }
+
+    #[test]
+    fn init_reports_bootstrap_pending_authorized_commit() {
+        let root = unique_test_dir("init-authorized-provenance");
+
+        run_init(
+            &root,
+            "authorized-provenance",
+            "Prepare provenance without granting commit authority.",
+            "0.1.0",
+            &[String::from("core")],
+        )
+        .unwrap();
+
+        let completion = init_completion_lines();
+        assert_eq!(completion[0], BOOTSTRAP_PENDING_AUTHORIZED_COMMIT);
+        assert_eq!(completion[1], COMMIT_AUTHORITY_POLICY);
+        assert_eq!(
+            completion[2],
+            "onboarding order: init -> authorized bootstrap commit -> `rms design --root . --task <intent>` -> recommended scaffold"
+        );
+        assert!(root.join(".git").is_dir());
+        assert!(source_revision(&root).is_none());
+        let head = Command::new("git")
+            .current_dir(&root)
+            .args(["rev-parse", "--verify", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(!head.status.success());
+
+        let next = build_next_report(&root, None, "design a core capability").unwrap();
+        assert_eq!(next.result, NextResult::DesignRequired);
+        assert_eq!(
+            next.completion.pending_state,
+            Some(BOOTSTRAP_PENDING_AUTHORIZED_COMMIT)
+        );
+        let declare = &next.steps[1].steps;
+        let bootstrap_index = declare
+            .iter()
+            .position(|step| step.description == BOOTSTRAP_PENDING_AUTHORIZED_COMMIT)
+            .unwrap();
+        let design_index = declare
+            .iter()
+            .position(|step| {
+                step.args
+                    .first()
+                    .is_some_and(|argument| argument == "design")
+            })
+            .unwrap();
+        assert!(bootstrap_index < design_index);
+
+        let guidance = fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        ensure_document_markers(
+            "generated AGENTS.md",
+            &guidance,
+            &[
+                "rms init [--adopt]",
+                "authorized bootstrap commit",
+                "rms design",
+                "rms add-module",
+            ],
+        )
+        .unwrap();
+        assert!(guidance.contains(BOOTSTRAP_PENDING_AUTHORIZED_COMMIT));
+        assert!(guidance.contains(COMMIT_AUTHORITY_POLICY));
+        assert!(!completion
+            .iter()
+            .any(|line| line.contains("production-ready")));
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -52910,7 +55514,7 @@ import struct ExternalKit.Widget
             .unwrap_err()
             .to_string();
 
-        assert!(agents.contains("RMS artifacts are the architectural source of truth"));
+        assert_eq!(agents, INIT_AGENTS_MD);
         assert_eq!(report.local_skills.status, "present");
         assert!(!report.plugin_required);
         assert!(overwrite_error.contains("refusing to overwrite"));
@@ -52942,9 +55546,11 @@ import struct ExternalKit.Widget
 
         fs::remove_dir_all(&root).unwrap();
         assert!(config_before.contains("default_provider: codex"));
-        assert!(synced_agents.contains("Default split for any capability"));
-        assert!(synced_agents.contains("Traceable machine"));
-        assert!(synced_agents.contains("Keep projections passive"));
+        assert!(synced_agents.starts_with("stale guidance\n"));
+        assert!(synced_agents.contains("rms next --task"));
+        assert!(synced_agents.contains(COMMIT_AUTHORITY_POLICY));
+        assert!(synced_agents.contains(CANDIDATE_PENDING_AUTHORIZED_COMMIT));
+        assert_eq!(synced.agent_instructions.status, "managed-current");
         assert_eq!(synced.local_skills.status, "present");
         assert!(config_after_sync.contains("default_provider: none"));
         assert!(config_after_sync.contains(".rms/custom-runs"));
@@ -52970,7 +55576,7 @@ import struct ExternalKit.Widget
                 .target_instructions
                 .as_ref()
                 .map(|item| item.status.as_str()),
-            Some("present")
+            Some("exact-current")
         );
         assert!(!report.plugin_required);
     }
@@ -52983,6 +55589,10 @@ import struct ExternalKit.Widget
 
         run_agent_plugin_install(AgentTarget::Codex, Some(&marketplace), true).unwrap();
         let plugin_root = root.join("plugins/rms");
+        write_test_file(
+            &root.join(".codex/config.toml"),
+            "[plugins.\"rms@personal\"]\nenabled = true\n",
+        );
         let report = build_agent_plugin_report(AgentTarget::Codex, Some(&marketplace)).unwrap();
         let manifest = fs::read_to_string(plugin_root.join(".codex-plugin/plugin.json")).unwrap();
         let marketplace_source = fs::read_to_string(&marketplace).unwrap();
@@ -52996,6 +55606,7 @@ import struct ExternalKit.Widget
         assert!(skill.contains("Implement a Change"));
         assert_eq!(report.marketplace_status, "present");
         assert_eq!(report.plugin_status, "present");
+        assert_eq!(report.installed_status, "installed-enabled");
         assert!(!report.plugin_required);
     }
 
@@ -53021,6 +55632,325 @@ import struct ExternalKit.Widget
                 "embedded skill drift: {relative_path}"
             );
         }
+    }
+
+    #[test]
+    fn skill_sources_distinguish_equivalent_divergent_stale_and_configured_origins() {
+        let fixture = unique_test_dir("skill-source-origins");
+        let project = fixture.join("project");
+        let home = fixture.join("home");
+        fs::create_dir_all(&project).unwrap();
+
+        write_embedded_skill_set(&project.join(".agents/skills"));
+        write_embedded_skill_set(&project.join(".claude/skills"));
+        fs::write(
+            project.join(".claude/skills/implement-change/SKILL.md"),
+            "divergent project Claude skill\n",
+        )
+        .unwrap();
+        write_embedded_skill_set(&home.join(".codex/skills"));
+        write_embedded_skill_set(&home.join("plugins/rms/skills"));
+        write_embedded_skill_set(&home.join(".codex/plugins/cache/personal/rms/0.1.0/skills"));
+        write_embedded_skill_set(&home.join(".codex/plugins/cache/personal/rms/0.0.9/skills"));
+        fs::write(
+            home.join(".codex/plugins/cache/personal/rms/0.0.9/skills/verify-module/SKILL.md"),
+            "stale cached skill\n",
+        )
+        .unwrap();
+        write_test_file(
+            &home.join(".agents/plugins/marketplace.json"),
+            &serde_json::to_string_pretty(&json!({
+                "name": "personal",
+                "plugins": [{
+                    "name": "rms",
+                    "source": {"source": "local", "path": "./plugins/rms"}
+                }]
+            }))
+            .unwrap(),
+        );
+        write_test_file(
+            &home.join(".codex/config.toml"),
+            "[plugins.\"rms@personal\"]\nenabled = false\n",
+        );
+
+        let report = detect_skill_sources(&project, Some(&home));
+        let source = |origin: &str| {
+            report
+                .sources
+                .iter()
+                .find(|source| source.origin == origin)
+                .unwrap_or_else(|| panic!("missing skill source {origin}"))
+        };
+        assert_eq!(source("project-codex").embedded_equivalence, "equivalent");
+        assert_eq!(source("project-codex").status, "informational");
+        assert_eq!(source("project-claude").embedded_equivalence, "divergent");
+        assert_eq!(source("project-claude").status, "review-required");
+        assert_eq!(source("user-codex").embedded_equivalence, "equivalent");
+        assert_eq!(
+            source("personal-marketplace").configured_state,
+            "marketplace-entry;installed-disabled"
+        );
+        assert_eq!(
+            source("plugin-cache:0.1.0").embedded_equivalence,
+            "equivalent"
+        );
+        assert_eq!(
+            source("plugin-cache:0.0.9").embedded_equivalence,
+            "divergent"
+        );
+        assert_eq!(source("plugin-cache:0.0.9").status, "review-required");
+        assert!(source("plugin-cache:0.0.9")
+            .remediation
+            .as_deref()
+            .unwrap_or_default()
+            .contains("plugin sync"));
+        assert!(report.sources.iter().all(|source| {
+            source.runtime_activation == "unknown" && source.precedence == "host-defined"
+        }));
+        let ordering = report
+            .sources
+            .iter()
+            .map(|source| (source.origin.clone(), source.path.clone()))
+            .collect::<Vec<_>>();
+        let mut sorted = ordering.clone();
+        sorted.sort();
+        assert_eq!(ordering, sorted);
+
+        write_test_file(
+            &home.join(".codex/config.toml"),
+            "[plugins.\"rms@personal\"]\nenabled = true\n",
+        );
+        let enabled = detect_skill_sources(&project, Some(&home));
+        assert_eq!(
+            enabled
+                .sources
+                .iter()
+                .find(|source| source.origin == "personal-marketplace")
+                .map(|source| source.configured_state.as_str()),
+            Some("marketplace-entry;installed-enabled")
+        );
+
+        fs::remove_dir_all(home.join("plugins/rms")).unwrap();
+        let missing_plugin = detect_skill_sources(&project, Some(&home));
+        let missing_plugin = missing_plugin
+            .sources
+            .iter()
+            .find(|source| source.origin == "personal-marketplace")
+            .unwrap();
+        assert_eq!(missing_plugin.embedded_equivalence, "unavailable");
+        assert_eq!(missing_plugin.status, "review-required");
+
+        write_test_file(
+            &home.join(".agents/plugins/marketplace.json"),
+            "{ malformed",
+        );
+        let malformed = detect_skill_sources(&project, Some(&home));
+        let malformed = malformed
+            .sources
+            .iter()
+            .find(|source| source.origin == "personal-marketplace")
+            .unwrap();
+        assert!(malformed
+            .configured_state
+            .starts_with("marketplace-malformed;"));
+        assert_eq!(malformed.status, "review-required");
+
+        let no_home = detect_skill_sources(&project, None);
+        fs::remove_dir_all(&fixture).unwrap();
+        assert_eq!(no_home.runtime_activation, "unknown");
+        assert_eq!(no_home.precedence, "host-defined");
+        assert!(no_home.sources.iter().any(|source| {
+            source.origin == "user-home"
+                && source.path == "<HOME-unavailable>"
+                && source.configured_state == "unknown"
+        }));
+    }
+
+    #[test]
+    fn agent_guidance_assets_are_exact_and_within_budgets() {
+        let root = unique_test_dir("agent-guidance-assets");
+        fs::create_dir_all(&root).unwrap();
+
+        run_agent_init(&root, AgentTarget::Codex, false).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+            INIT_AGENTS_MD
+        );
+        run_agent_init(&root, AgentTarget::Claude, true).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+            INIT_AGENTS_MD
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("CLAUDE.md")).unwrap(),
+            INIT_CLAUDE_MD
+        );
+        assert_eq!(
+            fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/guidance/agents-full.md")
+            )
+            .unwrap(),
+            INIT_AGENTS_MD
+        );
+        assert_eq!(
+            fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("assets/guidance/agents-adopted-block.md")
+            )
+            .unwrap(),
+            INIT_ADOPTED_AGENTS_BLOCK
+        );
+        assert_eq!(
+            INIT_AGENTS_MD
+                .lines()
+                .filter_map(|line| line.strip_prefix("## "))
+                .collect::<Vec<_>>(),
+            [
+                "Authority",
+                "Start / Route",
+                "Change Gate",
+                "Hard Boundaries",
+                "Completion",
+            ]
+        );
+        assert!(INIT_AGENTS_MD.lines().count() <= 100);
+        assert!(INIT_AGENTS_MD.len() <= 12 * 1024);
+        for required in [
+            COMMIT_AUTHORITY_POLICY,
+            BOOTSTRAP_PENDING_AUTHORIZED_COMMIT,
+            CANDIDATE_PENDING_AUTHORIZED_COMMIT,
+        ] {
+            assert!(INIT_AGENTS_MD.contains(required));
+        }
+        assert!(INIT_AGENTS_MD.contains("<!-- RMS generated full guidance -->"));
+        assert!(INIT_ADOPTED_AGENTS_BLOCK.contains(RMS_MANAGED_AGENTS_START));
+        assert!(INIT_ADOPTED_AGENTS_BLOCK.contains(RMS_MANAGED_AGENTS_END));
+        assert!(INIT_ADOPTED_AGENTS_BLOCK.contains(COMMIT_AUTHORITY_POLICY));
+        assert!(INIT_CLAUDE_MD.contains("@AGENTS.md"));
+        assert!(INIT_CLAUDE_MD.contains("<!-- RMS generated Claude guidance -->"));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn agent_guidance_status_distinguishes_all_managed_states() {
+        let root = unique_test_dir("agent-guidance-states");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("AGENTS.md");
+
+        assert_eq!(agent_guidance_readiness(&path).status, "missing");
+        fs::write(&path, INIT_AGENTS_MD).unwrap();
+        assert_eq!(agent_guidance_readiness(&path).status, "exact-current");
+
+        fs::write(
+            &path,
+            INIT_AGENTS_MD.replace(
+                "Canonical RMS artifacts own architecture",
+                "Drifted RMS artifacts own architecture",
+            ),
+        )
+        .unwrap();
+        assert_eq!(agent_guidance_readiness(&path).status, "drifted");
+
+        let managed = merge_managed_section(
+            "# Project Guidance\n",
+            RMS_MANAGED_AGENTS_START,
+            RMS_MANAGED_AGENTS_END,
+            INIT_ADOPTED_AGENTS_BLOCK,
+        )
+        .unwrap();
+        fs::write(&path, &managed).unwrap();
+        assert_eq!(agent_guidance_readiness(&path).status, "managed-current");
+
+        fs::write(
+            &path,
+            managed.replace(COMMIT_AUTHORITY_POLICY, "stale managed commit policy"),
+        )
+        .unwrap();
+        assert_eq!(agent_guidance_readiness(&path).status, "drifted");
+
+        fs::write(
+            &path,
+            format!("# Broken\n{RMS_MANAGED_AGENTS_START}\nmissing end marker\n"),
+        )
+        .unwrap();
+        assert_eq!(agent_guidance_readiness(&path).status, "malformed");
+
+        fs::write(&path, "# Project-owned guidance\n").unwrap();
+        assert_eq!(agent_guidance_readiness(&path).status, "unmanaged");
+
+        fs::remove_file(&path).unwrap();
+        assert_eq!(agent_guidance_readiness(&path).status, "missing");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn agent_sync_preserves_adopted_content_and_unrelated_skills() {
+        let root = unique_test_dir("agent-sync-preservation");
+        fs::create_dir_all(&root).unwrap();
+        let prefix = "# Project Guidance\n\nKeep this prefix byte-for-byte.\n\n";
+        let suffix = "\n\nKeep this suffix byte-for-byte.\n";
+        let stale_block = INIT_ADOPTED_AGENTS_BLOCK
+            .replace(COMMIT_AUTHORITY_POLICY, "outdated managed policy")
+            .trim_end()
+            .to_string();
+        fs::write(
+            root.join("AGENTS.md"),
+            format!("{prefix}{stale_block}{suffix}"),
+        )
+        .unwrap();
+        let unrelated = b"---\nname: project-only\n---\n\n# Project-only skill\n";
+        write_test_bytes(
+            &root.join(".agents/skills/project-only/SKILL.md"),
+            unrelated,
+        );
+
+        run_agent_sync(&root, AgentTarget::Codex).unwrap();
+        let first = snapshot_test_tree(&root);
+        let synced = fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        let report = build_agent_integration_report(&root, AgentTarget::Codex);
+        assert!(synced.starts_with(prefix));
+        assert!(synced.ends_with(suffix));
+        assert_eq!(synced.matches(RMS_MANAGED_AGENTS_START).count(), 1);
+        assert_eq!(synced.matches(RMS_MANAGED_AGENTS_END).count(), 1);
+        assert!(synced.contains(COMMIT_AUTHORITY_POLICY));
+        assert_eq!(
+            fs::read(root.join(".agents/skills/project-only/SKILL.md")).unwrap(),
+            unrelated
+        );
+        assert_eq!(report.agent_instructions.status, "managed-current");
+        assert_eq!(report.local_skills.status, "present");
+        assert!(report
+            .local_skills
+            .extra
+            .iter()
+            .any(|path| path == "project-only/SKILL.md"));
+
+        run_agent_sync(&root, AgentTarget::Codex).unwrap();
+        let second = snapshot_test_tree(&root);
+        assert_eq!(first, second);
+
+        let claude_prefix = "# Project Claude Policy\n\nKeep this adapter policy.\n";
+        fs::write(root.join("CLAUDE.md"), claude_prefix).unwrap();
+        write_test_bytes(
+            &root.join(".claude/skills/project-only/SKILL.md"),
+            unrelated,
+        );
+        run_agent_sync(&root, AgentTarget::Claude).unwrap();
+        let claude_first = snapshot_test_tree(&root);
+        let claude = fs::read_to_string(root.join("CLAUDE.md")).unwrap();
+        assert!(claude.starts_with(claude_prefix));
+        assert_eq!(claude.matches(RMS_MANAGED_CLAUDE_START).count(), 1);
+        assert_eq!(claude.matches(RMS_MANAGED_CLAUDE_END).count(), 1);
+        assert!(claude.contains(RMS_CLAUDE_GUIDANCE_SIGNATURE));
+        assert_eq!(
+            fs::read(root.join(".claude/skills/project-only/SKILL.md")).unwrap(),
+            unrelated
+        );
+        run_agent_sync(&root, AgentTarget::Claude).unwrap();
+        let claude_second = snapshot_test_tree(&root);
+        assert_eq!(claude_first, claude_second);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -63194,6 +66124,473 @@ semantic_functions: []
     }
 
     #[test]
+    fn next_classifies_repository_kinds_and_not_applicable_artifacts() {
+        let root = unique_test_dir("next-repository-kinds");
+        let system_root = root.join("system-root");
+        let module_root = root.join("module-root");
+        let system_container = root.join("system-container");
+        let multi_system = root.join("multi-system");
+        let module_workspace = root.join("module-workspace");
+        let uninitialized = root.join("uninitialized");
+        for path in [
+            &system_root,
+            &module_root,
+            &system_container,
+            &multi_system,
+            &module_workspace,
+            &uninitialized,
+        ] {
+            fs::create_dir_all(path).unwrap();
+        }
+        write_profile_manifest(&system_root.join("system.yaml"), "rms/system/v0.1", None);
+        write_profile_manifest(
+            &module_root.join("module.yaml"),
+            "rms/module/v0.1",
+            Some("direct-module"),
+        );
+        write_profile_manifest(
+            &system_container.join("app/system.yaml"),
+            "rms/system/v0.1",
+            None,
+        );
+        write_profile_manifest(
+            &multi_system.join("alpha/system.yaml"),
+            "rms/system/v0.1",
+            None,
+        );
+        write_profile_manifest(
+            &multi_system.join("beta/system.yaml"),
+            "rms/system/v0.1",
+            None,
+        );
+        write_profile_manifest(
+            &module_workspace.join("modules/alpha/module.yaml"),
+            "rms/module/v0.1",
+            Some("alpha"),
+        );
+
+        assert_eq!(
+            build_repository_profile(&system_root).unwrap().report.kind,
+            RepositoryKind::SystemRoot
+        );
+        assert_eq!(
+            build_repository_profile(&module_root).unwrap().report.kind,
+            RepositoryKind::ModuleRoot
+        );
+        assert_eq!(
+            build_repository_profile(&system_container)
+                .unwrap()
+                .report
+                .kind,
+            RepositoryKind::SystemContainer
+        );
+        let multi = build_repository_profile(&multi_system).unwrap().report;
+        assert_eq!(multi.kind, RepositoryKind::MultiSystemWorkspace);
+        assert!(multi
+            .canonical_files
+            .iter()
+            .filter(|item| matches!(item.name.as_str(), "system.yaml" | "context-map.yaml"))
+            .all(|item| item.status == "not-applicable"));
+        assert_eq!(
+            build_repository_profile(&module_workspace)
+                .unwrap()
+                .report
+                .kind,
+            RepositoryKind::ModuleWorkspace
+        );
+        assert_eq!(
+            build_repository_profile(&uninitialized)
+                .unwrap()
+                .report
+                .kind,
+            RepositoryKind::Uninitialized
+        );
+
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let actual = build_repository_profile(&workspace).unwrap().report;
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(actual.kind, RepositoryKind::MultiSystemWorkspace);
+        assert!(actual
+            .canonical_files
+            .iter()
+            .filter(|item| matches!(item.name.as_str(), "system.yaml" | "context-map.yaml"))
+            .all(|item| item.status == "not-applicable"));
+    }
+
+    #[test]
+    fn next_selects_owner_deterministically_without_guessing() {
+        let direct_root = unique_test_dir("next-direct-root-owner");
+        fs::create_dir_all(direct_root.join("nested")).unwrap();
+        write_profile_manifest(
+            &direct_root.join("module.yaml"),
+            "rms/module/v0.1",
+            Some("direct-owner"),
+        );
+        write_profile_manifest(
+            &direct_root.join("nested/other.module.yaml"),
+            "rms/module/v0.1",
+            Some("other-owner"),
+        );
+        let direct_profile = build_repository_profile(&direct_root).unwrap();
+        let direct = resolve_next_owner(
+            &direct_root,
+            None,
+            "make dragons sparkle",
+            &direct_profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(direct.status, OwnerStatus::Selected);
+        assert_eq!(direct.reason, "direct root module");
+        assert_eq!(
+            direct.selected.as_ref().map(|module| module.name.as_str()),
+            Some("direct-owner")
+        );
+        fs::remove_dir_all(&direct_root).unwrap();
+
+        let sole_root = unique_test_dir("next-sole-top-level-owner");
+        fs::create_dir_all(sole_root.join("modules/only")).unwrap();
+        write_profile_manifest(
+            &sole_root.join("modules/only/module.yaml"),
+            "rms/module/v0.1",
+            Some("sole-owner"),
+        );
+        let sole_profile = build_repository_profile(&sole_root).unwrap();
+        let sole = resolve_next_owner(
+            &sole_root,
+            None,
+            "make dragons sparkle",
+            &sole_profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(sole.status, OwnerStatus::Selected);
+        assert_eq!(sole.reason, "sole top-level module");
+        assert_eq!(
+            sole.selected.as_ref().map(|module| module.name.as_str()),
+            Some("sole-owner")
+        );
+        fs::remove_dir_all(&sole_root).unwrap();
+
+        let root = unique_test_dir("next-owner-selection");
+        fs::create_dir_all(&root).unwrap();
+        write_profile_manifest(
+            &root.join("alpha.module.yaml"),
+            "rms/module/v0.1",
+            Some("alpha-payments"),
+        );
+        write_profile_manifest(
+            &root.join("beta.module.yaml"),
+            "rms/module/v0.1",
+            Some("beta-games"),
+        );
+        let profile = build_repository_profile(&root).unwrap();
+
+        let explicit = resolve_next_owner(
+            &root,
+            Some(&root.join("beta.module.yaml")),
+            "change payments",
+            &profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(explicit.status, OwnerStatus::Selected);
+        assert_eq!(
+            explicit
+                .selected
+                .as_ref()
+                .map(|module| module.name.as_str()),
+            Some("beta-games")
+        );
+
+        let unique = resolve_next_owner(
+            &root,
+            None,
+            "change alpha payments",
+            &profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(unique.status, OwnerStatus::Selected);
+        assert_eq!(
+            unique.selected.as_ref().map(|module| module.name.as_str()),
+            Some("alpha-payments")
+        );
+
+        let no_match =
+            resolve_next_owner(&root, None, "make dragons sparkle", &profile.modules, false)
+                .unwrap();
+        assert_eq!(no_match.status, OwnerStatus::Ambiguous);
+        assert!(no_match.selected.is_none());
+
+        fs::write(
+            root.join("alpha.module.yaml"),
+            next_module_source("alpha", "Own shared reporting"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("beta.module.yaml"),
+            next_module_source("beta", "Own shared reporting"),
+        )
+        .unwrap();
+        let tied_profile = build_repository_profile(&root).unwrap();
+        let tied = resolve_next_owner(
+            &root,
+            None,
+            "change shared reporting",
+            &tied_profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(tied.status, OwnerStatus::Ambiguous);
+        assert_eq!(tied.candidates[0].score, tied.candidates[1].score);
+        fs::remove_dir_all(&root).unwrap();
+
+        let recursive = route_capability_fixture("next-recursive-owner");
+        let recursive_profile = build_repository_profile(&recursive).unwrap();
+        let routed = resolve_next_owner(
+            &recursive,
+            Some(&recursive.join("modules/play-game/module.yaml")),
+            "change invalid move rules and transition invariants",
+            &recursive_profile.modules,
+            false,
+        )
+        .unwrap();
+        fs::remove_dir_all(&recursive).unwrap();
+        assert_eq!(routed.status, OwnerStatus::Selected);
+        assert_eq!(
+            routed.selected.as_ref().map(|module| module.name.as_str()),
+            Some("play-game-domain")
+        );
+        assert!(routed.route.len() >= 2);
+
+        let cycle_root = unique_test_dir("next-recursive-cycle");
+        fs::create_dir_all(&cycle_root).unwrap();
+        write_recursive_parent(&cycle_root, "alpha", "beta", "internal", false);
+        write_recursive_parent(&cycle_root, "beta", "alpha", "internal", false);
+        let cycle_profile = build_repository_profile(&cycle_root).unwrap();
+        let cycle = resolve_next_owner(
+            &cycle_root,
+            Some(&cycle_root.join("alpha.module.yaml")),
+            "change alpha beta rules",
+            &cycle_profile.modules,
+            false,
+        )
+        .unwrap();
+        fs::remove_dir_all(&cycle_root).unwrap();
+        assert_eq!(cycle.status, OwnerStatus::Invalid);
+        assert!(cycle.reason.contains("cycle"), "{}", cycle.reason);
+        assert_eq!(cycle.route.len(), 2);
+    }
+
+    #[test]
+    fn next_classifies_prospective_task_lanes_independent_of_git_diff() {
+        for (task, expected) in [
+            ("inspect and explain this module", TaskLane::ReadOnly),
+            ("design a new billing capability module", TaskLane::Design),
+            (
+                "change the contract invariant and transition",
+                TaskLane::Semantic,
+            ),
+            ("add a CLI screen and form", TaskLane::Surface),
+            (
+                "change the public contract for the CLI endpoint",
+                TaskLane::SemanticPlusSurface,
+            ),
+            (
+                "fix the parser bug in existing code",
+                TaskLane::ImplementationCandidate,
+            ),
+            ("make it delightful", TaskLane::Undetermined),
+        ] {
+            assert_eq!(classify_prospective_task(task).lane, expected, "{task}");
+        }
+
+        let undetermined = build_next_report(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/minimal"),
+            None,
+            "make it delightful",
+        )
+        .unwrap();
+        assert_eq!(undetermined.result, NextResult::DesignRequired);
+        assert!(undetermined
+            .steps
+            .iter()
+            .flat_map(|group| &group.steps)
+            .all(|step| !step.args.iter().any(|argument| argument == "implement")));
+
+        let root = copy_minimal_fixture("next-dirty-diff");
+        let before = build_next_report(&root, None, "fix the existing implementation bug").unwrap();
+        fs::write(root.join("unrelated-notes.txt"), "dirty unrelated work\n").unwrap();
+        let after = build_next_report(&root, None, "fix the existing implementation bug").unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            before.task_classification.lane,
+            after.task_classification.lane
+        );
+        assert_eq!(
+            before.owner.selected.as_ref().map(|module| &module.path),
+            after.owner.selected.as_ref().map(|module| &module.path)
+        );
+        assert_eq!(
+            serde_json::to_value(&before.steps).unwrap(),
+            serde_json::to_value(&after.steps).unwrap()
+        );
+    }
+
+    #[test]
+    fn next_text_and_json_share_stable_safe_read_only_steps() {
+        let root = copy_minimal_fixture("next-stable-report");
+        let before_tree = snapshot_test_tree(&root);
+        let task = "change CLI contract; echo 'boom'\nthen continue";
+        let first = build_next_report(&root, None, task).unwrap();
+        let second = build_next_report(&root, None, task).unwrap();
+        let json_first = serde_json::to_string_pretty(&first).unwrap();
+        let json_second = serde_json::to_string_pretty(&second).unwrap();
+        let text_first = render_next_report(&first);
+        let text_second = render_next_report(&second);
+        let after_tree = snapshot_test_tree(&root);
+
+        assert_eq!(json_first, json_second);
+        assert_eq!(text_first, text_second);
+        assert_eq!(before_tree, after_tree);
+        assert!(json_first.contains("semantic-plus-surface"));
+        assert!(json_first.contains("host-defined"));
+        assert!(json_first.contains("runtime_activation"));
+        for shared_fact in [
+            first.result.label(),
+            first.repository.kind.label(),
+            first.owner.status.label(),
+            first.task_classification.lane.label(),
+            first.skill_sources.runtime_activation,
+            first.skill_sources.precedence,
+            first.completion.policy,
+        ] {
+            assert!(
+                text_first.contains(shared_fact),
+                "missing text fact: {shared_fact}"
+            );
+        }
+        assert!(text_first.contains("Route:"));
+        for source in &first.skill_sources.sources {
+            assert!(text_first.contains(&source.origin));
+            assert!(text_first.contains(&source.path));
+            assert!(text_first.contains(&source.configured_state));
+            if let Some(digest) = &source.digest {
+                assert!(text_first.contains(digest));
+            }
+            if let Some(remediation) = &source.remediation {
+                assert!(text_first.contains(remediation));
+            }
+        }
+        for step in first.steps.iter().flat_map(|group| &group.steps) {
+            match step.kind {
+                NextStepKind::Executable => {
+                    assert!(step.program.is_some());
+                    assert!(step.display.is_some());
+                    assert_ne!(step.program.as_deref(), Some("git"));
+                    assert_ne!(step.program.as_deref(), Some("codex"));
+                    assert_ne!(step.program.as_deref(), Some("claude"));
+                    assert!(text_first.contains(step.program.as_deref().unwrap()));
+                    assert!(text_first.contains(step.display.as_deref().unwrap()));
+                    assert!(text_first.contains(&format!("{:?}", step.args)));
+                    if let Some(cwd) = &step.cwd {
+                        assert!(text_first.contains(cwd));
+                    }
+                }
+                NextStepKind::Manual => {
+                    assert!(step.program.is_none());
+                    assert!(step.args.is_empty());
+                }
+            }
+        }
+        let task_step = first
+            .steps
+            .iter()
+            .flat_map(|group| &group.steps)
+            .find(|step| step.args.iter().any(|argument| argument == task))
+            .unwrap();
+        assert!(task_step.display.as_deref().unwrap().contains("'\\''boom"));
+        assert!(first
+            .steps
+            .iter()
+            .flat_map(|group| &group.steps)
+            .any(|step| {
+                step.kind == NextStepKind::Manual
+                    && step.description == CANDIDATE_PENDING_AUTHORIZED_COMMIT
+                    && step.program.is_none()
+            }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn next_relative_roots_render_paths_valid_from_each_step_cwd() {
+        let root = if Path::new("examples/minimal").is_dir() {
+            PathBuf::from("examples/minimal")
+        } else {
+            PathBuf::from("../../../examples/minimal")
+        };
+        let module = root.join("module.yaml");
+        let report =
+            build_next_report(&root, Some(&module), "fix existing implementation code").unwrap();
+        assert!(Path::new(&report.root).is_absolute());
+        assert!(report
+            .context
+            .implementation
+            .as_deref()
+            .is_some_and(|path| Path::new(path).is_absolute()));
+        for step in report.steps.iter().flat_map(|group| &group.steps) {
+            if let Some(cwd) = &step.cwd {
+                assert!(Path::new(cwd).is_absolute(), "cwd was relative: {cwd}");
+            }
+            for argument in &step.args {
+                assert!(
+                    !argument.starts_with("examples/minimal"),
+                    "root-relative argument would be duplicated from cwd: {argument}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn next_chooses_init_or_adopt_and_blocks_invalid_canonical_state() {
+        let fresh = unique_test_dir("next-fresh-uninitialized");
+        fs::create_dir_all(&fresh).unwrap();
+        let fresh_report = build_next_report(&fresh, None, "build a local tool").unwrap();
+        let fresh_init = &fresh_report.steps[1].steps[0];
+        assert_eq!(fresh_report.result, NextResult::BootstrapRequired);
+        assert!(!fresh_init.args.iter().any(|argument| argument == "--adopt"));
+
+        let existing = unique_test_dir("next-existing-uninitialized");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("README.md"), "existing project\n").unwrap();
+        let existing_report = build_next_report(&existing, None, "adopt this tool").unwrap();
+        assert_eq!(existing_report.result, NextResult::BootstrapRequired);
+        assert!(existing_report.steps[1].steps[0]
+            .args
+            .iter()
+            .any(|argument| argument == "--adopt"));
+
+        let invalid = unique_test_dir("next-invalid-canonical");
+        fs::create_dir_all(&invalid).unwrap();
+        fs::write(invalid.join("system.yaml"), "not: [valid\n").unwrap();
+        let blocked = build_next_report(&invalid, None, "inspect readiness").unwrap();
+        assert_eq!(blocked.result, NextResult::Blocked);
+        assert!(!blocked.blockers.is_empty());
+        assert!(build_next_report(&invalid, None, "   ").is_err());
+        assert!(build_next_report(
+            &invalid,
+            Some(Path::new("missing/module.yaml")),
+            "inspect readiness"
+        )
+        .is_err());
+
+        fs::remove_dir_all(&fresh).unwrap();
+        fs::remove_dir_all(&existing).unwrap();
+        fs::remove_dir_all(&invalid).unwrap();
+    }
+
+    #[test]
     fn composite_conformance_report_includes_composition_checks() {
         let root = unique_test_dir("conformance-composite-rollup");
         write_composite_verify_fixture(&root);
@@ -65742,6 +69139,46 @@ runs:
     }
 
     #[test]
+    fn diagnose_reports_repository_profile_and_detected_skill_summary() {
+        let root = unique_test_dir("diagnose-repository-profile");
+        fs::create_dir_all(&root).unwrap();
+        write_profile_manifest(
+            &root.join("module.yaml"),
+            "rms/module/v0.1",
+            Some("diagnose-owner"),
+        );
+        write_embedded_skill_set(&root.join(".agents/skills"));
+
+        let report = build_diagnose_report(&root).unwrap();
+        let rendered = serde_json::to_value(&report).unwrap();
+
+        assert_eq!(report.repository.kind, RepositoryKind::ModuleRoot);
+        assert_eq!(report.repository.module_manifests.len(), 1);
+        assert!(report
+            .repository
+            .canonical_files
+            .iter()
+            .filter(|item| matches!(item.name.as_str(), "system.yaml" | "context-map.yaml"))
+            .all(|item| item.status == "not-applicable"));
+        assert!(report.skill_sources.detected >= 3);
+        assert_eq!(report.skill_sources.runtime_activation, "unknown");
+        assert_eq!(report.skill_sources.precedence, "host-defined");
+        assert_eq!(rendered["repository"]["kind"], "module-root");
+        assert_eq!(rendered["skill_sources"]["runtime_activation"], "unknown");
+        assert_eq!(rendered["skill_sources"]["precedence"], "host-defined");
+        assert!(report
+            .guidance
+            .iter()
+            .any(|item| item.contains("rms next --task")));
+        assert!(report
+            .guidance
+            .iter()
+            .any(|item| item == COMMIT_AUTHORITY_POLICY));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn latest_run_dir_uses_newest_run_id() {
         let root = unique_test_dir("latest-run");
         let runs = root.join("runs");
@@ -65825,6 +69262,218 @@ runs:
 
         fs::remove_dir_all(&root).unwrap();
         assert!(error.contains("out of sync"));
+    }
+
+    #[test]
+    fn release_guidance_distribution_detects_drift_and_allows_unrelated_skills() {
+        let root = unique_test_dir("release-guidance-distribution");
+        write_release_distribution_fixture(&root);
+        let unrelated_codex = root.join(".agents/skills/project-only/SKILL.md");
+        let unrelated_claude = root.join(".claude/skills/project-only/SKILL.md");
+        write_test_file(&unrelated_codex, "project-only Codex skill\n");
+        write_test_file(&unrelated_claude, "project-only Claude skill\n");
+
+        validate_embedded_skill_assets(&root).unwrap();
+        validate_guidance_and_documentation_distribution(&root).unwrap();
+        assert_eq!(
+            fs::read_to_string(&unrelated_codex).unwrap(),
+            "project-only Codex skill\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&unrelated_claude).unwrap(),
+            "project-only Claude skill\n"
+        );
+
+        for relative in [
+            "tooling/rust/rms/assets/skills/implement-change/SKILL.md",
+            "integrations/codex/rms/skills/implement-change/SKILL.md",
+            ".agents/skills/implement-change/SKILL.md",
+            ".claude/skills/implement-change/SKILL.md",
+        ] {
+            let path = root.join(relative);
+            let original = fs::read_to_string(&path).unwrap();
+            fs::write(&path, format!("{original}\ndistribution drift\n")).unwrap();
+            let error = validate_embedded_skill_assets(&root)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("out of sync"), "{relative}: {error}");
+            fs::write(path, original).unwrap();
+        }
+
+        for relative in [
+            "tooling/rust/rms/assets/skills/unexpected/SKILL.md",
+            "integrations/codex/rms/skills/unexpected/SKILL.md",
+        ] {
+            let path = root.join(relative);
+            write_test_file(&path, "unexpected managed distribution residue\n");
+            let error = validate_embedded_skill_assets(&root)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("file set is out of sync"),
+                "{relative}: {error}"
+            );
+            fs::remove_file(path).unwrap();
+        }
+        let managed_residue = root.join(".agents/skills/implement-change/stale.md");
+        write_test_file(&managed_residue, "stale managed residue\n");
+        let error = validate_embedded_skill_assets(&root)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("stale managed residue"), "{error}");
+        fs::remove_file(managed_residue).unwrap();
+
+        for relative in [
+            "tooling/rust/rms/assets/guidance/agents-full.md",
+            "tooling/rust/rms/assets/guidance/agents-adopted-block.md",
+            "tooling/rust/rms/assets/guidance/claude.md",
+            "AGENTS.md",
+            "CLAUDE.md",
+        ] {
+            let path = root.join(relative);
+            let original = fs::read_to_string(&path).unwrap();
+            fs::write(&path, format!("{original}\ndistribution drift\n")).unwrap();
+            let error = validate_guidance_and_documentation_distribution(&root)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("out of sync") || error.contains("drifted"),
+                "{relative}: {error}"
+            );
+            fs::write(path, original).unwrap();
+        }
+
+        let sync_script = root.join("scripts/sync-rms-agent-distributions.sh");
+        let original_script = fs::read_to_string(&sync_script).unwrap();
+        fs::write(
+            &sync_script,
+            original_script.replace(".claude/skills", ".claude/missing"),
+        )
+        .unwrap();
+        let error = validate_guidance_and_documentation_distribution(&root)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(".claude/skills"), "{error}");
+        fs::write(sync_script, original_script).unwrap();
+
+        validate_embedded_skill_assets(&root).unwrap();
+        validate_guidance_and_documentation_distribution(&root).unwrap();
+        assert_eq!(
+            fs::read_to_string(&unrelated_codex).unwrap(),
+            "project-only Codex skill\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&unrelated_claude).unwrap(),
+            "project-only Claude skill\n"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn release_documentation_order_is_mechanically_enforced() {
+        let root = unique_test_dir("release-documentation-order");
+        write_release_distribution_fixture(&root);
+        validate_guidance_and_documentation_distribution(&root).unwrap();
+
+        let quickstart_path = root.join("QUICKSTART.md");
+        let quickstart = fs::read_to_string(&quickstart_path).unwrap();
+        fs::write(
+            &quickstart_path,
+            "rms init\nrms design\nauthorized bootstrap commit\nrms add-module\nrms add-capability\n",
+        )
+        .unwrap();
+        let error = validate_guidance_and_documentation_distribution(&root)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ordered marker `rms design`"), "{error}");
+
+        fs::write(
+            &quickstart_path,
+            format!("{quickstart}\n--domain-child invented-domain\n"),
+        )
+        .unwrap();
+        let error = validate_guidance_and_documentation_distribution(&root)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("child-name overrides"), "{error}");
+        fs::write(&quickstart_path, &quickstart).unwrap();
+
+        let production_path = root.join("PRODUCTION.md");
+        let production = fs::read_to_string(&production_path).unwrap();
+        fs::write(
+            &production_path,
+            "focused checks → gate → authorized candidate commit → strict audit\n\nfocused checks\n\nauthorized candidate commit\n\nrms gate --root .\n\nrms audit --root . --strict\n",
+        )
+        .unwrap();
+        let error = validate_guidance_and_documentation_distribution(&root)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("ordered marker `authorized candidate commit`"),
+            "{error}"
+        );
+        fs::write(&production_path, production).unwrap();
+
+        let readme_path = root.join("README.md");
+        fs::write(
+            &readme_path,
+            format!("runtime activation is unknown\n{COMMIT_AUTHORITY_POLICY}\n"),
+        )
+        .unwrap();
+        let error = validate_guidance_and_documentation_distribution(&root)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("README.md"), "{error}");
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn release_binary_smoke_includes_next_command() {
+        let args = release_install_next_args();
+        assert_eq!(
+            args,
+            [
+                "next",
+                "--root",
+                "examples/minimal",
+                "--task",
+                "inspect the example module",
+                "--json",
+            ]
+        );
+        let cli = Cli::try_parse_from(std::iter::once("rms").chain(args)).unwrap();
+        match cli.command {
+            Commands::Next {
+                task,
+                root,
+                module,
+                json,
+            } => {
+                assert_eq!(task, "inspect the example module");
+                assert_eq!(root, PathBuf::from("examples/minimal"));
+                assert!(module.is_none());
+                assert!(json);
+            }
+            _ => panic!("release install smoke args did not parse as rms next"),
+        }
+
+        let root = copy_minimal_fixture("release-installed-next");
+        let before = snapshot_test_tree(&root);
+        let report = build_next_report(&root, None, "inspect the example module").unwrap();
+        let json = serde_json::to_value(&report).unwrap();
+        let after = snapshot_test_tree(&root);
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(before, after);
+        assert_eq!(json["result"], "ready");
+        assert_eq!(json["repository"]["kind"], "system-root");
+        assert_eq!(json["skill_sources"]["runtime_activation"], "unknown");
+        assert!(report
+            .steps
+            .iter()
+            .flat_map(|group| &group.steps)
+            .all(|step| !matches!(step.program.as_deref(), Some("git" | "codex" | "claude"))));
     }
 
     #[test]
@@ -66835,6 +70484,127 @@ records:
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("rms-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    fn write_test_file(path: &Path, contents: &str) {
+        write_test_bytes(path, contents.as_bytes());
+    }
+
+    fn write_test_bytes(path: &Path, contents: &[u8]) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    fn write_embedded_skill_set(root: &Path) {
+        for (relative_path, contents) in INIT_AGENT_SKILLS {
+            write_test_file(&root.join(relative_path), contents);
+        }
+    }
+
+    fn write_release_distribution_fixture(root: &Path) {
+        for skills_root in [
+            root.join("skills"),
+            root.join("tooling/rust/rms/assets/skills"),
+            root.join("integrations/codex/rms/skills"),
+            root.join(".agents/skills"),
+            root.join(".claude/skills"),
+        ] {
+            write_embedded_skill_set(&skills_root);
+        }
+
+        write_test_file(
+            &root.join("tooling/rust/rms/assets/guidance/agents-full.md"),
+            INIT_AGENTS_MD,
+        );
+        write_test_file(
+            &root.join("tooling/rust/rms/assets/guidance/agents-adopted-block.md"),
+            INIT_ADOPTED_AGENTS_BLOCK,
+        );
+        write_test_file(
+            &root.join("tooling/rust/rms/assets/guidance/claude.md"),
+            INIT_CLAUDE_MD,
+        );
+        write_test_file(&root.join("AGENTS.md"), INIT_AGENTS_MD);
+        write_test_file(&root.join("CLAUDE.md"), INIT_CLAUDE_MD);
+        write_test_file(
+            &root.join("scripts/sync-rms-agent-distributions.sh"),
+            "#!/usr/bin/env sh\nset -eu\ncp -R skills/. tooling/rust/rms/assets/skills/\ncp -R skills/. integrations/codex/rms/skills/\ncp -R skills/. .agents/skills/\ncp -R skills/. .claude/skills/\ncp tooling/rust/rms/assets/guidance/agents-full.md AGENTS.md\ncp tooling/rust/rms/assets/guidance/claude.md CLAUDE.md\n",
+        );
+        write_test_file(
+            &root.join("integrations/codex/rms/scripts/sync-skills.sh"),
+            "#!/usr/bin/env sh\nexec sh scripts/sync-rms-agent-distributions.sh\n",
+        );
+        write_test_file(
+            &root.join("QUICKSTART.md"),
+            "# Quickstart\n\nrms init\n\nauthorized bootstrap commit\n\nrms design\n\nStandalone alternative: rms add-module\n\nRecursive alternative: rms add-capability\n",
+        );
+        write_test_file(
+            &root.join("PRODUCTION.md"),
+            "# Production\n\nfocused checks → gate → authorized candidate commit → strict audit\n\nfocused checks\n\nrms gate --root .\n\nauthorized candidate commit\n\nrms audit --root . --strict\n",
+        );
+        let doorway = format!(
+            "# RMS\n\nUse rms next for deterministic guidance. Detected sources do not prove runtime activation.\n\n{COMMIT_AUTHORITY_POLICY}\n"
+        );
+        for document in ["README.md", "TOOLING.md", "integrations/CODEX.md"] {
+            write_test_file(&root.join(document), &doorway);
+        }
+    }
+
+    fn write_profile_manifest(path: &Path, spec: &str, module_name: Option<&str>) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let source = match module_name {
+            Some(name) => next_module_source(name, &format!("Own {name} behavior")),
+            None => format!(
+                "spec: {spec}\n\nsystem:\n  name: fixture\n  version: 0.1.0\n  purpose: Classify repository shape\n\ncontexts: []\npublic_interfaces: []\nexternal_dependencies: []\nworkflows: []\ninvariants: []\ncompatibility:\n  policy: backward-compatible-within-major\n"
+            ),
+        };
+        fs::write(path, source).unwrap();
+    }
+
+    fn next_module_source(name: &str, purpose: &str) -> String {
+        format!(
+            "spec: rms/module/v0.1\n\nmodule:\n  name: {name}\n  version: 0.1.0\n  kind: library\n  purpose: {purpose}\n\nprofiles: [core]\nowns:\n  concepts: []\n  data: []\n  decisions: []\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\nrequires:\n  modules: []\n  capabilities: []\ninvariants: []\neffects: []\ncompatibility:\n  policy: backward-compatible-within-major\nverification:\n  laws: []\n  contracts: []\n  scenarios: []\n  boundaries: []\n"
+        )
+    }
+
+    fn copy_minimal_fixture(label: &str) -> PathBuf {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/minimal");
+        let destination = unique_test_dir(label);
+        for entry in WalkDir::new(&source).into_iter().filter_map(Result::ok) {
+            let relative = entry.path().strip_prefix(&source).unwrap();
+            let target = destination.join(relative);
+            if entry.file_type().is_dir() {
+                fs::create_dir_all(&target).unwrap();
+            } else if entry.file_type().is_file() {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+        destination
+    }
+
+    fn snapshot_test_tree(root: &Path) -> BTreeMap<String, String> {
+        let mut snapshot = BTreeMap::new();
+        for entry in WalkDir::new(root)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+        {
+            let relative = entry
+                .path()
+                .strip_prefix(root)
+                .unwrap()
+                .display()
+                .to_string();
+            snapshot.insert(relative, sha256_file(entry.path()).unwrap());
+        }
+        snapshot
     }
 
     fn assert_no_error_diagnostics(diagnostics: &[Diagnostic]) {

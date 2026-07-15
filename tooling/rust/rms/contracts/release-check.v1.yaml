@@ -1,34 +1,36 @@
 spec: rms/contract/v0.1
-name: release-check
+name: "release-check"
 version: 1
 kind: command
-meaning: Run the canonical release-readiness gate for the RMS CLI, examples, module bundle, and Codex plugin adapter.
+meaning: "Run deterministic release-readiness checks for the RMS CLI, examples, module bundle, generated guidance assets, managed skill distributions, documentation ordering, and optional Codex plugin adapter."
 preconditions:
-  - id: repository-root-readable
-    statement: The requested repository root is readable and contains the RMS workspace.
+  - id: "accepts-1"
+    statement: "a readable RMS repository root"
+  - id: "accepts-2"
+    statement: "the repository's native build and verification tools"
 postconditions:
-  - id: deterministic-gate-runs
-    statement: The command runs release metadata checks, formatting, Rust tests, RMS validation, RMS implementation verification, composition and compatibility smokes, package creation and verification smoke, scaffold roundtrip, clean-room recursive dogfood, example binding tests, release-binary smoke, optional Cargo packaging, and Codex plugin sync validation.
-  - id: release-metadata-is-consistent
-    statement: The Cargo package version, rms-cli module version, and packaged Codex plugin version are identical before release artifacts are accepted.
-  - id: release-binary-is-usable
-    statement: The release-mode `rms` binary builds, runs deterministic diagnostics and validation outside `cargo run`, and passes a clean-room PATH install smoke from a temporary directory.
-  - id: clean-room-agent-path-works
-    statement: The release-mode binary can initialize a fresh project, create project-local Codex and Claude guidance, scaffold a recursive capability tree, route domain and boundary work to the correct child modules, build a context packet, verify the composite rollup, and run the RMS gate without optional AI providers.
-  - id: pass-means-release-ready
-    statement: The command reports pass only when every enabled release-readiness check succeeds.
-  - id: provider-independent
-    statement: The release gate does not call optional AI providers.
+  - id: "ensures-1"
+    statement: "release checks cover metadata, formatting, focused and full tests, RMS validation, semantic and structure checks, properties, traces, composition, verification, package smoke, clean-room dogfood, examples, and installed release-binary smoke"
+  - id: "ensures-2"
+    statement: "canonical guidance assets, embedded skills, plugin skills, root guidance, and managed Codex and Claude copies must be synchronized"
+  - id: "ensures-3"
+    statement: "unrelated extra local skills remain allowed"
+  - id: "ensures-4"
+    statement: "onboarding documentation orders init, authorized bootstrap commit, design, and recommended scaffold"
+  - id: "ensures-5"
+    statement: "production documentation orders focused proof, gate, authorized candidate commit, and strict audit"
+  - id: "ensures-6"
+    statement: "release checks do not invoke optional AI providers"
+  - id: "ensures-7"
+    statement: "pass is reported only when every enabled release obligation succeeds"
 failure_categories:
-  - id: native-command-failed
-    statement: A release-readiness command such as cargo, RMS validation, RMS verification, or package smoke failed.
-  - id: plugin-drift
-    statement: The packaged Codex plugin skills or manifest drift from the canonical skill source.
-  - id: package-check-failed
-    statement: Cargo package, RMS package creation, or RMS package verification smoke failed.
-  - id: release-binary-smoke-failed
-    statement: The release-mode binary could not be built, installed into the temporary smoke path, or run deterministic smoke commands.
-  - id: release-metadata-drift
-    statement: Release package metadata disagrees across Cargo, RMS module, or packaged integration manifests.
+  - id: "rejects-1"
+    statement: "a native build, RMS verification, property, trace, package, or release-binary smoke command fails"
+  - id: "rejects-2"
+    statement: "managed guidance, skill distributions, or onboarding documentation drift"
+  - id: "rejects-3"
+    statement: "release metadata disagrees across canonical package and integration manifests"
+  - id: "rejects-4"
+    statement: "an enabled release-readiness obligation cannot be executed"
 compatibility:
   policy: backward-compatible-within-major

@@ -1,79 +1,28 @@
 # RMS Agent Skills
 
-These skills express architecture workflows without assuming a programming language or coding-agent vendor.
+## Authority
 
-The RMS CLI is the stable workbench for humans and agents. Skills should make agents use the CLI before carrying RMS rules in prompt memory. The CLI inspects canonical artifacts, builds bounded context, runs deterministic checks, and records evidence; skills only choose the right workflow.
+Canonical RMS manifests, contracts, applied revisions, and evidence declarations own system semantics. These skills are operational workflows: they select deterministic CLI context and proof lanes without becoming architectural authority.
 
-Product intent is enough input from the user. Agents should convert natural language into RMS semantics by asking only necessary clarifying questions, surfacing edge cases, naming what must never happen, and applying semantic changes before code.
+Product intent is sufficient input. Apply semantic changes before code, edit only declared roles, and treat provider output as advisory.
 
-Canonical skills:
+## Catalog
 
-- `inspect-module`
-- `implement-change`
-- `refactor-module`
-- `prune-module`
-- `add-module`
-- `evolve-contract`
-- `compose-modules`
-- `verify-module`
+- `inspect-module`: establish ownership, boundaries, contracts, effects, and evidence before planning.
+- `implement-change`: implement a feature or fix inside declared RMS roles.
+- `refactor-module`: improve internal structure without changing declared public meaning.
+- `prune-module`: remove unnecessary implementation residue while preserving obligations.
+- `add-module`: design and add a coherent module or recursive capability.
+- `evolve-contract`: change commands, queries, events, APIs, schemas, or failure semantics.
+- `compose-modules`: verify provider/consumer fit and cross-module behavior.
+- `verify-module`: prove declared laws, contracts, boundaries, profiles, and compatibility promises.
 
-Each skill uses the portable `SKILL.md` form with only common `name` and `description` frontmatter. Agent-specific packaging belongs under `integrations/` or generated installation directories.
+## Doorway
 
-The semantic workflow in these skills is normative only where it restates `SPEC.md`. The skills themselves are operational guidance.
-
-## CLI-first workflow
-
-Use these commands when available:
+Start with:
 
 ```text
-rms diagnose
-rms diagnose --json
-rms config init
-rms explain <module> [question]
-rms explain "question" --root <module-directory>
-rms plan <module> --task "<task>"
-rms implement <module> --task "<task>"
-rms evolve-contract <module> --task "<task>"
-rms evidence <module> --task "<task>"
-rms refactor <module> --task "<task>"
-rms review <module> [--diff <git-spec>]
-rms prompt <kind> <module> --task "<task>"
-rms prompt <kind> <module> --task "<task>" --record
-rms prompt <kind> <module> --task "<task>" --provider codex
-rms prompt <kind> <module> --task "<task>" --ai
-rms run list
-rms run latest
-rms run inspect <run-id-or-path>
-rms spec plan <module.yaml|implementation.yaml> --task "<task>"
-rms spec apply <module.yaml|implementation.yaml> --change-json '<json>'
-rms spec apply <module.yaml|implementation.yaml> --change-yaml '<yaml>'
-rms spec check <module.yaml|implementation.yaml>
-rms spec diff <module.yaml|implementation.yaml>
-rms machine plan <implementation.yaml> --task "<task>"
-rms machine apply <implementation.yaml> --change-json '<json>'
-rms machine apply <implementation.yaml> --change-yaml '<yaml>'
-rms machine check <implementation.yaml>
-rms machine diff <implementation.yaml>
-rms property check <module.yaml|implementation.yaml>
-rms property run <implementation.yaml> --profile smoke
-rms property replay <counterexample.yaml>
-rms trace check <trace-bundle>
-rms trace replay <trace-bundle>
-rms trace diagnose <trace-bundle>
-rms inspect <module>
-rms context <module> --task "<task>"
-rms validate --root <root>
-rms compose --root <root>
-rms check-compat <old-module> <new-module>
-rms verify <implementation.yaml|composite-module.yaml>
-rms conformance <module> --implementation <implementation.yaml>
-rms release check --root <root>
+rms next --task "<intent>" --root .
 ```
 
-Skills should use `rms explain`, `rms implement`, `rms evolve-contract`, `rms evidence`, `rms refactor`, `rms prompt <kind>`, and the advisory `rms plan` / `rms review` commands to render bounded prompts for humans or agents. Use `rms spec plan/apply/check` when a change needs new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, runnable surfaces, public entrypoints, binding dependencies, properties, fuzz targets, or evidence obligations. `binding_dependencies` names RMS modules; binding adapters realize native allowlists and local package metadata. `rms spec apply` records and hash-seals the exact semantic-change object under `verification/changes/` and automatically supersedes every active semantic revision; command logs with placeholders are not evidence. Generated capability contracts are scaffold obligations: replace them through `contracts.set` with product-specific meaning, accepted inputs, guarantees, and rejections before implementation. Use `set` and `remove`, including `properties.set/remove`, to revise RMS semantics, explicit `supersedes` only for additional non-local branches, and never edit or delete applied change records. Use `rms machine plan/apply/check` for focused inner-machine edits after semantic obligations are already correct; apply preserves evidence roles but does not generate replay proof from declarations. Effectful stateful machines declare exact machine-driver and transition-record functions; effect protocols declare exact executor symbols and effectful `effect-executor` semantic functions. The driver retains complete records, advances from `state_after`, executes `output.effects`, and owns the repeated transition/effect/result cycle. Every declared message envelope has a binding representation, and arithmetic over represented transition inputs is checked or bounded. Every executor role names its exact effect and uses a dedicated path separate from transition and machine-driver code; lifecycle policy cannot live in surfaces, adapters, or executors. Use `rms property check/run/replay` for broad laws, parser fuzz targets, numeric bounds, generated input spaces, and counterexamples; RMS owns the input space and oracle while bindings choose native property or fuzz tools. Every realization names an exact relative binding `path#symbol` runner; generated-property and deterministic-exhaustive strategies also name a generator. The runner calls its generator, a declared semantic operation, and a binding-native oracle. Active traces come from declared producers that call the real transition-record path and are recorded only with `rms trace run --record`. Evidence emitted by spec apply is an unmet obligation until its exact executable proof runs. Use `rms surface apply/check` when adding or changing app, UI, CLI, browser, HTTP, batch, or executable entrypoints; browser-style surfaces should declare the controller `entrypoint`, launch file `launch_entrypoint`, and any extra local `launch_scripts`. Launch scripts must route through the declared controller or adapter and must not duplicate parser/generator/transition/domain logic. For reusable modules, RMS says what is reusable: declare `provides.capabilities[]`, contracts, a public facade, and package/reuse evidence before treating a language-native package as importable. `rms package` builds, verifies, records the concrete proof, rebuilds, and verifies the final artifact; expected-result prose alone does not count. Consumers use `requires.capabilities[]` and import only the facade. Evidence must not claim a current filesystem snapshot or missing Git revision; strict audit resolves the clean committed candidate revision. For external truth, decide what happens when an outcome is unknown, duplicate, stale, partial, conflicting, delayed, or later corrected; use reconciliation or recovery evidence when correctness depends on that behavior. Use `--ai` only when `.rms/config.yaml` declares the intended default provider; use `--provider codex` for an explicit Codex run. Provider runs are bounded by `ai.codex.timeout_seconds` or `--provider-timeout-seconds`.
-
-Semantic-function declarations are architecture. Use `semantic_functions.add/set/remove` for exact symbols, authority owners, purity, discharged promises, assumptions, and evidence; never repair `implementation.yaml.semantic_functions` directly.
-
-## Safety
-
-The canonical skills are instruction-only. Agent-specific packages may add scripts, but executable additions should be version-pinned, reviewed, and granted least privilege. Skills should call project-native RMS validation rather than embedding a second set of architectural rules.
+Use `rms --help` for the complete command surface. Load the catalog skill that matches the prescribed lane; detailed machine, surface, property, trace, and completion rules live in selected skills and rendered RMS context.

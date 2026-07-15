@@ -23,7 +23,9 @@ rms inspect <module>
 rms context <module> [--task <task>]
 rms route <module> --task <task>
 rms init <path> [--adopt]
+rms next --task <task> [--root <path>] [--module <module>] [--json]
 rms add-module <path>
+rms add-capability <path>
 rms validate [module|contract|implementation]
 rms diagnose [system]
 rms explain [module] [question]
@@ -72,6 +74,7 @@ rms inspect <module.yaml>
 rms route <module.yaml> --task "..." [--root <path>] [--json]
 rms explain [<module.yaml>] ["question"] [--module <module.yaml>]
 rms diagnose [--root <path>] [--json]
+rms next --task "..." [--root <path>] [--module <module.yaml>] [--json]
 rms prompt <kind> <module.yaml> [--task "..."] [--diff <git-spec>] [--impact] [--ai|--provider codex] [--sandbox read-only|workspace-write] [--write-scope module|root] [--provider-timeout-seconds <seconds>]
 rms plan <module.yaml> --task "..." [--ai|--provider codex] [--provider-timeout-seconds <seconds>]
 rms implement <module.yaml> --task "..." [--ai|--provider codex] [--provider-timeout-seconds <seconds>]
@@ -116,11 +119,27 @@ Scaffolds a new RMS system with:
 - local agent skills: `.agents/skills`;
 - repository hygiene defaults: `.gitignore`.
 
-The command also establishes provenance: it initializes Git when the target is outside a worktree and reuses an existing parent worktree without creating a nested repository. Commit the generated bootstrap before product work.
+The command also establishes provenance: it initializes Git when the target is outside a worktree and reuses an existing parent worktree without creating a nested repository. The onboarding order is `init → authorized bootstrap commit → design → recommended scaffold`.
+
+Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness. An unauthorized initialization remains `bootstrap prepared; provenance baseline pending authorized commit`.
 
 Generated agent and workbench files are operational guidance. They must route future work through RMS manifests, contracts, and the shared CLI; they do not create module semantics. The command refuses to overwrite existing files.
 
 For an existing repository, `--adopt` changes collision handling without becoming a force mode. RMS validates the complete candidate first, preserves the glossary byte-for-byte, and maintains explicit idempotent sections inside existing agent guidance and ignore files while preserving all surrounding project-owned content. It creates only missing bootstrap artifacts and reports `created`, `adopted`, or `updated` per path. Existing RMS canonical manifests must validate and match the requested system identity. Existing embedded skill paths must match the current embedded skills; otherwise adoption stops and directs the user to make agent synchronization an explicit follow-up. Any conflict aborts before RMS writes an artifact.
+
+### `next`
+
+Constructs a deterministic work prescription from prospective task intent:
+
+```bash
+rms next --task "<intent>" [--root <path>] [--module <module.yaml>] [--json]
+```
+
+The shared text/JSON report classifies the repository and task lane, validates available canonical artifacts, selects an owner only from unambiguous evidence, lists canonical context and declared role paths, and orders inspect, declare, implement, verify, and complete steps. `result` is `ready`, `bootstrap-required`, `design-required`, `needs-owner`, or `blocked`; repository kind is `system-root`, `module-root`, `system-container`, `multi-system-workspace`, `module-workspace`, or `uninitialized`. Executable steps contain a program, argument array, and separately escaped display string. A candidate commit is a manual authorization step, never an executable Git prescription.
+
+An explicit module wins. Otherwise selection prefers a direct root module, a sole top-level module, or a unique positive task match, then recurses through composites with cycle protection. Ties remain `needs-owner`. Task classification is prospective and does not reuse impact or gate planning from an unrelated working-tree diff.
+
+The command is read-only: it does not mutate files or fixtures, invoke providers, execute verification, or grant source-edit or commit authority. It exits zero whenever it constructs a report, including bootstrap, design, and ambiguity states; construction failures exit one and argument errors retain the CLI parser's exit two.
 
 ### `add-module`
 
@@ -369,11 +388,15 @@ Native tool availability
 Optional AI-provider command availability
 Run-record directory readiness
 Agent workflow guidance
+Repository shape and applicability
+Detected RMS skill-source summary
 ```
 
 Use `rms --version` when only the installed CLI version is needed.
 
 Provider availability is diagnostic only. A missing Codex, Claude, or local-model command must not make deterministic RMS validation fail. Use `--json` for a machine-readable readiness report.
+
+Skill-source diagnostics report observable project copies, direct user locations, marketplace configuration, and plugin-cache versions. They do not inspect the current thread's injected skill catalog: runtime activation is unknown and precedence is host-defined. Identical duplicates are informational; divergent copies require review and explicit project or plugin synchronization.
 
 ### Workbench config
 
@@ -492,6 +515,8 @@ rms gate --dry-run --json
 The gate runs validation for impacted RMS changes, strict semantic/structural preflight, composition for architecture-level changes, and implementation verification for affected modules with implementation bindings. A failed check makes the command exit nonzero. Review and compatibility obligations remain visible and must not be used to justify bypassing the recommended structure.
 
 When git changed-path evidence is available, `rms gate` uses it to select the smallest useful checks. Strict preflight promotes every production-blocking semantic or structural audit finding except final dirty/untracked worktree cleanliness. A missing source revision is itself a gate failure. In a root without Git, the gate still runs deterministic full-project checks before returning failure so setup problems cannot hide architecture findings.
+
+Production completion is `focused checks → gate → authorized candidate commit → strict audit`. Without Git authority, stop at `candidate prepared; strict audit pending authorized commit`.
 
 ### `refactor`
 

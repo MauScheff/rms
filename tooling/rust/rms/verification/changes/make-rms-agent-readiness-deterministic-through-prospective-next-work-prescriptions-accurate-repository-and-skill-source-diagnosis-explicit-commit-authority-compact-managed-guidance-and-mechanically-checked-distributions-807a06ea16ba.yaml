@@ -1,0 +1,407 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/bind-the-init-rms-system-public-behavior-to-the-exact-adapter-that-implements-strict-initialization-and-explicit-repository-adoption-115978496d7d.yaml
+intent:
+  summary: Make RMS agent readiness deterministic through prospective next-work prescriptions, accurate repository and skill-source diagnosis, explicit commit authority, compact managed guidance, and mechanically checked distributions.
+laws:
+  add: []
+  set: []
+  remove: []
+contracts:
+  add:
+  - name: recommend-next-rms-work
+    direction: provided
+    version: '1'
+    command: recommend-next-rms-work
+    meaning: Construct a deterministic, read-only prescription for the next RMS work implied by a nonblank task intent and observable repository evidence.
+    accepts:
+    - a nonblank prospective task intent
+    - a readable root path
+    - an optional explicit readable module manifest
+    ensures:
+    - every constructed report classifies its result as ready, bootstrap-required, design-required, needs-owner, or blocked
+    - repository shape is classified as system-root, module-root, system-container, multi-system-workspace, module-workspace, or uninitialized
+    - explicit module selection wins, otherwise ownership resolves through a direct root module, a sole top-level module, or a unique positive task match without guessing through ties
+    - composite ownership routing reuses canonical route evidence recursively with cycle protection
+    - task classification is prospective and independent of unrelated working-tree changes
+    - text and JSON reports share validation health, owner evidence, task lane and confidence, canonical context, declared role paths, warnings, blockers, skill sources, completion order, and commit-authority status
+    - executable steps carry a program, argument array, and separately escaped display string while candidate commits remain manual authorization steps
+    - constructed reports exit successfully for bootstrap, design, owner ambiguity, and blocked canonical states
+    - report construction does not mutate files, invoke providers, execute recommended verification, or grant source-edit or Git authority
+    rejects:
+    - task intent is blank
+    - the requested root or explicit module cannot be read
+    - repository evidence is insufficient to construct a truthful report
+    protocol: null
+  - name: release-check
+    direction: provided
+    version: '1'
+    command: release-check
+    meaning: Run deterministic release-readiness checks for the RMS CLI, examples, module bundle, generated guidance assets, managed skill distributions, documentation ordering, and optional Codex plugin adapter.
+    accepts:
+    - a readable RMS repository root
+    - the repository's native build and verification tools
+    ensures:
+    - release checks cover metadata, formatting, focused and full tests, RMS validation, semantic and structure checks, properties, traces, composition, verification, package smoke, clean-room dogfood, examples, and installed release-binary smoke
+    - canonical guidance assets, embedded skills, plugin skills, root guidance, and managed Codex and Claude copies must be synchronized
+    - unrelated extra local skills remain allowed
+    - onboarding documentation orders init, authorized bootstrap commit, design, and recommended scaffold
+    - production documentation orders focused proof, gate, authorized candidate commit, and strict audit
+    - release checks do not invoke optional AI providers
+    - pass is reported only when every enabled release obligation succeeds
+    rejects:
+    - a native build, RMS verification, property, trace, package, or release-binary smoke command fails
+    - managed guidance, skill distributions, or onboarding documentation drift
+    - release metadata disagrees across canonical package and integration manifests
+    - an enabled release-readiness obligation cannot be executed
+    protocol: null
+  set:
+  - name: diagnose-rms-environment
+    direction: provided
+    version: '1'
+    command: diagnose-rms-environment
+    meaning: Report deterministic RMS readiness from observable repository shape, canonical validation, workbench configuration, run records, native tools, providers, guidance state, and detected skill sources without claiming runtime activation.
+    accepts:
+    - a readable repository or workspace root
+    - optional machine-readable output selection
+    ensures:
+    - repository shape uses the same classification model as recommend-next-rms-work
+    - root-level system and context artifacts are reported as not-applicable for shapes that do not own them while partial canonical roots remain missing or invalid
+    - skill reporting distinguishes detected sources from runtime-active skills
+    - detected skill summaries use deterministic ordering and host-defined precedence with unknown runtime activation
+    - machine-readable and text output derive from the same observations
+    - diagnostic evidence does not mutate or redefine canonical RMS semantics
+    rejects:
+    - the requested root cannot be traversed for repository evidence
+    - report construction cannot represent an unreadable canonical artifact truthfully
+    protocol: null
+  - name: configure-agent-integration
+    direction: provided
+    version: '1'
+    command: configure-agent-integration
+    meaning: Diagnose, initialize, synchronize, and optionally package managed RMS guidance and skills across supported agent targets while preserving project-owned content and reporting observable rather than purported runtime state.
+    accepts:
+    - a readable root for diagnosis
+    - a writable root for initialization or synchronization
+    - a supported agent target or managed distribution target
+    ensures:
+    - generated guidance is loaded from canonical crate assets and full guidance remains within its declared line and byte budgets
+    - diagnosis distinguishes exact-current, managed-current, drifted, malformed, unmanaged, and missing guidance
+    - skill origins report scope, path, configured state, digest, embedded equivalence, unknown runtime activation, and host-defined precedence
+    - equivalent duplicates are informational while divergent copies require review and deterministic project-sync or plugin-sync remediation
+    - synchronization refreshes only RMS-managed content and preserves unrelated local skills and project-owned document content
+    - Git commits are described as required evidence only when task and host policy grant commit authority
+    - optional plugin packaging remains an adapter and never becomes semantic authority
+    rejects:
+    - a managed document section is malformed or duplicated
+    - a required target is unwritable or unsupported
+    - a divergent managed skill cannot be synchronized safely
+    - optional plugin installation is unavailable or explicitly requested installation fails
+    protocol: null
+  - name: init-rms-system
+    direction: provided
+    version: '1'
+    command: init-rms-system
+    meaning: Initialize a fresh RMS workspace or explicitly adopt an existing repository while preserving project-owned content and preparing a provenance baseline that remains pending until an authorized commit.
+    accepts:
+    - a writable fresh target for strict initialization
+    - a writable existing repository when adopt mode is explicit
+    - valid system name, purpose, version, and optional context names
+    ensures:
+    - strict initialization refuses every existing managed path before writing
+    - adoption validates existing canonical RMS manifests and managed sections before writing
+    - adoption preserves project-owned content outside RMS-managed sections and refreshes only managed content
+    - collision preflight completes before any artifact is written and each managed path is reported deterministically
+    - a standalone target becomes a Git worktree while a nested target continues to use its existing parent worktree
+    - successful initialization reports bootstrap prepared; provenance baseline pending authorized commit
+    - generated onboarding orders initialization, authorized bootstrap commit, design, and the recommended scaffold
+    - this command does not itself grant commit authority or claim production readiness
+    rejects:
+    - an existing canonical artifact is invalid or incompatible with safe adoption
+    - an RMS-managed skill or document section conflicts or is malformed
+    - target input is invalid or unwritable
+    - required provenance worktree setup cannot be established
+    protocol: null
+  remove:
+  - name: check-release-readiness
+    direction: provided
+    version: null
+properties:
+  add: []
+  set:
+  - id: init-establishes-git-worktree
+    proves: bootstrap-creates-provenance-worktree
+    kind: property
+    subject: null
+    input_space: fresh directories outside Git and target directories already nested inside an existing Git worktree
+    preconditions:
+    - git is available and generated RMS files are absent
+    operation: run rms init and inspect the target repository root and generated completion guidance
+    oracle:
+    - fresh standalone target becomes a Git worktree
+    - nested target continues to use its existing parent worktree without a nested .git directory
+    - successful initialization reports bootstrap prepared; provenance baseline pending authorized commit
+    - generated guidance states that commits are required evidence rather than implied authority
+    - when commit authority is absent the bootstrap remains pending and production readiness is not claimed
+    evidence:
+      kind: property
+      path: verification/properties/init_git_provenance.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: properties
+      generator: null
+      runner: src/main.rs#init_scaffold_generates_valid_system_artifacts
+      exhaustive: false
+    temporal: null
+  remove: []
+trace_producers: null
+semantic_functions:
+  add:
+  - id: recommend-next-rms-work-command
+    symbol: run_next
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/recommend-next-rms-work.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      assumptions: []
+    assumptions:
+      requires:
+      - the requested task intent is prospective and nonblank
+      maintains:
+      - no repository files or provider state are mutated
+      ensures:
+      - repository classification, owner selection, task lane, skill origins, context, and ordered next steps are derived deterministically from observable evidence
+      - task advice does not inherit unrelated working-tree impact
+      - candidate commits remain manual authorization steps
+    evidence:
+      contracts:
+      - verification/contracts/recommend_next_rms_work.md
+  set:
+  - id: diagnose-rms-environment-command
+    symbol: run_diagnose
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/diagnose-rms-environment.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains:
+      - diagnostic output never grants architecture or runtime activation authority
+      ensures:
+      - repository shape and canonical readiness use the shared repository profile
+      - skill reporting describes detected sources, digests, equivalence, and configured state with unknown runtime activation and host-defined precedence
+      - text and JSON facts remain aligned
+    evidence:
+      contracts:
+      - verification/contracts/diagnose_rms_environment.md
+      - verification/contracts/diagnose_repository_and_skill_sources.md
+  - id: agent-integration-command
+    symbol: run_agent_init
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/configure-agent-integration.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains:
+      - project-owned guidance and unrelated local skills remain preserved
+      ensures:
+      - generated guidance is sourced from managed crate assets
+      - diagnosis classifies managed guidance state and detected skill origins deterministically
+      - synchronization refreshes canonical managed distributions without claiming runtime activation
+      - commit evidence is prescribed only under task and host authorization
+    evidence:
+      contracts:
+      - verification/contracts/configure_agent_integration.md
+      - verification/contracts/configure_agent_commit_authority.md
+  - id: init-rms-system-command
+    symbol: run_init_with_adopt
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/init-rms-system.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains:
+      - strict initialization remains collision-intolerant and adoption preserves project-owned content
+      ensures:
+      - managed guidance is generated from canonical assets
+      - initialization reports bootstrap prepared; provenance baseline pending authorized commit
+      - onboarding routes from initialization through authorized provenance commit and design before scaffolding
+      - initialization does not itself grant Git authority
+    evidence:
+      contracts:
+      - verification/contracts/init_rms_system.md
+      - verification/contracts/init_rms_system_managed_adoption.md
+      - verification/contracts/init_commit_authority.md
+  - id: release-check-command
+    symbol: run_release_check
+    kind: interpreter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/release-check.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains:
+      - release checks remain provider-independent
+      ensures:
+      - release readiness includes guidance assets, managed skill distributions, root guidance, onboarding order, completion order, and installed next-command smoke
+      - unrelated local skills do not cause distribution drift failures
+    evidence:
+      contracts:
+      - verification/contracts/release_check.md
+      - verification/contracts/release_guidance_distribution.md
+  remove: []
+machine:
+  mode: boundary-machine
+  justification: null
+  transition_signature: state-and-input
+  driver_function: drive_rms_workbench
+  transition_record_function: transition_record
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add:
+    - RecommendNextRmsWork
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+  resource_protocols:
+    set: null
+    add: []
+    remove: []
+  transitions:
+    set: null
+    add: []
+    remove: []
+roles:
+  set: []
+  add: []
+  remove: []
+evidence:
+  add:
+  - kind: contract
+    proves: recommend-next-rms-work
+    path: verification/contracts/recommend_next_rms_work.md
+  - kind: contract
+    proves: diagnose-rms-environment
+    path: verification/contracts/diagnose_repository_and_skill_sources.md
+  - kind: contract
+    proves: configure-agent-integration
+    path: verification/contracts/configure_agent_commit_authority.md
+  - kind: contract
+    proves: init-rms-system
+    path: verification/contracts/init_commit_authority.md
+  - kind: contract
+    proves: release-check
+    path: verification/contracts/release_guidance_distribution.md
+surfaces:
+  add: []
+  set: null
+  remove: []
+binding_dependencies:
+  set: null
+  add: []
+  remove: []
+artifacts:
+  set: []
+  add: []
+  remove: []
+transformations:
+  set: []
+  add: []
+  remove: []
+authorities:
+  set: []
+  add: []
+  remove: []
+protocol_bindings:
+  set: []
+  add: []
+  remove: []
+authority_bindings:
+  set: []
+  add: []
+  remove: []
+public_behavior_bindings:
+  set: null
+  add:
+  - id: release-check-public
+    public_kind: command
+    public_name: release-check
+    contract: contracts/release-check.v1.yaml
+    semantic_function: release-check-command
+    machine_inputs:
+    - CheckReleaseReadiness
+    machine_outputs: []
+  - id: recommend-next-rms-work-public
+    public_kind: command
+    public_name: recommend-next-rms-work
+    contract: contracts/recommend-next-rms-work.v1.yaml
+    semantic_function: recommend-next-rms-work-command
+    machine_inputs:
+    - RecommendNextRmsWork
+    machine_outputs: []
+  remove:
+  - check-release-readiness-public
+dependency_behavior_bindings:
+  set: null
+  add: []
+  remove: []

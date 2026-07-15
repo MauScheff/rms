@@ -35,7 +35,10 @@ Run deterministic readiness:
 ```bash
 rms diagnose
 rms diagnose --json
+rms next --task "add a validated public command" --root examples/minimal
 ```
+
+`rms next` is a read-only, prospective work prescription. It selects an owner only when the canonical artifacts support a unique choice, reports ambiguity instead of guessing, and does not execute providers, verification, edits, or Git commands.
 
 Validate the smallest example:
 
@@ -91,6 +94,8 @@ Do not use `--provider` or `--ai` unless the user intentionally wants an externa
 
 ## Create A New RMS System
 
+The onboarding order is `init → authorized bootstrap commit → design → recommended scaffold`.
+
 ```bash
 rms init ./my-system \
   --name my-system \
@@ -110,7 +115,25 @@ AGENTS.md
 .gitignore
 ```
 
-Add the first module:
+The authorized bootstrap commit establishes the provenance baseline before product design, but only when the task and host policy authorize Git writes:
+
+```bash
+git -C ./my-system add .
+git -C ./my-system commit -m "Initialize RMS project"
+```
+
+Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness. Without commit authority, stop at `bootstrap prepared; provenance baseline pending authorized commit`.
+
+Run design before choosing the first module tree:
+
+```bash
+rms next --task "<product intent>" --root ./my-system
+rms design --root ./my-system --task "<product intent>"
+```
+
+Follow the deterministic design recommendation and choose one scaffold path, not both.
+
+For a genuinely standalone module:
 
 ```bash
 rms add-module ./my-system/modules/widget \
@@ -121,20 +144,17 @@ rms add-module ./my-system/modules/widget \
   --binding rust
 ```
 
-For a capability that naturally splits pure rules from a UI, CLI, service, or other boundary surface, scaffold the recursive tree directly:
+Alternatively, for a capability that splits invariant-bearing decisions from a UI, CLI, service, or other boundary, use the recommended recursive tree:
 
 ```bash
-rms design --root ./my-system \
-  --task "playable Tic-Tac-Toe CLI"
-
 rms add-capability ./my-system/modules/tic-tac-toe \
   --name tic-tac-toe \
   --purpose "Expose playable Tic-Tac-Toe" \
-  --domain-child tic-tac-toe-rules \
-  --boundary-child tic-tac-toe-cli \
   --domain-binding rust \
   --boundary-binding js
 ```
+
+Accept the neutral default child paths unless the product already has meaningful child names.
 
 The generated module includes `module.yaml`, `README.md`, `contracts/README.md`, verification guidance directories, and the requested implementation binding. Use `--binding executable` for opaque command-backed surfaces when Rust, Swift, or JS static checks are not the right fit.
 
@@ -160,22 +180,27 @@ The gate builds and smoke-tests the release-mode `rms` binary, copies it into a 
 
 For a production-intended project, continue from quickstart to `PRODUCTION.md`.
 
-At minimum, commit the project and run:
+Use the completion order `focused checks → gate → authorized candidate commit → strict audit`:
 
 ```bash
 rms validate --root .
 rms compose --root .
+# Run the focused native, spec, machine, surface, property, and trace checks
+# required by the changed promise.
 rms gate --root .
+git add .
+git commit -m "Implement RMS candidate"
 rms audit --root . --strict
 ```
 
-Strict audit is intentionally stronger than local validation: it fails unknown source revision, unpinned evidence, scaffold evidence, missing trace bundles, and other production-readiness blockers. Use `templates/ci/github-actions-rms-project.yml` as the starting CI gate for downstream projects.
+The candidate commit is a manual authorization step, not authority granted by RMS. If commits are not authorized, stop at `candidate prepared; strict audit pending authorized commit`. Strict audit is intentionally stronger than local validation: it fails unknown source revision, unpinned evidence, scaffold evidence, missing trace bundles, and other production-readiness blockers. Use `templates/ci/github-actions-rms-project.yml` as the starting CI gate for downstream projects.
 
 ## Done
 
 The quickstart has succeeded when:
 
 - `rms diagnose` runs;
+- `rms next` returns a deterministic prospective prescription without changing the fixture;
 - `rms validate --root examples/minimal` passes;
 - `rms explain` renders an intelligible module explanation;
 - `rms atlas` writes `atlas.json` and `index.html`;

@@ -18,6 +18,8 @@ Canonical project semantics live in:
 
 Agent instructions, plugin skills, generated prompts, and local run records are adapters. They help agents work inside RMS, but they do not create module semantics.
 
+Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness.
+
 ## Production Pilot Requirements
 
 A project is ready for production pilot use when all requirements hold:
@@ -50,6 +52,8 @@ A project is ready for production pilot use when all requirements hold:
 
 Start from product intent. Do not tell the agent RMS internals, desired module names, ADTs, state machines, or file layout.
 
+The onboarding order is `init → authorized bootstrap commit → design → recommended scaffold`.
+
 ```bash
 rms init . \
   --name <project-name> \
@@ -63,6 +67,8 @@ rms agent init --target claude --root .
 git add .
 git commit -m "Initialize RMS project"
 ```
+
+The Git commands above are an authorized manual provenance step, not authority granted by RMS. Without Git authority, stop at `bootstrap prepared; provenance baseline pending authorized commit`.
 
 For an existing repository, do not temporarily remove or overwrite project documents. Adopt it explicitly, inspect the per-file report, and commit the resulting bootstrap as its own provenance baseline:
 
@@ -83,6 +89,7 @@ Before choosing modules:
 
 ```bash
 rms diagnose
+rms next --task "<product intent>" --root .
 rms design --root . --task "<product intent>"
 ```
 
@@ -153,10 +160,13 @@ For changes:
 
 ```bash
 rms diagnose
+rms next --task "<task>" --root .
 rms route <module.yaml> --task "<task>"
 rms context <module.yaml> --task "<task>"
 rms implement <module.yaml> --task "<task>"
 ```
+
+`rms next` is prospective and read-only. It must not infer the task lane from an unrelated working-tree diff, execute providers or checks, mutate fixtures, or guess through tied owners.
 
 If public meaning changes:
 
@@ -165,9 +175,10 @@ rms evolve-contract <module.yaml> --task "<task>"
 rms check-compat <old-module.yaml> <new-module.yaml>
 ```
 
-Before completion:
+Before completion, preserve `focused checks → gate → authorized candidate commit → strict audit`:
 
 ```bash
+# Focused native and RMS checks for the changed promise:
 rms validate --root .
 rms compose --root .
 # For each implementation with executable proofs:
@@ -180,7 +191,7 @@ git commit -m "Implement RMS candidate"
 rms audit --root . --strict
 ```
 
-Completion is binary: gate must exit zero before the candidate commit, and strict audit must exit zero after it. Failed checks are blockers, not manual notes.
+Completion is binary: focused proof must pass before gate, gate must exit zero before the authorized candidate commit, and strict audit must exit zero after it. Failed checks are blockers, not manual notes. Without Git authority, stop at `candidate prepared; strict audit pending authorized commit`.
 
 ## Evidence Rules
 
@@ -259,6 +270,7 @@ After upgrading RMS in a project:
 ```bash
 rms agent sync --target codex --root .
 rms agent sync --target claude --root .
+# Only when the task and host policy authorize the synchronization commit:
 git add AGENTS.md CLAUDE.md .agents .claude .rms
 git commit -m "Sync RMS agent guidance"
 ```
@@ -282,7 +294,7 @@ RMS makes structure, ownership, contracts, effects, transitions, and evidence in
 A production pilot project is ready to use RMS as its architecture and agent gate when:
 
 - CI runs the RMS gate and strict audit on every pull request;
-- the initial module tree was generated from product intent or manually reflected into canonical artifacts;
+- the initial module tree follows the deterministic `rms design` recommendation made after the authorized bootstrap provenance commit;
 - every implemented module has concrete, source-pinned evidence;
 - agents can start from `AGENTS.md` plus RMS CLI/project guidance without hidden conversation context;
 - the release owner treats strict audit failures as blockers.

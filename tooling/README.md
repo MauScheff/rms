@@ -8,8 +8,12 @@ The first reference implementation is the Rust CLI in `tooling/rust/rms`.
 
 ```bash
 cargo run -p rms -- init /tmp/rms-example --name rms-example --purpose "Try RMS"
+# When the task and host policy authorize the bootstrap commit:
+git -C /tmp/rms-example add .
+git -C /tmp/rms-example commit -m "Initialize RMS project"
+cargo run -p rms -- next --task "own validated widgets" --root /tmp/rms-example
+cargo run -p rms -- design --root /tmp/rms-example --task "own validated widgets"
 cargo run -p rms -- add-module /tmp/rms-example/modules/widget --name widget --purpose "Own widgets" --binding rust
-cargo run -p rms -- add-module /tmp/rms-example/modules/swift-widget --name swift-widget --purpose "Own Swift widgets" --binding swift
 cargo run -p rms -- validate --root examples/minimal
 cargo run -p rms -- compose --root examples/minimal
 cargo run -p rms -- inspect examples/minimal/module.yaml
@@ -19,6 +23,8 @@ cargo run -p rms -- package examples/rust/module.yaml --output /tmp/rust-example
 cargo run -p rms -- verify-package /tmp/rust-example.rms
 cargo run -p rms -- conformance examples/minimal/module.yaml
 ```
+
+The onboarding order is `init → authorized bootstrap commit → design → recommended scaffold`. `add-module` and `add-capability` are alternative scaffold outcomes. Git commits are evidence, not authority granted by RMS; without commit authority, report the pending state and do not claim completion.
 
 The CLI intentionally starts small:
 
@@ -41,7 +47,10 @@ Other implementations should preserve these command meanings even if flags and o
 | Command | Meaning |
 |---|---|
 | `rms init` | Scaffold a new RMS system. |
+| `rms next` | Construct a read-only prospective work prescription without guessing an owner or executing work. |
+| `rms design` | Recommend the semantic module shape for product intent. |
 | `rms add-module` | Scaffold a valid RMS module directory. |
+| `rms add-capability` | Scaffold a recommended composite/domain/boundary capability tree. |
 | `rms validate` | Check canonical artifacts and references. |
 | `rms compose` | Check module requirement/provider composition. |
 | `rms inspect` | Print a concise module brief. |
@@ -50,6 +59,8 @@ Other implementations should preserve these command meanings even if flags and o
 | `rms package` | Assemble a portable module package directory. |
 | `rms verify-package` | Verify package metadata, payload integrity, and included RMS artifacts. |
 | `rms conformance` | Emit machine-readable evaluation evidence. |
+| `rms gate` | Run focused pre-commit RMS proof for the candidate. |
+| `rms audit --strict` | Prove the clean, committed candidate is production-ready under RMS. |
 
 Language bindings belong beside or underneath `tooling/<language>/`. A binding may discover imports, public exports, effects, and native verification commands for a language, but it must not redefine RMS concepts. The current reference bindings are Rust and Swift.
 
