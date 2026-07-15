@@ -1,0 +1,34 @@
+spec: rms/contract/v0.1
+name: "check-rms-project"
+version: 1
+kind: command
+meaning: "Run one deterministic RMS readiness mode through the existing diagnosis, validation, composition, gate, or strict-audit authority and project its result through the compact RMS surface envelope."
+preconditions:
+  - id: "accepts-1"
+    statement: "a readable repository root"
+  - id: "accepts-2"
+    statement: "zero or one of environment, changes, or committed mode"
+  - id: "accepts-3"
+    statement: "optional machine-readable and detailed projection selections"
+postconditions:
+  - id: "ensures-1"
+    statement: "default mode runs validation and composition, environment mode runs diagnosis, changes mode runs the RMS gate, and committed mode runs strict audit"
+  - id: "ensures-2"
+    statement: "delegated checks remain their own policy authorities and are called as shared implementations rather than by recursively invoking the RMS executable"
+  - id: "ensures-3"
+    statement: "every report uses the rms.surface/v2 envelope with command, result, summary, reasons, warnings, next_action, done_when, and details_available plus mode and component summaries"
+  - id: "ensures-4"
+    statement: "detailed output nests complete delegated evidence under the same versioned envelope"
+  - id: "ensures-5"
+    statement: "success is reported only when every check selected by the mode passes; a constructed failing report exits unsuccessfully"
+  - id: "ensures-6"
+    statement: "the facade does not invoke optional providers, mutate canonical semantics, grant Git authority, or turn a candidate workspace into committed evidence"
+failure_categories:
+  - id: "rejects-1"
+    statement: "the requested root cannot be read"
+  - id: "rejects-2"
+    statement: "more than one mode is selected"
+  - id: "rejects-3"
+    statement: "a delegated report cannot be constructed truthfully"
+compatibility:
+  policy: backward-compatible-within-major

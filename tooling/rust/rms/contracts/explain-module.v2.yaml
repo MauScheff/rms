@@ -1,0 +1,36 @@
+spec: rms/contract/v0.1
+name: "explain-module"
+version: 2
+kind: command
+meaning: "Construct a deterministic answer-first explanation of one RMS module, or a concise overview when no question is supplied, from canonical artifacts without provider execution."
+preconditions:
+  - id: "accepts-1"
+    statement: "a readable repository root and optional explicit readable module manifest"
+  - id: "accepts-2"
+    statement: "an optional nonblank question"
+  - id: "accepts-3"
+    statement: "optional machine-readable and detailed projection selections"
+postconditions:
+  - id: "ensures-1"
+    statement: "explicit module selection wins and inferred selection succeeds only for one unambiguous readable module"
+  - id: "ensures-2"
+    statement: "a focused question produces one answer followed by at most three reasons, one immediate next action, and completion conditions without repeating canonical sections"
+  - id: "ensures-3"
+    statement: "no-question mode produces a concise module overview, while unsupported questions produce an insufficient-evidence result and the best deterministic evidence-gathering action"
+  - id: "ensures-4"
+    statement: "every machine-readable report uses the rms.surface/v2 envelope with command, result, summary, reasons, warnings, next_action, done_when, and details_available plus answer and canonical evidence paths"
+  - id: "ensures-5"
+    statement: "detailed output nests the complete relevant canonical inventory under the same versioned envelope; default output omits inventories and not-applicable fields"
+  - id: "ensures-6"
+    statement: "every constructed report exits successfully, including insufficient-evidence, while impossible construction exits unsuccessfully"
+  - id: "ensures-7"
+    statement: "explanation never invokes a provider, mutates project files, or introduces architectural truth beyond canonical artifacts"
+failure_categories:
+  - id: "rejects-1"
+    statement: "the requested root or explicit module cannot be read"
+  - id: "rejects-2"
+    statement: "module inference is ambiguous or the selected manifest cannot be parsed"
+  - id: "rejects-3"
+    statement: "available evidence cannot be represented truthfully"
+compatibility:
+  policy: backward-compatible-within-major

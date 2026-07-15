@@ -47,10 +47,11 @@ Use `--skip-cargo-package` only for offline local checks where crates.io index a
 For production-intended projects, use `PRODUCTION.md` and require:
 
 ```bash
-rms validate --root .
-rms compose --root .
-rms gate --root .
-rms audit --root . --strict
+rms check --environment --root .
+rms check --root .
+# Run focused project-native and RMS proof.
+rms check --changes --root .
+rms check --committed --root .
 ```
 
 The downstream CI template is `templates/ci/github-actions-rms-project.yml`. It installs a pinned RMS tag, checks out full git history for provenance, and runs the production-pilot RMS gate.
@@ -117,13 +118,13 @@ cargo install --path tooling/rust/rms
 For contributors who do not want to install:
 
 ```bash
-cargo run -p rms -- validate --root examples/minimal
+cargo run -p rms -- check --root examples/minimal
 ```
 
 After installation:
 
 ```bash
-rms diagnose
+rms check --environment
 ```
 
 Inside a source checkout:
@@ -139,7 +140,8 @@ A release is complete when:
 
 - the release workflow is green;
 - every expected artifact and checksum is attached;
-- `rms diagnose` works from an extracted binary archive;
+- `rms --help` exposes the five-command surface from an extracted binary archive;
+- `rms check --environment` works from an extracted binary archive;
 - release-binary and clean-room PATH install smoke pass in `rms release check --root .`;
 - `rms release check --root .` passes from source;
 - packaged Codex skills match canonical `skills/`;

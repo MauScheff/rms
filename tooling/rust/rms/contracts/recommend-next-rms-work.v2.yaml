@@ -1,0 +1,42 @@
+spec: rms/contract/v0.1
+name: "recommend-next-rms-work"
+version: 2
+kind: command
+meaning: "Construct a deterministic, prospective, read-only prescription or no-RMS-change finding for a nonblank task intent from observable repository and canonical evidence."
+preconditions:
+  - id: "accepts-1"
+    statement: "a nonblank prospective task intent"
+  - id: "accepts-2"
+    statement: "a readable repository root"
+  - id: "accepts-3"
+    statement: "an optional explicit readable module manifest"
+  - id: "accepts-4"
+    statement: "optional machine-readable and detailed projection selections"
+postconditions:
+  - id: "ensures-1"
+    statement: "every constructed report classifies its result as ready, bootstrap-required, design-required, needs-owner, blocked, or no-rms-change"
+  - id: "ensures-2"
+    statement: "repository shape and owner selection preserve deterministic explicit, direct, sole, unique-positive, and recursive composite routing without guessing through ties"
+  - id: "ensures-3"
+    statement: "task classification is prospective, independent of unrelated working-tree changes, and includes repository-operation alongside read-only, design, semantic, surface, semantic-plus-surface, implementation-candidate, and undetermined lanes"
+  - id: "ensures-4"
+    statement: "installation, managed skill or plugin synchronization, and Git status, fetch, commit, rebase, merge, or push intentions produce no-rms-change unless semantic intent about RMS behavior takes precedence"
+  - id: "ensures-5"
+    statement: "a readable uninitialized root may return no-rms-change, and that result contains no design, spec, source-edit, gate, audit, or pending-candidate prescription"
+  - id: "ensures-6"
+    statement: "every machine-readable report uses the rms.surface/v2 envelope with command, result, summary, reasons, warnings, next_action, done_when, and details_available plus lane, confidence, owner state, and ordered typed steps"
+  - id: "ensures-7"
+    statement: "command steps carry phase, program, argument array, safely escaped display, and no authorization; manual commit steps carry an instruction and host-required authorization with no executable Git program"
+  - id: "ensures-8"
+    statement: "detailed output nests validation, owner ranking, context, roles, skill origins, blockers, and full completion evidence under the same versioned envelope"
+  - id: "ensures-9"
+    statement: "every constructed report exits successfully while impossible construction exits unsuccessfully, and construction never mutates files, invokes providers, runs prescribed checks, or grants source-edit or Git authority"
+failure_categories:
+  - id: "rejects-1"
+    statement: "task intent is blank"
+  - id: "rejects-2"
+    statement: "the requested root or explicit module cannot be read"
+  - id: "rejects-3"
+    statement: "repository evidence cannot support a truthful projection"
+compatibility:
+  policy: backward-compatible-within-major

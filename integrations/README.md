@@ -2,6 +2,8 @@
 
 RMS is agent-neutral. The canonical architectural workflows live in `../skills/`; these files explain how to install or package them for current coding agents.
 
+Every adapter starts through `rms next "<intent>"`, uses `rms explain` for canonical questions, and completes through `rms check`; specialist commands remain discoverable through `rms help --all` and selected skills.
+
 - `CODEX.md` covers `AGENTS.md`, `.agents/skills`, plugins, and hooks.
 - `CLAUDE_CODE.md` covers `CLAUDE.md`, `.claude/skills`, plugins, and hooks.
 - `GENERIC_AGENT.md` defines the minimum adapter behavior for any other agent.

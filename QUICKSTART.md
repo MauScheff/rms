@@ -1,100 +1,71 @@
 # Quickstart
 
-This path proves the RMS workbench from a fresh source checkout. It is written for a user or agent that needs to install the CLI, understand one module, generate derived navigation, and run the release gate.
-
-## Prerequisites
-
-- Rust 1.89 or newer.
-- A checkout of this repository.
-- Optional: Codex CLI, only when using `--provider codex` or `--ai`.
+This path installs RMS, uses its five-command surface, and proves a change without loading the specialist command catalog into the main workflow.
 
 ## Install
 
-For release users, download the platform archive from:
-
-```text
-https://github.com/reliable-modular-systems/reliable-modular-systems/releases
-```
-
-For source users:
+Install a platform archive from the [GitHub releases page](https://github.com/reliable-modular-systems/reliable-modular-systems/releases), or install from this checkout:
 
 ```bash
 cargo install --path tooling/rust/rms
 ```
 
-For contributors who do not want to install:
+Contributors can run the source binary without installing:
 
 ```bash
 cargo run -p rms -- --help
 ```
 
+Source builds require Rust 1.89 or newer. External providers are optional and never used by the primary `next`, `explain`, or `check` commands.
+
 ## First 10 Minutes
 
-Run deterministic readiness:
+Check local readiness:
 
 ```bash
-rms diagnose
-rms diagnose --json
-rms next --task "add a validated public command" --root examples/minimal
+rms check --environment --root .
 ```
 
-`rms next` is a read-only, prospective work prescription. It selects an owner only when the canonical artifacts support a unique choice, reports ambiguity instead of guessing, and does not execute providers, verification, edits, or Git commands.
-
-Validate the smallest example:
+Ask RMS for a prospective prescription:
 
 ```bash
-rms validate --root examples/minimal
-rms compose --root examples/minimal
+rms next "inspect the example module" --root examples/minimal
 ```
 
-Inspect and explain a module:
+The compact response gives the outcome, up to three reasons, one immediate action, and the done condition. It does not edit the fixture, invoke a provider, run verification, or grant Git authority.
+
+Ask a focused question:
 
 ```bash
-rms inspect examples/minimal/module.yaml
-rms explain examples/minimal/module.yaml
-rms explain "How does this module work?" --root examples/minimal
+rms explain "What does this module own?" \
+  --module examples/minimal/module.yaml
 ```
 
-Generate a local atlas:
+Add `--details` only when the compact answer is insufficient. Add `--json` for the versioned `rms.surface/v2` agent envelope.
+
+Check canonical validity and composition:
 
 ```bash
-rms atlas examples/minimal/module.yaml \
-  --root examples/minimal \
-  --output dist/rms-atlas/minimal \
-  --force
+rms check --root examples/minimal
 ```
 
-Open `dist/rms-atlas/minimal/index.html` in a browser. The atlas is derived evidence; it does not replace `module.yaml`, contracts, or verification files.
-
-Render agent workbench prompts without calling an AI provider:
+Explore the derived semantic graph:
 
 ```bash
-rms plan examples/minimal/module.yaml \
-  --root examples/minimal \
-  --task "add a validated public command"
-
-rms implement examples/minimal/module.yaml \
-  --root examples/minimal \
-  --task "add a validated public command" \
-  --record
-
-rms run latest --root examples/minimal
+rms view --root examples/minimal
 ```
 
-Provider execution is explicit:
+Use `rms help --all` only when a selected skill or detailed report prescribes a specialist command.
 
-```bash
-rms config init
-rms explain "How does this module work?" \
-  --root examples/minimal \
-  --provider codex
+## Create a New RMS System
+
+The onboarding order is:
+
+```text
+init → authorized bootstrap commit → design → recommended scaffold
 ```
 
-Do not use `--provider` or `--ai` unless the user intentionally wants an external model run. Provider execution defaults to a 900 second timeout; use `--provider-timeout-seconds <seconds>` only when a longer bounded run is intentional.
-
-## Create A New RMS System
-
-The onboarding order is `init → authorized bootstrap commit → design → recommended scaffold`.
+Initialize the system:
 
 ```bash
 rms init ./my-system \
@@ -103,7 +74,9 @@ rms init ./my-system \
   --context core
 ```
 
-`rms init` creates the canonical system files plus the local agent/workbench surface a fresh project needs:
+For an existing repository with project-owned documents, use `rms init . --adopt` instead. Adoption preserves existing content and creates or refreshes only RMS-managed sections and artifacts.
+
+Initialization creates:
 
 ```text
 system.yaml
@@ -115,7 +88,7 @@ AGENTS.md
 .gitignore
 ```
 
-The authorized bootstrap commit establishes the provenance baseline before product design, but only when the task and host policy authorize Git writes:
+When the task and host policy authorize Git writes, create the authorized bootstrap commit as the provenance baseline before design:
 
 ```bash
 git -C ./my-system add .
@@ -124,10 +97,10 @@ git -C ./my-system commit -m "Initialize RMS project"
 
 Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness. Without commit authority, stop at `bootstrap prepared; provenance baseline pending authorized commit`.
 
-Run design before choosing the first module tree:
+Ask for the product workflow, then run design before choosing a module tree:
 
 ```bash
-rms next --task "<product intent>" --root ./my-system
+rms next "<product intent>" --root ./my-system
 rms design --root ./my-system --task "<product intent>"
 ```
 
@@ -144,7 +117,7 @@ rms add-module ./my-system/modules/widget \
   --binding rust
 ```
 
-Alternatively, for a capability that splits invariant-bearing decisions from a UI, CLI, service, or other boundary, use the recommended recursive tree:
+Alternatively, when design recommends a recursive public capability:
 
 ```bash
 rms add-capability ./my-system/modules/tic-tac-toe \
@@ -154,55 +127,45 @@ rms add-capability ./my-system/modules/tic-tac-toe \
   --boundary-binding js
 ```
 
-Accept the neutral default child paths unless the product already has meaningful child names.
+Accept the neutral default child paths unless the product already has meaningful child names. Do not run both scaffold commands by default.
 
-The generated module includes `module.yaml`, `README.md`, `contracts/README.md`, verification guidance directories, and the requested implementation binding. Use `--binding executable` for opaque command-backed surfaces when Rust, Swift, or JS static checks are not the right fit.
+After scaffolding, ask `next` again. It will prescribe the canonical declaration, declared implementation roles, focused evidence, and completion path for the actual task.
+
+## Complete a Change
+
+Follow the focused checks selected by `next` and the task-specific skill. Then use the two stable completion modes:
 
 ```bash
-rms validate --root ./my-system
-rms compose --root ./my-system
-rms route ./my-system/modules/tic-tac-toe/module.yaml \
-  --root ./my-system \
-  --task "change invalid move rules"
+rms check --changes --root .
+# Authorized manual candidate commit, when host policy allows it.
+rms check --committed --root .
 ```
 
-## Release Proof
+The order is `focused checks → check --changes → authorized candidate commit → check --committed`.
 
-Run the same gate used by CI and release publication:
+Candidate commits are manual authorization steps, not executable RMS actions. If commits are not authorized, stop at `candidate prepared; strict audit pending authorized commit`. The committed check runs strict audit against the clean candidate and fails incomplete, unpinned, placeholder, or drifted production evidence.
+
+For a production-intended downstream project, continue with [PRODUCTION.md](PRODUCTION.md).
+
+## Maintainer Release Proof
+
+Repository maintainers run the publication gate from the source checkout:
 
 ```bash
 rms release check --root .
 ```
 
-The gate builds and smoke-tests the release-mode `rms` binary, copies it into a temporary PATH install for a clean-room smoke, validates canonical artifacts, verifies the `rms-cli` implementation binding, checks examples, packages modules, checks Cargo packaging, and verifies packaged Codex skills. It does not invoke optional AI providers.
-
-## Production Pilot Gate
-
-For a production-intended project, continue from quickstart to `PRODUCTION.md`.
-
-Use the completion order `focused checks → gate → authorized candidate commit → strict audit`:
-
-```bash
-rms validate --root .
-rms compose --root .
-# Run the focused native, spec, machine, surface, property, and trace checks
-# required by the changed promise.
-rms gate --root .
-git add .
-git commit -m "Implement RMS candidate"
-rms audit --root . --strict
-```
-
-The candidate commit is a manual authorization step, not authority granted by RMS. If commits are not authorized, stop at `candidate prepared; strict audit pending authorized commit`. Strict audit is intentionally stronger than local validation: it fails unknown source revision, unpinned evidence, scaffold evidence, missing trace bundles, and other production-readiness blockers. Use `templates/ci/github-actions-rms-project.yml` as the starting CI gate for downstream projects.
+This specialist gate builds and smoke-tests the release binary, validates canonical artifacts, verifies examples and packages, checks Cargo packaging, and confirms embedded skills, generated guidance, and integration distributions. It does not invoke optional providers.
 
 ## Done
 
-The quickstart has succeeded when:
+The quickstart succeeds when:
 
-- `rms diagnose` runs;
-- `rms next` returns a deterministic prospective prescription without changing the fixture;
-- `rms validate --root examples/minimal` passes;
-- `rms explain` renders an intelligible module explanation;
-- `rms atlas` writes `atlas.json` and `index.html`;
-- `rms implement ... --record` writes a run record;
-- `rms release check --root .` passes in a source checkout.
+- `rms --help` shows the five primary commands and help doorway;
+- `rms check --environment` reports local readiness;
+- `rms next` returns a compact deterministic prescription without changing the fixture;
+- `rms explain` answers from canonical evidence;
+- `rms check --root examples/minimal` passes;
+- `rms view` can project the example without becoming semantic authority;
+- `rms help --all` makes specialist commands discoverable;
+- the applicable change or maintainer release check passes.

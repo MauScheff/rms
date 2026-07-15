@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Strict audit requires source provenance.
+          # The committed-candidate check requires source provenance.
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
@@ -29,26 +29,23 @@ jobs:
             rms \
             --locked
 
-      - name: RMS diagnose
-        run: rms diagnose
+      - name: Check RMS environment
+        run: rms check --environment --root .
 
-      - name: RMS validate
-        run: rms validate --root .
+      - name: Check canonical RMS system
+        run: rms check --root .
 
-      - name: RMS compose
-        run: rms compose --root .
-
-      - name: RMS gate
-        run: rms gate --root .
-
-      - name: RMS strict audit
-        run: rms audit --root . --strict
-
-      # Add project-native checks here when they are not already declared
-      # through implementation.yaml and reached by `rms gate`.
+      # Add project-native focused checks here when they are not already
+      # declared through implementation.yaml and reached by the change check.
       #
       # Examples:
       # - cargo test --workspace --locked
       # - swift test
       # - npm test
       # - npm run lint
+
+      - name: Check RMS candidate changes
+        run: rms check --changes --root .
+
+      - name: Check committed RMS candidate
+        run: rms check --committed --root .

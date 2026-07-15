@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+Compatibility impact: intentionally breaking presentation and agent-JSON revision. The primary CLI is now the five-command `init`, `next`, `explain`, `check`, and `view` surface; specialist commands remain available through `rms help --all`.
+
+- Changed `rms next` to positional intent and added repository-operation classification with `no-rms-change` results.
+- Made `rms explain` deterministic and answer-first, with complete canonical evidence behind `--details`.
+- Added `rms check` modes for environment, canonical system, working candidate, and committed-candidate proof.
+- Added the versioned `rms.surface/v2` JSON envelope with typed command and manual actions.
+- Compressed generated agent guidance and consolidated public documentation around the narrow-waist workflow.
+
 ## 0.1.0-rc.4 - 2026-06-30
 
 Compatibility impact: additive within RMS 0.1. Existing manifests, packages, examples, `rms init` invocations, `rms add-module` invocations, and `rms add-capability` invocations remain compatible. Strict production audit is intentionally stronger and may now fail projects that lack git source provenance or source-pinned evidence.

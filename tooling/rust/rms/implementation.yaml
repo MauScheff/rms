@@ -897,6 +897,8 @@ architecture:
     - RunTraceProducers
     - ViewRmsSystem
     - RecommendNextRmsWork
+    - CheckRmsProject
+    - DescribeRmsCommandSurface
     observed_events: []
     events:
     - CommandCompleted
@@ -1006,7 +1008,7 @@ architecture:
     delegates_to:
       role: adapter
       symbol: src/main.rs#main
-      command: validate-rms-artifacts
+      command: check-rms-project
     effects:
     - process-runner
     - filesystem
@@ -1034,7 +1036,7 @@ architecture:
   - id: explain-module-public
     public_kind: command
     public_name: explain-module
-    contract: contracts/explain-module.v1.yaml
+    contract: contracts/explain-module.v2.yaml
     semantic_function: explain-module-command
     machine_inputs:
     - ExplainModule
@@ -1418,10 +1420,26 @@ architecture:
   - id: recommend-next-rms-work-public
     public_kind: command
     public_name: recommend-next-rms-work
-    contract: contracts/recommend-next-rms-work.v1.yaml
+    contract: contracts/recommend-next-rms-work.v2.yaml
     semantic_function: recommend-next-rms-work-command
     machine_inputs:
     - RecommendNextRmsWork
+    machine_outputs: []
+  - id: check-rms-project-public
+    public_kind: command
+    public_name: check-rms-project
+    contract: contracts/check-rms-project.v1.yaml
+    semantic_function: check-rms-project-command
+    machine_inputs:
+    - CheckRmsProject
+    machine_outputs: []
+  - id: describe-rms-command-surface-public
+    public_kind: command
+    public_name: describe-rms-command-surface
+    contract: contracts/describe-rms-command-surface.v1.yaml
+    semantic_function: describe-rms-command-surface-command
+    machine_inputs:
+    - DescribeRmsCommandSurface
     machine_outputs: []
   dependency_behavior_bindings:
   - id: filesystem-provider
@@ -1464,16 +1482,21 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/explain-module.v1.yaml
+    - contracts/explain-module.v2.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
+    - diagnostics-are-evidence-not-authority
   assumptions:
+    requires:
+    - the selected module is readable and unambiguous
+    maintains:
+    - explanation remains derived evidence and provider-independent
     ensures:
-    - deterministic explanation content is derived from the target manifest and sibling implementation binding
-    - provider-backed explanation is opt-in and uses a bounded RMS prompt with a run record
+    - focused, overview, and insufficient-evidence answers share one compact rms.surface/v2 projection
+    - detailed evidence remains opt-in and nonduplicative
   evidence:
     contracts:
-    - verification/contracts/explain_module.md
+    - verification/contracts/explain_module_v2.md
 - id: diagnose-rms-environment-command
   symbol: run_diagnose
   kind: projector
@@ -2513,7 +2536,7 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/recommend-next-rms-work.v1.yaml
+    - contracts/recommend-next-rms-work.v2.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
@@ -2521,17 +2544,56 @@ semantic_functions:
     requires:
     - the requested task intent is prospective and nonblank
     maintains:
-    - no repository files or provider state are mutated
+    - no repository files, provider state, or Git state are mutated
     ensures:
-    - repository classification, owner selection, task lane, skill origins, context, and ordered next steps are derived deterministically from observable evidence
-    - task advice does not inherit unrelated working-tree impact
-    - candidate commits remain manual authorization steps
+    - task advice is independent of unrelated working-tree impact and uses the compact rms.surface/v2 projection
+    - repository-operation intent yields no-rms-change unless semantic intent takes precedence
+    - candidate commits remain manual host-authorized actions
   evidence:
     contracts:
-    - verification/contracts/recommend_next_rms_work.md
+    - verification/contracts/recommend_next_rms_work_v2.md
+- id: check-rms-project-command
+  symbol: run_check
+  kind: interpreter
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/check-rms-project.v1.yaml
+    invariants:
+    - canonical-artifacts-remain-authoritative
+    - diagnostics-are-evidence-not-authority
+  assumptions:
+    requires:
+    - the requested root is readable
+    maintains:
+    - delegated checks retain their existing semantic authority
+    - provider and Git authority are not inferred
+    ensures:
+    - exactly the checks selected by the explicit mode are executed through shared implementations and projected through rms.surface/v2
+    - exit status reflects every selected component
+  evidence:
+    contracts:
+    - verification/contracts/check_rms_project.md
+- id: describe-rms-command-surface-command
+  symbol: run_help
+  kind: projector
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/describe-rms-command-surface.v1.yaml
+    invariants:
+    - canonical-artifacts-remain-authoritative
+  assumptions:
+    maintains:
+    - specialist commands remain callable without entering the default doorway
+    ensures:
+    - default and all-command help derive from one deterministic command registry
+  evidence:
+    contracts:
+    - verification/contracts/describe_rms_command_surface.md
 x-rms:
   semantic_revision:
-    digest: sha256:7fc9c9c78055eec5f01118f24f393b8387a6754a93239568226b5a212f38d0ac
-    change_record: verification/changes/make-rms-agent-readiness-deterministic-through-prospective-next-work-prescriptions-accurate-repository-and-skill-source-diagnosis-explicit-commit-authority-compact-managed-guidance-and-mechanically-checked-distributions-807a06ea16ba.yaml
-    applied_by: rms spec apply
-    change_record_digest: sha256:807a06ea16bac99ff18ce7665575110cf23bfbe463b9e46e9dda2a4054520230
+    digest: sha256:aa87462f5202144625edb334c55d2c6860aac665db5cbd69b3aa29ae85856ba9
+    change_record: verification/surface-changes/rms-cli-cli-83e14af79a50.yaml
+    applied_by: rms surface apply
+    change_record_digest: sha256:83e14af79a503ea918cc07333eb51254263ce79e9aeaa365e8a5f4e3af7e67b2

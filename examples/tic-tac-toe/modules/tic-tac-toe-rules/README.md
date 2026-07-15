@@ -49,4 +49,4 @@ Representation is the RMS-level role for closed variants, validated values, comm
 
 ## Agent Workflow
 
-Use `rms design --root <system-root> --task "<task>"` when module boundaries or semantic shapes are unclear. Use `rms explain module.yaml` and `rms context module.yaml --task "<task>"` before implementation work. Use `rms evolve-contract module.yaml --task "<task>"` when public meaning changes, and `rms evidence module.yaml --task "<task>"` when proof design is unclear.
+Use `rms design --root <system-root> --task "<task>"` when module boundaries or semantic shapes are unclear. Use `rms explain --module module.yaml` and `rms context module.yaml --task "<task>"` before implementation work. Use `rms evolve-contract module.yaml --task "<task>"` when public meaning changes, and `rms evidence module.yaml --task "<task>"` when proof design is unclear.

@@ -1,60 +1,53 @@
 # Generic Coding-Agent Integration
 
-A coding agent does not need native RMS support to work reliably with an RMS project. It needs access to the `rms` CLI and concise repository instructions.
+A coding agent needs no native RMS integration. It needs the CLI, concise repository guidance, and a way to load the task-selected skill.
 
-Start with:
+## Doorway
 
 ```bash
-rms diagnose
-rms diagnose --json
-rms config init
-rms explain <module>
-rms explain "question" --root <module-directory>
-rms plan <module> --task "<task>"
-rms implement <module> --task "<task>"
-rms evolve-contract <module> --task "<task>"
-rms evidence <module> --task "<task>"
-rms refactor <module> --task "<task>"
-rms prompt <kind> <module> --task "<task>" --ai
-rms context <module> --task "<task>"
-rms review <module>
-rms prompt <kind> <module> --task "<task>" --record
-rms run list
-rms run latest
-rms run inspect <run-id-or-path>
-rms validate --root <root>
-rms compose --root <root>
-rms verify <implementation.yaml|composite-module.yaml>
-rms gate --root <root>
-rms audit --root <root>
-rms audit --root <root> --strict
-rms release check --root <root>
+rms check --environment --root .
+rms next "<intent>" --root .
+rms explain "<question>" --root .
+rms check --root .
+rms view --root .
 ```
 
-Provide the agent with a task context packet containing:
+Use `rms help --all` only when the selected skill or detailed response prescribes a specialist command.
 
-```text
-System summary
-Target module manifest
-Applicable glossary entries
-Public contracts
-Direct dependency contracts
-Relevant decisions
-Verification commands
+The agent should follow this loop:
+
+1. ask `next` for the owner, lane, context, and immediate action;
+2. use `explain` when canonical meaning is unclear;
+3. load the selected repository skill;
+4. apply semantic declarations before implementation and edit only declared roles;
+5. run focused proof and the prescribed `check` modes.
+
+Production completion is focused proof → `rms check --changes` → authorized candidate commit → `rms check --committed`. Git commits are required evidence, not implied authority; the agent acts only when task and host policy grant Git authority.
+
+## Agent JSON
+
+Use `--json` for automation. Every primary response has `schema: rms.surface/v2`, command, result, summary, reasons, warnings, next action, done conditions, and a details-availability flag. `next` also carries lane, confidence, owner state, and ordered typed steps; `explain` carries its answer and evidence paths; `check` carries its mode and constituent summaries. `--details --json` nests complete evidence under that same envelope.
+
+An executable action has:
+
+```yaml
+kind: command
+program: rms
+args: [check, --root, .]
+display: rms check --root .
+authorization: none
 ```
 
-The agent should follow the workflows in `skills/` and the portable rules in `AGENTS.md`, but the CLI is the preferred operating surface. Skills and prompts should not duplicate RMS rules when a CLI command can inspect, render a workbench prompt, validate canonical artifacts, verify declared implementations, or audit production readiness.
+Execute `program` with the argument array directly; never parse `display` as shell input.
 
-When preserving an agent interaction matters, use the CLI run-record options rather than an agent-specific transcript format.
+A manual action has an instruction rather than `program` and `args`. If `authorization` is `host-required`, stop unless the user and host policy already grant that authority. Candidate commits are always manual.
 
-A generic adapter should support:
+## Context and Authority
 
-```text
-Loading concise repository instructions
-Invoking Agent Skills or equivalent workflows
-Running the neutral validator
-Restricting filesystem, network, and credential access
-Returning verification evidence
-```
+When needed, provide the agent with the system summary, selected module, applicable glossary entries, public and dependency contracts, relevant decisions, declared roles, and focused verification commands. Prefer the context paths emitted by `next --details` over a hand-maintained packet.
 
-Do not make model-specific prompting part of the semantic specification. Prompt adaptations should remain replaceable.
+Canonical RMS artifacts and deterministic checks remain authoritative over conversation, reports, and generated guidance. Skills select workflows but do not define semantics.
+
+Skill-source detection does not prove runtime activation. The agent host's injected catalog is authoritative; RMS reports activation as unknown and precedence as host-defined.
+
+Provider execution, filesystem writes, credentials, Git operations, and external publication remain explicit host-authorized capabilities. Do not make model-specific prompting part of the semantic specification.

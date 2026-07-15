@@ -18,6 +18,16 @@ cargo install --path tooling/rust/rms
 
 Then point Codex at this plugin directory or copy it into a Codex plugin marketplace according to the current Codex plugin workflow.
 
+Start project work through the narrow doorway:
+
+```bash
+rms next "<intent>" --root .
+rms explain "<question>" --root .
+rms check --root .
+```
+
+Use `rms help --all` for specialist commands. The plugin must not carry a second RMS workflow.
+
 ## Refresh Skills
 
 The plugin carries a copy of the canonical skills so it can be distributed as a self-contained plugin. Refresh that copy before release:
@@ -36,4 +46,4 @@ From the repository root:
 rms release check --root .
 ```
 
-The release check validates that packaged plugin skills match canonical `skills/`. The plugin should remain thin. Skills, hooks, and MCP servers should call the shared `rms` CLI rather than implementing private architectural rules.
+The release check validates that packaged plugin skills match canonical `skills/`. The plugin should remain thin. Skills, hooks, and MCP servers should call the shared five-command doorway and task-selected specialist commands rather than implementing private architectural rules.

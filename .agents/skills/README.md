@@ -22,7 +22,7 @@ Product intent is sufficient input. Apply semantic changes before code, edit onl
 Start with:
 
 ```text
-rms next --task "<intent>" --root .
+rms next "<intent>" --root .
 ```
 
-Use `rms --help` for the complete command surface. Load the catalog skill that matches the prescribed lane; detailed machine, surface, property, trace, and completion rules live in selected skills and rendered RMS context.
+Use `rms explain ["<question>"]` when the compact prescription needs clarification and `rms help --all` for specialist commands. Load the catalog skill selected by the task lane; detailed machine, surface, property, trace, and completion rules live in selected skills and rendered RMS context.

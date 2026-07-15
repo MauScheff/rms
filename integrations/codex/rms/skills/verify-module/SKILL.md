@@ -5,10 +5,10 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
 
 # Verify an RMS Module
 
-1. Run `rms diagnose` when starting from an unfamiliar checkout.
+1. Run `rms check --environment` when starting from an unfamiliar checkout.
 2. Read the target manifest and implementation binding.
 3. Run `rms validate --root <root>` or validate the explicit target manifests.
-4. Run `rms review <module>` when verifying an active diff. Run `rms spec check <module.yaml|implementation.yaml>`, `rms machine check <implementation.yaml>` when an implementation binding exists, and `rms property check <module.yaml|implementation.yaml>` when laws, parsers, numeric bounds, reusable modules, generated input spaces, fuzz targets, or counterexamples are involved. Run `rms verify <implementation.yaml>` when the implementation binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups. Then require `rms gate --root <root>` to exit zero, commit the candidate, and require `rms audit --root <root> --strict` to exit zero before claiming production-ready RMS software. A failed check is a failure, not a manual note.
+4. Run `rms review <module>` when verifying an active diff. Run `rms spec check <module.yaml|implementation.yaml>`, `rms machine check <implementation.yaml>` when an implementation binding exists, and `rms property check <module.yaml|implementation.yaml>` when laws, parsers, numeric bounds, reusable modules, generated input spaces, fuzz targets, or counterexamples are involved. Run `rms verify <implementation.yaml>` when the implementation binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups. Then require `rms check --changes --root <root>` to exit zero, request the candidate commit only when authorized, and require `rms check --committed --root <root>` to exit zero before claiming production-ready RMS software. A failed check is a failure, not a manual note.
 5. Confirm manifest validity and referenced-file existence.
 6. Check ownership and dependency boundaries:
    - no undeclared imports or calls;

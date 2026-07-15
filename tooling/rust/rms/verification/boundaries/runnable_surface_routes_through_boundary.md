@@ -2,7 +2,7 @@
 
 Promise:
 
-- Runnable surface `rms-cli-cli` enters module `rms-cli` through declared RMS command `validate-rms-artifacts`.
+- Runnable surface `rms-cli-cli` presents the five-command doorway `init`, `next`, `explain`, `check`, and `view`, plus explicit help, through their declared RMS command bindings; directly callable specialist routes use the same boundary rather than a second behavior path.
 - Entrypoint `src/main.rs` delegates to `src/main.rs#main` before pure decisions run.
 - Product behavior is not reimplemented only in the runnable surface.
 

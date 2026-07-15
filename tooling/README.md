@@ -1,68 +1,50 @@
 # RMS Tooling
 
-RMS tooling is an adapter layer over the canonical specification. Tools may be written in any language as long as they preserve the same semantic model: manifests and contracts remain the source of truth; validators, language bindings, plugins, and hooks only enforce or package that truth.
+RMS tooling projects canonical semantics and evidence through a small public doorway. Manifests and contracts remain authoritative; validators, bindings, plugins, and reports only enforce or package that truth.
 
-## Current Reference Tool
+## Public Doorway
 
-The first reference implementation is the Rust CLI in `tooling/rust/rms`.
+The Rust reference CLI exposes five primary commands:
 
-```bash
-cargo run -p rms -- init /tmp/rms-example --name rms-example --purpose "Try RMS"
-# When the task and host policy authorize the bootstrap commit:
-git -C /tmp/rms-example add .
-git -C /tmp/rms-example commit -m "Initialize RMS project"
-cargo run -p rms -- next --task "own validated widgets" --root /tmp/rms-example
-cargo run -p rms -- design --root /tmp/rms-example --task "own validated widgets"
-cargo run -p rms -- add-module /tmp/rms-example/modules/widget --name widget --purpose "Own widgets" --binding rust
-cargo run -p rms -- validate --root examples/minimal
-cargo run -p rms -- compose --root examples/minimal
-cargo run -p rms -- inspect examples/minimal/module.yaml
-cargo run -p rms -- context examples/minimal/module.yaml --task "add a public command"
-cargo run -p rms -- check-compat examples/rust/module.yaml examples/rust/module.yaml
-cargo run -p rms -- package examples/rust/module.yaml --output /tmp/rust-example.rms
-cargo run -p rms -- verify-package /tmp/rust-example.rms
-cargo run -p rms -- conformance examples/minimal/module.yaml
+```text
+rms init [OPTIONS] [PATH]
+rms next "<intent>" [--root PATH] [--module MODULE] [--json] [--details]
+rms explain ["<question>"] [--root PATH] [--module MODULE] [--json] [--details]
+rms check [--environment | --changes | --committed] [--root PATH] [--json] [--details]
+rms view [OPTIONS]
 ```
 
-The onboarding order is `init → authorized bootstrap commit → design → recommended scaffold`. `add-module` and `add-capability` are alternative scaffold outcomes. Git commits are evidence, not authority granted by RMS; without commit authority, report the pending state and do not claim completion.
+`rms --help` shows only this doorway plus `help`. `rms help --all` groups the directly callable specialist commands used by selected skills and detailed reports.
 
-The CLI intentionally starts small:
+Human answers follow `Outcome/Answer → Why → Next → Done when`. Agent responses use the typed `rms.surface/v2` JSON envelope. Full canonical inventories remain behind `--details`.
 
-- validates manifests against embedded RMS JSON Schemas;
-- checks required semantic fields and RMS version identifiers;
-- checks referenced contracts, verification evidence, and implementation paths;
-- inspects module ownership, profiles, contracts, effects, and verification;
-- checks whether modules compose through declared module and capability requirements;
-- emits bounded context packets for agents;
-- classifies manifest compatibility changes;
-- assembles portable module package directories with checksummed contents;
-- verifies portable package directories before they are trusted elsewhere;
-- produces explicit partial/pass/fail conformance reports;
-- applies language binding checks when `implementation.yaml` declares `binding: rust` or `binding: swift`.
+Environment checks report skill sources detected on disk. Detection is not proof of runtime activation: activation remains `unknown` and precedence is `host-defined` because the CLI cannot inspect a host's injected task catalog.
+
+## One Workflow
+
+```text
+init → authorized bootstrap commit
+→ next → explain when needed → follow the prescribed work
+→ check --changes → authorized candidate commit → check --committed
+```
+
+The expanded bootstrap path still runs deterministic `design` before either the standalone-module or recursive-capability scaffold prescribed by `next`.
+
+Git commits are required evidence, not implied authority. RMS does not authorize Git operations. Without task and host authority, stop at the reported pending state and do not claim completion.
 
 ## Tooling Contract
 
-Other implementations should preserve these command meanings even if flags and output formats vary:
+| Command | Compact responsibility |
+| --- | --- |
+| `rms init` | Initialize or safely adopt a system. |
+| `rms next` | Classify prospective intent, resolve ownership without guessing, and prescribe ordered work. |
+| `rms explain` | Answer a focused question deterministically from canonical evidence. |
+| `rms check` | Delegate project, environment, change, or committed proof to the existing RMS engines. |
+| `rms view` | Open the read-only semantic explorer. |
 
-| Command | Meaning |
-|---|---|
-| `rms init` | Scaffold a new RMS system. |
-| `rms next` | Construct a read-only prospective work prescription without guessing an owner or executing work. |
-| `rms design` | Recommend the semantic module shape for product intent. |
-| `rms add-module` | Scaffold a valid RMS module directory. |
-| `rms add-capability` | Scaffold a recommended composite/domain/boundary capability tree. |
-| `rms validate` | Check canonical artifacts and references. |
-| `rms compose` | Check module requirement/provider composition. |
-| `rms inspect` | Print a concise module brief. |
-| `rms context` | Build a bounded packet for a task. |
-| `rms check-compat` | Classify module manifest compatibility impact. |
-| `rms package` | Assemble a portable module package directory. |
-| `rms verify-package` | Verify package metadata, payload integrity, and included RMS artifacts. |
-| `rms conformance` | Emit machine-readable evaluation evidence. |
-| `rms gate` | Run focused pre-commit RMS proof for the candidate. |
-| `rms audit --strict` | Prove the clean, committed candidate is production-ready under RMS. |
+Specialist commands preserve the deeper declaration, composition, verification, packaging, and integration machinery. They are not a second semantic authority.
 
-Language bindings belong beside or underneath `tooling/<language>/`. A binding may discover imports, public exports, effects, and native verification commands for a language, but it must not redefine RMS concepts. The current reference bindings are Rust and Swift.
+Language bindings belong beside or underneath `tooling/<language>/`. A binding may discover imports, public exports, effects, and native verification commands, but it must not redefine RMS concepts. The current reference bindings are Rust and Swift.
 
 ## Rust Binding
 

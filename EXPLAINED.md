@@ -158,13 +158,13 @@ RMS checks that the declared semantics are represented and reachable in code:
 During development, the agent runs:
 
 ```bash
-rms gate --root .
+rms check --changes --root .
 ```
 
 For a committed production candidate, it runs:
 
 ```bash
-rms audit --root . --strict
+rms check --committed --root .
 ```
 
 Strict audit does not merely trust evidence files. It regenerates deterministic smoke traces and properties from the committed implementation, compares them with the claimed evidence, rebuilds reusable packages, and fails if proof commands modify production files.

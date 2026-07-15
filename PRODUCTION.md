@@ -1,300 +1,176 @@
 # RMS Production Pilot Guide
 
-This guide defines the minimum operating pattern for using RMS on production-intended software.
-
-RMS is production-pilot ready when the project uses canonical RMS artifacts as the architecture source of truth, all implemented modules have concrete evidence, and CI gates changes with deterministic RMS checks. It is not a substitute for domain review, security review, load testing, incident response, or language-specific engineering discipline.
+This guide defines the minimum operating pattern for production-intended RMS software. RMS does not replace domain, security, performance, incident-response, or language-specific engineering review.
 
 ## Authority
 
-Canonical project semantics live in:
+Canonical project semantics live in system and context manifests, each owning `module.yaml`, public contracts, implementation bindings, applied revisions, and active verification evidence.
 
-- `system.yaml`
-- `context-map.yaml`
-- `GLOSSARY.md`
-- each owning `module.yaml`
-- public contracts under `contracts/`
-- implementation bindings under `implementation.yaml`
-- active evidence under `verification/`
-
-Agent instructions, plugin skills, generated prompts, and local run records are adapters. They help agents work inside RMS, but they do not create module semantics.
+Agent guidance, skills, prompts, reports, and local runs are adapters. They do not create module semantics or grant source, provider, Git, or release authority.
 
 Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness.
 
-## Production Pilot Requirements
+## Production Requirements
 
-A project is ready for production pilot use when all requirements hold:
+All requirements must hold:
 
 | Requirement | Proof |
-|---|---|
-| RMS CLI is pinned | CI installs `rms` from a release tag or release archive. |
-| Source provenance exists | The project is a git checkout and CI uses full checkout history. |
-| Canonical artifacts validate | `rms validate --root .` passes. |
-| Module dependencies compose | `rms compose --root .` passes. |
-| Implementations verify | `rms gate --root .` passes and runs declared `rms verify` targets. |
-| Release blockers are absent | `rms audit --root . --strict` passes. |
-| Evidence is concrete | No active implemented module reports `evidence.placeholder`, `evidence.bootstrap-active`, `evidence.source-unpinned`, or `evidence.semantic-shape-only`. |
-| Public compatibility is explicit | Contract or manifest changes include `rms check-compat` evidence or an explicit compatibility decision. |
-| Agents can start cold | `AGENTS.md`, `.rms/config.yaml`, and local agent skills are generated or synced from the pinned RMS CLI. |
-| Semantic changes are gated | New laws, contracts, artifacts, transformations, protocols, resource lifecycles, authorities, temporal properties, states, commands, events, effects, transitions, semantic roles, public entrypoints, and evidence obligations are introduced through `rms spec apply`, then checked with `rms spec check`. |
-| Canonical revision is intact | Strict audit reports `semantic.revision-integrity`; the exact applied record digest matches, superseded records still exist, and a clean commit does not hide direct manifest or history edits after RMS apply. |
-| Transition branches are code-backed and replayed | Every declared case exists in the declared transition source, no source-only branch escapes canonical semantics, every lifecycle state is reachable, and strict audit finds matching state/input/destination/source-file/source-branch evidence plus declared workflow events. |
-| Transition evidence is truthful | Expected failures use the typed transition rejection channel, and each execution-derived trace record matches its canonical case's exact state change, events, commands, effects, reply, and rejection. |
-| Effect execution is trace-complete | Every effectful stateful machine declares exact driver and transition-record functions plus executor semantic functions. Live execution retains complete records, advances from `state_after`, executes `output.effects`, and owns the repeated cycle. |
-| Boundary IO is explicit | Inspectable boundary filesystem, process, network, clock, randomness, or persistence work is declared as effects with typed results, atomic protocols, and dedicated executors. Runnable surfaces name exact callables into that machine path. |
-| Machine inputs are total | Arithmetic over represented indices, counts, attempts, offsets, lengths, and sequences is checked or bounded; extreme inputs produce explicit rejection instead of overflow, panic, or trap. |
-| Message declarations are real | Every declared command, event, effect, and effect-result envelope has a binding-native representation. |
-| Cross-module protocols close | Every protocol participant is bound once, every public message has one sender and receiver mapping, and stitched traces preserve identity and causation. |
-| Resources close | Every reachable terminal machine path leaves each declared resource in a terminal or transferred state. |
-| Elevated authority is contained | Privileged, unsafe, and foreign operations occur only in authority-bound roles behind exact safe facade symbols. |
-| Temporal proof matches scope | Finite semantic guarantees use exhaustive or model-checking evidence; runtime and platform bounds use the declared model checker, static analyzer, sanitizer, or benchmark. |
+| --- | --- |
+| RMS is pinned | CI installs a reviewed release archive or immutable tag. |
+| Source provenance exists | The project is a Git checkout with sufficient history. |
+| Environment is ready | `rms check --environment --root .` has no blocking result. |
+| Canonical semantics are coherent | `rms check --root .` passes. |
+| Focused implementation proof passes | The task-selected native, semantic, machine, surface, property, trace, package, and compatibility checks pass where applicable. |
+| The candidate is ready to commit | `rms check --changes --root .` passes. |
+| The committed candidate is production-ready | `rms check --committed --root .` passes against a clean worktree. |
+| Evidence is concrete | No active promise relies on placeholder, bootstrap, unpinned, or semantic-shape-only evidence. |
+| Agents can start cold | Concise managed guidance and local skills match the pinned CLI. |
 
-## New Project Flow
+The committed check must reject canonical revision drift, unrepresented public behavior, broken dependency closure, invalid machine/effect/executor structure, missing runnable delegation, unreplayed transition cases, incomplete properties, placeholder evidence, unpinned provenance, dirty production files, and managed-distribution drift when those obligations apply.
 
-Start from product intent. Do not tell the agent RMS internals, desired module names, ADTs, state machines, or file layout.
+## New or Adopted Project
 
-The onboarding order is `init → authorized bootstrap commit → design → recommended scaffold`.
+The onboarding order is:
+
+```text
+init → authorized bootstrap commit → design → recommended scaffold
+```
+
+Initialize a new project:
 
 ```bash
 rms init . \
   --name <project-name> \
   --purpose "<one sentence>" \
   --context core
-
-rms agent init --target codex --root .
-# Optional, for Claude Code scaffolding:
-rms agent init --target claude --root .
-
-git add .
-git commit -m "Initialize RMS project"
 ```
 
-The Git commands above are an authorized manual provenance step, not authority granted by RMS. Without Git authority, stop at `bootstrap prepared; provenance baseline pending authorized commit`.
+Use `rms init . --adopt` when the repository already owns documents. Adoption must preserve the glossary byte-for-byte and preserve project content outside marked RMS-managed sections.
 
-For an existing repository, do not temporarily remove or overwrite project documents. Adopt it explicitly, inspect the per-file report, and commit the resulting bootstrap as its own provenance baseline:
+When Git writes are authorized, create the authorized bootstrap commit as the provenance baseline before product design. Otherwise stop at exactly `bootstrap prepared; provenance baseline pending authorized commit`.
 
-```bash
-rms init . \
-  --name <project-name> \
-  --purpose "<one sentence>" \
-  --adopt
-
-git diff -- GLOSSARY.md AGENTS.md .gitignore
-git add .
-git commit -m "Adopt RMS project structure"
-```
-
-The glossary should remain byte-for-byte unchanged. Existing agent instructions and ignore rules should remain intact outside their clearly marked RMS-managed sections. Resolve canonical manifest, malformed-marker, or managed-skill conflicts explicitly; do not bypass adoption with a move-and-restore sequence.
-
-Before choosing modules:
+Then ask RMS for the product workflow and run the prescribed design step before choosing a tree:
 
 ```bash
-rms diagnose
-rms next --task "<product intent>" --root .
+rms next "<product intent>" --root .
 rms design --root . --task "<product intent>"
 ```
 
-Follow the deterministic scaffold recommendation. If it recommends a recursive capability, use `rms add-capability`; do not collapse it to one module for convenience. A single-module exception requires explicit user intent and canonical justification.
+Follow the deterministic recommendation:
 
-For a product capability that has pure decisions plus a UI, CLI, service, file, process, or network boundary, prefer a recursive capability tree:
+- use the standalone module scaffold only for a genuinely standalone owner;
+- use the recursive capability scaffold when public behavior separates invariant-bearing decisions from a UI, CLI, service, process, storage, or network boundary;
+- accept neutral child paths unless the product already supplies meaningful names;
+- choose implementation bindings when the project will produce code.
 
-```bash
-rms add-capability ./modules/<capability> \
-  --name <capability> \
-  --purpose "<public capability purpose>" \
-  --domain-binding rust \
-  --boundary-binding js
-```
+The selected `add-module` skill and `rms help --all` provide the exact scaffold command. Do not maintain an agent-only parallel architecture.
 
-For app, tool, UI, CLI, browser, HTTP, batch, mobile, desktop, executable, local-first, runnable, or smoke-test intents, the boundary module exposes a declared runnable surface. Delegation resolves to an existing role or concrete symbol, the surface declares boundary effects or a precise no-effect justification, and it names an existing usage document plus a smoke command that `rms verify` executes.
+## Change Workflow
 
-Use `rms add-module` only when the module is truly standalone or when the semantic shape is already clear:
+In a fresh agent task, provide only the working directory, product intent, and instruction to use project RMS guidance.
 
 ```bash
-rms add-module ./modules/<module> \
-  --name <module> \
-  --purpose "<owned responsibility>" \
-  --kind library \
-  --shape domain-engine \
-  --binding rust
+rms next "<task>" --root .
+rms explain "<focused question>" --root .
 ```
 
-Then implement inside the generated roles. When behavior changes, update `module.yaml`, contracts, `implementation.yaml`, and evidence only through the applicable `rms spec apply`, `rms machine apply`, or `rms surface apply` command. If the CLI cannot express the required change, report an RMS gap instead of editing canonical artifacts directly.
+`next` is prospective and read-only. It must not infer the task lane from an unrelated diff, execute providers or checks, mutate fixtures, grant source or Git authority, or guess through owner ties.
 
-When product meaning changes, do not ask the agent to hand-create laws, contracts, transitions, or evidence files. Have it run:
+Follow its prescription:
+
+1. inspect the selected owner and canonical context;
+2. load the selected repository skill;
+3. apply semantic, machine, or surface declarations before their source implementation, dry-run first;
+4. edit only declared roles and exact symbols;
+5. run the focused native and RMS proof named by the implementation binding and skill.
+
+Detailed specialist commands belong in the selected skill, rendered context, and `rms help --all`. The stable completion boundary is:
+
+```text
+focused checks → check --changes → authorized candidate commit → check --committed
+```
 
 ```bash
-rms spec plan <module.yaml|implementation.yaml> --task "<task>"
-rms spec apply <module.yaml|implementation.yaml> --change-yaml '<semantic-change>' --dry-run
-rms spec apply <module.yaml|implementation.yaml> --change-yaml '<semantic-change>'
-rms spec check <module.yaml|implementation.yaml>
+# Run focused proof for the changed promise first.
+rms check --changes --root .
+# authorized candidate commit, performed manually when host policy allows it
+rms check --committed --root .
 ```
 
-Inspect `final_machine` before source edits. Product variants must replace generic scaffold cases, every transition must name its semantic case, and every ordering/safety/bounded/parser/numeric law must have a matching property. Contract operations use `direction: provided` for module-owned surfaces and `direction: required` for consumer expectations; do not publish a dependency contract to make it editable. Every property realization names an exact runner; generated or exhaustive strategies also name a generator, and the runner must execute the generator, semantic operation, and oracle. Spec, machine, and surface apply record their change and reseal canonical semantics. Machine apply does not manufacture replay evidence: a declared producer must call the real transition-record path, and `rms trace run --record` is the only supported way to update active bundles. Direct changes to canonical semantics invalidate the seal and fail strict audit.
+Completion is binary. Failed checks are blockers, not manual notes. Without Git authority, stop at exactly `candidate prepared; strict audit pending authorized commit`.
 
-Before implementation, also classify the universal system semantics: versioned artifacts and transformations, ordered cross-module protocols, resource ownership and closure, privileged/unsafe/foreign authority, and always/eventually/bounded temporal guarantees. Declare only the structures the product actually needs, but never leave these concerns implicit when correctness depends on them.
+## Semantic and Implementation Rules
 
-## Existing Project Flow
+- Public meaning, laws, contracts, effects, dependencies, protocols, authorities, properties, and evidence obligations are canonical before code.
+- Every implemented public behavior closes through its contract, semantic function, classified machine input/output, and evidence.
+- Every required capability closes through an exact local consumer and declared provider or explicit external boundary.
+- Closed alternatives use closed representations; validated values use validated constructors; expected failures use explicit rejection channels.
+- Pure roles remain free of filesystem, process, network, clock, randomness, persistence, and provider IO.
+- Stateful effects follow runnable callable → driver → pure transition record → one-request executor → typed result → driver.
+- The driver owns repeated lifecycle progression; surfaces and executors do not loop around it.
+- Trace producers call the real transition-record path. Property runners execute their declared inputs, operation, and oracle.
+- Cross-module behavior uses public contracts and facades, not private role imports.
 
-Adopt one boundary at a time.
-
-1. Pick one owner with real invariants, effects, replaceability pressure, or public contract risk.
-2. Add or update the system/context/module manifests.
-3. Publish only the public contracts that other modules or users may depend on.
-4. Bind implementation symbols in `implementation.yaml`.
-5. Add the smallest evidence that proves the declared promises.
-6. Run the production gates before expanding to another boundary.
-
-Do not model every folder. RMS modules are semantic ownership boundaries, not package directories.
-
-## Agent Workflow
-
-In a fresh agent thread, provide only:
-
-- working directory;
-- product or change intent;
-- “use RMS CLI/project guidance.”
-
-The project should carry the rest through `AGENTS.md`, local skills, manifests, contracts, and CLI checks.
-
-For changes:
-
-```bash
-rms diagnose
-rms next --task "<task>" --root .
-rms route <module.yaml> --task "<task>"
-rms context <module.yaml> --task "<task>"
-rms implement <module.yaml> --task "<task>"
-```
-
-`rms next` is prospective and read-only. It must not infer the task lane from an unrelated working-tree diff, execute providers or checks, mutate fixtures, or guess through tied owners.
-
-If public meaning changes:
-
-```bash
-rms evolve-contract <module.yaml> --task "<task>"
-rms check-compat <old-module.yaml> <new-module.yaml>
-```
-
-Before completion, preserve `focused checks → gate → authorized candidate commit → strict audit`:
-
-```bash
-# Focused native and RMS checks for the changed promise:
-rms validate --root .
-rms compose --root .
-# For each implementation with executable proofs:
-rms trace run <implementation.yaml> --profile smoke --record
-rms trace run <implementation.yaml> --profile smoke
-rms property run <implementation.yaml> --profile smoke
-rms gate --root .
-git add .
-git commit -m "Implement RMS candidate"
-rms audit --root . --strict
-```
-
-Completion is binary: focused proof must pass before gate, gate must exit zero before the authorized candidate commit, and strict audit must exit zero after it. Failed checks are blockers, not manual notes. Without Git authority, stop at `candidate prepared; strict audit pending authorized commit`.
+If RMS cannot express a required declaration, report an RMS product gap instead of editing canonical artifacts directly.
 
 ## Evidence Rules
 
-Evidence must name:
+Evidence names:
 
-- promise proved;
-- success and relevant failure cases;
-- command or tool used;
+- the promise proved;
+- relevant success and failure cases;
+- the exact command, runner, or tool;
 - source revision or artifact identity;
-- trace bundle, replay result, or first-bad-transition proof when behavior depends on lifecycle order.
-- stitched system trace and first-bad-handoff result when behavior crosses module boundaries;
-- artifact compatibility, resource closure, authority containment, and temporal realization results when those semantics are declared.
+- trace, replay, counterexample, package, compatibility, protocol, resource, authority, or temporal proof when applicable.
 
-During work in progress, evidence may be temporary. Before production:
-
-- commit the project;
-- replace “local workspace,” “before first git commit,” “source revision: unknown,” and scaffold language;
-- rerun `rms audit --root . --strict`.
-
-Strict audit intentionally fails outside a git checkout or when active evidence is unpinned. It executes declared deterministic smoke proofs as trusted project code, compares regenerated traces and reusable packages with committed artifacts, and fails if a proof command mutates a production file. Inspect the command plan first with `rms audit --root . --strict --dry-run` when needed; dry-run cannot produce a production pass.
-Strict audit also fails when production-relevant implementation, manifest, contract, evidence, role, or agent-guidance files are dirty or untracked. Commit the production candidate before claiming `rms audit --root . --strict` as release evidence.
-
-Repository-root strict audit treats checked-in `examples/` as illustrative by default. Use `rms audit --root . --strict --include-examples` when examples are part of the production claim, or audit an examples subdirectory directly when that example is the target.
+Before production, replace local-workspace, pre-commit, unknown-revision, bootstrap, scaffold, and placeholder claims. The committed check executes declared smoke proof as trusted project code, compares regenerated evidence with committed artifacts, and fails if proof mutates production files.
 
 ## CI Gate
 
-Use the copyable GitHub Actions template at:
+Use `templates/ci/github-actions-rms-project.yml` as the starting workflow and pin the reviewed RMS release.
 
-```text
-templates/ci/github-actions-rms-project.yml
-```
-
-Required CI commands:
+Required RMS commands are:
 
 ```bash
-rms diagnose
-rms validate --root .
-rms compose --root .
-rms gate --root .
-rms audit --root . --strict
+rms check --environment --root .
+rms check --root .
+# Run focused project-native and RMS proof.
+rms check --changes --root .
+rms check --committed --root .
 ```
 
-Add project-native checks, such as `cargo test`, `swift test`, `npm test`, simulator tests, integration tests, or security scans, according to the implementation bindings and production risk.
+Add implementation-specific build, test, simulator, integration, security, and performance checks according to project risk.
 
 ## Release Decision
 
-Use this decision table before production deployment:
+| Result | Decision |
+| --- | --- |
+| Environment check blocks | Repair the toolchain or managed integration. |
+| Default check fails | Canonical artifacts or composition are invalid. Do not release. |
+| Focused proof fails | The changed promise is unproved. Do not release. |
+| Change check fails | The candidate is not ready to commit. Do not release. |
+| Committed check fails | Production evidence is incomplete, dirty, drifted, or unpinned. Do not release. |
+| RMS passes but native production checks fail | Architecture proof is insufficient for release. Do not release. |
+| All applicable checks pass | Continue with normal product, security, operational, and deployment approval. |
 
-| Result | Meaning |
-|---|---|
-| `rms validate --root .` fails | Canonical artifacts are invalid. Do not release. |
-| `rms compose --root .` fails | Module dependencies or exports do not compose. Do not release. |
-| `rms gate --root .` fails | Declared checks or compatibility obligations are not satisfied. Do not release. |
-| `rms audit --root . --strict` fails | Production readiness evidence is incomplete or unpinned. Do not release. |
-| All pass, but native production checks fail | RMS structure is sound; implementation is not release-ready. Do not release. |
-| All pass | RMS production-pilot gate is satisfied. Continue with normal product, security, and operational release approval. |
+## RMS Version and Agent Sync
 
-## RMS Release Pinning
+Pin one RMS version in CI and agent bootstrap documentation. After upgrading, use the specialist agent synchronization command prescribed by `rms help --all`, review the managed diff, and commit it only when the task and host policy authorize that commit.
 
-For production pilot projects, pin one RMS version in CI and agent bootstrap docs.
-
-Recommended:
-
-```bash
-cargo install \
-  --git https://github.com/reliable-modular-systems/reliable-modular-systems \
-  --tag <rms-version-tag> \
-  rms \
-  --locked
-```
-
-Release archives are preferred for end users. Source-tag installs are acceptable for CI when the tag is immutable and reviewed.
-
-After upgrading RMS in a project:
-
-```bash
-rms agent sync --target codex --root .
-rms agent sync --target claude --root .
-# Only when the task and host policy authorize the synchronization commit:
-git add AGENTS.md CLAUDE.md .agents .claude .rms
-git commit -m "Sync RMS agent guidance"
-```
-
-Only sync targets that the project uses.
+Detected skill copies are observable sources, not proof of runtime activation. The current host's injected skill catalog remains authoritative; RMS reports runtime activation as unknown and precedence as host-defined.
 
 ## What RMS Does Not Claim
 
-RMS does not prove:
+RMS does not prove that business requirements are correct, external systems behave correctly, code is defect-free, or performance, privacy, safety, and security requirements hold unless they are explicitly modeled and evidenced.
 
-- business requirements are correct;
-- code has no defects;
-- performance, privacy, safety, or security requirements are satisfied unless explicitly modeled and evidenced;
-- external systems behave correctly;
-- generated code is production-quality without review.
-
-RMS makes structure, ownership, contracts, effects, transitions, and evidence inspectable enough that humans and agents can change software with less architectural drift.
+It makes ownership, contracts, effects, transitions, compatibility, and proof inspectable enough for humans and agents to change software with less architectural drift.
 
 ## Done Criteria
 
-A production pilot project is ready to use RMS as its architecture and agent gate when:
+A production pilot is ready when:
 
-- CI runs the RMS gate and strict audit on every pull request;
-- the initial module tree follows the deterministic `rms design` recommendation made after the authorized bootstrap provenance commit;
-- every implemented module has concrete, source-pinned evidence;
-- agents can start from `AGENTS.md` plus RMS CLI/project guidance without hidden conversation context;
-- the release owner treats strict audit failures as blockers.
+- CI runs all four applicable `check` modes plus project-native proof;
+- the initial tree follows design after the authorized bootstrap provenance commit;
+- every implemented promise has concrete source-pinned evidence;
+- agents can start from concise managed guidance without hidden conversation context;
+- release owners treat every failed committed check as a blocker.

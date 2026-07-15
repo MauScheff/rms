@@ -3,47 +3,59 @@
 **Status:** Non-normative adapter guidance  
 **Checked against official Anthropic documentation:** 2026-06-20
 
-RMS remains agent-neutral. This adapter makes the neutral CLI, manifests, and skills convenient in Claude Code.
+RMS remains agent-neutral. Claude Code uses the same canonical CLI, guidance, and skills as every other agent.
 
-## Repository instructions
+## Repository Instructions
 
-Claude Code reads `CLAUDE.md`, not `AGENTS.md` directly. Use a minimal root `CLAUDE.md` that imports the portable instructions:
+Claude Code reads `CLAUDE.md`. Keep it minimal and import the portable agreement:
 
 ```md
 @AGENTS.md
 ```
 
-Claude Code treats these files as context, not deterministic enforcement. Keep them concise, tell Claude to use the `rms` CLI before inferring module boundaries, and use hooks or CI for rules that must always run.
+The five-command doorway is:
+
+```bash
+rms check --environment --root .
+rms next "<intent>" --root .
+rms explain "<question>" --root .
+rms check --root .
+rms view --root .
+```
+
+Use the compact result first, `--details` for complete canonical evidence, `--json` for the typed `rms.surface/v2` envelope, and `rms help --all` only when a selected skill prescribes specialist work.
+
+Finish through focused proof → `rms check --changes` → authorized candidate commit → `rms check --committed`. Git commits are required evidence, not implied authority; a manual `host-required` action in JSON does not authorize Claude to execute Git.
 
 ## Skills
 
-Claude Code skills follow the open Agent Skills standard, with Claude-specific extensions available when needed. To make RMS skills available as project skills, install or generate them under:
+Project skills live under:
 
 ```text
 .claude/skills/<skill-name>/SKILL.md
 ```
 
-The canonical source should remain the project-level `skills/` directory. Skills should call `rms diagnose`, `rms explain`, `rms plan`, `rms implement`, `rms evolve-contract`, `rms evidence`, `rms review`, `rms prompt`, `rms context`, `rms validate`, `rms compose`, `rms structure`, `rms trace`, `rms verify`, `rms gate`, and `rms audit` rather than embedding a second RMS workflow. Use `rms config init` to create local provider defaults when appropriate. Use `rms diagnose --json` when an agent needs structured readiness and `rms audit --root . --strict` before claiming production-ready RMS software. Use CLI run records for durable agent evidence; a Claude provider adapter can be added without changing RMS semantics. Review and pin executable skill content before installation. Run `rms release check --root .` before sharing release artifacts or generated integrations.
+Canonical skill content remains in repository `skills/`. Managed Claude copies call the shared CLI and must not redefine semantic artifacts.
 
-## Plugins
+Detected copies are observable evidence only. RMS cannot inspect the current Claude task's injected catalog, so runtime activation is unknown and precedence is host-defined.
 
-Package the RMS skills as a Claude Code plugin when marketplace or organization-wide distribution is useful. A plugin may include skills, agents, hooks, and MCP servers. Plugin packaging must not redefine the semantic manifests or contracts.
+Provider-backed work is explicit and specialist-only. A provider response remains advisory until canonical apply and deterministic checks succeed.
 
-## Hooks
+## Plugins and Hooks
 
-Claude Code hooks provide deterministic lifecycle actions. Use them to invoke shared RMS validation, formatting, or permission checks. The hook should call the same command used by CI.
+A Claude plugin may package skills, agents, hooks, and MCP servers, but packaging must not become semantic authority. Hooks may invoke the same `rms check` modes as local work and CI; they should not implement separate architectural rules.
 
-## Recommended layout
+## Recommended Layout
 
 ```text
-AGENTS.md
+AGENTS.md                     Portable instructions
 CLAUDE.md                     Imports AGENTS.md
 skills/                       Canonical skill source
-.claude/skills/               Generated or installed Claude skills
-integrations/claude-code/     Optional plugin and hook packaging
+.claude/skills/               Managed Claude copies
+integrations/claude-code/     Optional packaging
 ```
 
-## Official references
+## Official References
 
 - [Project memory and CLAUDE.md](https://code.claude.com/docs/en/memory)
 - [Skills](https://code.claude.com/docs/en/skills)

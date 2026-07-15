@@ -1,117 +1,74 @@
 # Dogfood Walkthrough
 
-The `rms` CLI is itself an RMS module. This walkthrough uses the workbench on its own module bundle to prove that the same commands used for other projects also guide changes to RMS.
+The `rms` CLI is itself an RMS module. This walkthrough uses the same narrow surface expected in downstream projects.
 
-## Target Module
+## Target
 
 | Role | Path |
-|---|---|
-| Module manifest | `tooling/rust/rms/module.yaml` |
-| Implementation binding | `tooling/rust/rms/implementation.yaml` |
-| Public contracts | `tooling/rust/rms/contracts/` |
+| --- | --- |
+| Module | `tooling/rust/rms/module.yaml` |
+| Implementation | `tooling/rust/rms/implementation.yaml` |
+| Contracts | `tooling/rust/rms/contracts/` |
 | Evidence | `tooling/rust/rms/verification/` |
 | Source | `tooling/rust/rms/src/main.rs` |
 
-The owning module is `rms-cli`. It owns the command surface, diagnostics, explanations, package reports, workbench prompts, run records, release readiness, and atlas artifacts. The implementation binding declares Rust as the binding and `cargo test --manifest-path Cargo.toml` as the native verification command.
+The `rms-cli` module owns the command surface, deterministic reports, agent integration, packaging, and release checks.
 
-## First Read
-
-Start with deterministic context:
+## Start
 
 ```bash
-rms inspect tooling/rust/rms/module.yaml
-rms explain tooling/rust/rms/module.yaml
-rms explain tooling/rust/rms/module.yaml \
-  "How does the release gate protect packaged skills and binaries?"
-```
-
-Use this output to identify ownership, public commands, effects, compatibility policy, and verification evidence. If the explanation and manifest disagree, treat that as architectural drift and inspect the canonical artifacts.
-
-## Atlas
-
-Generate a derived map of the module:
-
-```bash
-rms atlas tooling/rust/rms/module.yaml \
+rms check --environment --root .
+rms next "explain how the release gate protects packaged skills and binaries" \
   --root . \
-  --output dist/rms-atlas/rms-cli \
-  --force
+  --module tooling/rust/rms/module.yaml
+rms explain "How are packaged skills and binaries protected?" \
+  --module tooling/rust/rms/module.yaml
 ```
 
-Review:
+Use the compact answer first. Add `--details` for complete context, roles, diagnostics, and evidence. If the explanation and canonical artifacts disagree, treat that as drift.
 
-```text
-dist/rms-atlas/rms-cli/atlas.json
-dist/rms-atlas/rms-cli/index.html
-```
-
-Use the atlas for navigation. Do not edit atlas output as architecture. The source of truth remains `module.yaml`, contracts, implementation binding, and evidence files.
-
-## Change Impact
-
-Before reviewing or implementing a change, classify git impact:
+## Explore
 
 ```bash
-rms impact --root .
-rms impact HEAD~1..HEAD --root . --json
+rms view --root . --watch
 ```
 
-Interpretation rules:
+The viewer is read-only derived evidence. It does not replace the module, contracts, implementation binding, or evidence files.
 
-| Impact output | Agent action |
-|---|---|
-| `module-manifest.changed` | Review ownership, public surface, profiles, effects, compatibility, and verification references. |
-| `contract.changed` | Classify compatibility before implementation; update evidence. |
-| `implementation-binding.changed` | Verify source symbols, dependencies, commands, and binding assumptions. |
-| `source.changed` | Run the owning module verification command. |
-| `verification-evidence.changed` | Confirm the evidence still proves a manifest promise. |
-| `unowned-repository-artifact` | Treat as repository evidence, not semantic authority. |
+## Change
 
-## Agent Workbench
-
-Render prompts before broad edits:
+Ask `next` with the actual intent and follow its owner, declaration, implementation, and proof steps:
 
 ```bash
-rms plan tooling/rust/rms/module.yaml \
-  --root . \
-  --task "add release artifact smoke coverage"
-
-rms implement tooling/rust/rms/module.yaml \
-  --root . \
-  --task "add release artifact smoke coverage" \
-  --record
-
-rms review tooling/rust/rms/module.yaml \
-  --root . \
-  --record
+rms next "add release artifact smoke coverage" --root .
 ```
 
-The prompt output is advisory. The executing agent must still read canonical artifacts, edit the owning module, update contracts or evidence when public meaning changes, and run deterministic checks.
+Load the selected skill. Use `rms help --all` only when it prescribes a specialist semantic, surface, trace, property, review, or package command. Provider output remains explicit and advisory.
 
-## Verification
+## Verify
 
-For ordinary changes:
+Run the focused native and RMS checks selected by the implementation binding and skill, then:
 
 ```bash
-rms validate --root .
-rms verify tooling/rust/rms/implementation.yaml
+rms check --changes --root .
+# Authorized manual candidate commit, when host policy allows it.
+rms check --committed --root .
 ```
 
-For release or distribution changes:
+Repository release and distribution changes additionally require the maintainer publication gate:
 
 ```bash
 rms release check --root .
 ```
 
-The release gate is the strongest local proof lane. It includes release metadata checks, formatting, Rust tests, RMS validation, module verification, composition and compatibility smoke tests, package smoke tests, scaffold roundtrips, release-binary smoke, clean-room PATH install smoke, Cargo packaging, and Codex plugin sync validation.
-
 ## Done
 
 A dogfood change is complete when:
 
-- the owning `rms-cli` manifest and public contracts still describe the command surface;
-- implementation binding symbols exist in source;
-- new generated artifacts are semantically reachable from the module bundle;
-- provider-backed commands remain opt-in;
-- `rms release check --root .` passes;
-- the change summary names compatibility impact and any operational caveats.
+- canonical contracts still describe the public surface;
+- declared implementation symbols exist;
+- generated artifacts remain derived and semantically reachable;
+- provider-backed work remains opt-in;
+- the change and committed checks pass in the required order;
+- the maintainer release gate passes when release distribution changed;
+- the summary names compatibility impact and remaining obligations.

@@ -5,8 +5,8 @@ description: Inspect an RMS module before planning or changing it; use when owne
 
 # Inspect an RMS Module
 
-1. Run `rms diagnose` once per session when the CLI is available.
-2. Run `rms explain <module>` for a human-readable module doorway. If there is a specific uncertainty, pass it as the optional question.
+1. Run `rms check --environment` once per session when the CLI is available.
+2. Run `rms explain --module <module>` for a human-readable module doorway. If there is a specific uncertainty, pass it as the optional question; add `--details` only when the compact answer is insufficient.
 3. Run `rms inspect <module>` or `rms context <module> --task "<task>"` before planning a change.
 4. Identify the system, bounded context, and target module.
 5. Read, in order:
