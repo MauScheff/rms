@@ -1,201 +1,107 @@
 # Reliable Modular Systems
 
-Reliable Modular Systems is a semantic workbench for coding agents.
+Software can now be changed faster than its meaning can be recovered. A coding agent can produce a plausible patch in minutes while ownership, failure semantics, retry rules, allowed effects, and compatibility promises remain scattered across code, prompts, conventions, and memory. The next change must rediscover—or guess—the architecture.
 
-Describe the product intent. RMS turns it into explicit ownership, contracts, laws, state machines, effects, and evidence before an agent fills the declared implementation roles. The result is reviewable by people and deterministically checkable by tools.
+Reliable Modular Systems (RMS) is a CLI and repository model that makes those decisions explicit before implementation. It records who owns behavior, what the system promises, which states and external effects exist, and what evidence will prove a change. Those artifacts stay with the code, giving people and agents the same durable account of the system.
 
-RMS owns semantics. Agents fill declared roles. The CLI proves the result.
+RMS is useful when work crosses a meaningful boundary: a public API, a stateful workflow, an external effect, a compatibility promise, a reusable module, or a codebase maintained by several people or agents. Start with one honest boundary and expand only when the software demands it. A throwaway script may not need RMS; a system whose promises must survive its current author often does.
 
-For the conceptual tour, read [RMS, Explained](EXPLAINED.md). For a runnable path, use [Quickstart](QUICKSTART.md).
+The trade is deliberate: when meaning changes, meaning is declared before source code changes. In return, reviewers can see the intended behavior before reading its implementation, agents can fill named roles without inventing a new architecture, and deterministic checks can prove the declared claims. RMS works with existing languages and toolchains and adds no application runtime.
 
-```text
-Model meaning.
-Constrain change.
-Isolate effects.
-Compose through contracts.
-Verify the laws that matter.
-```
-
-## Why It Exists
-
-Software fails when ownership and promises are implicit: who may change state, whether retries are safe, which failures are expected, which effects may occur, and what must remain compatible. RMS records those promises as canonical artifacts instead of leaving them in a prompt, convention, or agent's memory.
-
-The model is language- and runtime-neutral. It supports monoliths, libraries, services, workflows, tools, and agent-maintained repositories without imposing an RMS runtime.
-
-## The Core Loop
+## From Intent to Evidence
 
 ```text
 product intent
-→ canonical RMS semantics
+→ explicit ownership and promises
 → declared implementation roles
-→ agent-filled code
-→ deterministic proof
+→ code
+→ executable evidence
 ```
 
-The semantic core covers:
+RMS resolves the owner and the required declarations before an agent edits code. Canonical artifacts retain the meaning; agents fill declared roles; the CLI proves the declared claims.
 
-- modules, ownership, public contracts, and dependencies;
-- closed commands, events, effects, results, states, and transitions;
-- public and resource protocols;
-- versioned artifacts and transformations;
-- authority boundaries and temporal properties;
-- executable traces, properties, packages, and conformance evidence.
+RMS does not replace domain judgment, security review, performance work, incident readiness, or language-specific engineering. It makes the promises those practices depend on visible and checkable.
 
-Canonical artifacts such as `module.yaml`, contracts, applied revisions, implementation bindings, traces, and evidence remain the source of truth. Reports, prompts, graphs, and agent guidance are derived views.
+## Quick Start
 
-## Install
-
-Install a platform archive from the [GitHub releases page](https://github.com/reliable-modular-systems/reliable-modular-systems/releases), or install from a source checkout:
+Install the current CLI from this checkout with Rust 1.89 or newer:
 
 ```bash
-cargo install --path tooling/rust/rms
+cargo install --locked --path tooling/rust/rms
 ```
 
-The source build requires Rust 1.89 or newer.
+Prebuilt archives for tagged versions are published on the [GitHub releases page](https://github.com/MauScheff/rms/releases); the source checkout may be newer than the latest tag.
 
-## The Five-Command Surface
+Then try the read-only workflow in this repository:
 
-```text
-rms init [OPTIONS] [PATH]
-rms next "<intent>" [--root PATH] [--module MODULE] [--json] [--details]
-rms explain ["<question>"] [--root PATH] [--module MODULE] [--json] [--details]
-rms check [--environment | --changes | --committed] [--root PATH] [--json] [--details]
-rms view [OPTIONS]
+```bash
+rms check --environment --root .
+rms next "inspect the example module" --root examples/minimal
+rms explain "What does this module own?" \
+  --root examples/minimal \
+  --module examples/minimal/module.yaml
+rms check --root examples/minimal
 ```
 
-`rms --help` presents this narrow surface. `rms help --all` reveals specialist commands when a selected skill or detailed report prescribes one.
-
-Each default human response is deliberately small:
-
-```text
-Outcome or answer
-Why
-Next
-Done when
-```
-
-Use `--details` for owner rankings, complete context, roles, diagnostics, skill origins, and proof evidence. Use `--json` for the versioned `rms.surface/v2` agent envelope. Executable actions contain `program` plus `args`; manual actions carry instructions and authorization. A candidate commit is always manual and `host-required`, never an executable Git prescription.
-
-### Start or adopt a system
+To begin a new system:
 
 ```bash
 rms init ./my-system \
   --name my-system \
-  --purpose "Build reliable modular software" \
-  --context core
+  --purpose "Process orders reliably"
 ```
 
-Use `--adopt` when the repository already owns documents that RMS must preserve. Initialization creates the canonical system artifacts, concise agent guidance, local skill copies, safe workbench defaults, and repository hygiene files.
-
-The onboarding order is:
-
-```text
-init → authorized bootstrap commit → design → recommended scaffold
-```
-
-The bootstrap commit is required provenance only when the task and host policy authorize it. Otherwise stop at `bootstrap prepared; provenance baseline pending authorized commit`.
-
-### Ask what to do
+To adopt an existing repository without overwriting project-owned documents:
 
 ```bash
-rms next "add a validated public command" --root ./my-system
+rms init --adopt ./existing-system \
+  --name existing-system \
+  --purpose "Describe the system's durable purpose"
 ```
 
-`next` resolves an owner only from canonical evidence, classifies the prospective task, and gives one ordered prescription without editing files, executing checks, invoking providers, or granting source-edit or Git authority. Ambiguity is reported instead of guessed.
+Then ask `next` about one real product outcome. In a fresh system, its first useful answer is the design-and-scaffold prescription. Once a module exists, RMS can resolve its owner, surface its promises, prescribe the implementation path, and state exactly what will count as done. The [Quickstart](QUICKSTART.md) walks through the complete change.
 
-Repository installation, plugin or skill synchronization, and Git status/fetch/commit/rebase/merge/push are classified as `repository-operation` and return `no-rms-change` unless the task actually changes RMS behavior. Existing working-tree diffs do not change that prospective classification.
+## Five Commands
 
-### Understand the reason
-
-```bash
-rms explain --root examples/minimal
-rms explain "What does this module own?" --module examples/minimal/module.yaml
-```
-
-`explain` answers the question first from canonical evidence. Unsupported questions return `insufficient-evidence` and a deterministic next action. Add `--details` for the full canonical inventory. Provider-backed explanation is an explicit expert workflow discoverable through `rms help --all`; the primary command never invokes a provider.
-
-### Check the right boundary
-
-```bash
-rms check --environment --root .  # local readiness
-rms check --root .                # canonical validity and composition
-rms check --changes --root .      # candidate change gate
-rms check --committed --root .    # strict proof of the committed candidate
-```
-
-`check` delegates to the existing deterministic engines rather than reimplementing their rules. It exits zero only when its selected checks pass.
-
-Production completion is:
-
-```text
-focused proof → check --changes → authorized candidate commit → check --committed
-```
-
-Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness. Without commit authority, stop at `candidate prepared; strict audit pending authorized commit`.
-
-### Explore the system
-
-```bash
-rms view --root . --watch
-```
-
-The loopback-only viewer projects modules, contracts, machines, semantic functions, effects, traces, evidence, and source provenance. It is read-only derived evidence, never another semantic source.
-
-## Working With Agents
-
-RMS is agent-neutral. A coding agent needs the CLI, concise repository guidance, and the task-selected skill.
-
-1. Start with `rms next "<intent>" --root .`.
-2. Use the compact answer; request `--details` only when needed.
-3. Use `rms explain` when canonical meaning is unclear.
-4. Load the selected repository skill and follow any prescribed specialist command.
-5. Finish through the two `check` completion modes and the host's commit policy.
-
-`rms check --environment` summarizes skill sources detected on disk. Detailed expert diagnostics may report their origins, configuration, digests, and equivalence. Detection does not prove that a host injected a skill into the current task: runtime activation is `unknown`, and precedence is `host-defined`.
-
-Canonical skills live in `skills/`. Generated Codex and Claude copies are distributions, not independent workflow definitions. See [Codex integration](integrations/CODEX.md), [Claude Code integration](integrations/CLAUDE_CODE.md), and [generic agent integration](integrations/GENERIC_AGENT.md).
-
-## Adopt RMS Incrementally
-
-Start with one honest boundary; do not model every folder. Split when language, ownership, pure invariants, external effects, replaceability, or evidence needs justify it.
-
-- Publish only contracts that consumers may depend on.
-- Declare effects, failures, compatibility, and evidence before implementation.
-- Use closed variants and validated constructors for important domain values.
-- Keep lifecycle behavior in explicit accepted and rejected transitions.
-- Cross modules only through declared public capabilities or facades.
-- Let `next` choose the workflow; detailed mechanics live in the selected skill and rendered RMS context.
-
-For production-intended projects, follow [PRODUCTION.md](PRODUCTION.md).
-
-## Repository Map
-
-| Path | Purpose |
+| Command | Purpose |
 | --- | --- |
-| `SPEC.md` | Normative RMS 0.1 pilot specification. |
-| `MANIFEST.md` | Manifest model and field reference. |
-| `TOOLING.md` | Narrow CLI contract and deterministic tooling model. |
-| `QUICKSTART.md` | First 10 minutes with the CLI. |
-| `PRODUCTION.md` | Production-pilot operating guide. |
-| `DOGFOOD.md` | Self-hosted RMS walkthrough. |
-| `RELEASE.md` | Maintainer release process. |
-| `GLOSSARY.md` | Canonical terminology. |
-| `skills/` | Canonical task-specific agent workflows. |
-| `tooling/rust/rms/` | Rust reference CLI and RMS module bundle. |
-| `integrations/` | Thin agent adapters and plugin packaging. |
-| `examples/` | Minimal and composed example systems. |
+| `rms init` | Establish a new RMS system or adopt an existing repository. |
+| `rms next` | Turn an intent into the immediate prescribed action. |
+| `rms explain` | Reveal the canonical reason when the prescription is unclear. |
+| `rms check` | Check the environment, project, candidate change, or committed proof. |
+| `rms view` | Explore the system as a read-only semantic graph. |
 
-## Release Readiness
+The ordinary lifecycle is:
 
-Repository maintainers use the release workflow in [RELEASE.md](RELEASE.md). Its publication gate verifies metadata, the release binary, clean-room installation, canonical artifacts, examples, packages, embedded skills, generated guidance, and integration distributions without invoking optional providers.
+```text
+init → authorized bootstrap commit
+→ next → explain when needed → follow the prescribed work
+→ check --changes → authorized candidate commit → check --committed
+```
 
-Downstream projects use `rms check --committed --root <project>` before claiming production readiness and should pin the reviewed RMS release used by CI.
+`next`, `explain`, and `check` render `Outcome or answer → Why → Next → Done when`. Add `--details` for deeper evidence, `--json` for their versioned `rms.surface/v2` agent contract, and use `rms help --all` only when prescribed work requires a specialist command.
+
+## Documentation
+
+| Goal | Read |
+| --- | --- |
+| Try the complete workflow | [Quickstart](QUICKSTART.md) |
+| Understand the model | [RMS, Explained](EXPLAINED.md) |
+| Look up commands, results, artifacts, and proof rules | [Reference](REFERENCE.md) |
+| Operate RMS in a production-intended project | [Production Pilot Guide](PRODUCTION.md) |
+| Understand the CLI and JSON model | [Tooling Model](TOOLING.md) |
+| Integrate Codex, Claude Code, or another agent | [Agent Integrations](integrations/README.md) |
+| Read the normative model | [Specification](SPEC.md), [Manifest Reference](MANIFEST.md), and [Glossary](GLOSSARY.md) |
+
+## Agents and Authority
+
+An agent starts with `rms next "<intent>" --root .`, consults `rms explain` when needed, and completes through the two `rms check` proof boundaries. The five primary commands are deterministic and provider-free; provider-backed specialist workflows are explicit and opt-in. On-disk skill detection does not prove runtime activation in the current task, because activation and precedence remain host-defined.
+
+Git commits are required evidence, not implied authority. RMS does not grant source-edit, provider, Git, release, or deployment authority. Those decisions remain with the user and host policy.
 
 ## Status
 
-This repository is the RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use; the Rust reference CLI supplies deterministic validation, composition, structure, trace, compatibility, package, agent, and release engines behind the five-command public façade.
-
-RMS should not be called 1.0 until it has survived a real reference application, a replacement or migration exercise, and at least one codebase primarily maintained through agents.
+RMS 0.1 is a production pilot and canonical draft. The semantic core is frozen for pilot use; the Rust reference CLI implements the five-command façade and the deeper deterministic engines behind it. RMS should not be called 1.0 until it has survived a real reference application, a replacement or migration exercise, and a codebase maintained primarily through agents.
 
 ## License
 

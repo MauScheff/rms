@@ -13,11 +13,13 @@ verification/
 
 ## Install
 
-Use a platform archive from the [GitHub releases page](https://github.com/reliable-modular-systems/reliable-modular-systems/releases), or install from this checkout:
+Install the current CLI from this checkout:
 
 ```bash
-cargo install --path tooling/rust/rms
+cargo install --locked --path tooling/rust/rms
 ```
+
+Prebuilt archives for tagged versions are published on the [GitHub releases page](https://github.com/MauScheff/rms/releases); the source checkout may be newer than the latest tag.
 
 Run from source without installing:
 

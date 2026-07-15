@@ -45,7 +45,15 @@ rms init . \
   --context core
 ```
 
-Use `rms init . --adopt` when the repository already owns documents. Adoption must preserve the glossary byte-for-byte and preserve project content outside marked RMS-managed sections.
+When the repository already owns documents, adopt it with the same required identity:
+
+```bash
+rms init . --adopt \
+  --name <project-name> \
+  --purpose "<one sentence>"
+```
+
+Adoption must preserve the glossary byte-for-byte and preserve project content outside marked RMS-managed sections.
 
 When Git writes are authorized, create the authorized bootstrap commit as the provenance baseline before product design. Otherwise stop at exactly `bootstrap prepared; provenance baseline pending authorized commit`.
 

@@ -7,13 +7,13 @@ This directory packages the canonical RMS skills for Codex. It is an adapter: th
 Install the neutral CLI first:
 
 ```text
-https://github.com/reliable-modular-systems/reliable-modular-systems/releases
+https://github.com/MauScheff/rms/releases
 ```
 
 Or install from a source checkout:
 
 ```bash
-cargo install --path tooling/rust/rms
+cargo install --locked --path tooling/rust/rms
 ```
 
 Then point Codex at this plugin directory or copy it into a Codex plugin marketplace according to the current Codex plugin workflow.

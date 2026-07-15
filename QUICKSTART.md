@@ -4,11 +4,13 @@ This path installs RMS, uses its five-command surface, and proves a change witho
 
 ## Install
 
-Install a platform archive from the [GitHub releases page](https://github.com/reliable-modular-systems/reliable-modular-systems/releases), or install from this checkout:
+Install the current CLI from this checkout:
 
 ```bash
-cargo install --path tooling/rust/rms
+cargo install --locked --path tooling/rust/rms
 ```
+
+Prebuilt archives for tagged versions are published on the [GitHub releases page](https://github.com/MauScheff/rms/releases); the source checkout may be newer than the latest tag.
 
 Contributors can run the source binary without installing:
 
@@ -19,6 +21,8 @@ cargo run -p rms -- --help
 Source builds require Rust 1.89 or newer. External providers are optional and never used by the primary `next`, `explain`, or `check` commands.
 
 ## First 10 Minutes
+
+This section uses the examples in the source checkout. If you installed only a release archive, skip to [Create a New RMS System](#create-a-new-rms-system).
 
 Check local readiness:
 
@@ -74,7 +78,15 @@ rms init ./my-system \
   --context core
 ```
 
-For an existing repository with project-owned documents, use `rms init . --adopt` instead. Adoption preserves existing content and creates or refreshes only RMS-managed sections and artifacts.
+For an existing repository with project-owned documents, adopt it explicitly:
+
+```bash
+rms init . --adopt \
+  --name my-system \
+  --purpose "Build reliable modular software"
+```
+
+Adoption preserves existing content and creates or refreshes only RMS-managed sections and artifacts.
 
 Initialization creates:
 

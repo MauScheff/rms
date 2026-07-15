@@ -219,7 +219,7 @@ The explorer is deliberately read-only. It derives its model from canonical arti
 6. Agent fills those role bodies with idiomatic code.
 7. RMS executes native tests, properties, traces, and package checks.
 8. Agent runs the development gate.
-9. Agent commits the candidate.
+9. When task and host policy authorize it, the user or agent commits the candidate.
 10. Strict audit proves the committed implementation.
 ```
 
