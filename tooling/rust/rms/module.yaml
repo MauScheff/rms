@@ -563,7 +563,7 @@ invariants:
   authority: parser
   enforced_by: view-rms-system-command
 - id: structured-intent-precedes-architecture
-  statement: Architecture and ownership decisions consume a validated language-neutral intent model and never derive authority from raw natural-language token matching; provider extraction is deterministically projected into closed canonical subject identifiers, top-level fields, fact-level fields, and runnable surface categories before validation.
+  statement: Architecture and ownership decisions consume a validated language-neutral intent model and never derive authority from raw natural-language token matching; provider extraction is deterministically projected into closed canonical subject identifiers, top-level fields, fact-level fields, runnable surface categories, and explicit module ownership scope before validation.
   kind: reliability
   authority: parser
   enforced_by: recommend-next-rms-work-command
@@ -794,12 +794,12 @@ verification:
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Project provider subject, fact, and runnable surface descriptions into closed canonical identifiers and surface categories before deterministic architecture validation.
+  last_semantic_intent: Resolve provider-extracted unknown change scope to existing-module only when an explicit RMS module override supplies canonical ownership.
   semantic_revision:
-    digest: sha256:ee94b26bde9a0861b673a6c166913a5e5c9931b080bd97f1fa4c87a195ca3c8c
-    change_record: verification/changes/project-provider-subject-fact-and-runnable-surface-descriptions-into-closed-canonical-identifiers-and-surface-categories-before-deterministic-architecture-validation-92d6077ff4da.yaml
+    digest: sha256:624dae122c373a03e1dc6bdd23259c711dd3f6c0da9843f792c67c86f7b25612
+    change_record: verification/changes/resolve-provider-extracted-unknown-change-scope-to-existing-module-only-when-an-explicit-rms-module-override-supplies-canonical-ownership-eb10ae7b1392.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:92d6077ff4da4a78597c835825b6fd01221173506568d6bb2d4f338f7a967be0
+    change_record_digest: sha256:eb10ae7b1392249468a78d5fe2ea87b05f937f68f2ba76f81737bbcfa8a98832
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-cli-applied-revision

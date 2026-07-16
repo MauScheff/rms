@@ -29009,7 +29009,16 @@ fn build_next_report_with_intent(
     }
     let root = fs::canonicalize(root)
         .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
-    let (intent, intent_diagnostics, _) = resolve_intent_model(&root, task, &input, options)?;
+    let provider_extraction = input.ai;
+    let (mut intent, mut intent_diagnostics, _) =
+        resolve_intent_model(&root, task, &input, options)?;
+    if provider_extraction && explicit_module.is_some() {
+        if let Some(model) = intent.as_mut() {
+            if normalize_provider_change_scope_for_explicit_module(model) {
+                intent_diagnostics = validate_intent_model(task, &root, model);
+            }
+        }
+    }
     let profile = build_repository_profile(&root)?;
     let classification = intent
         .as_ref()
@@ -29216,6 +29225,15 @@ fn build_next_report_with_intent(
         skill_sources,
         completion,
     })
+}
+
+fn normalize_provider_change_scope_for_explicit_module(model: &mut IntentModel) -> bool {
+    if model.change_scope == IntentChangeScope::Unknown {
+        model.change_scope = IntentChangeScope::ExistingModule;
+        true
+    } else {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -58539,6 +58557,38 @@ mod tests {
         let unchanged = normalize_provider_intent_source(&forbidden);
         assert_eq!(unchanged, forbidden);
         assert!(parse_intent_model_source(&unchanged).is_err());
+    }
+
+    #[test]
+    fn explicit_module_normalizes_only_provider_unknown_change_scope() {
+        let mut model = parse_intent_model_source(
+            r#"{
+              "spec":"rms/intent-model/v0.1",
+              "operation":"implementation-change",
+              "change_scope":"unknown",
+              "subjects":["account-access"],
+              "facts":{
+                "domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"account access"},
+                "lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No lifecycle."},
+                "effects":{"disposition":"absent","basis":"inferred","rationale":"No IO."},
+                "runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"No surface."},
+                "reuse":{"disposition":"absent","basis":"inferred","rationale":"No reuse."}
+              },
+              "responsibilities":[],
+              "surface_kinds":[],
+              "binding_preferences":[],
+              "open_questions":[]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(normalize_provider_change_scope_for_explicit_module(
+            &mut model
+        ));
+        assert_eq!(model.change_scope, IntentChangeScope::ExistingModule);
+        assert!(!normalize_provider_change_scope_for_explicit_module(
+            &mut model
+        ));
     }
 
     #[test]
