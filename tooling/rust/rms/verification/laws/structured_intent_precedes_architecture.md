@@ -8,7 +8,7 @@ Scenarios:
 - Missing intent returns `intent.model-required`.
 - Unknown material facts return `intent.material-unknown`.
 - A model containing `topology` is rejected by the closed schema.
-- Provider-only schema drift is deterministically projected into the closed model: extra semantic facts are discarded and implementation languages become binding preferences, while architecture fields still fail closed.
+- Provider-only schema drift is deterministically projected into the closed model: descriptive subjects become stable IDs; extra top-level semantic facts and nested fact detail such as `decisions` or `must_never_happen` are discarded; implementation languages become binding preferences; only canonical runnable-surface categories survive; and architecture fields still fail closed.
 
 Command/tool:
 

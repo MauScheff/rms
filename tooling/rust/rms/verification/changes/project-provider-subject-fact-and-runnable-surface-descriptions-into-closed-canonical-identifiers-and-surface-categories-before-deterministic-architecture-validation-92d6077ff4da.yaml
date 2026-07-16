@@ -1,0 +1,35 @@
+spec: rms/semantic-change/v0.1
+module: null
+supersedes:
+- verification/changes/project-provider-intent-subjects-and-fact-details-into-closed-canonical-identifiers-and-fact-fields-before-deterministic-architecture-validation-1bc4d1f25e5f.yaml
+intent:
+  summary: Project provider subject, fact, and runnable surface descriptions into closed canonical identifiers and surface categories before deterministic architecture validation.
+laws:
+  add: []
+  set:
+  - id: structured-intent-precedes-architecture
+    statement: Architecture and ownership decisions consume a validated language-neutral intent model and never derive authority from raw natural-language token matching; provider extraction is deterministically projected into closed canonical subject identifiers, top-level fields, fact-level fields, and runnable surface categories before validation.
+    kind: reliability
+    authority: parser
+    enforced_by: recommend-next-rms-work-command
+  remove: []
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: structured-intent-precedes-architecture
+    path: verification/laws/structured_intent_precedes_architecture.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

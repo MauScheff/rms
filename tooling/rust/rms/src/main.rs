@@ -10745,6 +10745,22 @@ fn normalize_provider_intent_source(source: &str) -> String {
         return source.to_string();
     };
 
+    let mut subjects = model
+        .get("subjects")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(JsonValue::as_str)
+        .map(semantic_id_segment)
+        .filter(|subject| !subject.is_empty())
+        .collect::<Vec<_>>();
+    subjects.sort();
+    subjects.dedup();
+    model.insert(
+        "subjects".to_string(),
+        JsonValue::Array(subjects.into_iter().map(JsonValue::String).collect()),
+    );
+
     let mut binding_preferences = model
         .get("binding_preferences")
         .and_then(JsonValue::as_array)
@@ -10760,12 +10776,17 @@ fn normalize_provider_intent_source(source: &str) -> String {
                 }
             }
         }
-        facts.retain(|key, _| {
-            matches!(
-                key.as_str(),
-                "domain_decisions" | "lifecycle" | "effects" | "runnable_surface" | "reuse"
-            )
-        });
+        let projected_facts = facts
+            .iter()
+            .filter(|(key, _)| {
+                matches!(
+                    key.as_str(),
+                    "domain_decisions" | "lifecycle" | "effects" | "runnable_surface" | "reuse"
+                )
+            })
+            .map(|(key, value)| (key.clone(), normalize_provider_intent_fact(value)))
+            .collect::<serde_json::Map<_, _>>();
+        *facts = projected_facts;
     }
     binding_preferences.sort();
     binding_preferences.dedup();
@@ -10791,10 +10812,21 @@ fn normalize_provider_intent_source(source: &str) -> String {
         );
     }
     if let Some(items) = model.get("surface_kinds").and_then(JsonValue::as_array) {
-        let surface_kinds = items
+        let mut surface_kinds = items
             .iter()
-            .filter_map(provider_required_scalar)
+            .filter_map(normalize_provider_surface_kind)
             .collect::<Vec<_>>();
+        if surface_kinds.is_empty() {
+            if let Some(surface) = model
+                .get("facts")
+                .and_then(|facts| facts.get("runnable_surface"))
+                .and_then(provider_surface_kind_from_runnable_fact)
+            {
+                surface_kinds.push(surface);
+            }
+        }
+        surface_kinds.sort();
+        surface_kinds.dedup();
         model.insert(
             "surface_kinds".to_string(),
             JsonValue::Array(surface_kinds.into_iter().map(JsonValue::String).collect()),
@@ -10816,6 +10848,23 @@ fn normalize_provider_intent_source(source: &str) -> String {
         )
     });
     serde_json::to_string(&value).unwrap_or_else(|_| source.to_string())
+}
+
+fn normalize_provider_intent_fact(value: &JsonValue) -> JsonValue {
+    let Some(fact) = value.as_object() else {
+        return value.clone();
+    };
+    JsonValue::Object(
+        fact.iter()
+            .filter(|(key, _)| {
+                matches!(
+                    key.as_str(),
+                    "disposition" | "basis" | "source_quote" | "rationale"
+                )
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    )
 }
 
 fn provider_intent_contains_architecture_fields(value: &JsonValue) -> bool {
@@ -10904,9 +10953,9 @@ fn normalize_provider_responsibility(
     Some(serde_json::json!({ "id": id, "kind": kind, "summary": summary }))
 }
 
-fn provider_required_scalar(value: &JsonValue) -> Option<String> {
+fn normalize_provider_surface_kind(value: &JsonValue) -> Option<String> {
     if let Some(value) = value.as_str() {
-        return Some(value.to_string());
+        return canonical_provider_surface_kind(value);
     }
     let object = value.as_object()?;
     if object
@@ -10919,12 +10968,51 @@ fn provider_required_scalar(value: &JsonValue) -> Option<String> {
     ["kind", "surface", "source_quote"]
         .into_iter()
         .find_map(|key| object.get(key).and_then(JsonValue::as_str))
-        .map(str::to_string)
+        .and_then(canonical_provider_surface_kind)
+}
+
+fn provider_surface_kind_from_runnable_fact(value: &JsonValue) -> Option<String> {
+    let fact = value.as_object()?;
+    if fact.get("disposition").and_then(JsonValue::as_str) != Some("required") {
+        return None;
+    }
+    ["source_quote", "rationale"]
+        .into_iter()
+        .find_map(|key| fact.get(key).and_then(JsonValue::as_str))
+        .and_then(canonical_provider_surface_kind)
+}
+
+fn canonical_provider_surface_kind(value: &str) -> Option<String> {
+    let value = value.to_ascii_lowercase();
+    let canonical = [
+        ("browser", "browser"),
+        ("cli", "cli"),
+        ("terminal", "cli"),
+        ("shell", "cli"),
+        ("unix", "cli"),
+        ("mobile-ui", "mobile-ui"),
+        ("ios", "mobile-ui"),
+        ("iphone", "mobile-ui"),
+        ("ipad", "mobile-ui"),
+        ("android", "mobile-ui"),
+        ("mobile", "mobile-ui"),
+        ("desktop-ui", "desktop-ui"),
+        ("macos", "desktop-ui"),
+        ("windows", "desktop-ui"),
+        ("desktop", "desktop-ui"),
+        ("http", "http"),
+        ("batch", "batch"),
+        ("executable", "executable"),
+    ];
+    canonical
+        .iter()
+        .find(|(needle, _)| value == *needle || value.contains(needle))
+        .map(|(_, surface)| (*surface).to_string())
 }
 
 fn render_intent_extraction_prompt(task: &str) -> String {
     format!(
-        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Surface kinds and binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
+        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Each fact contains only disposition, basis, source_quote, and rationale. Subjects are stable kebab-case identifiers. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Surface kinds may contain only browser|cli|mobile-ui|desktop-ui|http|batch|executable; never list product features, integrations, APIs, documentation, onboarding, sign-in, or sign-out as surface kinds. Binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
         serde_json::to_string_pretty(&intent_model_template()).unwrap_or_default()
     )
 }
@@ -58415,18 +58503,18 @@ mod tests {
           "spec":"rms/intent-model/v0.1",
           "operation":"design",
           "change_scope":"existing-module",
-          "subjects":["client-account-access"],
+          "subjects":["Client Account Access", "client-account-access"],
           "facts":{
-            "domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"pure Swift library"},
+            "domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"pure Swift library","decisions":["account access"],"must_never_happen":["unauthorized access"]},
             "lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No lifecycle requested."},
             "effects":{"disposition":"absent","basis":"explicit","source_quote":"performs no IO"},
-            "runnable_surface":{"disposition":"absent","basis":"explicit","source_quote":"no runnable interface"},
+            "runnable_surface":{"disposition":"required","basis":"explicit","source_quote":"minimal iOS onboarding"},
             "reuse":{"disposition":"required","basis":"explicit","source_quote":"reusable pure Swift library"},
             "implementation_language":{"disposition":"required","basis":"explicit","source_quote":"Swift"},
             "account_rules":{"disposition":"required","basis":"explicit","source_quote":"account access"}
           },
           "responsibilities":[{"kind":"decision","disposition":"required","subject":"Decide account access."}],
-          "surface_kinds":[],
+          "surface_kinds":["onboarding","private-api","documentation"],
           "binding_preferences":[{"disposition":"required","source_quote":"Swift"}],
           "open_questions":[]
         }"#;
@@ -58435,10 +58523,14 @@ mod tests {
         let model = parse_intent_model_source(&normalized).unwrap();
 
         assert_eq!(model.binding_preferences, vec!["swift"]);
+        assert_eq!(model.subjects, vec!["client-account-access"]);
+        assert_eq!(model.surface_kinds, vec!["mobile-ui"]);
         assert_eq!(model.responsibilities.len(), 1);
         assert_eq!(model.responsibilities[0].kind, ResponsibilityKind::Decision);
         assert!(!normalized.contains("implementation_language"));
         assert!(!normalized.contains("account_rules"));
+        assert!(!normalized.contains("must_never_happen"));
+        assert!(!normalized.contains("\"decisions\""));
 
         let forbidden = source.replace(
             "\"open_questions\":[]",
