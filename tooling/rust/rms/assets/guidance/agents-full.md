@@ -13,11 +13,11 @@ Git commits are required evidence, not implied authority. This guidance does not
 
 ## Start / Route
 
-1. Run `rms next "<intent>" --root .`; use `--module <module.yaml>` only for an explicit owner override.
+1. Extract `rms/intent-model/v0.1` facts from the user's words, never topology. Run `rms next "<intent>" --root . --intent-yaml '<model>'`; use `--ai` only for recorded read-only extraction and `--module` only for an explicit owner override.
 2. Follow its immediate action. Use `rms explain ["<question>"]` when the reason or canonical meaning is unclear; add `--details` only when the compact answer is insufficient.
 3. Inspect prescribed context and role paths, load the selected project skill, and use `rms help --all` only for specialist commands.
 
-New or adopted systems follow `rms init [--adopt]` → authorized bootstrap commit → `rms design --root . --task "<intent>"` → the recommended standalone or recursive scaffold.
+New or adopted systems follow `rms init [--adopt]` → authorized bootstrap commit → typed intent → `rms design --root . --task "<intent>" --intent-yaml '<model>'` → the exact recommended standalone or recursive scaffold.
 
 - Preserve project-owned documents during adoption.
 - Without commit authority, stop at exactly `bootstrap prepared; provenance baseline pending authorized commit`.
@@ -30,10 +30,12 @@ New or adopted systems follow `rms init [--adopt]` → authorized bootstrap comm
 | Meaning, law, contract, effect, dependency, authority, property, evidence | Semantic apply, dry-run first |
 | State, input, output, or transition | Semantic apply or focused machine apply |
 | App, CLI, UI, HTTP, batch, or executable boundary | Surface apply |
-| Module boundary or public capability | Design, then the recommended scaffold |
+| Module boundary or topology | Typed design, then `add-module` or `add-capability-tree` exactly as recommended |
+| Publish or require a capability on an existing module | Spec apply with `contracts.* kind: capability` plus its behavior binding |
 | Declared role body only | Edit the role, then run focused proof |
 
 - Use `set` and `remove` to revise canonical semantics; never edit an applied revision.
+- A pure reusable library is an ordinary standalone module. Only a runnable module mixing invariant-bearing decisions with boundary effects needs `unsplit_runnable_justification`.
 - Fill only declared roles and exact symbols. If RMS cannot express the change, report the RMS gap.
 - Replace scaffold contracts and placeholder evidence before production audit.
 
@@ -50,8 +52,9 @@ New or adopted systems follow `rms init [--adopt]` → authorized bootstrap comm
 
 ## Completion
 
-Use focused native and RMS proof → `rms check --changes --root .` → authorized candidate commit → `rms check --committed --root .`.
+Use focused native and RMS proof → `rms check --changes --root . [--module <module.yaml>]` → authorized candidate commit → `rms check --committed --root . [--module <module.yaml>]`.
 
 - The change check must pass; resolve or report every manual obligation.
 - Without commit authority, stop at exactly `candidate prepared; strict audit pending authorized commit`.
 - The committed check must pass against the clean candidate. Record exact checks and remaining obligations.
+- In progressive workspaces, state that proof covers discovered RMS module closures only; never imply whole-repository certification.

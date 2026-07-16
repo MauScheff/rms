@@ -681,7 +681,7 @@ Product meaning changes move through `rms spec apply` before code. The canonical
 | `supersedes` | Historical change records replaced for active reflection checks. `rms spec apply` automatically adds every currently active semantic revision; explicit entries are only for additional non-local branches. Applied records are append-only. |
 | `intent.summary` | Human-readable reason for the semantic delta. |
 | `laws.add` | Invariants, laws, or product promises that must hold. |
-| `contracts.add/set/remove` | Contract references with `direction: provided` for module-owned surfaces or `direction: required` for consumer expectations. Existing set/remove operations may infer a single unambiguous direction. |
+| `contracts.add/set/remove` | Contract references with required `kind: command|query|event|capability` and direction. Provided entries update matching `provides.*`; only capabilities may be required. Implemented capabilities include their public/dependency behavior binding in the same final change. |
 | `artifacts.add/set/remove` | Versioned provided, required, or internal artifact contracts. |
 | `transformations.add/set/remove` | Artifact input/output mappings with exact semantic owner, rejection cases, and preservation properties. |
 | `authorities.add/set/remove` | Privileged, unsafe, or foreign capabilities and their rationale. |
@@ -695,6 +695,14 @@ Product meaning changes move through `rms spec apply` before code. The canonical
 | `evidence.add` | Required proof lanes for laws, contracts, transitions, effects, scenarios, traces, or boundary behavior. |
 
 Use `rms spec apply` to add or change laws, contracts, machine structure, runnable surfaces, effects, semantic roles, public entrypoints, and evidence obligations together. Machine and semantic changes support `set`, `add`, and `remove`. Spec apply automatically closes every active semantic revision and stores `change_record_digest`; use explicit `supersedes` only for additional non-local branches, never to replace history by deleting or rewriting old records. Use `rms surface apply/check` for focused runnable entrypoint changes. Browser launch files and local launch scripts are part of the surface and must route through the declared controller, adapter, parser, or boundary machine rather than duplicating domain decisions. Agents may edit bodies inside declared role files after the semantic delta is applied. Focused inner-machine edits may use `rms machine apply` when laws, public contracts, and evidence obligations are already correct.
+
+Capability publication and module topology are independent. `rms spec apply` can add the first provided or required capability to an existing standalone module. `rms add-capability-tree` only scaffolds a composite with children after typed design explicitly selects recursive topology.
+
+### Typed Intent and Workspace Coverage
+
+`rms/intent-model/v0.1` is advisory input to deterministic policy, not a canonical module artifact. It contains operation, change scope, semantic subjects, facts with `required|absent|unknown`, responsibilities, binding preferences, and open questions. Explicit facts preserve exact user quotes; inferred facts carry rationale. Architecture, topology, shape, module names, and scaffold recommendations are forbidden.
+
+`.rms/config.yaml` records `workspace.coverage: progressive|complete`. Adopted repositories default to progressive coverage, where checks certify discovered RMS module closures. Complete coverage is accepted only when production paths are RMS-owned.
 
 ### Semantic Machine Structure
 

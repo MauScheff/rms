@@ -1,0 +1,18 @@
+spec: rms/contract/v0.1
+name: "add-rms-capability-tree"
+version: 1
+kind: command
+meaning: "Scaffold an explicitly requested recursive capability topology with a composite parent and semantic child modules, without publishing capabilities on existing standalone modules."
+preconditions:
+  - id: "accepts-1"
+    statement: "A fresh target, stable names, semantic purpose, explicit optional child bindings, and an optional explicit runnable surface kind."
+postconditions:
+  - id: "ensures-1"
+    statement: "The complete recursive topology is generated from explicit structured design output with canonical composition and no purpose-text inference."
+  - id: "ensures-2"
+    statement: "No existing standalone module is changed and no runnable surface is inferred from natural-language words."
+failure_categories:
+  - id: "rejects-1"
+    statement: "Existing generated targets, unsupported bindings or surface kinds, and incomplete recursive topology inputs."
+compatibility:
+  policy: backward-compatible-within-major

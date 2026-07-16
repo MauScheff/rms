@@ -55,16 +55,18 @@ rms init . --adopt \
 
 Adoption must preserve the glossary byte-for-byte and preserve project content outside marked RMS-managed sections.
 
+Adoption sets `workspace.coverage: progressive`. In that mode, root checks certify discovered RMS modules and their declared dependency closures only. Use `rms check --changes --module <module.yaml>` and `rms check --committed --module <module.yaml>` to certify one closure during migration. Promote with `rms adoption set --coverage complete --dry-run` only after `rms adoption status` reports no unowned production paths.
+
 When Git writes are authorized, create the authorized bootstrap commit as the provenance baseline before product design. Otherwise stop at exactly `bootstrap prepared; provenance baseline pending authorized commit`.
 
 Then ask RMS for the product workflow and run the prescribed design step before choosing a tree:
 
 ```bash
-rms next "<product intent>" --root .
-rms design --root . --task "<product intent>"
+rms next "<product intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
+rms design --root . --task "<product intent>" --intent-yaml '<rms/intent-model/v0.1>'
 ```
 
-Follow the deterministic recommendation:
+The agent extracts facts and open questions, never topology. RMS validates them and emits the deterministic recommendation:
 
 - use the standalone module scaffold only for a genuinely standalone owner;
 - use the recursive capability scaffold when public behavior separates invariant-bearing decisions from a UI, CLI, service, process, storage, or network boundary;
@@ -78,7 +80,7 @@ The selected `add-module` skill and `rms help --all` provide the exact scaffold 
 In a fresh agent task, provide only the working directory, product intent, and instruction to use project RMS guidance.
 
 ```bash
-rms next "<task>" --root .
+rms next "<task>" --root . --intent-yaml '<rms/intent-model/v0.1>'
 rms explain "<focused question>" --root .
 ```
 

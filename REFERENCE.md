@@ -24,7 +24,7 @@ Reports, explanations, plans, prompts, graphs, packages, and command logs are de
 
 ```text
 rms init [OPTIONS] --name <NAME> --purpose <PURPOSE> [PATH]
-rms next "<intent>" [--root PATH] [--module MODULE] [--json] [--details]
+rms next "<intent>" [--intent-json JSON | --intent-yaml YAML | --intent-file PATH | --ai] [--root PATH] [--module MODULE] [--json] [--details]
 rms explain ["<question>"] [--root PATH] [--module MODULE] [--json] [--details]
 rms check [--environment | --changes | --committed] [--root PATH] [--json] [--details]
 rms view [OPTIONS]
@@ -90,7 +90,7 @@ Phases are `inspect`, `declare`, `implement`, `verify`, and `complete`; authoriz
 | Command | Required input and defaults | Execution and exit behavior |
 | --- | --- | --- |
 | `init` | `--name`, `--purpose`; path defaults to `.`, version to `0.1.0`; without `--context`, creates one context named after `--name` | The target directory may be created first, but managed artifacts wait for collision preflight; success `0`, operational failure `1`, syntax error `2` |
-| `next` | Nonblank intent; root defaults to `.`, module is optional | Read-only; every constructed report `0`, impossible construction `1`, syntax error `2` |
+| `next` | Nonblank intent plus `rms/intent-model/v0.1` or explicit `--ai`; root defaults to `.`, module is optional | Read-only; validates typed facts and routes structured subjects; every constructed report `0`, impossible construction `1`, syntax error `2` |
 | `explain` | Question and module are optional; root defaults to `.` | Read-only; every constructed report `0`, impossible construction `1`, syntax error `2` |
 | `check` | No required argument; root defaults to `.`, mode defaults to project | May execute delegated proof commands but does not mutate canonical semantics; pass `0`, otherwise `1`, syntax error `2` |
 | `view` | No required argument; root defaults to `.`, port to `7337` | Starts a long-running loopback server and may open a browser; startup failure `1`, syntax error `2` |
@@ -112,14 +112,48 @@ bootstrap prepared; provenance baseline pending authorized commit
 
 The command prepares provenance but does not grant commit authority or production readiness.
 
+Fresh repositories record `workspace.coverage: complete`; `init --adopt` records `progressive`. Inspect or change the claim with:
+
+```bash
+rms adoption status --root .
+rms adoption set --root . --coverage complete --dry-run
+```
+
+Progressive root checks certify discovered RMS module closures only. `rms check --changes|--committed --module <module.yaml>` certifies the target, contained children, and transitive declared module providers; unrelated dirty paths are reported but do not invalidate that scoped proof. Complete coverage is rejected while production paths remain outside RMS ownership.
+
 ### `next`
 
-`next` builds a prospective prescription from the task, repository shape, canonical artifacts, routing evidence, implementation bindings, and declared proof obligations. It does not derive the task from an unrelated working-tree diff.
+Typed intent contains no architecture recommendation:
+
+```yaml
+spec: rms/intent-model/v0.1
+operation: design
+change_scope: new-module
+subjects: [client-account-access]
+facts:
+  domain_decisions: { disposition: required, basis: explicit, source_quote: "pure Swift library" }
+  lifecycle: { disposition: absent, basis: inferred, rationale: "No ordered behavior was requested." }
+  effects: { disposition: absent, basis: explicit, source_quote: "performs no IO" }
+  runnable_surface: { disposition: absent, basis: explicit, source_quote: "no runnable interface" }
+  reuse: { disposition: required, basis: explicit, source_quote: "reusable pure Swift library" }
+responsibilities:
+  - { id: account-access-decisions, kind: decision, summary: "Decide account-access outcomes." }
+binding_preferences: [swift]
+open_questions: []
+```
+
+Every fact is `required`, `absent`, or `unknown`. Explicit facts quote the task exactly; inferred facts provide rationale. Material unknowns require clarification. `architecture`, `topology`, module names, shapes, and scaffold recommendations are forbidden in the model.
+
+Typed-intent failures use the `intent.*` diagnostics; contract publication uses `semantic.contract-kind-missing` and `semantic.capability-binding-missing`; adoption uses `adoption.module-closure-unresolved` and `adoption.unowned-production-path`. `unsplit_runnable_justification` is valid only for one module mixing workflow decisions, a runnable boundary, and effects; ordinary standalone modules receive `semantic.unsplit-runnable-justification-not-applicable`.
+
+`next` builds a prospective prescription from a validated `rms/intent-model/v0.1`, repository shape, canonical artifacts, routing evidence, implementation bindings, and declared proof obligations. The agent or read-only provider extracts facts; RMS rejects topology fields and chooses structure deterministically.
 
 Report results are:
 
 | Result | Meaning |
 | --- | --- |
+| `intent-model-required` | Supply a typed model or explicit read-only `--ai` extraction; no architecture advice is emitted. |
+| `clarification-required` | A material fact is unknown; RMS stops rather than guessing. |
 | `ready` | Ownership and the immediate RMS lane are sufficiently resolved. |
 | `bootstrap-required` | The root needs RMS initialization or adoption before semantic work. |
 | `design-required` | A boundary or semantic shape must be designed before implementation. |
@@ -140,9 +174,7 @@ Task lanes are:
 | `repository-operation` | Installation, skill/plugin synchronization, or Git status/fetch/commit/rebase/merge/push |
 | `undetermined` | Observable evidence cannot yet select a truthful lane |
 
-Classification confidence is `high`, `medium`, or `low`. Result precedence is: canonical or owner blocker, repository operation, uninitialized root, missing module, unresolved owner, design or undetermined lane, then ready. This allows a readable uninitialized root to return `no-rms-change` for a repository operation.
-
-Semantic intent takes precedence over repository-operation words. “Push the branch” needs no RMS declaration; “teach `rms next` to recommend push behavior” changes RMS semantics.
+Classification confidence is `deterministic` after model validation. `operation` chooses the lane, structured `subjects` route ownership, and facts/responsibilities choose topology. Raw task words, including words inside negation, have no architectural authority.
 
 `no-rms-change` contains no design, specification, source-edit, gate, audit, or pending-candidate prescription, even when the readable root is uninitialized. It reports only the repository operation and its applicable authority boundary.
 
@@ -151,7 +183,7 @@ Owner selection is deterministic:
 1. An explicit readable `--module` wins.
 2. Otherwise prefer a direct root `module.yaml`.
 3. Otherwise select the sole top-level module.
-4. Otherwise select one unique positive task-language match.
+4. Otherwise select one unique positive match from structured semantic subjects.
 5. Recurse through declared composites using route evidence and cycle protection.
 6. Stop at `needs-owner` for ties, non-positive multi-candidate matches, or recursive ambiguity.
 
@@ -244,7 +276,8 @@ Implementation code fills roles declared by the canonical model. Another module 
 | Meaning, law, contract, effect, dependency, authority, property, or evidence obligation | Semantic apply, dry-run first |
 | State, classified input/output, or transition structure | Semantic apply or focused machine apply |
 | CLI, UI, HTTP, batch, app, or executable boundary | Surface apply |
-| Module boundary or public capability | Design, then the recommended scaffold |
+| Module boundary or topology | Typed design, then exactly the recommended `add-module` or `add-capability-tree` action |
+| Publish or require a capability on an existing module | `spec apply` with contract `kind: capability`, direction, and matching behavior binding |
 | Deferred implementation binding | Add a binding before machine or surface work |
 | Existing declared role body only | Edit the role, then run focused proof |
 
@@ -290,7 +323,7 @@ Git commits are required evidence, not implied authority. A commit establishes p
 
 The CLI is sufficient; plugins and global skills are optional adapters. The normal agent sequence is:
 
-1. Run `rms next "<intent>" --root .`.
+1. Extract typed facts and run `rms next "<intent>" --root . --intent-yaml '<model>'` (or recorded read-only `--ai`).
 2. Inspect the prescribed canonical context and declared paths.
 3. Load the selected project skill.
 4. Use `rms explain` when canonical meaning is unclear.
@@ -315,7 +348,7 @@ The exact catalog is generated by `rms help --all` from the same command definit
 
 - **Understand:** inspect, diagnose, context, route, atlas.
 - **Design and guide:** prompt, plan, design, review, refactor, implement, intent, evolve-contract, evidence.
-- **Declare:** spec, machine, surface, add-module, add-binding, add-capability.
+- **Declare:** spec, machine, surface, add-module, add-binding, add-capability-tree, adoption.
 - **Verify:** validate, impact, gate, trace, property, conformance, audit, check-compat, compose, verify, structure, package, verify-package.
 - **Integrate:** run, dogfood, config, agent, release.
 

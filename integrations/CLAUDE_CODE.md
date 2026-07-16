@@ -17,13 +17,13 @@ The five-command doorway is:
 
 ```bash
 rms check --environment --root .
-rms next "<intent>" --root .
+rms next "<intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
 rms explain "<question>" --root .
 rms check --root .
 rms view --root .
 ```
 
-Use the compact result first, `--details` for complete canonical evidence, `--json` for the typed `rms.surface/v2` envelope, and `rms help --all` only when a selected skill prescribes specialist work.
+Claude extracts typed facts without topology; recorded read-only `--ai` extraction is the alternative. Use the compact result first, `--details` for complete canonical evidence, `--json` for the typed `rms.surface/v2` envelope, and `rms help --all` only when a selected skill prescribes specialist work.
 
 Finish through focused proof → `rms check --changes` → authorized candidate commit → `rms check --committed`. Git commits are required evidence, not implied authority; a manual `host-required` action in JSON does not authorize Claude to execute Git.
 

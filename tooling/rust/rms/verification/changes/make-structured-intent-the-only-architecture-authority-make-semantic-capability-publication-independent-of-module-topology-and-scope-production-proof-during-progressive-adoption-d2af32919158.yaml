@@ -1,0 +1,300 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/distill-rms-into-a-deterministic-five-command-narrow-waist-with-compact-human-projections-a-versioned-agent-json-envelope-focused-explanation-repository-operation-advice-a-unified-check-facade-and-explicit-expert-help-9fe9457c0b06.yaml
+intent:
+  summary: Make structured intent the only architecture authority, make semantic capability publication independent of module topology, and scope production proof during progressive adoption.
+laws:
+  add:
+  - id: structured-intent-precedes-architecture
+    statement: Architecture and ownership decisions consume a validated language-neutral intent model and never derive authority from raw natural-language token matching.
+    kind: invariant
+    authority: parser
+    enforced_by: design-rms-system-command
+  - id: semantic-capability-publication-is-topology-independent
+    statement: A module may publish or require a capability contract through semantic apply without creating, deleting, or changing module topology.
+    kind: invariant
+    authority: effect-executor
+    enforced_by: semantic-change-apply-command
+  - id: progressive-adoption-proofs-are-scoped
+    statement: Production checks state whether they certify a complete repository or a progressive RMS module closure and never imply broader coverage.
+    kind: invariant
+    authority: composition
+    enforced_by: check-rms-project-command
+  set:
+  - id: composite-evidence-lanes-are-concrete
+    statement: Composite capability-tree scaffolds declare only concrete evidence lanes for production claims.
+    kind: invariant
+    authority: effect-executor
+    enforced_by: add-rms-capability-tree-command
+  - id: binding-dependencies-are-adapter-realized
+    statement: RMS binding adapters realize declared local implementation dependencies idiomatically and normalize equivalent binding-native package and import names.
+    kind: invariant
+    authority: effect-executor
+    enforced_by: add-rms-capability-tree-command
+  remove: []
+contracts:
+  add:
+  - name: add-rms-capability-tree
+    kind: command
+    direction: provided
+    version: v1
+    command: add-rms-capability-tree
+    meaning: Scaffold an explicitly requested recursive capability topology with a composite parent and semantic child modules, without publishing capabilities on existing standalone modules.
+    accepts:
+    - A fresh target, stable names, semantic purpose, explicit optional child bindings, and an optional explicit runnable surface kind.
+    ensures:
+    - The complete recursive topology is generated from explicit structured design output with canonical composition and no purpose-text inference.
+    - No existing standalone module is changed and no runnable surface is inferred from natural-language words.
+    rejects:
+    - Existing generated targets, unsupported bindings or surface kinds, and incomplete recursive topology inputs.
+    protocol: null
+  - name: manage-rms-adoption
+    kind: command
+    direction: provided
+    version: v1
+    command: manage-rms-adoption
+    meaning: Inspect or change whether RMS production proof covers discovered RMS module closures progressively or the complete repository.
+    accepts:
+    - A readable RMS workspace and either a status request or an explicit progressive or complete coverage update.
+    ensures:
+    - Coverage status and proof scope are reported explicitly, dry-run does not mutate configuration, and complete coverage is accepted only when production paths are RMS-owned.
+    rejects:
+    - Unknown coverage modes, unreadable configuration, unresolved module closures, and complete coverage with unowned production paths.
+    protocol: null
+  set:
+  - name: design-rms-system
+    kind: command
+    direction: provided
+    version: v1
+    command: design-rms-system
+    meaning: Validate an agent- or provider-extracted rms/intent-model/v0.1 and deterministically recommend semantic module topology without deriving architecture from raw task text.
+    accepts:
+    - Product intent plus an inline or file-backed typed intent model, or explicit read-only provider extraction.
+    - Complete dispositions, evidence or rationale, responsibilities, semantic subjects, and optional binding preferences.
+    ensures:
+    - Contradictory or materially unknown intent stops before topology selection.
+    - Valid facts deterministically select standalone or recursive RMS shapes and emit an exact scaffold action.
+    - Provider output remains advisory evidence and cannot contain architecture or topology fields.
+    rejects:
+    - Missing, malformed, contradictory, source-mismatched, materially unknown, or architecture-bearing intent models.
+    protocol: null
+  - name: recommend-next-rms-work
+    kind: command
+    direction: provided
+    version: v2
+    command: recommend-next-rms-work
+    meaning: Construct a deterministic prospective prescription from repository evidence and a validated rms/intent-model/v0.1 instead of raw task keyword scoring.
+    accepts:
+    - A nonblank task, readable repository root, and typed intent model or explicit read-only provider extraction.
+    - An optional explicit readable module manifest and optional machine-readable or detailed projection.
+    ensures:
+    - Task lane, ownership routing, and architecture-sensitive actions derive from structured operation, subjects, facts, and responsibilities.
+    - Missing or materially unknown intent returns a typed clarification action without architecture advice.
+    - Ties remain ties and every command or manual action preserves host authority boundaries.
+    rejects:
+    - Blank tasks, unreadable roots or modules, invalid intent models, unresolved material facts, and unsupported provider output.
+    protocol: null
+  - name: apply-semantic-change
+    kind: command
+    direction: provided
+    version: v1
+    command: apply-semantic-change
+    meaning: Validate and atomically apply language-neutral contracts with explicit command, query, event, or capability kind plus machine, protocol, resource, artifact, authority, property, and evidence revisions.
+    accepts:
+    - One complete rms/semantic-change/v0.1 object whose contract add, set, and remove entries declare semantic kind and direction.
+    - Final candidates whose capability publication and behavior bindings are complete without topology mutation.
+    ensures:
+    - Provided contracts update the matching provides collection, required capability contracts update requires.capabilities, and generated artifacts retain their declared kind.
+    - Canonical module and implementation semantics are updated together with an immutable revision record and seal.
+    rejects:
+    - Missing or unsupported contract kinds, required non-capability publication, incomplete behavior bindings, and invalid final semantic candidates.
+    protocol: null
+  - name: init-rms-system
+    kind: command
+    direction: provided
+    version: v1
+    command: init-rms-system
+    meaning: Initialize a complete fresh RMS workspace or progressively adopt an existing repository while preserving project-owned content and preparing a provenance baseline.
+    accepts:
+    - A writable fresh target or explicit adoption target with valid system identity and contexts.
+    ensures:
+    - Fresh initialization records complete workspace coverage and adoption records progressive coverage.
+    - Existing project-owned content remains preserved outside RMS-managed sections and Git provenance is prepared without granting commit authority.
+    rejects:
+    - Conflicting canonical artifacts, malformed managed sections, invalid inputs, unwritable targets, and unavailable provenance setup.
+    protocol: null
+  - name: check-rms-project
+    kind: command
+    direction: provided
+    version: v1
+    command: check-rms-project
+    meaning: Run deterministic RMS readiness checks for a complete workspace or an explicit RMS module dependency closure and report the exact certified coverage.
+    accepts:
+    - A readable root, one readiness mode, optional output detail, and an optional owning module for changes or committed checks.
+    ensures:
+    - Module-scoped checks include contained children and transitive declared providers while excluding unrelated out-of-scope dirt from failure.
+    - Progressive root checks identify RMS-modules-only coverage and complete checks reject unowned production paths.
+    - Exit status reflects every selected in-scope component.
+    rejects:
+    - Invalid modes, unreadable roots or modules, unresolved module closures, and untruthful complete-coverage claims.
+    protocol: null
+  remove:
+  - name: add-rms-capability
+    kind: command
+    direction: provided
+    version: v1
+properties: null
+trace_producers: null
+semantic_functions:
+  add:
+  - id: add-rms-capability-tree-command
+    symbol: run_add_capability_tree
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/add-rms-capability-tree.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      - composite-evidence-lanes-are-concrete
+      - binding-dependencies-are-adapter-realized
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/add_rms_capability_tree.md
+  - id: manage-rms-adoption-command
+    symbol: run_adoption_command
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/manage-rms-adoption.v1.yaml
+      invariants:
+      - progressive-adoption-proofs-are-scoped
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/manage_rms_adoption.md
+  set: []
+  remove:
+  - add-rms-capability-command
+machine:
+  mode: boundary-machine
+  justification: null
+  transition_signature: null
+  driver_function: null
+  transition_record_function: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add:
+    - AddRmsCapabilityTree
+    - ManageRmsAdoption
+    remove:
+    - AddRmsCapability
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+  resource_protocols:
+    set: null
+    add: []
+    remove: []
+  transitions: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: structured-intent-precedes-architecture
+    path: verification/laws/structured_intent_precedes_architecture.md
+  - kind: law
+    proves: semantic-capability-publication-is-topology-independent
+    path: verification/laws/semantic_capability_publication_is_topology_independent.md
+  - kind: law
+    proves: progressive-adoption-proofs-are-scoped
+    path: verification/laws/progressive_adoption_proofs_are_scoped.md
+  - kind: law
+    proves: composite-evidence-lanes-are-concrete
+    path: verification/laws/composite_evidence_lanes_are_concrete.md
+  - kind: law
+    proves: binding-dependencies-are-adapter-realized
+    path: verification/laws/binding_dependencies_are_adapter_realized.md
+  - kind: contract
+    proves: add-rms-capability-tree
+    path: verification/contracts/add_rms_capability_tree.md
+  - kind: contract
+    proves: manage-rms-adoption
+    path: verification/contracts/manage_rms_adoption.md
+  - kind: contract
+    proves: design-rms-system
+    path: verification/contracts/design_rms_system.md
+  - kind: contract
+    proves: recommend-next-rms-work
+    path: verification/contracts/recommend_next_rms_work_v2.md
+  - kind: contract
+    proves: apply-semantic-change
+    path: verification/contracts/apply_semantic_change.md
+  - kind: contract
+    proves: init-rms-system
+    path: verification/contracts/init_rms_system.md
+  - kind: contract
+    proves: check-rms-project
+    path: verification/contracts/check_rms_project.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings:
+  set: null
+  add:
+  - id: add-rms-capability-tree-public
+    public_kind: command
+    public_name: add-rms-capability-tree
+    contract: contracts/add-rms-capability-tree.v1.yaml
+    semantic_function: add-rms-capability-tree-command
+    machine_inputs:
+    - AddRmsCapabilityTree
+    machine_outputs: []
+  - id: manage-rms-adoption-public
+    public_kind: command
+    public_name: manage-rms-adoption
+    contract: contracts/manage-rms-adoption.v1.yaml
+    semantic_function: manage-rms-adoption-command
+    machine_inputs:
+    - ManageRmsAdoption
+    machine_outputs: []
+  remove:
+  - add-rms-capability-public
+dependency_behavior_bindings: null

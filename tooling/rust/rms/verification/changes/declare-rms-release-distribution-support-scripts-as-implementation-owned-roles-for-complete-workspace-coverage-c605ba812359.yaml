@@ -1,0 +1,34 @@
+spec: rms/semantic-change/v0.1
+module: null
+supersedes:
+- verification/changes/make-structured-intent-the-only-architecture-authority-make-semantic-capability-publication-independent-of-module-topology-and-scope-production-proof-during-progressive-adoption-d2af32919158.yaml
+intent:
+  summary: Declare RMS release distribution support scripts as implementation-owned roles for complete workspace coverage.
+laws: null
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles:
+  set: []
+  add:
+  - kind: distribution_support
+    effect: null
+    binding_hint: null
+    path: ../../../scripts/sync-rms-agent-distributions.sh
+  - kind: distribution_support
+    effect: null
+    binding_hint: null
+    path: ../../../integrations/codex/rms/scripts/sync-skills.sh
+  remove: []
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

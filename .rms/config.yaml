@@ -8,3 +8,5 @@ ai:
     # timeout_seconds: 900
 runs:
   directory: ".rms/runs"
+workspace:
+  coverage: complete

@@ -18,7 +18,7 @@ Contributors can run the source binary without installing:
 cargo run -p rms -- --help
 ```
 
-Source builds require Rust 1.89 or newer. External providers are optional and never used by the primary `next`, `explain`, or `check` commands.
+Source builds require Rust 1.89 or newer. External providers are optional. `next --ai` and `design --ai` use the configured provider only for recorded read-only typed-fact extraction; deterministic RMS policy remains the architecture authority.
 
 ## First 10 Minutes
 
@@ -33,7 +33,7 @@ rms check --environment --root .
 Ask RMS for a prospective prescription:
 
 ```bash
-rms next "inspect the example module" --root examples/minimal
+rms next "inspect the example module" --root examples/minimal --ai
 ```
 
 The compact response gives the outcome, up to three reasons, one immediate action, and the done condition. It does not edit the fixture, invoke a provider, run verification, or grant Git authority.
@@ -86,7 +86,7 @@ rms init . --adopt \
   --purpose "Build reliable modular software"
 ```
 
-Adoption preserves existing content and creates or refreshes only RMS-managed sections and artifacts.
+Adoption preserves existing content, creates or refreshes only RMS-managed sections and artifacts, and sets `workspace.coverage: progressive`. Fresh systems use `complete` coverage.
 
 Initialization creates:
 
@@ -109,11 +109,11 @@ git -C ./my-system commit -m "Initialize RMS project"
 
 Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness. Without commit authority, stop at `bootstrap prepared; provenance baseline pending authorized commit`.
 
-Ask for the product workflow, then run design before choosing a module tree:
+Ask for the product workflow. The coding agent should extract the typed model; `--ai` is the convenient isolated equivalent:
 
 ```bash
-rms next "<product intent>" --root ./my-system
-rms design --root ./my-system --task "<product intent>"
+rms next "<product intent>" --root ./my-system --ai
+rms design --root ./my-system --task "<product intent>" --ai
 ```
 
 Follow the deterministic design recommendation and choose one scaffold path, not both.
@@ -132,16 +132,19 @@ rms add-module ./my-system/modules/widget \
 Alternatively, when design recommends a recursive public capability:
 
 ```bash
-rms add-capability ./my-system/modules/tic-tac-toe \
+rms add-capability-tree ./my-system/modules/tic-tac-toe \
   --name tic-tac-toe \
   --purpose "Expose playable Tic-Tac-Toe" \
   --domain-binding rust \
-  --boundary-binding js
+  --boundary-binding js \
+  --surface browser
 ```
 
 Accept the neutral default child paths unless the product already has meaningful child names. Do not run both scaffold commands by default.
 
 After scaffolding, ask `next` again. It will prescribe the canonical declaration, declared implementation roles, focused evidence, and completion path for the actual task.
+
+A reusable standalone module publishes its first capability through `rms spec apply` with `contracts.add kind: capability direction: provided` and a matching `public_behavior_bindings` entry. This changes semantics without creating directories. Use `rms add-capability-tree` only when typed design recommends recursive topology.
 
 ## Complete a Change
 

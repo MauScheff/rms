@@ -14,7 +14,7 @@ Command/tool:
 
 Expected result:
 
-- `rms add-capability` for local browser tool intent creates a boundary implementation whose machine mode is `stateless-decision-machine` and whose only starter state is `AwaitingInput`.
+- `rms add-capability-tree` for local browser tool intent creates a boundary implementation whose machine mode is `stateless-decision-machine` and whose only starter state is `AwaitingInput`.
 - Generated browser assets are `public/index.html`, `public/app.mjs`, and declared controller `public/controller.mjs`.
 - The launch script imports the declared controller, and the controller imports the boundary adapter instead of duplicating domain decisions.
 - Simple JS boundary scaffolds omit `effect_lifecycle` and generated `EffectResultEnvelope` semantics unless effects are actually declared.

@@ -12,6 +12,8 @@ The trade is deliberate: when meaning changes, meaning is declared before source
 
 ```text
 product intent
+→ agent extracts typed semantic facts
+→ RMS validates facts and chooses topology deterministically
 → explicit ownership and promises
 → declared implementation roles
 → code
@@ -36,7 +38,7 @@ Then try the read-only workflow in this repository:
 
 ```bash
 rms check --environment --root .
-rms next "inspect the example module" --root examples/minimal
+rms next "inspect the example module" --root examples/minimal --ai
 rms explain "What does this module own?" \
   --root examples/minimal \
   --module examples/minimal/module.yaml
@@ -59,7 +61,7 @@ rms init --adopt ./existing-system \
   --purpose "Describe the system's durable purpose"
 ```
 
-Then ask `next` about one real product outcome. In a fresh system, its first useful answer is the design-and-scaffold prescription. Once a module exists, RMS can resolve its owner, surface its promises, prescribe the implementation path, and state exactly what will count as done. The [Quickstart](QUICKSTART.md) walks through the complete change.
+Then give an agent one real product outcome. The agent extracts `rms/intent-model/v0.1` facts without proposing topology; RMS rejects contradictions and material unknowns, then deterministically selects a standalone module or recursive capability tree. Negated intent such as “no runnable interface” remains an explicit absence rather than a flaky keyword signal. The [Quickstart](QUICKSTART.md) walks through the complete change.
 
 ## Five Commands
 
@@ -95,7 +97,9 @@ init → authorized bootstrap commit
 
 ## Agents and Authority
 
-An agent starts with `rms next "<intent>" --root .`, consults `rms explain` when needed, and completes through the two `rms check` proof boundaries. The five primary commands are deterministic and provider-free; provider-backed specialist workflows are explicit and opt-in. On-disk skill detection does not prove runtime activation in the current task, because activation and precedence remain host-defined.
+An agent first extracts typed facts from the user's intent, then runs `rms next "<intent>" --root . --intent-yaml '<model>'` (or opts into recorded read-only `--ai` extraction). Agents interpret language; RMS validates the model, chooses topology, mutates canonical semantics, and proves scope deterministically. A standalone module publishes a reusable capability through `rms spec apply`; `rms add-capability-tree` only creates an explicitly selected recursive topology. Adopted repositories use progressive coverage so checks state that they certify RMS module closures, not unrelated code.
+
+Detected skill files are configuration evidence, not proof of runtime activation; the host's injected skill catalog remains authoritative for the current task.
 
 Git commits are required evidence, not implied authority. RMS does not grant source-edit, provider, Git, release, or deployment authority. Those decisions remain with the user and host policy.
 

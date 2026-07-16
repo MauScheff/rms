@@ -20,6 +20,7 @@ The `rms-cli` module owns the command surface, deterministic reports, agent inte
 rms check --environment --root .
 rms next "explain how the release gate protects packaged skills and binaries" \
   --root . \
+  --ai \
   --module tooling/rust/rms/module.yaml
 rms explain "How are packaged skills and binaries protected?" \
   --module tooling/rust/rms/module.yaml
@@ -40,7 +41,7 @@ The viewer is read-only derived evidence. It does not replace the module, contra
 Ask `next` with the actual intent and follow its owner, declaration, implementation, and proof steps:
 
 ```bash
-rms next "add release artifact smoke coverage" --root .
+rms next "add release artifact smoke coverage" --root . --intent-yaml '<rms/intent-model/v0.1>'
 ```
 
 Load the selected skill. Use `rms help --all` only when it prescribes a specialist semantic, surface, trace, property, review, or package command. Provider output remains explicit and advisory.

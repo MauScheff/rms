@@ -2,23 +2,25 @@ spec: rms/contract/v0.1
 name: "apply-semantic-change"
 version: 1
 kind: command
-meaning: "Validate and atomically apply language-neutral module, machine, protocol, resource, artifact, authority, temporal-property, and evidence revisions while sealing the resulting canonical state."
+meaning: "Validate and atomically apply language-neutral contract, machine, protocol, resource, artifact, authority, property, and evidence revisions while sealing the final canonical state."
 preconditions:
   - id: "accepts-1"
     statement: "One complete rms/semantic-change/v0.1 object targeting a readable module or implementation."
   - id: "accepts-2"
-    statement: "Set, add, and remove operations whose protocol participants, resource operations, artifacts, transformations, authorities, machine cases, properties, and evidence references resolve in the final candidate."
+    statement: "Set, add, and remove operations whose contract kinds and directions, protocol participants, resource operations, artifacts, authorities, machine cases, properties, behavior bindings, and evidence references resolve in the final candidate."
 postconditions:
   - id: "ensures-1"
-    statement: "Canonical module and implementation semantics are updated together with an immutable applied change record and revision seal."
+    statement: "Contract changes explicitly retain command, query, event, or capability kind; provided contracts update the matching provides collection and required capabilities update requires.capabilities without changing topology."
   - id: "ensures-2"
-    statement: "Dry-run reports the complete final machine, protocols, resources, artifacts, transformations, authorities, semantic functions, and planned writes without mutation."
+    statement: "Implemented provided and required capabilities close through matching public or dependency behavior bindings in the same final candidate."
   - id: "ensures-3"
-    statement: "Bindings realize canonical semantics but cannot invent protocol, resource, artifact, or authority meaning."
+    statement: "Canonical module and implementation semantics are updated together with an immutable applied change record and revision seal."
+  - id: "ensures-4"
+    statement: "Dry-run reports the complete final semantic model and planned writes without mutation."
+  - id: "ensures-5"
+    statement: "Bindings realize canonical semantics but cannot invent protocol, resource, artifact, authority, contract, or capability meaning."
 failure_categories:
   - id: "rejects-1"
-    statement: "Unknown participants, messages, artifacts, authorities, effects, results, transitions, resources, or evidence references."
-  - id: "rejects-2"
-    statement: "Duplicate identifiers, invalid removals, unclosed resource lifecycles, and incompatible final semantic candidates."
+    statement: "Missing or unsupported contract kinds, required non-capability publication, incomplete behavior bindings, unknown semantic references, duplicate identifiers, invalid removals, unclosed lifecycles, and incompatible final candidates."
 compatibility:
   policy: backward-compatible-within-major

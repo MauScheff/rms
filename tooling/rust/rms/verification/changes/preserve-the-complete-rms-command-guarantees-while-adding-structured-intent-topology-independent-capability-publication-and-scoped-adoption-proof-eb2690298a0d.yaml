@@ -1,0 +1,134 @@
+spec: rms/semantic-change/v0.1
+module: null
+supersedes:
+- verification/changes/declare-rms-release-distribution-support-scripts-as-implementation-owned-roles-for-complete-workspace-coverage-c605ba812359.yaml
+intent:
+  summary: Preserve the complete RMS command guarantees while adding structured intent, topology-independent capability publication, and scoped adoption proof.
+laws: null
+contracts:
+  add: []
+  set:
+  - name: design-rms-system
+    kind: command
+    direction: provided
+    version: v1
+    command: design-rms-system
+    meaning: Validate an agent- or provider-extracted rms/intent-model/v0.1 and deterministically recommend language-neutral module topology without deriving architecture from raw task text.
+    accepts:
+    - Product intent, a readable RMS project root, and an inline or file-backed typed intent model or explicit read-only provider extraction.
+    - Complete fact dispositions with exact source quotes or inference rationales, responsibilities, semantic subjects, and optional binding preferences.
+    ensures:
+    - Missing, contradictory, or materially unknown intent stops before topology selection and returns the exact clarification or model requirement.
+    - Valid facts deterministically select the smallest honest standalone or recursive semantic shape and emit one exact scaffold action.
+    - Recommendations remain language-neutral and become authoritative only through RMS apply commands.
+    - Provider execution is read-only and recorded, and provider output containing architecture or topology fields is rejected.
+    rejects:
+    - Blank tasks, unreadable project context, malformed or source-mismatched models, material unknowns, contradictions, and architecture-bearing provider output.
+    protocol: null
+  - name: recommend-next-rms-work
+    kind: command
+    direction: provided
+    version: v2
+    command: recommend-next-rms-work
+    meaning: Construct a deterministic, prospective, read-only prescription from repository evidence and a validated rms/intent-model/v0.1 instead of raw task keyword scoring.
+    accepts:
+    - A nonblank prospective task intent, readable repository root, and typed intent model or explicit read-only provider extraction.
+    - An optional explicit readable module manifest and optional machine-readable or detailed projection selections.
+    ensures:
+    - Every report classifies its result as ready, bootstrap-required, design-required, needs-owner, blocked, no-rms-change, intent-model-required, or clarification-required.
+    - Task lane and architecture-sensitive actions derive only from structured operation, facts, and responsibilities; ownership routing uses structured subjects and preserves explicit, direct, sole, unique-positive, and recursive composite selection without guessing through ties.
+    - Repository shape and unrelated working-tree changes do not alter prospective intent classification.
+    - Read-only and repository-operation intent produces no semantic mutation prescription, and missing or materially unknown intent produces no architecture advice.
+    - Every machine-readable report uses the rms.surface/v2 envelope with command, result, summary, reasons, warnings, next_action, done_when, details_available, lane, confidence, owner state, and ordered typed steps.
+    - Command steps carry phase, program, argument array, safely escaped display, and no authorization; manual commit steps preserve host-required authorization and contain no executable Git program.
+    - Detailed output nests validation, owner ranking, context, roles, skill origins, blockers, and completion evidence under the same versioned envelope.
+    - Report construction is read-only, never grants source-edit or Git authority, and invokes a provider only when read-only extraction is explicitly requested.
+    rejects:
+    - Blank tasks, unreadable roots or modules, malformed or source-mismatched models, unresolved material facts, contradictions, and unsupported provider output.
+    protocol: null
+  - name: apply-semantic-change
+    kind: command
+    direction: provided
+    version: v1
+    command: apply-semantic-change
+    meaning: Validate and atomically apply language-neutral contract, machine, protocol, resource, artifact, authority, property, and evidence revisions while sealing the final canonical state.
+    accepts:
+    - One complete rms/semantic-change/v0.1 object targeting a readable module or implementation.
+    - Set, add, and remove operations whose contract kinds and directions, protocol participants, resource operations, artifacts, authorities, machine cases, properties, behavior bindings, and evidence references resolve in the final candidate.
+    ensures:
+    - Contract changes explicitly retain command, query, event, or capability kind; provided contracts update the matching provides collection and required capabilities update requires.capabilities without changing topology.
+    - Implemented provided and required capabilities close through matching public or dependency behavior bindings in the same final candidate.
+    - Canonical module and implementation semantics are updated together with an immutable applied change record and revision seal.
+    - Dry-run reports the complete final semantic model and planned writes without mutation.
+    - Bindings realize canonical semantics but cannot invent protocol, resource, artifact, authority, contract, or capability meaning.
+    rejects:
+    - Missing or unsupported contract kinds, required non-capability publication, incomplete behavior bindings, unknown semantic references, duplicate identifiers, invalid removals, unclosed lifecycles, and incompatible final candidates.
+    protocol: null
+  - name: init-rms-system
+    kind: command
+    direction: provided
+    version: v1
+    command: init-rms-system
+    meaning: Initialize a complete fresh RMS workspace or progressively adopt an existing repository while preserving project-owned content and preparing an authorized provenance baseline.
+    accepts:
+    - A writable fresh target for strict initialization or a writable existing repository when adopt mode is explicit.
+    - Valid system name, purpose, version, and optional context names.
+    ensures:
+    - Collision and compatibility preflight completes before writing; strict initialization refuses existing managed paths.
+    - Adoption validates existing canonical artifacts, preserves project-owned content outside managed sections, and creates only missing or safely upgradable managed content.
+    - Fresh initialization records complete workspace coverage and adoption records progressive coverage.
+    - A standalone target becomes a Git worktree while a nested target continues to use its existing parent worktree.
+    - Successful initialization reports bootstrap prepared and provenance baseline pending authorized commit; the command does not grant commit authority or claim production readiness.
+    - Generated onboarding orders initialization, authorized bootstrap commit, typed design, and exactly the recommended standalone or recursive scaffold.
+    rejects:
+    - Invalid or incompatible canonical artifacts, conflicting or malformed managed sections, invalid or unwritable targets, and unavailable provenance setup.
+    protocol: null
+  - name: check-rms-project
+    kind: command
+    direction: provided
+    version: v1
+    command: check-rms-project
+    meaning: Run one deterministic RMS readiness mode for a complete workspace or explicit RMS module dependency closure and project the exact certified scope through the compact RMS surface envelope.
+    accepts:
+    - A readable repository root, zero or one of environment, changes, or committed mode, optional machine-readable and detailed projection selections, and an optional module for changes or committed proof.
+    ensures:
+    - Default mode runs validation and composition, environment runs diagnosis, changes runs the RMS gate, and committed runs strict production proof through shared implementations rather than recursive CLI invocation.
+    - Module-scoped proof includes the target, contained children, contracts, implementation, and transitive declared providers; unrelated out-of-scope dirt is reported but does not invalidate the closure.
+    - Progressive root checks explicitly certify discovered RMS module closures rather than the whole repository, while complete coverage rejects unowned production paths.
+    - Every report uses rms.surface/v2 with command, result, summary, reasons, warnings, next_action, done_when, details_available, mode, component summaries, and optional complete delegated evidence.
+    - Success is reported only when every selected in-scope component passes; the facade does not invoke providers, mutate canonical semantics, grant Git authority, or turn a dirty candidate into committed evidence.
+    rejects:
+    - Invalid mode combinations, unreadable roots or modules, unresolved module closures, delegated reports that cannot be constructed truthfully, and untruthful complete-coverage claims.
+    protocol: null
+  remove: []
+properties: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: design-rms-system
+    path: verification/contracts/design_rms_system.md
+  - kind: contract
+    proves: recommend-next-rms-work
+    path: verification/contracts/recommend_next_rms_work_v2.md
+  - kind: contract
+    proves: apply-semantic-change
+    path: verification/contracts/apply_semantic_change.md
+  - kind: contract
+    proves: init-rms-system
+    path: verification/contracts/init_rms_system.md
+  - kind: contract
+    proves: check-rms-project
+    path: verification/contracts/check_rms_project.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

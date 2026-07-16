@@ -22,7 +22,9 @@ Product intent is sufficient input. Apply semantic changes before code, edit onl
 Start with:
 
 ```text
-rms next "<intent>" --root .
+rms next "<intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
 ```
+
+The agent extracts facts without topology. Recorded read-only `--ai` extraction is the alternative. Architecture-sensitive work without either input returns `intent-model-required`.
 
 Use `rms explain ["<question>"]` when the compact prescription needs clarification and `rms help --all` for specialist commands. Load the catalog skill selected by the task lane; detailed machine, surface, property, trace, and completion rules live in selected skills and rendered RMS context.

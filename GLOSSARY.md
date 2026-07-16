@@ -29,6 +29,8 @@ The manifests, contracts, invariants, context language, compatibility declaratio
 
 A named ability required or provided by a module, expressed independently of a concrete implementation. Examples include a clock, payment gateway, event store, or identity verifier.
 
+Capability publication changes a module's semantic public or dependency surface. It does not imply a module tree; topology is selected separately from structured intent.
+
 ## Command
 
 A request for the owner of a capability or state to perform work. A command expresses intent and may be accepted or rejected.
@@ -112,6 +114,10 @@ A property that must remain true for a defined state or consistency boundary.
 
 A natural-language artifact that captures the human need, motivating examples, counterexamples, questions, accepted answers, and rejected interpretations before implementation. It is evidence for understanding until accepted semantics are encoded in RMS artifacts.
 
+## Intent model
+
+A typed, non-architectural extraction of user intent. It classifies material facts as required, absent, or unknown; retains exact quotes for explicit facts and rationale for inferred facts; and cannot prescribe module names, shapes, or topology. RMS validates it before deterministic architecture policy runs.
+
 ## Kernel
 
 A small set of stable technical primitives shared by modules. It is not a global business model or communication bus.
@@ -124,6 +130,9 @@ Evidence that invariants, state transitions, algebraic properties, or policies h
 
 A cohesive unit of meaning and ownership with an explicit public contract and private implementation.
 
+## Module closure
+
+A selected module, its contained children, and transitive module providers named by declared dependency behavior bindings. Module-scoped production proof applies exactly to this set.
 
 ## Module package
 
@@ -149,6 +158,9 @@ An abstract interface through which a module requires or provides an effect or c
 
 An opt-in RMS requirement set activated by a module's characteristics. Profiles keep the core small while making reliability obligations explicit where needed.
 
+## Progressive adoption
+
+A workspace coverage mode that certifies discovered RMS modules and their declared dependency closures without claiming that unrelated repository code is RMS-owned. Promotion to complete coverage requires every production path to be owned.
 
 ## Provenance
 

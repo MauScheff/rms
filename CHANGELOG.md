@@ -9,6 +9,10 @@ Compatibility impact: intentionally breaking presentation and agent-JSON revisio
 - Added `rms check` modes for environment, canonical system, working candidate, and committed-candidate proof.
 - Added the versioned `rms.surface/v2` JSON envelope with typed command and manual actions.
 - Compressed generated agent guidance and consolidated public documentation around the narrow-waist workflow.
+- Replaced raw-language architecture heuristics with `rms/intent-model/v0.1`: agents extract typed facts, RMS validates them, and deterministic policy selects topology.
+- Renamed recursive scaffolding to `rms add-capability-tree` and removed `rms add-capability`; standalone capability publication now uses typed `contracts.* kind: capability` changes plus behavior bindings.
+- Added progressive and complete workspace coverage, `rms adoption status/set`, and module-scoped changes/committed checks.
+- Made `rms init --adopt` preserve project documents while setting progressive coverage, including upgrades of existing managed configuration.
 
 ## 0.1.0-rc.4 - 2026-06-30
 

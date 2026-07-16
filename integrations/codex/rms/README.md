@@ -21,12 +21,14 @@ Then point Codex at this plugin directory or copy it into a Codex plugin marketp
 Start project work through the narrow doorway:
 
 ```bash
-rms next "<intent>" --root .
+rms next "<intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
 rms explain "<question>" --root .
 rms check --root .
 ```
 
 Use `rms help --all` for specialist commands. The plugin must not carry a second RMS workflow.
+
+Machine-facing doorway reports use `rms.surface/v2`. Detected skill files do not prove runtime activation; `rms diagnose` reports that distinction. Git commits are required evidence, not implied authority, and production proof completes only through the committed RMS check.
 
 ## Refresh Skills
 

@@ -129,8 +129,6 @@ provides:
     contract: contracts/init-rms-system.v1.yaml
   - name: add-rms-module
     contract: contracts/add-rms-module.v1.yaml
-  - name: add-rms-capability
-    contract: contracts/add-rms-capability.v1.yaml
   - name: build-context-packet
     contract: contracts/build-context-packet.v1.yaml
   - name: build-module-atlas
@@ -183,6 +181,10 @@ provides:
     contract: contracts/check-rms-project.v1.yaml
   - name: describe-rms-command-surface
     contract: contracts/describe-rms-command-surface.v1.yaml
+  - name: add-rms-capability-tree
+    contract: contracts/add-rms-capability-tree.v1.yaml
+  - name: manage-rms-adoption
+    contract: contracts/manage-rms-adoption.v1.yaml
   queries:
   - name: inspect-module
     contract: contracts/inspect-module.v1.yaml
@@ -206,10 +208,10 @@ invariants:
   enforced_by: diagnose-rms-environment-command
   verified_by: verification/laws/diagnostics_are_evidence_not_authority.md
 - id: composite-evidence-lanes-are-concrete
-  statement: Composite scaffolds must not declare empty evidence lanes for production claims.
+  statement: Composite capability-tree scaffolds declare only concrete evidence lanes for production claims.
+  kind: invariant
   authority: effect-executor
-  enforced_by: add-rms-capability-command
-  verified_by: verification/laws/composite_evidence_lanes_are_concrete.md
+  enforced_by: add-rms-capability-tree-command
 - id: effect-results-are-canonical-machine-inputs
   statement: Machine-shaped modules that represent effect-result types or envelopes declare semantic effect results and consume them through transitions.
   authority: parser
@@ -379,7 +381,7 @@ invariants:
   statement: RMS binding adapters realize declared local implementation dependencies idiomatically and normalize equivalent binding-native package and import names.
   kind: invariant
   authority: effect-executor
-  enforced_by: add-rms-capability-command
+  enforced_by: add-rms-capability-tree-command
 - id: reusable-package-proof-is-cli-recorded
   statement: Successful RMS package construction and verification records a concrete reusable-package result in the owning module evidence.
   kind: invariant
@@ -560,6 +562,21 @@ invariants:
   kind: semantic-closure
   authority: parser
   enforced_by: view-rms-system-command
+- id: structured-intent-precedes-architecture
+  statement: Architecture and ownership decisions consume a validated language-neutral intent model and never derive authority from raw natural-language token matching.
+  kind: invariant
+  authority: parser
+  enforced_by: design-rms-system-command
+- id: semantic-capability-publication-is-topology-independent
+  statement: A module may publish or require a capability contract through semantic apply without creating, deleting, or changing module topology.
+  kind: invariant
+  authority: effect-executor
+  enforced_by: semantic-change-apply-command
+- id: progressive-adoption-proofs-are-scoped
+  statement: Production checks state whether they certify a complete repository or a progressive RMS module closure and never imply broader coverage.
+  kind: invariant
+  authority: composition
+  enforced_by: check-rms-project-command
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -660,9 +677,13 @@ verification:
   - verification/laws/semantic_system_graph.md
   - verification/laws/semantic_gap_applicability.md
   - verification/laws/public_behavior_binding_closure.md
+  - verification/laws/structured_intent_precedes_architecture.md
+  - verification/laws/semantic_capability_publication_is_topology_independent.md
+  - verification/laws/progressive_adoption_proofs_are_scoped.md
+  - verification/laws/composite_evidence_lanes_are_concrete.md
+  - verification/laws/binding_dependencies_are_adapter_realized.md
   contracts:
   - verification/contracts
-  - verification/contracts/add_rms_capability.md
   - verification/contracts/apply_runnable_surface.md
   - verification/contracts/check_runnable_surface.md
   - verification/contracts/add_rms_module.md
@@ -700,6 +721,8 @@ verification:
   - verification/contracts/recommend_next_rms_work_v2.md
   - verification/contracts/check_rms_project.md
   - verification/contracts/describe_rms_command_surface.md
+  - verification/contracts/add_rms_capability_tree.md
+  - verification/contracts/manage_rms_adoption.md
   scenarios:
   - verification/scenarios
   - verification/scenarios/reusable_module_package.md
@@ -746,12 +769,12 @@ verification:
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Distill RMS into a deterministic five-command narrow waist with compact human projections, a versioned agent JSON envelope, focused explanation, repository-operation advice, a unified check facade, and explicit expert help.
+  last_semantic_intent: Preserve the complete RMS command guarantees while adding structured intent, topology-independent capability publication, and scoped adoption proof.
   semantic_revision:
-    digest: sha256:aa87462f5202144625edb334c55d2c6860aac665db5cbd69b3aa29ae85856ba9
-    change_record: verification/surface-changes/rms-cli-cli-83e14af79a50.yaml
-    applied_by: rms surface apply
-    change_record_digest: sha256:83e14af79a503ea918cc07333eb51254263ce79e9aeaa365e8a5f4e3af7e67b2
+    digest: sha256:02da0bc10f83aecbe3804200ea3c6df44f629c9d99a3473ee9e0ae14360fb7a6
+    change_record: verification/changes/preserve-the-complete-rms-command-guarantees-while-adding-structured-intent-topology-independent-capability-publication-and-scoped-adoption-proof-eb2690298a0d.yaml
+    applied_by: rms spec apply
+    change_record_digest: sha256:eb2690298a0dc75acadef59a64b85cb44949c7279eb72d7c8dc38168926b466d
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-cli-applied-revision

@@ -45,6 +45,18 @@ RMS has three jobs:
 
 ## 1. Define Meaning Before Code
 
+The first step is typed intent, not keyword matching. The agent translates the user's words into facts such as:
+
+```text
+domain decisions: required
+lifecycle: absent
+effects: absent
+runnable surface: absent
+reuse: required
+```
+
+Explicit facts retain an exact quote. Inferred facts retain a rationale. Unknown material facts become questions. The model cannot name modules, shapes, or topology, so an LLM can interpret language without becoming the architecture authority. RMS validates the facts and applies one deterministic topology policy. This is why “no runnable interface” cannot accidentally create a boundary simply because the sentence contains the word “interface.”
+
 Before implementation, RMS records the important product semantics:
 
 - what the system promises;
@@ -77,6 +89,8 @@ checkout
 Modules communicate through declared capabilities and contracts. A consumer cannot rely on another module's private representation, transition, parser, or adapter files.
 
 This is what makes an RMS module reusable: RMS defines what the block means and promises; a language package defines how code imports it.
+
+Capability publication and topology are separate. A pure reusable library is normally one standalone domain module. It publishes a provided capability and public behavior binding through `rms spec apply`. `rms add-capability-tree` is only a topology scaffold for a composite with children; it is not the command for adding a capability to an existing module.
 
 ### Machines: Explicit Behavior Inside Modules
 
@@ -166,6 +180,8 @@ For a committed production candidate, it runs:
 ```bash
 rms check --committed --root .
 ```
+
+An adopted repository starts with progressive coverage. Root checks certify discovered RMS modules and their declared dependency closures, not unrelated legacy code. A module-scoped check can prove one closure while reporting out-of-scope dirt without treating it as part of that proof. Complete coverage is an explicit promotion and is rejected while production paths remain outside RMS ownership.
 
 Strict audit does not merely trust evidence files. It regenerates deterministic smoke traces and properties from the committed implementation, compares them with the claimed evidence, rebuilds reusable packages, and fails if proof commands modify production files.
 

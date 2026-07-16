@@ -55,6 +55,8 @@ The kernel contains small, stable technical primitives shared across modules. Th
 
 A contract defines a public command, query, event, capability, API, or data exchange. A contract includes semantic and operational behavior when those properties affect consumers.
 
+Contract publication MUST identify its kind and direction. Provided command, query, event, and capability contracts extend the matching public collection. Required contracts MUST be capabilities and extend the module's required capability collection. Publishing or requiring a capability MUST NOT imply a module split or recursive topology.
+
 ### 3.8 Effect
 
 An effect is contact with state or reality outside a pure decision boundary, including storage, network calls, time, randomness, messaging, filesystem access, secrets, or external services.
@@ -85,13 +87,25 @@ Rationale is the accepted explanation for why a particular interpretation, contr
 
 Intent and rationale MAY be recorded as natural-language artifacts and linked from manifests, contracts, laws, or evidence. They explain and justify public meaning, but they MUST NOT silently override manifests, contracts, invariants, context language, compatibility declarations, or verification evidence.
 
-### 3.14 Semantic machine
+### 3.14 Structured intent model
+
+Architecture-sensitive work MUST begin with a validated structured intent model or an explicit clarification result. The model MUST classify domain decisions, lifecycle, effects, runnable surface, and reuse as required, absent, or unknown. Explicit facts MUST retain an exact source quote. Inferred facts MUST retain a rationale. Material unknowns MUST stop topology selection.
+
+An intent model MUST NOT contain module names, semantic shapes, topology, or scaffold recommendations. Agents and providers MAY extract the model. Deterministic RMS policy MUST choose topology from validated facts. The resulting canonical module, contract, implementation, and evidence artifacts remain authoritative.
+
+### 3.15 Semantic machine
 
 An implemented RMS module MUST declare a domain-named semantic machine. Binding-native container names MUST be declared separately from semantic alternatives. A machine's state, command, observed-event, event, effect, effect-result, reply, and rejection lists MUST contain case names rather than the names of their enclosing language types.
 
 Stateful, boundary, workflow, storage, integration, and projection machines MUST expose one canonical transition that consumes current state plus a closed input over commands, observed events, and effect results. Each transition input MUST belong to exactly one category. Stateless decision machines MAY consume input without state only when an explicit justification explains why no lifecycle or ordering exists.
 
 A declared effect MUST define its possible results, executor role, and atomicity. When an individual result can alter a subsequent decision, the protocol MUST use one request and one result, and that result MUST return through the canonical transition. Effect executors MUST NOT own business sequencing, iteration, retry, compensation, stop/continue policy, or machine state progression.
+
+### 3.16 Workspace adoption coverage
+
+An RMS workspace declares `progressive` or `complete` coverage. Progressive coverage certifies discovered RMS modules and their declared dependency closures only. Complete coverage claims the repository production surface and MUST fail while production paths remain outside RMS ownership.
+
+Module-scoped production checks MUST include contained children and transitive declared module providers. Dirty or unresolved paths inside that closure invalidate the proof. Unrelated out-of-scope paths MUST be reported without being represented as part of the certified closure.
 
 ## 4. Core profile requirements
 

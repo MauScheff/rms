@@ -847,7 +847,6 @@ architecture:
     - Ready
     - WritingSemanticChangeRecord
     commands:
-    - AddRmsCapability
     - AddRmsModule
     - AnalyzeGitImpact
     - ApplyMachineChange
@@ -899,6 +898,8 @@ architecture:
     - RecommendNextRmsWork
     - CheckRmsProject
     - DescribeRmsCommandSurface
+    - AddRmsCapabilityTree
+    - ManageRmsAdoption
     observed_events: []
     events:
     - CommandCompleted
@@ -981,6 +982,9 @@ architecture:
     - src/main.rs
     trace_producer:
     - src/main.rs
+    distribution_support:
+    - ../../../scripts/sync-rms-agent-distributions.sh
+    - ../../../integrations/codex/rms/scripts/sync-skills.sh
   representation:
     closed_variants:
     - RmsWorkbenchState
@@ -1217,14 +1221,6 @@ architecture:
     machine_inputs:
     - AddRmsModule
     machine_outputs: []
-  - id: add-rms-capability-public
-    public_kind: command
-    public_name: add-rms-capability
-    contract: contracts/add-rms-capability.v1.yaml
-    semantic_function: add-rms-capability-command
-    machine_inputs:
-    - AddRmsCapability
-    machine_outputs: []
   - id: build-context-packet-public
     public_kind: command
     public_name: build-context-packet
@@ -1441,6 +1437,22 @@ architecture:
     machine_inputs:
     - DescribeRmsCommandSurface
     machine_outputs: []
+  - id: add-rms-capability-tree-public
+    public_kind: command
+    public_name: add-rms-capability-tree
+    contract: contracts/add-rms-capability-tree.v1.yaml
+    semantic_function: add-rms-capability-tree-command
+    machine_inputs:
+    - AddRmsCapabilityTree
+    machine_outputs: []
+  - id: manage-rms-adoption-public
+    public_kind: command
+    public_name: manage-rms-adoption
+    contract: contracts/manage-rms-adoption.v1.yaml
+    semantic_function: manage-rms-adoption-command
+    machine_inputs:
+    - ManageRmsAdoption
+    machine_outputs: []
   dependency_behavior_bindings:
   - id: filesystem-provider
     capability: filesystem
@@ -1641,26 +1653,6 @@ semantic_functions:
   evidence:
     contracts:
     - verification/contracts/add_rms_module.md
-- id: add-rms-capability-command
-  symbol: run_add_capability
-  kind: adapter
-  purity: effectful
-  discharges:
-    contracts:
-    - contracts/add-rms-capability.v1.yaml
-    invariants:
-    - canonical-artifacts-remain-authoritative
-    - diagnostics-are-evidence-not-authority
-  assumptions:
-    ensures:
-    - generated composite parent, domain child, boundary child, contracts, evidence, and optional child implementation bindings are deterministic scaffold artifacts
-    - generated domain and boundary children include local trace bundles that child verification checks
-    - default child names use neutral domain and boundary paths while inner role names come from semantic capability language
-    - parent composition exports and child dependencies are wired through canonical manifests rather than agent-only guidance
-    - generated parent verification can roll up composition and child implementation verification
-  evidence:
-    contracts:
-    - verification/contracts/add_rms_capability.md
 - id: add-rms-binding-command
   symbol: run_add_binding
   kind: adapter
@@ -2591,9 +2583,36 @@ semantic_functions:
   evidence:
     contracts:
     - verification/contracts/describe_rms_command_surface.md
+- id: add-rms-capability-tree-command
+  symbol: run_add_capability_tree
+  kind: adapter
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/add-rms-capability-tree.v1.yaml
+    invariants:
+    - canonical-artifacts-remain-authoritative
+    - diagnostics-are-evidence-not-authority
+    - composite-evidence-lanes-are-concrete
+    - binding-dependencies-are-adapter-realized
+  evidence:
+    contracts:
+    - verification/contracts/add_rms_capability_tree.md
+- id: manage-rms-adoption-command
+  symbol: run_adoption_command
+  kind: adapter
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/manage-rms-adoption.v1.yaml
+    invariants:
+    - progressive-adoption-proofs-are-scoped
+  evidence:
+    contracts:
+    - verification/contracts/manage_rms_adoption.md
 x-rms:
   semantic_revision:
-    digest: sha256:aa87462f5202144625edb334c55d2c6860aac665db5cbd69b3aa29ae85856ba9
-    change_record: verification/surface-changes/rms-cli-cli-83e14af79a50.yaml
-    applied_by: rms surface apply
-    change_record_digest: sha256:83e14af79a503ea918cc07333eb51254263ce79e9aeaa365e8a5f4e3af7e67b2
+    digest: sha256:02da0bc10f83aecbe3804200ea3c6df44f629c9d99a3473ee9e0ae14360fb7a6
+    change_record: verification/changes/preserve-the-complete-rms-command-guarantees-while-adding-structured-intent-topology-independent-capability-publication-and-scoped-adoption-proof-eb2690298a0d.yaml
+    applied_by: rms spec apply
+    change_record_digest: sha256:eb2690298a0dc75acadef59a64b85cb44949c7279eb72d7c8dc38168926b466d

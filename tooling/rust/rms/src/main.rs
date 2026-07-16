@@ -228,9 +228,25 @@ enum Commands {
         #[arg(long, default_value = ".")]
         root: PathBuf,
 
-        /// Explicit owning module manifest. This wins over inferred ownership.
+        /// Explicit owning module manifest. This wins over ownership selected from structured subjects.
         #[arg(long)]
         module: Option<PathBuf>,
+
+        /// Inline JSON rms/intent-model/v0.1 extracted from the task.
+        #[arg(long = "intent-json", conflicts_with_all = ["intent_yaml", "intent_file", "ai"])]
+        intent_json: Option<String>,
+
+        /// Inline YAML rms/intent-model/v0.1 extracted from the task.
+        #[arg(long = "intent-yaml", conflicts_with_all = ["intent_json", "intent_file", "ai"])]
+        intent_yaml: Option<String>,
+
+        /// Path to a JSON or YAML rms/intent-model/v0.1 document.
+        #[arg(long = "intent-file", conflicts_with_all = ["intent_json", "intent_yaml", "ai"])]
+        intent_file: Option<PathBuf>,
+
+        /// Ask the configured read-only provider to extract the typed intent model.
+        #[arg(long)]
+        ai: bool,
 
         /// Emit the shared report as machine-readable JSON.
         #[arg(long)]
@@ -259,6 +275,10 @@ enum Commands {
         /// Repository or system root to check.
         #[arg(long, default_value = ".")]
         root: PathBuf,
+
+        /// Restrict changes or committed proof to one module and its declared dependency closure.
+        #[arg(long)]
+        module: Option<PathBuf>,
 
         /// Emit the compact, versioned agent contract as JSON.
         #[arg(long)]
@@ -372,7 +392,7 @@ enum Commands {
         provider_timeout_seconds: Option<u64>,
     },
 
-    /// Render an advisory RMS semantic design prompt before module boundaries are fixed.
+    /// Validate typed intent and deterministically choose RMS module topology.
     Design {
         /// System or repository design task.
         #[arg(long)]
@@ -381,6 +401,22 @@ enum Commands {
         /// Repository or system root used to discover RMS artifacts.
         #[arg(long, default_value = ".")]
         root: PathBuf,
+
+        /// Inline JSON rms/intent-model/v0.1 extracted from the task.
+        #[arg(long = "intent-json", conflicts_with_all = ["intent_yaml", "intent_file", "ai", "provider"])]
+        intent_json: Option<String>,
+
+        /// Inline YAML rms/intent-model/v0.1 extracted from the task.
+        #[arg(long = "intent-yaml", conflicts_with_all = ["intent_json", "intent_file", "ai", "provider"])]
+        intent_yaml: Option<String>,
+
+        /// Path to a JSON or YAML rms/intent-model/v0.1 document.
+        #[arg(long = "intent-file", conflicts_with_all = ["intent_json", "intent_yaml", "ai", "provider"])]
+        intent_file: Option<PathBuf>,
+
+        /// Emit the deterministic design result as JSON.
+        #[arg(long)]
+        json: bool,
 
         /// Use the default AI provider from .rms/config.yaml.
         #[arg(long)]
@@ -1080,7 +1116,8 @@ enum Commands {
     },
 
     /// Scaffold a recursive RMS capability tree: composite parent, domain child, and boundary child.
-    AddCapability {
+    #[command(name = "add-capability-tree")]
+    AddCapabilityTree {
         /// Directory where the composite parent module artifacts should be created.
         path: PathBuf,
 
@@ -1115,6 +1152,16 @@ enum Commands {
         /// Optional implementation binding for the boundary child.
         #[arg(long)]
         boundary_binding: Option<String>,
+
+        /// Explicit runnable surface kind for the boundary child; never inferred from purpose text.
+        #[arg(long)]
+        surface: Option<String>,
+    },
+
+    /// Inspect or change progressive versus complete RMS workspace coverage.
+    Adoption {
+        #[command(subcommand)]
+        command: AdoptionCommands,
     },
 
     /// Show the primary doorway or the complete grouped specialist catalog.
@@ -1124,6 +1171,324 @@ enum Commands {
         #[arg(long)]
         all: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum AdoptionCommands {
+    /// Report the workspace coverage mode and currently governed RMS modules.
+    Status {
+        /// Repository or system root to inspect.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Change the workspace coverage mode after deterministic preflight.
+    Set {
+        /// Repository or system root containing .rms/config.yaml.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Coverage claimed by RMS checks.
+        #[arg(long, value_enum)]
+        coverage: WorkspaceCoverage,
+
+        /// Validate and report without updating configuration.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+enum WorkspaceCoverage {
+    Progressive,
+    #[default]
+    Complete,
+}
+
+#[derive(Debug, Serialize)]
+struct AdoptionStatusReport {
+    spec: &'static str,
+    result: String,
+    root: String,
+    coverage: String,
+    certifies: String,
+    modules: Vec<String>,
+    unowned_production_paths: Vec<String>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+fn run_adoption_command(command: AdoptionCommands) -> Result<()> {
+    match command {
+        AdoptionCommands::Status { root, json } => {
+            let report = build_adoption_status(&root, None)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print_adoption_status(&report);
+            }
+            Ok(())
+        }
+        AdoptionCommands::Set {
+            root,
+            coverage,
+            dry_run,
+        } => {
+            let report = build_adoption_status(&root, Some(coverage))?;
+            if report.result == "blocked" {
+                print_adoption_status(&report);
+                bail!("coverage update rejected by RMS adoption diagnostics");
+            }
+            if dry_run {
+                println!("RMS adoption: dry-run");
+                print_adoption_status(&report);
+                return Ok(());
+            }
+            write_workspace_coverage(&root, coverage)?;
+            print_adoption_status(&report);
+            Ok(())
+        }
+    }
+}
+
+fn build_adoption_status(
+    root: &Path,
+    requested: Option<WorkspaceCoverage>,
+) -> Result<AdoptionStatusReport> {
+    let root = fs::canonicalize(root)
+        .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
+    let configured = load_workbench_config(&root)?.ok_or_else(|| {
+        anyhow!("missing `{WORKBENCH_CONFIG_PATH}`; run `rms init --adopt` first")
+    })?;
+    let coverage = requested.unwrap_or(configured.value.workspace.coverage);
+    let modules = discover_module_manifests(&root)?;
+    let mut module_paths = modules
+        .iter()
+        .map(|module| display_relative(&root, &module.path))
+        .collect::<Vec<_>>();
+    module_paths.sort();
+    let unowned = discover_unowned_production_paths(&root, &modules)?;
+    let mut diagnostics = Vec::new();
+    let module_index = discover_module_index(&root)?;
+    for module in &modules {
+        let name = get_str(&module.value, &["module", "name"]).unwrap_or("<missing>");
+        let (_, unresolved) = module_dependency_closure(name, &module_index);
+        if !unresolved.is_empty() {
+            diagnostics.push(error(
+                "adoption.module-closure-unresolved",
+                &module.path,
+                format!(
+                    "module closure `{name}` has unresolved member(s): {}",
+                    unresolved.into_iter().collect::<Vec<_>>().join(", ")
+                ),
+            ));
+        }
+    }
+    if coverage == WorkspaceCoverage::Complete && !unowned.is_empty() {
+        diagnostics.push(error(
+            "adoption.unowned-production-path",
+            &root,
+            format!(
+                "complete coverage requires every production path to be RMS-owned; {} path(s) remain outside discovered modules",
+                unowned.len()
+            ),
+        ));
+    }
+    let result = if diagnostics
+        .iter()
+        .any(|item| item.severity == Severity::Error)
+    {
+        "blocked"
+    } else {
+        "pass"
+    };
+    Ok(AdoptionStatusReport {
+        spec: "rms/adoption-status/v0.1",
+        result: result.to_string(),
+        root: root.display().to_string(),
+        coverage: coverage.label().to_string(),
+        certifies: match coverage {
+            WorkspaceCoverage::Progressive => {
+                "discovered RMS modules and their declared dependency closures only"
+            }
+            WorkspaceCoverage::Complete => "the complete repository production surface",
+        }
+        .to_string(),
+        modules: module_paths,
+        unowned_production_paths: unowned,
+        diagnostics,
+    })
+}
+
+fn print_adoption_status(report: &AdoptionStatusReport) {
+    println!("RMS adoption: {}", report.result);
+    println!("coverage: {}", report.coverage);
+    println!("certifies: {}", report.certifies);
+    println!("modules: {}", report.modules.len());
+    for module in &report.modules {
+        println!("  - {module}");
+    }
+    if !report.unowned_production_paths.is_empty() {
+        println!("unowned production paths:");
+        for path in &report.unowned_production_paths {
+            println!("  - {path}");
+        }
+    }
+    for diagnostic in &report.diagnostics {
+        println!(
+            "{} [{}] {}",
+            severity_label(diagnostic.severity),
+            diagnostic.check,
+            diagnostic.message
+        );
+    }
+}
+
+fn write_workspace_coverage(root: &Path, coverage: WorkspaceCoverage) -> Result<()> {
+    let root = fs::canonicalize(root)
+        .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
+    let path = root.join(WORKBENCH_CONFIG_PATH);
+    let source = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read `{}`", path.display()))?;
+    let mut value: YamlValue = serde_yaml::from_str(&source)
+        .with_context(|| format!("failed to parse `{}`", path.display()))?;
+    set_yaml_string_path(&mut value, &["workspace", "coverage"], coverage.label());
+    let rendered = serde_yaml::to_string(&value)?;
+    fs::write(&path, rendered).with_context(|| format!("failed to write `{}`", path.display()))?;
+    Ok(())
+}
+
+fn discover_unowned_production_paths(
+    root: &Path,
+    modules: &[LoadedManifest],
+) -> Result<Vec<String>> {
+    let module_roots = modules
+        .iter()
+        .filter_map(|module| module.path.parent().map(Path::to_path_buf))
+        .collect::<Vec<_>>();
+    let mut declared_role_paths = Vec::new();
+    for module_root in &module_roots {
+        let implementation_path = module_root.join("implementation.yaml");
+        let Ok(implementation) = load_manifest(&implementation_path) else {
+            continue;
+        };
+        let Some(roles) = get_path(&implementation.value, &["architecture", "roles"])
+            .and_then(YamlValue::as_mapping)
+        else {
+            continue;
+        };
+        for role_paths in roles.values().filter_map(YamlValue::as_sequence) {
+            for role_path in role_paths.iter().filter_map(YamlValue::as_str) {
+                if let Ok(path) = fs::canonicalize(module_root.join(role_path)) {
+                    declared_role_paths.push(path);
+                }
+            }
+        }
+    }
+    let mut paths = WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            let name = entry.file_name().to_string_lossy();
+            !entry.file_type().is_dir()
+                || !matches!(
+                    name.as_ref(),
+                    ".git"
+                        | ".rms"
+                        | ".agents"
+                        | ".claude"
+                        | "target"
+                        | "dist"
+                        | "build"
+                        | "node_modules"
+                        | ".build"
+                )
+        })
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.path().to_path_buf())
+        .filter(|path| {
+            !module_roots
+                .iter()
+                .any(|module_root| path.starts_with(module_root))
+        })
+        .filter(|path| {
+            !declared_role_paths.iter().any(|owned| {
+                if owned.is_dir() {
+                    path.starts_with(owned)
+                } else {
+                    path == owned
+                }
+            })
+        })
+        .filter(|path| {
+            !(path.parent() == Some(root)
+                && matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some(
+                        "Cargo.toml"
+                            | "Cargo.lock"
+                            | "Package.swift"
+                            | "package.json"
+                            | "pyproject.toml"
+                            | "go.mod"
+                            | "go.sum"
+                    )
+                ))
+        })
+        .filter(|path| is_adoption_production_path(path))
+        .map(|path| display_relative(root, &path))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn is_adoption_production_path(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if matches!(
+        name,
+        "Cargo.toml" | "Package.swift" | "package.json" | "pyproject.toml" | "go.mod"
+    ) {
+        return true;
+    }
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some(
+            "rs" | "swift"
+                | "js"
+                | "mjs"
+                | "cjs"
+                | "ts"
+                | "tsx"
+                | "py"
+                | "go"
+                | "c"
+                | "h"
+                | "cc"
+                | "cpp"
+                | "java"
+                | "kt"
+                | "kts"
+                | "sh"
+        )
+    )
+}
+
+impl WorkspaceCoverage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Progressive => "progressive",
+            Self::Complete => "complete",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1439,7 +1804,8 @@ enum RmsWorkbenchCommand {
     ConfigureAgentIntegration,
     InitRmsSystem,
     AddRmsModule,
-    AddRmsCapability,
+    AddRmsCapabilityTree,
+    ManageRmsAdoption,
     AddRmsBinding,
     CheckReleaseReadiness,
     BuildContextPacket,
@@ -2266,6 +2632,8 @@ struct SemanticContractsChange {
 struct SemanticContractChange {
     name: String,
     #[serde(default)]
+    kind: Option<SemanticContractKind>,
+    #[serde(default)]
     direction: Option<SemanticContractDirection>,
     #[serde(default)]
     version: Option<String>,
@@ -2317,6 +2685,8 @@ struct ProtocolTransition {
 struct SemanticContractRemoveChange {
     name: String,
     #[serde(default)]
+    kind: Option<SemanticContractKind>,
+    #[serde(default)]
     direction: Option<SemanticContractDirection>,
     #[serde(default)]
     version: Option<String>,
@@ -2327,6 +2697,41 @@ struct SemanticContractRemoveChange {
 enum SemanticContractDirection {
     Provided,
     Required,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum SemanticContractKind {
+    Command,
+    Query,
+    Event,
+    Capability,
+}
+
+impl SemanticContractKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Query => "query",
+            Self::Event => "event",
+            Self::Capability => "capability",
+        }
+    }
+
+    fn module_path(self, direction: SemanticContractDirection) -> Option<&'static [&'static str]> {
+        match (direction, self) {
+            (SemanticContractDirection::Provided, Self::Command) => Some(&["provides", "commands"]),
+            (SemanticContractDirection::Provided, Self::Query) => Some(&["provides", "queries"]),
+            (SemanticContractDirection::Provided, Self::Event) => Some(&["provides", "events"]),
+            (SemanticContractDirection::Provided, Self::Capability) => {
+                Some(&["provides", "capabilities"])
+            }
+            (SemanticContractDirection::Required, Self::Capability) => {
+                Some(&["requires", "capabilities"])
+            }
+            (SemanticContractDirection::Required, _) => None,
+        }
+    }
 }
 
 impl SemanticContractDirection {
@@ -3840,7 +4245,7 @@ fn starter_states_for_shape(shape: ScaffoldShape) -> Vec<String> {
     .collect()
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CodexSandbox {
     #[value(name = "read-only")]
     ReadOnly,
@@ -3877,21 +4282,22 @@ struct RawPromptRunOptions {
     provider_timeout_seconds: Option<u64>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct WorkbenchConfig {
     ai: AiConfig,
     runs: RunsConfig,
+    workspace: WorkspaceConfig,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct AiConfig {
     default_provider: Option<String>,
     codex: CodexConfig,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct CodexConfig {
     model: Option<String>,
@@ -3900,10 +4306,16 @@ struct CodexConfig {
     timeout_seconds: Option<u64>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct RunsConfig {
     directory: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct WorkspaceConfig {
+    coverage: WorkspaceCoverage,
 }
 
 #[derive(Clone, Debug)]
@@ -4234,21 +4646,11 @@ impl PromptKind {
                 "Propose the smallest implementation and verification path.",
             ],
             PromptKind::Design => &[
-                "Treat RMS design output as advisory until module manifests, contracts, implementation bindings, semantic-change applications, and focused machine-change applications reflect it.",
-                "Treat deterministic design hints as the scaffold decision: when they recommend a recursive capability, use `rms add-capability`; use one module only for explicit library-only intent or a canonically recorded single-module exception.",
+                "Return only an `rms/intent-model/v0.1` extraction: facts, responsibilities, binding preferences, and material questions. Do not propose modules, shapes, topology, files, or scaffolds.",
+                "Use exact source quotes for explicit facts and rationale for inferred facts; preserve negation as an absent disposition rather than a positive keyword signal.",
+                "Leave every material uncertainty as `unknown`; RMS, not the provider, validates the model and deterministically selects `rms add-module` or `rms add-capability-tree`.",
                 "Start from system purpose, contexts, existing modules, glossary language, and the requested task.",
-                "Propose the smallest honest module set; do not create a module for every noun.",
-                "Assign each module a semantic shape: domain-engine, boundary-adapter, runtime-monitor, workflow, storage-adapter, integration-adapter, or composite.",
-                "Separate pure decisions from external effects, and name required module dependencies.",
-                "For reusable domain/library modules, declare provider capabilities and contracts, one public facade, package/reuse evidence, and consumer access through `requires.capabilities[]` rather than private role imports. Run `rms package` to build, verify, and record concrete proof; expectation-only evidence does not count.",
-                "Define representation obligations: closed variants, validated values, commands, states, events, accepted/rejected outcomes, boundary schemas, and runnable surfaces when outside input reaches the module.",
-                "Resolve semantic edge cases before file layout: invalid commands, illegal transitions, terminal states, stale or conflicting state, parser failures, numeric overflow or rounding, and effect failure categories.",
-                "Name semantic cases rather than Rust, Swift, JS, Python, or other binding type names; bindings realize the cases later.",
-                "For each effect, decide whether individual outcomes alter later decisions; if they do, use one-request-one-result protocols and transition-owned orchestration.",
-                "Define public protocol automata, resource lifecycle automata, artifact transformations, authority boundaries, and temporal proof obligations whenever the intent contains those semantics.",
-                "For every proposed public command, query, or capability, name its exact contract, semantic-function owner, machine cases, and evidence; for every required capability, name its exact consumer and provider resolution.",
-                "Treat inspectable boundary IO as declared effects with typed results and an executor, and require runnable surfaces to delegate to an exact callable that reaches the machine.",
-                "Define focused evidence: laws, contract scenarios, boundary parser tests, numeric boundary tests, runtime monitor trigger/non-trigger cases, transition records, replay bundles, first-bad-transition proof, fuzz/property checks, recovery, or reconciliation.",
+                "Classify whether the task owns domain decisions, lifecycle, effects, a runnable surface, reuse, storage, integration, monitoring, or boundary adaptation without converting those facts into topology.",
                 "Treat provider output and generated plans as advisory evidence until reflected in canonical artifacts.",
             ],
             PromptKind::Explain => &[
@@ -4308,6 +4710,7 @@ impl PromptKind {
                 "Return concrete implementation instructions; do not claim edits were made unless the executing agent actually made them.",
             ],
             PromptKind::Intent => &[
+                "Extract `rms/intent-model/v0.1` facts before deeper semantic planning; never put module names, shapes, topology, or scaffold recommendations in that model.",
                 "Think before code: do not propose implementation steps until intent, rationale, contracts, and evidence obligations are understood.",
                 "Normalize the human request into atomic stories with actors, state, actions, success results, failure results, and stale or conflicting-state behavior.",
                 "Ask only the questions needed to resolve product, domain, ownership, source-of-truth, lifecycle, compatibility, or operational ambiguity.",
@@ -4365,14 +4768,11 @@ impl PromptKind {
                 "Focused verification plan and commands.",
             ],
             PromptKind::Design => &[
-                "Recommended module set and semantic shape for each module.",
-                "Recommended module tree, including a composite parent when several semantic modules form one public capability.",
-                "Owned concepts, data, decisions, public contracts, dependencies, effects, and profiles.",
-                "Semantic structure before code: ADTs or closed variants, validated values, commands, states, events, result and rejection types, and transition boundaries.",
-                "Edge-case decisions: invalid commands, illegal transitions, terminal states, boundary parse failures, stale or conflicting state, and not-applicable cases.",
-                "Representation obligations for ADTs, validated values, commands, states, events, and result/rejection types.",
-                "Trace, law, fuzz/property, contract, boundary, runtime monitor, recovery, or reconciliation evidence.",
-                "Scope boundaries and assumptions.",
+                "Exactly one `rms/intent-model/v0.1` object with no architecture fields.",
+                "Required, absent, or unknown disposition for every material fact.",
+                "Exact quotes for explicit facts and rationale for inferred facts.",
+                "Responsibilities stated as semantic work, not module recommendations.",
+                "Material open questions that must stop deterministic topology selection.",
             ],
             PromptKind::Explain => &[
                 "Intelligible plain-language explanation of how the module works.",
@@ -6284,12 +6684,16 @@ fn run_release_install_smoke(root: &Path, binary: &Path) -> Result<()> {
     result
 }
 
-fn release_install_next_args() -> [&'static str; 5] {
+const RELEASE_INSPECT_INTENT_MODEL: &str = r#"{"spec":"rms/intent-model/v0.1","operation":"read","change_scope":"existing-module","subjects":["example-module"],"facts":{"domain_decisions":{"disposition":"absent","basis":"inferred","rationale":"Read-only inspection does not add decisions."},"lifecycle":{"disposition":"absent","basis":"inferred","rationale":"Read-only inspection does not add lifecycle."},"effects":{"disposition":"absent","basis":"inferred","rationale":"Read-only inspection does not add effects."},"runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"Read-only inspection does not add a surface."},"reuse":{"disposition":"absent","basis":"inferred","rationale":"Read-only inspection does not change reuse."}},"responsibilities":[],"surface_kinds":[],"binding_preferences":[],"open_questions":[]}"#;
+
+fn release_install_next_args() -> [&'static str; 7] {
     [
         "next",
         "inspect the example module",
         "--root",
         "examples/minimal",
+        "--intent-json",
+        RELEASE_INSPECT_INTENT_MODEL,
         "--json",
     ]
 }
@@ -6327,6 +6731,7 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
     let rules_module = "modules/play-tic-tac-toe-domain/module.yaml";
     let verify_parent = app.join(parent_module);
     let verify_parent_arg = verify_parent.to_string_lossy().to_string();
+    let intent_model = r#"{"spec":"rms/intent-model/v0.1","operation":"design","change_scope":"new-system","subjects":["tic-tac-toe"],"facts":{"domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"Tic Tac Toe game"},"lifecycle":{"disposition":"required","basis":"inferred","rationale":"Turns and terminal outcomes are ordered."},"effects":{"disposition":"required","basis":"inferred","rationale":"Browser interaction is a boundary effect."},"runnable_surface":{"disposition":"required","basis":"explicit","source_quote":"browser-playable"},"reuse":{"disposition":"absent","basis":"inferred","rationale":"No reuse requirement was stated."}},"responsibilities":[{"id":"tic-tac-toe-decisions","kind":"decision","summary":"Decide legal game transitions."},{"id":"tic-tac-toe-browser","kind":"boundary","summary":"Adapt browser interaction."}],"surface_kinds":["browser"],"binding_preferences":["rust","js"],"open_questions":[]}"#;
 
     let result = (|| -> Result<()> {
         run_release_step(
@@ -6390,6 +6795,8 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
                     "browser-playable Tic Tac Toe game",
                     "--root",
                     app_arg.as_str(),
+                    "--intent-json",
+                    intent_model,
                     "--json",
                 ],
                 root,
@@ -6428,17 +6835,19 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
                     app_arg.as_str(),
                     "--task",
                     "browser-playable Tic Tac Toe game",
+                    "--intent-json",
+                    intent_model,
                 ],
                 root,
                 &bin_dir,
             )?,
         )?;
         run_release_step(
-            "clean-room dogfood add-capability",
+            "clean-room dogfood add-capability-tree",
             command_with_path(
                 "rms",
                 &[
-                    "add-capability",
+                    "add-capability-tree",
                     capability_arg.as_str(),
                     "--name",
                     "play-tic-tac-toe",
@@ -6452,6 +6861,8 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
                     "rust",
                     "--boundary-binding",
                     "js",
+                    "--surface",
+                    "browser",
                 ],
                 root,
                 &bin_dir,
@@ -7061,7 +7472,7 @@ fn validate_guidance_and_documentation_distribution(root: &Path) -> Result<()> {
     if quickstart.contains("--domain-child") || quickstart.contains("--boundary-child") {
         bail!("QUICKSTART.md must not prescribe default capability child-name overrides");
     }
-    if !quickstart.contains("rms add-capability") {
+    if !quickstart.contains("rms add-capability-tree") {
         bail!("QUICKSTART.md must present recursive capability scaffolding as an alternative");
     }
     let production = fs::read_to_string(root.join("PRODUCTION.md"))?;
@@ -7254,6 +7665,15 @@ fn run_release_agent_distribution_smoke(rms_exe: &Path) -> Result<()> {
 }
 
 fn render_workbench_config(provider: Provider, model: Option<&str>, run_root: &Path) -> String {
+    render_workbench_config_with_coverage(provider, model, run_root, WorkspaceCoverage::Complete)
+}
+
+fn render_workbench_config_with_coverage(
+    provider: Provider,
+    model: Option<&str>,
+    run_root: &Path,
+    coverage: WorkspaceCoverage,
+) -> String {
     let mut out = String::new();
     out.push_str("ai:\n");
     let _ = writeln!(out, "  default_provider: {}", provider.label());
@@ -7276,6 +7696,8 @@ fn render_workbench_config(provider: Provider, model: Option<&str>, run_root: &P
         "  directory: {}",
         yaml_quote(&run_root.display().to_string())
     );
+    out.push_str("workspace:\n");
+    let _ = writeln!(out, "  coverage: {}", coverage.label());
     out
 }
 
@@ -7349,7 +7771,8 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
             "surface",
             "add-module",
             "add-binding",
-            "add-capability",
+            "add-capability-tree",
+            "adoption",
         ],
     ),
     (
@@ -7488,19 +7911,57 @@ fn main() -> Result<()> {
             task,
             root,
             module,
+            intent_json,
+            intent_yaml,
+            intent_file,
+            ai,
             json,
             details,
-        } => run_next(&root, module.as_deref(), &task, json, details),
+        } => {
+            let options = ai
+                .then(|| {
+                    resolve_prompt_run_options(
+                        &root,
+                        RawPromptRunOptions {
+                            ai: true,
+                            provider: None,
+                            record: true,
+                            run_root: None,
+                            model: None,
+                            sandbox: Some(CodexSandbox::ReadOnly),
+                            write_scope: None,
+                            provider_timeout_seconds: None,
+                        },
+                    )
+                })
+                .transpose()?;
+            run_next(
+                &root,
+                module.as_deref(),
+                &task,
+                RawIntentInput {
+                    json: intent_json,
+                    yaml: intent_yaml,
+                    file: intent_file,
+                    ai,
+                },
+                options.as_ref(),
+                json,
+                details,
+            )
+        }
         Commands::Check {
             environment,
             changes,
             committed,
             root,
+            module,
             json,
             details,
         } => run_check(
             &root,
             CheckMode::from_flags(environment, changes, committed),
+            module.as_deref(),
             json,
             details,
         ),
@@ -7582,6 +8043,10 @@ fn main() -> Result<()> {
         Commands::Design {
             task,
             root,
+            intent_json,
+            intent_yaml,
+            intent_file,
+            json,
             ai,
             provider,
             record,
@@ -7591,20 +8056,32 @@ fn main() -> Result<()> {
             write_scope,
             provider_timeout_seconds,
         } => {
-            let options = resolve_prompt_run_options(
+            let mut options = resolve_prompt_run_options(
                 &root,
                 RawPromptRunOptions {
-                    ai,
+                    ai: ai || provider.is_some(),
                     provider,
-                    record,
+                    record: record || ai,
                     run_root,
                     model,
-                    sandbox,
+                    sandbox: Some(sandbox.unwrap_or(CodexSandbox::ReadOnly)),
                     write_scope,
                     provider_timeout_seconds,
                 },
             )?;
-            run_design(&root, &task, &options)
+            options.sandbox = CodexSandbox::ReadOnly;
+            run_design(
+                &root,
+                &task,
+                RawIntentInput {
+                    json: intent_json,
+                    yaml: intent_yaml,
+                    file: intent_file,
+                    ai: ai || options.provider != Provider::None,
+                },
+                &options,
+                json,
+            )
         }
         Commands::Review {
             module,
@@ -8203,7 +8680,7 @@ fn main() -> Result<()> {
         Commands::AddBinding { module, binding } => {
             run_add_binding(AddBindingRequest { module, binding })
         }
-        Commands::AddCapability {
+        Commands::AddCapabilityTree {
             path,
             name,
             purpose,
@@ -8213,7 +8690,8 @@ fn main() -> Result<()> {
             domain_command,
             domain_binding,
             boundary_binding,
-        } => run_add_capability(AddCapabilityRequest {
+            surface,
+        } => run_add_capability_tree(AddCapabilityTreeRequest {
             path,
             name,
             purpose,
@@ -8223,7 +8701,9 @@ fn main() -> Result<()> {
             domain_command,
             domain_binding,
             boundary_binding,
+            surface,
         }),
+        Commands::Adoption { command } => run_adoption_command(command),
         Commands::Help { all } => run_help(all),
     }
 }
@@ -10017,286 +10497,562 @@ fn run_prompt(
     Ok(())
 }
 
-fn run_design(root: &Path, task: &str, options: &PromptRunOptions) -> Result<()> {
-    let manifest = synthetic_workbench_manifest(root, "rms-design", "system design advisory");
-    let mut rendered = render_design_prompt(root, task)?;
-    if options.provider != Provider::None {
-        rendered.push_str(&render_provider_execution_scope(&manifest, root, options));
+fn run_design(
+    root: &Path,
+    task: &str,
+    input: RawIntentInput,
+    options: &PromptRunOptions,
+    json_output: bool,
+) -> Result<()> {
+    let root = fs::canonicalize(root)
+        .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
+    let (intent, mut diagnostics, run_dir) =
+        resolve_intent_model(&root, task, &input, Some(options))?;
+    let decision = intent.as_ref().and_then(|model| {
+        if diagnostics
+            .iter()
+            .any(|item| item.severity == Severity::Error || item.check == "intent.material-unknown")
+        {
+            None
+        } else {
+            Some(decide_architecture(task, model))
+        }
+    });
+    let result = if diagnostics
+        .iter()
+        .any(|item| item.check == "intent.model-required")
+    {
+        "intent-model-required"
+    } else if diagnostics
+        .iter()
+        .any(|item| item.severity == Severity::Error)
+    {
+        "invalid"
+    } else if diagnostics
+        .iter()
+        .any(|item| item.check == "intent.material-unknown")
+    {
+        "clarification-required"
+    } else {
+        "recommendation"
+    };
+    diagnostics.sort_by(|left, right| {
+        left.check
+            .cmp(&right.check)
+            .then_with(|| left.message.cmp(&right.message))
+    });
+    let report = DesignReport {
+        spec: "rms/design-result/v0.1",
+        result: result.to_string(),
+        root: root.display().to_string(),
+        task: task.to_string(),
+        intent,
+        decision,
+        diagnostics,
+        intent_template: (result == "intent-model-required").then(intent_model_template),
+    };
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_design_report(&report);
+        if let Some(run_dir) = run_dir {
+            println!("run record: {}", run_dir.display());
+        }
+    }
+    if matches!(report.result.as_str(), "invalid") {
+        bail!("RMS intent model rejected");
+    }
+    Ok(())
+}
+
+fn print_design_report(report: &DesignReport) {
+    println!("RMS design: {}", report.result);
+    println!("root: {}", report.root);
+    if let Some(decision) = &report.decision {
+        println!("topology: {:?}", decision.topology);
+        println!("modules:");
+        for module in &decision.modules {
+            println!(
+                "  - {} [{}] binding={}",
+                module.responsibility,
+                module.shape,
+                module.binding.as_deref().unwrap_or("semantic-only")
+            );
+        }
+        println!("why:");
+        for reason in &decision.rationale {
+            println!("  - {reason}");
+        }
+        println!(
+            "next: {}",
+            std::iter::once(decision.scaffold.program.as_str())
+                .chain(decision.scaffold.args.iter().map(String::as_str))
+                .map(shell_arg)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    } else if report.result == "intent-model-required" {
+        println!("next: supply --intent-json, --intent-yaml, --intent-file, or --ai");
+        if let Some(template) = &report.intent_template {
+            println!(
+                "intent template:\n{}",
+                serde_yaml::to_string(template).unwrap_or_default()
+            );
+        }
+    } else {
+        println!("next: resolve the intent diagnostics before choosing module topology");
+    }
+    if !report.diagnostics.is_empty() {
+        println!("diagnostics:");
+        for diagnostic in &report.diagnostics {
+            println!(
+                "  {} [{}] {}",
+                severity_label(diagnostic.severity),
+                diagnostic.check,
+                diagnostic.message
+            );
+        }
+    }
+}
+
+fn resolve_intent_model(
+    root: &Path,
+    task: &str,
+    input: &RawIntentInput,
+    options: Option<&PromptRunOptions>,
+) -> Result<(Option<IntentModel>, Vec<Diagnostic>, Option<PathBuf>)> {
+    let supplied = usize::from(input.json.is_some())
+        + usize::from(input.yaml.is_some())
+        + usize::from(input.file.is_some())
+        + usize::from(input.ai);
+    if supplied > 1 {
+        bail!("supply exactly one intent model source");
+    }
+    if supplied == 0 {
+        return Ok((
+            None,
+            vec![warning(
+                "intent.model-required",
+                root,
+                "architecture-sensitive work requires rms/intent-model/v0.1 or explicit --ai extraction",
+            )],
+            None,
+        ));
     }
 
-    let run_dir = if options.record || options.provider != Provider::None {
-        Some(write_prompt_run_record(
+    let mut run_dir = None;
+    let source = if let Some(source) = &input.json {
+        source.clone()
+    } else if let Some(source) = &input.yaml {
+        source.clone()
+    } else if let Some(path) = &input.file {
+        fs::read_to_string(path)
+            .with_context(|| format!("failed to read intent model `{}`", path.display()))?
+    } else {
+        let options = options.ok_or_else(|| anyhow!("--ai requires provider options"))?;
+        if options.provider == Provider::None {
+            bail!("--ai requires a configured provider");
+        }
+        if options.sandbox != CodexSandbox::ReadOnly {
+            bail!("intent extraction providers must use the read-only sandbox");
+        }
+        let manifest = synthetic_workbench_manifest(root, "rms-intent", "typed intent extraction");
+        let prompt = render_intent_extraction_prompt(task);
+        let dir = write_prompt_run_record(
             &manifest,
             root,
-            PromptKind::Design,
+            PromptKind::Intent,
             Some(task),
             None,
             false,
-            &rendered,
+            &prompt,
             options,
-        )?)
-    } else {
-        None
+        )?;
+        execute_codex_provider(root, &manifest, &prompt, &dir, options)?;
+        let response = fs::read_to_string(dir.join("response.md")).with_context(|| {
+            format!(
+                "failed to read provider intent response `{}`",
+                dir.display()
+            )
+        })?;
+        run_dir = Some(dir);
+        extract_structured_provider_response(&response)
     };
 
-    match options.provider {
-        Provider::None => {
-            println!("{rendered}");
-            if let Some(run_dir) = run_dir {
-                eprintln!("run record: {}", run_dir.display());
+    match parse_intent_model_source(&source) {
+        Ok(model) => {
+            let diagnostics = validate_intent_model(task, root, &model);
+            Ok((Some(model), diagnostics, run_dir))
+        }
+        Err(message) => {
+            let check = if message.contains("unknown field")
+                && ["architecture", "topology", "shape", "modules", "scaffold"]
+                    .iter()
+                    .any(|field| message.contains(field))
+            {
+                "intent.architecture-field-forbidden"
+            } else {
+                "intent.model-invalid"
+            };
+            Ok((None, vec![error(check, root, message)], run_dir))
+        }
+    }
+}
+
+fn parse_intent_model_source(source: &str) -> std::result::Result<IntentModel, String> {
+    serde_json::from_str(source)
+        .or_else(|_| serde_yaml::from_str(source))
+        .map_err(|error| error.to_string())
+}
+
+fn extract_structured_provider_response(response: &str) -> String {
+    let trimmed = response.trim();
+    if let Some(start) = trimmed.find("```") {
+        let after = &trimmed[start + 3..];
+        let after = after
+            .strip_prefix("json")
+            .or_else(|| after.strip_prefix("yaml"))
+            .or_else(|| after.strip_prefix("yml"))
+            .unwrap_or(after)
+            .trim_start_matches([' ', '\t', '\r', '\n']);
+        if let Some(end) = after.find("```") {
+            return after[..end].trim().to_string();
+        }
+    }
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if start <= end {
+            return trimmed[start..=end].to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn render_intent_extraction_prompt(task: &str) -> String {
+    format!(
+        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. Do not propose architecture, modules, topology, shapes, files, or scaffolds. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Responsibility kinds are decision|workflow|boundary|storage|integration|monitor. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
+        serde_json::to_string_pretty(&intent_model_template()).unwrap_or_default()
+    )
+}
+
+fn intent_model_template() -> YamlValue {
+    serde_yaml::from_str(
+        r#"spec: rms/intent-model/v0.1
+operation: design
+change_scope: new-module
+subjects: [semantic-subject]
+facts:
+  domain_decisions: { disposition: unknown, basis: inferred, rationale: clarify whether the software owns decisions }
+  lifecycle: { disposition: unknown, basis: inferred, rationale: clarify whether legal behavior depends on order }
+  effects: { disposition: unknown, basis: inferred, rationale: clarify whether the module touches the outside world }
+  runnable_surface: { disposition: unknown, basis: inferred, rationale: clarify whether users run or interact with it }
+  reuse: { disposition: unknown, basis: inferred, rationale: clarify whether other modules consume it }
+responsibilities: []
+surface_kinds: []
+binding_preferences: []
+open_questions: [Clarify every material unknown before architecture is selected.]
+"#,
+    )
+    .unwrap_or(YamlValue::Null)
+}
+
+fn validate_intent_model(task: &str, root: &Path, model: &IntentModel) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    if model.spec != "rms/intent-model/v0.1" {
+        diagnostics.push(error(
+            "intent.model-invalid",
+            root,
+            format!(
+                "expected spec rms/intent-model/v0.1, found `{}`",
+                model.spec
+            ),
+        ));
+    }
+    if model.subjects.is_empty()
+        || model
+            .subjects
+            .iter()
+            .any(|subject| !is_stable_semantic_id(subject))
+    {
+        diagnostics.push(error(
+            "intent.model-invalid",
+            root,
+            "subjects must contain stable semantic identifiers",
+        ));
+    }
+    let facts = [
+        ("domain_decisions", &model.facts.domain_decisions),
+        ("lifecycle", &model.facts.lifecycle),
+        ("effects", &model.facts.effects),
+        ("runnable_surface", &model.facts.runnable_surface),
+        ("reuse", &model.facts.reuse),
+    ];
+    for (name, fact) in facts {
+        match fact.basis {
+            IntentBasis::Explicit => {
+                let quote = fact.source_quote.as_deref().unwrap_or("").trim();
+                if quote.is_empty() || !task.contains(quote) {
+                    diagnostics.push(error(
+                        "intent.source-mismatch",
+                        root,
+                        format!("explicit fact `{name}` must quote exact task text"),
+                    ));
+                }
+            }
+            IntentBasis::Inferred => {
+                if fact.rationale.as_deref().unwrap_or("").trim().is_empty() {
+                    diagnostics.push(error(
+                        "intent.model-invalid",
+                        root,
+                        format!("inferred fact `{name}` requires a rationale"),
+                    ));
+                }
             }
         }
-        Provider::Codex => {
-            let run_dir =
-                run_dir.ok_or_else(|| anyhow!("provider execution requires run record"))?;
-            execute_codex_provider(root, &manifest, &rendered, &run_dir, options)?;
-            println!("run record: {}", run_dir.display());
-            println!("response: {}", run_dir.join("response.md").display());
+        if fact.disposition == IntentDisposition::Unknown {
+            diagnostics.push(warning(
+                "intent.material-unknown",
+                root,
+                format!("material fact `{name}` remains unknown"),
+            ));
         }
     }
-
-    Ok(())
-}
-
-fn render_design_prompt(root: &Path, task: &str) -> Result<String> {
-    let modules = discover_module_manifests(root)?;
-    let mut out = String::new();
-    writeln!(out, "# RMS Workbench Prompt")?;
-    writeln!(out)?;
-    writeln!(out, "Prompt: {}", PromptKind::Design.prompt_id())?;
-    writeln!(
-        out,
-        "Mode: advisory; no edits are performed by this command"
-    )?;
-    writeln!(out, "Root: {}", root.display())?;
-    writeln!(out, "Task: {task}")?;
-    writeln!(out)?;
-    writeln!(out, "## Operating Rule")?;
-    writeln!(out, "Use RMS canonical artifacts as the source of architectural truth. Use design output as advisory evidence until reflected in system, context, module, contract, implementation, and verification artifacts.")?;
-    writeln!(out, "Execution rule: deterministic design hints choose the initial scaffold. If they recommend the composite/domain/boundary tree, use `rms add-capability`; do not replace it with one module merely to save work. A single-module exception requires explicit user intent and canonical justification.")?;
-    writeln!(out, "Product intent is enough input from the user: ask clarifying questions only when needed, surface semantic edge cases, name what must never happen, and propose laws, contracts, machines, effects, rejections, and evidence before code.")?;
-    writeln!(out, "Before choosing files, ask five universal questions: which artifacts cross boundaries or change form; which modules exchange ordered messages; which resources are acquired, used, released, or transferred; which operations require elevated authority; and which facts must always, eventually, or within a bound hold.")?;
-    writeln!(out, "For external truth, decide what happens when outcomes are unknown, duplicate, stale, partial, conflicting, delayed, or later corrected; use reconciliation or recovery evidence when those cases matter.")?;
-    writeln!(out)?;
-    append_design_context(&mut out, root, &modules)?;
-    append_design_recommendations(&mut out, task, &modules)?;
-    writeln!(out)?;
-    append_semantic_structure_checklist(&mut out, PromptKind::Design)?;
-    writeln!(out, "## Workflow")?;
-    for item in PromptKind::Design.workflow() {
-        writeln!(out, "- {item}")?;
+    if model.change_scope == IntentChangeScope::Unknown {
+        diagnostics.push(warning(
+            "intent.material-unknown",
+            root,
+            "change_scope remains unknown",
+        ));
     }
-    writeln!(out)?;
-    writeln!(out, "## Expected Output")?;
-    for item in PromptKind::Design.expected_output() {
-        writeln!(out, "- {item}")?;
+    if model
+        .open_questions
+        .iter()
+        .any(|question| question.trim().is_empty())
+    {
+        diagnostics.push(error(
+            "intent.model-invalid",
+            root,
+            "open questions cannot be blank",
+        ));
     }
-    writeln!(out)?;
-    writeln!(out, "## Deterministic Checks")?;
-    for item in PromptKind::Design.deterministic_checks() {
-        writeln!(out, "- {item}")?;
-    }
-    Ok(out)
-}
-
-fn append_design_context(out: &mut String, root: &Path, modules: &[LoadedManifest]) -> Result<()> {
-    writeln!(out, "## Repository Context")?;
-    for file_name in ["system.yaml", "context-map.yaml", "GLOSSARY.md"] {
-        let path = root.join(file_name);
-        if path.exists() {
-            writeln!(out, "- {}", path.display())?;
-        }
-    }
-    if modules.is_empty() {
-        writeln!(out, "- Modules: <none discovered>")?;
-    } else {
-        writeln!(out, "- Modules:")?;
-        for module in modules {
-            let name = get_str(&module.value, &["module", "name"]).unwrap_or("<unknown>");
-            let kind = get_str(&module.value, &["module", "kind"]).unwrap_or("<missing>");
-            let purpose = get_str(&module.value, &["module", "purpose"]).unwrap_or("<missing>");
-            let profiles = get_string_array(&module.value, &["profiles"]).join(", ");
-            writeln!(
-                out,
-                "  - {} [{}] profiles={} path={} purpose={}",
-                name,
-                kind,
-                if profiles.is_empty() {
-                    "<none>"
-                } else {
-                    &profiles
-                },
-                module.path.display(),
-                purpose
-            )?;
-            for advisory in shape_advisories(module) {
-                writeln!(out, "    - advisory: {advisory}")?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn append_design_recommendations(
-    out: &mut String,
-    task: &str,
-    modules: &[LoadedManifest],
-) -> Result<()> {
-    writeln!(out)?;
-    writeln!(out, "## Deterministic Design Hints")?;
-    let lower = task.to_lowercase();
-    let boundary_terms = [
+    let allowed_surfaces = [
         "browser",
-        "web",
-        "ui",
         "cli",
-        "command-line",
-        "input",
-        "output",
-        "network",
-        "storage",
-        "external",
-        "integration",
-        "file",
-        "time",
-        "random",
-    ];
-    let decision_terms = [
-        "rule",
-        "rules",
-        "engine",
-        "decision",
-        "transition",
-        "state",
-        "invariant",
-        "workflow",
-        "game",
-        "resolver",
-        "validation",
-        "policy",
-        "batch",
-        "bounded",
-        "order",
-        "preserve",
-        "filter",
-        "select",
-        "plan",
-        "classify",
-        "calculate",
-        "normalize",
-        "stop",
-        "continue",
-        "retry",
-        "compensat",
-        "reconcil",
-        "must not",
-        "never",
-        "always",
-    ];
-    let monitor_terms = [
-        "monitor",
-        "runtime",
-        "observe",
-        "observed",
-        "derived",
-        "stream",
-        "trigger",
-        "alarm",
-        "envelope",
-        "supervisory",
-        "guard",
-        "fallback",
-    ];
-    let mentions_boundary = boundary_terms.iter().any(|term| lower.contains(term));
-    let mentions_decision = decision_terms.iter().any(|term| lower.contains(term));
-    let mentions_monitor = monitor_terms.iter().any(|term| lower.contains(term));
-    let mentions_runnable_surface = [
-        "browser",
-        "web",
-        "ui",
-        "app",
-        "tool",
-        "cli",
-        "command-line",
-        "command line",
-        "mobile",
-        "desktop",
+        "mobile-ui",
+        "desktop-ui",
         "http",
         "batch",
         "executable",
-        "local-first reference app",
-        "local-first",
-        "runnable",
-        "status",
-        "write local file",
-        "write local",
-        "smoke",
-    ]
-    .iter()
-    .any(|term| lower.contains(term));
-    if mentions_boundary && mentions_decision {
-        writeln!(out, "- Candidate split: invariant-bearing decisions in a `domain-engine` plus untrusted input/output and effects in a `boundary-adapter`.")?;
-        writeln!(out)?;
-        writeln!(out, "### Recommended Module Tree")?;
-        writeln!(
-            out,
-            "- `<capability>` [composite]: public product/capability surface; exports child-backed commands, queries, events, or capabilities."
-        )?;
-        writeln!(
-            out,
-            "  - `<semantic-domain-child>` [domain-engine, internal]: pure invariant-bearing decisions, closed variants, validated values, accepted/rejected transition records, laws, and replay bundles."
-        )?;
-        writeln!(
-            out,
-            "  - `<semantic-boundary-child>` [boundary-adapter, internal]: untrusted input/output, UI/CLI/web/process/network/storage/time/randomness effects, parsers, ports, and boundary evidence."
-        )?;
-        writeln!(
-            out,
-            "  - Name children in product/domain language; `rules`, `engine`, `adapter`, `cli`, `web`, and similar role words are implementation hints, not canonical semantics."
-        )?;
-        writeln!(
-            out,
-            "  - When scaffolding with `rms add-capability`, omit `--domain-child` and `--boundary-child` unless the user supplied semantic child names; the defaults use neutral `-domain` and `-boundary` paths."
-        )?;
-        writeln!(
-            out,
-            "  - Choose implementation bindings before scaffolding code. For an implemented tree, run `rms add-capability <path> --name <name> --purpose <purpose> --domain-binding <rust|swift|js|executable> --boundary-binding <rust|swift|js|executable>`. Omit binding flags only for an intentionally semantic-only design."
-        )?;
-        writeln!(
-            out,
-            "  - If a semantic-only child already exists, attach its implementation canonically with `rms add-binding <child>/module.yaml --binding <rust|swift|js|executable>`; do not create a scratch module or copy generated files."
-        )?;
-        writeln!(
-            out,
-            "  - Do not name inner machines from role or surface words such as `RulesMachine`, `AdapterMachine`, `CliMachine`, or `WebMachine`; prefer capability language such as `<Capability>Machine` or `<Capability>BoundaryMachine`."
-        )?;
-        writeln!(
-            out,
-            "- Add more adapter children only when there are distinct external surfaces; keep the parent export explicit rather than inferred from children."
-        )?;
-        writeln!(out)?;
-        writeln!(out, "- Keep rendering, input, storage, timers, time, randomness, process, network, and external-service effects outside the pure transition module.")?;
-    }
-    if mentions_runnable_surface {
-        writeln!(out, "- Because the intent names an app/tool/runnable surface, include a boundary adapter with a declared runnable surface via `rms surface apply` or `rms spec apply`, plus smoke evidence; do not leave the result as library-only unless the user explicitly requested a library.")?;
-        writeln!(out, "- Preferred scaffold for a runnable product app is a composite capability with at least one boundary child and one domain/workflow child. A single-module app is acceptable only when `module.yaml` or `implementation.yaml` records the semantic single-module justification.")?;
-        writeln!(out, "- A runnable product needs an implementation binding now. Supply explicit child binding flags to `rms add-capability`, or run `rms add-binding` before machine and surface changes; an omitted binding is an intentional semantic-only scaffold, not an implementation plan.")?;
-    }
-    writeln!(out, "- Choose `domain-engine` when the module owns pure decisions, invariants, transitions, or traceable rules.")?;
-    writeln!(out, "- Choose `boundary-adapter` when untrusted input, UI, CLI, network, storage, time, randomness, or external effects enter or leave.")?;
-    writeln!(out, "- Choose `runtime-monitor` when the module observes runtime inputs over time, computes derived facts or streams, and emits findings, alarms, events, or declared supervisory commands.")?;
-    if mentions_monitor {
-        writeln!(out, "- Monitor authority must be explicit: observe-only, advisory, enforcing, or fail-safe. Supervisory outputs must cross public contracts and must not mutate controlled module state directly.")?;
-    }
-    if modules
-        .iter()
-        .any(|module| !shape_advisories(module).is_empty())
+    ];
+    if model.facts.runnable_surface.disposition == IntentDisposition::Required
+        && model.surface_kinds.is_empty()
     {
-        writeln!(out, "- Existing modules show shape or boundary pressure; align scaffold shape, module kind, profiles, and pure/effectful responsibilities before implementation.")?;
+        diagnostics.push(warning(
+            "intent.material-unknown",
+            root,
+            "runnable surface is required but no surface kind is known",
+        ));
     }
-    writeln!(out, "- Representation belongs in an explicit role/unit: closed variants, validated values, commands, states, events, and accepted/rejected result types.")?;
-    writeln!(out, "- Transition behavior should be replayable from command traces and suitable for law/property/fuzz evidence where risk justifies it.")?;
-    Ok(())
+    if model.facts.runnable_surface.disposition == IntentDisposition::Absent
+        && !model.surface_kinds.is_empty()
+    {
+        diagnostics.push(error(
+            "intent.contradiction",
+            root,
+            "runnable surface is absent but surface_kinds are declared",
+        ));
+    }
+    if model
+        .surface_kinds
+        .iter()
+        .any(|surface| !allowed_surfaces.contains(&surface.as_str()))
+    {
+        diagnostics.push(error(
+            "intent.model-invalid",
+            root,
+            "surface_kinds contains an unsupported semantic surface",
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    for responsibility in &model.responsibilities {
+        if !is_stable_semantic_id(&responsibility.id)
+            || !ids.insert(responsibility.id.clone())
+            || responsibility.summary.trim().is_empty()
+        {
+            diagnostics.push(error(
+                "intent.model-invalid",
+                root,
+                format!(
+                    "responsibility `{}` needs a unique stable id and summary",
+                    responsibility.id
+                ),
+            ));
+        }
+    }
+    let has_decision = model
+        .responsibilities
+        .iter()
+        .any(|item| item.kind == ResponsibilityKind::Decision);
+    let has_workflow = model
+        .responsibilities
+        .iter()
+        .any(|item| item.kind == ResponsibilityKind::Workflow);
+    let has_effect_owner = model.responsibilities.iter().any(|item| {
+        matches!(
+            item.kind,
+            ResponsibilityKind::Storage | ResponsibilityKind::Integration
+        )
+    });
+    if (has_decision != (model.facts.domain_decisions.disposition == IntentDisposition::Required))
+        || (has_workflow && model.facts.lifecycle.disposition == IntentDisposition::Absent)
+        || (has_effect_owner && model.facts.effects.disposition == IntentDisposition::Absent)
+        || (model.operation == IntentOperation::SurfaceChange
+            && model.facts.runnable_surface.disposition == IntentDisposition::Absent)
+    {
+        diagnostics.push(error(
+            "intent.contradiction",
+            root,
+            "responsibilities or operation contradict the declared fact dispositions",
+        ));
+    }
+    diagnostics
+}
+
+fn decide_architecture(task: &str, model: &IntentModel) -> ArchitectureDecision {
+    let subject = model
+        .subjects
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "rms-module".to_string());
+    let binding = model.binding_preferences.first().cloned();
+    let has_decisions = model.facts.domain_decisions.disposition == IntentDisposition::Required;
+    let has_lifecycle = model.facts.lifecycle.disposition == IntentDisposition::Required;
+    let has_effects = model.facts.effects.disposition == IntentDisposition::Required;
+    let has_surface = model.facts.runnable_surface.disposition == IntentDisposition::Required;
+    let topology = if has_decisions && (has_effects || has_surface) {
+        ArchitectureTopology::CapabilityTree
+    } else {
+        ArchitectureTopology::Standalone
+    };
+    let decision_shape = if has_lifecycle {
+        "workflow"
+    } else {
+        "domain-engine"
+    };
+    let standalone_shape = if has_decisions {
+        decision_shape
+    } else if model
+        .responsibilities
+        .iter()
+        .any(|item| item.kind == ResponsibilityKind::Storage)
+    {
+        "storage-adapter"
+    } else if model
+        .responsibilities
+        .iter()
+        .any(|item| item.kind == ResponsibilityKind::Integration)
+    {
+        "integration-adapter"
+    } else if model
+        .responsibilities
+        .iter()
+        .any(|item| item.kind == ResponsibilityKind::Monitor)
+    {
+        "runtime-monitor"
+    } else {
+        "boundary-adapter"
+    };
+    let mut modules = Vec::new();
+    match topology {
+        ArchitectureTopology::Standalone => modules.push(ArchitectureModuleRecommendation {
+            responsibility: subject.clone(),
+            shape: standalone_shape.to_string(),
+            binding: binding.clone(),
+        }),
+        ArchitectureTopology::CapabilityTree => {
+            modules.push(ArchitectureModuleRecommendation {
+                responsibility: format!("{subject}-capability"),
+                shape: "composite".to_string(),
+                binding: None,
+            });
+            modules.push(ArchitectureModuleRecommendation {
+                responsibility: format!("{subject}-decisions"),
+                shape: decision_shape.to_string(),
+                binding: binding.clone(),
+            });
+            modules.push(ArchitectureModuleRecommendation {
+                responsibility: format!("{subject}-boundary"),
+                shape: "boundary-adapter".to_string(),
+                binding: binding.clone(),
+            });
+        }
+    }
+    let mut args = match topology {
+        ArchitectureTopology::Standalone => vec![
+            "add-module".to_string(),
+            format!("modules/{subject}"),
+            "--name".to_string(),
+            subject.clone(),
+            "--purpose".to_string(),
+            task.to_string(),
+            "--shape".to_string(),
+            standalone_shape.to_string(),
+        ],
+        ArchitectureTopology::CapabilityTree => vec![
+            "add-capability-tree".to_string(),
+            format!("modules/{subject}"),
+            "--name".to_string(),
+            subject.clone(),
+            "--purpose".to_string(),
+            task.to_string(),
+        ],
+    };
+    if let Some(binding) = &binding {
+        match topology {
+            ArchitectureTopology::Standalone => {
+                args.extend(["--binding".to_string(), binding.clone()]);
+            }
+            ArchitectureTopology::CapabilityTree => {
+                args.extend([
+                    "--domain-binding".to_string(),
+                    binding.clone(),
+                    "--boundary-binding".to_string(),
+                    binding.clone(),
+                ]);
+            }
+        }
+    }
+    if topology == ArchitectureTopology::CapabilityTree {
+        if let Some(surface) = model.surface_kinds.first() {
+            args.extend(["--surface".to_string(), surface.clone()]);
+        }
+    }
+    let mut rationale = vec![format!(
+        "domain decisions={}, lifecycle={}, effects={}, runnable surface={}",
+        intent_disposition_label(model.facts.domain_decisions.disposition),
+        intent_disposition_label(model.facts.lifecycle.disposition),
+        intent_disposition_label(model.facts.effects.disposition),
+        intent_disposition_label(model.facts.runnable_surface.disposition)
+    )];
+    if model.facts.reuse.disposition == IntentDisposition::Required {
+        rationale.push("the standalone/public decision owner should publish a reusable capability contract and public facade".to_string());
+    }
+    ArchitectureDecision {
+        topology,
+        modules,
+        rationale,
+        scaffold: ArchitectureAction {
+            program: "rms".to_string(),
+            args,
+        },
+    }
+}
+
+fn intent_disposition_label(value: IntentDisposition) -> &'static str {
+    match value {
+        IntentDisposition::Required => "required",
+        IntentDisposition::Absent => "absent",
+        IntentDisposition::Unknown => "unknown",
+    }
 }
 
 fn discover_module_manifests(root: &Path) -> Result<Vec<LoadedManifest>> {
@@ -20054,17 +20810,6 @@ fn inspect_runnable_surface_declarations(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let declarations = architecture_surface_declarations(manifest);
-    if declarations.is_empty()
-        && get_str(&manifest.value, &["architecture", "shape"]) == Some("boundary-adapter")
-        && module_mentions_runnable_surface_intent(manifest)
-    {
-        push_unique_warning(
-            diagnostics,
-            "structure.runnable-surface-missing",
-            &manifest.path,
-            "boundary implementation appears to own a runnable app/tool/UI surface but does not declare `architecture.surfaces`",
-        );
-    }
     let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
     for declaration in declarations {
         diagnostics.extend(validate_surface_declaration(manifest, &declaration));
@@ -20266,38 +21011,6 @@ fn path_to_manifest_reference(path: &Path) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
-}
-
-fn module_mentions_runnable_surface_intent(manifest: &LoadedManifest) -> bool {
-    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
-    let Some(module) = load_binding_module_manifest(manifest, base) else {
-        return false;
-    };
-    let mut text = String::new();
-    if let Some(purpose) = get_str(&module.value, &["module", "purpose"]) {
-        text.push_str(purpose);
-        text.push('\n');
-    }
-    for concept in get_string_array(&module.value, &["owns", "concepts"]) {
-        text.push_str(&concept);
-        text.push('\n');
-    }
-    semantic_name_contains_any(
-        &text,
-        &[
-            "app",
-            "tool",
-            "ui",
-            "cli",
-            "browser",
-            "web",
-            "mobile",
-            "desktop",
-            "runnable",
-            "local-first",
-            "smoke",
-        ],
-    )
 }
 
 fn runnable_surface_looks_like_domain_logic(source: &str, declared_semantic_source: &str) -> bool {
@@ -26565,6 +27278,8 @@ fn print_context_packet(manifest: &LoadedManifest, root: &Path, task: Option<&st
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum NextResult {
+    IntentRequired,
+    ClarificationRequired,
     Ready,
     BootstrapRequired,
     DesignRequired,
@@ -26576,6 +27291,8 @@ enum NextResult {
 impl NextResult {
     fn label(self) -> &'static str {
         match self {
+            Self::IntentRequired => "intent-model-required",
+            Self::ClarificationRequired => "clarification-required",
             Self::Ready => "ready",
             Self::BootstrapRequired => "bootstrap-required",
             Self::DesignRequired => "design-required",
@@ -26584,6 +27301,146 @@ impl NextResult {
             Self::Blocked => "blocked",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum IntentOperation {
+    Read,
+    RepositoryOperation,
+    Design,
+    SemanticChange,
+    SurfaceChange,
+    ImplementationChange,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum IntentChangeScope {
+    NewSystem,
+    NewModule,
+    ExistingModule,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum IntentDisposition {
+    Required,
+    Absent,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum IntentBasis {
+    Explicit,
+    Inferred,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct IntentFact {
+    disposition: IntentDisposition,
+    basis: IntentBasis,
+    #[serde(default)]
+    source_quote: Option<String>,
+    #[serde(default)]
+    rationale: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct IntentFacts {
+    domain_decisions: IntentFact,
+    lifecycle: IntentFact,
+    effects: IntentFact,
+    runnable_surface: IntentFact,
+    reuse: IntentFact,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ResponsibilityKind {
+    Decision,
+    Workflow,
+    Boundary,
+    Storage,
+    Integration,
+    Monitor,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct IntentResponsibility {
+    id: String,
+    kind: ResponsibilityKind,
+    summary: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct IntentModel {
+    spec: String,
+    operation: IntentOperation,
+    change_scope: IntentChangeScope,
+    subjects: Vec<String>,
+    facts: IntentFacts,
+    responsibilities: Vec<IntentResponsibility>,
+    #[serde(default)]
+    surface_kinds: Vec<String>,
+    #[serde(default)]
+    binding_preferences: Vec<String>,
+    #[serde(default)]
+    open_questions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RawIntentInput {
+    json: Option<String>,
+    yaml: Option<String>,
+    file: Option<PathBuf>,
+    ai: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ArchitectureTopology {
+    Standalone,
+    CapabilityTree,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ArchitectureModuleRecommendation {
+    responsibility: String,
+    shape: String,
+    binding: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ArchitectureAction {
+    program: String,
+    args: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ArchitectureDecision {
+    topology: ArchitectureTopology,
+    modules: Vec<ArchitectureModuleRecommendation>,
+    rationale: Vec<String>,
+    scaffold: ArchitectureAction,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DesignReport {
+    spec: &'static str,
+    result: String,
+    root: String,
+    task: String,
+    intent: Option<IntentModel>,
+    decision: Option<ArchitectureDecision>,
+    diagnostics: Vec<Diagnostic>,
+    intent_template: Option<YamlValue>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -26707,6 +27564,8 @@ struct NextReport {
     result: NextResult,
     task: String,
     root: String,
+    intent: Option<IntentModel>,
+    intent_template: Option<YamlValue>,
     repository: RepositoryProfile,
     validation: ValidationReadiness,
     owner: OwnerResolution,
@@ -26995,8 +27854,17 @@ struct CheckReport {
     details: JsonValue,
 }
 
-fn run_check(root: &Path, mode: CheckMode, json_output: bool, include_details: bool) -> Result<()> {
-    let report = build_check_report(root, mode)?;
+fn run_check(
+    root: &Path,
+    mode: CheckMode,
+    module: Option<&Path>,
+    json_output: bool,
+    include_details: bool,
+) -> Result<()> {
+    if module.is_some() && !matches!(mode, CheckMode::Changes | CheckMode::Committed) {
+        bail!("--module is supported only with --changes or --committed");
+    }
+    let report = build_check_report_scoped(root, mode, module)?;
     let surface = project_check_report(&report, include_details);
     if json_output {
         println!("{}", serde_json::to_string_pretty(&surface)?);
@@ -27024,15 +27892,384 @@ fn check_exit_code(result: CheckResult) -> i32 {
     }
 }
 
-fn build_check_report(root: &Path, mode: CheckMode) -> Result<CheckReport> {
+fn build_check_report_scoped(
+    root: &Path,
+    mode: CheckMode,
+    module: Option<&Path>,
+) -> Result<CheckReport> {
     let root = fs::canonicalize(root)
         .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
-    match mode {
+    let mut report = match mode {
         CheckMode::Project => build_project_check_report(&root),
         CheckMode::Environment => build_environment_check_report(&root),
-        CheckMode::Changes => build_changes_check_report(&root),
-        CheckMode::Committed => build_committed_check_report(&root),
+        CheckMode::Changes => build_changes_check_report_scoped(&root, module),
+        CheckMode::Committed => build_committed_check_report_scoped(&root, module),
+    }?;
+    if module.is_none()
+        && mode != CheckMode::Environment
+        && workspace_coverage(&root) == WorkspaceCoverage::Complete
+    {
+        let modules = discover_module_manifests(&root)?;
+        let unowned = discover_unowned_production_paths(&root, &modules)?;
+        if !unowned.is_empty() {
+            report.result = CheckResult::Fail;
+            report.summary = format!(
+                "RMS {} checks fail: complete coverage has unowned production paths.",
+                mode.label()
+            );
+            report.reasons.push(format!(
+                "adoption.unowned-production-path: {} path(s), including {}",
+                unowned.len(),
+                unowned
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            report.components.push(surface_projection::CheckComponent {
+                id: "complete-coverage".to_string(),
+                result: "fail".to_string(),
+                summary: format!("{} unowned production path(s)", unowned.len()),
+            });
+            report.details["coverage"] = json!("complete");
+            report.details["unowned_production_paths"] = json!(unowned);
+        }
     }
+    Ok(report)
+}
+
+#[cfg(test)]
+fn build_check_report(root: &Path, mode: CheckMode) -> Result<CheckReport> {
+    build_check_report_scoped(root, mode, None)
+}
+
+fn build_changes_check_report_scoped(root: &Path, module: Option<&Path>) -> Result<CheckReport> {
+    match module {
+        Some(module) => build_module_scoped_check_report(root, module, CheckMode::Changes),
+        None if workspace_coverage(root) == WorkspaceCoverage::Progressive => {
+            build_progressive_workspace_check_report(root, CheckMode::Changes)
+        }
+        None => build_changes_check_report(root),
+    }
+}
+
+fn build_committed_check_report_scoped(root: &Path, module: Option<&Path>) -> Result<CheckReport> {
+    match module {
+        Some(module) => build_module_scoped_check_report(root, module, CheckMode::Committed),
+        None if workspace_coverage(root) == WorkspaceCoverage::Progressive => {
+            build_progressive_workspace_check_report(root, CheckMode::Committed)
+        }
+        None => build_committed_check_report(root),
+    }
+}
+
+fn workspace_coverage(root: &Path) -> WorkspaceCoverage {
+    load_workbench_config(root)
+        .ok()
+        .flatten()
+        .map(|config| config.value.workspace.coverage)
+        .unwrap_or(WorkspaceCoverage::Complete)
+}
+
+fn build_progressive_workspace_check_report(root: &Path, mode: CheckMode) -> Result<CheckReport> {
+    let modules = discover_module_index(root)?;
+    let contained = composition_children(&modules)
+        .into_iter()
+        .map(|child| child.name)
+        .collect::<BTreeSet<_>>();
+    let mut top_level = modules
+        .values()
+        .filter(|module| !contained.contains(&module.name))
+        .collect::<Vec<_>>();
+    top_level.sort_by(|left, right| left.name.cmp(&right.name));
+    if top_level.is_empty() {
+        bail!("progressive coverage discovered no RMS module to certify");
+    }
+    let mut reports = Vec::new();
+    for module in top_level {
+        reports.push(build_module_scoped_check_report(root, &module.path, mode)?);
+    }
+    let result = aggregate_check_results(reports.iter().map(|report| report.result));
+    let components = reports
+        .iter()
+        .flat_map(|report| report.components.clone())
+        .collect::<Vec<_>>();
+    let warnings = reports
+        .iter()
+        .flat_map(|report| report.warnings.clone())
+        .collect::<Vec<_>>();
+    let reasons = reports
+        .iter()
+        .flat_map(|report| report.reasons.clone())
+        .collect::<Vec<_>>();
+    Ok(CheckReport {
+        mode,
+        result,
+        summary: format!(
+            "RMS {} check {} for discovered RMS modules under progressive coverage; it does not certify the whole repository.",
+            mode.label(),
+            result.label()
+        ),
+        reasons,
+        warnings,
+        next_action: check_follow_up(root, mode, result),
+        done_when: vec![
+            "Every discovered RMS module closure passes; unrelated repository paths remain explicitly outside this progressive proof."
+                .to_string(),
+        ],
+        components,
+        details: json!({
+            "coverage": "progressive",
+            "certifies": "discovered RMS module closures only",
+            "module_reports": reports.into_iter().map(|report| report.details).collect::<Vec<_>>(),
+        }),
+    })
+}
+
+fn build_module_scoped_check_report(
+    root: &Path,
+    requested: &Path,
+    mode: CheckMode,
+) -> Result<CheckReport> {
+    let modules = discover_module_index(root)?;
+    let requested_path = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.join(requested)
+    };
+    let requested_path = fs::canonicalize(&requested_path).with_context(|| {
+        format!(
+            "failed to resolve scoped module `{}`",
+            requested_path.display()
+        )
+    })?;
+    let requested_manifest = load_manifest(&requested_path)?;
+    let requested_name = get_str(&requested_manifest.value, &["module", "name"])
+        .ok_or_else(|| anyhow!("scoped module is missing module.name"))?;
+    let (closure, unresolved) = module_dependency_closure(requested_name, &modules);
+    let module_paths = closure
+        .iter()
+        .filter_map(|name| modules.get(name).map(|module| module.path.clone()))
+        .collect::<Vec<_>>();
+    let implementation_paths = module_paths
+        .iter()
+        .filter_map(|path| {
+            let implementation = path.parent()?.join("implementation.yaml");
+            implementation.is_file().then_some(implementation)
+        })
+        .collect::<Vec<_>>();
+    let diagnostics = collect_validation_diagnostics(
+        root,
+        module_paths.clone(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        implementation_paths.clone(),
+        Vec::new(),
+    )?;
+    let mut failures = diagnostics
+        .iter()
+        .filter(|item| item.severity == Severity::Error)
+        .map(|item| format!("{} [{}]: {}", item.path, item.check, item.message))
+        .collect::<Vec<_>>();
+    failures.extend(
+        unresolved
+            .iter()
+            .map(|name| format!("adoption.module-closure-unresolved: `{name}`")),
+    );
+
+    let composition = compose_system(root)?;
+    let scoped_findings = composition
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding
+                .consumer
+                .as_ref()
+                .is_some_and(|name| closure.contains(name))
+                || finding
+                    .provider
+                    .as_ref()
+                    .is_some_and(|name| closure.contains(name))
+        })
+        .collect::<Vec<_>>();
+    failures.extend(
+        scoped_findings
+            .iter()
+            .filter(|finding| {
+                matches!(
+                    finding.status,
+                    ComposeStatus::Unresolved | ComposeStatus::Incompatible
+                )
+            })
+            .map(|finding| format!("{}: {}", finding.check, finding.message)),
+    );
+
+    let mut verification = Vec::new();
+    for implementation in &implementation_paths {
+        match run_verify_target_captured(implementation) {
+            Ok(output) => verification.push(json!({
+                "target": display_relative(root, implementation),
+                "result": "pass",
+                "output": output,
+            })),
+            Err(error) => {
+                failures.push(format!(
+                    "verify `{}`: {error}",
+                    display_relative(root, implementation)
+                ));
+                verification.push(json!({
+                    "target": display_relative(root, implementation),
+                    "result": "fail",
+                    "error": error.to_string(),
+                }));
+            }
+        }
+    }
+    for module in &module_paths {
+        if load_manifest(module).is_ok_and(|manifest| is_composite_module(&manifest.value)) {
+            if let Err(error) = run_verify_target_captured(module) {
+                failures.push(format!(
+                    "verify `{}`: {error}",
+                    display_relative(root, module)
+                ));
+            }
+        }
+    }
+
+    let changed = read_git_changed_paths(root, None)?;
+    let closure_roots = module_paths
+        .iter()
+        .filter_map(|path| path.parent().map(Path::to_path_buf))
+        .collect::<Vec<_>>();
+    let mut in_scope_changed = Vec::new();
+    let mut out_of_scope_changed = Vec::new();
+    for item in changed {
+        let absolute = root.join(&item.path);
+        if closure_roots.iter().any(|base| absolute.starts_with(base)) {
+            in_scope_changed.push(item.path);
+        } else {
+            out_of_scope_changed.push(item.path);
+        }
+    }
+    if mode == CheckMode::Committed && !in_scope_changed.is_empty() {
+        failures.push(format!(
+            "scoped committed proof requires a clean module closure; dirty path(s): {}",
+            in_scope_changed.join(", ")
+        ));
+    }
+    let diagnostic_warnings = diagnostics
+        .iter()
+        .filter(|item| item.severity == Severity::Warning)
+        .map(|item| item.message.clone())
+        .collect::<Vec<_>>();
+    let result = if failures.is_empty() {
+        if diagnostic_warnings.is_empty() {
+            CheckResult::Pass
+        } else {
+            CheckResult::ReviewRequired
+        }
+    } else {
+        CheckResult::Fail
+    };
+    let warnings = diagnostic_warnings
+        .into_iter()
+        .chain((!out_of_scope_changed.is_empty()).then(|| {
+            format!(
+                "{} dirty path(s) are outside the certified module closure and did not invalidate this scoped proof",
+                out_of_scope_changed.len()
+            )
+        }))
+        .collect::<Vec<_>>();
+    let scope = closure.iter().cloned().collect::<Vec<_>>();
+    let component = surface_projection::CheckComponent {
+        id: "module-closure".to_string(),
+        result: result.label().to_string(),
+        summary: format!(
+            "certified {} module(s), {} implementation(s); {} failure(s)",
+            scope.len(),
+            implementation_paths.len(),
+            failures.len()
+        ),
+    };
+    Ok(CheckReport {
+        mode,
+        result,
+        summary: format!(
+            "RMS {} check {} for module closure `{}`.",
+            mode.label(),
+            result.label(),
+            requested_name
+        ),
+        reasons: if failures.is_empty() {
+            vec![format!("certified module closure: {}", scope.join(", "))]
+        } else {
+            failures.clone()
+        },
+        warnings,
+        next_action: check_follow_up(root, mode, result),
+        done_when: vec![format!(
+            "The `{requested_name}` module closure passes {} proof with no in-scope unresolved dependency or dirty production path.",
+            mode.label()
+        )],
+        components: vec![component],
+        details: json!({
+            "coverage": "module-closure",
+            "requested_module": requested_name,
+            "closure": scope,
+            "in_scope_changed_paths": in_scope_changed,
+            "out_of_scope_changed_paths": out_of_scope_changed,
+            "diagnostics": diagnostics,
+            "composition_findings": scoped_findings,
+            "verification": verification,
+        }),
+    })
+}
+
+fn module_dependency_closure(
+    root_name: &str,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    let children = composition_children(modules);
+    let mut closure = BTreeSet::new();
+    let mut unresolved = BTreeSet::new();
+    let mut pending = vec![root_name.to_string()];
+    while let Some(name) = pending.pop() {
+        if !closure.insert(name.clone()) {
+            continue;
+        }
+        let Some(module) = modules.get(&name) else {
+            unresolved.insert(name);
+            continue;
+        };
+        pending.extend(
+            children
+                .iter()
+                .filter(|child| child.parent == name)
+                .map(|child| child.name.clone()),
+        );
+        let implementation = module
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("implementation.yaml");
+        if let Ok(implementation) = load_manifest(&implementation) {
+            for binding in typed_yaml_sequence::<DependencyBehaviorBinding>(
+                &implementation.value,
+                &["architecture", "dependency_behavior_bindings"],
+            ) {
+                if binding.resolution == "module" {
+                    if let Some(provider) = binding.provider_module {
+                        pending.push(provider);
+                    } else {
+                        unresolved.insert(format!("{}:<provider>", binding.capability));
+                    }
+                }
+            }
+        }
+    }
+    (closure, unresolved)
 }
 
 fn build_project_check_report(root: &Path) -> Result<CheckReport> {
@@ -27392,10 +28629,12 @@ fn run_next(
     root: &Path,
     explicit_module: Option<&Path>,
     task: &str,
+    input: RawIntentInput,
+    options: Option<&PromptRunOptions>,
     json_output: bool,
     details: bool,
 ) -> Result<()> {
-    let report = build_next_report(root, explicit_module, task)?;
+    let report = build_next_report_with_intent(root, explicit_module, task, input, options)?;
     let surface = project_next_report(&report, details)?;
     if json_output {
         println!("{}", serde_json::to_string_pretty(&surface)?);
@@ -27408,10 +28647,12 @@ fn run_next(
     Ok(())
 }
 
-fn build_next_report(
+fn build_next_report_with_intent(
     root: &Path,
     explicit_module: Option<&Path>,
     task: &str,
+    input: RawIntentInput,
+    options: Option<&PromptRunOptions>,
 ) -> Result<NextReport> {
     let task = task.trim();
     if task.is_empty() {
@@ -27419,8 +28660,12 @@ fn build_next_report(
     }
     let root = fs::canonicalize(root)
         .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
+    let (intent, intent_diagnostics, _) = resolve_intent_model(&root, task, &input, options)?;
     let profile = build_repository_profile(&root)?;
-    let classification = classify_prospective_task(task);
+    let classification = intent
+        .as_ref()
+        .map(classify_intent_model)
+        .unwrap_or_else(undetermined_task_classification);
     let mut diagnostics = collect_validation_diagnostics(
         &root,
         Vec::new(),
@@ -27430,6 +28675,7 @@ fn build_next_report(
         Vec::new(),
         Vec::new(),
     )?;
+    append_unique_diagnostics(&mut diagnostics, intent_diagnostics);
     append_unique_diagnostics(&mut diagnostics, profile.diagnostics.clone());
     let errors = diagnostics
         .iter()
@@ -27452,7 +28698,28 @@ fn build_next_report(
         diagnostics,
     };
 
-    let mut owner = resolve_next_owner(&root, explicit_module, task, &profile.modules, errors > 0)?;
+    let subject_route = intent
+        .as_ref()
+        .map(|model| model.subjects.join(" "))
+        .unwrap_or_default();
+    let mut owner = if intent.is_some() {
+        resolve_next_owner(
+            &root,
+            explicit_module,
+            &subject_route,
+            &profile.modules,
+            errors > 0,
+        )?
+    } else {
+        OwnerResolution {
+            status: OwnerStatus::None,
+            reason: "ownership routing requires structured intent subjects".to_string(),
+            selected: None,
+            candidates: Vec::new(),
+            route: Vec::new(),
+            warnings: Vec::new(),
+        }
+    };
     let context = build_next_context(&root, &profile.report, owner.selected.as_ref())?;
     let skill_sources = detect_skill_sources(&root, home_dir().ok().as_deref());
     let mut warnings = if classification.lane == TaskLane::RepositoryOperation {
@@ -27496,8 +28763,21 @@ fn build_next_report(
     blockers.sort();
     blockers.dedup();
 
-    let result = if !blockers.is_empty() {
+    let model_required = intent.is_none()
+        && validation
+            .diagnostics
+            .iter()
+            .any(|item| item.check == "intent.model-required");
+    let material_unknown = validation
+        .diagnostics
+        .iter()
+        .any(|item| item.check == "intent.material-unknown");
+    let result = if model_required {
+        NextResult::IntentRequired
+    } else if !blockers.is_empty() {
         NextResult::Blocked
+    } else if material_unknown {
+        NextResult::ClarificationRequired
     } else if classification.lane == TaskLane::RepositoryOperation {
         NextResult::NoRmsChange
     } else if profile.report.kind == RepositoryKind::Uninitialized {
@@ -27537,7 +28817,12 @@ fn build_next_report(
         );
     let provenance_pending = repository_provenance_pending(&profile.report);
     let completion = CompletionPrescription {
-        order: if result == NextResult::NoRmsChange {
+        order: if matches!(
+            result,
+            NextResult::NoRmsChange
+                | NextResult::IntentRequired
+                | NextResult::ClarificationRequired
+        ) {
             Vec::new()
         } else {
             vec![
@@ -27549,7 +28834,14 @@ fn build_next_report(
         },
         commit_authority: "unknown; task and host policy must authorize Git writes".to_string(),
         policy: COMMIT_AUTHORITY_POLICY,
-        pending_state: (prepares_candidate && result != NextResult::NoRmsChange).then_some(
+        pending_state: (prepares_candidate
+            && !matches!(
+                result,
+                NextResult::NoRmsChange
+                    | NextResult::IntentRequired
+                    | NextResult::ClarificationRequired
+            ))
+        .then_some(
             if result == NextResult::BootstrapRequired || provenance_pending {
                 BOOTSTRAP_PENDING_AUTHORIZED_COMMIT
             } else {
@@ -27562,6 +28854,8 @@ fn build_next_report(
         result,
         task: task.to_string(),
         root: root.display().to_string(),
+        intent,
+        intent_template: (result == NextResult::IntentRequired).then(intent_model_template),
         repository: profile.report,
         validation,
         owner,
@@ -27575,6 +28869,119 @@ fn build_next_report(
     })
 }
 
+#[cfg(test)]
+fn build_next_report(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    task: &str,
+) -> Result<NextReport> {
+    let classification = classify_prospective_task(task);
+    let operation = match classification.lane {
+        TaskLane::ReadOnly => IntentOperation::Read,
+        TaskLane::RepositoryOperation => IntentOperation::RepositoryOperation,
+        TaskLane::Design | TaskLane::Undetermined => IntentOperation::Design,
+        TaskLane::Semantic | TaskLane::SemanticPlusSurface => IntentOperation::SemanticChange,
+        TaskLane::Surface => IntentOperation::SurfaceChange,
+        TaskLane::ImplementationCandidate => IntentOperation::ImplementationChange,
+    };
+    let subject = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(semantic_id_segment)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "test-subject".to_string());
+    let decision_required = matches!(
+        classification.lane,
+        TaskLane::Design | TaskLane::Semantic | TaskLane::SemanticPlusSurface
+    );
+    let surface_required = matches!(
+        classification.lane,
+        TaskLane::Surface | TaskLane::SemanticPlusSurface
+    );
+    let fact = |required| IntentFact {
+        disposition: if required {
+            IntentDisposition::Required
+        } else {
+            IntentDisposition::Absent
+        },
+        basis: IntentBasis::Inferred,
+        source_quote: None,
+        rationale: Some("test fixture classification".to_string()),
+    };
+    let model = IntentModel {
+        spec: "rms/intent-model/v0.1".to_string(),
+        operation,
+        change_scope: IntentChangeScope::ExistingModule,
+        subjects: vec![subject.clone()],
+        facts: IntentFacts {
+            domain_decisions: fact(decision_required),
+            lifecycle: fact(false),
+            effects: fact(false),
+            runnable_surface: fact(surface_required),
+            reuse: fact(false),
+        },
+        responsibilities: decision_required
+            .then(|| IntentResponsibility {
+                id: format!("{subject}-decisions"),
+                kind: ResponsibilityKind::Decision,
+                summary: "Test-owned decisions".to_string(),
+            })
+            .into_iter()
+            .collect(),
+        surface_kinds: surface_required
+            .then(|| "executable".to_string())
+            .into_iter()
+            .collect(),
+        binding_preferences: Vec::new(),
+        open_questions: Vec::new(),
+    };
+    build_next_report_with_intent(
+        root,
+        explicit_module,
+        task,
+        RawIntentInput {
+            yaml: Some(serde_yaml::to_string(&model)?),
+            ..RawIntentInput::default()
+        },
+        None,
+    )
+}
+
+fn classify_intent_model(model: &IntentModel) -> TaskClassification {
+    let lane = match model.operation {
+        IntentOperation::Read => TaskLane::ReadOnly,
+        IntentOperation::RepositoryOperation => TaskLane::RepositoryOperation,
+        IntentOperation::Design => TaskLane::Design,
+        IntentOperation::SemanticChange
+            if model.facts.runnable_surface.disposition == IntentDisposition::Required =>
+        {
+            TaskLane::SemanticPlusSurface
+        }
+        IntentOperation::SemanticChange => TaskLane::Semantic,
+        IntentOperation::SurfaceChange => TaskLane::Surface,
+        IntentOperation::ImplementationChange => TaskLane::ImplementationCandidate,
+    };
+    TaskClassification {
+        lane,
+        confidence: "deterministic".to_string(),
+        reasons: vec![format!(
+            "rms/intent-model/v0.1 classifies this operation as {}",
+            lane.label()
+        )],
+        prospective: true,
+    }
+}
+
+fn undetermined_task_classification() -> TaskClassification {
+    TaskClassification {
+        lane: TaskLane::Undetermined,
+        confidence: "none".to_string(),
+        reasons: vec!["no validated rms/intent-model/v0.1 is available".to_string()],
+        prospective: true,
+    }
+}
+
+#[cfg(test)]
 fn classify_repository_operation(task: &str) -> Option<String> {
     let normalized = task.to_ascii_lowercase();
     let source_change_verb = [
@@ -27743,6 +29150,7 @@ fn classify_repository_operation(task: &str) -> Option<String> {
     )
 }
 
+#[cfg(test)]
 fn classify_prospective_task(task: &str) -> TaskClassification {
     let read_terms = score_keywords(
         task,
@@ -28331,6 +29739,20 @@ fn build_next_steps(
     context: &NextContext,
 ) -> Result<Vec<NextStepGroup>> {
     let cwd = Some(root.display().to_string());
+    if matches!(
+        result,
+        NextResult::IntentRequired | NextResult::ClarificationRequired
+    ) {
+        let description = if result == NextResult::IntentRequired {
+            "Extract an rms/intent-model/v0.1 from the user intent, then rerun `rms next` with --intent-json, --intent-yaml, --intent-file, or --ai. Do not choose topology from raw task wording."
+        } else {
+            "Resolve every material unknown with the user, update the typed intent model, and rerun `rms next`; RMS will not guess architecture."
+        };
+        return Ok(vec![NextStepGroup {
+            phase: "clarify".to_string(),
+            steps: vec![manual_next_step(description, None)],
+        }]);
+    }
     if result == NextResult::NoRmsChange {
         return Ok(vec![
             NextStepGroup {
@@ -28654,7 +30076,7 @@ fn design_step(root: &Path, task: &str) -> NextStep {
 
 fn scaffold_choice_step() -> NextStep {
     manual_next_step(
-        "Follow the design result with exactly one alternative: `rms add-module` for a standalone module, or `rms add-capability` for a recursive capability. Use explicit bindings for code and omit child-name overrides unless product language supplied them.",
+        "Follow the design result with exactly one alternative: `rms add-module` for a standalone module, or `rms add-capability-tree` for a recursive capability. Use explicit bindings for code and omit child-name overrides unless product language supplied them.",
         None,
     )
 }
@@ -28888,6 +30310,14 @@ fn project_next_report(
         .collect::<Vec<_>>();
     let next_action = steps.first().cloned();
     let summary = match report.result {
+        NextResult::IntentRequired => {
+            "A typed intent model is required before RMS can route or prescribe architecture."
+                .to_string()
+        }
+        NextResult::ClarificationRequired => {
+            "Material intent facts remain unknown; clarify them before RMS chooses structure."
+                .to_string()
+        }
         NextResult::Ready => format!(
             "RMS work is ready in the {} lane.",
             report.task_classification.lane.label()
@@ -28916,6 +30346,13 @@ fn project_next_report(
         reasons.extend(report.blockers.iter().take(2).cloned());
     }
     let done_when = match report.result {
+        NextResult::IntentRequired => vec![
+            "A valid rms/intent-model/v0.1 is supplied and deterministic routing can proceed."
+                .to_string(),
+        ],
+        NextResult::ClarificationRequired => {
+            vec!["Every material unknown is resolved in the typed intent model.".to_string()]
+        }
         NextResult::NoRmsChange => vec![
             "The requested repository or tool operation is complete under task and host policy."
                 .to_string(),
@@ -28934,6 +30371,8 @@ fn project_next_report(
         json!({
             "task": &report.task,
             "root": &report.root,
+            "intent": &report.intent,
+            "intent_template": &report.intent_template,
             "repository": &report.repository,
             "validation": &report.validation,
             "owner": &report.owner,
@@ -33368,7 +34807,11 @@ fn append_semantic_change_module_reflection_checks(
             let direction = contract
                 .direction
                 .unwrap_or(SemanticContractDirection::Provided);
-            if !semantic_contract_directions(module, &contract.name).contains(&direction) {
+            let reflected = contract.kind.is_some_and(|kind| {
+                semantic_contract_directions_for_kind(module, &contract.name, kind)
+                    .contains(&direction)
+            });
+            if !reflected {
                 push_applied_change_reflection_failure(
                     checks,
                     strict,
@@ -33385,7 +34828,11 @@ fn append_semantic_change_module_reflection_checks(
             let direction = contract
                 .direction
                 .unwrap_or(SemanticContractDirection::Provided);
-            if semantic_contract_directions(module, &contract.name).contains(&direction) {
+            let reflected = contract.kind.is_some_and(|kind| {
+                semantic_contract_directions_for_kind(module, &contract.name, kind)
+                    .contains(&direction)
+            });
+            if reflected {
                 push_applied_change_reflection_failure(
                     checks,
                     strict,
@@ -39542,7 +40989,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact: `laws.add[]` and `laws.set[]` use scalar strings `id`, `statement`, `kind`, `authority`, and `enforced_by`. `contracts.add[]` and `contracts.set[]` use scalar strings `name`, optional `direction: provided|required`, `version`, `command`, and `meaning`, plus non-empty string lists `accepts`, `ensures`, and `rejects`; cross-module conversations add `protocol` with participants, closed messages, states, initial/terminal states, and transitions. `artifacts` declare `name`, `version`, `direction: provided|required|internal`, `contract`, and invariant ids. `transformations` declare input/output artifact names, an exact semantic function, rejection cases, and property ids. `authorities` declare an `id`, `kind: privileged|unsafe|foreign`, capabilities, and rationale. `properties.add[]` and `properties.set[]` use scalar strings `id`, `proves`, and `kind`; structured `input_space` and `operation`; string lists `preconditions` and non-empty `oracle`; `evidence: {{kind: property, path: <relative-path>}}` (or kind `fuzz` for a fuzz property); `counterexamples: {{path: <relative-path>}}`; `realizations: [{{profile, strategy, command, generator, runner}}]`, where `generator` is required for generated-property and deterministic-exhaustive strategies and `runner` is always required; and optional `temporal: {{pattern, scope, trigger, condition, bound}}`. `trace_producers.add[]` and `trace_producers.set[]` use scalar `id`, `profile`, `bundle`, `command`, and exact `runner`; removals contain producer ids. `properties.remove[]` contains existing property ids. `semantic_functions.add[]` and `semantic_functions.set[]` use scalar `id`, exact binding `symbol`, `kind`, and `purity`; optional string-list mappings under `discharges` and `assumptions`; optional declared `authorities`; and non-empty categorized evidence paths. `semantic_functions.remove[]` contains existing function ids. `public_behavior_bindings` connect `id`, `public_kind: command|query|capability`, `public_name`, `contract`, `semantic_function`, and exact semantic `machine_inputs`/`machine_outputs`. `dependency_behavior_bindings` connect `id`, required `capability`, optional required `contract`, exact local `consumer: path#symbol`, and `resolution: module|external`; module resolution also names `provider_module` and `provider_contract`. `evidence.add[]` uses scalar strings `kind`, `proves`, and `path`.")?;
+    writeln!(out, "Item shapes and cardinalities are exact: `laws.add[]` and `laws.set[]` use scalar strings `id`, `statement`, `kind`, `authority`, and `enforced_by`. `contracts.add[]` and `contracts.set[]` use scalar strings `name`, required `kind: command|query|event|capability`, optional `direction: provided|required`, `version`, optional binding-facing `command`, and `meaning`, plus non-empty string lists `accepts`, `ensures`, and `rejects`; only capability contracts may be required. Cross-module conversations add `protocol` with participants, closed messages, states, initial/terminal states, and transitions. `artifacts` declare `name`, `version`, `direction: provided|required|internal`, `contract`, and invariant ids. `transformations` declare input/output artifact names, an exact semantic function, rejection cases, and property ids. `authorities` declare an `id`, `kind: privileged|unsafe|foreign`, capabilities, and rationale. `properties.add[]` and `properties.set[]` use scalar strings `id`, `proves`, and `kind`; structured `input_space` and `operation`; string lists `preconditions` and non-empty `oracle`; `evidence: {{kind: property, path: <relative-path>}}` (or kind `fuzz` for a fuzz property); `counterexamples: {{path: <relative-path>}}`; `realizations: [{{profile, strategy, command, generator, runner}}]`, where `generator` is required for generated-property and deterministic-exhaustive strategies and `runner` is always required; and optional `temporal: {{pattern, scope, trigger, condition, bound}}`. `trace_producers.add[]` and `trace_producers.set[]` use scalar `id`, `profile`, `bundle`, `command`, and exact `runner`; removals contain producer ids. `properties.remove[]` contains existing property ids. `semantic_functions.add[]` and `semantic_functions.set[]` use scalar `id`, exact binding `symbol`, `kind`, and `purity`; optional string-list mappings under `discharges` and `assumptions`; optional declared `authorities`; and non-empty categorized evidence paths. `semantic_functions.remove[]` contains existing function ids. `public_behavior_bindings` connect `id`, `public_kind: command|query|capability`, `public_name`, `contract`, `semantic_function`, and exact semantic `machine_inputs`/`machine_outputs`. `dependency_behavior_bindings` connect `id`, required `capability`, optional required `contract`, exact local `consumer: path#symbol`, and `resolution: module|external`; module resolution also names `provider_module` and `provider_contract`. `evidence.add[]` uses scalar strings `kind`, `proves`, and `path`.")?;
     writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module.")?;
     writeln!(out, "`rms spec apply` automatically adds every currently active semantic revision to `supersedes` and hash-seals the exact new record. Use explicit `supersedes` only for additional branches that are not locally discoverable. Applied records are append-only: never edit or delete them.")?;
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
@@ -39553,7 +41000,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically.")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
-    writeln!(out, "Contract add/set entries use scalar `name`, optional `direction: provided|required`, `version`, `command`, product-specific `meaning`, and non-empty string lists `accepts`, `ensures`, and `rejects`. `provided` owns a module's public command/capability contract; `required` owns the consumer expectation under `requires.capabilities`. Set/remove may omit direction only when exactly one ownership direction exists. If a required contract already exists, revise it with `contracts.set`; do not use `contracts.add` to publish the dependency as a provider command. Generated capability contracts are scaffold obligations: replace them with `contracts.set` before implementation or production audit. Contract remove entries use scalar `name`, optional `direction`, and optional scalar `version`.")?;
+    writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and non-empty `accepts`, `ensures`, and `rejects`. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
     if context.implementation.is_none() {
         writeln!(out, "This target has no implementation binding, so `semantic_functions`, `machine`, `roles`, and `surfaces` are null. Keep them null for contract/law/property-only work. Before requesting implementation bindings, machine roles, or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
     }
@@ -39848,7 +41295,12 @@ fn normalize_semantic_contract_directions(
             continue;
         }
         let existing = module
-            .map(|module| semantic_contract_directions(module, &contract.name))
+            .map(|module| {
+                contract.kind.map_or_else(
+                    || semantic_contract_directions(module, &contract.name),
+                    |kind| semantic_contract_directions_for_kind(module, &contract.name, kind),
+                )
+            })
             .unwrap_or_default();
         if !existing.contains(&SemanticContractDirection::Required) {
             contract.direction = Some(SemanticContractDirection::Provided);
@@ -39859,7 +41311,12 @@ fn normalize_semantic_contract_directions(
             continue;
         }
         let existing = module
-            .map(|module| semantic_contract_directions(module, &contract.name))
+            .map(|module| {
+                contract.kind.map_or_else(
+                    || semantic_contract_directions(module, &contract.name),
+                    |kind| semantic_contract_directions_for_kind(module, &contract.name, kind),
+                )
+            })
             .unwrap_or_default();
         contract.direction = resolve_existing_semantic_contract_direction(&existing, None).ok();
     }
@@ -39868,7 +41325,12 @@ fn normalize_semantic_contract_directions(
             continue;
         }
         let existing = module
-            .map(|module| semantic_contract_directions(module, &contract.name))
+            .map(|module| {
+                contract.kind.map_or_else(
+                    || semantic_contract_directions(module, &contract.name),
+                    |kind| semantic_contract_directions_for_kind(module, &contract.name, kind),
+                )
+            })
             .unwrap_or_default();
         contract.direction = resolve_existing_semantic_contract_direction(&existing, None).ok();
     }
@@ -40233,7 +41695,7 @@ fn dogfood_phases(scenario: DogfoodScenario) -> Vec<DogfoodPhase> {
 
 fn render_dogfood_prompt(root: &Path, phase: &DogfoodPhase) -> String {
     format!(
-        "Working directory: {}\n\nUse RMS CLI/project guidance. Treat product intent as enough input unless RMS says clarification is required. Encode semantic changes before source changes. For runnable local apps, provide a runnable boundary surface or record an explicit single-module exception in canonical RMS artifacts. Model local/external outcomes as effect results when they drive transitions. Record concrete boundary and trace evidence. Record commands and final verification output.\n\n{}\n",
+        "Working directory: {}\n\nUse RMS CLI/project guidance. Extract typed semantic facts from product intent and let RMS choose topology; ask only for material unknowns. Encode semantic changes before source changes. For runnable local apps, provide a runnable boundary surface; use `unsplit_runnable_justification` only when one module truly mixes invariant-bearing decisions with boundary effects. Model local/external outcomes as effect results when they drive transitions. Record concrete boundary and trace evidence. Record commands and final verification output.\n\n{}\n",
         root.display(),
         phase.intent,
     )
@@ -40458,7 +41920,7 @@ fn dogfood_module_topology(root: &Path) -> Result<JsonValue> {
     let mut entries = Vec::new();
     let mut recursive = modules.len() > 1;
     let mut runnable_surface = false;
-    let mut single_module_exception_recorded = false;
+    let mut unsplit_runnable_justification_recorded = false;
     for module in modules.values() {
         let base = module.path.parent().unwrap_or_else(|| Path::new("."));
         let implementation_path = base.join("implementation.yaml");
@@ -40477,10 +41939,10 @@ fn dogfood_module_topology(root: &Path) -> Result<JsonValue> {
         if implementation_declares_runnable_surface(implementation_value) {
             runnable_surface = true;
         }
-        if has_single_module_exception(&module.value)
-            || has_single_module_exception(implementation_value)
+        if has_unsplit_runnable_justification(&module.value)
+            || has_unsplit_runnable_justification(implementation_value)
         {
-            single_module_exception_recorded = true;
+            unsplit_runnable_justification_recorded = true;
         }
         entries.push(json!({
             "name": module.name,
@@ -40497,14 +41959,14 @@ fn dogfood_module_topology(root: &Path) -> Result<JsonValue> {
     }
     let single_module = modules.len() == 1;
     let matches_reference_expectation =
-        recursive || (single_module && single_module_exception_recorded);
+        recursive || (single_module && unsplit_runnable_justification_recorded);
     Ok(json!({
         "module_count": modules.len(),
         "single_module": single_module,
         "recursive": recursive,
         "runnable_surface_detected": runnable_surface,
-        "single_module_exception_recorded": single_module_exception_recorded,
-        "expected_for_reference_app": "recursive-or-explicit-single-module-exception",
+        "unsplit_runnable_justification_recorded": unsplit_runnable_justification_recorded,
+        "expected_for_reference_app": "recursive-or-explicit-unsplit-runnable-justification",
         "matches_expected": matches_reference_expectation,
         "modules": entries,
     }))
@@ -40548,12 +42010,11 @@ fn implementation_declares_runnable_surface(value: &YamlValue) -> bool {
     false
 }
 
-fn has_single_module_exception(value: &YamlValue) -> bool {
+fn has_unsplit_runnable_justification(value: &YamlValue) -> bool {
     [
-        &["architecture", "single_module_justification"][..],
-        &["module", "single_module_justification"][..],
-        &["x-rms", "single_module_justification"][..],
-        &["x-rms", "single-module-justification"][..],
+        &["architecture", "unsplit_runnable_justification"][..],
+        &["module", "unsplit_runnable_justification"][..],
+        &["x-rms", "unsplit_runnable_justification"][..],
     ]
     .iter()
     .any(|path| get_str(value, path).is_some_and(|text| !text.trim().is_empty()))
@@ -41950,6 +43411,31 @@ fn validate_semantic_contracts(
     let mut changed = BTreeSet::new();
 
     for contract in contracts.add.iter().chain(&contracts.replace) {
+        let Some(kind) = contract.kind else {
+            diagnostics.push(error(
+                "semantic.contract-kind-missing",
+                &context.target,
+                format!(
+                    "contract `{}` must declare kind: command|query|event|capability",
+                    contract.name
+                ),
+            ));
+            continue;
+        };
+        let direction = contract
+            .direction
+            .unwrap_or(SemanticContractDirection::Provided);
+        if kind.module_path(direction).is_none() {
+            diagnostics.push(error(
+                "semantic.contract-kind-direction-invalid",
+                &context.target,
+                format!(
+                    "{} contracts cannot be declared as {}",
+                    kind.label(),
+                    direction.label()
+                ),
+            ));
+        }
         if !is_stable_semantic_id(&contract.name) {
             diagnostics.push(error(
                 "semantic.contract-name",
@@ -41966,16 +43452,6 @@ fn validate_semantic_contracts(
                 &context.target,
                 format!(
                     "semantic change modifies contract `{}` more than once",
-                    contract.name
-                ),
-            ));
-        }
-        if contract.command.as_deref().unwrap_or("").trim().is_empty() {
-            diagnostics.push(error(
-                "semantic.contract-without-public-surface",
-                &context.target,
-                format!(
-                    "contract `{}` must declare the command provided or required by the capability",
                     contract.name
                 ),
             ));
@@ -42028,8 +43504,11 @@ fn validate_semantic_contracts(
     }
 
     for contract in &contracts.add {
+        let Some(kind) = contract.kind else {
+            continue;
+        };
         let existing = module
-            .map(|module| semantic_contract_directions(module, &contract.name))
+            .map(|module| semantic_contract_directions_for_kind(module, &contract.name, kind))
             .unwrap_or_default();
         let direction = contract
             .direction
@@ -42059,8 +43538,11 @@ fn validate_semantic_contracts(
         }
     }
     for contract in &contracts.replace {
+        let Some(kind) = contract.kind else {
+            continue;
+        };
         let existing = module
-            .map(|module| semantic_contract_directions(module, &contract.name))
+            .map(|module| semantic_contract_directions_for_kind(module, &contract.name, kind))
             .unwrap_or_default();
         match resolve_existing_semantic_contract_direction(&existing, contract.direction) {
             Ok(_) => {}
@@ -42087,6 +43569,17 @@ fn validate_semantic_contracts(
         }
     }
     for contract in &contracts.remove {
+        let Some(kind) = contract.kind else {
+            diagnostics.push(error(
+                "semantic.contract-kind-missing",
+                &context.target,
+                format!(
+                    "contract removal `{}` must declare its contract kind",
+                    contract.name
+                ),
+            ));
+            continue;
+        };
         if !is_stable_semantic_id(&contract.name) {
             diagnostics.push(error(
                 "semantic.contract-name",
@@ -42108,7 +43601,7 @@ fn validate_semantic_contracts(
             ));
         }
         let existing = module
-            .map(|module| semantic_contract_directions(module, &contract.name))
+            .map(|module| semantic_contract_directions_for_kind(module, &contract.name, kind))
             .unwrap_or_default();
         match resolve_existing_semantic_contract_direction(&existing, contract.direction) {
             Ok(_) => {}
@@ -42132,6 +43625,51 @@ fn validate_semantic_contracts(
                     contract.name
                 ),
             )),
+        }
+    }
+
+    if let Some(implementation) = context.implementation.as_ref() {
+        let final_implementation = final_implementation_value(context, change)
+            .unwrap_or_else(|| implementation.value.clone());
+        let public_bindings = typed_yaml_sequence::<PublicBehaviorBinding>(
+            &final_implementation,
+            &["architecture", "public_behavior_bindings"],
+        );
+        let dependency_bindings = typed_yaml_sequence::<DependencyBehaviorBinding>(
+            &final_implementation,
+            &["architecture", "dependency_behavior_bindings"],
+        );
+        for contract in contracts.add.iter().chain(&contracts.replace) {
+            if contract.kind != Some(SemanticContractKind::Capability) {
+                continue;
+            }
+            let direction = contract
+                .direction
+                .unwrap_or(SemanticContractDirection::Provided);
+            let bound = match direction {
+                SemanticContractDirection::Provided => public_bindings.iter().any(|binding| {
+                    binding.public_kind == "capability" && binding.public_name == contract.name
+                }),
+                SemanticContractDirection::Required => dependency_bindings
+                    .iter()
+                    .any(|binding| binding.capability == contract.name),
+            };
+            if !bound {
+                diagnostics.push(error(
+                    "semantic.capability-binding-missing",
+                    &context.target,
+                    format!(
+                        "implemented {} capability `{}` requires its {} behavior binding in the same final semantic change",
+                        direction.label(),
+                        contract.name,
+                        if direction == SemanticContractDirection::Provided {
+                            "public"
+                        } else {
+                            "dependency"
+                        }
+                    ),
+                ));
+            }
         }
     }
 }
@@ -42270,6 +43808,30 @@ fn semantic_contract_directions(
         directions.insert(SemanticContractDirection::Required);
     }
     directions
+}
+
+fn semantic_contract_directions_for_kind(
+    module: &YamlValue,
+    name: &str,
+    kind: SemanticContractKind,
+) -> BTreeSet<SemanticContractDirection> {
+    [
+        SemanticContractDirection::Provided,
+        SemanticContractDirection::Required,
+    ]
+    .into_iter()
+    .filter(|direction| {
+        kind.module_path(*direction).is_some_and(|path| {
+            get_path(module, path)
+                .and_then(YamlValue::as_sequence)
+                .is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| get_str(item, &["name"]) == Some(name))
+                })
+        })
+    })
+    .collect()
 }
 
 fn resolve_existing_semantic_contract_direction(
@@ -42811,6 +44373,36 @@ fn final_implementation_value(
     {
         let declarations = final_semantic_function_declarations_from_value(&value, functions);
         set_yaml_sequence_path(&mut value, &["semantic_functions"], declarations);
+    }
+    if let Some(bindings) = change
+        .public_behavior_bindings
+        .as_ref()
+        .filter(|bindings| public_behavior_bindings_change_has_operations(bindings))
+    {
+        let declarations = final_public_behavior_bindings(&value, bindings);
+        set_yaml_sequence_path(
+            &mut value,
+            &["architecture", "public_behavior_bindings"],
+            declarations
+                .iter()
+                .map(public_behavior_binding_yaml)
+                .collect(),
+        );
+    }
+    if let Some(bindings) = change
+        .dependency_behavior_bindings
+        .as_ref()
+        .filter(|bindings| dependency_behavior_bindings_change_has_operations(bindings))
+    {
+        let declarations = final_dependency_behavior_bindings(&value, bindings);
+        set_yaml_sequence_path(
+            &mut value,
+            &["architecture", "dependency_behavior_bindings"],
+            declarations
+                .iter()
+                .map(dependency_behavior_binding_yaml)
+                .collect(),
+        );
     }
     Some(value)
 }
@@ -44913,9 +46505,13 @@ fn apply_semantic_contract_changes_to_module(
     contracts: &SemanticContractsChange,
 ) {
     for contract in &contracts.replace {
+        let Some(kind) = contract.kind else {
+            continue;
+        };
         update_semantic_contract_references(
             value,
             &contract.name,
+            kind,
             contract
                 .direction
                 .unwrap_or(SemanticContractDirection::Provided),
@@ -44923,42 +46519,58 @@ fn apply_semantic_contract_changes_to_module(
         );
     }
     for contract in &contracts.remove {
+        let Some(kind) = contract.kind else {
+            continue;
+        };
         remove_semantic_contract_references(
             value,
             &contract.name,
+            kind,
             contract
                 .direction
                 .unwrap_or(SemanticContractDirection::Provided),
         );
+        if semantic_contract_directions(value, &contract.name).is_empty() {
+            remove_generated_contract_evidence_reference(value, &contract.name);
+        }
     }
     for contract in &contracts.add {
+        let Some(kind) = contract.kind else {
+            continue;
+        };
         let direction = contract
             .direction
             .unwrap_or(SemanticContractDirection::Provided);
-        let path = match direction {
-            SemanticContractDirection::Provided => &["provides", "commands"][..],
-            SemanticContractDirection::Required => &["requires", "capabilities"][..],
+        let Some(path) = kind.module_path(direction) else {
+            continue;
         };
         ensure_yaml_sequence_path(value, path).push(semantic_contract_reference_yaml(contract));
+    }
+}
+
+fn remove_generated_contract_evidence_reference(value: &mut YamlValue, name: &str) {
+    let dashed = format!("verification/contracts/{name}.md");
+    let underscored = format!("verification/contracts/{}.md", name.replace('-', "_"));
+    if let Some(items) =
+        get_path_mut(value, &["verification", "contracts"]).and_then(YamlValue::as_sequence_mut)
+    {
+        items.retain(|item| {
+            item.as_str()
+                .is_none_or(|path| path != dashed && path != underscored)
+        });
     }
 }
 
 fn update_semantic_contract_references(
     value: &mut YamlValue,
     name: &str,
+    kind: SemanticContractKind,
     direction: SemanticContractDirection,
     replacement: YamlValue,
 ) {
-    let paths = match direction {
-        SemanticContractDirection::Provided => vec![
-            &["provides", "commands"][..],
-            &["provides", "capabilities"][..],
-        ],
-        SemanticContractDirection::Required => vec![&["requires", "capabilities"][..]],
-    };
-    for path in paths {
+    if let Some(path) = kind.module_path(direction) {
         let Some(items) = get_path_mut(value, path).and_then(YamlValue::as_sequence_mut) else {
-            continue;
+            return;
         };
         for item in items {
             if get_str(item, &["name"]) == Some(name) {
@@ -44971,16 +46583,10 @@ fn update_semantic_contract_references(
 fn remove_semantic_contract_references(
     value: &mut YamlValue,
     name: &str,
+    kind: SemanticContractKind,
     direction: SemanticContractDirection,
 ) {
-    let paths = match direction {
-        SemanticContractDirection::Provided => vec![
-            &["provides", "commands"][..],
-            &["provides", "capabilities"][..],
-        ],
-        SemanticContractDirection::Required => vec![&["requires", "capabilities"][..]],
-    };
-    for path in paths {
+    if let Some(path) = kind.module_path(direction) {
         if let Some(items) = get_path_mut(value, path).and_then(YamlValue::as_sequence_mut) {
             items.retain(|item| get_str(item, &["name"]) != Some(name));
         }
@@ -45163,6 +46769,19 @@ fn write_semantic_contracts_and_evidence(
             if path.exists() && !retained_contract_paths.contains(&relative) {
                 fs::remove_file(&path)
                     .with_context(|| format!("failed to remove `{}`", path.display()))?;
+                for evidence_path in [
+                    base.join(format!("verification/contracts/{}.md", contract.name)),
+                    base.join(format!(
+                        "verification/contracts/{}.md",
+                        contract.name.replace('-', "_")
+                    )),
+                ] {
+                    if evidence_path.exists() {
+                        fs::remove_file(&evidence_path).with_context(|| {
+                            format!("failed to remove `{}`", evidence_path.display())
+                        })?;
+                    }
+                }
             }
         }
     }
@@ -45225,7 +46844,14 @@ fn render_semantic_contract(contract: &SemanticContractChange) -> String {
     let _ = writeln!(out, "spec: rms/contract/v0.1");
     let _ = writeln!(out, "name: {}", yaml_quote(&contract.name));
     let _ = writeln!(out, "version: {version}");
-    let _ = writeln!(out, "kind: command");
+    let _ = writeln!(
+        out,
+        "kind: {}",
+        contract
+            .kind
+            .map(SemanticContractKind::label)
+            .unwrap_or("invalid")
+    );
     let _ = writeln!(
         out,
         "meaning: {}",
@@ -45526,16 +47152,23 @@ fn validate_semantic_module_completeness(
     let has_workflow_profile = profiles
         .iter()
         .any(|profile| semantic_name_contains_any(profile, &["workflow"]));
-    if has_boundary_profile
+    let unsplit_runnable_justification = has_unsplit_runnable_justification(&module.value);
+    let unsplit_runnable_justification_applies = has_boundary_profile
         && has_workflow_profile
-        && module_declares_local_or_external_effects(module)
-        && !has_single_module_exception(&module.value)
-    {
+        && module_declares_local_or_external_effects(module);
+    if unsplit_runnable_justification_applies && !unsplit_runnable_justification {
         push_unique_warning(
             diagnostics,
-            "semantic.single-module-app-justification-missing",
+            "semantic.unsplit-runnable-justification-missing",
             &module.path,
-            "module combines boundary, workflow, and effects; record a single-module justification or split the runnable surface from domain/workflow behavior",
+            "module mixes invariant-bearing decisions with a runnable boundary and effects; record unsplit_runnable_justification or split semantic owners",
+        );
+    } else if !unsplit_runnable_justification_applies && unsplit_runnable_justification {
+        push_unique_warning(
+            diagnostics,
+            "semantic.unsplit-runnable-justification-not-applicable",
+            &module.path,
+            "unsplit_runnable_justification applies only to one module that mixes workflow decisions, a runnable boundary, and effects; remove it from an ordinary standalone module",
         );
     }
     validate_property_module(module, diagnostics);
@@ -49640,7 +51273,7 @@ fn run_init_with_adopt(
         contexts.to_vec()
     };
 
-    let mut artifacts = init_artifacts(name, purpose, version, &contexts);
+    let mut artifacts = init_artifacts(name, purpose, version, &contexts, adopt);
     let statuses = preflight_init(
         path,
         &mut artifacts,
@@ -49733,6 +51366,7 @@ fn init_artifacts(
     purpose: &str,
     version: &str,
     contexts: &[String],
+    adopt: bool,
 ) -> Vec<InitArtifact> {
     let mut artifacts = vec![
         InitArtifact {
@@ -49762,7 +51396,16 @@ fn init_artifacts(
         },
         InitArtifact {
             relative_path: PathBuf::from(WORKBENCH_CONFIG_PATH),
-            contents: render_workbench_config(Provider::Codex, None, Path::new(DEFAULT_RUN_ROOT)),
+            contents: render_workbench_config_with_coverage(
+                Provider::Codex,
+                None,
+                Path::new(DEFAULT_RUN_ROOT),
+                if adopt {
+                    WorkspaceCoverage::Progressive
+                } else {
+                    WorkspaceCoverage::Complete
+                },
+            ),
             existing_policy: InitExistingPolicy::WorkbenchConfig,
         },
     ];
@@ -49866,7 +51509,25 @@ fn preflight_init(
                 "rms/context-map/v0.1",
             )
             .map(|_| ()),
-            InitExistingPolicy::WorkbenchConfig => load_workbench_config(root).map(|_| ()),
+            InitExistingPolicy::WorkbenchConfig => load_workbench_config(root).and_then(|loaded| {
+                let loaded = loaded.ok_or_else(|| {
+                    anyhow!("failed to load existing `{WORKBENCH_CONFIG_PATH}`")
+                })?;
+                if adopt && loaded.value.workspace.coverage != WorkspaceCoverage::Progressive {
+                    let existing = fs::read_to_string(&target)
+                        .with_context(|| format!("failed to read `{}`", target.display()))?;
+                    let mut value: YamlValue = serde_yaml::from_str(&existing)
+                        .with_context(|| format!("failed to parse `{}`", target.display()))?;
+                    set_yaml_string_path(
+                        &mut value,
+                        &["workspace", "coverage"],
+                        WorkspaceCoverage::Progressive.label(),
+                    );
+                    artifact.contents = serde_yaml::to_string(&value)?;
+                    status = InitArtifactStatus::Updated;
+                }
+                Ok(())
+            }),
             InitExistingPolicy::ExactManaged => fs::read(&target)
                 .with_context(|| format!("failed to read `{}`", target.display()))
                 .and_then(|existing| {
@@ -50061,7 +51722,7 @@ struct AddModuleRequest {
     root: PathBuf,
 }
 
-struct AddCapabilityRequest {
+struct AddCapabilityTreeRequest {
     path: PathBuf,
     name: String,
     purpose: String,
@@ -50071,6 +51732,7 @@ struct AddCapabilityRequest {
     domain_command: Option<String>,
     domain_binding: Option<String>,
     boundary_binding: Option<String>,
+    surface: Option<String>,
 }
 
 struct AddBindingRequest {
@@ -50281,7 +51943,7 @@ fn scaffold_binding_transactionally(
     Ok(())
 }
 
-fn run_add_capability(request: AddCapabilityRequest) -> Result<()> {
+fn run_add_capability_tree(request: AddCapabilityTreeRequest) -> Result<()> {
     validate_scaffold_binding(request.domain_binding.as_deref())?;
     validate_scaffold_binding(request.boundary_binding.as_deref())?;
 
@@ -50334,10 +51996,10 @@ fn run_add_capability(request: AddCapabilityRequest) -> Result<()> {
             realize_capability_binding_dependency(&boundary_path, &domain_child, binding)?;
         }
     }
-    scaffold_runnable_surface_if_inferred(
+    scaffold_explicit_runnable_surface(
         &boundary_path,
         &request.name,
-        &request.purpose,
+        request.surface.as_deref(),
         &public_command,
         request.boundary_binding.as_deref(),
     )?;
@@ -50691,16 +52353,29 @@ fn configure_scaffold_dependency_behavior_binding(
     write_yaml_manifest(&implementation)
 }
 
-fn scaffold_runnable_surface_if_inferred(
+fn scaffold_explicit_runnable_surface(
     boundary_path: &Path,
     capability_name: &str,
-    purpose: &str,
+    surface: Option<&str>,
     public_command: &str,
     binding: Option<&str>,
 ) -> Result<()> {
-    let Some(surface) = infer_runnable_surface_from_text(purpose) else {
+    let Some(surface) = surface else {
         return Ok(());
     };
+    let allowed = [
+        "browser",
+        "cli",
+        "mobile-ui",
+        "desktop-ui",
+        "http",
+        "batch",
+        "executable",
+    ];
+    if !allowed.contains(&surface) {
+        bail!("unsupported runnable surface `{surface}`");
+    }
+    let surface = surface.to_string();
     let implementation_path = boundary_path.join("implementation.yaml");
     if !implementation_path.exists() {
         return Ok(());
@@ -50771,34 +52446,6 @@ fn scaffold_runnable_surface_if_inferred(
     write_surface_usage_document(&manifest, &declaration)?;
     write_surface_evidence_placeholders(&manifest, &declaration)?;
     Ok(())
-}
-
-fn infer_runnable_surface_from_text(text: &str) -> Option<String> {
-    if semantic_name_contains_any(text, &["browser", "web", "html"]) {
-        return Some("browser".to_string());
-    }
-    if semantic_name_contains_any(text, &["cli", "command-line", "terminal"]) {
-        return Some("cli".to_string());
-    }
-    if semantic_name_contains_any(text, &["mobile", "ios", "android"]) {
-        return Some("mobile-ui".to_string());
-    }
-    if semantic_name_contains_any(text, &["desktop"]) {
-        return Some("desktop-ui".to_string());
-    }
-    if semantic_name_contains_any(text, &["http", "api", "server"]) {
-        return Some("http".to_string());
-    }
-    if semantic_name_contains_any(text, &["batch", "job"]) {
-        return Some("batch".to_string());
-    }
-    if semantic_name_contains_any(
-        text,
-        &["app", "tool", "ui", "runnable", "local-first", "smoke"],
-    ) {
-        return Some("executable".to_string());
-    }
-    None
 }
 
 fn default_domain_child_name(capability_name: &str) -> String {
@@ -52290,7 +53937,7 @@ fn render_module_readme(
     };
 
     let rendered = format!(
-        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Semantic Shape\n\nShape: `{}`: `{}` ({})\n\nRequired roles:\n{}\n\nRepresentation is the RMS-level role for closed variants, validated values, commands, states, events, and result/rejection types. Implement it with language-idiomatic files or modules; do not treat a folder named `domain` or `types` as canonical architecture. Traceable-machine roles make debugging bad states explicit: message envelopes carry identity and causality, transitions return next state plus emitted events, commands, effects, and reply, transition records capture before/after/input/output/source provenance, journals explain, replay bundles reproduce, and first-bad-transition evidence points to the fix. Use domain-named role suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Do not derive inner role names from role or surface suffixes such as rules, engine, adapter, cli, web, rust, swift, or js unless those words are genuine domain language.\n\n## Representation Decisions\n\n- Closed domain alternatives should use ADTs, sealed variants, enums, or tagged constructors.\n- Public values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Validated numeric values should use checked, saturating, bounded, or explicitly proven arithmetic, with evidence for overflow, floors, ceilings, and rounding when arithmetic affects decisions.\n- Expected domain failures should be explicit result or rejection values rather than ambient exceptions.\n- Lifecycle or order-dependent behavior should use a transition model with accepted and rejected outcomes, transition records, replay bundles, and first-bad-transition diagnostics when applicable.\n- Boundary input should be parsed into enveloped domain commands before reaching pure decisions.\n- Runnable surfaces adapt outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Projections observe and derive timelines; they do not emit workflow commands or mutate another module's state.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Runtime Monitor Decisions\n\n- Use this section when the module declares the `monitor` profile or `runtime-monitor` shape.\n- Declare observed inputs, derived facts or streams, trigger conditions, monitor authority, retrigger/idempotency policy, and fail-open/fail-closed/degraded behavior in `module.yaml`.\n- Supervisory outputs must be public commands, events, alarms, findings, or capabilities. Do not mutate controlled module state directly.\n- Add runtime evidence for trigger and non-trigger cases before relying on a monitor for release or operational assurance.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs, illegal transitions, replayed bad states, numeric boundary cases, or passive projections when applicable.\n5. Use `rms spec apply module.yaml --change-yaml '<semantic-change>'` when new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, runnable surfaces, public entrypoints, or evidence obligations are needed; then fill declared role bodies.\n6. Use `rms surface apply implementation.yaml --kind runnable-boundary --surface <surface> --entrypoint <path> --delegates-to <role-or-symbol> --command <public-command>` before adding or changing app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints.\n7. Use `rms machine apply implementation.yaml --change-yaml '<machine-change>'` only for focused inner-machine edits after laws, public contracts, and evidence obligations are already correct.\n8. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms spec check module.yaml`, `rms machine check implementation.yaml`, `rms surface check implementation.yaml`, `rms structure implementation.yaml`, and `rms verify implementation.yaml` when an implementation binding exists.\n9. Replace scaffold placeholder evidence before declaring this module implemented; `rms validate --root <system-root>` should not report placeholder, bootstrap, unpinned, or semantic-shape-only evidence for implemented promises.\n\n## Agent Workflow\n\nUse `rms design --root <system-root> --task \"<task>\"` when module boundaries or semantic shapes are unclear. Use `rms explain --module module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms spec plan module.yaml --task \"<task>\"` before changing product meaning, laws, contracts, runnable surfaces, effects, machine structure, or evidence obligations. Use `rms surface apply/check implementation.yaml` before app/UI/CLI/browser/HTTP/batch/mobile/desktop/executable entrypoint changes. Use `rms machine plan implementation.yaml --task \"<task>\"` only for focused inner-machine edits after the semantic layer is correct. Use `rms evolve-contract module.yaml --task \"<task>\"` when public compatibility requires deeper guidance, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
+        "# {}\n\nPurpose: {}\nKind: `{}`\n{}\n\n## Profiles\n\n{}\n\n## Semantic Shape\n\nShape: `{}`: `{}` ({})\n\nRequired roles:\n{}\n\nRepresentation is the RMS-level role for closed variants, validated values, commands, states, events, and result/rejection types. Implement it with language-idiomatic files or modules; do not treat a folder named `domain` or `types` as canonical architecture. Traceable-machine roles make debugging bad states explicit: message envelopes carry identity and causality, transitions return next state plus emitted events, commands, effects, and reply, transition records capture before/after/input/output/source provenance, journals explain, replay bundles reproduce, and first-bad-transition evidence points to the fix. Use domain-named role suffixes where the language allows it: `<Domain>Machine`, `<Domain>State`, `<Domain>Command`, `<Domain>Event`, `<Domain>Effect`, `<Domain>EffectResult`, `<Domain>Reply`, `<Domain>Rejection`, `<Domain>Transition`, and `<Domain>TransitionRecord`. Do not derive inner role names from role or surface suffixes such as rules, engine, adapter, cli, web, rust, swift, or js unless those words are genuine domain language.\n\n## Representation Decisions\n\n- Closed domain alternatives should use ADTs, sealed variants, enums, or tagged constructors.\n- Public values with validity rules should use private fields, validated constructors, explicit failure types, semantic-function bindings, and evidence.\n- Validated numeric values should use checked, saturating, bounded, or explicitly proven arithmetic, with evidence for overflow, floors, ceilings, and rounding when arithmetic affects decisions.\n- Expected domain failures should be explicit result or rejection values rather than ambient exceptions.\n- Lifecycle or order-dependent behavior should use a transition model with accepted and rejected outcomes, transition records, replay bundles, and first-bad-transition diagnostics when applicable.\n- Boundary input should be parsed into enveloped domain commands before reaching pure decisions.\n- Runnable surfaces adapt outside input into declared RMS commands, may render or execute declared boundary effects, and must not reimplement domain decisions or call private module internals.\n- Public read models or result structs produced only by queries/projectors may keep private fields without public constructors only when `implementation.yaml` declares them in `architecture.allowed_missing_constructors` and evidence names the producing query/projector.\n- Projections observe and derive timelines; they do not emit workflow commands or mutate another module's state.\n- Do not add a fake public constructor only to satisfy a binding check; either expose a real contract-backed constructor or document the query-produced exception.\n\n## Runtime Monitor Decisions\n\n- Use this section when the module declares the `monitor` profile or `runtime-monitor` shape.\n- Declare observed inputs, derived facts or streams, trigger conditions, monitor authority, retrigger/idempotency policy, and fail-open/fail-closed/degraded behavior in `module.yaml`.\n- Supervisory outputs must be public commands, events, alarms, findings, or capabilities. Do not mutate controlled module state directly.\n- Add runtime evidence for trigger and non-trigger cases before relying on a monitor for release or operational assurance.\n\n## Canonical Artifacts\n\n- `module.yaml` is the source of module ownership, public surface, dependencies, effects, invariants, profiles, and compatibility.\n- `contracts/` contains public RMS contracts only: commands, queries, events, APIs, capabilities, schemas, and externally consumed failure semantics.\n- `implementation.yaml`, when present, binds code symbols to contracts, invariants, assumptions, and evidence.\n- `verification/` contains evidence for declared promises. Evidence should name the source revision and command or tool used.\n\n## Before Changing Behavior\n\n1. Fill `module.yaml` with owned concepts, data, decisions, public surface, dependencies, effects, invariants, and verification references that are true for this module.\n2. Add or update public contracts before implementing externally consumed behavior.\n3. Keep private implementation details out of `contracts/` unless consumers depend on them.\n4. Add the smallest evidence that proves the declared promise, including negative cases for invalid inputs, illegal transitions, replayed bad states, numeric boundary cases, or passive projections when applicable.\n5. Use `rms spec apply module.yaml --change-yaml '<semantic-change>'` when new laws, contracts, states, commands, events, effects, effect results, replies, rejections, transitions, semantic roles, runnable surfaces, public entrypoints, or evidence obligations are needed; then fill declared role bodies.\n6. Use `rms surface apply implementation.yaml --kind runnable-boundary --surface <surface> --entrypoint <path> --delegates-to <role-or-symbol> --command <public-command>` before adding or changing app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints.\n7. Use `rms machine apply implementation.yaml --change-yaml '<machine-change>'` only for focused inner-machine edits after laws, public contracts, and evidence obligations are already correct.\n8. Run `rms validate --root <system-root>` and `rms compose --root <system-root>`; run `rms spec check module.yaml`, `rms machine check implementation.yaml`, `rms surface check implementation.yaml`, `rms structure implementation.yaml`, and `rms verify implementation.yaml` when an implementation binding exists.\n9. Replace scaffold placeholder evidence before declaring this module implemented; `rms validate --root <system-root>` should not report placeholder, bootstrap, unpinned, or semantic-shape-only evidence for implemented promises.\n\n## Agent Workflow\n\nUse `rms design --root <system-root> --task \"<task>\" --intent-yaml '<rms/intent-model/v0.1>'` when module boundaries or semantic shapes are unclear. Use `rms explain --module module.yaml` and `rms context module.yaml --task \"<task>\"` before implementation work. Use `rms spec plan module.yaml --task \"<task>\"` before changing product meaning, laws, contracts, runnable surfaces, effects, machine structure, or evidence obligations. Use `rms surface apply/check implementation.yaml` before app/UI/CLI/browser/HTTP/batch/mobile/desktop/executable entrypoint changes. Use `rms machine plan implementation.yaml --task \"<task>\"` only for focused inner-machine edits after the semantic layer is correct. Use `rms evolve-contract module.yaml --task \"<task>\"` when public compatibility requires deeper guidance, and `rms evidence module.yaml --task \"<task>\"` when proof design is unclear.\n",
         markdown_inline(name),
         markdown_inline(purpose),
         markdown_inline(kind),
@@ -57115,7 +58762,8 @@ import struct ExternalKit.Widget
         assert!(agents.contains(COMMIT_AUTHORITY_POLICY));
         assert!(agents.contains(BOOTSTRAP_PENDING_AUTHORIZED_COMMIT));
         assert!(agents.contains(CANDIDATE_PENDING_AUTHORIZED_COMMIT));
-        assert!(agents.contains("rms init [--adopt]` → authorized bootstrap commit → `rms design"));
+        assert!(agents.contains("New or adopted systems follow `rms init [--adopt]`"));
+        assert!(agents.contains("Extract `rms/intent-model/v0.1` facts"));
         assert!(agents.contains("recommended standalone or recursive scaffold"));
         assert!(agents.contains("focused native and RMS proof"));
         assert!(agents.contains("authorized candidate commit"));
@@ -57127,6 +58775,7 @@ import struct ExternalKit.Widget
         assert!(config_text.contains("# timeout_seconds: 900"));
         assert_eq!(config.value.ai.default_provider.as_deref(), Some("codex"));
         assert_eq!(config.value.ai.codex.sandbox.as_deref(), Some("read-only"));
+        assert_eq!(config.value.workspace.coverage, WorkspaceCoverage::Complete);
         assert_eq!(
             config.value.runs.directory.as_deref(),
             Some(Path::new(".rms/runs"))
@@ -57283,6 +58932,11 @@ import struct ExternalKit.Widget
         assert!(root.join(".rms/config.yaml").is_file());
         assert!(root.join(".agents/skills/README.md").is_file());
         assert!(root.join(".git").is_dir());
+        let adoption = build_adoption_status(&root, None).unwrap();
+        assert_eq!(adoption.coverage, "progressive");
+        assert!(adoption
+            .certifies
+            .contains("discovered RMS modules and their declared dependency closures"));
 
         run_agent_sync(&root, AgentTarget::Codex).unwrap();
         let synced_agents = fs::read(root.join("AGENTS.md")).unwrap();
@@ -57322,6 +58976,122 @@ import struct ExternalKit.Widget
         .unwrap();
 
         assert_eq!(fs::read(root.join("system.yaml")).unwrap(), before);
+        let config = load_workbench_config(&root).unwrap().unwrap();
+        assert_eq!(
+            config.value.workspace.coverage,
+            WorkspaceCoverage::Progressive
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn adoption_complete_rejects_unowned_production_paths() {
+        let root = unique_test_dir("adoption-unowned-production");
+        fs::create_dir_all(root.join("Sources/Legacy")).unwrap();
+        fs::write(
+            root.join("Sources/Legacy/Legacy.swift"),
+            "struct Legacy {}\n",
+        )
+        .unwrap();
+        run_init_with_adopt(
+            &root,
+            "progressive-system",
+            "Adopt one module closure progressively.",
+            "0.1.0",
+            &[],
+            true,
+        )
+        .unwrap();
+
+        let progressive = build_adoption_status(&root, None).unwrap();
+        let complete = build_adoption_status(&root, Some(WorkspaceCoverage::Complete)).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(progressive.result, "pass");
+        assert_eq!(progressive.coverage, "progressive");
+        assert_eq!(complete.result, "blocked");
+        assert!(complete
+            .diagnostics
+            .iter()
+            .any(|item| item.check == "adoption.unowned-production-path"));
+    }
+
+    #[test]
+    fn module_scoped_committed_proof_reports_outside_dirt_without_invalidating_closure() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+
+        let root = unique_test_dir("module-scoped-adoption-proof");
+        run_init(
+            &root,
+            "progressive-system",
+            "Certify one adopted module closure.",
+            "0.1.0",
+            &[],
+        )
+        .unwrap();
+        let module_root = root.join("modules/owned-decisions");
+        run_add_module(
+            add_module_request(
+                &module_root,
+                "owned-decisions",
+                "Own one progressively adopted decision boundary.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                None,
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        for args in [
+            vec!["config", "user.email", "rms@example.test"],
+            vec!["config", "user.name", "RMS Test"],
+            vec!["add", "-A"],
+            vec!["commit", "-m", "baseline"],
+        ] {
+            let status = Command::new("git")
+                .args(&args)
+                .current_dir(&root)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {} failed", args.join(" "));
+        }
+
+        fs::create_dir_all(root.join("Sources/Legacy")).unwrap();
+        fs::write(
+            root.join("Sources/Legacy/Unowned.swift"),
+            "struct Unowned {}\n",
+        )
+        .unwrap();
+        let outside = build_module_scoped_check_report(
+            &root,
+            &module_root.join("module.yaml"),
+            CheckMode::Committed,
+        )
+        .unwrap();
+        assert_eq!(outside.result, CheckResult::Pass, "{outside:#?}");
+        assert!(outside.warnings.iter().any(|warning| warning.contains(
+            "outside the certified module closure and did not invalidate this scoped proof"
+        )));
+        assert_eq!(
+            outside.details["out_of_scope_changed_paths"],
+            json!(["Sources/Legacy/Unowned.swift"])
+        );
+
+        fs::write(module_root.join("uncommitted-role.txt"), "candidate\n").unwrap();
+        let inside = build_module_scoped_check_report(
+            &root,
+            &module_root.join("module.yaml"),
+            CheckMode::Committed,
+        )
+        .unwrap();
+        assert_eq!(inside.result, CheckResult::Fail, "{inside:#?}");
+        assert!(inside.reasons.iter().any(
+            |reason| reason.contains("scoped committed proof requires a clean module closure")
+        ));
+
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -61176,6 +62946,7 @@ laws:
 contracts:
   add:
     - name: resolve-checkout
+      kind: command
       version: v1
       command: ResolveCheckout
       meaning: Resolve checkout state after inventory and payment outcomes.
@@ -61375,6 +63146,7 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
 contracts:
   set:
     - name: select-lines
+      kind: command
       version: v1
       command: select-lines
       meaning: Select requested input lines once while preserving source order.
@@ -61457,6 +63229,7 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
 contracts:
   set:
     - name: plan-batches
+      kind: capability
       version: v1
       command: plan-batches
       meaning: Consume ordered bounded batch plans from the declared provider.
@@ -61539,6 +63312,7 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
 contracts:
   add:
     - name: plan-batches
+      kind: capability
       version: v1
       command: plan-batches
       meaning: Accidentally publish a required contract.
@@ -61592,6 +63366,7 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
 contracts:
   add:
     - name: plan-batches
+      kind: capability
       direction: required
       version: v1
       command: plan-batches
@@ -61624,7 +63399,94 @@ evidence:
     }
 
     #[test]
-    fn spec_apply_contract_set_requires_direction_when_name_is_provided_and_required() {
+    fn spec_apply_publishes_first_capability_on_standalone_module() {
+        let root = unique_test_dir("spec-apply-first-standalone-capability");
+        run_add_module(
+            add_module_request(
+                &root,
+                "client-account-access",
+                "Decide account access as a reusable pure library.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("swift"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+intent:
+  summary: Publish account access as a reusable semantic capability.
+contracts:
+  add:
+    - name: client-account-access
+      kind: capability
+      direction: provided
+      version: v1
+      meaning: Decide whether a client may access an account.
+      accepts: [validated access request]
+      ensures: [explicit access decision]
+      rejects: [invalid request]
+semantic_functions:
+  set:
+    - id: transition-model
+      symbol: Sources/ClientAccountAccess/Transition.swift#transition
+      kind: transition
+      purity: pure
+      discharges:
+        contracts: [contracts/client-account-access.v1.yaml]
+      evidence:
+        contracts: [verification/contracts/client_account_access.md]
+public_behavior_bindings:
+  add:
+    - id: client-account-access-public
+      public_kind: capability
+      public_name: client-account-access
+      contract: contracts/client-account-access.v1.yaml
+      semantic_function: transition-model
+      machine_inputs: [Accept, Reject]
+      machine_outputs: [Accepted, InvalidCommand]
+evidence:
+  add:
+    - kind: contract
+      proves: client-account-access
+      path: verification/contracts/client_account_access.md
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let module = load_manifest(&root.join("module.yaml")).unwrap();
+        let capabilities = get_path(&module.value, &["provides", "capabilities"])
+            .and_then(YamlValue::as_sequence)
+            .unwrap();
+        let contract =
+            load_manifest(&root.join("contracts/client-account-access.v1.yaml")).unwrap();
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        let has_composition = get_path(&module.value, &["composition"]).is_some();
+        let generated_children = [
+            "client-account-access-domain",
+            "client-account-access-boundary",
+        ]
+        .iter()
+        .any(|name| root.join(name).exists());
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(capabilities.len(), 1);
+        assert_eq!(get_str(&contract.value, &["kind"]), Some("capability"));
+        assert!(implementation.contains("id: client-account-access-public"));
+        assert!(!has_composition);
+        assert!(!generated_children);
+    }
+
+    #[test]
+    fn spec_apply_contract_set_requires_explicit_kind() {
         let root = unique_test_dir("spec-apply-ambiguous-contract-direction");
         fs::create_dir_all(root.join("contracts")).unwrap();
         fs::write(
@@ -61683,7 +63545,7 @@ evidence:
         fs::remove_dir_all(&root).unwrap();
         assert!(diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.check == "semantic.contract-direction-ambiguous"));
+            .any(|diagnostic| diagnostic.check == "semantic.contract-kind-missing"));
     }
 
     #[test]
@@ -61729,6 +63591,7 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
 contracts:
   remove:
     - name: shared-operation
+      kind: capability
       direction: required
       version: v1
 "#,
@@ -61938,6 +63801,7 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
 contracts:
   remove:
     - name: old-command
+      kind: command
       version: v1
 "#,
             ),
@@ -64010,6 +65874,51 @@ verification:
     }
 
     #[test]
+    fn pure_standalone_module_rejects_unsplit_runnable_justification() {
+        let manifest = loaded_module_manifest(
+            "module.yaml",
+            r#"spec: rms/module/v0.1
+module:
+  name: account-access
+  version: 0.1.0
+  kind: library
+  purpose: Decide account access without IO.
+profiles: [core]
+owns:
+  concepts: [AccessDecision]
+  data: []
+  decisions: [decide account access]
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  modules: []
+  capabilities: []
+invariants: []
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+x-rms:
+  unsplit_runnable_justification: This reusable pure library is intentionally standalone.
+"#,
+        );
+        let mut diagnostics = Vec::new();
+
+        validate_semantic_module_completeness(&manifest, &mut diagnostics);
+
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "semantic.unsplit-runnable-justification-not-applicable"
+        }));
+    }
+
+    #[test]
     fn risk_bearing_law_requires_matching_semantic_property() {
         let manifest = LoadedManifest {
             path: PathBuf::from("module.yaml"),
@@ -65062,52 +66971,180 @@ architecture:
     }
 
     #[test]
-    fn design_prompt_recommends_generic_domain_engine_and_boundary_adapter() {
-        let root = unique_test_dir("design-boundary-split");
-        let rendered = render_design_prompt(&root, "browser-playable Snake game").unwrap();
-
-        fs::remove_dir_all(&root).ok();
-        assert!(rendered.contains("Prompt: rms.design@v1"));
-        assert!(rendered.contains("deterministic design hints choose the initial scaffold"));
-        assert!(rendered.contains("do not replace it with one module merely to save work"));
-        assert!(rendered.contains("Candidate split"));
-        assert!(rendered.contains("## Semantic Structure Before Code"));
-        assert!(rendered.contains("Traceable machine rule"));
-        assert!(rendered.contains("Artifacts and transformations"));
-        assert!(rendered.contains("Public protocols"));
-        assert!(rendered.contains("Resource ownership"));
-        assert!(rendered.contains("Temporal proof"));
-        assert!(rendered.contains("first-bad-transition evidence"));
-        assert!(rendered.contains("Edge cases first"));
-        assert!(rendered.contains("### Recommended Module Tree"));
-        assert!(rendered.contains("`<capability>` [composite]"));
-        assert!(rendered.contains("`<semantic-domain-child>` [domain-engine, internal]"));
-        assert!(rendered.contains("`<semantic-boundary-child>` [boundary-adapter, internal]"));
-        assert!(rendered.contains("Name children in product/domain language"));
-        assert!(rendered.contains("omit `--domain-child`"));
-        assert!(rendered.contains("--domain-binding <rust|swift|js|executable>"));
-        assert!(rendered.contains("rms add-binding <child>/module.yaml"));
-        assert!(rendered.contains("Do not name inner machines from role or surface words"));
-        assert!(rendered.contains("domain-engine"));
-        assert!(rendered.contains("boundary-adapter"));
-        assert!(!rendered.contains("snake-rules"));
-        assert!(!rendered.contains("snake-web"));
-        assert!(!rendered.contains("snake [composite]"));
+    fn structured_intent_recommends_generic_domain_and_boundary_topology() {
+        let task = "browser-playable Snake game";
+        let model: IntentModel = serde_yaml::from_str(
+            r#"spec: rms/intent-model/v0.1
+operation: design
+change_scope: new-system
+subjects: [snake]
+facts:
+  domain_decisions: { disposition: required, basis: explicit, source_quote: "Snake game" }
+  lifecycle: { disposition: required, basis: inferred, rationale: "Turns are ordered." }
+  effects: { disposition: required, basis: inferred, rationale: "Rendering is a boundary effect." }
+  runnable_surface: { disposition: required, basis: explicit, source_quote: "browser-playable" }
+  reuse: { disposition: absent, basis: inferred, rationale: "No reuse request." }
+responsibilities:
+  - { id: snake-decisions, kind: decision, summary: "Decide legal game transitions." }
+  - { id: snake-browser, kind: boundary, summary: "Adapt browser input and rendering." }
+surface_kinds: [browser]
+binding_preferences: []
+open_questions: []
+"#,
+        )
+        .unwrap();
+        assert!(validate_intent_model(task, Path::new("."), &model).is_empty());
+        let decision = decide_architecture(task, &model);
+        assert_eq!(decision.topology, ArchitectureTopology::CapabilityTree);
+        assert!(decision
+            .modules
+            .iter()
+            .any(|module| module.shape == "workflow"));
+        assert!(decision
+            .modules
+            .iter()
+            .any(|module| module.shape == "boundary-adapter"));
+        assert_eq!(decision.scaffold.args[0], "add-capability-tree");
     }
 
     #[test]
-    fn design_prompt_names_runtime_monitor_for_supervisory_tasks() {
-        let root = unique_test_dir("design-runtime-monitor");
-        let rendered = render_design_prompt(
-            &root,
-            "runtime monitor that observes operational inputs and triggers supervisory fallback",
+    fn structured_intent_names_runtime_monitor_without_keyword_inference() {
+        let model: IntentModel = serde_yaml::from_str(
+            r#"spec: rms/intent-model/v0.1
+operation: design
+change_scope: new-module
+subjects: [health-observation]
+facts:
+  domain_decisions: { disposition: absent, basis: inferred, rationale: "It observes facts." }
+  lifecycle: { disposition: required, basis: inferred, rationale: "Observations evolve." }
+  effects: { disposition: absent, basis: inferred, rationale: "No external executor requested." }
+  runnable_surface: { disposition: absent, basis: inferred, rationale: "No surface requested." }
+  reuse: { disposition: absent, basis: inferred, rationale: "No reuse request." }
+responsibilities:
+  - { id: health-observation, kind: monitor, summary: "Project observed health facts." }
+surface_kinds: []
+binding_preferences: []
+open_questions: []
+"#,
+        )
+        .unwrap();
+        let decision = decide_architecture("irrelevant raw text", &model);
+        assert_eq!(decision.topology, ArchitectureTopology::Standalone);
+        assert_eq!(decision.modules[0].shape, "runtime-monitor");
+    }
+
+    #[test]
+    fn structured_intent_keeps_pure_reusable_swift_library_standalone() {
+        let task = "Initialize it as the Client Account Access system and add one Swift-bound domain-engine library module. Record that this is a reusable pure library, not a runnable app, and it performs no IO with no runnable interface.";
+        let model: IntentModel = serde_yaml::from_str(
+            r#"spec: rms/intent-model/v0.1
+operation: design
+change_scope: new-module
+subjects: [client-account-access]
+facts:
+  domain_decisions: { disposition: required, basis: explicit, source_quote: "pure library" }
+  lifecycle: { disposition: absent, basis: inferred, rationale: "No ordered behavior was requested." }
+  effects: { disposition: absent, basis: explicit, source_quote: "performs no IO" }
+  runnable_surface: { disposition: absent, basis: explicit, source_quote: "no runnable interface" }
+  reuse: { disposition: required, basis: explicit, source_quote: "reusable pure library" }
+responsibilities:
+  - { id: account-access-decisions, kind: decision, summary: "Decide account-access outcomes." }
+surface_kinds: []
+binding_preferences: [swift]
+open_questions: []
+"#,
         )
         .unwrap();
 
-        fs::remove_dir_all(&root).ok();
-        assert!(rendered.contains("runtime-monitor"));
-        assert!(rendered.contains("Monitor authority must be explicit"));
-        assert!(rendered.contains("Supervisory outputs must cross public contracts"));
+        assert!(validate_intent_model(task, Path::new("."), &model).is_empty());
+        let decision = decide_architecture(task, &model);
+
+        assert_eq!(decision.topology, ArchitectureTopology::Standalone);
+        assert_eq!(decision.modules.len(), 1);
+        assert_eq!(decision.modules[0].shape, "domain-engine");
+        assert_eq!(decision.modules[0].binding.as_deref(), Some("swift"));
+        assert_eq!(decision.scaffold.args[0], "add-module");
+        assert!(!decision.scaffold.args.iter().any(|arg| arg == "--surface"));
+        assert!(!format!("{decision:?}").contains("justification"));
+    }
+
+    #[test]
+    fn intent_model_requires_material_facts_and_forbids_architecture_fields() {
+        let missing = RawIntentInput::default();
+        let (model, diagnostics, _) =
+            resolve_intent_model(Path::new("."), "Design a library", &missing, None).unwrap();
+        assert!(model.is_none());
+        assert!(diagnostics
+            .iter()
+            .any(|item| item.check == "intent.model-required"));
+
+        let unknown: IntentModel = serde_yaml::from_str(
+            r#"spec: rms/intent-model/v0.1
+operation: design
+change_scope: unknown
+subjects: [unknown-system]
+facts:
+  domain_decisions: { disposition: unknown, basis: inferred, rationale: "Needs clarification." }
+  lifecycle: { disposition: unknown, basis: inferred, rationale: "Needs clarification." }
+  effects: { disposition: unknown, basis: inferred, rationale: "Needs clarification." }
+  runnable_surface: { disposition: unknown, basis: inferred, rationale: "Needs clarification." }
+  reuse: { disposition: unknown, basis: inferred, rationale: "Needs clarification." }
+responsibilities: []
+surface_kinds: []
+binding_preferences: []
+open_questions: ["Clarify the requested behavior."]
+"#,
+        )
+        .unwrap();
+        assert!(
+            validate_intent_model("Design something", Path::new("."), &unknown)
+                .iter()
+                .any(|item| item.check == "intent.material-unknown")
+        );
+
+        let forbidden = r#"spec: rms/intent-model/v0.1
+operation: design
+change_scope: new-module
+subjects: [forbidden]
+facts:
+  domain_decisions: { disposition: absent, basis: inferred, rationale: "No decision." }
+  lifecycle: { disposition: absent, basis: inferred, rationale: "No lifecycle." }
+  effects: { disposition: absent, basis: inferred, rationale: "No effects." }
+  runnable_surface: { disposition: absent, basis: inferred, rationale: "No surface." }
+  reuse: { disposition: absent, basis: inferred, rationale: "No reuse." }
+responsibilities: []
+surface_kinds: []
+binding_preferences: []
+open_questions: []
+topology: composite
+"#;
+        assert!(parse_intent_model_source(forbidden)
+            .unwrap_err()
+            .contains("unknown field `topology`"));
+    }
+
+    #[test]
+    fn removed_add_capability_command_is_unavailable() {
+        assert!(Cli::try_parse_from([
+            "rms",
+            "add-capability",
+            "modules/example",
+            "--name",
+            "example",
+            "--purpose",
+            "Example"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "rms",
+            "add-capability-tree",
+            "modules/example",
+            "--name",
+            "example",
+            "--purpose",
+            "Example"
+        ])
+        .is_ok());
     }
 
     #[test]
@@ -65312,12 +67349,13 @@ verification:
         )
         .unwrap();
 
-        let rendered = render_design_prompt(&root, "local Tic-Tac-Toe game").unwrap();
+        let modules = discover_module_manifests(&root).unwrap();
+        let advisories = shape_advisories(&modules[0]);
 
         fs::remove_dir_all(&root).unwrap();
-        assert!(rendered.contains("tic-tac-toe-cli"));
-        assert!(!rendered.contains("module mixes boundary effects with owned domain decisions"));
-        assert!(!rendered.contains("Existing modules show shape or boundary pressure"));
+        assert!(advisories.iter().all(
+            |item| !item.contains("module mixes boundary effects with owned domain decisions")
+        ));
     }
 
     #[test]
@@ -65376,11 +67414,16 @@ verification:
         )
         .unwrap();
 
-        let rendered = render_design_prompt(&root, "browser Snake game").unwrap();
+        let modules = discover_module_manifests(&root).unwrap();
+        let advisories = shape_advisories(&modules[0]);
 
         fs::remove_dir_all(&root).unwrap();
-        assert!(rendered.contains("module mixes boundary effects with owned domain decisions"));
-        assert!(rendered.contains("Existing modules show shape or boundary pressure"));
+        assert!(
+            advisories
+                .iter()
+                .any(|item| item
+                    .contains("module mixes boundary effects with owned domain decisions"))
+        );
     }
 
     #[test]
@@ -66539,7 +68582,7 @@ verification:
         )
         .unwrap();
 
-        run_add_capability(AddCapabilityRequest {
+        run_add_capability_tree(AddCapabilityTreeRequest {
             path: root.join("modules/play-game"),
             name: "play-game".to_string(),
             purpose: "Expose playable game capability.".to_string(),
@@ -66549,6 +68592,7 @@ verification:
             domain_command: Some("resolve-move".to_string()),
             domain_binding: Some("rust".to_string()),
             boundary_binding: Some("js".to_string()),
+            surface: None,
         })
         .unwrap();
         record_generated_traces(&root.join("modules/play-game-rules"));
@@ -66665,7 +68709,7 @@ verification:
 
     #[test]
     fn add_capability_realizes_same_binding_local_dependency() {
-        let root = unique_test_dir("add-capability-rust-local-dependency");
+        let root = unique_test_dir("add-capability-tree-rust-local-dependency");
         run_init(
             &root,
             "dependency-fixture",
@@ -66675,7 +68719,7 @@ verification:
         )
         .unwrap();
 
-        run_add_capability(AddCapabilityRequest {
+        run_add_capability_tree(AddCapabilityTreeRequest {
             path: root.join("modules/mini-xargs"),
             name: "mini-xargs".to_string(),
             purpose: "Build a local CLI with pure batching and process effects.".to_string(),
@@ -66685,6 +68729,7 @@ verification:
             domain_command: Some("plan-invocations".to_string()),
             domain_binding: Some("rust".to_string()),
             boundary_binding: Some("rust".to_string()),
+            surface: None,
         })
         .unwrap();
 
@@ -66718,7 +68763,7 @@ verification:
             &["fixture".to_string()],
         )
         .unwrap();
-        run_add_capability(AddCapabilityRequest {
+        run_add_capability_tree(AddCapabilityTreeRequest {
             path: root.join("modules/play-game"),
             name: "play-game".to_string(),
             purpose: "Expose a local playable game command.".to_string(),
@@ -66728,6 +68773,7 @@ verification:
             domain_command: Some("resolve-move".to_string()),
             domain_binding: Some("js".to_string()),
             boundary_binding: Some("js".to_string()),
+            surface: None,
         })
         .unwrap();
         let boundary = root.join("modules/play-game-boundary");
@@ -67131,7 +69177,7 @@ semantic_functions:
 
     #[test]
     fn add_capability_parent_does_not_declare_empty_boundary_lane() {
-        let root = unique_test_dir("add-capability-parent-evidence-lanes");
+        let root = unique_test_dir("add-capability-tree-parent-evidence-lanes");
         run_init(
             &root,
             "capability-fixture",
@@ -67141,7 +69187,7 @@ semantic_functions:
         )
         .unwrap();
 
-        run_add_capability(AddCapabilityRequest {
+        run_add_capability_tree(AddCapabilityTreeRequest {
             path: root.join("modules/checkout"),
             name: "checkout".to_string(),
             purpose: "Expose checkout capability.".to_string(),
@@ -67151,6 +69197,7 @@ semantic_functions:
             domain_command: Some("decide-checkout".to_string()),
             domain_binding: Some("rust".to_string()),
             boundary_binding: Some("rust".to_string()),
+            surface: None,
         })
         .unwrap();
 
@@ -67171,7 +69218,7 @@ semantic_functions:
 
     #[test]
     fn add_capability_browser_tool_declares_thin_runnable_surface() {
-        let root = unique_test_dir("add-capability-browser-surface");
+        let root = unique_test_dir("add-capability-tree-browser-surface");
         run_init(
             &root,
             "browser-surface-fixture",
@@ -67181,7 +69228,7 @@ semantic_functions:
         )
         .unwrap();
 
-        run_add_capability(AddCapabilityRequest {
+        run_add_capability_tree(AddCapabilityTreeRequest {
             path: root.join("modules/tile-generator"),
             name: "tile-generator".to_string(),
             purpose: "Local browser tool for generating tile assets.".to_string(),
@@ -67191,6 +69238,7 @@ semantic_functions:
             domain_command: Some("create-alpha-mask-tile".to_string()),
             domain_binding: Some("js".to_string()),
             boundary_binding: Some("js".to_string()),
+            surface: Some("browser".to_string()),
         })
         .unwrap();
 
@@ -67254,7 +69302,7 @@ semantic_functions:
 
     #[test]
     fn add_capability_defaults_to_neutral_child_names() {
-        let root = unique_test_dir("add-capability-neutral-children");
+        let root = unique_test_dir("add-capability-tree-neutral-children");
         run_init(
             &root,
             "neutral-child-fixture",
@@ -67264,7 +69312,7 @@ semantic_functions:
         )
         .unwrap();
 
-        run_add_capability(AddCapabilityRequest {
+        run_add_capability_tree(AddCapabilityTreeRequest {
             path: root.join("modules/evaluate-coupon"),
             name: "evaluate-coupon".to_string(),
             purpose: "Expose coupon evaluation.".to_string(),
@@ -67274,6 +69322,7 @@ semantic_functions:
             domain_command: None,
             domain_binding: None,
             boundary_binding: None,
+            surface: None,
         })
         .unwrap();
 
@@ -67299,7 +69348,7 @@ semantic_functions:
         .unwrap();
         run_agent_init(&root, AgentTarget::Codex, true).unwrap();
         run_agent_init(&root, AgentTarget::Claude, true).unwrap();
-        run_add_capability(AddCapabilityRequest {
+        run_add_capability_tree(AddCapabilityTreeRequest {
             path: root.join("modules/play-tic-tac-toe"),
             name: "play-tic-tac-toe".to_string(),
             purpose: "Expose a playable Tic Tac Toe capability.".to_string(),
@@ -67309,6 +69358,7 @@ semantic_functions:
             domain_command: Some("apply-move".to_string()),
             domain_binding: Some("rust".to_string()),
             boundary_binding: Some("js".to_string()),
+            surface: None,
         })
         .unwrap();
         record_generated_traces(&root.join("modules/play-tic-tac-toe-domain"));
@@ -69341,8 +71391,8 @@ verification:
         assert!(semantic.contains("`enforced_by` names the declared semantic-function id"));
         assert!(semantic.contains("non-empty string lists `accepts`, `ensures`, and `rejects`"));
         assert!(semantic.contains("optional `direction: provided|required`"));
-        assert!(semantic.contains("consumer expectation under `requires.capabilities`"));
-        assert!(semantic.contains("do not use `contracts.add` to publish the dependency"));
+        assert!(semantic.contains("only capability contracts may be required"));
+        assert!(semantic.contains("public_behavior_bindings"));
         assert!(semantic.contains("non-empty `oracle`"));
         assert!(semantic.contains("`properties.add[]` and `properties.set[]`"));
         assert!(semantic.contains("`properties.remove[]` contains existing property ids"));
@@ -71796,7 +73846,7 @@ runs:
         let quickstart = fs::read_to_string(&quickstart_path).unwrap();
         fs::write(
             &quickstart_path,
-            "rms init\nrms design\nauthorized bootstrap commit\nrms add-module\nrms add-capability\n",
+            "rms init\nrms design\nauthorized bootstrap commit\nrms add-module\nrms add-capability-tree\n",
         )
         .unwrap();
         let error = validate_guidance_and_documentation_distribution(&root)
@@ -71855,6 +73905,8 @@ runs:
                 "inspect the example module",
                 "--root",
                 "examples/minimal",
+                "--intent-json",
+                RELEASE_INSPECT_INTENT_MODEL,
                 "--json",
             ]
         );
@@ -71866,6 +73918,7 @@ runs:
                 module,
                 json,
                 details,
+                ..
             } => {
                 assert_eq!(task, "inspect the example module");
                 assert_eq!(root, PathBuf::from("examples/minimal"));
@@ -72119,6 +74172,7 @@ intent:
 contracts:
   add:
     - name: source-unit
+      kind: command
       version: v1
       command: ValidateSource
       meaning: A validated source unit accepted by this compiler stage.
@@ -72126,6 +74180,7 @@ contracts:
       ensures: [the source artifact has a stable versioned contract]
       rejects: [invalid source]
     - name: compile
+      kind: command
       version: v1
       command: Compile
       meaning: Request compilation of one validated source unit.
@@ -72961,7 +75016,7 @@ records:
         );
         write_test_file(
             &root.join("QUICKSTART.md"),
-            "# Quickstart\n\nrms init\n\nauthorized bootstrap commit\n\nrms design\n\nStandalone alternative: rms add-module\n\nRecursive alternative: rms add-capability\n",
+            "# Quickstart\n\nrms init\n\nauthorized bootstrap commit\n\nrms design\n\nStandalone alternative: rms add-module\n\nRecursive alternative: rms add-capability-tree\n",
         );
         write_test_file(
             &root.join("PRODUCTION.md"),
@@ -73309,7 +75364,7 @@ verification:
             &["fixture".to_string()],
         )
         .unwrap();
-        run_add_capability(AddCapabilityRequest {
+        run_add_capability_tree(AddCapabilityTreeRequest {
             path: root.join("modules/play-game"),
             name: "play-game".to_string(),
             purpose: "Expose playable game capability.".to_string(),
@@ -73319,6 +75374,7 @@ verification:
             domain_command: Some("resolve-move".to_string()),
             domain_binding: Some("rust".to_string()),
             boundary_binding: Some("js".to_string()),
+            surface: None,
         })
         .unwrap();
         root

@@ -22,7 +22,7 @@ The reference interface has five primary commands:
 
 ```text
 rms init [OPTIONS] [PATH]
-rms next "<intent>" [--root PATH] [--module MODULE] [--json] [--details]
+rms next "<intent>" [--intent-json JSON | --intent-yaml YAML | --intent-file PATH | --ai] [--root PATH] [--module MODULE] [--json] [--details]
 rms explain ["<question>"] [--root PATH] [--module MODULE] [--json] [--details]
 rms check [--environment | --changes | --committed] [--root PATH] [--json] [--details]
 rms view [OPTIONS]
@@ -86,15 +86,15 @@ Without commit authority, the exact state is `bootstrap prepared; provenance bas
 
 ### `next`
 
-`next` is the deterministic doorway from intent to work:
+`next` is the deterministic doorway from typed intent to work:
 
 ```bash
-rms next "<intent>" --root .
+rms next "<intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
 ```
 
-It classifies repository shape and task lane, validates readable canonical artifacts, resolves ownership only from unambiguous evidence, and returns the immediate action plus completion conditions. Explicit `--module` is an owner override. Recursive composition routing is cycle-protected, and ties remain ties.
+An agent or recorded read-only provider extracts typed facts without topology. RMS validates exact quotes, inferred rationales, contradictions, and material unknowns; then deterministic policy chooses the lane, structured subjects route ownership, and facts choose standalone or recursive topology. Explicit `--module` is an owner override. Recursive composition routing is cycle-protected, and ties remain ties.
 
-The task is prospective. An unrelated working-tree diff must not affect its lane or prescription. `next` never mutates files, runs verification, invokes providers, or grants edit or commit authority.
+The task is prospective. Raw task keywords and unrelated working-tree diffs have no architecture authority. `next` never mutates files, runs verification, or grants edit or commit authority; `--ai` performs only recorded read-only intent extraction.
 
 Repository installation, plugin or skill synchronization, and Git status/fetch/commit/rebase/merge/push are `repository-operation` tasks with result `no-rms-change`, unless the intent changes RMS's behavior around those operations. A readable uninitialized root may therefore require no RMS bootstrap for an operational task. Invalid canonical artifacts still block semantic work.
 

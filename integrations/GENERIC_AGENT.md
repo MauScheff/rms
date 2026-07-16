@@ -6,7 +6,7 @@ A coding agent needs no native RMS integration. It needs the CLI, concise reposi
 
 ```bash
 rms check --environment --root .
-rms next "<intent>" --root .
+rms next "<intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
 rms explain "<question>" --root .
 rms check --root .
 rms view --root .
@@ -14,7 +14,7 @@ rms view --root .
 
 Use `rms help --all` only when the selected skill or detailed response prescribes a specialist command.
 
-The agent should follow this loop:
+The agent extracts typed semantic facts from the user's words without proposing modules, shapes, or topology. It may instead opt into recorded read-only `--ai` extraction. The agent should then follow this loop:
 
 1. ask `next` for the owner, lane, context, and immediate action;
 2. use `explain` when canonical meaning is unclear;

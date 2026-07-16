@@ -6,7 +6,7 @@ Promise:
 
 Scenario:
 
-- `rms add-capability` with Rust domain and boundary children records `dependencies.local_modules`, adds one Rust allowlist entry, and writes the sibling Cargo path dependency.
+- `rms add-capability-tree` with Rust domain and boundary children records `dependencies.local_modules`, adds one Rust allowlist entry, and writes the sibling Cargo path dependency.
 - `rms spec apply` accepts language-neutral `binding_dependencies.set/add/remove` and routes realization through the selected binding adapter.
 - Rust package spelling `mini-xargs-domain` and import spelling `mini_xargs_domain` normalize to the same crate identity.
 

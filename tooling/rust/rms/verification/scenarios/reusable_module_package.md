@@ -2,7 +2,7 @@
 
 Promise:
 
-- `rms add-capability` scaffolds reusable pure/domain children as capability providers with package/reuse evidence.
+- `rms add-capability-tree` scaffolds reusable pure/domain children as capability providers with package/reuse evidence.
 - JS reusable/domain bindings expose `src/public.mjs` as the public facade while keeping `representation.mjs` and `transition.mjs` as role files.
 - Consumers compose through `requires.capabilities[]` and contract paths, not private source imports.
 

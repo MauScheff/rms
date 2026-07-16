@@ -1,15 +1,21 @@
 # Contract Evidence: design-rms-system
 
-Covered by `cargo test --manifest-path Cargo.toml`, including deterministic design prompt coverage.
+Promise: `design-rms-system` validates `rms/intent-model/v0.1` facts before architecture, rejects model fields that contain topology, and applies one language-neutral deterministic topology policy. Provider extraction is read-only evidence, not architecture authority.
 
-Executable coverage:
+Executable scenarios:
 
-- `design_prompt_recommends_generic_domain_engine_and_boundary_adapter` verifies `rms.design@v1` renders before a target module exists and recommends a semantic composite tree with a `domain-engine` child plus a `boundary-adapter` child, without hard-coded game-specific module names. It also verifies the prompt requires semantic structure, traceable-machine obligations, and edge-case decisions before code.
-- `design_prompt_names_runtime_monitor_for_supervisory_tasks` verifies runtime monitoring and supervisory-control tasks receive runtime-monitor shape guidance and explicit monitor-authority guidance.
-- `design_prompt_allows_boundary_adapter_parser_decisions` verifies adapter-owned parsing, malformed-input rejection, and delegation decisions do not trigger mixed domain/boundary warnings.
-- `design_prompt_warns_when_boundary_adapter_owns_domain_rules` verifies boundary modules that also own rule decisions still receive domain-engine split guidance.
-- `boundary_adapter_shape_scaffold_gets_boundary_semantics` verifies `rms add-module --shape boundary-adapter` records adapter kind and Boundary-profile obligations by default.
-- `validate_warns_when_boundary_adapter_shape_lacks_boundary_semantics` verifies validation warns when scaffold shape and manifest semantics drift apart.
-- `workbench_run_record_writes_prompt_request_and_checks` covers the shared run-record path used by advisory design prompts.
+- `structured_intent_keeps_pure_reusable_swift_library_standalone` proves the exact Client Account Access intent yields one Swift `domain-engine`, no surface, no composite, and no exception despite negated runnable language.
+- `structured_intent_recommends_generic_domain_and_boundary_topology` proves decisions plus a required runnable surface select a recursive decision/boundary topology.
+- `structured_intent_names_runtime_monitor_without_keyword_inference` proves responsibility kinds, rather than prose keywords, select specialized shapes.
+- `intent_model_requires_material_facts_and_forbids_architecture_fields` proves missing, unknown, contradictory, source-mismatched, and topology-bearing models stop before scaffolding.
 
-Provider execution uses the same rendered prompt and stores provider output under the generated run record.
+Command/tool:
+
+```bash
+cargo test --manifest-path tooling/rust/rms/Cargo.toml --locked structured_intent_
+cargo test --manifest-path tooling/rust/rms/Cargo.toml --locked intent_model_requires_material_facts_and_forbids_architecture_fields
+```
+
+Expected result: all tests pass and no runtime architecture decision scans raw task or purpose text.
+
+Source provenance: the clean committed candidate revision resolved by `rms audit --root . --strict`.

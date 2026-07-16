@@ -19,13 +19,13 @@ For ordinary work, Codex needs only the five-command doorway:
 
 ```bash
 rms check --environment --root .
-rms next "<intent>" --root .
+rms next "<intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
 rms explain "<question>" --root .
 rms check --root .
 rms view --root .
 ```
 
-`next` selects the owner, task lane, context, skill, and proof path. Codex should use its compact response first and request `--details` only when needed. `rms help --all` exposes specialist commands when the selected skill prescribes one.
+Codex extracts typed facts without architecture fields; recorded read-only `--ai` extraction is also available. `next` validates those facts, then selects the owner, task lane, context, skill, and proof path. Codex should use its compact response first and request `--details` only when needed. `rms help --all` exposes specialist commands when the selected skill prescribes one.
 
 Production completion is focused proof → `rms check --changes` → authorized candidate commit → `rms check --committed`.
 
