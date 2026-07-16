@@ -2612,7 +2612,7 @@ semantic_functions:
     - verification/contracts/manage_rms_adoption.md
 x-rms:
   semantic_revision:
-    digest: sha256:02da0bc10f83aecbe3804200ea3c6df44f629c9d99a3473ee9e0ae14360fb7a6
-    change_record: verification/changes/preserve-the-complete-rms-command-guarantees-while-adding-structured-intent-topology-independent-capability-publication-and-scoped-adoption-proof-eb2690298a0d.yaml
+    digest: sha256:592f6b59dade33e71f6b536ac9dc1e54ce037f11083dafbaa41dceac19d9b5f7
+    change_record: verification/changes/recognize-valid-binding-native-swift-async-and-throwing-executor-declarations-without-weakening-canonical-effect-request-and-result-conformance-d01c42bf17eb.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:eb2690298a0dc75acadef59a64b85cb44949c7279eb72d7c8dc38168926b466d
+    change_record_digest: sha256:d01c42bf17ebf9d751ae86379de42341b2440311955d31f73d9f2e1a325319df

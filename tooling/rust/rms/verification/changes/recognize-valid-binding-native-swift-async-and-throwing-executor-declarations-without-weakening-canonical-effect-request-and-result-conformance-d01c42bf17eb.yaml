@@ -1,0 +1,35 @@
+spec: rms/semantic-change/v0.1
+module: null
+supersedes:
+- verification/changes/preserve-the-complete-rms-command-guarantees-while-adding-structured-intent-topology-independent-capability-publication-and-scoped-adoption-proof-eb2690298a0d.yaml
+intent:
+  summary: Recognize valid binding-native Swift async and throwing executor declarations without weakening canonical effect request and result conformance.
+laws:
+  add: []
+  set:
+  - id: effect-protocols-bind-exact-executors
+    statement: Every declared effect protocol names one exact executor symbol whose binding accepts the declared effect request and returns a declared effect result without owning orchestration; binding-native execution modifiers such as Swift async and throwing syntax do not change that semantic signature.
+    kind: reliability
+    authority: composition
+    enforced_by: effect-protocol-binding-check
+  remove: []
+contracts: null
+properties: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: effect-protocols-bind-exact-executors
+    path: verification/laws/exact_effect_executor_binding.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

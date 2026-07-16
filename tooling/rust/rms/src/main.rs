@@ -25734,7 +25734,7 @@ fn swift_function_signature(source: &str, function: &str) -> Option<SwiftFunctio
             .filter_map(|(_, ty)| binding_type_leaf(ty))
             .collect()
     };
-    let after = rest[end + 1..].trim_start();
+    let after = swift_signature_after_effect_specifiers(&rest[end + 1..])?;
     let return_type = after.strip_prefix("->").and_then(|value| {
         let value = value.split(['{', '\n']).next().unwrap_or(value).trim();
         binding_type_leaf(value)
@@ -25743,6 +25743,58 @@ fn swift_function_signature(source: &str, function: &str) -> Option<SwiftFunctio
         parameter_types,
         return_type,
     })
+}
+
+fn swift_signature_after_effect_specifiers(source: &str) -> Option<&str> {
+    let mut rest = source.trim_start();
+    loop {
+        if let Some(after) = strip_swift_signature_keyword(rest, "async") {
+            rest = after.trim_start();
+            continue;
+        }
+        if let Some(after) = strip_swift_signature_keyword(rest, "rethrows") {
+            rest = after.trim_start();
+            continue;
+        }
+        if let Some(after) = strip_swift_signature_keyword(rest, "throws") {
+            rest = after.trim_start();
+            if rest.starts_with('(') {
+                rest = swift_source_after_balanced_group(rest, '(', ')')?.trim_start();
+            }
+            continue;
+        }
+        return Some(rest);
+    }
+}
+
+fn strip_swift_signature_keyword<'a>(source: &'a str, keyword: &str) -> Option<&'a str> {
+    let rest = source.strip_prefix(keyword)?;
+    rest.chars()
+        .next()
+        .is_none_or(|character| !swift_identifier_character(character))
+        .then_some(rest)
+}
+
+fn swift_identifier_character(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
+fn swift_source_after_balanced_group(source: &str, open: char, close: char) -> Option<&str> {
+    if !source.starts_with(open) {
+        return None;
+    }
+    let mut depth = 0_u32;
+    for (index, character) in source.char_indices() {
+        if character == open {
+            depth += 1;
+        } else if character == close {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                return Some(&source[index + character.len_utf8()..]);
+            }
+        }
+    }
+    None
 }
 
 fn binding_type_leaf(value: &str) -> Option<String> {
@@ -26257,7 +26309,8 @@ fn validate_swift_machine_execution_path(
         };
         let expected_input = machine_types.effect.as_deref();
         let expected_output = machine_types.effect_result.as_deref();
-        if swift_function_signature(executor_source, executor).is_none_or(|signature| {
+        let executor_signature = swift_function_signature(executor_source, executor);
+        if executor_signature.as_ref().is_none_or(|signature| {
             signature.parameter_types.len() != 1
                 || signature.parameter_types.first().map(String::as_str) != expected_input
                 || signature.return_type.as_deref() != expected_output
@@ -26266,8 +26319,8 @@ fn validate_swift_machine_execution_path(
                 "structure.effect-protocol-executor-signature-mismatch",
                 &implementation.path,
                 format!(
-                    "effect `{}` Swift executor `{executor}` must accept {:?} and return {:?}",
-                    protocol.effect, expected_input, expected_output
+                    "effect `{}` Swift executor `{executor}` must accept {:?} and return {:?}; RMS parsed {:?}",
+                    protocol.effect, expected_input, expected_output, executor_signature
                 ),
             ));
         }
@@ -59946,6 +59999,70 @@ import struct ExternalKit.Widget
     }
 
     #[test]
+    fn swift_effect_executor_conformance_accepts_async_throwing_declarations() {
+        let root = unique_test_dir("workflow-swift-async-executor");
+        run_add_module(
+            add_module_request(
+                &root,
+                "checkout-flow",
+                "Coordinate checkout progress.",
+                "tool",
+                &[],
+                Some(ScaffoldShape::Workflow),
+                Some("swift"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+
+        let executor_path = WalkDir::new(root.join("Sources"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_str() == Some("EffectExecutor.swift"))
+            .map(|entry| entry.path().to_path_buf())
+            .unwrap();
+        let driver_path = WalkDir::new(root.join("Sources"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_str() == Some("MachineDriver.swift"))
+            .map(|entry| entry.path().to_path_buf())
+            .unwrap();
+
+        let executor =
+            fs::read_to_string(&executor_path)
+                .unwrap()
+                .replacen(") -> ", ") async throws -> ", 1);
+        let driver = fs::read_to_string(&driver_path)
+            .unwrap()
+            .replacen(") -> [", ") async throws -> [", 1)
+            .replace(
+                "pending.append(.effectResult(executeEffect(effect)))",
+                "pending.append(.effectResult(try await executeEffect(effect)))",
+            );
+        fs::write(&executor_path, executor).unwrap();
+        fs::write(&driver_path, driver).unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+        let status = std::process::Command::new("swift")
+            .args(["build", "--package-path"])
+            .arg(&root)
+            .status()
+            .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(status.success());
+        assert!(
+            report.diagnostics.iter().all(|diagnostic| {
+                diagnostic.check != "structure.effect-protocol-executor-signature-mismatch"
+                    && diagnostic.check
+                        != "structure.machine-driver-transition-record-not-preserved"
+            }),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
     fn rust_transition_arithmetic_distinguishes_unchecked_and_checked_indices() {
         let inspect = |source: &str| {
             let parsed = syn::parse_file(source).unwrap();
@@ -67938,6 +68055,40 @@ public func transitionWidget(_ state: WidgetState, _ input: WidgetInput) -> Widg
                 .starts_with("implementation.swift.typing.state")),
             "{diagnostics:#?}"
         );
+    }
+
+    #[test]
+    fn swift_signature_parser_preserves_types_across_execution_modifiers() {
+        for declaration in [
+            "func execute(_ effect: WidgetEffect) -> WidgetEffectResult {}",
+            "func execute(_ effect: WidgetEffect) async -> WidgetEffectResult {}",
+            "func execute(_ effect: WidgetEffect) throws -> WidgetEffectResult {}",
+            "func execute(_ effect: WidgetEffect) rethrows -> WidgetEffectResult {}",
+            "func execute(_ effect: WidgetEffect) async throws -> WidgetEffectResult {}",
+            "func execute(_ effect: WidgetEffect)\n    async throws(WidgetExecutorError)\n    -> WidgetEffectResult {}",
+            "func execute(_ effect: WidgetEffect) async throws(any Error) -> WidgetEffectResult {}",
+        ] {
+            assert_eq!(
+                swift_function_signature(declaration, "execute"),
+                Some(SwiftFunctionSignature {
+                    parameter_types: vec!["WidgetEffect".to_string()],
+                    return_type: Some("WidgetEffectResult".to_string()),
+                }),
+                "failed to parse `{declaration}`"
+            );
+        }
+    }
+
+    #[test]
+    fn swift_signature_parser_does_not_hide_wrong_executor_types() {
+        let signature = swift_function_signature(
+            "func execute(_ effect: UnrelatedEffect) async throws -> WrongResult {}",
+            "execute",
+        )
+        .unwrap();
+
+        assert_eq!(signature.parameter_types, ["UnrelatedEffect"]);
+        assert_eq!(signature.return_type.as_deref(), Some("WrongResult"));
     }
 
     #[test]
