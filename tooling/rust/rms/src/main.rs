@@ -10676,7 +10676,7 @@ fn resolve_intent_model(
             )
         })?;
         run_dir = Some(dir);
-        extract_structured_provider_response(&response)
+        normalize_provider_intent_source(&extract_structured_provider_response(&response))
     };
 
     match parse_intent_model_source(&source) {
@@ -10727,9 +10727,204 @@ fn extract_structured_provider_response(response: &str) -> String {
     trimmed.to_string()
 }
 
+fn normalize_provider_intent_source(source: &str) -> String {
+    let mut value = match serde_json::from_str::<JsonValue>(source) {
+        Ok(value) => value,
+        Err(_) => match serde_yaml::from_str::<YamlValue>(source)
+            .ok()
+            .and_then(|value| serde_json::to_value(value).ok())
+        {
+            Some(value) => value,
+            None => return source.to_string(),
+        },
+    };
+    if provider_intent_contains_architecture_fields(&value) {
+        return source.to_string();
+    }
+    let Some(model) = value.as_object_mut() else {
+        return source.to_string();
+    };
+
+    let mut binding_preferences = model
+        .get("binding_preferences")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(provider_binding_preference)
+        .collect::<Vec<_>>();
+    if let Some(facts) = model.get_mut("facts").and_then(JsonValue::as_object_mut) {
+        for key in ["implementation_language", "implementation_languages"] {
+            if let Some(value) = facts.get(key) {
+                if let Some(preference) = provider_binding_preference(value) {
+                    binding_preferences.push(preference);
+                }
+            }
+        }
+        facts.retain(|key, _| {
+            matches!(
+                key.as_str(),
+                "domain_decisions" | "lifecycle" | "effects" | "runnable_surface" | "reuse"
+            )
+        });
+    }
+    binding_preferences.sort();
+    binding_preferences.dedup();
+    model.insert(
+        "binding_preferences".to_string(),
+        JsonValue::Array(
+            binding_preferences
+                .into_iter()
+                .map(JsonValue::String)
+                .collect(),
+        ),
+    );
+
+    if let Some(items) = model.get("responsibilities").and_then(JsonValue::as_array) {
+        let mut used_ids = BTreeSet::new();
+        let responsibilities = items
+            .iter()
+            .filter_map(|item| normalize_provider_responsibility(item, &mut used_ids))
+            .collect::<Vec<_>>();
+        model.insert(
+            "responsibilities".to_string(),
+            JsonValue::Array(responsibilities),
+        );
+    }
+    if let Some(items) = model.get("surface_kinds").and_then(JsonValue::as_array) {
+        let surface_kinds = items
+            .iter()
+            .filter_map(provider_required_scalar)
+            .collect::<Vec<_>>();
+        model.insert(
+            "surface_kinds".to_string(),
+            JsonValue::Array(surface_kinds.into_iter().map(JsonValue::String).collect()),
+        );
+    }
+
+    model.retain(|key, _| {
+        matches!(
+            key.as_str(),
+            "spec"
+                | "operation"
+                | "change_scope"
+                | "subjects"
+                | "facts"
+                | "responsibilities"
+                | "surface_kinds"
+                | "binding_preferences"
+                | "open_questions"
+        )
+    });
+    serde_json::to_string(&value).unwrap_or_else(|_| source.to_string())
+}
+
+fn provider_intent_contains_architecture_fields(value: &JsonValue) -> bool {
+    const FORBIDDEN: &[&str] = &[
+        "architecture",
+        "topology",
+        "shape",
+        "shapes",
+        "modules",
+        "module_names",
+        "scaffold",
+        "scaffolds",
+        "composite",
+        "boundary_tree",
+    ];
+    match value {
+        JsonValue::Object(mapping) => mapping.iter().any(|(key, value)| {
+            FORBIDDEN.contains(&key.as_str()) || provider_intent_contains_architecture_fields(value)
+        }),
+        JsonValue::Array(items) => items
+            .iter()
+            .any(provider_intent_contains_architecture_fields),
+        _ => false,
+    }
+}
+
+fn provider_binding_preference(value: &JsonValue) -> Option<String> {
+    let raw = value.as_str().or_else(|| {
+        let object = value.as_object()?;
+        if object
+            .get("disposition")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|disposition| disposition != "required")
+        {
+            return None;
+        }
+        ["binding", "preference", "source_quote"]
+            .into_iter()
+            .find_map(|key| object.get(key).and_then(JsonValue::as_str))
+    })?;
+    let normalized = raw.to_ascii_lowercase();
+    for (needle, binding) in [
+        ("swift", "swift"),
+        ("rust", "rust"),
+        ("javascript", "js"),
+        (" js", "js"),
+        ("python", "python"),
+        ("executable", "executable"),
+    ] {
+        if normalized == needle.trim() || normalized.contains(needle) {
+            return Some(binding.to_string());
+        }
+    }
+    Some(raw.to_string())
+}
+
+fn normalize_provider_responsibility(
+    value: &JsonValue,
+    used_ids: &mut BTreeSet<String>,
+) -> Option<JsonValue> {
+    let object = value.as_object()?;
+    let kind = object.get("kind")?.as_str()?;
+    if object
+        .get("disposition")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|disposition| disposition != "required")
+    {
+        return None;
+    }
+    let summary = object
+        .get("summary")
+        .or_else(|| object.get("subject"))
+        .or_else(|| object.get("source_quote"))
+        .and_then(JsonValue::as_str)?;
+    let base_id = object
+        .get("id")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| semantic_id_segment(&format!("{kind}-{summary}")));
+    let mut id = base_id.clone();
+    let mut suffix = 2_u32;
+    while !used_ids.insert(id.clone()) {
+        id = format!("{base_id}-{suffix}");
+        suffix += 1;
+    }
+    Some(serde_json::json!({ "id": id, "kind": kind, "summary": summary }))
+}
+
+fn provider_required_scalar(value: &JsonValue) -> Option<String> {
+    if let Some(value) = value.as_str() {
+        return Some(value.to_string());
+    }
+    let object = value.as_object()?;
+    if object
+        .get("disposition")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|disposition| disposition != "required")
+    {
+        return None;
+    }
+    ["kind", "surface", "source_quote"]
+        .into_iter()
+        .find_map(|key| object.get(key).and_then(JsonValue::as_str))
+        .map(str::to_string)
+}
+
 fn render_intent_extraction_prompt(task: &str) -> String {
     format!(
-        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. Do not propose architecture, modules, topology, shapes, files, or scaffolds. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Responsibility kinds are decision|workflow|boundary|storage|integration|monitor. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
+        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Surface kinds and binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
         serde_json::to_string_pretty(&intent_model_template()).unwrap_or_default()
     )
 }
@@ -13379,7 +13574,7 @@ fn binding_symbol_reference_exists(
                 return false;
             };
             match binding {
-                Some("swift") => swift_function_signature(&source, symbol).is_some(),
+                Some("swift") => swift_binding_symbol_exists(&source, symbol),
                 Some("js") => {
                     let mut summary = JsSourceSummary::default();
                     inspect_js_source(&source, &mut summary);
@@ -13389,6 +13584,19 @@ fn binding_symbol_reference_exists(
             }
         }
     }
+}
+
+fn swift_binding_symbol_exists(source: &str, symbol: &str) -> bool {
+    if swift_function_signature(source, symbol).is_some() {
+        return true;
+    }
+    source.lines().any(|line| {
+        let line = line.trim_start();
+        ["struct", "enum", "class", "protocol", "actor"]
+            .iter()
+            .any(|kind| parse_swift_declaration_name(line, kind).as_deref() == Some(symbol))
+            || parse_swift_public_typealias(line).is_some_and(|(name, _)| name == symbol)
+    })
 }
 
 fn binding_reference_symbol(reference: &str) -> Option<&str> {
@@ -47377,6 +47585,9 @@ fn semantic_module_has_evidence_for(module: &LoadedManifest, id: &str) -> bool {
     for category in verification_reference_categories() {
         for reference in get_string_array(&module.value, &["verification", category]) {
             let path = base.join(&reference);
+            if semantic_text_mentions_id(&reference, id) && concrete_evidence_path_exists(&path) {
+                return true;
+            }
             if path.is_file()
                 && fs::read_to_string(&path)
                     .is_ok_and(|source| semantic_text_mentions_id(&source, id))
@@ -48424,9 +48635,21 @@ fn package_command_path_refs(command: &str) -> BTreeSet<String> {
     command
         .split_whitespace()
         .map(|token| token.trim_matches(|c: char| matches!(c, '\'' | '"' | ',' | ';')))
-        .filter(|token| looks_like_path(token))
+        .filter(|token| package_command_token_is_safe_relative_path(token))
         .map(ToString::to_string)
         .collect()
+}
+
+fn package_command_token_is_safe_relative_path(token: &str) -> bool {
+    !token.is_empty()
+        && !token.chars().any(|character| {
+            matches!(
+                character,
+                '>' | '<' | '|' | '&' | '$' | '`' | '(' | ')' | '{' | '}'
+            )
+        })
+        && package_relative_path(token).is_some()
+        && looks_like_path(token)
 }
 
 fn package_string_array_refs(value: &YamlValue, path: &[&str]) -> Vec<String> {
@@ -49465,6 +49688,7 @@ fn compose_system(root: &Path) -> Result<ComposeReport> {
         compose_required_capabilities(
             module,
             &modules,
+            &implementations,
             &provided_requirements,
             &external_dependencies,
             &mut findings,
@@ -49696,6 +49920,7 @@ fn compose_required_modules(
 fn compose_required_capabilities(
     module: &ModuleIndexEntry,
     modules: &BTreeMap<String, ModuleIndexEntry>,
+    implementations: &BTreeMap<String, ImplementationIndexEntry>,
     provided_requirements: &BTreeMap<String, Vec<ProvidedRequirement>>,
     external_dependencies: &BTreeSet<String>,
     findings: &mut Vec<ComposeFinding>,
@@ -49779,7 +50004,23 @@ fn compose_required_capabilities(
             continue;
         }
 
-        if external_dependencies.contains(&required_name) {
+        if implementation_declares_external_dependency(
+            module,
+            implementations,
+            &required_name,
+            required_contract.as_deref(),
+        ) {
+            findings.push(compose_finding(
+                ComposeStatus::Satisfied,
+                "requires.capabilities.external-binding",
+                Some(module.name.clone()),
+                Some(required_name.clone()),
+                Some(required_name.clone()),
+                format!(
+                    "required capability `{required_name}` is resolved by its declared external dependency behavior binding"
+                ),
+            ));
+        } else if external_dependencies.contains(&required_name) {
             findings.push(compose_finding(
                 ComposeStatus::Satisfied,
                 "requires.capabilities.external",
@@ -49802,6 +50043,28 @@ fn compose_required_capabilities(
             ));
         }
     }
+}
+
+fn implementation_declares_external_dependency(
+    module: &ModuleIndexEntry,
+    implementations: &BTreeMap<String, ImplementationIndexEntry>,
+    capability: &str,
+    contract: Option<&str>,
+) -> bool {
+    implementations
+        .get(&module.name)
+        .is_some_and(|implementation| {
+            typed_yaml_sequence::<DependencyBehaviorBinding>(
+                &implementation.value,
+                &["architecture", "dependency_behavior_bindings"],
+            )
+            .into_iter()
+            .any(|binding| {
+                binding.capability == capability
+                    && binding.resolution == "external"
+                    && binding.contract.as_deref() == contract
+            })
+        })
 }
 
 fn check_external_capability_effect(
@@ -58144,6 +58407,146 @@ mod tests {
 
         assert!(version.contains(VALIDATOR_NAME));
         assert!(version.contains(VALIDATOR_VERSION));
+    }
+
+    #[test]
+    fn provider_intent_projection_preserves_closed_schema() {
+        let source = r#"{
+          "spec":"rms/intent-model/v0.1",
+          "operation":"design",
+          "change_scope":"existing-module",
+          "subjects":["client-account-access"],
+          "facts":{
+            "domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"pure Swift library"},
+            "lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No lifecycle requested."},
+            "effects":{"disposition":"absent","basis":"explicit","source_quote":"performs no IO"},
+            "runnable_surface":{"disposition":"absent","basis":"explicit","source_quote":"no runnable interface"},
+            "reuse":{"disposition":"required","basis":"explicit","source_quote":"reusable pure Swift library"},
+            "implementation_language":{"disposition":"required","basis":"explicit","source_quote":"Swift"},
+            "account_rules":{"disposition":"required","basis":"explicit","source_quote":"account access"}
+          },
+          "responsibilities":[{"kind":"decision","disposition":"required","subject":"Decide account access."}],
+          "surface_kinds":[],
+          "binding_preferences":[{"disposition":"required","source_quote":"Swift"}],
+          "open_questions":[]
+        }"#;
+
+        let normalized = normalize_provider_intent_source(source);
+        let model = parse_intent_model_source(&normalized).unwrap();
+
+        assert_eq!(model.binding_preferences, vec!["swift"]);
+        assert_eq!(model.responsibilities.len(), 1);
+        assert_eq!(model.responsibilities[0].kind, ResponsibilityKind::Decision);
+        assert!(!normalized.contains("implementation_language"));
+        assert!(!normalized.contains("account_rules"));
+
+        let forbidden = source.replace(
+            "\"open_questions\":[]",
+            "\"open_questions\":[],\"topology\":\"standalone\"",
+        );
+        let unchanged = normalize_provider_intent_source(&forbidden);
+        assert_eq!(unchanged, forbidden);
+        assert!(parse_intent_model_source(&unchanged).is_err());
+    }
+
+    #[test]
+    fn swift_dependency_consumers_may_be_type_owned_ports() {
+        let source = r#"
+public struct ClientAccountAccessEffectExecutor: Sendable {
+    public init() {}
+}
+public actor SessionExecutor {}
+public protocol EffectPort {}
+"#;
+
+        assert!(swift_binding_symbol_exists(
+            source,
+            "ClientAccountAccessEffectExecutor"
+        ));
+        assert!(swift_binding_symbol_exists(source, "SessionExecutor"));
+        assert!(swift_binding_symbol_exists(source, "EffectPort"));
+        assert!(!swift_binding_symbol_exists(source, "MissingPort"));
+    }
+
+    #[test]
+    fn declared_external_dependency_binding_satisfies_composition() {
+        let module = ModuleIndexEntry {
+            name: "account-access".to_string(),
+            path: PathBuf::from("modules/account-access/module.yaml"),
+            value: serde_yaml::from_str("spec: rms/module/v0.1\n").unwrap(),
+        };
+        let implementation_value: YamlValue = serde_yaml::from_str(
+            r#"
+architecture:
+  dependency_behavior_bindings:
+    - id: account-auth-effect-port
+      capability: account-auth-service
+      contract: contracts/account-auth-service.v1.yaml
+      consumer: Sources/AccountAccess/EffectPort.swift#AccountAccessEffectExecutor
+      resolution: external
+"#,
+        )
+        .unwrap();
+        let implementations = BTreeMap::from([(
+            module.name.clone(),
+            ImplementationIndexEntry {
+                module: module.name.clone(),
+                path: PathBuf::from("modules/account-access/implementation.yaml"),
+                value: implementation_value,
+            },
+        )]);
+
+        assert!(implementation_declares_external_dependency(
+            &module,
+            &implementations,
+            "account-auth-service",
+            Some("contracts/account-auth-service.v1.yaml")
+        ));
+        assert!(!implementation_declares_external_dependency(
+            &module,
+            &implementations,
+            "session-vault",
+            Some("contracts/session-vault.v1.yaml")
+        ));
+    }
+
+    #[test]
+    fn dependency_contract_evidence_may_be_linked_by_declared_path() {
+        let root = unique_test_dir("dependency-contract-path-evidence");
+        fs::create_dir_all(root.join("verification/contracts")).unwrap();
+        fs::write(
+            root.join("verification/contracts/account_auth_service_v1.md"),
+            "# Contract evidence\n\nAccount authentication service behavior is verified.\n",
+        )
+        .unwrap();
+        let module = LoadedManifest {
+            path: root.join("module.yaml"),
+            value: serde_yaml::from_str(
+                r#"
+verification:
+  contracts:
+    - verification/contracts/account_auth_service_v1.md
+"#,
+            )
+            .unwrap(),
+        };
+
+        assert!(semantic_module_has_evidence_for(
+            &module,
+            "account-auth-service"
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn package_command_paths_ignore_shell_redirections() {
+        let paths = package_command_path_refs(
+            "if [ \"$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)\" = 1 ]; then sh scripts/verify.sh; fi",
+        );
+
+        assert_eq!(paths, BTreeSet::from(["scripts/verify.sh".to_string()]));
+        assert!(!paths.contains("2>/dev/null"));
+        assert!(!paths.contains("/dev/null"));
     }
 
     #[test]

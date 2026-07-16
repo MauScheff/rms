@@ -8,11 +8,13 @@ Scenarios:
 - Missing intent returns `intent.model-required`.
 - Unknown material facts return `intent.material-unknown`.
 - A model containing `topology` is rejected by the closed schema.
+- Provider-only schema drift is deterministically projected into the closed model: extra semantic facts are discarded and implementation languages become binding preferences, while architecture fields still fail closed.
 
 Command/tool:
 
 - `cargo test -p rms structured_intent_`
 - `cargo test -p rms intent_model_requires_material_facts_and_forbids_architecture_fields`
+- `cargo test -p rms provider_intent_projection_preserves_closed_schema`
 
 Expected result: all typed-intent validation and deterministic-policy regressions pass without raw-purpose architecture inference.
 

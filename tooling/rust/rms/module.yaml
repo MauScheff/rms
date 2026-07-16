@@ -563,10 +563,10 @@ invariants:
   authority: parser
   enforced_by: view-rms-system-command
 - id: structured-intent-precedes-architecture
-  statement: Architecture and ownership decisions consume a validated language-neutral intent model and never derive authority from raw natural-language token matching.
-  kind: invariant
+  statement: Architecture and ownership decisions consume a validated language-neutral intent model and never derive authority from raw natural-language token matching; provider extraction is deterministically projected into the closed intent schema before validation.
+  kind: reliability
   authority: parser
-  enforced_by: design-rms-system-command
+  enforced_by: recommend-next-rms-work-command
 - id: semantic-capability-publication-is-topology-independent
   statement: A module may publish or require a capability contract through semantic apply without creating, deleting, or changing module topology.
   kind: invariant
@@ -577,6 +577,26 @@ invariants:
   kind: invariant
   authority: composition
   enforced_by: check-rms-project-command
+- id: dependency-consumer-symbols-are-binding-native
+  statement: A dependency behavior binding consumer resolves when its declared binding-native file exposes the exact named callable or type that owns the dependency port.
+  kind: reliability
+  authority: parser
+  enforced_by: inspect-implementation-structure-command
+- id: external-dependency-bindings-compose-without-system-duplication
+  statement: A required capability with one exact external dependency behavior binding and matching contract composes as an external dependency without duplicating that declaration in system.yaml.
+  kind: composition
+  authority: composition
+  enforced_by: compose-rms-system-command
+- id: dependency-contract-evidence-follows-declared-paths
+  statement: Required capability contract evidence resolves through a concrete declared verification reference whose path or contents identify the capability.
+  kind: evidence-integrity
+  authority: parser
+  enforced_by: validate-rms-artifacts-command
+- id: package-command-discovery-ignores-shell-syntax
+  statement: RMS package source discovery includes only safe module-relative file references from implementation commands and never interprets shell redirections, substitutions, operators, or device paths as package payload.
+  kind: safety
+  authority: effect-executor
+  enforced_by: package-module-command
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -682,6 +702,10 @@ verification:
   - verification/laws/progressive_adoption_proofs_are_scoped.md
   - verification/laws/composite_evidence_lanes_are_concrete.md
   - verification/laws/binding_dependencies_are_adapter_realized.md
+  - verification/laws/dependency_consumer_symbols_are_binding_native.md
+  - verification/laws/external_dependency_bindings_compose.md
+  - verification/laws/dependency_contract_evidence_resolution.md
+  - verification/laws/package_command_source_discovery.md
   contracts:
   - verification/contracts
   - verification/contracts/apply_runnable_surface.md
@@ -766,15 +790,16 @@ verification:
   - verification/properties/semantic_final_candidate_repair_conformance.md
   - verification/properties/system_viewer_read_only.md
   - verification/properties/init_git_provenance.md
+  - verification/properties/package_command_source_discovery.md
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Recognize valid binding-native Swift async and throwing executor declarations without weakening canonical effect request and result conformance.
+  last_semantic_intent: Make progressive adoption robust to provider intent drift, type-owned dependency ports, explicit external bindings, path-linked contract evidence, and shell redirection in verification commands.
   semantic_revision:
-    digest: sha256:592f6b59dade33e71f6b536ac9dc1e54ce037f11083dafbaa41dceac19d9b5f7
-    change_record: verification/changes/recognize-valid-binding-native-swift-async-and-throwing-executor-declarations-without-weakening-canonical-effect-request-and-result-conformance-d01c42bf17eb.yaml
+    digest: sha256:4569f794fee13c83682ca1c149a4b3c0dfcc021508c317b2b2ce189776aaff79
+    change_record: verification/changes/make-progressive-adoption-robust-to-provider-intent-drift-type-owned-dependency-ports-explicit-external-bindings-path-linked-contract-evidence-and-shell-redirection-in-verification-commands-ec8cf1a26166.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:d01c42bf17ebf9d751ae86379de42341b2440311955d31f73d9f2e1a325319df
+    change_record_digest: sha256:ec8cf1a26166cf3a07eea0251d5f745d3d6f449c79f16ad221b3502b701ed099
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-cli-applied-revision
@@ -1500,6 +1525,34 @@ properties:
     strategy: deterministic-corpus
     command: properties
     runner: src/main.rs#init_scaffold_generates_valid_system_artifacts
+- id: package-command-paths-are-shell-safe
+  proves: package-command-discovery-ignores-shell-syntax
+  kind: property
+  input_space:
+    corpus: implementation build and verify commands containing relative scripts, package manifests, shell redirections, substitutions, operators, and device paths
+    categories:
+    - relative-source
+    - redirection
+    - substitution
+    - operator
+    - device-path
+  preconditions:
+  - The command is declared in implementation.yaml.
+  operation:
+    symbol: src/main.rs#package_command_path_refs
+    behavior: Extract package-owned source references from command tokens.
+  oracle:
+  - safe module-relative source paths are retained
+  - shell syntax, redirections, substitutions, operators, and absolute device paths are excluded
+  evidence:
+    path: verification/properties/package_command_source_discovery.md
+  counterexamples:
+    path: verification/fuzz/counterexamples/package-command-source-discovery
+  realizations:
+  - profile: smoke
+    strategy: deterministic-corpus
+    command: properties
+    runner: src/main.rs#package_command_paths_ignore_shell_redirections
 fuzz_targets:
 - id: rms-cli-malformed-artifacts-produce-diagnostics
   proves: canonical-artifacts-remain-authoritative

@@ -1,0 +1,106 @@
+spec: rms/semantic-change/v0.1
+module: null
+supersedes:
+- verification/changes/recognize-valid-binding-native-swift-async-and-throwing-executor-declarations-without-weakening-canonical-effect-request-and-result-conformance-d01c42bf17eb.yaml
+intent:
+  summary: Make progressive adoption robust to provider intent drift, type-owned dependency ports, explicit external bindings, path-linked contract evidence, and shell redirection in verification commands.
+laws:
+  add:
+  - id: dependency-consumer-symbols-are-binding-native
+    statement: A dependency behavior binding consumer resolves when its declared binding-native file exposes the exact named callable or type that owns the dependency port.
+    kind: reliability
+    authority: parser
+    enforced_by: inspect-implementation-structure-command
+  - id: external-dependency-bindings-compose-without-system-duplication
+    statement: A required capability with one exact external dependency behavior binding and matching contract composes as an external dependency without duplicating that declaration in system.yaml.
+    kind: composition
+    authority: composition
+    enforced_by: compose-rms-system-command
+  - id: dependency-contract-evidence-follows-declared-paths
+    statement: Required capability contract evidence resolves through a concrete declared verification reference whose path or contents identify the capability.
+    kind: evidence-integrity
+    authority: parser
+    enforced_by: validate-rms-artifacts-command
+  - id: package-command-discovery-ignores-shell-syntax
+    statement: RMS package source discovery includes only safe module-relative file references from implementation commands and never interprets shell redirections, substitutions, operators, or device paths as package payload.
+    kind: safety
+    authority: effect-executor
+    enforced_by: package-module-command
+  set:
+  - id: structured-intent-precedes-architecture
+    statement: Architecture and ownership decisions consume a validated language-neutral intent model and never derive authority from raw natural-language token matching; provider extraction is deterministically projected into the closed intent schema before validation.
+    kind: reliability
+    authority: parser
+    enforced_by: recommend-next-rms-work-command
+  remove: []
+contracts: null
+properties:
+  add:
+  - id: package-command-paths-are-shell-safe
+    proves: package-command-discovery-ignores-shell-syntax
+    kind: property
+    subject: null
+    input_space:
+      corpus: implementation build and verify commands containing relative scripts, package manifests, shell redirections, substitutions, operators, and device paths
+      categories:
+      - relative-source
+      - redirection
+      - substitution
+      - operator
+      - device-path
+    preconditions:
+    - The command is declared in implementation.yaml.
+    operation:
+      symbol: src/main.rs#package_command_path_refs
+      behavior: Extract package-owned source references from command tokens.
+    oracle:
+    - safe module-relative source paths are retained
+    - shell syntax, redirections, substitutions, operators, and absolute device paths are excluded
+    evidence:
+      kind: property
+      path: verification/properties/package_command_source_discovery.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/package-command-source-discovery
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: properties
+      generator: null
+      runner: src/main.rs#package_command_paths_ignore_shell_redirections
+      exhaustive: false
+    temporal: null
+  set: []
+  remove: []
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: structured-intent-precedes-architecture
+    path: verification/laws/structured_intent_precedes_architecture.md
+  - kind: law
+    proves: dependency-consumer-symbols-are-binding-native
+    path: verification/laws/dependency_consumer_symbols_are_binding_native.md
+  - kind: law
+    proves: external-dependency-bindings-compose-without-system-duplication
+    path: verification/laws/external_dependency_bindings_compose.md
+  - kind: law
+    proves: dependency-contract-evidence-follows-declared-paths
+    path: verification/laws/dependency_contract_evidence_resolution.md
+  - kind: law
+    proves: package-command-discovery-ignores-shell-syntax
+    path: verification/laws/package_command_source_discovery.md
+  - kind: property
+    proves: package-command-paths-are-shell-safe
+    path: verification/properties/package_command_source_discovery.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

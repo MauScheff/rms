@@ -778,6 +778,34 @@ architecture:
         strategy: deterministic-corpus
         command: properties
         runner: src/main.rs#init_scaffold_generates_valid_system_artifacts
+    - id: package-command-paths-are-shell-safe
+      proves: package-command-discovery-ignores-shell-syntax
+      kind: property
+      input_space:
+        corpus: implementation build and verify commands containing relative scripts, package manifests, shell redirections, substitutions, operators, and device paths
+        categories:
+        - relative-source
+        - redirection
+        - substitution
+        - operator
+        - device-path
+      preconditions:
+      - The command is declared in implementation.yaml.
+      operation:
+        symbol: src/main.rs#package_command_path_refs
+        behavior: Extract package-owned source references from command tokens.
+      oracle:
+      - safe module-relative source paths are retained
+      - shell syntax, redirections, substitutions, operators, and absolute device paths are excluded
+      evidence:
+        path: verification/properties/package_command_source_discovery.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/package-command-source-discovery
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: properties
+        runner: src/main.rs#package_command_paths_ignore_shell_redirections
   messages:
     command_envelope:
     - command_id
@@ -2612,7 +2640,7 @@ semantic_functions:
     - verification/contracts/manage_rms_adoption.md
 x-rms:
   semantic_revision:
-    digest: sha256:592f6b59dade33e71f6b536ac9dc1e54ce037f11083dafbaa41dceac19d9b5f7
-    change_record: verification/changes/recognize-valid-binding-native-swift-async-and-throwing-executor-declarations-without-weakening-canonical-effect-request-and-result-conformance-d01c42bf17eb.yaml
+    digest: sha256:4569f794fee13c83682ca1c149a4b3c0dfcc021508c317b2b2ce189776aaff79
+    change_record: verification/changes/make-progressive-adoption-robust-to-provider-intent-drift-type-owned-dependency-ports-explicit-external-bindings-path-linked-contract-evidence-and-shell-redirection-in-verification-commands-ec8cf1a26166.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:d01c42bf17ebf9d751ae86379de42341b2440311955d31f73d9f2e1a325319df
+    change_record_digest: sha256:ec8cf1a26166cf3a07eea0251d5f745d3d6f449c79f16ad221b3502b701ed099
