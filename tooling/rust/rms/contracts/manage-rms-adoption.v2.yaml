@@ -1,0 +1,18 @@
+spec: rms/contract/v0.1
+name: "manage-rms-adoption"
+version: 2
+kind: command
+meaning: "Inspect or change RMS workspace coverage while reporting the exact certification scope, discovered closure count, and unowned production paths."
+preconditions:
+  - id: "accepts-1"
+    statement: "A readable RMS workspace and either status or an explicit progressive or complete coverage update."
+postconditions:
+  - id: "ensures-1"
+    statement: "Status prominently reports coverage mode, certification statement, governed modules, unowned count, and bounded sample."
+  - id: "ensures-2"
+    statement: "Dry-run does not mutate configuration and complete coverage is accepted only when every production path is RMS-owned."
+failure_categories:
+  - id: "rejects-1"
+    statement: "Unknown coverage modes, unreadable configuration, unresolved module closures, and complete coverage with unowned production paths."
+compatibility:
+  policy: backward-compatible-within-major

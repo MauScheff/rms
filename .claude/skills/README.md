@@ -22,9 +22,9 @@ Product intent is sufficient input. Apply semantic changes before code, edit onl
 Start with:
 
 ```text
-rms next "<intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
+rms next "<exact user task>" --root . --ai
 ```
 
-The agent extracts facts without topology. Recorded read-only `--ai` extraction is the alternative. Architecture-sensitive work without either input returns `intent-model-required`.
+RMS records schema-constrained fact extraction without accepting provider topology. CI, offline, and intentionally pre-structured callers use `--intent-json`, `--intent-yaml`, or `--intent-file`. Pass the returned `run_id`, run directory, or receipt file through `--route-receipt` on prescribed canonical semantic and topology mutations, including dry-runs.
 
 Use `rms explain ["<question>"]` when the compact prescription needs clarification and `rms help --all` for specialist commands. Load the catalog skill selected by the task lane; detailed machine, surface, property, trace, and completion rules live in selected skills and rendered RMS context.

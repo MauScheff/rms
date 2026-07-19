@@ -62,8 +62,8 @@ When Git writes are authorized, create the authorized bootstrap commit as the pr
 Then ask RMS for the product workflow and run the prescribed design step before choosing a tree:
 
 ```bash
-rms next "<product intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
-rms design --root . --task "<product intent>" --intent-yaml '<rms/intent-model/v0.1>'
+rms next "<exact product intent>" --root . --ai
+rms design --root . --task "<exact product intent>" --ai
 ```
 
 The agent extracts facts and open questions, never topology. RMS validates them and emits the deterministic recommendation:
@@ -80,7 +80,7 @@ The selected `add-module` skill and `rms help --all` provide the exact scaffold 
 In a fresh agent task, provide only the working directory, product intent, and instruction to use project RMS guidance.
 
 ```bash
-rms next "<task>" --root . --intent-yaml '<rms/intent-model/v0.1>'
+rms next "<exact user task>" --root . --ai
 rms explain "<focused question>" --root .
 ```
 

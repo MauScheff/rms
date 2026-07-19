@@ -1,0 +1,129 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/enforce-auditable-route-receipts-for-canonical-mutations-make-provider-intent-extraction-structured-and-cached-and-project-exact-proof-observations-and-progressive-coverage-67f549dad066.yaml
+intent:
+  summary: Add a receipt-gated release preparation command so RMS can update its own canonical and package version metadata without hand-editing manifests.
+laws: null
+contracts:
+  add:
+  - name: prepare-rms-release
+    kind: command
+    direction: provided
+    version: '1'
+    command: null
+    meaning: Validate and atomically prepare one RMS release version across canonical module, Cargo package, lockfile, plugin, CI template, reference, and changelog metadata after validating a current route receipt.
+    accepts:
+    - A valid semantic version, repository root, and ready current route receipt selecting rms-cli and authorizing semantic mutation.
+    - An optional dry-run request.
+    ensures:
+    - Receipt validation precedes candidate computation in dry-run and write modes.
+    - Every known RMS release metadata location is changed to the same version or no files are written.
+    - The result names the accepted receipt and exact changed paths without granting Git authority.
+    rejects:
+    - Missing, stale, tampered, non-ready, wrong-owner, wrong-action, or wrong-target receipts.
+    - Invalid versions, unexpected current metadata, partial candidate construction, validation failure, and filesystem failure.
+    protocol: null
+  set: []
+  remove: []
+properties: null
+trace_producers: null
+semantic_functions:
+  add:
+  - id: prepare-rms-release-command
+    symbol: run_release_prepare
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/prepare-rms-release.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - canonical-mutations-require-route-receipts
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - release preparation remains deterministic, atomic at the candidate-validation boundary, and does not commit or publish
+    evidence:
+      contracts:
+      - verification/contracts/prepare_rms_release.md
+      laws:
+      - verification/laws/canonical_mutations_require_route_receipts.md
+  set: []
+  remove: []
+machine:
+  mode: ''
+  justification: null
+  transition_signature: null
+  driver_function: null
+  transition_record_function: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add:
+    - PrepareRmsRelease
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+  resource_protocols:
+    set: null
+    add: []
+    remove: []
+  transitions: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: prepare-rms-release
+    path: verification/contracts/prepare_rms_release.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings:
+  set: null
+  add:
+  - id: prepare-rms-release-public
+    public_kind: command
+    public_name: prepare-rms-release
+    contract: contracts/prepare-rms-release.v1.yaml
+    semantic_function: prepare-rms-release-command
+    machine_inputs:
+    - PrepareRmsRelease
+    machine_outputs: []
+  remove: []
+dependency_behavior_bindings: null

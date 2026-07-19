@@ -1,0 +1,18 @@
+spec: rms/contract/v0.1
+name: "apply-machine-change"
+version: 2
+kind: command
+meaning: "Validate and atomically apply one focused machine-structure revision only after a current route receipt authorizes the target implementation and machine action."
+preconditions:
+  - id: "accepts-1"
+    statement: "One machine-change object, readable implementation binding, and ready matching route receipt."
+postconditions:
+  - id: "ensures-1"
+    statement: "Receipt validation precedes final-candidate computation in dry-run and write modes."
+  - id: "ensures-2"
+    statement: "The complete final machine remains canonical, validated, atomically written, and linked to the accepted receipt in the result."
+failure_categories:
+  - id: "rejects-1"
+    statement: "Missing or invalid receipts and malformed, incomplete, inconsistent, or unsupported machine changes."
+compatibility:
+  policy: backward-compatible-within-major

@@ -10,6 +10,7 @@ The release authority is the repository state at a signed or reviewed tag. Gener
 |---|---|---|
 | RMS CLI crate | `tooling/rust/rms/Cargo.toml` | Source package for the `rms` binary. |
 | CLI module bundle | `tooling/rust/rms/module.yaml` | Canonical module contract for the workbench itself. |
+| Release preparation contract | `tooling/rust/rms/contracts/prepare-rms-release.v1.yaml` | Receipt-gated release metadata mutation promise. |
 | Release contract | `tooling/rust/rms/contracts/release-check.v1.yaml` | Deterministic release-readiness promise. |
 | Codex plugin wrapper | `integrations/codex/rms/` | Installable adapter that packages canonical skills. |
 | Canonical skills | `skills/*/SKILL.md` | Source of agent workflows. |
@@ -25,7 +26,7 @@ tooling/rust/rms/module.yaml             module.version
 integrations/codex/rms/.codex-plugin/plugin.json  version
 ```
 
-The tag must be `v<version>`, for example `v0.1.0` or `v0.1.0-rc.1`. The release workflow checks that the tag version matches the Cargo package version. `rms release check` checks the Cargo, RMS module, and Codex plugin versions.
+The tag must be `v<version>`, for example `v0.1.0` or `v0.1.0-rc.1`. The release workflow checks that the tag version matches the Cargo package version. `rms release prepare <version> --root . --route-receipt <RUN_ID>` updates the complete versioned metadata candidate after a dry-run; `rms release check` checks the Cargo, RMS module, and Codex plugin versions.
 
 ## Local Release Gate
 
@@ -58,8 +59,8 @@ The downstream CI template is `templates/ci/github-actions-rms-project.yml`. It 
 
 ## Tag Release
 
-1. Update versions in the Cargo package, `rms-cli` module manifest, and Codex plugin manifest.
-2. Update `CHANGELOG.md`.
+1. Route the release task and run `rms release prepare <version> --root . --route-receipt <RUN_ID> --dry-run`.
+2. Run the same preparation command without `--dry-run`; it updates Cargo, lockfile, `rms-cli`, plugin, CI template, reference, and changelog metadata without committing or publishing.
 3. Run the local release gate.
 4. Create and push the tag:
 

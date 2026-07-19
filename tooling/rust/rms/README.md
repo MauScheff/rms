@@ -31,13 +31,15 @@ cargo run -p rms -- --help
 
 ```text
 rms init [OPTIONS] [PATH]
-rms next "<intent>" [--root PATH] [--module MODULE] [--json] [--details]
+rms next "<exact user task>" --root PATH --ai [--refresh-intent] [--module MODULE] [--json] [--details]
 rms explain ["<question>"] [--root PATH] [--module MODULE] [--json] [--details]
 rms check [--environment | --changes | --committed] [--root PATH] [--json] [--details]
 rms view [OPTIONS]
 ```
 
 `rms --help` shows the five primary commands and help doorway. `rms help --all` shows grouped specialist commands used by selected skills, rendered context, and maintainers.
+
+Every `next` and `design` invocation records its inputs and returns `run_id`, `receipt_id`, and `receipt_path`. Pass a ready receipt through `--route-receipt` to `add-module`, `add-capability-tree`, `add-binding`, and semantic, machine, or surface apply commands, including dry-runs. A receipt binds routing context; it grants neither source-edit nor Git authority.
 
 Default human output follows `Outcome/Answer → Why → Next → Done when`. `--details` includes complete canonical diagnostics. `--json` emits the versioned `rms.surface/v2` envelope with typed command or manual actions.
 
@@ -104,7 +106,14 @@ Use `rms help --all` for configuration, prompt, run-record, semantic apply, mach
 
 ## Maintainer Release Gate
 
-Before publishing or sharing this CLI, repository maintainers run:
+After a ready semantic route, prepare a release version through the same canonical mutation gate:
+
+```bash
+rms release prepare <version> --root . --route-receipt <RUN_ID> --dry-run
+rms release prepare <version> --root . --route-receipt <RUN_ID>
+```
+
+The preparation command updates and validates Cargo, lockfile, canonical module, plugin, CI template, reference, and changelog metadata as one candidate. It does not commit, publish, or install anything. Before publishing or sharing this CLI, repository maintainers run:
 
 ```bash
 rms release check --root .

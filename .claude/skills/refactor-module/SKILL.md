@@ -9,7 +9,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
 
 1. Run the `inspect-module` workflow for the owning module.
 2. Build a bounded packet with `rms context <module> --task "<task>"` when the CLI is available. Use `rms refactor <module> --task "<task>"` when a refactor prompt would help before editing.
-3. Treat RMS as the semantic and architecture gate. Apply structural revisions through `rms spec apply --dry-run` or focused machine/surface apply, inspect the complete final model, and let RMS hash-seal and chain the semantic revision. Never repair scaffold drift by hand-editing canonical manifests or deleting applied change records.
+3. Treat RMS as the semantic and architecture gate. Apply structural revisions through `rms spec apply --dry-run --route-receipt <RUN_ID>` or focused machine/surface apply with the same ready receipt, inspect the complete final model, and let RMS hash-seal and chain the semantic revision. Never repair scaffold drift by hand-editing canonical manifests or deleting applied change records.
 4. State the public semantics that must be preserved:
    - public commands, queries, events, APIs, and capabilities;
    - invariants and laws;

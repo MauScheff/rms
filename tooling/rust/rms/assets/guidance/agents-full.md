@@ -13,11 +13,11 @@ Git commits are required evidence, not implied authority. This guidance does not
 
 ## Start / Route
 
-1. Extract `rms/intent-model/v0.1` facts from the user's words, never topology. Run `rms next "<intent>" --root . --intent-yaml '<model>'`; use `--ai` only for recorded read-only extraction and `--module` only for an explicit owner override.
+1. Begin natural-language work with `rms next "<exact user task>" --root . --ai`; RMS records schema-constrained extraction and routes the validated `rms/intent-model/v0.1`, never provider-proposed topology. Use typed intent flags for CI, offline, or intentionally pre-structured input, and `--module` only for an explicit owner override.
 2. Follow its immediate action. Use `rms explain ["<question>"]` when the reason or canonical meaning is unclear; add `--details` only when the compact answer is insufficient.
 3. Inspect prescribed context and role paths, load the selected project skill, and use `rms help --all` only for specialist commands.
 
-New or adopted systems follow `rms init [--adopt]` → authorized bootstrap commit → typed intent → `rms design --root . --task "<intent>" --intent-yaml '<model>'` → the exact recommended standalone or recursive scaffold.
+New or adopted systems follow `rms init [--adopt]` → authorized bootstrap commit → `rms design --root . --task "<exact user task>" --ai` → the exact recommended standalone or recursive scaffold with its `--route-receipt`.
 
 - Preserve project-owned documents during adoption.
 - Without commit authority, stop at exactly `bootstrap prepared; provenance baseline pending authorized commit`.
@@ -37,6 +37,7 @@ New or adopted systems follow `rms init [--adopt]` → authorized bootstrap comm
 - Use `set` and `remove` to revise canonical semantics; never edit an applied revision.
 - A pure reusable library is an ordinary standalone module. Only a runnable module mixing invariant-bearing decisions with boundary effects needs `unsplit_runnable_justification`.
 - Fill only declared roles and exact symbols. If RMS cannot express the change, report the RMS gap.
+- Pass the ready route `run_id`, run directory, or receipt file through `--route-receipt` on every prescribed canonical semantic or topology mutation, including dry-runs. Receipts grant neither source-edit nor Git authority.
 - Replace scaffold contracts and placeholder evidence before production audit.
 
 ## Hard Boundaries
@@ -51,7 +52,6 @@ New or adopted systems follow `rms init [--adopt]` → authorized bootstrap comm
 - Treat reports, diffs, packages, atlases, prompts, and logs as evidence, not live semantics.
 
 ## Completion
-
 Use focused native and RMS proof → `rms check --changes --root . [--module <module.yaml>]` → authorized candidate commit → `rms check --committed --root . [--module <module.yaml>]`.
 
 - The change check must pass; resolve or report every manual obligation.

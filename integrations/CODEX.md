@@ -19,7 +19,7 @@ For ordinary work, Codex needs only the five-command doorway:
 
 ```bash
 rms check --environment --root .
-rms next "<intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
+rms next "<exact user task>" --root . --ai
 rms explain "<question>" --root .
 rms check --root .
 rms view --root .

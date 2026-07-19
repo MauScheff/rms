@@ -1,0 +1,685 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/resolve-provider-extracted-unknown-change-scope-to-existing-module-only-when-an-explicit-rms-module-override-supplies-canonical-ownership-eb10ae7b1392.yaml
+intent:
+  summary: Enforce auditable route receipts for canonical mutations, make provider intent extraction structured and cached, and project exact proof observations and progressive coverage.
+laws:
+  add:
+  - id: canonical-mutations-require-route-receipts
+    statement: Every canonical topology or semantic mutation validates a ready route receipt against its digest, repository revision, selected owner, permitted action, and target before dry-run or write computation begins.
+    kind: safety
+    authority: parser
+    enforced_by: route-receipt-validator
+  - id: provider-intent-extraction-is-structured-cached-and-auditable
+    statement: Explicit provider intent extraction uses the exact intent-model schema, performs at most one diagnostic repair, caches only validated normalized models, and records raw attempts, normalization, diagnostics, cache provenance, route, and receipt without making provider output semantic authority.
+    kind: evidence-integrity
+    authority: parser
+    enforced_by: intent-extraction-pipeline
+  - id: check-projections-distinguish-declared-and-observed-proof
+    statement: Every RMS check projection names its certified coverage and reports declared proof separately from commands and validators actually observed during that check.
+    kind: evidence-integrity
+    authority: parser
+    enforced_by: check-proof-projector
+  set: []
+  remove: []
+contracts:
+  add: []
+  set:
+  - name: recommend-next-rms-work
+    kind: command
+    direction: provided
+    version: '3'
+    command: null
+    meaning: Validate typed or explicitly provider-extracted intent, route it deterministically, persist an auditable run, issue a content-addressed route receipt, and return an exit status that distinguishes ready work from semantic non-readiness.
+    accepts:
+    - A nonblank prospective task, readable repository root, optional explicit owner, and exactly one typed intent source or explicit read-only provider extraction.
+    - An optional intent-cache refresh request and compact or detailed projection selection.
+    ensures:
+    - Every invocation records request, normalized intent or diagnostics, route result, and a route receipt whose allowed actions are nonempty only for ready work.
+    - Provider extraction is schema-constrained, bounded to one repair, root-local cached, and never used unless explicitly requested.
+    - Ready and no-rms-change results exit zero; clarification, missing model, missing owner, design-required, bootstrap-required, and blocked results exit two.
+    - The rms.surface/v2 report additively exposes run_id, receipt_id, and receipt_path without granting source-edit or Git authority.
+    rejects:
+    - Blank tasks, unreadable roots, malformed or source-mismatched models, unsupported provider structure, unresolved material facts, contradictory intent, ambiguous ownership, and receipt persistence failure.
+    protocol: null
+  - name: design-rms-system
+    kind: command
+    direction: provided
+    version: '2'
+    command: null
+    meaning: Validate typed or explicitly provider-extracted system intent, choose the smallest deterministic topology, persist the decision, and issue a receipt authorizing only the exact recommended scaffold.
+    accepts:
+    - A system design task, readable RMS root, and exactly one typed intent source or explicit provider extraction.
+    - Optional provider, recording, cache-refresh, and projection settings.
+    ensures:
+    - Valid intent yields one deterministic architecture decision and a content-addressed receipt limited to its exact scaffold command and arguments.
+    - Provider extraction follows the same structured, repaired, cached, and audited pipeline as next.
+    - Non-ready design outcomes cannot authorize module or capability-tree creation.
+    rejects:
+    - Malformed or materially unknown intent, topology-bearing provider output, provider failure, unsupported structured output, persistence failure, and design inputs that do not close deterministically.
+    protocol: null
+  - name: configure-agent-integration
+    kind: command
+    direction: provided
+    version: '2'
+    command: null
+    meaning: Diagnose, create, synchronize, or package managed agent guidance that enters natural-language RMS work through explicit recorded AI routing and carries the resulting receipt into canonical mutations.
+    accepts:
+    - A supported agent target and readable project root or explicit optional plugin marketplace path.
+    ensures:
+    - Managed guidance starts natural-language work with rms next using explicit --ai and preserves caller-supplied typed intent for offline or CI workflows.
+    - Mutation examples pass the route receipt returned by next or design and retain existing commit-authority constraints.
+    - Project-owned guidance remains preserved outside managed regions and generated distributions remain digest-equivalent.
+    rejects:
+    - Unsupported targets, stale managed templates that cannot be synchronized safely, unwritable destinations, and plugin packaging or installation failures.
+    protocol: null
+  - name: add-rms-module
+    kind: command
+    direction: provided
+    version: '2'
+    command: null
+    meaning: Scaffold the exact standalone RMS module selected by design only after validating its current topology receipt.
+    accepts:
+    - Valid scaffold inputs and a ready design route receipt matching the repository revision, target path, module identity, shape, profiles, and binding.
+    ensures:
+    - Receipt validation completes before dry-run or filesystem candidate construction.
+    - The deterministic scaffold remains collision-intolerant and contains only semantics authorized by its design decision.
+    - Reports identify the accepted receipt without treating it as source-edit or Git authority.
+    rejects:
+    - Missing, malformed, stale, tampered, non-ready, wrong-root, wrong-target, wrong-action, or argument-mismatched receipts; existing generated paths; unsupported shapes or bindings; and provider or filesystem failure.
+    protocol: null
+  - name: add-rms-capability-tree
+    kind: command
+    direction: provided
+    version: '2'
+    command: null
+    meaning: Scaffold the exact recursive capability topology selected by design only after validating its current topology receipt.
+    accepts:
+    - Valid parent and child scaffold inputs and a ready design receipt matching every topology argument and target.
+    ensures:
+    - Receipt validation precedes dry-run or writes and authorizes only the exact recommended composite, domain child, boundary child, bindings, and surface.
+    - Generated dependencies, evidence lanes, and public delegation remain deterministic and adapter-realized.
+    rejects:
+    - Missing, stale, tampered, non-ready, wrong-root, wrong-target, wrong-action, argument-mismatched, or unsupported-topology receipts and any scaffold collision or invalid binding.
+    protocol: null
+  - name: add-rms-binding
+    kind: command
+    direction: provided
+    version: '2'
+    command: null
+    meaning: Attach one supported implementation binding to the selected semantic-only module only after validating a matching existing-module route receipt.
+    accepts:
+    - A semantic-only module, supported binding, and ready receipt that selects that module and authorizes binding attachment.
+    ensures:
+    - Receipt validation occurs before staging and the attachment remains atomic and semantics-preserving.
+    - The accepted receipt identifier is included in the result.
+    rejects:
+    - Missing, stale, tampered, non-ready, wrong-owner, wrong-action, or wrong-target receipts; unsupported bindings; existing implementation artifacts; and staging or installation failure.
+    protocol: null
+  - name: apply-machine-change
+    kind: command
+    direction: provided
+    version: '2'
+    command: null
+    meaning: Validate and atomically apply one focused machine-structure revision only after a current route receipt authorizes the target implementation and machine action.
+    accepts:
+    - One machine-change object, readable implementation binding, and ready matching route receipt.
+    ensures:
+    - Receipt validation precedes final-candidate computation in dry-run and write modes.
+    - The complete final machine remains canonical, validated, atomically written, and linked to the accepted receipt in the result.
+    rejects:
+    - Missing or invalid receipts and malformed, incomplete, inconsistent, or unsupported machine changes.
+    protocol: null
+  - name: apply-semantic-change
+    kind: command
+    direction: provided
+    version: '2'
+    command: null
+    meaning: Validate and atomically apply one language-neutral semantic revision only after a current route receipt authorizes the selected module and semantic action.
+    accepts:
+    - One complete rms/semantic-change/v0.1 object, readable target, and ready matching route receipt.
+    ensures:
+    - Receipt validation precedes final-candidate computation in dry-run and write modes.
+    - Contracts, laws, properties, bindings, and sealed revision history update together and the result identifies the accepted receipt.
+    rejects:
+    - Missing, stale, tampered, non-ready, wrong-owner, wrong-action, or wrong-target receipts and any invalid, unclosed, incompatible, or unsupported semantic candidate.
+    protocol: null
+  - name: apply-runnable-surface
+    kind: command
+    direction: provided
+    version: '2'
+    command: null
+    meaning: Validate and apply one runnable boundary declaration only after a current route receipt authorizes the selected implementation and surface action.
+    accepts:
+    - A complete runnable-surface declaration, readable implementation binding, and ready matching route receipt.
+    ensures:
+    - Receipt validation precedes dry-run or candidate computation and the resulting surface remains bound to declared roles, effects, usage, smoke proof, and accepted receipt.
+    rejects:
+    - Missing or invalid receipts, unknown roles or commands, undeclared effects, unsafe paths, missing usage or smoke evidence, and incompatible surface candidates.
+    protocol: null
+  - name: check-rms-project
+    kind: command
+    direction: provided
+    version: '2'
+    command: null
+    meaning: Execute one deterministic RMS readiness mode and project the exact certified repository or module scope together with proof declarations and observations without strengthening the underlying checks.
+    accepts:
+    - A readable RMS root, one valid check mode, optional module closure, and compact or detailed projection selection.
+    ensures:
+    - Every report names complete, progressive, or module coverage, every selected top-level closure, unowned production counts, and bounded samples.
+    - Components include stable ids plus semantic subjects and scopes.
+    - Proof observations identify only commands and validators actually executed; unexecuted declarations remain separate.
+    - Progressive pass means selected closures passed and never implies whole-repository certification.
+    rejects:
+    - Invalid mode combinations, unresolved closures, unreadable evidence, delegated reports that cannot be projected truthfully, and complete-coverage claims with unowned production paths.
+    protocol: null
+  - name: manage-rms-adoption
+    kind: command
+    direction: provided
+    version: '2'
+    command: null
+    meaning: Inspect or change RMS workspace coverage while reporting the exact certification scope, discovered closure count, and unowned production paths.
+    accepts:
+    - A readable RMS workspace and either status or an explicit progressive or complete coverage update.
+    ensures:
+    - Status prominently reports coverage mode, certification statement, governed modules, unowned count, and bounded sample.
+    - Dry-run does not mutate configuration and complete coverage is accepted only when every production path is RMS-owned.
+    rejects:
+    - Unknown coverage modes, unreadable configuration, unresolved module closures, and complete coverage with unowned production paths.
+    protocol: null
+  remove: []
+properties:
+  add:
+  - id: route-receipt-gate-closure
+    proves: canonical-mutations-require-route-receipts
+    kind: property
+    subject: null
+    input_space:
+      receipts: ready and non-ready receipts crossed with matching and mismatching digest, root, revision, owner, action, target, and scaffold arguments
+    preconditions:
+    - validation runs before candidate computation
+    operation: validate every receipt and mutation-context combination
+    oracle:
+    - only a digest-valid ready receipt matching root, revision, owner, action, and target is accepted
+    - rejected receipts produce no candidate writes
+    - one valid receipt can authorize every listed action until the repository revision changes
+    evidence:
+      kind: property
+      path: verification/properties/route_receipt_gate_closure.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/route-receipt-gate
+    realizations:
+    - profile: smoke
+      strategy: generated-property
+      command: properties
+      generator: src/main.rs#generate_route_receipt_validation_cases
+      runner: src/main.rs#route_receipt_gate_accepts_only_matching_ready_context
+      exhaustive: false
+    temporal: null
+  - id: intent-extraction-cache-determinism
+    proves: provider-intent-extraction-is-structured-cached-and-auditable
+    kind: property
+    subject: null
+    input_space:
+      attempts: valid, repairable, materially unknown, schema-invalid, cache-hit, refresh, and concurrent provider outcomes
+    preconditions:
+    - provider execution is explicitly requested
+    operation: execute extraction twice for each cache identity and inspect persisted artifacts
+    oracle:
+    - validated identical requests reuse one normalized model without another provider invocation
+    - invalid first responses perform at most one repair and failed extraction is never cached
+    - every invocation records exact raw, normalized, diagnostic, provider, route, and receipt evidence
+    evidence:
+      kind: property
+      path: verification/properties/intent_extraction_cache_determinism.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/intent-extraction-cache
+    realizations:
+    - profile: smoke
+      strategy: generated-property
+      command: properties
+      generator: src/main.rs#generate_intent_cache_cases
+      runner: src/main.rs#intent_extraction_cache_is_deterministic
+      exhaustive: false
+    temporal: null
+  - id: check-proof-projection-truthfulness
+    proves: check-projections-distinguish-declared-and-observed-proof
+    kind: property
+    subject: null
+    input_space:
+      checks: complete, progressive, and module-scoped reports with passing, failing, declared-only, and observed proof items
+    preconditions:
+    - delegated check evidence identifies its actual executions
+    operation: project compact and detailed coverage and proof reports
+    oracle:
+    - every selected closure is named exactly once
+    - unowned counts equal discovery
+    - no declaration appears as an observation without an executed validator or command result
+    evidence:
+      kind: property
+      path: verification/properties/check_proof_projection_truthfulness.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/check-proof-projection
+    realizations:
+    - profile: smoke
+      strategy: generated-property
+      command: properties
+      generator: src/main.rs#generate_check_proof_projection_cases
+      runner: src/main.rs#check_proof_projection_never_promotes_declarations
+      exhaustive: false
+    temporal: null
+  set: []
+  remove: []
+trace_producers: null
+semantic_functions:
+  add:
+  - id: route-receipt-issuer
+    symbol: issue_route_receipt
+    kind: decision
+    purity: pure
+    discharges:
+      contracts: []
+      invariants:
+      - canonical-mutations-require-route-receipts
+      assumptions: []
+    evidence:
+      laws:
+      - verification/laws/canonical_mutations_require_route_receipts.md
+      properties:
+      - verification/properties/route_receipt_gate_closure.md
+  - id: route-receipt-validator
+    symbol: validate_route_receipt
+    kind: parser
+    purity: pure
+    discharges:
+      contracts: []
+      invariants:
+      - canonical-mutations-require-route-receipts
+      assumptions: []
+    evidence:
+      laws:
+      - verification/laws/canonical_mutations_require_route_receipts.md
+      properties:
+      - verification/properties/route_receipt_gate_closure.md
+  - id: intent-extraction-pipeline
+    symbol: extract_provider_intent
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts: []
+      invariants:
+      - provider-intent-extraction-is-structured-cached-and-auditable
+      assumptions: []
+    evidence:
+      laws:
+      - verification/laws/provider_intent_extraction_is_structured_cached_and_auditable.md
+      properties:
+      - verification/properties/intent_extraction_cache_determinism.md
+  - id: check-proof-projector
+    symbol: project_check_proof
+    kind: projector
+    purity: pure
+    discharges:
+      contracts: []
+      invariants:
+      - check-projections-distinguish-declared-and-observed-proof
+      assumptions: []
+    evidence:
+      laws:
+      - verification/laws/check_projections_distinguish_declared_and_observed_proof.md
+      properties:
+      - verification/properties/check_proof_projection_truthfulness.md
+  set:
+  - id: design-rms-system-command
+    symbol: run_design
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/design-rms-system.v2.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      - canonical-mutations-require-route-receipts
+      - provider-intent-extraction-is-structured-cached-and-auditable
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/design_rms_system_v2.md
+      laws:
+      - verification/laws/canonical_mutations_require_route_receipts.md
+      - verification/laws/provider_intent_extraction_is_structured_cached_and_auditable.md
+  - id: agent-integration-command
+    symbol: run_agent_init
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/configure-agent-integration.v2.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/configure_agent_integration_v2.md
+  - id: agent-plugin-command
+    symbol: run_agent_plugin_install
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/configure-agent-integration.v2.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/configure_agent_integration_v2.md
+  - id: add-rms-module-command
+    symbol: run_add_module
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/add-rms-module.v2.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      - canonical-mutations-require-route-receipts
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/add_rms_module_v2.md
+      laws:
+      - verification/laws/canonical_mutations_require_route_receipts.md
+  - id: add-rms-binding-command
+    symbol: run_add_binding
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/add-rms-binding.v2.yaml
+      invariants:
+      - semantic-only-modules-have-canonical-binding-attachment
+      - canonical-mutations-require-route-receipts
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/add_rms_binding_v2.md
+      laws:
+      - verification/laws/semantic_only_binding_attachment.md
+      - verification/laws/canonical_mutations_require_route_receipts.md
+  - id: machine-change-apply-command
+    symbol: run_machine_apply
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/apply-machine-change.v2.yaml
+      invariants:
+      - canonical-mutations-require-route-receipts
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/apply_machine_change_v2.md
+      laws:
+      - verification/laws/canonical_mutations_require_route_receipts.md
+  - id: semantic-change-apply-command
+    symbol: run_spec_apply
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/apply-semantic-change.v2.yaml
+      invariants:
+      - semantic-contract-revisions-are-cli-applied
+      - canonical-semantics-match-cli-applied-revision
+      - semantic-function-bindings-are-cli-applied
+      - canonical-mutations-require-route-receipts
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/apply_semantic_change_v2.md
+      laws:
+      - verification/laws/semantic_function_bindings_are_cli_applied.md
+      - verification/laws/canonical_mutations_require_route_receipts.md
+      traces:
+      - verification/traces/semantic_change_record.yaml
+  - id: apply-runnable-surface-command
+    symbol: run_surface_apply
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/apply-runnable-surface.v2.yaml
+      invariants:
+      - runnable-surfaces-enter-through-boundaries
+      - canonical-artifacts-remain-authoritative
+      - canonical-mutations-require-route-receipts
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/apply_runnable_surface_v2.md
+      laws:
+      - verification/laws/canonical_mutations_require_route_receipts.md
+  - id: recommend-next-rms-work-command
+    symbol: run_next
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/recommend-next-rms-work.v3.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      - canonical-mutations-require-route-receipts
+      - provider-intent-extraction-is-structured-cached-and-auditable
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/recommend_next_rms_work_v3.md
+      laws:
+      - verification/laws/canonical_mutations_require_route_receipts.md
+      - verification/laws/provider_intent_extraction_is_structured_cached_and_auditable.md
+  - id: check-rms-project-command
+    symbol: run_check
+    kind: interpreter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/check-rms-project.v2.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      - check-projections-distinguish-declared-and-observed-proof
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/check_rms_project_v2.md
+      laws:
+      - verification/laws/check_projections_distinguish_declared_and_observed_proof.md
+  - id: add-rms-capability-tree-command
+    symbol: run_add_capability_tree
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/add-rms-capability-tree.v2.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      - composite-evidence-lanes-are-concrete
+      - binding-dependencies-are-adapter-realized
+      - canonical-mutations-require-route-receipts
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/add_rms_capability_tree_v2.md
+      laws:
+      - verification/laws/canonical_mutations_require_route_receipts.md
+  - id: manage-rms-adoption-command
+    symbol: run_adoption_command
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/manage-rms-adoption.v2.yaml
+      invariants:
+      - progressive-adoption-proofs-are-scoped
+      - check-projections-distinguish-declared-and-observed-proof
+      assumptions: []
+    evidence:
+      contracts:
+      - verification/contracts/manage_rms_adoption_v2.md
+      laws:
+      - verification/laws/check_projections_distinguish_declared_and_observed_proof.md
+  remove: []
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: recommend-next-rms-work
+    path: verification/contracts/recommend_next_rms_work_v3.md
+  - kind: contract
+    proves: design-rms-system
+    path: verification/contracts/design_rms_system_v2.md
+  - kind: contract
+    proves: configure-agent-integration
+    path: verification/contracts/configure_agent_integration_v2.md
+  - kind: contract
+    proves: add-rms-module
+    path: verification/contracts/add_rms_module_v2.md
+  - kind: contract
+    proves: add-rms-capability-tree
+    path: verification/contracts/add_rms_capability_tree_v2.md
+  - kind: contract
+    proves: add-rms-binding
+    path: verification/contracts/add_rms_binding_v2.md
+  - kind: contract
+    proves: apply-machine-change
+    path: verification/contracts/apply_machine_change_v2.md
+  - kind: contract
+    proves: apply-semantic-change
+    path: verification/contracts/apply_semantic_change_v2.md
+  - kind: contract
+    proves: apply-runnable-surface
+    path: verification/contracts/apply_runnable_surface_v2.md
+  - kind: contract
+    proves: check-rms-project
+    path: verification/contracts/check_rms_project_v2.md
+  - kind: contract
+    proves: manage-rms-adoption
+    path: verification/contracts/manage_rms_adoption_v2.md
+  - kind: law
+    proves: canonical-mutations-require-route-receipts
+    path: verification/laws/canonical_mutations_require_route_receipts.md
+  - kind: law
+    proves: provider-intent-extraction-is-structured-cached-and-auditable
+    path: verification/laws/provider_intent_extraction_is_structured_cached_and_auditable.md
+  - kind: law
+    proves: check-projections-distinguish-declared-and-observed-proof
+    path: verification/laws/check_projections_distinguish_declared_and_observed_proof.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings:
+  set:
+  - id: design-rms-system-public
+    public_kind: command
+    public_name: design-rms-system
+    contract: contracts/design-rms-system.v2.yaml
+    semantic_function: design-rms-system-command
+    machine_inputs:
+    - DesignRmsSystem
+    machine_outputs: []
+  - id: configure-agent-integration-public
+    public_kind: command
+    public_name: configure-agent-integration
+    contract: contracts/configure-agent-integration.v2.yaml
+    semantic_function: agent-integration-command
+    machine_inputs:
+    - ConfigureAgentIntegration
+    machine_outputs: []
+  - id: add-rms-module-public
+    public_kind: command
+    public_name: add-rms-module
+    contract: contracts/add-rms-module.v2.yaml
+    semantic_function: add-rms-module-command
+    machine_inputs:
+    - AddRmsModule
+    machine_outputs: []
+  - id: add-rms-binding-public
+    public_kind: command
+    public_name: add-rms-binding
+    contract: contracts/add-rms-binding.v2.yaml
+    semantic_function: add-rms-binding-command
+    machine_inputs:
+    - AddRmsBinding
+    machine_outputs: []
+  - id: apply-machine-change-public
+    public_kind: command
+    public_name: apply-machine-change
+    contract: contracts/apply-machine-change.v2.yaml
+    semantic_function: machine-change-apply-command
+    machine_inputs:
+    - ApplyMachineChange
+    machine_outputs: []
+  - id: apply-semantic-change-public
+    public_kind: command
+    public_name: apply-semantic-change
+    contract: contracts/apply-semantic-change.v2.yaml
+    semantic_function: semantic-change-apply-command
+    machine_inputs:
+    - ApplySemanticChange
+    machine_outputs: []
+  - id: apply-runnable-surface-public
+    public_kind: command
+    public_name: apply-runnable-surface
+    contract: contracts/apply-runnable-surface.v2.yaml
+    semantic_function: apply-runnable-surface-command
+    machine_inputs:
+    - ApplyRunnableSurface
+    machine_outputs: []
+  - id: recommend-next-rms-work-public
+    public_kind: command
+    public_name: recommend-next-rms-work
+    contract: contracts/recommend-next-rms-work.v3.yaml
+    semantic_function: recommend-next-rms-work-command
+    machine_inputs:
+    - RecommendNextRmsWork
+    machine_outputs: []
+  - id: check-rms-project-public
+    public_kind: command
+    public_name: check-rms-project
+    contract: contracts/check-rms-project.v2.yaml
+    semantic_function: check-rms-project-command
+    machine_inputs:
+    - CheckRmsProject
+    machine_outputs: []
+  - id: add-rms-capability-tree-public
+    public_kind: command
+    public_name: add-rms-capability-tree
+    contract: contracts/add-rms-capability-tree.v2.yaml
+    semantic_function: add-rms-capability-tree-command
+    machine_inputs:
+    - AddRmsCapabilityTree
+    machine_outputs: []
+  - id: manage-rms-adoption-public
+    public_kind: command
+    public_name: manage-rms-adoption
+    contract: contracts/manage-rms-adoption.v2.yaml
+    semantic_function: manage-rms-adoption-command
+    machine_inputs:
+    - ManageRmsAdoption
+    machine_outputs: []
+  add: []
+  remove: []
+dependency_behavior_bindings: null

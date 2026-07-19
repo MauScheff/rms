@@ -3,7 +3,8 @@
 
 Project instructions outside this section remain authoritative. Canonical RMS artifacts own semantics; agents fill declared roles.
 
-- Extract typed semantic facts, never topology; start with `rms next "<intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'` or recorded read-only `--ai` extraction.
+- Begin natural-language work with `rms next "<exact user task>" --root . --ai`; use typed intent flags for CI, offline, or intentionally pre-structured input. RMS validates facts and chooses topology.
+- Pass the ready route receipt through `--route-receipt` on prescribed canonical mutators, including dry-runs; it grants neither source-edit nor Git authority.
 - New or adopted systems follow `rms init [--adopt]` → authorized bootstrap commit → typed `rms design` → exactly one recommended scaffold.
 - Without commit authority, stop at exactly `bootstrap prepared; provenance baseline pending authorized commit`.
 - Apply canonical semantic or surface changes before source edits, dry-run first; do not hand-edit RMS declarations.

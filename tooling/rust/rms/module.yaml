@@ -1,7 +1,7 @@
 spec: rms/module/v0.1
 module:
   name: rms-cli
-  version: 0.1.0-rc.4
+  version: 0.1.0-rc.5
   kind: tool
   purpose: Provide the canonical command-line workbench for inspecting, validating, packaging, explaining, structuring, and verifying RMS modules.
 profiles:
@@ -92,7 +92,7 @@ provides:
   - name: plan-module-change
     contract: contracts/plan-module-change.v1.yaml
   - name: design-rms-system
-    contract: contracts/design-rms-system.v1.yaml
+    contract: contracts/design-rms-system.v2.yaml
   - name: compose-rms-system
     contract: contracts/compose-rms-system.v1.yaml
   - name: route-rms-work
@@ -124,11 +124,11 @@ provides:
   - name: init-workbench-config
     contract: contracts/init-workbench-config.v1.yaml
   - name: configure-agent-integration
-    contract: contracts/configure-agent-integration.v1.yaml
+    contract: contracts/configure-agent-integration.v2.yaml
   - name: init-rms-system
     contract: contracts/init-rms-system.v1.yaml
   - name: add-rms-module
-    contract: contracts/add-rms-module.v1.yaml
+    contract: contracts/add-rms-module.v2.yaml
   - name: build-context-packet
     contract: contracts/build-context-packet.v1.yaml
   - name: build-module-atlas
@@ -140,11 +140,11 @@ provides:
   - name: plan-machine-change
     contract: contracts/plan-machine-change.v1.yaml
   - name: apply-machine-change
-    contract: contracts/apply-machine-change.v1.yaml
+    contract: contracts/apply-machine-change.v2.yaml
   - name: plan-semantic-change
     contract: contracts/plan-semantic-change.v1.yaml
   - name: apply-semantic-change
-    contract: contracts/apply-semantic-change.v1.yaml
+    contract: contracts/apply-semantic-change.v2.yaml
   - name: check-semantic-change
     contract: contracts/check-semantic-change.v1.yaml
   - name: diff-semantic-change
@@ -154,7 +154,7 @@ provides:
   - name: diff-machine-structure
     contract: contracts/diff-machine-structure.v1.yaml
   - name: apply-runnable-surface
-    contract: contracts/apply-runnable-surface.v1.yaml
+    contract: contracts/apply-runnable-surface.v2.yaml
   - name: check-runnable-surface
     contract: contracts/check-runnable-surface.v1.yaml
   - name: package-module
@@ -168,23 +168,25 @@ provides:
   - name: replay-property-counterexample
     contract: contracts/replay-property-counterexample.v1.yaml
   - name: add-rms-binding
-    contract: contracts/add-rms-binding.v1.yaml
+    contract: contracts/add-rms-binding.v2.yaml
   - name: run-trace-producers
     contract: contracts/run-trace-producers.v1.yaml
   - name: view-rms-system
     contract: contracts/view-rms-system.v1.yaml
   - name: recommend-next-rms-work
-    contract: contracts/recommend-next-rms-work.v2.yaml
+    contract: contracts/recommend-next-rms-work.v3.yaml
   - name: release-check
     contract: contracts/release-check.v1.yaml
   - name: check-rms-project
-    contract: contracts/check-rms-project.v1.yaml
+    contract: contracts/check-rms-project.v2.yaml
   - name: describe-rms-command-surface
     contract: contracts/describe-rms-command-surface.v1.yaml
   - name: add-rms-capability-tree
-    contract: contracts/add-rms-capability-tree.v1.yaml
+    contract: contracts/add-rms-capability-tree.v2.yaml
   - name: manage-rms-adoption
-    contract: contracts/manage-rms-adoption.v1.yaml
+    contract: contracts/manage-rms-adoption.v2.yaml
+  - name: prepare-rms-release
+    contract: contracts/prepare-rms-release.v1.yaml
   queries:
   - name: inspect-module
     contract: contracts/inspect-module.v1.yaml
@@ -597,6 +599,21 @@ invariants:
   kind: safety
   authority: effect-executor
   enforced_by: package-module-command
+- id: canonical-mutations-require-route-receipts
+  statement: Every canonical topology or semantic mutation validates a ready route receipt against its digest, repository revision, selected owner, permitted action, and target before dry-run or write computation begins.
+  kind: safety
+  authority: parser
+  enforced_by: route-receipt-validator
+- id: provider-intent-extraction-is-structured-cached-and-auditable
+  statement: Explicit provider intent extraction uses the exact intent-model schema, performs at most one diagnostic repair, caches only validated normalized models, and records raw attempts, normalization, diagnostics, cache provenance, route, and receipt without making provider output semantic authority.
+  kind: evidence-integrity
+  authority: parser
+  enforced_by: intent-extraction-pipeline
+- id: check-projections-distinguish-declared-and-observed-proof
+  statement: Every RMS check projection names its certified coverage and reports declared proof separately from commands and validators actually observed during that check.
+  kind: evidence-integrity
+  authority: parser
+  enforced_by: check-proof-projector
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -706,6 +723,9 @@ verification:
   - verification/laws/external_dependency_bindings_compose.md
   - verification/laws/dependency_contract_evidence_resolution.md
   - verification/laws/package_command_source_discovery.md
+  - verification/laws/canonical_mutations_require_route_receipts.md
+  - verification/laws/provider_intent_extraction_is_structured_cached_and_auditable.md
+  - verification/laws/check_projections_distinguish_declared_and_observed_proof.md
   contracts:
   - verification/contracts
   - verification/contracts/apply_runnable_surface.md
@@ -747,6 +767,18 @@ verification:
   - verification/contracts/describe_rms_command_surface.md
   - verification/contracts/add_rms_capability_tree.md
   - verification/contracts/manage_rms_adoption.md
+  - verification/contracts/recommend_next_rms_work_v3.md
+  - verification/contracts/design_rms_system_v2.md
+  - verification/contracts/configure_agent_integration_v2.md
+  - verification/contracts/add_rms_module_v2.md
+  - verification/contracts/add_rms_capability_tree_v2.md
+  - verification/contracts/add_rms_binding_v2.md
+  - verification/contracts/apply_machine_change_v2.md
+  - verification/contracts/apply_semantic_change_v2.md
+  - verification/contracts/apply_runnable_surface_v2.md
+  - verification/contracts/check_rms_project_v2.md
+  - verification/contracts/manage_rms_adoption_v2.md
+  - verification/contracts/prepare_rms_release.md
   scenarios:
   - verification/scenarios
   - verification/scenarios/reusable_module_package.md
@@ -791,15 +823,18 @@ verification:
   - verification/properties/system_viewer_read_only.md
   - verification/properties/init_git_provenance.md
   - verification/properties/package_command_source_discovery.md
+  - verification/properties/route_receipt_gate_closure.md
+  - verification/properties/intent_extraction_cache_determinism.md
+  - verification/properties/check_proof_projection_truthfulness.md
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Resolve provider-extracted unknown change scope to existing-module only when an explicit RMS module override supplies canonical ownership.
+  last_semantic_intent: Restore the complete existing RMS public behavior binding graph while retaining every RC.5 contract revision and release preparation binding.
   semantic_revision:
-    digest: sha256:624dae122c373a03e1dc6bdd23259c711dd3f6c0da9843f792c67c86f7b25612
-    change_record: verification/changes/resolve-provider-extracted-unknown-change-scope-to-existing-module-only-when-an-explicit-rms-module-override-supplies-canonical-ownership-eb10ae7b1392.yaml
+    digest: sha256:8ac817ab7bac4c55bc12d94f566b038458be04b537a18ad3afeaa99cae54874b
+    change_record: verification/changes/restore-the-complete-existing-rms-public-behavior-binding-graph-while-retaining-every-rc-5-contract-revision-and-release-preparation-binding-e6a3f19dec99.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:eb10ae7b1392249468a78d5fe2ea87b05f937f68f2ba76f81737bbcfa8a98832
+    change_record_digest: sha256:e6a3f19dec9956683a7e18586cb4ee372e51ee4659a95a6ef1c1044db11abc38
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-cli-applied-revision
@@ -1553,6 +1588,72 @@ properties:
     strategy: deterministic-corpus
     command: properties
     runner: src/main.rs#package_command_paths_ignore_shell_redirections
+- id: route-receipt-gate-closure
+  proves: canonical-mutations-require-route-receipts
+  kind: property
+  input_space:
+    receipts: ready and non-ready receipts crossed with matching and mismatching digest, root, revision, owner, action, target, and scaffold arguments
+  preconditions:
+  - validation runs before candidate computation
+  operation: validate every receipt and mutation-context combination
+  oracle:
+  - only a digest-valid ready receipt matching root, revision, owner, action, and target is accepted
+  - rejected receipts produce no candidate writes
+  - one valid receipt can authorize every listed action until the repository revision changes
+  evidence:
+    path: verification/properties/route_receipt_gate_closure.md
+  counterexamples:
+    path: verification/fuzz/counterexamples/route-receipt-gate
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: properties
+    generator: src/main.rs#generate_route_receipt_validation_cases
+    runner: src/main.rs#route_receipt_gate_accepts_only_matching_ready_context
+- id: intent-extraction-cache-determinism
+  proves: provider-intent-extraction-is-structured-cached-and-auditable
+  kind: property
+  input_space:
+    attempts: valid, repairable, materially unknown, schema-invalid, cache-hit, refresh, and concurrent provider outcomes
+  preconditions:
+  - provider execution is explicitly requested
+  operation: execute extraction twice for each cache identity and inspect persisted artifacts
+  oracle:
+  - validated identical requests reuse one normalized model without another provider invocation
+  - invalid first responses perform at most one repair and failed extraction is never cached
+  - every invocation records exact raw, normalized, diagnostic, provider, route, and receipt evidence
+  evidence:
+    path: verification/properties/intent_extraction_cache_determinism.md
+  counterexamples:
+    path: verification/fuzz/counterexamples/intent-extraction-cache
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: properties
+    generator: src/main.rs#generate_intent_cache_cases
+    runner: src/main.rs#intent_extraction_cache_is_deterministic
+- id: check-proof-projection-truthfulness
+  proves: check-projections-distinguish-declared-and-observed-proof
+  kind: property
+  input_space:
+    checks: complete, progressive, and module-scoped reports with passing, failing, declared-only, and observed proof items
+  preconditions:
+  - delegated check evidence identifies its actual executions
+  operation: project compact and detailed coverage and proof reports
+  oracle:
+  - every selected closure is named exactly once
+  - unowned counts equal discovery
+  - no declaration appears as an observation without an executed validator or command result
+  evidence:
+    path: verification/properties/check_proof_projection_truthfulness.md
+  counterexamples:
+    path: verification/fuzz/counterexamples/check-proof-projection
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: properties
+    generator: src/main.rs#generate_check_proof_projection_cases
+    runner: src/main.rs#check_proof_projection_never_promotes_declarations
 fuzz_targets:
 - id: rms-cli-malformed-artifacts-produce-diagnostics
   proves: canonical-artifacts-remain-authoritative

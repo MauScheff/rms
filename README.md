@@ -97,7 +97,7 @@ init → authorized bootstrap commit
 
 ## Agents and Authority
 
-An agent first extracts typed facts from the user's intent, then runs `rms next "<intent>" --root . --intent-yaml '<model>'` (or opts into recorded read-only `--ai` extraction). Agents interpret language; RMS validates the model, chooses topology, mutates canonical semantics, and proves scope deterministically. A standalone module publishes a reusable capability through `rms spec apply`; `rms add-capability-tree` only creates an explicitly selected recursive topology. Adopted repositories use progressive coverage so checks state that they certify RMS module closures, not unrelated code.
+Managed agents begin with `rms next "<exact user task>" --root . --ai`; ordinary CLI callers explicitly opt into provider execution or supply typed intent for CI and offline use. RMS schema-constrains and records extraction, validates the model, chooses topology, issues a route receipt, gates canonical semantic and topology mutations with `--route-receipt`, and proves selected scope deterministically. A standalone module publishes a reusable capability through `rms spec apply`; `rms add-capability-tree` only creates an explicitly selected recursive topology. Adopted repositories use progressive coverage so checks state that they certify RMS module closures, not unrelated code.
 
 Detected skill files are configuration evidence, not proof of runtime activation; the host's injected skill catalog remains authoritative for the current task.
 

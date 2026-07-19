@@ -6,7 +6,7 @@ A coding agent needs no native RMS integration. It needs the CLI, concise reposi
 
 ```bash
 rms check --environment --root .
-rms next "<intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
+rms next "<exact user task>" --root . --ai
 rms explain "<question>" --root .
 rms check --root .
 rms view --root .

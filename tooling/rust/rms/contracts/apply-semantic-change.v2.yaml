@@ -1,0 +1,18 @@
+spec: rms/contract/v0.1
+name: "apply-semantic-change"
+version: 2
+kind: command
+meaning: "Validate and atomically apply one language-neutral semantic revision only after a current route receipt authorizes the selected module and semantic action."
+preconditions:
+  - id: "accepts-1"
+    statement: "One complete rms/semantic-change/v0.1 object, readable target, and ready matching route receipt."
+postconditions:
+  - id: "ensures-1"
+    statement: "Receipt validation precedes final-candidate computation in dry-run and write modes."
+  - id: "ensures-2"
+    statement: "Contracts, laws, properties, bindings, and sealed revision history update together and the result identifies the accepted receipt."
+failure_categories:
+  - id: "rejects-1"
+    statement: "Missing, stale, tampered, non-ready, wrong-owner, wrong-action, or wrong-target receipts and any invalid, unclosed, incompatible, or unsupported semantic candidate."
+compatibility:
+  policy: backward-compatible-within-major

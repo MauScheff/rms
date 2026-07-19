@@ -1,0 +1,18 @@
+spec: rms/contract/v0.1
+name: "add-rms-binding"
+version: 2
+kind: command
+meaning: "Attach one supported implementation binding to the selected semantic-only module only after validating a matching existing-module route receipt."
+preconditions:
+  - id: "accepts-1"
+    statement: "A semantic-only module, supported binding, and ready receipt that selects that module and authorizes binding attachment."
+postconditions:
+  - id: "ensures-1"
+    statement: "Receipt validation occurs before staging and the attachment remains atomic and semantics-preserving."
+  - id: "ensures-2"
+    statement: "The accepted receipt identifier is included in the result."
+failure_categories:
+  - id: "rejects-1"
+    statement: "Missing, stale, tampered, non-ready, wrong-owner, wrong-action, or wrong-target receipts; unsupported bindings; existing implementation artifacts; and staging or installation failure."
+compatibility:
+  policy: backward-compatible-within-major

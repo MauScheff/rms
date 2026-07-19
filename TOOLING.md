@@ -22,7 +22,7 @@ The reference interface has five primary commands:
 
 ```text
 rms init [OPTIONS] [PATH]
-rms next "<intent>" [--intent-json JSON | --intent-yaml YAML | --intent-file PATH | --ai] [--root PATH] [--module MODULE] [--json] [--details]
+rms next "<exact user task>" [--intent-json JSON | --intent-yaml YAML | --intent-file PATH | --ai [--refresh-intent]] [--root PATH] [--module MODULE] [--json] [--details]
 rms explain ["<question>"] [--root PATH] [--module MODULE] [--json] [--details]
 rms check [--environment | --changes | --committed] [--root PATH] [--json] [--details]
 rms view [OPTIONS]
@@ -89,8 +89,10 @@ Without commit authority, the exact state is `bootstrap prepared; provenance bas
 `next` is the deterministic doorway from typed intent to work:
 
 ```bash
-rms next "<intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
+rms next "<exact user task>" --root . --ai
 ```
+
+Managed agents use schema-constrained recorded extraction; typed intent flags remain available for CI, offline, and intentionally pre-structured callers. Every invocation returns `run_id`, `receipt_id`, and `receipt_path`. Ready receipts are required by canonical semantic and topology mutators, including dry-runs; they grant neither source-edit nor Git authority.
 
 An agent or recorded read-only provider extracts typed facts without topology. RMS validates exact quotes, inferred rationales, contradictions, and material unknowns; then deterministic policy chooses the lane, structured subjects route ownership, and facts choose standalone or recursive topology. Explicit `--module` is an owner override. Recursive composition routing is cycle-protected, and ties remain ties.
 

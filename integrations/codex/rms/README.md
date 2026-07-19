@@ -21,7 +21,7 @@ Then point Codex at this plugin directory or copy it into a Codex plugin marketp
 Start project work through the narrow doorway:
 
 ```bash
-rms next "<intent>" --root . --intent-yaml '<rms/intent-model/v0.1>'
+rms next "<exact user task>" --root . --ai
 rms explain "<question>" --root .
 rms check --root .
 ```

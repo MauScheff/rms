@@ -24,7 +24,7 @@ Reports, explanations, plans, prompts, graphs, packages, and command logs are de
 
 ```text
 rms init [OPTIONS] --name <NAME> --purpose <PURPOSE> [PATH]
-rms next "<intent>" [--intent-json JSON | --intent-yaml YAML | --intent-file PATH | --ai] [--root PATH] [--module MODULE] [--json] [--details]
+rms next "<exact user task>" [--intent-json JSON | --intent-yaml YAML | --intent-file PATH | --ai [--refresh-intent]] [--root PATH] [--module MODULE] [--json] [--details]
 rms explain ["<question>"] [--root PATH] [--module MODULE] [--json] [--details]
 rms check [--environment | --changes | --committed] [--root PATH] [--json] [--details]
 rms view [OPTIONS]
@@ -372,4 +372,4 @@ Specialist commands remain directly callable. Their absence from default help is
 
 ## Version and Status
 
-This repository is the RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use. The Rust reference implementation is `0.1.0-rc.4`; the public presentation is intentionally narrow while the specialist engines remain available.
+This repository is the RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use. The Rust reference implementation is `0.1.0-rc.5`; the public presentation is intentionally narrow while the specialist engines remain available.

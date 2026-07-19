@@ -1,0 +1,24 @@
+spec: rms/contract/v0.1
+name: "prepare-rms-release"
+version: 1
+kind: command
+meaning: "Validate and atomically prepare one RMS release version across canonical module, Cargo package, lockfile, plugin, CI template, reference, and changelog metadata after validating a current route receipt."
+preconditions:
+  - id: "accepts-1"
+    statement: "A valid semantic version, repository root, and ready current route receipt selecting rms-cli and authorizing semantic mutation."
+  - id: "accepts-2"
+    statement: "An optional dry-run request."
+postconditions:
+  - id: "ensures-1"
+    statement: "Receipt validation precedes candidate computation in dry-run and write modes."
+  - id: "ensures-2"
+    statement: "Every known RMS release metadata location is changed to the same version or no files are written."
+  - id: "ensures-3"
+    statement: "The result names the accepted receipt and exact changed paths without granting Git authority."
+failure_categories:
+  - id: "rejects-1"
+    statement: "Missing, stale, tampered, non-ready, wrong-owner, wrong-action, or wrong-target receipts."
+  - id: "rejects-2"
+    statement: "Invalid versions, unexpected current metadata, partial candidate construction, validation failure, and filesystem failure."
+compatibility:
+  policy: backward-compatible-within-major

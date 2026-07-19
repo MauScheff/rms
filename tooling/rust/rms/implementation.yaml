@@ -806,6 +806,72 @@ architecture:
         strategy: deterministic-corpus
         command: properties
         runner: src/main.rs#package_command_paths_ignore_shell_redirections
+    - id: route-receipt-gate-closure
+      proves: canonical-mutations-require-route-receipts
+      kind: property
+      input_space:
+        receipts: ready and non-ready receipts crossed with matching and mismatching digest, root, revision, owner, action, target, and scaffold arguments
+      preconditions:
+      - validation runs before candidate computation
+      operation: validate every receipt and mutation-context combination
+      oracle:
+      - only a digest-valid ready receipt matching root, revision, owner, action, and target is accepted
+      - rejected receipts produce no candidate writes
+      - one valid receipt can authorize every listed action until the repository revision changes
+      evidence:
+        path: verification/properties/route_receipt_gate_closure.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/route-receipt-gate
+      realizations:
+      - profile: smoke
+        strategy: generated-property
+        command: properties
+        generator: src/main.rs#generate_route_receipt_validation_cases
+        runner: src/main.rs#route_receipt_gate_accepts_only_matching_ready_context
+    - id: intent-extraction-cache-determinism
+      proves: provider-intent-extraction-is-structured-cached-and-auditable
+      kind: property
+      input_space:
+        attempts: valid, repairable, materially unknown, schema-invalid, cache-hit, refresh, and concurrent provider outcomes
+      preconditions:
+      - provider execution is explicitly requested
+      operation: execute extraction twice for each cache identity and inspect persisted artifacts
+      oracle:
+      - validated identical requests reuse one normalized model without another provider invocation
+      - invalid first responses perform at most one repair and failed extraction is never cached
+      - every invocation records exact raw, normalized, diagnostic, provider, route, and receipt evidence
+      evidence:
+        path: verification/properties/intent_extraction_cache_determinism.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/intent-extraction-cache
+      realizations:
+      - profile: smoke
+        strategy: generated-property
+        command: properties
+        generator: src/main.rs#generate_intent_cache_cases
+        runner: src/main.rs#intent_extraction_cache_is_deterministic
+    - id: check-proof-projection-truthfulness
+      proves: check-projections-distinguish-declared-and-observed-proof
+      kind: property
+      input_space:
+        checks: complete, progressive, and module-scoped reports with passing, failing, declared-only, and observed proof items
+      preconditions:
+      - delegated check evidence identifies its actual executions
+      operation: project compact and detailed coverage and proof reports
+      oracle:
+      - every selected closure is named exactly once
+      - unowned counts equal discovery
+      - no declaration appears as an observation without an executed validator or command result
+      evidence:
+        path: verification/properties/check_proof_projection_truthfulness.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/check-proof-projection
+      realizations:
+      - profile: smoke
+        strategy: generated-property
+        command: properties
+        generator: src/main.rs#generate_check_proof_projection_cases
+        runner: src/main.rs#check_proof_projection_never_promotes_declarations
   messages:
     command_envelope:
     - command_id
@@ -928,6 +994,7 @@ architecture:
     - DescribeRmsCommandSurface
     - AddRmsCapabilityTree
     - ManageRmsAdoption
+    - PrepareRmsRelease
     observed_events: []
     events:
     - CommandCompleted
@@ -1100,7 +1167,7 @@ architecture:
   - id: design-rms-system-public
     public_kind: command
     public_name: design-rms-system
-    contract: contracts/design-rms-system.v1.yaml
+    contract: contracts/design-rms-system.v2.yaml
     semantic_function: design-rms-system-command
     machine_inputs:
     - DesignRmsSystem
@@ -1228,7 +1295,7 @@ architecture:
   - id: configure-agent-integration-public
     public_kind: command
     public_name: configure-agent-integration
-    contract: contracts/configure-agent-integration.v1.yaml
+    contract: contracts/configure-agent-integration.v2.yaml
     semantic_function: agent-integration-command
     machine_inputs:
     - ConfigureAgentIntegration
@@ -1244,7 +1311,7 @@ architecture:
   - id: add-rms-module-public
     public_kind: command
     public_name: add-rms-module
-    contract: contracts/add-rms-module.v1.yaml
+    contract: contracts/add-rms-module.v2.yaml
     semantic_function: add-rms-module-command
     machine_inputs:
     - AddRmsModule
@@ -1292,7 +1359,7 @@ architecture:
   - id: apply-machine-change-public
     public_kind: command
     public_name: apply-machine-change
-    contract: contracts/apply-machine-change.v1.yaml
+    contract: contracts/apply-machine-change.v2.yaml
     semantic_function: machine-change-apply-command
     machine_inputs:
     - ApplyMachineChange
@@ -1308,7 +1375,7 @@ architecture:
   - id: apply-semantic-change-public
     public_kind: command
     public_name: apply-semantic-change
-    contract: contracts/apply-semantic-change.v1.yaml
+    contract: contracts/apply-semantic-change.v2.yaml
     semantic_function: semantic-change-apply-command
     machine_inputs:
     - ApplySemanticChange
@@ -1348,7 +1415,7 @@ architecture:
   - id: apply-runnable-surface-public
     public_kind: command
     public_name: apply-runnable-surface
-    contract: contracts/apply-runnable-surface.v1.yaml
+    contract: contracts/apply-runnable-surface.v2.yaml
     semantic_function: apply-runnable-surface-command
     machine_inputs:
     - ApplyRunnableSurface
@@ -1404,7 +1471,7 @@ architecture:
   - id: add-rms-binding-public
     public_kind: command
     public_name: add-rms-binding
-    contract: contracts/add-rms-binding.v1.yaml
+    contract: contracts/add-rms-binding.v2.yaml
     semantic_function: add-rms-binding-command
     machine_inputs:
     - AddRmsBinding
@@ -1444,7 +1511,7 @@ architecture:
   - id: recommend-next-rms-work-public
     public_kind: command
     public_name: recommend-next-rms-work
-    contract: contracts/recommend-next-rms-work.v2.yaml
+    contract: contracts/recommend-next-rms-work.v3.yaml
     semantic_function: recommend-next-rms-work-command
     machine_inputs:
     - RecommendNextRmsWork
@@ -1452,7 +1519,7 @@ architecture:
   - id: check-rms-project-public
     public_kind: command
     public_name: check-rms-project
-    contract: contracts/check-rms-project.v1.yaml
+    contract: contracts/check-rms-project.v2.yaml
     semantic_function: check-rms-project-command
     machine_inputs:
     - CheckRmsProject
@@ -1468,7 +1535,7 @@ architecture:
   - id: add-rms-capability-tree-public
     public_kind: command
     public_name: add-rms-capability-tree
-    contract: contracts/add-rms-capability-tree.v1.yaml
+    contract: contracts/add-rms-capability-tree.v2.yaml
     semantic_function: add-rms-capability-tree-command
     machine_inputs:
     - AddRmsCapabilityTree
@@ -1476,10 +1543,18 @@ architecture:
   - id: manage-rms-adoption-public
     public_kind: command
     public_name: manage-rms-adoption
-    contract: contracts/manage-rms-adoption.v1.yaml
+    contract: contracts/manage-rms-adoption.v2.yaml
     semantic_function: manage-rms-adoption-command
     machine_inputs:
     - ManageRmsAdoption
+    machine_outputs: []
+  - id: prepare-rms-release-public
+    public_kind: command
+    public_name: prepare-rms-release
+    contract: contracts/prepare-rms-release.v1.yaml
+    semantic_function: prepare-rms-release-command
+    machine_inputs:
+    - PrepareRmsRelease
     machine_outputs: []
   dependency_behavior_bindings:
   - id: filesystem-provider
@@ -1602,40 +1677,26 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/configure-agent-integration.v1.yaml
+    - contracts/configure-agent-integration.v2.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
-  assumptions:
-    maintains:
-    - project-owned guidance and unrelated local skills remain preserved
-    ensures:
-    - generated guidance is sourced from managed crate assets
-    - diagnosis classifies managed guidance state and detected skill origins deterministically
-    - synchronization refreshes canonical managed distributions without claiming runtime activation
-    - commit evidence is prescribed only under task and host authorization
   evidence:
     contracts:
-    - verification/contracts/configure_agent_integration.md
-    - verification/contracts/configure_agent_commit_authority.md
+    - verification/contracts/configure_agent_integration_v2.md
 - id: agent-plugin-command
   symbol: run_agent_plugin_install
   kind: adapter
   purity: effectful
   discharges:
     contracts:
-    - contracts/configure-agent-integration.v1.yaml
+    - contracts/configure-agent-integration.v2.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
-  assumptions:
-    ensures:
-    - optional Codex plugin package is generated from embedded RMS assets
-    - personal marketplace entries point at the generated local plugin package
-    - Codex plugin installation remains explicit and optional
   evidence:
     contracts:
-    - verification/contracts/configure_agent_integration.md
+    - verification/contracts/configure_agent_integration_v2.md
 - id: init-rms-system-command
   symbol: run_init_with_adopt
   kind: adapter
@@ -1665,41 +1726,32 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/add-rms-module.v1.yaml
+    - contracts/add-rms-module.v2.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
-  assumptions:
-    ensures:
-    - generated module manifest, module README, contract guidance, semantic shape evidence, evidence directories, and optional implementation binding are deterministic scaffold artifacts
-    - inspectable implementation bindings include advisory traceable-machine declarations for message envelopes, transition output, trace records, replay bundles, and first-bad-transition support where the binding can express them
-    - inspectable implementation bindings declare numeric-safety obligations and generated evidence asks for numeric boundary proof when validated numeric values affect decisions
-    - traceable scaffolds write local JSON/YAML trace bundles under verification/traces and bind them from implementation.yaml
-    - runtime-monitor scaffolds declare the Monitor profile, monitor authority placeholders, and runtime trigger evidence without inventing module-specific monitored facts
-    - optional advisory scaffold planning records provider output as evidence without making it canonical architecture by itself
-    - generated guidance routes future work through canonical artifacts and does not define module-specific semantics
+    - canonical-mutations-require-route-receipts
   evidence:
     contracts:
-    - verification/contracts/add_rms_module.md
+    - verification/contracts/add_rms_module_v2.md
+    laws:
+    - verification/laws/canonical_mutations_require_route_receipts.md
 - id: add-rms-binding-command
   symbol: run_add_binding
   kind: adapter
   purity: effectful
   discharges:
     contracts:
-    - contracts/add-rms-binding.v1.yaml
+    - contracts/add-rms-binding.v2.yaml
     invariants:
     - semantic-only-modules-have-canonical-binding-attachment
-  assumptions:
-    ensures:
-    - a supported binding is rendered through the canonical binding adapter into a staging directory before any module file is installed
-    - the existing module manifest and semantic artifacts remain unchanged
-    - destination conflicts reject the complete attachment without leaving a partial implementation binding
+    - canonical-mutations-require-route-receipts
   evidence:
     contracts:
-    - verification/contracts/add_rms_binding.md
+    - verification/contracts/add_rms_binding_v2.md
     laws:
     - verification/laws/semantic_only_binding_attachment.md
+    - verification/laws/canonical_mutations_require_route_receipts.md
 - id: release-check-command
   symbol: run_release_check
   kind: interpreter
@@ -1776,19 +1828,18 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/design-rms-system.v1.yaml
+    - contracts/design-rms-system.v2.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
-  assumptions:
-    ensures:
-    - design prompts are advisory and can run before a target module exists
-    - module split and semantic shape recommendations remain evidence until reflected in canonical artifacts
-    - design prompts require semantic structure, traceable-machine obligations, and edge-case decisions before implementation file layout
-    - runtime monitoring and supervisory control are modeled as runtime-monitor shape guidance with explicit authority and declared outputs
+    - canonical-mutations-require-route-receipts
+    - provider-intent-extraction-is-structured-cached-and-auditable
   evidence:
     contracts:
-    - verification/contracts/design_rms_system.md
+    - verification/contracts/design_rms_system_v2.md
+    laws:
+    - verification/laws/canonical_mutations_require_route_receipts.md
+    - verification/laws/provider_intent_extraction_is_structured_cached_and_auditable.md
 - id: compose-rms-system-command
   symbol: run_compose
   kind: interpreter
@@ -2092,18 +2143,16 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/apply-runnable-surface.v1.yaml
+    - contracts/apply-runnable-surface.v2.yaml
     invariants:
     - runnable-surfaces-enter-through-boundaries
     - canonical-artifacts-remain-authoritative
-  assumptions:
-    ensures:
-    - surface declarations update `architecture.surfaces` and `architecture.roles.runnable_surface`
-    - generated evidence names the delegated RMS command and boundary entrypoint
-    - dry-run reports planned writes without mutating artifacts
+    - canonical-mutations-require-route-receipts
   evidence:
     contracts:
-    - verification/contracts/apply_runnable_surface.md
+    - verification/contracts/apply_runnable_surface_v2.md
+    laws:
+    - verification/laws/canonical_mutations_require_route_receipts.md
 - id: check-runnable-surface-command
   symbol: run_surface_check
   kind: projector
@@ -2184,10 +2233,14 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/apply-machine-change.v1.yaml
+    - contracts/apply-machine-change.v2.yaml
+    invariants:
+    - canonical-mutations-require-route-receipts
   evidence:
     contracts:
-    - verification/contracts/apply_machine_change.md
+    - verification/contracts/apply_machine_change_v2.md
+    laws:
+    - verification/laws/canonical_mutations_require_route_receipts.md
 - id: machine-structure-check-command
   symbol: run_machine_check
   kind: parser
@@ -2238,20 +2291,18 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/apply-semantic-change.v1.yaml
+    - contracts/apply-semantic-change.v2.yaml
     invariants:
     - semantic-contract-revisions-are-cli-applied
     - canonical-semantics-match-cli-applied-revision
     - semantic-function-bindings-are-cli-applied
-  assumptions:
-    ensures:
-    - contract add, set, and remove operations update canonical module references, files, and semantic-change records together
-    - semantic-function add, set, and remove operations update implementation bindings and sealed semantic-change records together
+    - canonical-mutations-require-route-receipts
   evidence:
     contracts:
-    - verification/contracts/apply_semantic_change.md
+    - verification/contracts/apply_semantic_change_v2.md
     laws:
     - verification/laws/semantic_function_bindings_are_cli_applied.md
+    - verification/laws/canonical_mutations_require_route_receipts.md
     traces:
     - verification/traces/semantic_change_record.yaml
 - id: semantic-change-record-writer
@@ -2556,44 +2607,34 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/recommend-next-rms-work.v2.yaml
+    - contracts/recommend-next-rms-work.v3.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
-  assumptions:
-    requires:
-    - the requested task intent is prospective and nonblank
-    maintains:
-    - no repository files, provider state, or Git state are mutated
-    ensures:
-    - task advice is independent of unrelated working-tree impact and uses the compact rms.surface/v2 projection
-    - repository-operation intent yields no-rms-change unless semantic intent takes precedence
-    - candidate commits remain manual host-authorized actions
+    - canonical-mutations-require-route-receipts
+    - provider-intent-extraction-is-structured-cached-and-auditable
   evidence:
     contracts:
-    - verification/contracts/recommend_next_rms_work_v2.md
+    - verification/contracts/recommend_next_rms_work_v3.md
+    laws:
+    - verification/laws/canonical_mutations_require_route_receipts.md
+    - verification/laws/provider_intent_extraction_is_structured_cached_and_auditable.md
 - id: check-rms-project-command
   symbol: run_check
   kind: interpreter
   purity: effectful
   discharges:
     contracts:
-    - contracts/check-rms-project.v1.yaml
+    - contracts/check-rms-project.v2.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
-  assumptions:
-    requires:
-    - the requested root is readable
-    maintains:
-    - delegated checks retain their existing semantic authority
-    - provider and Git authority are not inferred
-    ensures:
-    - exactly the checks selected by the explicit mode are executed through shared implementations and projected through rms.surface/v2
-    - exit status reflects every selected component
+    - check-projections-distinguish-declared-and-observed-proof
   evidence:
     contracts:
-    - verification/contracts/check_rms_project.md
+    - verification/contracts/check_rms_project_v2.md
+    laws:
+    - verification/laws/check_projections_distinguish_declared_and_observed_proof.md
 - id: describe-rms-command-surface-command
   symbol: run_help
   kind: projector
@@ -2617,30 +2658,102 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/add-rms-capability-tree.v1.yaml
+    - contracts/add-rms-capability-tree.v2.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
     - composite-evidence-lanes-are-concrete
     - binding-dependencies-are-adapter-realized
+    - canonical-mutations-require-route-receipts
   evidence:
     contracts:
-    - verification/contracts/add_rms_capability_tree.md
+    - verification/contracts/add_rms_capability_tree_v2.md
+    laws:
+    - verification/laws/canonical_mutations_require_route_receipts.md
 - id: manage-rms-adoption-command
   symbol: run_adoption_command
   kind: adapter
   purity: effectful
   discharges:
     contracts:
-    - contracts/manage-rms-adoption.v1.yaml
+    - contracts/manage-rms-adoption.v2.yaml
     invariants:
     - progressive-adoption-proofs-are-scoped
+    - check-projections-distinguish-declared-and-observed-proof
   evidence:
     contracts:
-    - verification/contracts/manage_rms_adoption.md
+    - verification/contracts/manage_rms_adoption_v2.md
+    laws:
+    - verification/laws/check_projections_distinguish_declared_and_observed_proof.md
+- id: route-receipt-issuer
+  symbol: issue_route_receipt
+  kind: decision
+  purity: pure
+  discharges:
+    invariants:
+    - canonical-mutations-require-route-receipts
+  evidence:
+    laws:
+    - verification/laws/canonical_mutations_require_route_receipts.md
+    properties:
+    - verification/properties/route_receipt_gate_closure.md
+- id: route-receipt-validator
+  symbol: validate_route_receipt
+  kind: parser
+  purity: pure
+  discharges:
+    invariants:
+    - canonical-mutations-require-route-receipts
+  evidence:
+    laws:
+    - verification/laws/canonical_mutations_require_route_receipts.md
+    properties:
+    - verification/properties/route_receipt_gate_closure.md
+- id: intent-extraction-pipeline
+  symbol: extract_provider_intent
+  kind: adapter
+  purity: effectful
+  discharges:
+    invariants:
+    - provider-intent-extraction-is-structured-cached-and-auditable
+  evidence:
+    laws:
+    - verification/laws/provider_intent_extraction_is_structured_cached_and_auditable.md
+    properties:
+    - verification/properties/intent_extraction_cache_determinism.md
+- id: check-proof-projector
+  symbol: project_check_proof
+  kind: projector
+  purity: pure
+  discharges:
+    invariants:
+    - check-projections-distinguish-declared-and-observed-proof
+  evidence:
+    laws:
+    - verification/laws/check_projections_distinguish_declared_and_observed_proof.md
+    properties:
+    - verification/properties/check_proof_projection_truthfulness.md
+- id: prepare-rms-release-command
+  symbol: run_release_prepare
+  kind: adapter
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/prepare-rms-release.v1.yaml
+    invariants:
+    - canonical-artifacts-remain-authoritative
+    - canonical-mutations-require-route-receipts
+  assumptions:
+    ensures:
+    - release preparation remains deterministic, atomic at the candidate-validation boundary, and does not commit or publish
+  evidence:
+    contracts:
+    - verification/contracts/prepare_rms_release.md
+    laws:
+    - verification/laws/canonical_mutations_require_route_receipts.md
 x-rms:
   semantic_revision:
-    digest: sha256:624dae122c373a03e1dc6bdd23259c711dd3f6c0da9843f792c67c86f7b25612
-    change_record: verification/changes/resolve-provider-extracted-unknown-change-scope-to-existing-module-only-when-an-explicit-rms-module-override-supplies-canonical-ownership-eb10ae7b1392.yaml
+    digest: sha256:8ac817ab7bac4c55bc12d94f566b038458be04b537a18ad3afeaa99cae54874b
+    change_record: verification/changes/restore-the-complete-existing-rms-public-behavior-binding-graph-while-retaining-every-rc-5-contract-revision-and-release-preparation-binding-e6a3f19dec99.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:eb10ae7b1392249468a78d5fe2ea87b05f937f68f2ba76f81737bbcfa8a98832
+    change_record_digest: sha256:e6a3f19dec9956683a7e18586cb4ee372e51ee4659a95a6ef1c1044db11abc38

@@ -7,8 +7,8 @@ description: Design and add a new RMS module or bounded context with a coherent 
 
 1. Run `rms check --environment` when starting from an unfamiliar checkout.
 2. Confirm that a new boundary is justified by distinct language, ownership, invariants, change cadence, or replaceability. Do not create a module for every noun.
-3. Extract a typed `rms/intent-model/v0.1` from the user's words without naming modules, shapes, or topology. Pass it to `rms design --root <root> --task "<task>" --intent-yaml '<model>'`, or use recorded read-only `--ai` extraction. Resolve every material `unknown`; deterministic RMS policy, not task keywords or provider advice, chooses the topology.
-4. Follow exactly one design action: `rms add-module` for a standalone owner or `rms add-capability-tree` for an explicitly recommended composite tree. `add-capability-tree` never means “publish a capability” and never infers a surface from purpose prose; pass `--surface` only when the typed model requires one. A pure reusable library is an ordinary standalone `domain-engine`, with no exception. Only one runnable module mixing invariant-bearing decisions and boundary effects needs `unsplit_runnable_justification`.
+3. Begin with `rms design --root <root> --task "<exact user task>" --ai`; use typed intent flags for CI or offline input. Resolve every material `unknown`; deterministic RMS policy, not task keywords or provider advice, chooses the topology.
+4. Follow exactly one design action with its returned `--route-receipt <RUN_ID>`: `rms add-module` for a standalone owner or `rms add-capability-tree` for an explicitly recommended composite tree. `add-capability-tree` never means “publish a capability” and never infers a surface from purpose prose; pass `--surface` only when the typed model requires one. A pure reusable library is an ordinary standalone `domain-engine`, with no exception. Only one runnable module mixing invariant-bearing decisions and boundary effects needs `unsplit_runnable_justification`.
 5. Choose whether the new unit is a bounded context, internal module, runtime monitor, workflow, adapter, or library.
 6. Define:
    - one-sentence purpose;

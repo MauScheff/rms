@@ -2,8 +2,14 @@
 
 ## Unreleased
 
+## 0.1.0-rc.5
+
 Compatibility impact: intentionally breaking presentation and agent-JSON revision. The primary CLI is now the five-command `init`, `next`, `explain`, `check`, and `view` surface; specialist commands remain available through `rms help --all`.
 
+- Required ready, current, target-compatible route receipts for canonical semantic and topology mutations, including dry-runs.
+- Made explicit provider intent extraction schema-constrained, single-repair, root-local cached, concurrency-safe, and fully auditable through per-invocation run artifacts.
+- Added exact coverage and proof projections that distinguish observed execution from declared-but-unobserved evidence and name every selected RMS closure.
+- Added receipt-gated `rms release prepare` so RMS can update its own canonical and package version metadata without hand-editing manifests.
 - Changed `rms next` to positional intent and added repository-operation classification with `no-rms-change` results.
 - Made `rms explain` deterministic and answer-first, with complete canonical evidence behind `--details`.
 - Added `rms check` modes for environment, canonical system, working candidate, and committed-candidate proof.

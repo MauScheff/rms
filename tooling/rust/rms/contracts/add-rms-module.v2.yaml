@@ -1,0 +1,20 @@
+spec: rms/contract/v0.1
+name: "add-rms-module"
+version: 2
+kind: command
+meaning: "Scaffold the exact standalone RMS module selected by design only after validating its current topology receipt."
+preconditions:
+  - id: "accepts-1"
+    statement: "Valid scaffold inputs and a ready design route receipt matching the repository revision, target path, module identity, shape, profiles, and binding."
+postconditions:
+  - id: "ensures-1"
+    statement: "Receipt validation completes before dry-run or filesystem candidate construction."
+  - id: "ensures-2"
+    statement: "The deterministic scaffold remains collision-intolerant and contains only semantics authorized by its design decision."
+  - id: "ensures-3"
+    statement: "Reports identify the accepted receipt without treating it as source-edit or Git authority."
+failure_categories:
+  - id: "rejects-1"
+    statement: "Missing, malformed, stale, tampered, non-ready, wrong-root, wrong-target, wrong-action, or argument-mismatched receipts; existing generated paths; unsupported shapes or bindings; and provider or filesystem failure."
+compatibility:
+  policy: backward-compatible-within-major

@@ -7,7 +7,7 @@ on:
 
 env:
   # Pin this to the reviewed RMS release tag used by the project.
-  RMS_VERSION: v0.1.0-rc.4
+  RMS_VERSION: v0.1.0-rc.5
 
 jobs:
   rms:

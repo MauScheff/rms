@@ -1,0 +1,22 @@
+spec: rms/contract/v0.1
+name: "check-rms-project"
+version: 2
+kind: command
+meaning: "Execute one deterministic RMS readiness mode and project the exact certified repository or module scope together with proof declarations and observations without strengthening the underlying checks."
+preconditions:
+  - id: "accepts-1"
+    statement: "A readable RMS root, one valid check mode, optional module closure, and compact or detailed projection selection."
+postconditions:
+  - id: "ensures-1"
+    statement: "Every report names complete, progressive, or module coverage, every selected top-level closure, unowned production counts, and bounded samples."
+  - id: "ensures-2"
+    statement: "Components include stable ids plus semantic subjects and scopes."
+  - id: "ensures-3"
+    statement: "Proof observations identify only commands and validators actually executed; unexecuted declarations remain separate."
+  - id: "ensures-4"
+    statement: "Progressive pass means selected closures passed and never implies whole-repository certification."
+failure_categories:
+  - id: "rejects-1"
+    statement: "Invalid mode combinations, unresolved closures, unreadable evidence, delegated reports that cannot be projected truthfully, and complete-coverage claims with unowned production paths."
+compatibility:
+  policy: backward-compatible-within-major

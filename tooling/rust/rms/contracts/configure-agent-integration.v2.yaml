@@ -1,0 +1,20 @@
+spec: rms/contract/v0.1
+name: "configure-agent-integration"
+version: 2
+kind: command
+meaning: "Diagnose, create, synchronize, or package managed agent guidance that enters natural-language RMS work through explicit recorded AI routing and carries the resulting receipt into canonical mutations."
+preconditions:
+  - id: "accepts-1"
+    statement: "A supported agent target and readable project root or explicit optional plugin marketplace path."
+postconditions:
+  - id: "ensures-1"
+    statement: "Managed guidance starts natural-language work with rms next using explicit --ai and preserves caller-supplied typed intent for offline or CI workflows."
+  - id: "ensures-2"
+    statement: "Mutation examples pass the route receipt returned by next or design and retain existing commit-authority constraints."
+  - id: "ensures-3"
+    statement: "Project-owned guidance remains preserved outside managed regions and generated distributions remain digest-equivalent."
+failure_categories:
+  - id: "rejects-1"
+    statement: "Unsupported targets, stale managed templates that cannot be synchronized safely, unwritable destinations, and plugin packaging or installation failures."
+compatibility:
+  policy: backward-compatible-within-major

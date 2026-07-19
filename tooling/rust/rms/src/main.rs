@@ -31,6 +31,11 @@ mod viewer_request;
 const VALIDATOR_NAME: &str = "rms";
 const VALIDATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_RUN_ROOT: &str = ".rms/runs";
+const DEFAULT_INTENT_CACHE_ROOT: &str = ".rms/cache/intent";
+const INTENT_SCHEMA_SPEC: &str = "rms/intent-model/v0.1";
+const INTENT_EXTRACTION_PROMPT_VERSION: &str = "rms-intent-extraction/v2";
+const INTENT_NORMALIZATION_VERSION: &str = "rms-intent-normalization/v2";
+const ROUTE_RECEIPT_SPEC: &str = "rms/route-receipt/v0.1";
 const DEFAULT_PROVIDER_TIMEOUT_SECONDS: u64 = 900;
 const DEFAULT_DOGFOOD_PHASE_TIMEOUT_SECONDS: u64 = 3600;
 const DEFAULT_PROOF_TIMEOUT_SECONDS: u64 = 300;
@@ -248,6 +253,10 @@ enum Commands {
         #[arg(long)]
         ai: bool,
 
+        /// Bypass and replace a validated cached provider intent extraction.
+        #[arg(long, requires = "ai")]
+        refresh_intent: bool,
+
         /// Emit the shared report as machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -421,6 +430,10 @@ enum Commands {
         /// Use the default AI provider from .rms/config.yaml.
         #[arg(long)]
         ai: bool,
+
+        /// Bypass and replace a validated cached provider intent extraction.
+        #[arg(long, requires = "ai")]
+        refresh_intent: bool,
 
         /// Optional AI provider to execute the rendered prompt.
         #[arg(long)]
@@ -1072,6 +1085,13 @@ enum Commands {
         #[arg(long, default_value = ".")]
         root: PathBuf,
 
+        /// Ready route run ID, run directory, or route-receipt.json authorizing this exact scaffold.
+        #[arg(
+            long = "route-receipt",
+            value_name = "RUN_ID|RUN_DIRECTORY|RECEIPT_FILE"
+        )]
+        route_receipt: PathBuf,
+
         /// Use the default AI provider to produce an advisory scaffold plan before deterministic scaffolding.
         #[arg(long)]
         ai: bool,
@@ -1113,6 +1133,13 @@ enum Commands {
         /// Implementation binding to scaffold: rust, swift, js, or executable.
         #[arg(long)]
         binding: String,
+
+        /// Ready route run ID, run directory, or route-receipt.json authorizing this mutation.
+        #[arg(
+            long = "route-receipt",
+            value_name = "RUN_ID|RUN_DIRECTORY|RECEIPT_FILE"
+        )]
+        route_receipt: PathBuf,
     },
 
     /// Scaffold a recursive RMS capability tree: composite parent, domain child, and boundary child.
@@ -1156,6 +1183,17 @@ enum Commands {
         /// Explicit runnable surface kind for the boundary child; never inferred from purpose text.
         #[arg(long)]
         surface: Option<String>,
+
+        /// Repository or system root used to resolve a bare route run ID.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Ready route run ID, run directory, or route-receipt.json authorizing this exact scaffold.
+        #[arg(
+            long = "route-receipt",
+            value_name = "RUN_ID|RUN_DIRECTORY|RECEIPT_FILE"
+        )]
+        route_receipt: PathBuf,
     },
 
     /// Inspect or change progressive versus complete RMS workspace coverage.
@@ -1516,6 +1554,18 @@ struct AuditCheck {
     result: String,
     evidence: String,
     note: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proof_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strategy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    elapsed_ms: Option<u128>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1806,6 +1856,7 @@ enum RmsWorkbenchCommand {
     AddRmsModule,
     AddRmsCapabilityTree,
     ManageRmsAdoption,
+    PrepareRmsRelease,
     AddRmsBinding,
     CheckReleaseReadiness,
     BuildContextPacket,
@@ -3646,6 +3697,13 @@ enum MachineCommands {
         /// Validate and report planned artifact changes without writing.
         #[arg(long)]
         dry_run: bool,
+
+        /// Ready route run ID, run directory, or route-receipt.json authorizing this mutation.
+        #[arg(
+            long = "route-receipt",
+            value_name = "RUN_ID|RUN_DIRECTORY|RECEIPT_FILE"
+        )]
+        route_receipt: PathBuf,
     },
 
     /// Check an implementation's semantic machine declarations.
@@ -3735,6 +3793,13 @@ enum SurfaceCommands {
         /// Validate and report planned artifact changes without writing.
         #[arg(long)]
         dry_run: bool,
+
+        /// Ready route run ID, run directory, or route-receipt.json authorizing this mutation.
+        #[arg(
+            long = "route-receipt",
+            value_name = "RUN_ID|RUN_DIRECTORY|RECEIPT_FILE"
+        )]
+        route_receipt: PathBuf,
     },
 
     /// Check runnable surface declarations and wiring.
@@ -3824,6 +3889,13 @@ enum SpecCommands {
         /// Validate and report planned artifact changes without writing.
         #[arg(long)]
         dry_run: bool,
+
+        /// Ready route run ID, run directory, or route-receipt.json authorizing this mutation.
+        #[arg(
+            long = "route-receipt",
+            value_name = "RUN_ID|RUN_DIRECTORY|RECEIPT_FILE"
+        )]
+        route_receipt: PathBuf,
     },
 
     /// Check a module or implementation for semantic-first completeness.
@@ -4021,6 +4093,24 @@ enum AgentPluginCommands {
 
 #[derive(Subcommand)]
 enum ReleaseCommands {
+    /// Prepare one consistent, receipt-gated RMS release metadata revision.
+    Prepare {
+        /// Semantic version to prepare.
+        version: String,
+
+        /// Repository root to update.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Ready route run ID, run directory, or route-receipt.json path.
+        #[arg(long, value_name = "RUN_ID|RUN_DIRECTORY|RECEIPT_FILE")]
+        route_receipt: PathBuf,
+
+        /// Validate and report the complete candidate without writing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Run the canonical release-readiness gate.
     Check {
         /// Repository root to check.
@@ -6325,6 +6415,65 @@ fn validate_command_surface() -> Result<()> {
     Ok(())
 }
 
+fn run_release_design_scaffold(
+    root: &Path,
+    rms_exe: &Path,
+    app: &Path,
+    label: &str,
+    task: &str,
+    intent_model: &str,
+) -> Result<()> {
+    let app_arg = app.to_string_lossy().to_string();
+    let design_output = run_release_step_capture(
+        &format!("{label} design"),
+        command_with_args(
+            rms_exe,
+            &[
+                "design",
+                "--root",
+                app_arg.as_str(),
+                "--task",
+                task,
+                "--intent-json",
+                intent_model,
+                "--json",
+            ],
+            root,
+        ),
+    )?;
+    let design: JsonValue = serde_json::from_str(&design_output)
+        .with_context(|| format!("{label} design did not return JSON"))?;
+    if design.get("result").and_then(JsonValue::as_str) != Some("ready") {
+        bail!("{label} design did not return a ready result");
+    }
+    let receipt = design
+        .get("run_id")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| anyhow!("{label} design omitted run_id"))?;
+    let mut scaffold_args = design
+        .get("decision")
+        .and_then(|value| value.get("scaffold"))
+        .and_then(|value| value.get("args"))
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| anyhow!("{label} design omitted scaffold args"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(ToString::to_string)
+                .ok_or_else(|| anyhow!("{label} scaffold argument is not a string"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    scaffold_args.extend([
+        "--root".to_string(),
+        app_arg,
+        "--route-receipt".to_string(),
+        receipt.to_string(),
+    ]);
+    let scaffold_arg_refs = scaffold_args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_release_step(label, command_with_args(rms_exe, &scaffold_arg_refs, app))
+}
+
 fn run_release_scaffold_roundtrip(root: &Path, rms_exe: &Path) -> Result<()> {
     let temp = std::env::temp_dir().join(format!(
         "rms-release-scaffold-{}-{}",
@@ -6338,15 +6487,14 @@ fn run_release_scaffold_roundtrip(root: &Path, rms_exe: &Path) -> Result<()> {
     let app = temp.join("app");
     let app_arg = app.to_string_lossy().to_string();
     let widget = app.join("modules/widget");
-    let widget_arg = widget.to_string_lossy().to_string();
-    let swift_widget = app.join("modules/swift-widget");
-    let swift_widget_arg = swift_widget.to_string_lossy().to_string();
     let widget_manifest = widget.join("Cargo.toml");
     let widget_manifest_arg = widget_manifest.to_string_lossy().to_string();
     let executable_widget = app.join("modules/executable-widget");
-    let executable_widget_arg = executable_widget.to_string_lossy().to_string();
     let executable_implementation = executable_widget.join("implementation.yaml");
     let executable_implementation_arg = executable_implementation.to_string_lossy().to_string();
+    let rust_intent = r#"{"spec":"rms/intent-model/v0.1","operation":"design","change_scope":"new-module","subjects":["widget"],"facts":{"domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"widget decision"},"lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No ordered lifecycle was requested."},"effects":{"disposition":"absent","basis":"inferred","rationale":"The decision module is pure."},"runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"No runnable surface was requested."},"reuse":{"disposition":"absent","basis":"inferred","rationale":"No reuse requirement was stated."}},"responsibilities":[{"id":"widget-decision","kind":"decision","summary":"Own widget decisions."}],"surface_kinds":[],"binding_preferences":["rust"],"open_questions":[]}"#;
+    let swift_intent = r#"{"spec":"rms/intent-model/v0.1","operation":"design","change_scope":"new-module","subjects":["swift-widget"],"facts":{"domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"Swift widget decision"},"lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No ordered lifecycle was requested."},"effects":{"disposition":"absent","basis":"inferred","rationale":"The decision module is pure."},"runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"No runnable surface was requested."},"reuse":{"disposition":"absent","basis":"inferred","rationale":"No reuse requirement was stated."}},"responsibilities":[{"id":"swift-widget-decision","kind":"decision","summary":"Own Swift widget decisions."}],"surface_kinds":[],"binding_preferences":["swift"],"open_questions":[]}"#;
+    let executable_intent = r#"{"spec":"rms/intent-model/v0.1","operation":"design","change_scope":"new-module","subjects":["executable-widget"],"facts":{"domain_decisions":{"disposition":"absent","basis":"inferred","rationale":"The module adapts an existing decision boundary."},"lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No ordered lifecycle was requested."},"effects":{"disposition":"required","basis":"explicit","source_quote":"executable widget boundary"},"runnable_surface":{"disposition":"required","basis":"explicit","source_quote":"executable"},"reuse":{"disposition":"absent","basis":"inferred","rationale":"No reuse requirement was stated."}},"responsibilities":[{"id":"executable-widget-boundary","kind":"boundary","summary":"Own the executable widget boundary."}],"surface_kinds":["executable"],"binding_preferences":["executable"],"open_questions":[]}"#;
 
     let result = (|| -> Result<()> {
         run_release_step(
@@ -6367,63 +6515,50 @@ fn run_release_scaffold_roundtrip(root: &Path, rms_exe: &Path) -> Result<()> {
             ),
         )?;
         run_release_step(
+            "rms scaffold stage authorized bootstrap",
+            command_with_args("git", &["-C", app_arg.as_str(), "add", "."], root),
+        )?;
+        run_release_step(
+            "rms scaffold authorized bootstrap commit",
+            command_with_args(
+                "git",
+                &[
+                    "-c",
+                    "user.name=RMS Release Check",
+                    "-c",
+                    "user.email=rms-release@example.invalid",
+                    "-C",
+                    app_arg.as_str(),
+                    "commit",
+                    "-m",
+                    "Initialize RMS scaffold",
+                ],
+                root,
+            ),
+        )?;
+        run_release_design_scaffold(
+            root,
+            rms_exe,
+            &app,
             "rms add-module rust scaffold",
-            command_with_args(
-                rms_exe,
-                &[
-                    "add-module",
-                    widget_arg.as_str(),
-                    "--name",
-                    "widget",
-                    "--purpose",
-                    "Own widgets",
-                    "--kind",
-                    "library",
-                    "--binding",
-                    "rust",
-                ],
-                root,
-            ),
+            "Create the widget decision module in Rust.",
+            rust_intent,
         )?;
-        run_release_step(
+        run_release_design_scaffold(
+            root,
+            rms_exe,
+            &app,
             "rms add-module swift scaffold",
-            command_with_args(
-                rms_exe,
-                &[
-                    "add-module",
-                    swift_widget_arg.as_str(),
-                    "--name",
-                    "swift-widget",
-                    "--purpose",
-                    "Own Swift widgets",
-                    "--kind",
-                    "library",
-                    "--binding",
-                    "swift",
-                ],
-                root,
-            ),
+            "Create the Swift widget decision module.",
+            swift_intent,
         )?;
-        run_release_step(
+        run_release_design_scaffold(
+            root,
+            rms_exe,
+            &app,
             "rms add-module executable scaffold",
-            command_with_args(
-                rms_exe,
-                &[
-                    "add-module",
-                    executable_widget_arg.as_str(),
-                    "--name",
-                    "executable-widget",
-                    "--purpose",
-                    "Own executable widgets",
-                    "--kind",
-                    "adapter",
-                    "--profile",
-                    "boundary",
-                    "--binding",
-                    "executable",
-                ],
-                root,
-            ),
+            "Create the executable widget boundary.",
+            executable_intent,
         )?;
         run_release_step(
             "rms validate scaffold",
@@ -6564,8 +6699,8 @@ fn run_release_binary_smoke(root: &Path) -> Result<()> {
         "release binary diagnose",
         command_with_args(&binary, &["diagnose", "--root", ".", "--json"], root),
     )?;
-    run_release_step(
-        "release binary next",
+    let untyped_next = run_release_step_expect_status(
+        "release binary untyped next",
         command_with_args(
             &binary,
             &[
@@ -6579,6 +6714,12 @@ fn run_release_binary_smoke(root: &Path) -> Result<()> {
             ],
             root,
         ),
+        2,
+    )?;
+    ensure_output_contains(
+        "release binary untyped next",
+        &untyped_next,
+        "intent-model-required",
     )?;
     run_release_step(
         "release binary explain",
@@ -6725,10 +6866,8 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
 
     let app = work_dir.join("tic-tac-toe");
     let app_arg = app.to_string_lossy().to_string();
-    let capability = app.join("modules/play-tic-tac-toe");
-    let capability_arg = capability.to_string_lossy().to_string();
-    let parent_module = "modules/play-tic-tac-toe/module.yaml";
-    let rules_module = "modules/play-tic-tac-toe-domain/module.yaml";
+    let parent_module = "modules/tic-tac-toe/module.yaml";
+    let rules_module = "modules/tic-tac-toe-domain/module.yaml";
     let verify_parent = app.join(parent_module);
     let verify_parent_arg = verify_parent.to_string_lossy().to_string();
     let intent_model = r#"{"spec":"rms/intent-model/v0.1","operation":"design","change_scope":"new-system","subjects":["tic-tac-toe"],"facts":{"domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"Tic Tac Toe game"},"lifecycle":{"disposition":"required","basis":"inferred","rationale":"Turns and terminal outcomes are ordered."},"effects":{"disposition":"required","basis":"inferred","rationale":"Browser interaction is a boundary effect."},"runnable_surface":{"disposition":"required","basis":"explicit","source_quote":"browser-playable"},"reuse":{"disposition":"absent","basis":"inferred","rationale":"No reuse requirement was stated."}},"responsibilities":[{"id":"tic-tac-toe-decisions","kind":"decision","summary":"Decide legal game transitions."},{"id":"tic-tac-toe-browser","kind":"boundary","summary":"Adapt browser interaction."}],"surface_kinds":["browser"],"binding_preferences":["rust","js"],"open_questions":[]}"#;
@@ -6786,7 +6925,7 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
                 &bin_dir,
             )?,
         )?;
-        run_release_step(
+        let pre_design_route = run_release_step_expect_status(
             "clean-room dogfood next before design",
             command_with_path(
                 "rms",
@@ -6802,6 +6941,12 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
                 root,
                 &bin_dir,
             )?,
+            2,
+        )?;
+        ensure_output_contains(
+            "clean-room dogfood next before design",
+            &pre_design_route,
+            "design-required",
         )?;
         run_release_step(
             "clean-room dogfood stage authorized bootstrap",
@@ -6825,7 +6970,7 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
                 root,
             ),
         )?;
-        run_release_step(
+        let design_output = run_release_step_capture(
             "clean-room dogfood design",
             command_with_path(
                 "rms",
@@ -6837,38 +6982,59 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
                     "browser-playable Tic Tac Toe game",
                     "--intent-json",
                     intent_model,
+                    "--json",
                 ],
                 root,
                 &bin_dir,
             )?,
         )?;
+        let design: JsonValue = serde_json::from_str(&design_output)
+            .context("clean-room dogfood design did not return JSON")?;
+        let receipt = design
+            .get("run_id")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| anyhow!("clean-room dogfood design omitted run_id"))?;
+        let mut scaffold_args = design
+            .get("decision")
+            .and_then(|value| value.get("scaffold"))
+            .and_then(|value| value.get("args"))
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| anyhow!("clean-room dogfood design omitted scaffold args"))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(ToString::to_string)
+                    .ok_or_else(|| anyhow!("clean-room dogfood scaffold argument is not a string"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let domain_binding = scaffold_args
+            .windows(2)
+            .find(|pair| pair[0] == "--domain-binding")
+            .map(|pair| pair[1].clone())
+            .ok_or_else(|| anyhow!("clean-room dogfood design omitted domain binding"))?;
+        let boundary_binding = scaffold_args
+            .windows(2)
+            .find(|pair| pair[0] == "--boundary-binding")
+            .map(|pair| pair[1].clone())
+            .ok_or_else(|| anyhow!("clean-room dogfood design omitted boundary binding"))?;
+        scaffold_args.extend([
+            "--root".to_string(),
+            app_arg.clone(),
+            "--route-receipt".to_string(),
+            receipt.to_string(),
+        ]);
+        let scaffold_arg_refs = scaffold_args.iter().map(String::as_str).collect::<Vec<_>>();
         run_release_step(
             "clean-room dogfood add-capability-tree",
-            command_with_path(
-                "rms",
-                &[
-                    "add-capability-tree",
-                    capability_arg.as_str(),
-                    "--name",
-                    "play-tic-tac-toe",
-                    "--purpose",
-                    "Expose a playable Tic Tac Toe capability",
-                    "--public-command",
-                    "play-tic-tac-toe",
-                    "--domain-command",
-                    "apply-move",
-                    "--domain-binding",
-                    "rust",
-                    "--boundary-binding",
-                    "js",
-                    "--surface",
-                    "browser",
-                ],
-                root,
-                &bin_dir,
-            )?,
+            command_with_path("rms", &scaffold_arg_refs, &app, &bin_dir)?,
         )?;
-        assert_clean_room_dogfood_artifacts(&app)?;
+        assert_clean_room_dogfood_artifacts(
+            &app,
+            "tic-tac-toe",
+            &domain_binding,
+            &boundary_binding,
+        )?;
         run_release_step(
             "clean-room dogfood validate",
             command_with_path("rms", &["validate", "--root", "."], &app, &bin_dir)?,
@@ -6896,7 +7062,7 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
         ensure_output_contains(
             "clean-room dogfood route rules",
             &rules_route,
-            "Recommended module: play-tic-tac-toe-domain",
+            "Recommended module: tic-tac-toe-domain",
         )?;
         let boundary_route = run_release_step_capture(
             "clean-room dogfood route boundary",
@@ -6917,7 +7083,7 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
         ensure_output_contains(
             "clean-room dogfood route boundary",
             &boundary_route,
-            "Recommended module: play-tic-tac-toe-boundary",
+            "Recommended module: tic-tac-toe-boundary",
         )?;
         run_release_step(
             "clean-room dogfood context",
@@ -6999,6 +7165,253 @@ fn make_executable(path: &Path) -> Result<()> {
 
 #[cfg(not(unix))]
 fn make_executable(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct ReleaseMetadataCandidate {
+    path: PathBuf,
+    current: String,
+    next: String,
+}
+
+fn validate_release_version(version: &str) -> Result<()> {
+    let (core, prerelease) = version
+        .split_once('-')
+        .map_or((version, None), |(core, suffix)| (core, Some(suffix)));
+    let core_parts = core.split('.').collect::<Vec<_>>();
+    if core_parts.len() != 3
+        || core_parts.iter().any(|part| {
+            part.is_empty() || !part.chars().all(|character| character.is_ascii_digit())
+        })
+        || prerelease.is_some_and(|suffix| {
+            suffix.is_empty()
+                || !suffix.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '.' | '-')
+                })
+        })
+    {
+        bail!("release version `{version}` is not a supported semantic version");
+    }
+    Ok(())
+}
+
+fn replace_release_metadata_once(
+    path: &Path,
+    source: &str,
+    current: &str,
+    next: &str,
+) -> Result<String> {
+    let occurrences = source.match_indices(current).count();
+    if occurrences != 1 {
+        bail!(
+            "release metadata `{}` expected exactly one `{current}` marker, found {occurrences}",
+            path.display()
+        );
+    }
+    Ok(source.replacen(current, next, 1))
+}
+
+fn release_metadata_candidates(
+    root: &Path,
+    version: &str,
+) -> Result<Vec<ReleaseMetadataCandidate>> {
+    validate_release_version(version)?;
+    let cargo_path = root.join("tooling/rust/rms/Cargo.toml");
+    let cargo_source = fs::read_to_string(&cargo_path)
+        .with_context(|| format!("failed to read `{}`", cargo_path.display()))?;
+    let cargo: TomlValue = toml::from_str(&cargo_source)
+        .with_context(|| format!("failed to parse `{}`", cargo_path.display()))?;
+    let current_version = cargo
+        .get("package")
+        .and_then(TomlValue::as_table)
+        .and_then(|package| package.get("version"))
+        .and_then(TomlValue::as_str)
+        .ok_or_else(|| anyhow!("`{}` missing package.version", cargo_path.display()))?;
+    if current_version == version {
+        bail!("RMS release metadata is already prepared for `{version}`");
+    }
+
+    let specifications = [
+        (
+            PathBuf::from("tooling/rust/rms/Cargo.toml"),
+            format!("version = \"{current_version}\""),
+            format!("version = \"{version}\""),
+        ),
+        (
+            PathBuf::from("Cargo.lock"),
+            format!("name = \"rms\"\nversion = \"{current_version}\""),
+            format!("name = \"rms\"\nversion = \"{version}\""),
+        ),
+        (
+            PathBuf::from("tooling/rust/rms/module.yaml"),
+            format!("name: rms-cli\n  version: {current_version}"),
+            format!("name: rms-cli\n  version: {version}"),
+        ),
+        (
+            PathBuf::from("integrations/codex/rms/.codex-plugin/plugin.json"),
+            format!("\"version\": \"{current_version}\""),
+            format!("\"version\": \"{version}\""),
+        ),
+        (
+            PathBuf::from("templates/ci/github-actions-rms-project.yml"),
+            format!("RMS_VERSION: v{current_version}"),
+            format!("RMS_VERSION: v{version}"),
+        ),
+        (
+            PathBuf::from("REFERENCE.md"),
+            format!("implementation is `{current_version}`"),
+            format!("implementation is `{version}`"),
+        ),
+    ];
+
+    let mut candidates = Vec::new();
+    for (relative, current_marker, next_marker) in specifications {
+        let path = root.join(relative);
+        let current = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read `{}`", path.display()))?;
+        let next = replace_release_metadata_once(&path, &current, &current_marker, &next_marker)?;
+        candidates.push(ReleaseMetadataCandidate {
+            path,
+            current,
+            next,
+        });
+    }
+
+    let changelog_path = root.join("CHANGELOG.md");
+    let changelog = fs::read_to_string(&changelog_path)
+        .with_context(|| format!("failed to read `{}`", changelog_path.display()))?;
+    if changelog.contains(&format!("## {version}")) {
+        bail!(
+            "`{}` already contains a `{version}` release section",
+            changelog_path.display()
+        );
+    }
+    let next_changelog = replace_release_metadata_once(
+        &changelog_path,
+        &changelog,
+        "## Unreleased\n\n",
+        &format!("## Unreleased\n\n## {version}\n\n"),
+    )?;
+    candidates.push(ReleaseMetadataCandidate {
+        path: changelog_path,
+        current: changelog,
+        next: next_changelog,
+    });
+    Ok(candidates)
+}
+
+fn write_release_metadata_candidates(candidates: &[ReleaseMetadataCandidate]) -> Result<()> {
+    let nonce = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    );
+    let mut staged = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let file_name = candidate
+            .path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| {
+                anyhow!(
+                    "release metadata path `{}` has no file name",
+                    candidate.path.display()
+                )
+            })?;
+        let staged_path = candidate
+            .path
+            .with_file_name(format!(".{file_name}.rms-release-{nonce}-{index}.tmp"));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged_path)
+            .with_context(|| format!("failed to stage `{}`", candidate.path.display()))?;
+        if let Err(error) = file.write_all(candidate.next.as_bytes()) {
+            let _ = fs::remove_file(&staged_path);
+            for path in staged {
+                let _ = fs::remove_file(path);
+            }
+            return Err(error)
+                .with_context(|| format!("failed to stage `{}`", candidate.path.display()));
+        }
+        staged.push(staged_path);
+    }
+
+    let mut committed: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let file_name = candidate
+            .path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("metadata");
+        let backup = candidate
+            .path
+            .with_file_name(format!(".{file_name}.rms-release-{nonce}-{index}.bak"));
+        let commit_result = fs::rename(&candidate.path, &backup)
+            .and_then(|_| fs::rename(&staged[index], &candidate.path));
+        if let Err(error) = commit_result {
+            if backup.exists() && !candidate.path.exists() {
+                let _ = fs::rename(&backup, &candidate.path);
+            }
+            for (path, prior_backup) in committed.iter().rev() {
+                let _ = fs::remove_file(path);
+                let _ = fs::rename(prior_backup, path);
+            }
+            for path in &staged {
+                let _ = fs::remove_file(path);
+            }
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to commit release metadata `{}`",
+                    candidate.path.display()
+                )
+            });
+        }
+        committed.push((candidate.path.clone(), backup));
+    }
+    for (_, backup) in committed {
+        let _ = fs::remove_file(backup);
+    }
+    Ok(())
+}
+
+fn run_release_prepare(root: &Path, version: &str, dry_run: bool) -> Result<()> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
+    let candidates = release_metadata_candidates(&root, version)?;
+    for candidate in &candidates {
+        if candidate.current == candidate.next {
+            bail!(
+                "release metadata candidate `{}` is unchanged",
+                candidate.path.display()
+            );
+        }
+    }
+    if !dry_run {
+        write_release_metadata_candidates(&candidates)?;
+        validate_release_metadata(&root)?;
+    }
+    println!(
+        "RMS release prepare: {}",
+        if dry_run { "dry-run pass" } else { "pass" }
+    );
+    println!("version: {version}");
+    for candidate in candidates {
+        println!(
+            "{}: {}",
+            if dry_run { "would write" } else { "wrote" },
+            candidate
+                .path
+                .strip_prefix(&root)
+                .unwrap_or(&candidate.path)
+                .display()
+        );
+    }
     Ok(())
 }
 
@@ -7100,6 +7513,38 @@ fn run_release_step_capture(label: &str, mut command: Command) -> Result<String>
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn run_release_step_expect_status(
+    label: &str,
+    mut command: Command,
+    expected_status: i32,
+) -> Result<String> {
+    println!("## {label}");
+    let output = command
+        .output()
+        .with_context(|| format!("failed to start release check step `{label}`"))?;
+    if output.status.code() != Some(expected_status) {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "release check step `{label}` returned status {} instead of {expected_status}\nstdout:\n{}\nstderr:\n{}",
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string()),
+            stdout,
+            stderr,
+        );
+    }
+    println!("pass: returned expected status {expected_status}");
+    println!();
+    Ok(format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
 fn run_release_step_expect_failure(label: &str, mut command: Command) -> Result<String> {
     println!("## {label}");
     let output = command
@@ -7122,10 +7567,18 @@ fn ensure_output_contains(label: &str, output: &str, needle: &str) -> Result<()>
     Ok(())
 }
 
-fn assert_clean_room_dogfood_artifacts(app: &Path) -> Result<()> {
+fn assert_clean_room_dogfood_artifacts(
+    app: &Path,
+    capability_name: &str,
+    domain_binding: &str,
+    boundary_binding: &str,
+) -> Result<()> {
+    let parent = format!("modules/{capability_name}/module.yaml");
+    let domain = format!("modules/{capability_name}-domain");
+    let boundary = format!("modules/{capability_name}-boundary");
     ensure_file_contains(
         &app.join("AGENTS.md"),
-        "rms next \"<intent>\"",
+        "rms next \"<exact user task>\" --root . --ai",
         "Codex/agent RMS guidance",
     )?;
     ensure_file_contains(
@@ -7153,31 +7606,41 @@ fn assert_clean_room_dogfood_artifacts(app: &Path) -> Result<()> {
         "Claude local RMS skill",
     )?;
     ensure_file_contains(
-        &app.join("modules/play-tic-tac-toe/module.yaml"),
+        &app.join(parent),
         "shape: \"composite\"",
         "composite parent scaffold",
     )?;
     ensure_file_contains(
-        &app.join("modules/play-tic-tac-toe-domain/module.yaml"),
+        &app.join(&domain).join("module.yaml"),
         "shape: \"domain-engine\"",
         "domain engine scaffold",
     )?;
     ensure_file_contains(
-        &app.join("modules/play-tic-tac-toe-boundary/module.yaml"),
+        &app.join(&boundary).join("module.yaml"),
         "shape: \"boundary-adapter\"",
         "boundary adapter scaffold",
     )?;
+    let (domain_representation, domain_transition) = match domain_binding {
+        "rust" => ("src/representation.rs", "src/transition.rs"),
+        "js" => ("src/representation.mjs", "src/transition.mjs"),
+        other => bail!("unsupported dogfood domain binding `{other}`"),
+    };
+    let boundary_unit = match boundary_binding {
+        "rust" => "src/representation.rs",
+        "js" => "src/parser.mjs",
+        other => bail!("unsupported dogfood boundary binding `{other}`"),
+    };
     ensure_file_exists(
-        &app.join("modules/play-tic-tac-toe-domain/src/representation.rs"),
+        &app.join(&domain).join(domain_representation),
         "domain representation unit",
     )?;
     ensure_file_exists(
-        &app.join("modules/play-tic-tac-toe-domain/src/transition.rs"),
+        &app.join(&domain).join(domain_transition),
         "domain transition unit",
     )?;
     ensure_file_exists(
-        &app.join("modules/play-tic-tac-toe-boundary/src/parser.mjs"),
-        "boundary parser unit",
+        &app.join(&boundary).join(boundary_unit),
+        "boundary binding unit",
     )?;
     Ok(())
 }
@@ -7915,6 +8378,7 @@ fn main() -> Result<()> {
             intent_yaml,
             intent_file,
             ai,
+            refresh_intent,
             json,
             details,
         } => {
@@ -7944,6 +8408,7 @@ fn main() -> Result<()> {
                     yaml: intent_yaml,
                     file: intent_file,
                     ai,
+                    refresh: refresh_intent,
                 },
                 options.as_ref(),
                 json,
@@ -8048,8 +8513,9 @@ fn main() -> Result<()> {
             intent_file,
             json,
             ai,
+            refresh_intent,
             provider,
-            record,
+            record: _,
             run_root,
             model,
             sandbox,
@@ -8061,7 +8527,7 @@ fn main() -> Result<()> {
                 RawPromptRunOptions {
                     ai: ai || provider.is_some(),
                     provider,
-                    record: record || ai,
+                    record: true,
                     run_root,
                     model,
                     sandbox: Some(sandbox.unwrap_or(CodexSandbox::ReadOnly)),
@@ -8078,6 +8544,7 @@ fn main() -> Result<()> {
                     yaml: intent_yaml,
                     file: intent_file,
                     ai: ai || options.provider != Provider::None,
+                    refresh: refresh_intent,
                 },
                 &options,
                 json,
@@ -8405,13 +8872,26 @@ fn main() -> Result<()> {
                 change_yaml,
                 change_file,
                 dry_run,
-            } => run_machine_apply(
-                &implementation,
-                change_json.as_deref(),
-                change_yaml.as_deref(),
-                change_file.as_deref(),
-                dry_run,
-            ),
+                route_receipt,
+            } => {
+                let root = repository_root_for_target(&implementation)?;
+                let receipt = require_route_receipt(
+                    &root,
+                    &route_receipt,
+                    "machine-apply",
+                    &implementation,
+                    None,
+                );
+                run_machine_apply(
+                    &implementation,
+                    change_json.as_deref(),
+                    change_yaml.as_deref(),
+                    change_file.as_deref(),
+                    dry_run,
+                )?;
+                println!("route receipt: {}", receipt.receipt_id);
+                Ok(())
+            }
             MachineCommands::Check {
                 implementation,
                 strict,
@@ -8439,23 +8919,36 @@ fn main() -> Result<()> {
                 usage_document,
                 smoke_command,
                 dry_run,
-            } => run_surface_apply(SurfaceApplyRequest {
-                implementation,
-                kind,
-                surface,
-                entrypoint,
-                launch_entrypoint,
-                launch_scripts,
-                delegates_to,
-                command,
-                name,
-                effects,
-                no_effects_justification,
-                evidence,
-                usage_document,
-                smoke_command,
-                dry_run,
-            }),
+                route_receipt,
+            } => {
+                let root = repository_root_for_target(&implementation)?;
+                let receipt = require_route_receipt(
+                    &root,
+                    &route_receipt,
+                    "surface-apply",
+                    &implementation,
+                    None,
+                );
+                run_surface_apply(SurfaceApplyRequest {
+                    implementation,
+                    kind,
+                    surface,
+                    entrypoint,
+                    launch_entrypoint,
+                    launch_scripts,
+                    delegates_to,
+                    command,
+                    name,
+                    effects,
+                    no_effects_justification,
+                    evidence,
+                    usage_document,
+                    smoke_command,
+                    dry_run,
+                })?;
+                println!("route receipt: {}", receipt.receipt_id);
+                Ok(())
+            }
             SurfaceCommands::Check {
                 implementation,
                 strict,
@@ -8498,13 +8991,21 @@ fn main() -> Result<()> {
                 change_yaml,
                 change_file,
                 dry_run,
-            } => run_spec_apply(
-                &target,
-                change_json.as_deref(),
-                change_yaml.as_deref(),
-                change_file.as_deref(),
-                dry_run,
-            ),
+                route_receipt,
+            } => {
+                let root = repository_root_for_target(&target)?;
+                let receipt =
+                    require_route_receipt(&root, &route_receipt, "spec-apply", &target, None);
+                run_spec_apply(
+                    &target,
+                    change_json.as_deref(),
+                    change_yaml.as_deref(),
+                    change_file.as_deref(),
+                    dry_run,
+                )?;
+                println!("route receipt: {}", receipt.receipt_id);
+                Ok(())
+            }
             SpecCommands::Check {
                 target,
                 strict,
@@ -8555,6 +9056,19 @@ fn main() -> Result<()> {
             },
         },
         Commands::Release { command } => match command {
+            ReleaseCommands::Prepare {
+                version,
+                root,
+                route_receipt,
+                dry_run,
+            } => {
+                let target = root.join("tooling/rust/rms/implementation.yaml");
+                let receipt =
+                    require_route_receipt(&root, &route_receipt, "spec-apply", &target, None);
+                run_release_prepare(&root, &version, dry_run)?;
+                println!("route receipt: {}", receipt.receipt_id);
+                Ok(())
+            }
             ReleaseCommands::Check {
                 root,
                 skip_cargo_package,
@@ -8643,6 +9157,7 @@ fn main() -> Result<()> {
             shape,
             binding,
             root,
+            route_receipt,
             ai,
             provider,
             record,
@@ -8675,10 +9190,29 @@ fn main() -> Result<()> {
                 binding,
                 root,
             };
-            run_add_module(request, &options)
+            let scaffold = add_module_scaffold_action(&request);
+            let receipt = require_route_receipt(
+                &request.root,
+                &route_receipt,
+                "add-module",
+                &request.path,
+                Some(&scaffold),
+            );
+            run_add_module(request, &options)?;
+            println!("route receipt: {}", receipt.receipt_id);
+            Ok(())
         }
-        Commands::AddBinding { module, binding } => {
-            run_add_binding(AddBindingRequest { module, binding })
+        Commands::AddBinding {
+            module,
+            binding,
+            route_receipt,
+        } => {
+            let root = repository_root_for_target(&module)?;
+            let receipt =
+                require_route_receipt(&root, &route_receipt, "add-binding", &module, None);
+            run_add_binding(AddBindingRequest { module, binding })?;
+            println!("route receipt: {}", receipt.receipt_id);
+            Ok(())
         }
         Commands::AddCapabilityTree {
             path,
@@ -8691,18 +9225,33 @@ fn main() -> Result<()> {
             domain_binding,
             boundary_binding,
             surface,
-        } => run_add_capability_tree(AddCapabilityTreeRequest {
-            path,
-            name,
-            purpose,
-            public_command,
-            domain_child,
-            boundary_child,
-            domain_command,
-            domain_binding,
-            boundary_binding,
-            surface,
-        }),
+            root,
+            route_receipt,
+        } => {
+            let request = AddCapabilityTreeRequest {
+                path,
+                name,
+                purpose,
+                public_command,
+                domain_child,
+                boundary_child,
+                domain_command,
+                domain_binding,
+                boundary_binding,
+                surface,
+            };
+            let scaffold = add_capability_tree_scaffold_action(&request);
+            let receipt = require_route_receipt(
+                &root,
+                &route_receipt,
+                "add-capability-tree",
+                &request.path,
+                Some(&scaffold),
+            );
+            run_add_capability_tree(request)?;
+            println!("route receipt: {}", receipt.receipt_id);
+            Ok(())
+        }
         Commands::Adoption { command } => run_adoption_command(command),
         Commands::Help { all } => run_help(all),
     }
@@ -9086,7 +9635,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
 
     let source_revision = source_revision(root);
     let mut guidance = vec![
-        "Use `rms next \"<intent>\" --root .` for the deterministic work prescription."
+        "Managed agents use `rms next \"<exact user task>\" --root . --ai`; ordinary CLI callers explicitly opt into --ai or supply typed intent."
             .to_string(),
         "Use `rms explain [\"<question>\"] --root .` for a focused deterministic answer; add `--details` only when needed."
             .to_string(),
@@ -9142,7 +9691,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
             command_readiness("swift", &["--version"]),
         ],
         ai_providers: vec![
-            command_readiness("codex", &["--version"]),
+            codex_structured_output_readiness(),
             command_readiness("claude", &["--version"]),
         ],
         run_records,
@@ -10506,8 +11055,8 @@ fn run_design(
 ) -> Result<()> {
     let root = fs::canonicalize(root)
         .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
-    let (intent, mut diagnostics, run_dir) =
-        resolve_intent_model(&root, task, &input, Some(options))?;
+    let (intent, mut diagnostics, existing_run_dir) =
+        resolve_intent_model(&root, "design", task, &input, Some(options))?;
     let decision = intent.as_ref().and_then(|model| {
         if diagnostics
             .iter()
@@ -10534,13 +11083,54 @@ fn run_design(
     {
         "clarification-required"
     } else {
-        "recommendation"
+        "ready"
     };
     diagnostics.sort_by(|left, right| {
         left.check
             .cmp(&right.check)
             .then_with(|| left.message.cmp(&right.message))
     });
+    let run_dir = prepare_route_run_record(
+        &root,
+        "design",
+        task,
+        &render_intent_extraction_prompt(task),
+        Some(options),
+        existing_run_dir,
+    )?;
+    fs::write(
+        run_dir.join("intent-diagnostics.json"),
+        serde_json::to_string_pretty(&diagnostics)?,
+    )?;
+    let ready = result == "ready";
+    let scaffold = ready
+        .then(|| decision.as_ref().map(|value| value.scaffold.clone()))
+        .flatten();
+    let target_paths = scaffold
+        .as_ref()
+        .and_then(|action| action.args.get(1))
+        .map(PathBuf::from)
+        .into_iter()
+        .collect::<Vec<_>>();
+    let allowed_actions = scaffold
+        .as_ref()
+        .and_then(|action| action.args.first())
+        .cloned()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let route = issue_route_receipt(
+        &root,
+        &run_dir,
+        task,
+        intent.as_ref(),
+        result,
+        "design",
+        None,
+        None,
+        allowed_actions,
+        target_paths,
+        scaffold,
+    )?;
     let report = DesignReport {
         spec: "rms/design-result/v0.1",
         result: result.to_string(),
@@ -10550,19 +11140,35 @@ fn run_design(
         decision,
         diagnostics,
         intent_template: (result == "intent-model-required").then(intent_model_template),
+        run_id: route.run_id.clone(),
+        receipt_id: route.receipt_id.clone(),
+        receipt_path: route.receipt_path.display().to_string(),
     };
+    fs::write(
+        route.run_dir.join("route.json"),
+        serde_json::to_string_pretty(&report)?,
+    )?;
     if json_output {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print_design_report(&report);
-        if let Some(run_dir) = run_dir {
-            println!("run record: {}", run_dir.display());
-        }
+        println!("run_id: {}", report.run_id);
+        println!("receipt_id: {}", report.receipt_id);
+        println!("receipt_path: {}", report.receipt_path);
     }
-    if matches!(report.result.as_str(), "invalid") {
-        bail!("RMS intent model rejected");
+    let exit_code = design_exit_code(&report.result);
+    if exit_code != 0 {
+        std::process::exit(exit_code);
     }
     Ok(())
+}
+
+fn design_exit_code(result: &str) -> i32 {
+    if result == "ready" {
+        0
+    } else {
+        2
+    }
 }
 
 fn print_design_report(report: &DesignReport) {
@@ -10591,6 +11197,7 @@ fn print_design_report(report: &DesignReport) {
                 .collect::<Vec<_>>()
                 .join(" ")
         );
+        println!("receipt argument: --route-receipt {}", report.run_id);
     } else if report.result == "intent-model-required" {
         println!("next: supply --intent-json, --intent-yaml, --intent-file, or --ai");
         if let Some(template) = &report.intent_template {
@@ -10617,6 +11224,7 @@ fn print_design_report(report: &DesignReport) {
 
 fn resolve_intent_model(
     root: &Path,
+    command: &str,
     task: &str,
     input: &RawIntentInput,
     options: Option<&PromptRunOptions>,
@@ -10656,27 +11264,9 @@ fn resolve_intent_model(
         if options.sandbox != CodexSandbox::ReadOnly {
             bail!("intent extraction providers must use the read-only sandbox");
         }
-        let manifest = synthetic_workbench_manifest(root, "rms-intent", "typed intent extraction");
-        let prompt = render_intent_extraction_prompt(task);
-        let dir = write_prompt_run_record(
-            &manifest,
-            root,
-            PromptKind::Intent,
-            Some(task),
-            None,
-            false,
-            &prompt,
-            options,
-        )?;
-        execute_codex_provider(root, &manifest, &prompt, &dir, options)?;
-        let response = fs::read_to_string(dir.join("response.md")).with_context(|| {
-            format!(
-                "failed to read provider intent response `{}`",
-                dir.display()
-            )
-        })?;
-        run_dir = Some(dir);
-        normalize_provider_intent_source(&extract_structured_provider_response(&response))
+        let extraction = extract_provider_intent(root, command, task, options, input.refresh)?;
+        run_dir = Some(extraction.run_dir);
+        serde_json::to_string(&extraction.intent)?
     };
 
     match parse_intent_model_source(&source) {
@@ -10697,6 +11287,409 @@ fn resolve_intent_model(
             Ok((None, vec![error(check, root, message)], run_dir))
         }
     }
+}
+
+#[derive(Debug)]
+struct IntentExtractionResult {
+    intent: IntentModel,
+    run_dir: PathBuf,
+}
+
+struct IntentCacheLock {
+    path: PathBuf,
+}
+
+impl Drop for IntentCacheLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(&self.path);
+    }
+}
+
+fn intent_cache_key(task: &str, options: &PromptRunOptions) -> Result<String> {
+    let schema_digest = sha256_bytes(&serde_json::to_vec(&intent_model_json_schema())?);
+    Ok(sha256_bytes(&serde_json::to_vec(&json!({
+        "task_bytes_sha256": sha256_bytes(task.as_bytes()),
+        "schema_sha256": schema_digest,
+        "prompt_version": INTENT_EXTRACTION_PROMPT_VERSION,
+        "provider": options.provider.label(),
+        "model": options.model.as_deref().unwrap_or("<provider-default>"),
+        "normalization_version": INTENT_NORMALIZATION_VERSION,
+    }))?))
+}
+
+fn acquire_intent_cache_lock(
+    cache_root: &Path,
+    key: &str,
+    timeout: Duration,
+) -> Result<IntentCacheLock> {
+    fs::create_dir_all(cache_root)?;
+    let path = cache_root.join(format!("{key}.lock"));
+    let started = Instant::now();
+    loop {
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(IntentCacheLock { path }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let stale = fs::metadata(&path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|age| age > timeout);
+                if stale {
+                    let _ = fs::remove_dir(&path);
+                    continue;
+                }
+                if started.elapsed() >= timeout {
+                    bail!(
+                        "timed out waiting for intent cache lock `{}`",
+                        path.display()
+                    );
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to acquire intent cache lock `{}`", path.display())
+                });
+            }
+        }
+    }
+}
+
+fn load_valid_intent_cache(
+    root: &Path,
+    entry: &Path,
+    task: &str,
+) -> Result<Option<(IntentModel, Vec<Diagnostic>, String, JsonValue)>> {
+    let normalized_path = entry.join("normalized-intent.json");
+    let response_path = entry.join("response.md");
+    let metadata_path = entry.join("cache.json");
+    if !normalized_path.exists() || !response_path.exists() || !metadata_path.exists() {
+        return Ok(None);
+    }
+    let model: IntentModel = match serde_json::from_slice(&fs::read(&normalized_path)?) {
+        Ok(model) => model,
+        Err(_) => return Ok(None),
+    };
+    let diagnostics = validate_intent_model(task, root, &model);
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        return Ok(None);
+    }
+    let response = fs::read_to_string(response_path)?;
+    let metadata = serde_json::from_slice(&fs::read(metadata_path)?)?;
+    Ok(Some((model, diagnostics, response, metadata)))
+}
+
+fn replace_intent_cache(
+    cache_root: &Path,
+    key: &str,
+    model: &IntentModel,
+    diagnostics: &[Diagnostic],
+    response: &str,
+    source_run_id: &str,
+) -> Result<PathBuf> {
+    let entry = cache_root.join(key);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let temporary = cache_root.join(format!(".{key}.tmp-{}-{nonce}", std::process::id()));
+    fs::create_dir(&temporary)?;
+    fs::write(
+        temporary.join("normalized-intent.json"),
+        serde_json::to_string_pretty(model)?,
+    )?;
+    fs::write(
+        temporary.join("intent-diagnostics.json"),
+        serde_json::to_string_pretty(diagnostics)?,
+    )?;
+    fs::write(temporary.join("response.md"), response)?;
+    fs::write(
+        temporary.join("cache.json"),
+        serde_json::to_string_pretty(&json!({
+            "schema": "rms/intent-cache-entry/v0.1",
+            "key": key,
+            "source_run_id": source_run_id,
+            "prompt_version": INTENT_EXTRACTION_PROMPT_VERSION,
+            "normalization_version": INTENT_NORMALIZATION_VERSION,
+        }))?,
+    )?;
+    if entry.exists() {
+        let backup = cache_root.join(format!(".{key}.previous-{nonce}"));
+        fs::rename(&entry, &backup)?;
+        if let Err(error) = fs::rename(&temporary, &entry) {
+            let _ = fs::rename(&backup, &entry);
+            return Err(error).context("failed to atomically replace intent cache entry");
+        }
+        fs::remove_dir_all(backup)?;
+    } else {
+        fs::rename(&temporary, &entry)?;
+    }
+    Ok(entry)
+}
+
+fn provider_intent_candidate(
+    task: &str,
+    root: &Path,
+    response: &str,
+) -> std::result::Result<(IntentModel, Vec<Diagnostic>, String), Vec<Diagnostic>> {
+    let extracted = extract_structured_provider_response(response);
+    let raw_value = match serde_json::from_str::<JsonValue>(&extracted) {
+        Ok(value) => value,
+        Err(json_error) => {
+            let yaml = serde_yaml::from_str::<YamlValue>(&extracted).map_err(|yaml_error| {
+                vec![error_diagnostic(
+                    "intent.model-invalid",
+                    root,
+                    format!("JSON: {json_error}; YAML: {yaml_error}"),
+                )]
+            })?;
+            serde_json::to_value(yaml).map_err(|error| {
+                vec![error_diagnostic(
+                    "intent.model-invalid",
+                    root,
+                    error.to_string(),
+                )]
+            })?
+        }
+    };
+    if provider_intent_contains_architecture_fields(&raw_value) {
+        return Err(vec![error_diagnostic(
+            "intent.architecture-field-forbidden",
+            root,
+            "provider output contains architecture, topology, shape, module, or scaffold fields",
+        )]);
+    }
+    let raw_source = serde_json::to_string(&raw_value).map_err(|error| {
+        vec![error_diagnostic(
+            "intent.model-invalid",
+            root,
+            error.to_string(),
+        )]
+    })?;
+    let normalized = normalize_provider_intent_source(&raw_source);
+    let model = parse_intent_model_source(&normalized)
+        .map_err(|message| vec![error_diagnostic("intent.model-invalid", root, message)])?;
+    let diagnostics = validate_intent_model(task, root, &model);
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        return Err(diagnostics);
+    }
+    Ok((model, diagnostics, normalized))
+}
+
+fn render_intent_repair_prompt(
+    task: &str,
+    invalid_response: &str,
+    diagnostics: &[Diagnostic],
+) -> String {
+    format!(
+        "{}\n\nThe previous response was invalid. Repair it once. Preserve material unknowns instead of guessing. Return only a schema-valid JSON object.\n\nInvalid response:\n{}\n\nDiagnostics:\n{}",
+        render_intent_extraction_prompt(task),
+        invalid_response,
+        serde_json::to_string_pretty(diagnostics).unwrap_or_default(),
+    )
+}
+
+fn extract_provider_intent(
+    root: &Path,
+    command: &str,
+    task: &str,
+    options: &PromptRunOptions,
+    refresh: bool,
+) -> Result<IntentExtractionResult> {
+    extract_provider_intent_with_program(root, command, task, options, refresh, Path::new("codex"))
+}
+
+fn extract_provider_intent_with_program(
+    root: &Path,
+    command: &str,
+    task: &str,
+    options: &PromptRunOptions,
+    refresh: bool,
+    provider_program: &Path,
+) -> Result<IntentExtractionResult> {
+    if options.provider != Provider::Codex {
+        bail!("structured intent extraction currently requires the Codex provider");
+    }
+    let prompt = render_intent_extraction_prompt(task);
+    let run_dir = create_route_run_record(root, command, task, &prompt, Some(options))?;
+    let schema_path = run_dir.join("intent-schema.json");
+    let cache_key = intent_cache_key(task, options)?;
+    let cache_root = root.join(DEFAULT_INTENT_CACHE_ROOT);
+    let cache_entry = cache_root.join(&cache_key);
+    if !refresh {
+        if let Some((model, diagnostics, response, provenance)) =
+            load_valid_intent_cache(root, &cache_entry, task)?
+        {
+            fs::write(run_dir.join("response.md"), response)?;
+            fs::write(
+                run_dir.join("normalized-intent.json"),
+                serde_json::to_string_pretty(&model)?,
+            )?;
+            fs::write(
+                run_dir.join("intent-diagnostics.json"),
+                serde_json::to_string_pretty(&diagnostics)?,
+            )?;
+            fs::write(
+                run_dir.join("provider.json"),
+                serde_json::to_string_pretty(&json!({
+                    "provider": options.provider.label(),
+                    "model": options.model,
+                    "cache": "hit",
+                    "cache_key": cache_key,
+                    "cache_entry": cache_entry,
+                    "cache_provenance": provenance,
+                    "attempts": 0,
+                    "elapsed_ms": 0,
+                    "tokens": null,
+                }))?,
+            )?;
+            return Ok(IntentExtractionResult {
+                intent: model,
+                run_dir,
+            });
+        }
+    }
+    let _lock = acquire_intent_cache_lock(
+        &cache_root,
+        &cache_key,
+        Duration::from_secs(options.provider_timeout_seconds),
+    )?;
+    if !refresh {
+        if let Some((model, diagnostics, response, provenance)) =
+            load_valid_intent_cache(root, &cache_entry, task)?
+        {
+            fs::write(run_dir.join("response.md"), response)?;
+            fs::write(
+                run_dir.join("normalized-intent.json"),
+                serde_json::to_string_pretty(&model)?,
+            )?;
+            fs::write(
+                run_dir.join("intent-diagnostics.json"),
+                serde_json::to_string_pretty(&diagnostics)?,
+            )?;
+            fs::write(
+                run_dir.join("provider.json"),
+                serde_json::to_string_pretty(&json!({
+                    "provider": options.provider.label(),
+                    "model": options.model,
+                    "cache": "hit-after-wait",
+                    "cache_key": cache_key,
+                    "cache_entry": cache_entry,
+                    "cache_provenance": provenance,
+                    "attempts": 0,
+                    "elapsed_ms": 0,
+                    "tokens": null,
+                }))?,
+            )?;
+            return Ok(IntentExtractionResult {
+                intent: model,
+                run_dir,
+            });
+        }
+    }
+    let manifest = synthetic_workbench_manifest(root, "rms-intent", "typed intent extraction");
+    let mut prompt_for_attempt = prompt;
+    let mut elapsed_ms = 0_u128;
+    let mut last_diagnostics = Vec::new();
+    let mut last_response = String::new();
+    for attempt in 1..=2 {
+        if attempt > 1 {
+            fs::write(run_dir.join("prompt-repair.md"), &prompt_for_attempt)?;
+        }
+        let response_name = format!("attempt-{attempt}-response.md");
+        let metadata = execute_codex_provider_attempt(
+            provider_program,
+            root,
+            &manifest,
+            &prompt_for_attempt,
+            &run_dir,
+            options,
+            Some(&schema_path),
+            &response_name,
+            &format!("attempt-{attempt}-provider"),
+            false,
+        )?;
+        elapsed_ms += metadata.elapsed_ms;
+        let response = fs::read_to_string(&metadata.response_path)?;
+        last_response = response.clone();
+        match provider_intent_candidate(task, root, &response) {
+            Ok((model, diagnostics, _normalized)) => {
+                fs::write(run_dir.join("response.md"), &response)?;
+                fs::write(
+                    run_dir.join("normalized-intent.json"),
+                    serde_json::to_string_pretty(&model)?,
+                )?;
+                fs::write(
+                    run_dir.join("intent-diagnostics.json"),
+                    serde_json::to_string_pretty(&diagnostics)?,
+                )?;
+                let run_id = run_dir
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("unknown-run");
+                let cache_entry = replace_intent_cache(
+                    &cache_root,
+                    &cache_key,
+                    &model,
+                    &diagnostics,
+                    &response,
+                    run_id,
+                )?;
+                fs::write(
+                    run_dir.join("provider.json"),
+                    serde_json::to_string_pretty(&json!({
+                        "provider": options.provider.label(),
+                        "model": options.model,
+                        "cache": if refresh { "refreshed" } else { "miss" },
+                        "cache_key": cache_key,
+                        "cache_entry": cache_entry,
+                        "attempts": attempt,
+                        "elapsed_ms": elapsed_ms,
+                        "tokens": null,
+                    }))?,
+                )?;
+                return Ok(IntentExtractionResult {
+                    intent: model,
+                    run_dir,
+                });
+            }
+            Err(diagnostics) => {
+                last_diagnostics = diagnostics;
+                if attempt == 1 {
+                    prompt_for_attempt =
+                        render_intent_repair_prompt(task, &response, &last_diagnostics);
+                }
+            }
+        }
+    }
+    fs::write(run_dir.join("response.md"), &last_response)?;
+    fs::write(
+        run_dir.join("intent-diagnostics.json"),
+        serde_json::to_string_pretty(&last_diagnostics)?,
+    )?;
+    fs::write(
+        run_dir.join("provider.json"),
+        serde_json::to_string_pretty(&json!({
+            "provider": options.provider.label(),
+            "model": options.model,
+            "cache": "not-written",
+            "cache_key": cache_key,
+            "attempts": 2,
+            "elapsed_ms": elapsed_ms,
+            "tokens": null,
+            "result": "invalid-after-repair",
+        }))?,
+    )?;
+    bail!(
+        "provider intent extraction remained invalid after one repair; see `{}`",
+        run_dir.display()
+    )
 }
 
 fn parse_intent_model_source(source: &str) -> std::result::Result<IntentModel, String> {
@@ -11579,20 +12572,61 @@ fn execute_codex_provider(
     run_dir: &Path,
     options: &PromptRunOptions,
 ) -> Result<()> {
-    let response_path = run_dir.join("response.md");
-    let provider_response_path = provider_response_path(run_dir)?;
-    let stdout_path = run_dir.join("provider.stdout.log");
-    let stderr_path = run_dir.join("provider.stderr.log");
+    execute_codex_provider_attempt(
+        Path::new("codex"),
+        root,
+        manifest,
+        prompt,
+        run_dir,
+        options,
+        None,
+        "response.md",
+        "provider",
+        true,
+    )?;
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ProviderAttemptMetadata {
+    elapsed_ms: u128,
+    response_path: PathBuf,
+}
+
+fn execute_codex_provider_attempt(
+    provider_program: &Path,
+    root: &Path,
+    manifest: &LoadedManifest,
+    prompt: &str,
+    run_dir: &Path,
+    options: &PromptRunOptions,
+    output_schema: Option<&Path>,
+    response_name: &str,
+    log_prefix: &str,
+    allow_stdout_fallback: bool,
+) -> Result<ProviderAttemptMetadata> {
+    let response_path = run_dir.join(response_name);
+    let provider_response_path = fs::canonicalize(run_dir)
+        .with_context(|| format!("failed to resolve run directory `{}`", run_dir.display()))?
+        .join(response_name);
+    let stdout_path = run_dir.join(format!("{log_prefix}.stdout.log"));
+    let stderr_path = run_dir.join(format!("{log_prefix}.stderr.log"));
     let execution_root = provider_execution_root(root, manifest, options);
     let timeout = Duration::from_secs(options.provider_timeout_seconds);
+    let started = Instant::now();
 
-    let mut command = Command::new("codex");
+    let mut command = Command::new(provider_program);
     command
         .arg("exec")
         .arg("--cd")
         .arg(&execution_root)
         .arg("--sandbox")
         .arg(options.sandbox.as_str())
+        .args(
+            output_schema
+                .map(|path| vec!["--output-schema".into(), path.as_os_str().to_os_string()])
+                .unwrap_or_default(),
+        )
         .arg("--output-last-message")
         .arg(&provider_response_path);
 
@@ -11637,6 +12671,13 @@ fn execute_codex_provider(
 
     match outcome {
         ProviderProcessOutcome::Exited(status) if !status.success() => {
+            if output_schema.is_some() && String::from_utf8_lossy(&stderr).contains("output-schema")
+            {
+                bail!(
+                    "installed Codex provider does not support required structured output; upgrade Codex before using --ai; see `{}`",
+                    stderr_path.display()
+                );
+            }
             bail!(
                 "`codex exec` failed with status {}; see `{}` and `{}`",
                 exit_status_label(status),
@@ -11661,12 +12702,21 @@ fn execute_codex_provider(
         ProviderProcessOutcome::Exited(_) => {}
     }
 
-    if !response_path.exists() {
+    if !response_path.exists() && allow_stdout_fallback {
         fs::write(&response_path, String::from_utf8_lossy(&stdout).as_ref())
             .with_context(|| format!("failed to write `{}`", response_path.display()))?;
     }
+    if !response_path.exists() {
+        bail!(
+            "structured provider completed without `{}`; unconstrained output is not accepted",
+            response_path.display()
+        );
+    }
 
-    Ok(())
+    Ok(ProviderAttemptMetadata {
+        elapsed_ms: started.elapsed().as_millis(),
+        response_path,
+    })
 }
 
 enum ProviderProcessOutcome {
@@ -11841,10 +12891,12 @@ fn module_execution_root(root: &Path, manifest: &LoadedManifest) -> PathBuf {
     }
 }
 
+#[cfg(test)]
 fn provider_response_path(run_dir: &Path) -> Result<PathBuf> {
     absolute_path(&run_dir.join("response.md"))
 }
 
+#[cfg(test)]
 fn absolute_path(path: &Path) -> Result<PathBuf> {
     if path.is_absolute() {
         Ok(path.to_path_buf())
@@ -27750,6 +28802,44 @@ struct RawIntentInput {
     yaml: Option<String>,
     file: Option<PathBuf>,
     ai: bool,
+    refresh: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RouteReceiptPayload {
+    schema: String,
+    run_id: String,
+    issuing_rms_version: String,
+    route_result: String,
+    task_sha256: String,
+    normalized_intent_sha256: String,
+    intent_schema_sha256: String,
+    extraction_prompt_version: String,
+    repository: String,
+    git_head: String,
+    lane: String,
+    owner_module: Option<String>,
+    implementation_target: Option<String>,
+    allowed_action_families: Vec<String>,
+    normalized_target_paths: Vec<String>,
+    scaffold: Option<ArchitectureAction>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RouteReceipt {
+    #[serde(flatten)]
+    payload: RouteReceiptPayload,
+    receipt_id: String,
+}
+
+#[derive(Clone, Debug)]
+struct RouteRunArtifacts {
+    run_id: String,
+    run_dir: PathBuf,
+    receipt_id: String,
+    receipt_path: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -27766,7 +28856,7 @@ struct ArchitectureModuleRecommendation {
     binding: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct ArchitectureAction {
     program: String,
     args: Vec<String>,
@@ -27790,6 +28880,9 @@ struct DesignReport {
     decision: Option<ArchitectureDecision>,
     diagnostics: Vec<Diagnostic>,
     intent_template: Option<YamlValue>,
+    run_id: String,
+    receipt_id: String,
+    receipt_path: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -27925,6 +29018,9 @@ struct NextReport {
     steps: Vec<NextStepGroup>,
     skill_sources: SkillSourceReport,
     completion: CompletionPrescription,
+    run_id: String,
+    receipt_id: String,
+    receipt_path: String,
 }
 
 mod surface_projection {
@@ -28057,6 +29153,9 @@ mod surface_projection {
         pub confidence: String,
         pub owner: SurfaceOwner,
         pub steps: Vec<SurfaceAction>,
+        pub run_id: String,
+        pub receipt_id: String,
+        pub receipt_path: String,
     }
 
     #[derive(Clone, Debug, Serialize)]
@@ -28073,13 +29172,61 @@ mod surface_projection {
         pub envelope: SurfaceEnvelope,
         pub mode: String,
         pub components: Vec<CheckComponent>,
+        pub coverage: CoverageProjection,
+        pub proof: ProofProjection,
     }
 
     #[derive(Clone, Debug, Serialize)]
     pub struct CheckComponent {
         pub id: String,
+        pub subject: String,
+        pub scope: String,
         pub result: String,
         pub summary: String,
+    }
+
+    #[derive(Clone, Debug, Default, Serialize)]
+    pub struct CoverageProjection {
+        pub mode: String,
+        pub certification: String,
+        pub closures: Vec<CoverageClosure>,
+        pub unowned_production_paths: usize,
+        pub changed_unowned_paths: usize,
+        pub unowned_sample: Vec<String>,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    pub struct CoverageClosure {
+        pub module: String,
+        pub path: String,
+        pub members: Vec<String>,
+        pub result: String,
+    }
+
+    #[derive(Clone, Debug, Default, Serialize)]
+    pub struct ProofProjection {
+        pub observed: Vec<ProofEntry>,
+        pub declared_not_observed: Vec<ProofEntry>,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    pub struct ProofEntry {
+        pub subject: String,
+        pub class: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub strategy: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub profile: Option<String>,
+        pub result: String,
+        pub count: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub command: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub runner: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub elapsed_ms: Option<u128>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub evidence_paths: Vec<String>,
     }
 
     pub fn render_text(label: &str, envelope: &SurfaceEnvelope) -> String {
@@ -28200,6 +29347,8 @@ struct CheckReport {
     next_action: Option<surface_projection::SurfaceAction>,
     done_when: Vec<String>,
     components: Vec<surface_projection::CheckComponent>,
+    coverage: surface_projection::CoverageProjection,
+    proof: surface_projection::ProofProjection,
     details: JsonValue,
 }
 
@@ -28219,6 +29368,30 @@ fn run_check(
         println!("{}", serde_json::to_string_pretty(&surface)?);
     } else {
         let mut rendered = surface_projection::render_text("Outcome", &surface.envelope);
+        rendered.push_str("\nCoverage:\n");
+        let _ = writeln!(rendered, "- Mode: {}", surface.coverage.mode);
+        let _ = writeln!(rendered, "- {}", surface.coverage.certification);
+        for closure in &surface.coverage.closures {
+            let _ = writeln!(
+                rendered,
+                "- {} [{}]: {} (members: {})",
+                closure.module,
+                closure.path,
+                closure.result,
+                closure.members.join(", ")
+            );
+        }
+        let _ = writeln!(
+            rendered,
+            "- Unowned production paths: {} total, {} changed",
+            surface.coverage.unowned_production_paths, surface.coverage.changed_unowned_paths
+        );
+        let _ = writeln!(
+            rendered,
+            "\nProof: {} observed, {} declared but not observed",
+            surface.proof.observed.len(),
+            surface.proof.declared_not_observed.len()
+        );
         if include_details {
             rendered.push_str("\nDetails:\n");
             rendered.push_str(&serde_json::to_string_pretty(&report.details)?);
@@ -28278,6 +29451,8 @@ fn build_check_report_scoped(
             ));
             report.components.push(surface_projection::CheckComponent {
                 id: "complete-coverage".to_string(),
+                subject: root.display().to_string(),
+                scope: "repository-production-paths".to_string(),
                 result: "fail".to_string(),
                 summary: format!("{} unowned production path(s)", unowned.len()),
             });
@@ -28285,7 +29460,419 @@ fn build_check_report_scoped(
             report.details["unowned_production_paths"] = json!(unowned);
         }
     }
+    report.coverage = project_check_coverage(&root, mode, module, &report)?;
+    report.proof = project_check_proof(&root, &report)?;
+    if report.coverage.mode == "progressive" && report.result == CheckResult::Pass {
+        report.summary = format!(
+            "All selected RMS closures passed; {} production paths remain outside RMS coverage.",
+            report.coverage.unowned_production_paths
+        );
+    }
     Ok(report)
+}
+
+fn project_check_coverage(
+    root: &Path,
+    mode: CheckMode,
+    requested: Option<&Path>,
+    report: &CheckReport,
+) -> Result<surface_projection::CoverageProjection> {
+    let modules = discover_module_index(root)?;
+    let contained = composition_children(&modules)
+        .into_iter()
+        .map(|child| child.name)
+        .collect::<BTreeSet<_>>();
+    let requested_name = requested
+        .map(|path| {
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                root.join(path)
+            }
+        })
+        .map(|path| load_manifest(&path))
+        .transpose()?
+        .and_then(|manifest| get_str(&manifest.value, &["module", "name"]).map(str::to_string));
+    let mut roots = modules
+        .values()
+        .filter(|module| {
+            requested_name
+                .as_ref()
+                .map(|name| name == &module.name)
+                .unwrap_or_else(|| !contained.contains(&module.name))
+        })
+        .collect::<Vec<_>>();
+    roots.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut closures = Vec::new();
+    for module in roots {
+        let (members, unresolved) = module_dependency_closure(&module.name, &modules);
+        let mut members = members.into_iter().collect::<Vec<_>>();
+        members.extend(
+            unresolved
+                .into_iter()
+                .map(|name| format!("unresolved:{name}")),
+        );
+        let result = report
+            .components
+            .iter()
+            .find(|component| component.subject == module.name)
+            .map(|component| component.result.clone())
+            .unwrap_or_else(|| {
+                if mode == CheckMode::Environment {
+                    "not-observed".to_string()
+                } else {
+                    report.result.label().to_string()
+                }
+            });
+        closures.push(surface_projection::CoverageClosure {
+            module: module.name.clone(),
+            path: display_relative(root, &module.path),
+            members,
+            result,
+        });
+    }
+    let manifests = discover_module_manifests(root)?;
+    let unowned = discover_unowned_production_paths(root, &manifests)?;
+    let changed = read_git_changed_paths(root, None)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| path.path)
+        .collect::<BTreeSet<_>>();
+    let changed_unowned = unowned
+        .iter()
+        .filter(|path| changed.contains(*path))
+        .count();
+    let coverage_mode = if requested.is_some() {
+        "module"
+    } else if workspace_coverage(root) == WorkspaceCoverage::Progressive {
+        "progressive"
+    } else {
+        "complete"
+    };
+    let certification = match coverage_mode {
+        "module" => format!(
+            "Selected module closure {} {}; no other closure or unowned path is certified.",
+            requested_name.as_deref().unwrap_or("<unknown>"),
+            report.result.label()
+        ),
+        "progressive" if report.result == CheckResult::Pass => format!(
+            "All selected RMS closures passed; {} production paths remain outside RMS coverage.",
+            unowned.len()
+        ),
+        "progressive" => format!(
+            "Selected RMS closures {}; {} production paths remain outside RMS coverage.",
+            report.result.label(),
+            unowned.len()
+        ),
+        _ if mode == CheckMode::Environment => {
+            "Environment readiness was observed; module closures were discovered but not certified."
+                .to_string()
+        }
+        _ => format!(
+            "Selected complete-workspace RMS scope {}; {} production paths are unowned.",
+            report.result.label(),
+            unowned.len()
+        ),
+    };
+    Ok(surface_projection::CoverageProjection {
+        mode: coverage_mode.to_string(),
+        certification,
+        closures,
+        unowned_production_paths: unowned.len(),
+        changed_unowned_paths: changed_unowned,
+        unowned_sample: unowned.into_iter().take(10).collect(),
+    })
+}
+
+fn proof_entry(
+    subject: impl Into<String>,
+    class: impl Into<String>,
+    result: impl Into<String>,
+) -> surface_projection::ProofEntry {
+    surface_projection::ProofEntry {
+        subject: subject.into(),
+        class: class.into(),
+        strategy: None,
+        profile: None,
+        result: result.into(),
+        count: 1,
+        command: None,
+        runner: None,
+        elapsed_ms: None,
+        evidence_paths: Vec::new(),
+    }
+}
+
+fn gate_command_class(command: &str) -> &'static str {
+    if command.contains(" compose") {
+        "composition"
+    } else if command.contains(" verify") || command.contains("cargo test") {
+        "native-verification"
+    } else {
+        "structural-validation"
+    }
+}
+
+fn collect_verification_observations(
+    value: &JsonValue,
+    output: &mut Vec<surface_projection::ProofEntry>,
+) {
+    if let Some(items) = value.get("verification").and_then(JsonValue::as_array) {
+        for item in items {
+            let subject = item
+                .get("target")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("implementation");
+            let result = item
+                .get("result")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("unknown");
+            let mut entry = proof_entry(subject, "native-verification", result);
+            entry.command = Some(format!("rms verify {subject}"));
+            entry.runner = Some("rms verify".to_string());
+            entry.evidence_paths.push(subject.to_string());
+            output.push(entry);
+        }
+    }
+    if let Some(reports) = value.get("module_reports").and_then(JsonValue::as_array) {
+        for report in reports {
+            collect_verification_observations(report, output);
+        }
+    }
+}
+
+fn declared_proof_entries(root: &Path) -> Result<Vec<surface_projection::ProofEntry>> {
+    const STRATEGIES: &[&str] = &[
+        "deterministic-corpus",
+        "deterministic-exhaustive",
+        "generated-property",
+        "coverage-fuzzer",
+        "model-checker",
+        "benchmark",
+        "static-analyzer",
+        "sanitizer",
+    ];
+    let mut entries = Vec::new();
+    for module in discover_module_manifests(root)? {
+        let base = module.path.parent().unwrap_or(root);
+        let implementation = load_manifest(&base.join("implementation.yaml")).ok();
+        let sources = std::iter::once((&module.value, vec!["properties"])).chain(
+            implementation.iter().flat_map(|implementation| {
+                [
+                    (
+                        &implementation.value,
+                        vec!["architecture", "reliability", "properties"],
+                    ),
+                    (
+                        &implementation.value,
+                        vec!["architecture", "reliability", "fuzz_targets"],
+                    ),
+                ]
+            }),
+        );
+        for (value, path) in sources {
+            let path = path.into_iter().collect::<Vec<_>>();
+            let Some(targets) = get_path(value, &path).and_then(YamlValue::as_sequence) else {
+                continue;
+            };
+            for target in targets {
+                let subject = get_str(target, &["id"]).unwrap_or("unnamed-property");
+                let evidence = get_str(target, &["evidence", "path"])
+                    .map(|path| display_relative(root, &base.join(path)));
+                if let Some(realizations) =
+                    get_path(target, &["realizations"]).and_then(YamlValue::as_sequence)
+                {
+                    for realization in realizations {
+                        let strategy = get_str(realization, &["strategy"]).unwrap_or("unknown");
+                        if !STRATEGIES.contains(&strategy) {
+                            continue;
+                        }
+                        let mut entry = proof_entry(subject, "property", "declared-not-observed");
+                        entry.strategy = Some(strategy.to_string());
+                        entry.profile = get_str(realization, &["profile"]).map(str::to_string);
+                        entry.command = get_str(realization, &["command"]).map(str::to_string);
+                        entry.runner = get_str(realization, &["runner"]).map(str::to_string);
+                        if let Some(evidence) = &evidence {
+                            entry.evidence_paths.push(evidence.clone());
+                        }
+                        entries.push(entry);
+                    }
+                }
+            }
+        }
+        if let Some(implementation) = implementation {
+            for producer in trace_producers_from_implementation(&implementation) {
+                let mut entry = proof_entry(
+                    producer.id,
+                    "trace-producer-execution",
+                    "declared-not-observed",
+                );
+                entry.profile = Some(producer.profile);
+                entry.command = Some(producer.command);
+                entry.runner = Some(producer.runner);
+                entry
+                    .evidence_paths
+                    .push(display_relative(root, &base.join(producer.bundle)));
+                entries.push(entry);
+            }
+        }
+    }
+    entries.sort_by(|left, right| {
+        left.subject
+            .cmp(&right.subject)
+            .then_with(|| left.class.cmp(&right.class))
+            .then_with(|| left.profile.cmp(&right.profile))
+            .then_with(|| left.strategy.cmp(&right.strategy))
+    });
+    entries.dedup_by(|left, right| {
+        left.subject == right.subject
+            && left.class == right.class
+            && left.profile == right.profile
+            && left.strategy == right.strategy
+    });
+    Ok(entries)
+}
+
+fn project_check_proof(
+    root: &Path,
+    report: &CheckReport,
+) -> Result<surface_projection::ProofProjection> {
+    let mut observed = Vec::new();
+    for component in &report.components {
+        let class = match component.id.as_str() {
+            "validate" => Some("structural-validation"),
+            "compose" => Some("composition"),
+            "diagnose" => Some("structural-validation"),
+            _ => None,
+        };
+        if let Some(class) = class {
+            observed.push(proof_entry(
+                component.subject.clone(),
+                class,
+                component.result.clone(),
+            ));
+        }
+    }
+    collect_verification_observations(&report.details, &mut observed);
+    if let Some(checks) = report
+        .details
+        .get("gate")
+        .and_then(|gate| gate.get("executable_checks"))
+        .and_then(JsonValue::as_array)
+    {
+        for check in checks {
+            let command = check
+                .get("command")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("<unknown-command>");
+            let result = check
+                .get("status")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("unknown");
+            let mut entry = proof_entry(command, gate_command_class(command), result);
+            entry.command = Some(command.to_string());
+            entry.runner = Some("rms gate".to_string());
+            observed.push(entry);
+        }
+    }
+    if let Some(checks) = report
+        .details
+        .get("audit")
+        .and_then(|audit| audit.get("checks"))
+        .and_then(JsonValue::as_array)
+    {
+        for check in checks {
+            let id = check
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("audit");
+            if matches!(id, "property.execution-proof" | "trace.execution-proof") {
+                continue;
+            }
+            let explicit_class = check.get("proof_class").and_then(JsonValue::as_str);
+            let class = explicit_class.or_else(|| {
+                if id.starts_with("trace.") {
+                    Some("trace-validation")
+                } else if id.contains("runnable") || id.contains("smoke") {
+                    Some("runnable-smoke")
+                } else if id.starts_with("package.") {
+                    Some("package-regeneration")
+                } else if id.starts_with("compose") {
+                    Some("composition")
+                } else {
+                    Some("structural-validation")
+                }
+            });
+            let subject = id
+                .strip_prefix("property.execution.")
+                .or_else(|| id.strip_prefix("trace.producer-execution."))
+                .unwrap_or(id);
+            let mut entry = proof_entry(
+                subject,
+                class.unwrap_or("structural-validation"),
+                check
+                    .get("result")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("unknown"),
+            );
+            entry.strategy = check
+                .get("strategy")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string);
+            entry.profile = check
+                .get("profile")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string);
+            entry.command = check
+                .get("command")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string);
+            entry.runner = check
+                .get("runner")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string);
+            entry.elapsed_ms = check
+                .get("elapsed_ms")
+                .and_then(JsonValue::as_u64)
+                .map(u128::from);
+            if let Some(evidence) = check.get("evidence").and_then(JsonValue::as_str) {
+                entry.evidence_paths.push(evidence.to_string());
+            }
+            observed.push(entry);
+        }
+    }
+    let observed_identities = observed
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.class.as_str(),
+                "property" | "trace-producer-execution"
+            )
+        })
+        .map(|entry| {
+            (
+                entry.subject.clone(),
+                entry.class.clone(),
+                entry.strategy.clone(),
+                entry.profile.clone(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let declared_not_observed = declared_proof_entries(root)?
+        .into_iter()
+        .filter(|entry| {
+            !observed_identities.contains(&(
+                entry.subject.clone(),
+                entry.class.clone(),
+                entry.strategy.clone(),
+                entry.profile.clone(),
+            ))
+        })
+        .collect();
+    Ok(surface_projection::ProofProjection {
+        observed,
+        declared_not_observed,
+    })
 }
 
 #[cfg(test)]
@@ -28368,6 +29955,8 @@ fn build_progressive_workspace_check_report(root: &Path, mode: CheckMode) -> Res
                 .to_string(),
         ],
         components,
+        coverage: Default::default(),
+        proof: Default::default(),
         details: json!({
             "coverage": "progressive",
             "certifies": "discovered RMS module closures only",
@@ -28508,10 +30097,31 @@ fn build_module_scoped_check_report(
             in_scope_changed.join(", ")
         ));
     }
+    let scoped_audit = if mode == CheckMode::Committed {
+        let audit = execute_audit(root, true, false, false, DEFAULT_PROOF_TIMEOUT_SECONDS)?;
+        let audit = restrict_audit_to_module_closure(root, audit, &closure_roots);
+        failures.extend(
+            audit
+                .checks
+                .iter()
+                .filter(|check| check.result == "fail")
+                .map(|check| format!("{}: {}", check.id, check.note)),
+        );
+        Some(audit)
+    } else {
+        None
+    };
     let diagnostic_warnings = diagnostics
         .iter()
         .filter(|item| item.severity == Severity::Warning)
         .map(|item| item.message.clone())
+        .chain(scoped_audit.iter().flat_map(|audit| {
+            audit
+                .checks
+                .iter()
+                .filter(|check| check.result == "review-required")
+                .map(|check| format!("{}: {}", check.id, check.note))
+        }))
         .collect::<Vec<_>>();
     let result = if failures.is_empty() {
         if diagnostic_warnings.is_empty() {
@@ -28534,6 +30144,8 @@ fn build_module_scoped_check_report(
     let scope = closure.iter().cloned().collect::<Vec<_>>();
     let component = surface_projection::CheckComponent {
         id: "module-closure".to_string(),
+        subject: requested_name.to_string(),
+        scope: scope.join(", "),
         result: result.label().to_string(),
         summary: format!(
             "certified {} module(s), {} implementation(s); {} failure(s)",
@@ -28563,6 +30175,8 @@ fn build_module_scoped_check_report(
             mode.label()
         )],
         components: vec![component],
+        coverage: Default::default(),
+        proof: Default::default(),
         details: json!({
             "coverage": "module-closure",
             "requested_module": requested_name,
@@ -28572,8 +30186,36 @@ fn build_module_scoped_check_report(
             "diagnostics": diagnostics,
             "composition_findings": scoped_findings,
             "verification": verification,
+            "audit": scoped_audit,
         }),
     })
+}
+
+fn restrict_audit_to_module_closure(
+    root: &Path,
+    mut audit: AuditReport,
+    closure_roots: &[PathBuf],
+) -> AuditReport {
+    const GLOBAL_CHECKS: &[&str] = &["provenance.source-revision", "proof.command-mutated-source"];
+    let in_closure = |path: &str| {
+        let path = Path::new(path);
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            root.join(path)
+        };
+        closure_roots
+            .iter()
+            .any(|closure_root| absolute.starts_with(closure_root))
+    };
+    audit
+        .checks
+        .retain(|check| GLOBAL_CHECKS.contains(&check.id.as_str()) || in_closure(&check.evidence));
+    audit
+        .verification_targets
+        .retain(|target| in_closure(target));
+    audit.result = audit_result(&audit.checks);
+    audit
 }
 
 fn module_dependency_closure(
@@ -28668,6 +30310,8 @@ fn build_project_check_report(root: &Path) -> Result<CheckReport> {
     let components = vec![
         surface_projection::CheckComponent {
             id: "validate".to_string(),
+            subject: root.display().to_string(),
+            scope: "discovered-canonical-artifacts".to_string(),
             result: validation_result.label().to_string(),
             summary: if errors == 0 && warnings_count == 0 {
                 "no validation errors or warnings".to_string()
@@ -28677,6 +30321,8 @@ fn build_project_check_report(root: &Path) -> Result<CheckReport> {
         },
         surface_projection::CheckComponent {
             id: "compose".to_string(),
+            subject: root.display().to_string(),
+            scope: "discovered-module-composition".to_string(),
             result: composition_result.label().to_string(),
             summary: format!(
                 "{} module(s), {composition_obligations} unresolved or review finding(s)",
@@ -28721,6 +30367,8 @@ fn build_project_check_report(root: &Path) -> Result<CheckReport> {
             "Validation and composition both pass with no unresolved finding.".to_string(),
         ],
         components,
+        coverage: Default::default(),
+        proof: Default::default(),
         details,
     })
 }
@@ -28745,6 +30393,8 @@ fn build_environment_check_report(root: &Path) -> Result<CheckReport> {
     };
     let component = surface_projection::CheckComponent {
         id: "diagnose".to_string(),
+        subject: root.display().to_string(),
+        scope: "environment".to_string(),
         result: result.label().to_string(),
         summary: format!(
             "{} repository; {} validation error(s), {} skill source(s) need review",
@@ -28789,6 +30439,8 @@ fn build_environment_check_report(root: &Path) -> Result<CheckReport> {
             "Repository, configuration, and detected skill-source diagnosis all pass.".to_string(),
         ],
         components: vec![component],
+        coverage: Default::default(),
+        proof: Default::default(),
         details,
     })
 }
@@ -28811,6 +30463,12 @@ fn changes_check_report_from_gate(root: &Path, gate: GateReport) -> CheckReport 
         .count();
     let component = surface_projection::CheckComponent {
         id: "gate".to_string(),
+        subject: root.display().to_string(),
+        scope: if gate.affected_modules.is_empty() {
+            "changed-path-selection".to_string()
+        } else {
+            gate.affected_modules.join(", ")
+        },
         result: result.label().to_string(),
         summary: format!(
             "{passed}/{} executable check(s) passed; {} manual obligation(s)",
@@ -28848,6 +30506,8 @@ fn changes_check_report_from_gate(root: &Path, gate: GateReport) -> CheckReport 
                 .to_string(),
         ],
         components: vec![component],
+        coverage: Default::default(),
+        proof: Default::default(),
         details,
     }
 }
@@ -28870,6 +30530,8 @@ fn committed_check_report_from_audit(root: &Path, audit: AuditReport) -> CheckRe
         .count();
     let component = surface_projection::CheckComponent {
         id: "audit-strict".to_string(),
+        subject: root.display().to_string(),
+        scope: audit.verification_targets.join(", "),
         result: result.label().to_string(),
         summary: format!("{passed}/{} audit check(s) passed", audit.checks.len()),
     };
@@ -28894,6 +30556,8 @@ fn committed_check_report_from_audit(root: &Path, audit: AuditReport) -> CheckRe
         next_action,
         done_when: vec!["Strict audit passes against the clean committed candidate.".to_string()],
         components: vec![component],
+        coverage: Default::default(),
+        proof: Default::default(),
         details,
     }
 }
@@ -28958,6 +30622,19 @@ fn project_check_report(
     report: &CheckReport,
     include_details: bool,
 ) -> surface_projection::CheckSurfaceReport {
+    let mut proof = report.proof.clone();
+    if !include_details {
+        for entry in proof
+            .observed
+            .iter_mut()
+            .chain(proof.declared_not_observed.iter_mut())
+        {
+            entry.command = None;
+            entry.runner = None;
+            entry.elapsed_ms = None;
+            entry.evidence_paths.clear();
+        }
+    }
     surface_projection::CheckSurfaceReport {
         envelope: surface_projection::SurfaceEnvelope::new(
             "check",
@@ -28971,6 +30648,8 @@ fn project_check_report(
         ),
         mode: report.mode.label().to_string(),
         components: report.components.clone(),
+        coverage: report.coverage.clone(),
+        proof,
     }
 }
 
@@ -28993,7 +30672,19 @@ fn run_next(
             render_next_surface_report(&surface, details.then_some(&report))
         );
     }
+    let exit_code = next_exit_code(report.result);
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
     Ok(())
+}
+
+fn next_exit_code(result: NextResult) -> i32 {
+    if matches!(result, NextResult::Ready | NextResult::NoRmsChange) {
+        0
+    } else {
+        2
+    }
 }
 
 fn build_next_report_with_intent(
@@ -29010,8 +30701,8 @@ fn build_next_report_with_intent(
     let root = fs::canonicalize(root)
         .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
     let provider_extraction = input.ai;
-    let (mut intent, mut intent_diagnostics, _) =
-        resolve_intent_model(&root, task, &input, options)?;
+    let (mut intent, mut intent_diagnostics, existing_run_dir) =
+        resolve_intent_model(&root, "next", task, &input, options)?;
     if provider_extraction && explicit_module.is_some() {
         if let Some(model) = intent.as_mut() {
             if normalize_provider_change_scope_for_explicit_module(model) {
@@ -29019,6 +30710,7 @@ fn build_next_report_with_intent(
             }
         }
     }
+    let extraction_diagnostics = intent_diagnostics.clone();
     let profile = build_repository_profile(&root)?;
     let classification = intent
         .as_ref()
@@ -29208,7 +30900,60 @@ fn build_next_report_with_intent(
         ),
     };
 
-    Ok(NextReport {
+    let run_dir = prepare_route_run_record(
+        &root,
+        "next",
+        task,
+        &render_intent_extraction_prompt(task),
+        options,
+        existing_run_dir,
+    )?;
+    fs::write(
+        run_dir.join("intent-diagnostics.json"),
+        serde_json::to_string_pretty(&extraction_diagnostics)?,
+    )?;
+    let mut allowed_actions = Vec::new();
+    if result == NextResult::Ready {
+        match classification.lane {
+            TaskLane::Semantic => {
+                allowed_actions.extend(["spec-apply", "machine-apply"]);
+            }
+            TaskLane::Surface => allowed_actions.push("surface-apply"),
+            TaskLane::SemanticPlusSurface => {
+                allowed_actions.extend(["spec-apply", "machine-apply", "surface-apply"]);
+            }
+            TaskLane::ImplementationCandidate => allowed_actions.push("add-binding"),
+            _ => {}
+        }
+    }
+    let owner_path = owner
+        .selected
+        .as_ref()
+        .map(|selected| PathBuf::from(&selected.path));
+    let implementation_path = context.implementation.as_ref().map(PathBuf::from);
+    let target_paths = owner_path
+        .iter()
+        .cloned()
+        .chain(implementation_path.iter().cloned())
+        .collect::<Vec<_>>();
+    let route = issue_route_receipt(
+        &root,
+        &run_dir,
+        task,
+        intent.as_ref(),
+        result.label(),
+        classification.lane.label(),
+        owner_path.as_deref(),
+        implementation_path.as_deref(),
+        allowed_actions.into_iter().map(str::to_string).collect(),
+        if result == NextResult::Ready {
+            target_paths
+        } else {
+            Vec::new()
+        },
+        None,
+    )?;
+    let report = NextReport {
         result,
         task: task.to_string(),
         root: root.display().to_string(),
@@ -29224,7 +30969,15 @@ fn build_next_report_with_intent(
         steps,
         skill_sources,
         completion,
-    })
+        run_id: route.run_id.clone(),
+        receipt_id: route.receipt_id.clone(),
+        receipt_path: route.receipt_path.display().to_string(),
+    };
+    fs::write(
+        route.run_dir.join("route.json"),
+        serde_json::to_string_pretty(&report)?,
+    )?;
+    Ok(report)
 }
 
 fn normalize_provider_change_scope_for_explicit_module(model: &mut IntentModel) -> bool {
@@ -30111,7 +31864,7 @@ fn build_next_steps(
         NextResult::IntentRequired | NextResult::ClarificationRequired
     ) {
         let description = if result == NextResult::IntentRequired {
-            "Extract an rms/intent-model/v0.1 from the user intent, then rerun `rms next` with --intent-json, --intent-yaml, --intent-file, or --ai. Do not choose topology from raw task wording."
+            "Rerun managed natural-language work as `rms next \"<exact user task>\" --root . --ai`, or supply typed intent for CI/offline use. Do not choose topology from raw task wording."
         } else {
             "Resolve every material unknown with the user, update the typed intent model, and rerun `rms next`; RMS will not guess architecture."
         };
@@ -30297,18 +32050,18 @@ fn build_next_steps(
                     cwd.clone(),
                 ));
                 declare.push(manual_next_step(
-                    "Apply one reviewed semantic-change object with `rms spec apply ... --dry-run`, then apply it without `--dry-run` and pass `rms spec check`.",
+                    "Apply one reviewed semantic-change object with `rms spec apply ... --dry-run --route-receipt <RUN_ID>`, then apply it with the same receipt and pass `rms spec check`.",
                     None,
                 ));
                 if classification.lane == TaskLane::SemanticPlusSurface {
                     declare.push(manual_next_step(
-                        "Declare the runnable surface through `rms surface apply --dry-run` and `rms surface apply` after semantic ownership is correct.",
+                        "Declare the runnable surface through `rms surface apply --dry-run --route-receipt <RUN_ID>` and apply with the same receipt after semantic ownership is correct.",
                         None,
                     ));
                 }
             }
             TaskLane::Surface => declare.push(manual_next_step(
-                "Declare the exact runnable surface with `rms surface apply --dry-run`, then apply and check it; do not add an undeclared entrypoint.",
+                "Declare the exact runnable surface with `rms surface apply --dry-run --route-receipt <RUN_ID>`, then apply with the same receipt and check it; do not add an undeclared entrypoint.",
                 None,
             )),
             TaskLane::ImplementationCandidate => declare.push(manual_next_step(
@@ -30736,6 +32489,9 @@ fn project_next_report(
     };
     let details = include_details.then(|| {
         json!({
+            "run_id": &report.run_id,
+            "receipt_id": &report.receipt_id,
+            "receipt_path": &report.receipt_path,
             "task": &report.task,
             "root": &report.root,
             "intent": &report.intent,
@@ -30787,6 +32543,9 @@ fn project_next_report(
         confidence: report.task_classification.confidence.clone(),
         owner,
         steps,
+        run_id: report.run_id.clone(),
+        receipt_id: report.receipt_id.clone(),
+        receipt_path: report.receipt_path.clone(),
     })
 }
 
@@ -30810,6 +32569,9 @@ fn render_next_surface_report(
     details: Option<&NextReport>,
 ) -> String {
     let mut out = surface_projection::render_text("Outcome", &surface.envelope);
+    let _ = writeln!(out, "\nRun ID: {}", surface.run_id);
+    let _ = writeln!(out, "Receipt ID: {}", surface.receipt_id);
+    let _ = writeln!(out, "Receipt: {}", surface.receipt_path);
     if let Some(details) = details {
         out.push_str("\nDetails:\n\n");
         out.push_str(&render_next_report(details));
@@ -30823,6 +32585,9 @@ fn render_next_report(report: &NextReport) -> String {
     let _ = writeln!(out, "Result: {}", report.result.label());
     let _ = writeln!(out, "Task: {}", report.task);
     let _ = writeln!(out, "Root: {}", report.root);
+    let _ = writeln!(out, "Run ID: {}", report.run_id);
+    let _ = writeln!(out, "Receipt ID: {}", report.receipt_id);
+    let _ = writeln!(out, "Receipt: {}", report.receipt_path);
     let _ = writeln!(out, "Repository kind: {}", report.repository.kind.label());
     let _ = writeln!(
         out,
@@ -34362,6 +36127,27 @@ fn append_executable_proof_audit_checks(
                             )
                         },
                     ));
+                    if !dry_run {
+                        for producer in &report.producers {
+                            let mut observation = audit_check(
+                                format!("trace.producer-execution.{}", producer.id),
+                                "proof",
+                                if producer.status == "pass" {
+                                    "pass"
+                                } else {
+                                    "fail"
+                                },
+                                &implementation.path,
+                                format!("executed trace producer `{}`", producer.id),
+                            );
+                            observation.proof_class = Some("trace-producer-execution".to_string());
+                            observation.profile = Some(report.profile.clone());
+                            observation.command = Some(producer.command.clone());
+                            observation.runner = Some(producer.runner.clone());
+                            observation.elapsed_ms = Some(producer.elapsed_ms);
+                            checks.push(observation);
+                        }
+                    }
                     for diagnostic in report.diagnostics {
                         checks.push(audit_check_from_diagnostic(&diagnostic, true));
                     }
@@ -34434,6 +36220,31 @@ fn append_executable_proof_audit_checks(
                             )
                         },
                     ));
+                    if !dry_run {
+                        for command in &report.commands {
+                            let mut observation = audit_check(
+                                format!("property.execution.{}", command.property),
+                                "proof",
+                                if command.status == "pass" {
+                                    "pass"
+                                } else {
+                                    "fail"
+                                },
+                                &implementation.path,
+                                format!("executed property realization `{}`", command.property),
+                            );
+                            observation.proof_class = Some("property".to_string());
+                            observation.strategy = command
+                                .kind
+                                .split_once(':')
+                                .map(|(_, strategy)| strategy.to_string());
+                            observation.profile = Some(report.profile.clone());
+                            observation.command = Some(command.command.clone());
+                            observation.runner = Some(command.runner.clone());
+                            observation.elapsed_ms = Some(command.elapsed_ms);
+                            checks.push(observation);
+                        }
+                    }
                     for diagnostic in report.diagnostics {
                         checks.push(audit_check_from_diagnostic(&diagnostic, true));
                     }
@@ -34564,13 +36375,19 @@ fn append_package_regeneration_audit_checks(
             .and_then(|package| verify_package(&package.output).map(|report| (package, report)));
         match outcome {
             Ok((package, report)) if report.result == VerifyPackageResult::Pass => {
-                checks.push(audit_check(
+                let mut regeneration = audit_check(
                     "package.proof-regeneration",
                     "proof",
                     "pass",
                     &module.path,
                     "reusable module package rebuilt and verified from current committed source",
+                );
+                regeneration.proof_class = Some("package-regeneration".to_string());
+                regeneration.command = Some(format!(
+                    "rms package {} --output <temporary> --force && rms verify-package <temporary>",
+                    module.path.display()
                 ));
+                checks.push(regeneration);
                 if let Some(existing) = declared_existing_package_path(&module) {
                     match (
                         package_payload_manifest(&package.output),
@@ -35674,6 +37491,9 @@ fn implementation_transition_triplets(
 }
 
 fn is_production_claim_path(path: &str) -> bool {
+    if path.starts_with(".rms/runs/") || path.starts_with(".rms/cache/") {
+        return false;
+    }
     path.ends_with("module.yaml")
         || path.ends_with("implementation.yaml")
         || path.ends_with("system.yaml")
@@ -36748,6 +38568,12 @@ fn audit_check_from_diagnostic(diagnostic: &Diagnostic, strict: bool) -> AuditCh
         result: result.to_string(),
         evidence: diagnostic.path.clone(),
         note: diagnostic.message.clone(),
+        proof_class: None,
+        strategy: None,
+        profile: None,
+        command: None,
+        runner: None,
+        elapsed_ms: None,
     }
 }
 
@@ -36893,6 +38719,12 @@ fn audit_check(
         result: result.into(),
         evidence: evidence.display().to_string(),
         note: note.into(),
+        proof_class: None,
+        strategy: None,
+        profile: None,
+        command: None,
+        runner: None,
+        elapsed_ms: None,
     }
 }
 
@@ -51779,7 +53611,7 @@ fn init_completion_lines() -> [&'static str; 3] {
     [
         BOOTSTRAP_PENDING_AUTHORIZED_COMMIT,
         COMMIT_AUTHORITY_POLICY,
-        "onboarding order: init -> authorized bootstrap commit -> `rms design --root . --task <intent>` -> recommended scaffold",
+        "onboarding order: init -> authorized bootstrap commit -> `rms design --root . --task \"<exact user task>\" --ai` -> recommended scaffold with `--route-receipt`",
     ]
 }
 
@@ -52178,6 +54010,61 @@ struct SurfaceApplyRequest {
     usage_document: Option<String>,
     smoke_command: Option<String>,
     dry_run: bool,
+}
+
+fn add_module_scaffold_action(request: &AddModuleRequest) -> ArchitectureAction {
+    let mut args = vec![
+        "add-module".to_string(),
+        request.path.display().to_string(),
+        "--name".to_string(),
+        request.name.clone(),
+        "--purpose".to_string(),
+        request.purpose.clone(),
+    ];
+    if request.kind != "module" {
+        args.extend(["--kind".to_string(), request.kind.clone()]);
+    }
+    for profile in &request.profiles {
+        args.extend(["--profile".to_string(), profile.clone()]);
+    }
+    if let Some(shape) = request.shape {
+        args.extend(["--shape".to_string(), shape.as_str().to_string()]);
+    }
+    if let Some(binding) = &request.binding {
+        args.extend(["--binding".to_string(), binding.clone()]);
+    }
+    ArchitectureAction {
+        program: "rms".to_string(),
+        args,
+    }
+}
+
+fn add_capability_tree_scaffold_action(request: &AddCapabilityTreeRequest) -> ArchitectureAction {
+    let mut args = vec![
+        "add-capability-tree".to_string(),
+        request.path.display().to_string(),
+        "--name".to_string(),
+        request.name.clone(),
+        "--purpose".to_string(),
+        request.purpose.clone(),
+    ];
+    for (flag, value) in [
+        ("--public-command", &request.public_command),
+        ("--domain-child", &request.domain_child),
+        ("--boundary-child", &request.boundary_child),
+        ("--domain-command", &request.domain_command),
+        ("--domain-binding", &request.domain_binding),
+        ("--boundary-binding", &request.boundary_binding),
+        ("--surface", &request.surface),
+    ] {
+        if let Some(value) = value {
+            args.extend([flag.to_string(), value.clone()]);
+        }
+    }
+    ArchitectureAction {
+        program: "rms".to_string(),
+        args,
+    }
 }
 
 fn run_add_module(request: AddModuleRequest, options: &PromptRunOptions) -> Result<()> {
@@ -57827,7 +59714,7 @@ fn write_file_if_missing(path: &Path, contents: &str) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("failed to write `{}`", path.display()))
 }
 
-const INIT_GITIGNORE: &str = ".DS_Store\ntarget/\ndist/\n.rms/runs/\n.rms/dogfood/\n";
+const INIT_GITIGNORE: &str = ".DS_Store\ntarget/\ndist/\n.rms/runs/\n.rms/cache/\n.rms/dogfood/\n";
 const RMS_MANAGED_AGENTS_START: &str = "<!-- RMS managed guidance: begin -->";
 const RMS_MANAGED_AGENTS_END: &str = "<!-- RMS managed guidance: end -->";
 const INIT_ADOPTED_AGENTS_BLOCK: &str = include_str!("../assets/guidance/agents-adopted-block.md");
@@ -57838,6 +59725,7 @@ const INIT_ADOPTED_GITIGNORE_BLOCK: &str = r#"# RMS managed ignores: begin
 target/
 dist/
 .rms/runs/
+.rms/cache/
 .rms/dogfood/
 # RMS managed ignores: end
 "#;
@@ -58237,6 +60125,47 @@ fn command_readiness(command: &str, args: &[&str]) -> CommandReadiness {
     }
 }
 
+fn codex_structured_output_readiness() -> CommandReadiness {
+    match Command::new("codex").args(["exec", "--help"]).output() {
+        Ok(output) if output.status.success() => {
+            let help = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if help.contains("--output-schema") {
+                CommandReadiness {
+                    command: "codex".to_string(),
+                    status: "available".to_string(),
+                    detail: Some("structured output supported (--output-schema)".to_string()),
+                }
+            } else {
+                CommandReadiness {
+                    command: "codex".to_string(),
+                    status: "upgrade-required".to_string(),
+                    detail: Some(
+                        "rms next/design --ai requires a Codex version with --output-schema"
+                            .to_string(),
+                    ),
+                }
+            }
+        }
+        Ok(output) => CommandReadiness {
+            command: "codex".to_string(),
+            status: "found-not-ready".to_string(),
+            detail: Some(format!(
+                "`codex exec --help` exited {}",
+                exit_status_label(output.status)
+            )),
+        },
+        Err(_) => CommandReadiness {
+            command: "codex".to_string(),
+            status: "not-configured".to_string(),
+            detail: None,
+        },
+    }
+}
+
 fn print_command_readiness(readiness: &CommandReadiness) {
     match readiness.detail.as_deref() {
         Some(detail) => println!("{}: {} ({detail})", readiness.command, readiness.status),
@@ -58419,6 +60348,473 @@ fn source_revision(root: &Path) -> Option<String> {
     } else {
         None
     }
+}
+
+fn git_repository_identity(root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .with_context(|| format!("failed to inspect Git repository `{}`", root.display()))?;
+    if !output.status.success() {
+        bail!(
+            "route receipts require a Git repository at `{}`{}",
+            root.display(),
+            command_output_excerpt(&output)
+        );
+    }
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    Ok(fs::canonicalize(&path)
+        .with_context(|| format!("failed to canonicalize Git root `{}`", path.display()))?
+        .display()
+        .to_string())
+}
+
+fn git_head(root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .with_context(|| format!("failed to inspect Git HEAD at `{}`", root.display()))?;
+    if !output.status.success() {
+        bail!(
+            "route receipts require a committed Git HEAD at `{}`{}",
+            root.display(),
+            command_output_excerpt(&output)
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn route_repository_identity(root: &Path) -> Result<String> {
+    git_repository_identity(root).or_else(|_| {
+        Ok(fs::canonicalize(root)
+            .with_context(|| format!("failed to canonicalize route root `{}`", root.display()))?
+            .display()
+            .to_string())
+    })
+}
+
+fn route_git_head(root: &Path) -> String {
+    git_head(root).unwrap_or_else(|_| "<uncommitted>".to_string())
+}
+
+fn normalize_receipt_target(root: &Path, target: &Path) -> Result<String> {
+    let target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        root.join(target)
+    };
+    let normalized = if target.exists() {
+        fs::canonicalize(&target)
+            .with_context(|| format!("failed to canonicalize target `{}`", target.display()))?
+    } else {
+        let mut existing = target.as_path();
+        let mut suffix = Vec::new();
+        while !existing.exists() {
+            suffix.push(
+                existing
+                    .file_name()
+                    .ok_or_else(|| {
+                        anyhow!("target `{}` has no existing ancestor", target.display())
+                    })?
+                    .to_os_string(),
+            );
+            existing = existing.parent().unwrap_or(root);
+        }
+        let mut normalized = fs::canonicalize(existing).with_context(|| {
+            format!(
+                "failed to canonicalize target ancestor `{}`",
+                existing.display()
+            )
+        })?;
+        for component in suffix.into_iter().rev() {
+            normalized.push(component);
+        }
+        normalized
+    };
+    Ok(normalized.display().to_string())
+}
+
+fn intent_model_json_schema() -> JsonValue {
+    let fact = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["disposition", "basis", "source_quote", "rationale"],
+        "properties": {
+            "disposition": {"enum": ["required", "absent", "unknown"]},
+            "basis": {"enum": ["explicit", "inferred"]},
+            "source_quote": {"type": ["string", "null"]},
+            "rationale": {"type": ["string", "null"]}
+        }
+    });
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": INTENT_SCHEMA_SPEC,
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["spec", "operation", "change_scope", "subjects", "facts", "responsibilities", "surface_kinds", "binding_preferences", "open_questions"],
+        "properties": {
+            "spec": {"const": INTENT_SCHEMA_SPEC},
+            "operation": {"enum": ["read", "repository-operation", "design", "semantic-change", "surface-change", "implementation-change"]},
+            "change_scope": {"enum": ["new-system", "new-module", "existing-module", "unknown"]},
+            "subjects": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            "facts": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["domain_decisions", "lifecycle", "effects", "runnable_surface", "reuse"],
+                "properties": {
+                    "domain_decisions": fact.clone(),
+                    "lifecycle": fact.clone(),
+                    "effects": fact.clone(),
+                    "runnable_surface": fact.clone(),
+                    "reuse": fact
+                }
+            },
+            "responsibilities": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["id", "kind", "summary"],
+                    "properties": {
+                        "id": {"type": "string"},
+                        "kind": {"enum": ["decision", "workflow", "boundary", "storage", "integration", "monitor"]},
+                        "summary": {"type": "string"}
+                    }
+                }
+            },
+            "surface_kinds": {"type": "array", "items": {"enum": ["browser", "cli", "mobile-ui", "desktop-ui", "http", "batch", "executable"]}},
+            "binding_preferences": {"type": "array", "items": {"type": "string"}},
+            "open_questions": {"type": "array", "items": {"type": "string"}}
+        }
+    })
+}
+
+fn create_route_run_record(
+    root: &Path,
+    command: &str,
+    task: &str,
+    prompt: &str,
+    options: Option<&PromptRunOptions>,
+) -> Result<PathBuf> {
+    let run_root = match options {
+        Some(options) => options.run_root.clone(),
+        None => resolve_run_root(root, None)?,
+    };
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let run_id = format!("{nanos}-{command}-route");
+    let run_dir = root.join(run_root).join(&run_id);
+    fs::create_dir_all(&run_dir)
+        .with_context(|| format!("failed to create route run `{}`", run_dir.display()))?;
+    fs::write(run_dir.join("prompt.md"), prompt)?;
+    fs::write(
+        run_dir.join("request.yaml"),
+        serde_yaml::to_string(&json!({
+            "schema": "rms/route-request/v0.1",
+            "run_id": run_id,
+            "command": command,
+            "task": task,
+            "created_unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).map(|value| value.as_millis()).unwrap_or(0),
+        }))?,
+    )?;
+    fs::write(
+        run_dir.join("intent-schema.json"),
+        serde_json::to_string_pretty(&intent_model_json_schema())?,
+    )?;
+    if !run_dir.join("response.md").exists() {
+        fs::write(run_dir.join("response.md"), "")?;
+    }
+    Ok(run_dir)
+}
+
+fn prepare_route_run_record(
+    root: &Path,
+    command: &str,
+    task: &str,
+    prompt: &str,
+    options: Option<&PromptRunOptions>,
+    existing: Option<PathBuf>,
+) -> Result<PathBuf> {
+    let run_dir = match existing {
+        Some(run_dir) => run_dir,
+        None => create_route_run_record(root, command, task, prompt, options)?,
+    };
+    fs::write(
+        run_dir.join("intent-schema.json"),
+        serde_json::to_string_pretty(&intent_model_json_schema())?,
+    )?;
+    if !run_dir.join("response.md").exists() {
+        fs::write(run_dir.join("response.md"), "")?;
+    }
+    if !run_dir.join("provider.json").exists() {
+        fs::write(
+            run_dir.join("provider.json"),
+            serde_json::to_string_pretty(&json!({
+                "provider": "none",
+                "model": null,
+                "cache": "not-applicable",
+                "attempts": 0,
+                "elapsed_ms": 0,
+                "tokens": null,
+            }))?,
+        )?;
+    }
+    Ok(run_dir)
+}
+
+fn issue_route_receipt(
+    root: &Path,
+    run_dir: &Path,
+    task: &str,
+    intent: Option<&IntentModel>,
+    route_result: &str,
+    lane: &str,
+    owner_module: Option<&Path>,
+    implementation_target: Option<&Path>,
+    mut allowed_action_families: Vec<String>,
+    target_paths: Vec<PathBuf>,
+    scaffold: Option<ArchitectureAction>,
+) -> Result<RouteRunArtifacts> {
+    let run_id = run_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow!("run directory `{}` has no stable run ID", run_dir.display()))?
+        .to_string();
+    allowed_action_families.sort();
+    allowed_action_families.dedup();
+    let mut normalized_target_paths = target_paths
+        .iter()
+        .map(|path| normalize_receipt_target(root, path))
+        .collect::<Result<Vec<_>>>()?;
+    normalized_target_paths.sort();
+    normalized_target_paths.dedup();
+    let normalized_intent_value = serde_json::to_value(intent)?;
+    let normalized_intent = serde_json::to_vec(&normalized_intent_value)?;
+    let schema_bytes = serde_json::to_vec(&intent_model_json_schema())?;
+    let payload = RouteReceiptPayload {
+        schema: ROUTE_RECEIPT_SPEC.to_string(),
+        run_id: run_id.clone(),
+        issuing_rms_version: VALIDATOR_VERSION.to_string(),
+        route_result: route_result.to_string(),
+        task_sha256: sha256_bytes(task.as_bytes()),
+        normalized_intent_sha256: sha256_bytes(&normalized_intent),
+        intent_schema_sha256: sha256_bytes(&schema_bytes),
+        extraction_prompt_version: INTENT_EXTRACTION_PROMPT_VERSION.to_string(),
+        repository: route_repository_identity(root)?,
+        git_head: route_git_head(root),
+        lane: lane.to_string(),
+        owner_module: owner_module
+            .map(|path| normalize_receipt_target(root, path))
+            .transpose()?,
+        implementation_target: implementation_target
+            .map(|path| normalize_receipt_target(root, path))
+            .transpose()?,
+        allowed_action_families,
+        normalized_target_paths,
+        scaffold,
+    };
+    let receipt_id = sha256_bytes(&serde_json::to_vec(&payload)?);
+    let receipt = RouteReceipt {
+        payload,
+        receipt_id: receipt_id.clone(),
+    };
+    let receipt_path = run_dir.join("route-receipt.json");
+    fs::write(&receipt_path, serde_json::to_string_pretty(&receipt)?)?;
+    fs::write(
+        run_dir.join("normalized-intent.json"),
+        serde_json::to_string_pretty(&normalized_intent_value)?,
+    )?;
+    Ok(RouteRunArtifacts {
+        run_id,
+        run_dir: run_dir.to_path_buf(),
+        receipt_id,
+        receipt_path,
+    })
+}
+
+fn resolve_route_receipt_path(root: &Path, reference: &Path) -> Result<PathBuf> {
+    if reference.is_file() {
+        return Ok(reference.to_path_buf());
+    }
+    if reference.is_dir() {
+        return Ok(reference.join("route-receipt.json"));
+    }
+    if reference.components().count() == 1 {
+        return Ok(root
+            .join(resolve_run_root(root, None)?)
+            .join(reference)
+            .join("route-receipt.json"));
+    }
+    Ok(reference.to_path_buf())
+}
+
+fn validate_route_receipt(
+    root: &Path,
+    reference: &Path,
+    action_family: &str,
+    target: &Path,
+    scaffold: Option<&ArchitectureAction>,
+) -> Result<RouteReceipt> {
+    let root = fs::canonicalize(root)
+        .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
+    let path = resolve_route_receipt_path(&root, reference)?;
+    let source = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read route receipt `{}`", path.display()))?;
+    let receipt: RouteReceipt = serde_json::from_str(&source)
+        .with_context(|| format!("invalid route receipt `{}`", path.display()))?;
+    let expected_id = sha256_bytes(&serde_json::to_vec(&receipt.payload)?);
+    if receipt.receipt_id != expected_id {
+        bail!("route receipt digest does not match its canonical payload");
+    }
+    if receipt.payload.schema != ROUTE_RECEIPT_SPEC {
+        bail!(
+            "unsupported route receipt schema `{}`",
+            receipt.payload.schema
+        );
+    }
+    if receipt.payload.issuing_rms_version != VALIDATOR_VERSION {
+        bail!(
+            "route receipt was issued by RMS {}, current RMS is {}",
+            receipt.payload.issuing_rms_version,
+            VALIDATOR_VERSION
+        );
+    }
+    if receipt.payload.route_result != "ready" {
+        bail!(
+            "route result `{}` cannot authorize a canonical mutation",
+            receipt.payload.route_result
+        );
+    }
+    if receipt.payload.repository != git_repository_identity(&root)? {
+        bail!("route receipt repository identity does not match the current repository");
+    }
+    if receipt.payload.git_head != git_head(&root)? {
+        bail!("route receipt Git HEAD is stale; route the exact task again");
+    }
+    if !receipt
+        .payload
+        .allowed_action_families
+        .iter()
+        .any(|allowed| allowed == action_family)
+    {
+        bail!("route receipt does not authorize action family `{action_family}`");
+    }
+    let normalized_target = normalize_receipt_target(&root, target)?;
+    if !receipt
+        .payload
+        .normalized_target_paths
+        .iter()
+        .any(|allowed| allowed == &normalized_target)
+    {
+        bail!(
+            "route receipt does not authorize target `{}`",
+            target.display()
+        );
+    }
+    if receipt.payload.scaffold.as_ref() != scaffold {
+        bail!("route receipt scaffold arguments do not match the requested topology mutation");
+    }
+    let run_dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("route receipt has no run directory"))?;
+    let request: YamlValue =
+        serde_yaml::from_str(&fs::read_to_string(run_dir.join("request.yaml"))?)?;
+    let task = get_str(&request, &["task"])
+        .ok_or_else(|| anyhow!("route run request does not preserve the exact task"))?;
+    if sha256_bytes(task.as_bytes()) != receipt.payload.task_sha256 {
+        bail!("route receipt task digest does not match its run record");
+    }
+    let normalized_intent = fs::read(run_dir.join("normalized-intent.json"))?;
+    let normalized_intent: JsonValue = serde_json::from_slice(&normalized_intent)?;
+    if sha256_bytes(&serde_json::to_vec(&normalized_intent)?)
+        != receipt.payload.normalized_intent_sha256
+    {
+        bail!("route receipt normalized intent digest does not match its run record");
+    }
+    let schema: JsonValue = serde_json::from_slice(&fs::read(run_dir.join("intent-schema.json"))?)?;
+    if sha256_bytes(&serde_json::to_vec(&schema)?) != receipt.payload.intent_schema_sha256 {
+        bail!("route receipt intent schema digest does not match its run record");
+    }
+    if receipt.payload.extraction_prompt_version != INTENT_EXTRACTION_PROMPT_VERSION {
+        bail!("route receipt extraction prompt version is stale");
+    }
+    Ok(receipt)
+}
+
+fn require_route_receipt(
+    root: &Path,
+    reference: &Path,
+    action_family: &str,
+    target: &Path,
+    scaffold: Option<&ArchitectureAction>,
+) -> RouteReceipt {
+    match validate_route_receipt(root, reference, action_family, target, scaffold) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            eprintln!("RMS route receipt rejected: {error:#}");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn repository_root_for_target(target: &Path) -> Result<PathBuf> {
+    let start = if target.is_dir() {
+        target
+    } else {
+        target.parent().unwrap_or_else(|| Path::new("."))
+    };
+    Ok(PathBuf::from(git_repository_identity(start)?))
+}
+
+#[cfg(test)]
+fn generate_route_receipt_validation_cases() -> Vec<String> {
+    let dimensions = [
+        ("status", ["matching", "mismatching"]),
+        ("root", ["matching", "mismatching"]),
+        ("head", ["matching", "mismatching"]),
+        ("owner", ["matching", "mismatching"]),
+        ("action", ["matching", "mismatching"]),
+        ("target", ["matching", "mismatching"]),
+        ("digest", ["matching", "mismatching"]),
+        ("scaffold", ["matching", "mismatching"]),
+    ];
+    let mut cases = Vec::new();
+    for (dimension, values) in dimensions {
+        for value in values {
+            cases.push(format!("{dimension}:{value}"));
+        }
+    }
+    cases
+}
+
+#[cfg(test)]
+fn generate_intent_cache_cases() -> Vec<String> {
+    let outcomes = ["valid", "repairable", "invalid", "material-unknown"];
+    let cache_states = ["miss", "hit", "refresh", "concurrent"];
+    let mut cases = Vec::new();
+    for outcome in outcomes {
+        for cache_state in cache_states {
+            cases.push(format!("{outcome}:{cache_state}"));
+        }
+    }
+    cases
+}
+
+#[cfg(test)]
+fn generate_check_proof_projection_cases() -> Vec<String> {
+    let modes = ["complete", "progressive", "module"];
+    let evidence_states = ["declared-only", "observed"];
+    let mut cases = Vec::new();
+    for mode in modes {
+        for evidence in evidence_states {
+            cases.push(format!("{mode}:{evidence}"));
+        }
+    }
+    cases
 }
 
 #[cfg(test)]
@@ -59356,18 +61752,20 @@ import struct ExternalKit.Widget
         );
         assert!(agents.lines().count() <= 60);
         assert!(agents.len() <= 8 * 1024);
-        assert!(agents.contains("rms next \"<intent>\""));
+        assert!(agents.contains("rms next \"<exact user task>\" --root . --ai"));
         assert!(agents.contains(COMMIT_AUTHORITY_POLICY));
         assert!(agents.contains(BOOTSTRAP_PENDING_AUTHORIZED_COMMIT));
         assert!(agents.contains(CANDIDATE_PENDING_AUTHORIZED_COMMIT));
         assert!(agents.contains("New or adopted systems follow `rms init [--adopt]`"));
-        assert!(agents.contains("Extract `rms/intent-model/v0.1` facts"));
+        assert!(agents.contains("schema-constrained extraction"));
+        assert!(agents.contains("--route-receipt"));
         assert!(agents.contains("recommended standalone or recursive scaffold"));
         assert!(agents.contains("focused native and RMS proof"));
         assert!(agents.contains("authorized candidate commit"));
         assert!(agents.contains("rms check --changes --root ."));
         assert!(agents.contains("rms check --committed --root ."));
         assert!(gitignore.contains(".rms/runs/"));
+        assert!(gitignore.contains(".rms/cache/"));
         assert!(gitignore.contains(".rms/dogfood/"));
         assert!(config_text.contains("# write_scope: module"));
         assert!(config_text.contains("# timeout_seconds: 900"));
@@ -59434,7 +61832,7 @@ import struct ExternalKit.Widget
         assert_eq!(completion[1], COMMIT_AUTHORITY_POLICY);
         assert_eq!(
             completion[2],
-            "onboarding order: init -> authorized bootstrap commit -> `rms design --root . --task <intent>` -> recommended scaffold"
+            "onboarding order: init -> authorized bootstrap commit -> `rms design --root . --task \"<exact user task>\" --ai` -> recommended scaffold with `--route-receipt`"
         );
         assert!(root.join(".git").is_dir());
         assert!(source_revision(&root).is_none());
@@ -59615,7 +62013,7 @@ import struct ExternalKit.Widget
     }
 
     #[test]
-    fn module_scoped_committed_proof_reports_outside_dirt_without_invalidating_closure() {
+    fn module_scoped_committed_proof_ignores_outside_dirt_but_runs_strict_audit() {
         if Command::new("git").arg("--version").output().is_err() {
             return;
         }
@@ -59669,10 +62067,17 @@ import struct ExternalKit.Widget
             CheckMode::Committed,
         )
         .unwrap();
-        assert_eq!(outside.result, CheckResult::Pass, "{outside:#?}");
+        assert_eq!(outside.result, CheckResult::Fail, "{outside:#?}");
         assert!(outside.warnings.iter().any(|warning| warning.contains(
             "outside the certified module closure and did not invalidate this scoped proof"
         )));
+        assert!(outside
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("semantic.revision-missing")));
+        assert!(outside.details["audit"]["checks"]
+            .as_array()
+            .is_some_and(|checks| !checks.is_empty()));
         assert_eq!(
             outside.details["out_of_scope_changed_paths"],
             json!(["Sources/Legacy/Unowned.swift"])
@@ -59848,7 +62253,7 @@ import struct ExternalKit.Widget
         fs::remove_dir_all(&root).unwrap();
         assert!(config_before.contains("default_provider: codex"));
         assert!(synced_agents.starts_with("stale guidance\n"));
-        assert!(synced_agents.contains("rms next \"<intent>\""));
+        assert!(synced_agents.contains("rms next \"<exact user task>\" --root . --ai"));
         assert!(synced_agents.contains(COMMIT_AUTHORITY_POLICY));
         assert!(synced_agents.contains(CANDIDATE_PENDING_AUTHORIZED_COMMIT));
         assert_eq!(synced.agent_instructions.status, "managed-current");
@@ -67734,7 +70139,8 @@ open_questions: []
     fn intent_model_requires_material_facts_and_forbids_architecture_fields() {
         let missing = RawIntentInput::default();
         let (model, diagnostics, _) =
-            resolve_intent_model(Path::new("."), "Design a library", &missing, None).unwrap();
+            resolve_intent_model(Path::new("."), "next", "Design a library", &missing, None)
+                .unwrap();
         assert!(model.is_none());
         assert!(diagnostics
             .iter()
@@ -67794,7 +70200,9 @@ topology: composite
             "--name",
             "example",
             "--purpose",
-            "Example"
+            "Example",
+            "--route-receipt",
+            "design-run"
         ])
         .is_err());
         assert!(Cli::try_parse_from([
@@ -67804,7 +70212,9 @@ topology: composite
             "--name",
             "example",
             "--purpose",
-            "Example"
+            "Example",
+            "--route-receipt",
+            "design-run"
         ])
         .is_ok());
     }
@@ -70060,7 +72470,7 @@ semantic_functions:
         record_generated_traces(&root.join("modules/play-tic-tac-toe-domain"));
         record_generated_traces(&root.join("modules/play-tic-tac-toe-boundary"));
 
-        assert_clean_room_dogfood_artifacts(&root).unwrap();
+        assert_clean_room_dogfood_artifacts(&root, "play-tic-tac-toe", "rust", "js").unwrap();
         let report = compose_system(&root).unwrap();
         let rules_route = build_route_report(
             &root.join("modules/play-tic-tac-toe/module.yaml"),
@@ -71099,12 +73509,10 @@ semantic_functions: []
             assert_eq!(classify_prospective_task(task).lane, expected, "{task}");
         }
 
-        let undetermined = build_next_report(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/minimal"),
-            None,
-            "make it delightful",
-        )
-        .unwrap();
+        let undetermined_root = copy_minimal_fixture("next-undetermined");
+        let undetermined =
+            build_next_report(&undetermined_root, None, "make it delightful").unwrap();
+        fs::remove_dir_all(&undetermined_root).unwrap();
         assert_eq!(undetermined.result, NextResult::DesignRequired);
         assert!(undetermined
             .steps
@@ -71142,14 +73550,22 @@ semantic_functions: []
         let second_surface = project_next_report(&second, false).unwrap();
         let detailed_surface = project_next_report(&first, true).unwrap();
         let json_first = serde_json::to_string_pretty(&first_surface).unwrap();
-        let json_second = serde_json::to_string_pretty(&second_surface).unwrap();
         let text_first = render_next_surface_report(&first_surface, None);
         let text_second = render_next_surface_report(&second_surface, None);
         let after_tree = snapshot_test_tree(&root);
 
-        assert_eq!(json_first, json_second);
-        assert_eq!(text_first, text_second);
-        assert_eq!(before_tree, after_tree);
+        let mut stable_first = serde_json::to_value(&first_surface).unwrap();
+        let mut stable_second = serde_json::to_value(&second_surface).unwrap();
+        for value in [&mut stable_first, &mut stable_second] {
+            value.as_object_mut().unwrap().remove("run_id");
+            value.as_object_mut().unwrap().remove("receipt_id");
+            value.as_object_mut().unwrap().remove("receipt_path");
+        }
+        assert_eq!(stable_first, stable_second);
+        assert_ne!(text_first, text_second);
+        assert_ne!(before_tree, after_tree);
+        assert!(Path::new(&first_surface.receipt_path).is_file());
+        assert!(Path::new(&second_surface.receipt_path).is_file());
         assert_eq!(first_surface.envelope.schema, "rms.surface/v2");
         assert_eq!(first_surface.envelope.command, "next");
         assert!(first_surface.envelope.reasons.len() <= 3);
@@ -71527,11 +73943,7 @@ semantic_functions: []
 
     #[test]
     fn next_relative_roots_render_paths_valid_from_each_step_cwd() {
-        let root = if Path::new("examples/minimal").is_dir() {
-            PathBuf::from("examples/minimal")
-        } else {
-            PathBuf::from("../../../examples/minimal")
-        };
+        let root = copy_minimal_fixture("next-relative-root");
         let module = root.join("module.yaml");
         let report =
             build_next_report(&root, Some(&module), "fix existing implementation code").unwrap();
@@ -71552,6 +73964,7 @@ semantic_functions: []
                 );
             }
         }
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -74332,7 +76745,7 @@ runs:
         assert!(report
             .guidance
             .iter()
-            .any(|item| item.contains("rms next \"<intent>\"")));
+            .any(|item| item.contains("rms next \"<exact user task>\" --root . --ai")));
         assert!(report
             .guidance
             .iter()
@@ -74630,9 +77043,11 @@ runs:
         let report = build_next_report(&root, None, "inspect the example module").unwrap();
         let json = serde_json::to_value(project_next_report(&report, true).unwrap()).unwrap();
         let after = snapshot_test_tree(&root);
+        let receipt_exists = Path::new(json["receipt_path"].as_str().unwrap()).is_file();
         fs::remove_dir_all(&root).unwrap();
 
-        assert_eq!(before, after);
+        assert_ne!(before, after);
+        assert!(receipt_exists);
         assert_eq!(json["schema"], "rms.surface/v2");
         assert_eq!(json["command"], "next");
         assert_eq!(json["result"], "ready");
@@ -74691,6 +77106,68 @@ runs:
 
         fs::remove_dir_all(&root).unwrap();
         assert!(error.contains("version drift"));
+    }
+
+    #[test]
+    fn release_prepare_derives_one_consistent_validated_candidate() {
+        let root = unique_test_dir("release-prepare");
+        for directory in [
+            "tooling/rust/rms",
+            "integrations/codex/rms/.codex-plugin",
+            "templates/ci",
+        ] {
+            fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        fs::write(
+            root.join("tooling/rust/rms/Cargo.toml"),
+            "[package]\nname = \"rms\"\nversion = \"0.1.0-rc.4\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Cargo.lock"),
+            "[[package]]\nname = \"rms\"\nversion = \"0.1.0-rc.4\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("tooling/rust/rms/module.yaml"),
+            "spec: rms/module/v0.1\nmodule:\n  name: rms-cli\n  version: 0.1.0-rc.4\n  kind: tool\n  purpose: Test release preparation\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("integrations/codex/rms/.codex-plugin/plugin.json"),
+            "{\n  \"name\": \"rms\",\n  \"version\": \"0.1.0-rc.4\"\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("templates/ci/github-actions-rms-project.yml"),
+            "env:\n  RMS_VERSION: v0.1.0-rc.4\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("REFERENCE.md"),
+            "The Rust reference implementation is `0.1.0-rc.4`.\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("CHANGELOG.md"),
+            "# Changelog\n\n## Unreleased\n\nCompatibility impact.\n",
+        )
+        .unwrap();
+
+        let candidates = release_metadata_candidates(&root, "0.1.0-rc.5").unwrap();
+        assert_eq!(candidates.len(), 7);
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.next.contains("0.1.0-rc.5")));
+        assert!(release_metadata_candidates(&root, "rc.5").is_err());
+        write_release_metadata_candidates(&candidates).unwrap();
+        validate_release_metadata(&root).unwrap();
+        assert!(fs::read_to_string(root.join("CHANGELOG.md"))
+            .unwrap()
+            .contains("## 0.1.0-rc.5"));
+        assert!(release_metadata_candidates(&root, "0.1.0-rc.5").is_err());
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -75652,12 +78129,564 @@ records:
             .any(|diagnostic| { diagnostic.check == "trace.system-handoff-broken" }));
     }
 
+    #[test]
+    fn route_receipt_gate_accepts_only_matching_ready_context() {
+        assert_eq!(generate_route_receipt_validation_cases().len(), 16);
+        let root = copy_minimal_fixture("route-receipt-context");
+        initialize_test_git_repository(&root);
+        let report = build_next_report(&root, None, "change the example contract").unwrap();
+        assert_eq!(report.result, NextResult::Ready);
+        let implementation = root.join("implementation.yaml");
+        let receipt = PathBuf::from(&report.receipt_path);
+
+        assert!(
+            validate_route_receipt(&root, &receipt, "spec-apply", &implementation, None,).is_ok()
+        );
+        fs::write(root.join("uncommitted-note.txt"), "same routed task\n").unwrap();
+        assert!(
+            validate_route_receipt(&root, &receipt, "spec-apply", &implementation, None,).is_ok()
+        );
+        assert!(
+            validate_route_receipt(&root, &receipt, "surface-apply", &implementation, None,)
+                .is_err()
+        );
+        assert!(validate_route_receipt(
+            &root,
+            &receipt,
+            "spec-apply",
+            &root.join("GLOSSARY.md"),
+            None,
+        )
+        .is_err());
+        let non_ready = build_next_report_with_intent(
+            &root,
+            None,
+            "ambiguous task",
+            RawIntentInput::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(non_ready.result, NextResult::IntentRequired);
+        assert!(validate_route_receipt(
+            &root,
+            Path::new(&non_ready.receipt_path),
+            "spec-apply",
+            &implementation,
+            None,
+        )
+        .is_err());
+
+        let original = fs::read_to_string(&receipt).unwrap();
+        let mut tampered: RouteReceipt = serde_json::from_str(&original).unwrap();
+        tampered.payload.lane = "surface".to_string();
+        fs::write(&receipt, serde_json::to_string_pretty(&tampered).unwrap()).unwrap();
+        assert!(
+            validate_route_receipt(&root, &receipt, "spec-apply", &implementation, None,).is_err()
+        );
+        fs::write(&receipt, original).unwrap();
+
+        let commit = Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "advance head"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+        assert!(
+            validate_route_receipt(&root, &receipt, "spec-apply", &implementation, None,).is_err()
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn design_receipt_binds_exact_scaffold_arguments() {
+        let root = copy_minimal_fixture("design-receipt-scaffold");
+        initialize_test_git_repository(&root);
+        let intent = parse_intent_model_source(
+            r#"spec: rms/intent-model/v0.1
+operation: design
+change_scope: new-module
+subjects: [ledger]
+facts:
+  domain_decisions: { disposition: required, basis: explicit, source_quote: ledger }
+  lifecycle: { disposition: absent, basis: inferred, rationale: no ordered lifecycle }
+  effects: { disposition: absent, basis: inferred, rationale: pure decision owner }
+  runnable_surface: { disposition: absent, basis: inferred, rationale: no runnable boundary }
+  reuse: { disposition: required, basis: inferred, rationale: shared capability }
+responsibilities:
+  - { id: ledger-decisions, kind: decision, summary: Own ledger decisions }
+surface_kinds: []
+binding_preferences: [rust]
+open_questions: []
+"#,
+        )
+        .unwrap();
+        let task = "design a ledger decision module";
+        let decision = decide_architecture(task, &intent);
+        let run_dir = create_route_run_record(&root, "design", task, "prompt", None).unwrap();
+        let target = PathBuf::from(decision.scaffold.args.get(1).unwrap());
+        let route = issue_route_receipt(
+            &root,
+            &run_dir,
+            task,
+            Some(&intent),
+            "ready",
+            "design",
+            None,
+            None,
+            vec![decision.scaffold.args[0].clone()],
+            vec![target.clone()],
+            Some(decision.scaffold.clone()),
+        )
+        .unwrap();
+        assert!(validate_route_receipt(
+            &root,
+            &route.receipt_path,
+            "add-module",
+            &target,
+            Some(&decision.scaffold),
+        )
+        .is_ok());
+        let mut changed = decision.scaffold.clone();
+        changed.args.push("--profile".to_string());
+        changed.args.push("boundary".to_string());
+        assert!(validate_route_receipt(
+            &root,
+            &route.receipt_path,
+            "add-module",
+            &target,
+            Some(&changed),
+        )
+        .is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn mutator_cli_requires_route_receipts() {
+        let command = Cli::command();
+        for path in [
+            &["add-module"][..],
+            &["add-binding"][..],
+            &["add-capability-tree"][..],
+            &["machine", "apply"][..],
+            &["surface", "apply"][..],
+            &["spec", "apply"][..],
+            &["release", "prepare"][..],
+        ] {
+            let mut current = &command;
+            for segment in path {
+                current = current
+                    .get_subcommands()
+                    .find(|candidate| candidate.get_name() == *segment)
+                    .unwrap();
+            }
+            let receipt = current
+                .get_arguments()
+                .find(|argument| argument.get_id() == "route_receipt")
+                .unwrap();
+            assert!(receipt.is_required_set(), "{}", path.join(" "));
+        }
+    }
+
+    #[test]
+    fn provider_intent_candidate_preserves_material_unknown() {
+        let root = unique_test_dir("provider-material-unknown");
+        fs::create_dir_all(&root).unwrap();
+        let response = r#"{
+  "spec":"rms/intent-model/v0.1",
+  "operation":"design",
+  "change_scope":"unknown",
+  "subjects":["ambiguous-work"],
+  "facts":{
+    "domain_decisions":{"disposition":"unknown","basis":"inferred","source_quote":null,"rationale":"needs clarification"},
+    "lifecycle":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},
+    "effects":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},
+    "runnable_surface":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},
+    "reuse":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"}
+  },
+  "responsibilities":[],
+  "surface_kinds":[],
+  "binding_preferences":[],
+  "open_questions":["Does this own domain decisions?"]
+}"#;
+        let (_, diagnostics, _) =
+            provider_intent_candidate("design ambiguous work", &root, response).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "intent.material-unknown"));
+        assert!(diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity != Severity::Error));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn intent_extraction_cache_is_deterministic() {
+        assert_eq!(generate_intent_cache_cases().len(), 16);
+        let mut options = no_provider_options();
+        options.provider = Provider::Codex;
+        options.model = Some("model-a".to_string());
+        let first = intent_cache_key("exact task", &options).unwrap();
+        let second = intent_cache_key("exact task", &options).unwrap();
+        assert_eq!(first, second);
+        assert_ne!(first, intent_cache_key("exact task!", &options).unwrap());
+        options.model = Some("model-b".to_string());
+        assert_ne!(first, intent_cache_key("exact task", &options).unwrap());
+        assert_eq!(
+            Path::new(DEFAULT_INTENT_CACHE_ROOT),
+            Path::new(".rms/cache/intent")
+        );
+    }
+
+    #[test]
+    fn check_proof_projection_never_promotes_declarations() {
+        assert_eq!(generate_check_proof_projection_cases().len(), 6);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let report = CheckReport {
+            mode: CheckMode::Changes,
+            result: CheckResult::Pass,
+            summary: "selected scope passed".to_string(),
+            reasons: Vec::new(),
+            warnings: Vec::new(),
+            next_action: None,
+            done_when: Vec::new(),
+            components: Vec::new(),
+            coverage: Default::default(),
+            proof: Default::default(),
+            details: json!({
+                "verification": [{"target": "implementation.yaml", "result": "pass"}],
+                "audit": {"checks": [{
+                    "id": "property.execution.route-receipt-gate-closure",
+                    "result": "pass",
+                    "proof_class": "property",
+                    "strategy": "generated-property",
+                    "profile": "smoke",
+                    "command": "properties",
+                    "runner": "src/main.rs#route_receipt_gate_accepts_only_matching_ready_context",
+                    "elapsed_ms": 7
+                }]}
+            }),
+        };
+        let proof = project_check_proof(root, &report).unwrap();
+        assert!(proof.observed.iter().any(|entry| {
+            entry.subject == "route-receipt-gate-closure"
+                && entry.class == "property"
+                && entry.strategy.as_deref() == Some("generated-property")
+                && entry.profile.as_deref() == Some("smoke")
+        }));
+        assert!(!proof.declared_not_observed.iter().any(|entry| {
+            entry.subject == "route-receipt-gate-closure"
+                && entry.strategy.as_deref() == Some("generated-property")
+        }));
+        assert!(proof.declared_not_observed.iter().any(|entry| {
+            entry.subject == "intent-extraction-cache-determinism"
+                && entry.strategy.as_deref() == Some("generated-property")
+        }));
+    }
+
+    #[test]
+    fn progressive_coverage_names_every_closure() {
+        let root = unique_test_dir("progressive-closure-projection");
+        fs::create_dir_all(root.join(".rms")).unwrap();
+        fs::write(
+            root.join(".rms/config.yaml"),
+            "workspace:\n  coverage: progressive\n",
+        )
+        .unwrap();
+        write_profile_manifest(
+            &root.join("modules/alpha/module.yaml"),
+            "rms/module/v0.1",
+            Some("alpha"),
+        );
+        write_profile_manifest(
+            &root.join("modules/beta/module.yaml"),
+            "rms/module/v0.1",
+            Some("beta"),
+        );
+        let report = CheckReport {
+            mode: CheckMode::Changes,
+            result: CheckResult::Pass,
+            summary: "selected scope passed".to_string(),
+            reasons: Vec::new(),
+            warnings: Vec::new(),
+            next_action: None,
+            done_when: Vec::new(),
+            components: vec![
+                surface_projection::CheckComponent {
+                    id: "module-closure".to_string(),
+                    subject: "alpha".to_string(),
+                    scope: "alpha".to_string(),
+                    result: "pass".to_string(),
+                    summary: "passed".to_string(),
+                },
+                surface_projection::CheckComponent {
+                    id: "module-closure".to_string(),
+                    subject: "beta".to_string(),
+                    scope: "beta".to_string(),
+                    result: "pass".to_string(),
+                    summary: "passed".to_string(),
+                },
+            ],
+            coverage: Default::default(),
+            proof: Default::default(),
+            details: json!({}),
+        };
+        let coverage = project_check_coverage(&root, CheckMode::Changes, None, &report).unwrap();
+        assert_eq!(coverage.mode, "progressive");
+        assert_eq!(
+            coverage
+                .closures
+                .iter()
+                .map(|closure| closure.module.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
+        assert!(coverage
+            .certification
+            .starts_with("All selected RMS closures passed"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn route_result_exit_codes_distinguish_semantic_non_readiness() {
+        assert_eq!(next_exit_code(NextResult::Ready), 0);
+        assert_eq!(next_exit_code(NextResult::NoRmsChange), 0);
+        for result in [
+            NextResult::IntentRequired,
+            NextResult::ClarificationRequired,
+            NextResult::BootstrapRequired,
+            NextResult::DesignRequired,
+            NextResult::NeedsOwner,
+            NextResult::Blocked,
+        ] {
+            assert_eq!(next_exit_code(result), 2);
+        }
+        assert_eq!(design_exit_code("ready"), 0);
+        for result in [
+            "intent-model-required",
+            "clarification-required",
+            "invalid",
+            "blocked",
+        ] {
+            assert_eq!(design_exit_code(result), 2);
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_fake_codex(root: &Path, mode: &str) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let program = root.join("fake-codex.sh");
+        let counter = root.join("provider-count.txt");
+        let valid = r#"{"spec":"rms/intent-model/v0.1","operation":"implementation-change","change_scope":"existing-module","subjects":["cache-task"],"facts":{"domain_decisions":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"lifecycle":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"effects":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"runnable_surface":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"reuse":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"}},"responsibilities":[],"surface_kinds":[],"binding_preferences":[],"open_questions":[]}"#;
+        let script = format!(
+            r#"#!/bin/sh
+set -eu
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-last-message) output="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+counter_file='{}'
+count=0
+if [ -f "$counter_file" ]; then count=$(sed -n '1p' "$counter_file"); fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$counter_file"
+case '{}' in
+  incompatible) printf '%s\n' 'unknown option --output-schema' >&2; exit 2 ;;
+  invalid) response='{{"invalid":true}}' ;;
+  repair) if [ "$count" -eq 1 ]; then response='{{"invalid":true}}'; else response='{}'; fi ;;
+  slow) sleep 1; response='{}' ;;
+  *) response='{}' ;;
+esac
+printf '%s\n' "$response" > "$output"
+"#,
+            counter.display(),
+            mode,
+            valid,
+            valid,
+            valid,
+        );
+        write_test_file(&program, &script);
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        (program, counter)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_pipeline_repairs_caches_refreshes_and_deduplicates() {
+        let root = unique_test_dir("provider-pipeline");
+        fs::create_dir_all(&root).unwrap();
+        let (program, counter) = write_fake_codex(&root, "success");
+        let mut options = no_provider_options();
+        options.provider = Provider::Codex;
+        options.run_root = PathBuf::from(".rms/runs");
+        options.provider_timeout_seconds = 5;
+
+        let first = extract_provider_intent_with_program(
+            &root,
+            "next",
+            "cache task",
+            &options,
+            false,
+            &program,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&counter).unwrap().trim(), "1");
+        for artifact in [
+            "request.yaml",
+            "prompt.md",
+            "intent-schema.json",
+            "response.md",
+            "attempt-1-response.md",
+            "normalized-intent.json",
+            "intent-diagnostics.json",
+            "provider.json",
+        ] {
+            assert!(first.run_dir.join(artifact).is_file(), "{artifact}");
+        }
+        let second = extract_provider_intent_with_program(
+            &root,
+            "next",
+            "cache task",
+            &options,
+            false,
+            &program,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&counter).unwrap().trim(), "1");
+        assert!(fs::read_to_string(second.run_dir.join("provider.json"))
+            .unwrap()
+            .contains("\"cache\": \"hit\""));
+        extract_provider_intent_with_program(&root, "next", "cache task", &options, true, &program)
+            .unwrap();
+        assert_eq!(fs::read_to_string(&counter).unwrap().trim(), "2");
+
+        let repair_root = unique_test_dir("provider-repair");
+        fs::create_dir_all(&repair_root).unwrap();
+        let (repair_program, repair_counter) = write_fake_codex(&repair_root, "repair");
+        let repair = extract_provider_intent_with_program(
+            &repair_root,
+            "design",
+            "cache task",
+            &options,
+            false,
+            &repair_program,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(repair_counter).unwrap().trim(), "2");
+        assert!(repair.run_dir.join("attempt-2-response.md").is_file());
+
+        let invalid_root = unique_test_dir("provider-invalid");
+        fs::create_dir_all(&invalid_root).unwrap();
+        let (invalid_program, _) = write_fake_codex(&invalid_root, "invalid");
+        assert!(extract_provider_intent_with_program(
+            &invalid_root,
+            "next",
+            "cache task",
+            &options,
+            false,
+            &invalid_program,
+        )
+        .is_err());
+        let cache_entries = fs::read_dir(invalid_root.join(DEFAULT_INTENT_CACHE_ROOT))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .count();
+        assert_eq!(cache_entries, 0);
+
+        let incompatible_root = unique_test_dir("provider-incompatible");
+        fs::create_dir_all(&incompatible_root).unwrap();
+        let (incompatible_program, _) = write_fake_codex(&incompatible_root, "incompatible");
+        let error = extract_provider_intent_with_program(
+            &incompatible_root,
+            "next",
+            "cache task",
+            &options,
+            false,
+            &incompatible_program,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("upgrade Codex"), "{error}");
+
+        let concurrent_root = unique_test_dir("provider-concurrent");
+        fs::create_dir_all(&concurrent_root).unwrap();
+        let (slow_program, slow_counter) = write_fake_codex(&concurrent_root, "slow");
+        let first_root = concurrent_root.clone();
+        let second_root = concurrent_root.clone();
+        let first_program = slow_program.clone();
+        let second_program = slow_program.clone();
+        let first_options = options.clone();
+        let second_options = options.clone();
+        let one = thread::spawn(move || {
+            extract_provider_intent_with_program(
+                &first_root,
+                "next",
+                "cache task",
+                &first_options,
+                false,
+                &first_program,
+            )
+            .unwrap()
+        });
+        let two = thread::spawn(move || {
+            extract_provider_intent_with_program(
+                &second_root,
+                "next",
+                "cache task",
+                &second_options,
+                false,
+                &second_program,
+            )
+            .unwrap()
+        });
+        one.join().unwrap();
+        two.join().unwrap();
+        assert_eq!(fs::read_to_string(slow_counter).unwrap().trim(), "1");
+
+        for path in [
+            root,
+            repair_root,
+            invalid_root,
+            incompatible_root,
+            concurrent_root,
+        ] {
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
+
     fn unique_test_dir(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("rms-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    fn initialize_test_git_repository(root: &Path) {
+        fs::create_dir_all(root).unwrap();
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "rms@example.test"],
+            vec!["config", "user.name", "RMS Test"],
+            vec!["add", "."],
+            vec!["commit", "-m", "baseline"],
+        ] {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                command_output_excerpt(&output)
+            );
+        }
     }
 
     fn write_test_file(path: &Path, contents: &str) {
