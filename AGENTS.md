@@ -2,6 +2,12 @@
 
 <!-- RMS generated full guidance -->
 
+## RMS Self-Application Boundary
+
+When the task develops, maintains, reviews, documents, or discusses RMS itself—including its CLI, contracts, schemas, guidance, skills, integrations, examples, or release tooling—do not use RMS as the router, workflow, authority, change gate, or completion framework. In particular, do not begin ordinary RMS development with `rms next` or use an RMS-generated route to govern that work. Use the repository's maintainer workflow and native proof instead.
+
+RMS commands may be executed when RMS behavior is the system under test; their output is test evidence, not authority over the work. Use RMS to govern changes to RMS only when the user explicitly requests self-hosting or rewriting the RMS CLI through RMS. This boundary overrides the RMS invocation requirements below for work on RMS itself.
+
 ## Authority
 
 Canonical RMS artifacts own architecture, behavior, effects, dependencies, compatibility, recovery, and evidence; code fills declared roles. Apply semantic changes before their implementations.
