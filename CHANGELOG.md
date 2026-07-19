@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0-rc.7
+
+- Made the generated intent JSON Schema compatible with strict structured-output providers by explicitly typing every constant and enum node.
+- Added regression coverage that rejects any future untyped `const` or `enum` in the provider schema.
+
 ## 0.1.0-rc.6
 
 - Made structured intent provider failures terminal and auditable: failed runs now preserve complete artifacts, issue a non-ready empty-action receipt, select no owner, and prescribe explicit provider recovery without automatic typed-intent fallback.

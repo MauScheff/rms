@@ -1,7 +1,7 @@
 spec: rms/module/v0.1
 module:
   name: rms-cli
-  version: 0.1.0-rc.6
+  version: 0.1.0-rc.7
   kind: tool
   purpose: Provide the canonical command-line workbench for inspecting, validating, packaging, explaining, structuring, and verifying RMS modules.
 profiles:

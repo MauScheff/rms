@@ -372,4 +372,4 @@ Specialist commands remain directly callable. Their absence from default help is
 
 ## Version and Status
 
-This repository is the RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use. The Rust reference implementation is `0.1.0-rc.6`; the public presentation is intentionally narrow while the specialist engines remain available.
+This repository is the RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use. The Rust reference implementation is `0.1.0-rc.7`; the public presentation is intentionally narrow while the specialist engines remain available.

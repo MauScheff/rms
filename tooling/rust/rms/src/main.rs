@@ -60624,8 +60624,8 @@ fn intent_model_json_schema() -> JsonValue {
         "additionalProperties": false,
         "required": ["disposition", "basis", "source_quote", "rationale"],
         "properties": {
-            "disposition": {"enum": ["required", "absent", "unknown"]},
-            "basis": {"enum": ["explicit", "inferred"]},
+            "disposition": {"type": "string", "enum": ["required", "absent", "unknown"]},
+            "basis": {"type": "string", "enum": ["explicit", "inferred"]},
             "source_quote": {"type": ["string", "null"]},
             "rationale": {"type": ["string", "null"]}
         }
@@ -60637,9 +60637,9 @@ fn intent_model_json_schema() -> JsonValue {
         "additionalProperties": false,
         "required": ["spec", "operation", "change_scope", "subjects", "facts", "responsibilities", "surface_kinds", "binding_preferences", "open_questions"],
         "properties": {
-            "spec": {"const": INTENT_SCHEMA_SPEC},
-            "operation": {"enum": ["read", "repository-operation", "design", "semantic-change", "surface-change", "implementation-change"]},
-            "change_scope": {"enum": ["new-system", "new-module", "existing-module", "unknown"]},
+            "spec": {"type": "string", "const": INTENT_SCHEMA_SPEC},
+            "operation": {"type": "string", "enum": ["read", "repository-operation", "design", "semantic-change", "surface-change", "implementation-change"]},
+            "change_scope": {"type": "string", "enum": ["new-system", "new-module", "existing-module", "unknown"]},
             "subjects": {"type": "array", "items": {"type": "string"}, "minItems": 1},
             "facts": {
                 "type": "object",
@@ -60661,12 +60661,12 @@ fn intent_model_json_schema() -> JsonValue {
                     "required": ["id", "kind", "summary"],
                     "properties": {
                         "id": {"type": "string"},
-                        "kind": {"enum": ["decision", "workflow", "boundary", "storage", "integration", "monitor"]},
+                        "kind": {"type": "string", "enum": ["decision", "workflow", "boundary", "storage", "integration", "monitor"]},
                         "summary": {"type": "string"}
                     }
                 }
             },
-            "surface_kinds": {"type": "array", "items": {"enum": ["browser", "cli", "mobile-ui", "desktop-ui", "http", "batch", "executable"]}},
+            "surface_kinds": {"type": "array", "items": {"type": "string", "enum": ["browser", "cli", "mobile-ui", "desktop-ui", "http", "batch", "executable"]}},
             "binding_preferences": {"type": "array", "items": {"type": "string"}},
             "open_questions": {"type": "array", "items": {"type": "string"}}
         }
@@ -61103,6 +61103,37 @@ mod tests {
 
         assert!(version.contains(VALIDATOR_NAME));
         assert!(version.contains(VALIDATOR_VERSION));
+    }
+
+    #[test]
+    fn provider_intent_schema_types_every_const_and_enum() {
+        fn assert_typed_literals(value: &JsonValue, path: &str) {
+            match value {
+                JsonValue::Object(object) => {
+                    if object.contains_key("const") || object.contains_key("enum") {
+                        assert!(
+                            object.contains_key("type"),
+                            "structured-output literal at `{path}` must declare its JSON type: {value}"
+                        );
+                    }
+                    for (key, child) in object {
+                        assert_typed_literals(child, &format!("{path}.{key}"));
+                    }
+                }
+                JsonValue::Array(items) => {
+                    for (index, child) in items.iter().enumerate() {
+                        assert_typed_literals(child, &format!("{path}[{index}]"));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let schema = intent_model_json_schema();
+        assert_typed_literals(&schema, "$");
+        assert_eq!(schema["properties"]["spec"]["type"], "string");
+        assert_eq!(schema["properties"]["operation"]["type"], "string");
+        assert_eq!(schema["properties"]["change_scope"]["type"], "string");
     }
 
     #[test]
