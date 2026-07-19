@@ -25,6 +25,8 @@ Start with:
 rms next "<exact user task>" --root . --ai
 ```
 
+Typed intent is reserved for CI, offline, or intentionally pre-structured caller input. Do not synthesize it as an automatic fallback when provider execution fails. A non-ready or ownerless route selects no owner; candidates and context are evidence, not permission to imply one.
+
 RMS records schema-constrained fact extraction without accepting provider topology. CI, offline, and intentionally pre-structured callers use `--intent-json`, `--intent-yaml`, or `--intent-file`. Pass the returned `run_id`, run directory, or receipt file through `--route-receipt` on prescribed canonical semantic and topology mutations, including dry-runs.
 
 Use `rms explain ["<question>"]` when the compact prescription needs clarification and `rms help --all` for specialist commands. Load the catalog skill selected by the task lane; detailed machine, surface, property, trace, and completion rules live in selected skills and rendered RMS context.

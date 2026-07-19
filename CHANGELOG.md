@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.0-rc.6
+
+- Made structured intent provider failures terminal and auditable: failed runs now preserve complete artifacts, issue a non-ready empty-action receipt, select no owner, and prescribe explicit provider recovery without automatic typed-intent fallback.
+- Made every semantically non-ready route explicitly ownerless, removing tentative owner context and owner-scoped implementation steps while retaining candidates only as non-authoritative evidence.
+- Updated managed Codex/Claude guidance and packaged RMS skills to prohibit inferring an owner from candidates, neighboring modules, inspection context, or implementation language.
+
 ## 0.1.0-rc.5
 
 Compatibility impact: intentionally breaking presentation and agent-JSON revision. The primary CLI is now the five-command `init`, `next`, `explain`, `check`, and `view` surface; specialist commands remain available through `rms help --all`.

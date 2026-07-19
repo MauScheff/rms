@@ -1,0 +1,54 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/make-operational-provider-failures-terminal-and-auditable-and-ensure-unresolved-ownership-can-never-be-converted-into-an-agent-inferred-semantic-owner-30654f166aa4.yaml
+intent:
+  summary: Classify the finite non-ready route owner-closure realization truthfully as a deterministic corpus.
+laws: null
+contracts: null
+properties:
+  add: []
+  set:
+  - id: non-ready-route-owner-closure
+    proves: non-ready-routes-remain-ownerless
+    kind: property
+    subject: null
+    input_space:
+      routes: absent, ambiguous, invalid, blocked, clarification, provider-failed, and ready ownership outcomes crossed with candidates and inspection context
+    preconditions:
+    - A route outcome and its candidate or context evidence are available for projection.
+    operation:
+      symbol: src/main.rs#project_next_report
+      behavior: Project ownership, actions, receipt authority, and recovery instructions for the route outcome.
+    oracle:
+    - every non-ready ownership outcome has no selected owner and no owner-scoped implementation action
+    - candidates and context never become substitute ownership authority
+    - only a ready route can carry mutation action families
+    evidence:
+      kind: property
+      path: verification/properties/non_ready_route_owner_closure.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/non-ready-route-owner-closure
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: properties
+      generator: null
+      runner: src/main.rs#non_ready_routes_never_select_an_owner
+      exhaustive: false
+    temporal: null
+  remove: []
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

@@ -1,7 +1,7 @@
 spec: rms/module/v0.1
 module:
   name: rms-cli
-  version: 0.1.0-rc.5
+  version: 0.1.0-rc.6
   kind: tool
   purpose: Provide the canonical command-line workbench for inspecting, validating, packaging, explaining, structuring, and verifying RMS modules.
 profiles:
@@ -124,7 +124,7 @@ provides:
   - name: init-workbench-config
     contract: contracts/init-workbench-config.v1.yaml
   - name: configure-agent-integration
-    contract: contracts/configure-agent-integration.v2.yaml
+    contract: contracts/configure-agent-integration.v3.yaml
   - name: init-rms-system
     contract: contracts/init-rms-system.v1.yaml
   - name: add-rms-module
@@ -174,7 +174,7 @@ provides:
   - name: view-rms-system
     contract: contracts/view-rms-system.v1.yaml
   - name: recommend-next-rms-work
-    contract: contracts/recommend-next-rms-work.v3.yaml
+    contract: contracts/recommend-next-rms-work.v4.yaml
   - name: release-check
     contract: contracts/release-check.v1.yaml
   - name: check-rms-project
@@ -605,15 +605,20 @@ invariants:
   authority: parser
   enforced_by: route-receipt-validator
 - id: provider-intent-extraction-is-structured-cached-and-auditable
-  statement: Explicit provider intent extraction uses the exact intent-model schema, performs at most one diagnostic repair, caches only validated normalized models, and records raw attempts, normalization, diagnostics, cache provenance, route, and receipt without making provider output semantic authority.
-  kind: evidence-integrity
-  authority: parser
-  enforced_by: intent-extraction-pipeline
+  statement: Explicit provider intent extraction uses the exact intent-model schema, performs at most one diagnostic repair, caches only validated normalized models, and records a complete terminal run including raw attempts, normalization or diagnostics, cache provenance, route, and non-ready receipt even when provider execution fails, without making provider output semantic authority.
+  kind: safety
+  authority: composition
+  enforced_by: recommend-next-rms-work-command
 - id: check-projections-distinguish-declared-and-observed-proof
   statement: Every RMS check projection names its certified coverage and reports declared proof separately from commands and validators actually observed during that check.
   kind: evidence-integrity
   authority: parser
   enforced_by: check-proof-projector
+- id: non-ready-routes-remain-ownerless
+  statement: A route whose ownership is absent, ambiguous, invalid, or otherwise non-ready selects no owner, authorizes no canonical mutation, and instructs callers not to infer an owner from candidates, inspection context, or adjacent modules.
+  kind: evidence-integrity
+  authority: parser
+  enforced_by: intent-extraction-pipeline
 effects:
 - name: read-repository-files
   kind: filesystem-read
@@ -726,6 +731,8 @@ verification:
   - verification/laws/canonical_mutations_require_route_receipts.md
   - verification/laws/provider_intent_extraction_is_structured_cached_and_auditable.md
   - verification/laws/check_projections_distinguish_declared_and_observed_proof.md
+  - verification/laws/non_ready_routes_remain_ownerless.md
+  - verification/laws/provider_intent_extraction_terminal_runs.md
   contracts:
   - verification/contracts
   - verification/contracts/apply_runnable_surface.md
@@ -779,6 +786,8 @@ verification:
   - verification/contracts/check_rms_project_v2.md
   - verification/contracts/manage_rms_adoption_v2.md
   - verification/contracts/prepare_rms_release.md
+  - verification/contracts/recommend_next_rms_work_v4.md
+  - verification/contracts/configure_agent_integration_v3.md
   scenarios:
   - verification/scenarios
   - verification/scenarios/reusable_module_package.md
@@ -824,17 +833,18 @@ verification:
   - verification/properties/init_git_provenance.md
   - verification/properties/package_command_source_discovery.md
   - verification/properties/route_receipt_gate_closure.md
-  - verification/properties/intent_extraction_cache_determinism.md
   - verification/properties/check_proof_projection_truthfulness.md
+  - verification/properties/intent_extraction_terminal_runs.md
+  - verification/properties/non_ready_route_owner_closure.md
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Restore the complete existing RMS public behavior binding graph while retaining every RC.5 contract revision and release preparation binding.
+  last_semantic_intent: Seal the final RMS 0.1.0-rc.6 canonical state after release metadata and upstream guidance reconciliation.
   semantic_revision:
-    digest: sha256:8ac817ab7bac4c55bc12d94f566b038458be04b537a18ad3afeaa99cae54874b
-    change_record: verification/changes/restore-the-complete-existing-rms-public-behavior-binding-graph-while-retaining-every-rc-5-contract-revision-and-release-preparation-binding-e6a3f19dec99.yaml
+    digest: sha256:c2a7ac40d694b720d0605a853e621b047942d7ffe926dd5732663c3394808e2d
+    change_record: verification/changes/seal-the-final-rms-0-1-0-rc-6-canonical-state-after-release-metadata-and-upstream-guidance-reconciliation-43b5d8060d51.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:e6a3f19dec9956683a7e18586cb4ee372e51ee4659a95a6ef1c1044db11abc38
+    change_record_digest: sha256:43b5d8060d51abac26e3e5ad88454b9b84092160e903d31449cb68425ea82866
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-cli-applied-revision
@@ -1610,28 +1620,6 @@ properties:
     command: properties
     generator: src/main.rs#generate_route_receipt_validation_cases
     runner: src/main.rs#route_receipt_gate_accepts_only_matching_ready_context
-- id: intent-extraction-cache-determinism
-  proves: provider-intent-extraction-is-structured-cached-and-auditable
-  kind: property
-  input_space:
-    attempts: valid, repairable, materially unknown, schema-invalid, cache-hit, refresh, and concurrent provider outcomes
-  preconditions:
-  - provider execution is explicitly requested
-  operation: execute extraction twice for each cache identity and inspect persisted artifacts
-  oracle:
-  - validated identical requests reuse one normalized model without another provider invocation
-  - invalid first responses perform at most one repair and failed extraction is never cached
-  - every invocation records exact raw, normalized, diagnostic, provider, route, and receipt evidence
-  evidence:
-    path: verification/properties/intent_extraction_cache_determinism.md
-  counterexamples:
-    path: verification/fuzz/counterexamples/intent-extraction-cache
-  realizations:
-  - profile: smoke
-    strategy: generated-property
-    command: properties
-    generator: src/main.rs#generate_intent_cache_cases
-    runner: src/main.rs#intent_extraction_cache_is_deterministic
 - id: check-proof-projection-truthfulness
   proves: check-projections-distinguish-declared-and-observed-proof
   kind: property
@@ -1654,6 +1642,54 @@ properties:
     command: properties
     generator: src/main.rs#generate_check_proof_projection_cases
     runner: src/main.rs#check_proof_projection_never_promotes_declarations
+- id: intent-extraction-cache-determinism
+  proves: provider-intent-extraction-is-structured-cached-and-auditable
+  kind: property
+  input_space:
+    attempts: valid, repairable, materially unknown, schema-invalid, provider-process-failed, provider-incompatible, timed-out, cache-hit, refresh, and concurrent provider outcomes
+  preconditions:
+  - Provider execution is explicitly requested.
+  operation:
+    symbol: src/main.rs#extract_provider_intent_with_program
+    behavior: Execute or reuse structured extraction and persist a terminal route run for every outcome.
+  oracle:
+  - validated identical requests reuse one normalized model without another provider invocation
+  - invalid structured responses perform at most one repair and failed extraction is never cached
+  - operational failures perform no schema repair and produce diagnostics, provider metadata, terminal route, and a non-ready receipt with no owner or allowed actions
+  - every invocation preserves exact raw response and provider logs or cache provenance
+  evidence:
+    path: verification/properties/intent_extraction_terminal_runs.md
+  counterexamples:
+    path: verification/fuzz/counterexamples/intent-extraction-cache
+  realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: properties
+    generator: src/main.rs#generate_intent_cache_cases
+    runner: src/main.rs#intent_extraction_cache_is_deterministic
+- id: non-ready-route-owner-closure
+  proves: non-ready-routes-remain-ownerless
+  kind: property
+  input_space:
+    routes: absent, ambiguous, invalid, blocked, clarification, provider-failed, and ready ownership outcomes crossed with candidates and inspection context
+  preconditions:
+  - A route outcome and its candidate or context evidence are available for projection.
+  operation:
+    symbol: src/main.rs#project_next_report
+    behavior: Project ownership, actions, receipt authority, and recovery instructions for the route outcome.
+  oracle:
+  - every non-ready ownership outcome has no selected owner and no owner-scoped implementation action
+  - candidates and context never become substitute ownership authority
+  - only a ready route can carry mutation action families
+  evidence:
+    path: verification/properties/non_ready_route_owner_closure.md
+  counterexamples:
+    path: verification/fuzz/counterexamples/non-ready-route-owner-closure
+  realizations:
+  - profile: smoke
+    strategy: deterministic-corpus
+    command: properties
+    runner: src/main.rs#non_ready_routes_never_select_an_owner
 fuzz_targets:
 - id: rms-cli-malformed-artifacts-produce-diagnostics
   proves: canonical-artifacts-remain-authoritative

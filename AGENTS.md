@@ -19,7 +19,7 @@ Git commits are required evidence, not implied authority. This guidance does not
 
 ## Start / Route
 
-1. Begin natural-language work with `rms next "<exact user task>" --root . --ai`; RMS records schema-constrained extraction and routes the validated `rms/intent-model/v0.1`, never provider-proposed topology. Use typed intent flags for CI, offline, or intentionally pre-structured input, and `--module` only for an explicit owner override.
+1. Begin natural-language work with `rms next "<exact user task>" --root . --ai`; RMS records schema-constrained extraction and routes the validated `rms/intent-model/v0.1`, never provider-proposed topology. Use typed intent flags only for CI, offline, or intentionally pre-structured caller input, and `--module` only for an explicit caller-owned override. If provider execution fails, do not synthesize typed intent as an automatic fallback. If routing is non-ready or ownerless, do not select or imply an owner from candidates, context, neighboring modules, or implementation language; resolve ownership explicitly, model/adopt the boundary, or state that the work remains outside RMS coverage.
 2. Follow its immediate action. Use `rms explain ["<question>"]` when the reason or canonical meaning is unclear; add `--details` only when the compact answer is insufficient.
 3. Inspect prescribed context and role paths, load the selected project skill, and use `rms help --all` only for specialist commands.
 

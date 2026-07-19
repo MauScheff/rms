@@ -828,28 +828,6 @@ architecture:
         command: properties
         generator: src/main.rs#generate_route_receipt_validation_cases
         runner: src/main.rs#route_receipt_gate_accepts_only_matching_ready_context
-    - id: intent-extraction-cache-determinism
-      proves: provider-intent-extraction-is-structured-cached-and-auditable
-      kind: property
-      input_space:
-        attempts: valid, repairable, materially unknown, schema-invalid, cache-hit, refresh, and concurrent provider outcomes
-      preconditions:
-      - provider execution is explicitly requested
-      operation: execute extraction twice for each cache identity and inspect persisted artifacts
-      oracle:
-      - validated identical requests reuse one normalized model without another provider invocation
-      - invalid first responses perform at most one repair and failed extraction is never cached
-      - every invocation records exact raw, normalized, diagnostic, provider, route, and receipt evidence
-      evidence:
-        path: verification/properties/intent_extraction_cache_determinism.md
-      counterexamples:
-        path: verification/fuzz/counterexamples/intent-extraction-cache
-      realizations:
-      - profile: smoke
-        strategy: generated-property
-        command: properties
-        generator: src/main.rs#generate_intent_cache_cases
-        runner: src/main.rs#intent_extraction_cache_is_deterministic
     - id: check-proof-projection-truthfulness
       proves: check-projections-distinguish-declared-and-observed-proof
       kind: property
@@ -872,6 +850,54 @@ architecture:
         command: properties
         generator: src/main.rs#generate_check_proof_projection_cases
         runner: src/main.rs#check_proof_projection_never_promotes_declarations
+    - id: intent-extraction-cache-determinism
+      proves: provider-intent-extraction-is-structured-cached-and-auditable
+      kind: property
+      input_space:
+        attempts: valid, repairable, materially unknown, schema-invalid, provider-process-failed, provider-incompatible, timed-out, cache-hit, refresh, and concurrent provider outcomes
+      preconditions:
+      - Provider execution is explicitly requested.
+      operation:
+        symbol: src/main.rs#extract_provider_intent_with_program
+        behavior: Execute or reuse structured extraction and persist a terminal route run for every outcome.
+      oracle:
+      - validated identical requests reuse one normalized model without another provider invocation
+      - invalid structured responses perform at most one repair and failed extraction is never cached
+      - operational failures perform no schema repair and produce diagnostics, provider metadata, terminal route, and a non-ready receipt with no owner or allowed actions
+      - every invocation preserves exact raw response and provider logs or cache provenance
+      evidence:
+        path: verification/properties/intent_extraction_terminal_runs.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/intent-extraction-cache
+      realizations:
+      - profile: smoke
+        strategy: generated-property
+        command: properties
+        generator: src/main.rs#generate_intent_cache_cases
+        runner: src/main.rs#intent_extraction_cache_is_deterministic
+    - id: non-ready-route-owner-closure
+      proves: non-ready-routes-remain-ownerless
+      kind: property
+      input_space:
+        routes: absent, ambiguous, invalid, blocked, clarification, provider-failed, and ready ownership outcomes crossed with candidates and inspection context
+      preconditions:
+      - A route outcome and its candidate or context evidence are available for projection.
+      operation:
+        symbol: src/main.rs#project_next_report
+        behavior: Project ownership, actions, receipt authority, and recovery instructions for the route outcome.
+      oracle:
+      - every non-ready ownership outcome has no selected owner and no owner-scoped implementation action
+      - candidates and context never become substitute ownership authority
+      - only a ready route can carry mutation action families
+      evidence:
+        path: verification/properties/non_ready_route_owner_closure.md
+      counterexamples:
+        path: verification/fuzz/counterexamples/non-ready-route-owner-closure
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: properties
+        runner: src/main.rs#non_ready_routes_never_select_an_owner
   messages:
     command_envelope:
     - command_id
@@ -1295,7 +1321,7 @@ architecture:
   - id: configure-agent-integration-public
     public_kind: command
     public_name: configure-agent-integration
-    contract: contracts/configure-agent-integration.v2.yaml
+    contract: contracts/configure-agent-integration.v3.yaml
     semantic_function: agent-integration-command
     machine_inputs:
     - ConfigureAgentIntegration
@@ -1511,7 +1537,7 @@ architecture:
   - id: recommend-next-rms-work-public
     public_kind: command
     public_name: recommend-next-rms-work
-    contract: contracts/recommend-next-rms-work.v3.yaml
+    contract: contracts/recommend-next-rms-work.v4.yaml
     semantic_function: recommend-next-rms-work-command
     machine_inputs:
     - RecommendNextRmsWork
@@ -1677,26 +1703,26 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/configure-agent-integration.v2.yaml
+    - contracts/configure-agent-integration.v3.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
   evidence:
     contracts:
-    - verification/contracts/configure_agent_integration_v2.md
+    - verification/contracts/configure_agent_integration_v3.md
 - id: agent-plugin-command
   symbol: run_agent_plugin_install
   kind: adapter
   purity: effectful
   discharges:
     contracts:
-    - contracts/configure-agent-integration.v2.yaml
+    - contracts/configure-agent-integration.v3.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
   evidence:
     contracts:
-    - verification/contracts/configure_agent_integration_v2.md
+    - verification/contracts/configure_agent_integration_v3.md
 - id: init-rms-system-command
   symbol: run_init_with_adopt
   kind: adapter
@@ -2607,18 +2633,20 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/recommend-next-rms-work.v3.yaml
+    - contracts/recommend-next-rms-work.v4.yaml
     invariants:
     - canonical-artifacts-remain-authoritative
     - diagnostics-are-evidence-not-authority
     - canonical-mutations-require-route-receipts
     - provider-intent-extraction-is-structured-cached-and-auditable
+    - non-ready-routes-remain-ownerless
   evidence:
     contracts:
-    - verification/contracts/recommend_next_rms_work_v3.md
+    - verification/contracts/recommend_next_rms_work_v4.md
     laws:
     - verification/laws/canonical_mutations_require_route_receipts.md
-    - verification/laws/provider_intent_extraction_is_structured_cached_and_auditable.md
+    - verification/laws/provider_intent_extraction_terminal_runs.md
+    - verification/laws/non_ready_routes_remain_ownerless.md
 - id: check-rms-project-command
   symbol: run_check
   kind: interpreter
@@ -2715,12 +2743,12 @@ semantic_functions:
   purity: effectful
   discharges:
     invariants:
+    - structured-intent-precedes-architecture
     - provider-intent-extraction-is-structured-cached-and-auditable
   evidence:
     laws:
-    - verification/laws/provider_intent_extraction_is_structured_cached_and_auditable.md
-    properties:
-    - verification/properties/intent_extraction_cache_determinism.md
+    - verification/laws/structured_intent_precedes_architecture.md
+    - verification/laws/provider_intent_extraction_terminal_runs.md
 - id: check-proof-projector
   symbol: project_check_proof
   kind: projector
@@ -2753,7 +2781,7 @@ semantic_functions:
     - verification/laws/canonical_mutations_require_route_receipts.md
 x-rms:
   semantic_revision:
-    digest: sha256:8ac817ab7bac4c55bc12d94f566b038458be04b537a18ad3afeaa99cae54874b
-    change_record: verification/changes/restore-the-complete-existing-rms-public-behavior-binding-graph-while-retaining-every-rc-5-contract-revision-and-release-preparation-binding-e6a3f19dec99.yaml
+    digest: sha256:c2a7ac40d694b720d0605a853e621b047942d7ffe926dd5732663c3394808e2d
+    change_record: verification/changes/seal-the-final-rms-0-1-0-rc-6-canonical-state-after-release-metadata-and-upstream-guidance-reconciliation-43b5d8060d51.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:e6a3f19dec9956683a7e18586cb4ee372e51ee4659a95a6ef1c1044db11abc38
+    change_record_digest: sha256:43b5d8060d51abac26e3e5ad88454b9b84092160e903d31449cb68425ea82866

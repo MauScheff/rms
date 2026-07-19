@@ -3,7 +3,7 @@
 
 Project instructions outside this section remain authoritative. Canonical RMS artifacts own semantics; agents fill declared roles.
 
-- Begin natural-language work with `rms next "<exact user task>" --root . --ai`; use typed intent flags for CI, offline, or intentionally pre-structured input. RMS validates facts and chooses topology.
+- Begin natural-language work with `rms next "<exact user task>" --root . --ai`; use typed intent flags only for CI, offline, or intentionally pre-structured caller input. Never use synthesized typed intent as an automatic provider-failure fallback. A non-ready or ownerless route selects no owner: do not infer one from candidates, context, neighboring modules, or implementation language.
 - Pass the ready route receipt through `--route-receipt` on prescribed canonical mutators, including dry-runs; it grants neither source-edit nor Git authority.
 - New or adopted systems follow `rms init [--adopt]` → authorized bootstrap commit → typed `rms design` → exactly one recommended scaffold.
 - Without commit authority, stop at exactly `bootstrap prepared; provenance baseline pending authorized commit`.

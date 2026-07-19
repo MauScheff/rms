@@ -7848,8 +7848,8 @@ fn validate_guidance_and_documentation_distribution(root: &Path) -> Result<()> {
     if full != INIT_AGENTS_MD {
         bail!("full managed AGENTS guidance asset drifted from the embedded crate asset");
     }
-    if full.lines().count() > 60 || full.len() > 8 * 1024 {
-        bail!("full managed AGENTS guidance exceeds 60 lines or 8 KiB");
+    if full.lines().count() > 70 || full.len() > 8 * 1024 {
+        bail!("full managed AGENTS guidance exceeds 70 lines or 8 KiB");
     }
     let sections = full
         .lines()
@@ -7857,6 +7857,7 @@ fn validate_guidance_and_documentation_distribution(root: &Path) -> Result<()> {
         .collect::<Vec<_>>();
     if sections
         != [
+            "RMS Self-Application Boundary",
             "Authority",
             "Start / Route",
             "Change Gate",
@@ -7864,7 +7865,7 @@ fn validate_guidance_and_documentation_distribution(root: &Path) -> Result<()> {
             "Completion",
         ]
     {
-        bail!("full managed AGENTS guidance must contain exactly the five canonical sections");
+        bail!("full managed AGENTS guidance must contain exactly the six canonical sections");
     }
     for required in [
         COMMIT_AUTHORITY_POLICY,
@@ -9635,7 +9636,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
 
     let source_revision = source_revision(root);
     let mut guidance = vec![
-        "Managed agents use `rms next \"<exact user task>\" --root . --ai`; ordinary CLI callers explicitly opt into --ai or supply typed intent."
+        "Managed agents use `rms next \"<exact user task>\" --root . --ai`; typed intent is intentional caller input, never an automatic provider-failure fallback, and non-ready routing never permits inferred owner selection."
             .to_string(),
         "Use `rms explain [\"<question>\"] --root .` for a focused deterministic answer; add `--details` only when needed."
             .to_string(),
@@ -11495,6 +11496,132 @@ fn render_intent_repair_prompt(
     )
 }
 
+fn provider_failure_classification(
+    error: &anyhow::Error,
+    stderr: &str,
+) -> (&'static str, &'static str) {
+    let evidence = format!("{error:#}\n{stderr}").to_ascii_lowercase();
+    if evidence.contains("requires a newer version")
+        || evidence.contains("upgrade codex")
+        || evidence.contains("does not support required structured output")
+        || evidence.contains("unknown option --output-schema")
+    {
+        (
+            "provider-incompatible",
+            "Upgrade or reconfigure the structured-output provider, then rerun the exact task with --ai. Do not infer an owner or automatically synthesize typed intent from this failure.",
+        )
+    } else if evidence.contains("timed out") {
+        (
+            "provider-timeout",
+            "Restore provider responsiveness or adjust the configured timeout, then rerun the exact task with --ai. Do not infer an owner or automatically synthesize typed intent from this failure.",
+        )
+    } else if evidence.contains("failed to start") || evidence.contains("no such file") {
+        (
+            "provider-unavailable",
+            "Install or configure the structured-output provider, then rerun the exact task with --ai. Do not infer an owner or automatically synthesize typed intent from this failure.",
+        )
+    } else {
+        (
+            "provider-failed",
+            "Resolve the recorded provider failure, then rerun the exact task with --ai. Caller-supplied typed intent remains available only when it is intentionally authored input; do not infer an owner from this failure.",
+        )
+    }
+}
+
+fn finalize_provider_operational_failure(
+    root: &Path,
+    command: &str,
+    task: &str,
+    options: &PromptRunOptions,
+    run_dir: &Path,
+    cache_key: &str,
+    attempt: usize,
+    elapsed_ms: u128,
+    response_name: &str,
+    log_prefix: &str,
+    failure: &anyhow::Error,
+) -> Result<RouteRunArtifacts> {
+    let response_path = run_dir.join(response_name);
+    if !response_path.exists() {
+        fs::write(&response_path, "")?;
+    }
+    let response = fs::read_to_string(&response_path).unwrap_or_default();
+    fs::write(run_dir.join("response.md"), &response)?;
+    let stdout_path = run_dir.join(format!("{log_prefix}.stdout.log"));
+    let stderr_path = run_dir.join(format!("{log_prefix}.stderr.log"));
+    if !stdout_path.exists() {
+        fs::write(&stdout_path, "")?;
+    }
+    if !stderr_path.exists() {
+        fs::write(&stderr_path, "")?;
+    }
+    let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
+    let (result, recovery) = provider_failure_classification(failure, &stderr);
+    let diagnostics = vec![error_diagnostic(
+        format!("intent.{result}"),
+        root,
+        format!("{failure:#}"),
+    )];
+    fs::write(
+        run_dir.join("intent-diagnostics.json"),
+        serde_json::to_string_pretty(&diagnostics)?,
+    )?;
+    fs::write(
+        run_dir.join("provider.json"),
+        serde_json::to_string_pretty(&json!({
+            "provider": options.provider.label(),
+            "model": options.model,
+            "cache": "not-written",
+            "cache_key": cache_key,
+            "attempts": attempt,
+            "elapsed_ms": elapsed_ms,
+            "tokens": null,
+            "result": result,
+            "error": format!("{failure:#}"),
+            "stdout_log": stdout_path,
+            "stderr_log": stderr_path,
+        }))?,
+    )?;
+    let route = issue_route_receipt(
+        root,
+        run_dir,
+        task,
+        None,
+        result,
+        "undetermined",
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        None,
+    )?;
+    fs::write(
+        run_dir.join("route.json"),
+        serde_json::to_string_pretty(&json!({
+            "schema": surface_projection::SCHEMA,
+            "command": command,
+            "result": result,
+            "summary": "Structured intent extraction failed operationally; RMS selected no owner and authorized no mutation.",
+            "reasons": [format!("{failure:#}")],
+            "warnings": [],
+            "next_action": {
+                "kind": "manual",
+                "phase": "recover",
+                "instruction": recovery,
+                "authorization": "none"
+            },
+            "done_when": ["The exact task is rerun successfully through structured extraction or the caller intentionally supplies a validated typed intent."],
+            "lane": "undetermined",
+            "owner": {"status": "none", "module": null, "path": null},
+            "steps": [],
+            "run_id": route.run_id,
+            "receipt_id": route.receipt_id,
+            "receipt_path": route.receipt_path,
+        }))?,
+    )?;
+    Ok(route)
+}
+
 fn extract_provider_intent(
     root: &Path,
     command: &str,
@@ -11595,6 +11722,7 @@ fn extract_provider_intent_with_program(
     }
     let manifest = synthetic_workbench_manifest(root, "rms-intent", "typed intent extraction");
     let mut prompt_for_attempt = prompt;
+    let extraction_started = Instant::now();
     let mut elapsed_ms = 0_u128;
     let mut last_diagnostics = Vec::new();
     let mut last_response = String::new();
@@ -11603,7 +11731,7 @@ fn extract_provider_intent_with_program(
             fs::write(run_dir.join("prompt-repair.md"), &prompt_for_attempt)?;
         }
         let response_name = format!("attempt-{attempt}-response.md");
-        let metadata = execute_codex_provider_attempt(
+        let metadata = match execute_codex_provider_attempt(
             provider_program,
             root,
             &manifest,
@@ -11614,7 +11742,30 @@ fn extract_provider_intent_with_program(
             &response_name,
             &format!("attempt-{attempt}-provider"),
             false,
-        )?;
+        ) {
+            Ok(metadata) => metadata,
+            Err(failure) => {
+                let route = finalize_provider_operational_failure(
+                    root,
+                    command,
+                    task,
+                    options,
+                    &run_dir,
+                    &cache_key,
+                    attempt,
+                    extraction_started.elapsed().as_millis(),
+                    &response_name,
+                    &format!("attempt-{attempt}-provider"),
+                    &failure,
+                )?;
+                bail!(
+                    "structured intent provider failed operationally; RMS selected no owner and authorized no mutation; recovery is recorded in `{}` (run {}, receipt {}): {failure:#}",
+                    route.run_dir.join("route.json").display(),
+                    route.run_id,
+                    route.receipt_id,
+                );
+            }
+        };
         elapsed_ms += metadata.elapsed_ms;
         let response = fs::read_to_string(&metadata.response_path)?;
         last_response = response.clone();
@@ -30687,6 +30838,42 @@ fn next_exit_code(result: NextResult) -> i32 {
     }
 }
 
+fn enforce_non_ready_ownerlessness(
+    result: NextResult,
+    owner: &mut OwnerResolution,
+    context: &mut NextContext,
+) {
+    if matches!(result, NextResult::Ready | NextResult::NoRmsChange) {
+        return;
+    }
+    if let Some(selected) = owner.selected.take() {
+        if !owner
+            .candidates
+            .iter()
+            .any(|candidate| candidate.module.path == selected.path)
+        {
+            owner.candidates.push(RouteCandidate {
+                module: selected,
+                score: 0,
+                reasons: vec![
+                    "candidate evidence is informational and is not owner selection".to_string(),
+                ],
+            });
+        }
+    }
+    owner.status = OwnerStatus::None;
+    owner.route.clear();
+    owner.reason = format!(
+        "route result `{}` is non-ready; RMS selected no owner, and candidates or inspection context must not be used as substitute ownership authority",
+        result.label()
+    );
+    context.files.clear();
+    context.implementation = None;
+    context.declared_roles.clear();
+    context.edit_authority =
+        "This non-ready route grants no owner-scoped inspection or edit authority.".to_string();
+}
+
 fn build_next_report_with_intent(
     root: &Path,
     explicit_module: Option<&Path>,
@@ -30770,7 +30957,7 @@ fn build_next_report_with_intent(
             warnings: Vec::new(),
         }
     };
-    let context = build_next_context(&root, &profile.report, owner.selected.as_ref())?;
+    let mut context = build_next_context(&root, &profile.report, owner.selected.as_ref())?;
     let skill_sources = detect_skill_sources(&root, home_dir().ok().as_deref());
     let mut warnings = if classification.lane == TaskLane::RepositoryOperation {
         Vec::new()
@@ -30845,12 +31032,7 @@ fn build_next_report_with_intent(
         NextResult::Ready
     };
 
-    if result == NextResult::Blocked && owner.status == OwnerStatus::Selected {
-        owner.warnings.push(
-            "owner evidence is advisory until the blocking canonical diagnostics are resolved"
-                .to_string(),
-        );
-    }
+    enforce_non_ready_ownerlessness(result, &mut owner, &mut context);
     let steps = build_next_steps(
         &root,
         task,
@@ -31947,7 +32129,7 @@ fn build_next_steps(
         ));
     } else if result == NextResult::NeedsOwner {
         inspect.push(manual_next_step(
-            "Choose an owner from the ranked candidates, then rerun `rms next` with `--module`; do not guess through a tie.",
+            "Do not select or imply an owner from ranked candidates, inspection context, neighboring modules, or implementation language. Obtain an explicit caller-owned module decision, model or adopt the missing boundary, or explicitly treat the work as outside RMS coverage; then rerun `rms next`.",
             None,
         ));
     }
@@ -32016,7 +32198,7 @@ fn build_next_steps(
         ));
     } else if result == NextResult::NeedsOwner {
         declare.push(manual_next_step(
-            "No declaration is safe until the owning module is selected explicitly.",
+            "No declaration or owner-scoped implementation is safe until an explicit caller decision or canonical modeling change resolves ownership.",
             None,
         ));
     } else if let Some(selected) = &owner.selected {
@@ -32449,7 +32631,7 @@ fn project_next_report(
             "Canonical design is required before implementation.".to_string()
         }
         NextResult::NeedsOwner => {
-            "Select the owning module explicitly; RMS will not guess through a tie.".to_string()
+            "RMS selected no owner. Do not infer one from candidates or context; resolve ownership explicitly or model the missing boundary.".to_string()
         }
         NextResult::NoRmsChange => {
             "This repository or tool operation requires no RMS semantic change.".to_string()
@@ -32482,7 +32664,7 @@ fn project_next_report(
                 .to_string(),
         ],
         NextResult::NeedsOwner => vec![
-            "An owner is selected explicitly and the task can be prescribed without ambiguity."
+            "The caller explicitly identifies the canonical owner, RMS models or adopts the missing boundary, or the work is explicitly classified outside RMS coverage."
                 .to_string(),
         ],
         _ => report.completion.order.clone(),
@@ -60805,6 +60987,18 @@ fn generate_intent_cache_cases() -> Vec<String> {
 }
 
 #[cfg(test)]
+fn generate_non_ready_route_cases() -> Vec<NextResult> {
+    vec![
+        NextResult::IntentRequired,
+        NextResult::ClarificationRequired,
+        NextResult::BootstrapRequired,
+        NextResult::DesignRequired,
+        NextResult::NeedsOwner,
+        NextResult::Blocked,
+    ]
+}
+
+#[cfg(test)]
 fn generate_check_proof_projection_cases() -> Vec<String> {
     let modes = ["complete", "progressive", "module"];
     let evidence_states = ["declared-only", "observed"];
@@ -61743,6 +61937,7 @@ import struct ExternalKit.Widget
                 .filter_map(|line| line.strip_prefix("## "))
                 .collect::<Vec<_>>(),
             [
+                "RMS Self-Application Boundary",
                 "Authority",
                 "Start / Route",
                 "Change Gate",
@@ -61750,7 +61945,7 @@ import struct ExternalKit.Widget
                 "Completion",
             ]
         );
-        assert!(agents.lines().count() <= 60);
+        assert!(agents.lines().count() <= 70);
         assert!(agents.len() <= 8 * 1024);
         assert!(agents.contains("rms next \"<exact user task>\" --root . --ai"));
         assert!(agents.contains(COMMIT_AUTHORITY_POLICY));
@@ -62512,6 +62707,7 @@ import struct ExternalKit.Widget
                 .filter_map(|line| line.strip_prefix("## "))
                 .collect::<Vec<_>>(),
             [
+                "RMS Self-Application Boundary",
                 "Authority",
                 "Start / Route",
                 "Change Gate",
@@ -62519,7 +62715,7 @@ import struct ExternalKit.Widget
                 "Completion",
             ]
         );
-        assert!(INIT_AGENTS_MD.lines().count() <= 60);
+        assert!(INIT_AGENTS_MD.lines().count() <= 70);
         assert!(INIT_AGENTS_MD.len() <= 8 * 1024);
         for required in [
             COMMIT_AUTHORITY_POLICY,
@@ -78471,6 +78667,75 @@ open_questions: []
         }
     }
 
+    #[test]
+    fn non_ready_routes_never_select_an_owner() {
+        for result in generate_non_ready_route_cases() {
+            let selected = RouteModuleSummary {
+                name: "candidate".to_string(),
+                path: "/repository/modules/candidate/module.yaml".to_string(),
+                kind: "tool".to_string(),
+                shape: "boundary-adapter".to_string(),
+                visibility: Some("public".to_string()),
+            };
+            let mut owner = OwnerResolution {
+                status: OwnerStatus::Selected,
+                reason: "tentative match".to_string(),
+                selected: Some(selected),
+                candidates: Vec::new(),
+                route: vec!["candidate".to_string()],
+                warnings: Vec::new(),
+            };
+            let mut context = NextContext {
+                files: vec![ReadinessItem {
+                    name: "candidate".to_string(),
+                    path: "/repository/modules/candidate/module.yaml".to_string(),
+                    status: "present".to_string(),
+                }],
+                implementation: Some(
+                    "/repository/modules/candidate/implementation.yaml".to_string(),
+                ),
+                declared_roles: vec![DeclaredRolePath {
+                    role: "boundary".to_string(),
+                    path: "/repository/modules/candidate/src/boundary.rs".to_string(),
+                }],
+                edit_authority: "candidate".to_string(),
+            };
+
+            enforce_non_ready_ownerlessness(result, &mut owner, &mut context);
+
+            assert_eq!(owner.status, OwnerStatus::None);
+            assert!(owner.selected.is_none());
+            assert!(owner.route.is_empty());
+            assert_eq!(owner.candidates.len(), 1);
+            assert!(context.files.is_empty());
+            assert!(context.implementation.is_none());
+            assert!(context.declared_roles.is_empty());
+            assert!(context.edit_authority.contains("no owner-scoped"));
+            let steps = build_next_steps(
+                Path::new("/repository"),
+                "task",
+                result,
+                &RepositoryProfile {
+                    kind: RepositoryKind::SystemRoot,
+                    root: "/repository".to_string(),
+                    has_project_content: true,
+                    system_manifests: Vec::new(),
+                    module_manifests: Vec::new(),
+                    top_level_modules: Vec::new(),
+                    canonical_files: Vec::new(),
+                },
+                &undetermined_task_classification(),
+                &owner,
+                &context,
+            )
+            .unwrap();
+            assert!(steps.iter().flat_map(|group| &group.steps).all(|step| {
+                step.description.contains("no declaration")
+                    || !step.description.contains("selected owner")
+            }));
+        }
+    }
+
     #[cfg(unix)]
     fn write_fake_codex(root: &Path, mode: &str) -> (PathBuf, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
@@ -78612,6 +78877,43 @@ printf '%s\n' "$response" > "$output"
         .unwrap_err()
         .to_string();
         assert!(error.contains("upgrade Codex"), "{error}");
+        let failure_run = fs::read_dir(incompatible_root.join(".rms/runs"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .max_by_key(|entry| entry.file_name())
+            .unwrap()
+            .path();
+        for artifact in [
+            "request.yaml",
+            "prompt.md",
+            "intent-schema.json",
+            "response.md",
+            "attempt-1-response.md",
+            "normalized-intent.json",
+            "intent-diagnostics.json",
+            "provider.json",
+            "route.json",
+            "route-receipt.json",
+        ] {
+            assert!(failure_run.join(artifact).is_file(), "{artifact}");
+        }
+        assert!(!failure_run.join("attempt-2-response.md").exists());
+        let failure_receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(failure_run.join("route-receipt.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            failure_receipt.payload.route_result,
+            "provider-incompatible"
+        );
+        assert!(failure_receipt.payload.owner_module.is_none());
+        assert!(failure_receipt.payload.allowed_action_families.is_empty());
+        let failure_route: JsonValue =
+            serde_json::from_slice(&fs::read(failure_run.join("route.json")).unwrap()).unwrap();
+        assert_eq!(failure_route["owner"]["status"], "none");
+        assert!(failure_route["summary"]
+            .as_str()
+            .unwrap()
+            .contains("selected no owner"));
 
         let concurrent_root = unique_test_dir("provider-concurrent");
         fs::create_dir_all(&concurrent_root).unwrap();
