@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Narrowed managed agent routing so `rms next` begins software-change work, while read-only investigation, explanation, review, status/history inspection, ordinary Git or tool operations, and discussion remain native until a concrete change is proposed.
+
 ## 0.1.0-rc.7
 
 - Made the generated intent JSON Schema compatible with strict structured-output providers by explicitly typing every constant and enum node.

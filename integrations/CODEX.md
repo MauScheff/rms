@@ -15,17 +15,17 @@ The onboarding order is:
 init → authorized bootstrap commit → design → recommended scaffold
 ```
 
-For ordinary work, Codex needs only the five-command doorway:
+For software-change work, Codex needs only the five-command doorway:
 
 ```bash
 rms check --environment --root .
-rms next "<exact user task>" --root . --ai
+rms next "<exact change task>" --root . --ai
 rms explain "<question>" --root .
 rms check --root .
 rms view --root .
 ```
 
-Codex extracts typed facts without architecture fields; recorded read-only `--ai` extraction is also available. `next` validates those facts, then selects the owner, task lane, context, skill, and proof path. Codex should use its compact response first and request `--details` only when needed. `rms help --all` exposes specialist commands when the selected skill prescribes one.
+Codex extracts typed facts without architecture fields; recorded read-only `--ai` extraction is also available. `next` validates those facts, then selects the owner, task lane, context, skill, and proof path. Codex should use its compact response first and request `--details` only when needed. `rms help --all` exposes specialist commands when the selected skill prescribes one. Read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change use native tools without `next`; if they reveal a proposed change, Codex stops before editing and routes that exact change task.
 
 Production completion is focused proof → `rms check --changes` → authorized candidate commit → `rms check --committed`.
 

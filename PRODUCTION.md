@@ -77,10 +77,10 @@ The selected `add-module` skill and `rms help --all` provide the exact scaffold 
 
 ## Change Workflow
 
-In a fresh agent task, provide only the working directory, product intent, and instruction to use project RMS guidance.
+For a task that requests or may require a software change, provide the working directory, exact change intent, and instruction to use project RMS guidance. Read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change use native project tools without `rms next`. If that work reveals a proposed change, stop before editing and begin this workflow with the exact change task.
 
 ```bash
-rms next "<exact user task>" --root . --ai
+rms next "<exact change task>" --root . --ai
 rms explain "<focused question>" --root .
 ```
 

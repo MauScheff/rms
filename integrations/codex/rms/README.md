@@ -18,13 +18,15 @@ cargo install --locked --path tooling/rust/rms
 
 Then point Codex at this plugin directory or copy it into a Codex plugin marketplace according to the current Codex plugin workflow.
 
-Start project work through the narrow doorway:
+Start software-change work through the narrow doorway:
 
 ```bash
-rms next "<exact user task>" --root . --ai
+rms next "<exact change task>" --root . --ai
 rms explain "<question>" --root .
 rms check --root .
 ```
+
+Use native project tools for read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change. If that work reveals a proposed change, stop before editing and route the exact change task through RMS.
 
 Use `rms help --all` for specialist commands. The plugin must not carry a second RMS workflow.
 

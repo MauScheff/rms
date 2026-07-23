@@ -19,11 +19,13 @@ Product intent is sufficient input. Apply semantic changes before code, edit onl
 
 ## Doorway
 
-Start with:
+For work that requests or may require a software change, start with:
 
 ```text
-rms next "<exact user task>" --root . --ai
+rms next "<exact change task>" --root . --ai
 ```
+
+Use native project tools for read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change. If that work reveals a proposed change, stop before editing and enter this doorway with the exact change task.
 
 Typed intent is reserved for CI, offline, or intentionally pre-structured caller input. Do not synthesize it as an automatic fallback when provider execution fails. A non-ready or ownerless route selects no owner; candidates and context are evidence, not permission to imply one.
 

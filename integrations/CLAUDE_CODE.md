@@ -13,17 +13,17 @@ Claude Code reads `CLAUDE.md`. Keep it minimal and import the portable agreement
 @AGENTS.md
 ```
 
-The five-command doorway is:
+The five-command doorway for software-change work is:
 
 ```bash
 rms check --environment --root .
-rms next "<exact user task>" --root . --ai
+rms next "<exact change task>" --root . --ai
 rms explain "<question>" --root .
 rms check --root .
 rms view --root .
 ```
 
-Claude extracts typed facts without topology; recorded read-only `--ai` extraction is the alternative. Use the compact result first, `--details` for complete canonical evidence, `--json` for the typed `rms.surface/v2` envelope, and `rms help --all` only when a selected skill prescribes specialist work.
+Claude extracts typed facts without topology; recorded read-only `--ai` extraction is the alternative. Use the compact result first, `--details` for complete canonical evidence, `--json` for the typed `rms.surface/v2` envelope, and `rms help --all` only when a selected skill prescribes specialist work. Read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change use native tools without `next`; if they reveal a proposed change, Claude stops before editing and routes that exact change task.
 
 Finish through focused proof → `rms check --changes` → authorized candidate commit → `rms check --committed`. Git commits are required evidence, not implied authority; a manual `host-required` action in JSON does not authorize Claude to execute Git.
 

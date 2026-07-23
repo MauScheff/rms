@@ -86,13 +86,13 @@ Without commit authority, the exact state is `bootstrap prepared; provenance bas
 
 ### `next`
 
-`next` is the deterministic doorway from typed intent to work:
+`next` is the deterministic doorway from typed intent to software-change work:
 
 ```bash
-rms next "<exact user task>" --root . --ai
+rms next "<exact change task>" --root . --ai
 ```
 
-Managed agents use schema-constrained recorded extraction; typed intent flags remain available for CI, offline, and intentionally pre-structured callers. Every invocation returns `run_id`, `receipt_id`, and `receipt_path`. Ready receipts are required by canonical semantic and topology mutators, including dry-runs; they grant neither source-edit nor Git authority.
+Managed agents use native project tools for read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change. If that work reveals a proposed change, they stop before editing and invoke `next` with the exact change task. Change routing uses schema-constrained recorded extraction; typed intent flags remain available for CI, offline, and intentionally pre-structured callers. Every invocation returns `run_id`, `receipt_id`, and `receipt_path`. Ready receipts are required by canonical semantic and topology mutators, including dry-runs; they grant neither source-edit nor Git authority.
 
 An agent or recorded read-only provider extracts typed facts without topology. RMS validates exact quotes, inferred rationales, contradictions, and material unknowns; then deterministic policy chooses the lane, structured subjects route ownership, and facts choose standalone or recursive topology. Explicit `--module` is an owner override. Recursive composition routing is cycle-protected, and ties remain ties.
 

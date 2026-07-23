@@ -2,17 +2,17 @@
 
 A coding agent needs no native RMS integration. It needs the CLI, concise repository guidance, and a way to load the task-selected skill.
 
-## Doorway
+## Change Doorway
 
 ```bash
 rms check --environment --root .
-rms next "<exact user task>" --root . --ai
+rms next "<exact change task>" --root . --ai
 rms explain "<question>" --root .
 rms check --root .
 rms view --root .
 ```
 
-Use `rms help --all` only when the selected skill or detailed response prescribes a specialist command.
+Use this doorway when work requests or may require a software change. Use native project tools without `next` for read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change. If that work reveals a proposed change, stop before editing and route the exact change task through RMS. Use `rms help --all` only when the selected skill or detailed response prescribes a specialist command.
 
 The agent extracts typed semantic facts from the user's words without proposing modules, shapes, or topology. It may instead opt into recorded read-only `--ai` extraction. The agent should then follow this loop:
 

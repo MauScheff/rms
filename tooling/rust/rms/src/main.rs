@@ -7578,7 +7578,7 @@ fn assert_clean_room_dogfood_artifacts(
     let boundary = format!("modules/{capability_name}-boundary");
     ensure_file_contains(
         &app.join("AGENTS.md"),
-        "rms next \"<exact user task>\" --root . --ai",
+        "rms next \"<exact change task>\" --root . --ai",
         "Codex/agent RMS guidance",
     )?;
     ensure_file_contains(
@@ -9636,7 +9636,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
 
     let source_revision = source_revision(root);
     let mut guidance = vec![
-        "Managed agents use `rms next \"<exact user task>\" --root . --ai`; typed intent is intentional caller input, never an automatic provider-failure fallback, and non-ready routing never permits inferred owner selection."
+        "Managed agents use `rms next \"<exact change task>\" --root . --ai` for software-change work. Read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change use native project tools; if they reveal a proposed change, stop before editing and route that exact change task. Typed intent is intentional caller input, never an automatic provider-failure fallback, and non-ready routing never permits inferred owner selection."
             .to_string(),
         "Use `rms explain [\"<question>\"] --root .` for a focused deterministic answer; add `--details` only when needed."
             .to_string(),
@@ -32046,7 +32046,7 @@ fn build_next_steps(
         NextResult::IntentRequired | NextResult::ClarificationRequired
     ) {
         let description = if result == NextResult::IntentRequired {
-            "Rerun managed natural-language work as `rms next \"<exact user task>\" --root . --ai`, or supply typed intent for CI/offline use. Do not choose topology from raw task wording."
+            "Rerun managed software-change work as `rms next \"<exact change task>\" --root . --ai`, or supply typed intent for CI/offline use. Do not choose topology from raw task wording."
         } else {
             "Resolve every material unknown with the user, update the typed intent model, and rerun `rms next`; RMS will not guess architecture."
         };
@@ -61978,7 +61978,9 @@ import struct ExternalKit.Widget
         );
         assert!(agents.lines().count() <= 70);
         assert!(agents.len() <= 8 * 1024);
-        assert!(agents.contains("rms next \"<exact user task>\" --root . --ai"));
+        assert!(agents.contains("rms next \"<exact change task>\" --root . --ai"));
+        assert!(agents.contains("Do not invoke RMS for read-only investigation"));
+        assert!(agents.contains("stop before editing"));
         assert!(agents.contains(COMMIT_AUTHORITY_POLICY));
         assert!(agents.contains(BOOTSTRAP_PENDING_AUTHORIZED_COMMIT));
         assert!(agents.contains(CANDIDATE_PENDING_AUTHORIZED_COMMIT));
@@ -62479,7 +62481,8 @@ import struct ExternalKit.Widget
         fs::remove_dir_all(&root).unwrap();
         assert!(config_before.contains("default_provider: codex"));
         assert!(synced_agents.starts_with("stale guidance\n"));
-        assert!(synced_agents.contains("rms next \"<exact user task>\" --root . --ai"));
+        assert!(synced_agents.contains("rms next \"<exact change task>\" --root . --ai"));
+        assert!(synced_agents.contains("Skip RMS for read-only investigation"));
         assert!(synced_agents.contains(COMMIT_AUTHORITY_POLICY));
         assert!(synced_agents.contains(CANDIDATE_PENDING_AUTHORIZED_COMMIT));
         assert_eq!(synced.agent_instructions.status, "managed-current");
@@ -76972,7 +76975,10 @@ runs:
         assert!(report
             .guidance
             .iter()
-            .any(|item| item.contains("rms next \"<exact user task>\" --root . --ai")));
+            .any(|item| item.contains("rms next \"<exact change task>\" --root . --ai")));
+        assert!(report.guidance.iter().any(|item| {
+            item.contains("Read-only investigation") && item.contains("native project tools")
+        }));
         assert!(report
             .guidance
             .iter()

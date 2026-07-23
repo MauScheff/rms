@@ -1,6 +1,6 @@
 # Contract evidence: configure-agent-integration v2
 
-Managed Codex and Claude guidance begins natural-language work with `rms next "<exact user task>" --root . --ai`, while documenting typed intent inputs for CI and offline callers.
+Managed Codex and Claude guidance begins software-change work with `rms next "<exact change task>" --root . --ai`, while reserving read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change for native project tools. It documents typed intent inputs for CI and offline callers.
 
 Verification:
 

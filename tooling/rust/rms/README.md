@@ -45,7 +45,7 @@ Default human output follows `Outcome/Answer → Why → Next → Done when`. `-
 
 ## Typical Flow
 
-Check the local environment and ask what to do:
+Check the local environment and route an exact software-change task:
 
 ```bash
 rms check --environment --root .
@@ -81,7 +81,7 @@ Git commits are required evidence, not implied authority. This guidance does not
 
 `init` creates or adopts canonical system artifacts and concise managed agent guidance. The onboarding order is `init → authorized bootstrap commit → design → recommended scaffold`.
 
-`next` is prospective and read-only. It classifies repository shape, resolves ownership only from unambiguous evidence, selects the task lane, and returns safely represented steps without editing files, running verification, invoking providers, or granting source-edit or commit authority. Operational repository work may return `no-rms-change`.
+`next` is the prospective, read-only doorway for work that requests or may require a software change. It classifies repository shape, resolves ownership only from unambiguous evidence, selects the task lane, and returns safely represented steps without editing files, running verification, invoking providers, or granting source-edit or commit authority. Read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change use native project tools instead. If that work reveals a proposed change, stop before editing and route the exact change task through `next`.
 
 `explain` answers from canonical artifacts and renders relevant evidence once. Unsupported questions return `insufficient-evidence`; full inventory is behind `--details`. The primary command never invokes a provider. Explicit provider-backed explanation uses the specialist prompt workflow shown by `rms help --all`.
 
