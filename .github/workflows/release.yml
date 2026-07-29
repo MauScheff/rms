@@ -6,6 +6,7 @@ on:
       - "v*"
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
@@ -20,20 +21,25 @@ jobs:
           crate_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; data = json.load(sys.stdin); print(next(package["version"] for package in data["packages"] if package["name"] == "rms"))')"
           tag_version="${GITHUB_REF_NAME#v}"
           test "$crate_version" = "$tag_version"
-      - name: RMS release check
+      - name: Require successful CI for tag commit
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for attempt in 1 2 3; do
-            status=0
-            timeout 20m cargo run -p rms --locked -- release check --root . || status=$?
-            if [ "$status" -eq 0 ]; then
-              exit 0
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              exit "$status"
-            fi
-            echo "RMS release check attempt ${attempt} failed; retrying the complete gate"
-          done
+          ci_url="$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow CI \
+            --commit "$GITHUB_SHA" \
+            --event push \
+            --status success \
+            --limit 1 \
+            --json url \
+            --jq '.[0].url // empty')"
+          if [ -z "$ci_url" ]; then
+            echo "no successful CI run found for tagged commit $GITHUB_SHA" >&2
+            exit 1
+          fi
+          echo "using successful CI proof: $ci_url"
 
   source-package:
     needs: release-check
