@@ -25,8 +25,13 @@ jobs:
           cat > "$wrapper_dir/cargo" <<EOF
           #!/usr/bin/env bash
           set -euo pipefail
-          if [ "\$#" -eq 1 ] && [ "\$1" = "test" ]; then
-            exec "$real_cargo" test -- --skip "$provider_test"
+          if [ "\${1:-}" = "test" ]; then
+            for argument in "\$@"; do
+              if [ "\$argument" = "--" ]; then
+                exec "$real_cargo" "\$@" --skip "$provider_test"
+              fi
+            done
+            exec "$real_cargo" "\$@" -- --skip "$provider_test"
           fi
           exec "$real_cargo" "\$@"
           EOF
