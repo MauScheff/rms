@@ -8,6 +8,7 @@
 - Replaced the former recorded-timeline replay subcommand directly with `rms trace show`; no compatibility alias is recognized.
 - Made probe bindings and initial machine state mandatory for inspectable Rust, Swift, and JavaScript implementations.
 - Narrowed managed agent routing so `rms next` begins software-change work, while read-only investigation, explanation, review, status/history inspection, ordinary Git or tool operations, and discussion remain native until a concrete change is proposed.
+- Give Rust test threads enough stack for the complete Clap command tree, and run the CLI version assertion through the built executable so Linux CI verifies the real `rms --version` boundary.
 
 ## 0.1.0-rc.7
 
