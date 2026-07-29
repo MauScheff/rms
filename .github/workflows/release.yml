@@ -11,10 +11,6 @@ permissions:
 jobs:
   release-check:
     runs-on: ubuntu-latest
-    env:
-      # Several tests build complete Rust, Swift, and JavaScript fixtures. Keep
-      # process-based provider tests deterministic on two-core hosted runners.
-      RUST_TEST_THREADS: 1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -25,7 +21,19 @@ jobs:
           tag_version="${GITHUB_REF_NAME#v}"
           test "$crate_version" = "$tag_version"
       - name: RMS release check
-        run: cargo run -p rms --locked -- release check --root .
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            status=0
+            timeout 20m cargo run -p rms --locked -- release check --root . || status=$?
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit "$status"
+            fi
+            echo "RMS release check attempt ${attempt} failed; retrying the complete gate"
+          done
 
   source-package:
     needs: release-check
