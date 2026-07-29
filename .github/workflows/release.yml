@@ -30,7 +30,6 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --workflow CI \
             --commit "$GITHUB_SHA" \
-            --event push \
             --status success \
             --limit 1 \
             --json url \
