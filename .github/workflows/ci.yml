@@ -12,16 +12,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: RMS release check
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            status=0
-            timeout 20m cargo run -p rms --locked -- release check --root . || status=$?
-            if [ "$status" -eq 0 ]; then
-              exit 0
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              exit "$status"
-            fi
-            echo "RMS release check attempt ${attempt} failed; retrying the complete gate"
-          done
+        run: cargo run -p rms --locked -- release check --root .
