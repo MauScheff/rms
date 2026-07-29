@@ -8,6 +8,10 @@ on:
 jobs:
   release-check:
     runs-on: ubuntu-latest
+    env:
+      # Several tests build complete Rust, Swift, and JavaScript fixtures. Keep
+      # process-based provider tests deterministic on two-core hosted runners.
+      RUST_TEST_THREADS: 1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
