@@ -63,7 +63,7 @@ Any participant that can produce and consume these semantic records can interope
 
 ## CLI-First Bridge
 
-Before a runtime exists, `rms trace check`, `rms trace replay`, and `rms trace diagnose` operate on local trace bundles.
+Before a runtime exists, `rms trace check`, `rms trace show`, and `rms trace diagnose` operate on local trace bundles.
 
 The optional runtime should emit the same kind of bundles, so existing CLI diagnostics continue to work unchanged.
 

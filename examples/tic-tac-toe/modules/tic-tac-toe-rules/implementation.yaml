@@ -9,6 +9,7 @@ commands:
   verify: cargo test --manifest-path Cargo.toml
   format: cargo fmt --manifest-path Cargo.toml --check
   trace: cargo test --manifest-path Cargo.toml "${RMS_TRACE_RUNNER##*#}"
+  probe: cargo test --manifest-path Cargo.toml "${RMS_PROBE_RUNNER##*#}" -- --nocapture
 toolchain:
   cargo_manifest: Cargo.toml
   package: tic-tac-toe-rules
@@ -17,6 +18,11 @@ dependencies:
   - serde_json
 architecture:
   shape: domain-engine
+  probe:
+    protocol: rms/machine-probe/v0.1
+    command: probe
+    runner: tests/machine_probe.rs#probe_machine
+    initial_state_function: src/representation.rs#initial_game
   reliability:
     properties:
     - id: legal-moves-preserve-game-laws
@@ -76,6 +82,7 @@ architecture:
     name: TicTacToeMachine
     mode: stateful-transition-machine
     transition_signature: state-and-input
+    initial_state: InProgress
     types:
       state: Game
       input: TicTacToeInput
@@ -172,6 +179,8 @@ architecture:
     - verification/traces/transition_trace.yaml
     trace_producer:
     - tests/trace_producer.rs
+    probe_adapter:
+    - tests/machine_probe.rs
   representation:
     closed_variants:
     - Command

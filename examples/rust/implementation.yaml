@@ -9,6 +9,7 @@ commands:
   verify: cargo test --manifest-path Cargo.toml
   format: cargo fmt --manifest-path Cargo.toml --check
   trace: cargo test --manifest-path Cargo.toml "${RMS_TRACE_RUNNER##*#}"
+  probe: cargo test --manifest-path Cargo.toml "${RMS_PROBE_RUNNER##*#}" -- --nocapture
 toolchain:
   cargo_manifest: Cargo.toml
   package: rms-rust-example
@@ -18,6 +19,10 @@ dependencies:
   - serde_json
 architecture:
   shape: domain-engine
+  probe:
+    protocol: rms/machine-probe/v0.1
+    command: probe
+    runner: tests/machine_probe.rs#probe_machine
   reliability:
     properties:
     - id: accepted-widget-name-is-non-empty
@@ -75,6 +80,7 @@ architecture:
     name: RustExampleMachine
     mode: stateless-decision-machine
     transition_signature: input-only
+    initial_state: Ready
     stateless_justification: This example is a pure query over validated input with no lifecycle.
     types:
       state: RustExampleState
@@ -141,6 +147,8 @@ architecture:
     - verification/traces/transition_trace.yaml
     trace_producer:
     - tests/trace_producer.rs
+    probe_adapter:
+    - tests/machine_probe.rs
   representation:
     closed_variants:
     - DescribeWidgetCommand

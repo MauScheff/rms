@@ -52,6 +52,10 @@
         "verify": {
           "type": "string"
         },
+        "probe": {
+          "type": "string",
+          "minLength": 1
+        },
         "format": {
           "type": "string"
         }
@@ -110,6 +114,51 @@
     "^x-": {}
   },
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "binding": {
+            "enum": [
+              "rust",
+              "swift",
+              "js",
+              "javascript"
+            ]
+          }
+        },
+        "required": [
+          "binding"
+        ]
+      },
+      "then": {
+        "properties": {
+          "commands": {
+            "required": [
+              "probe"
+            ]
+          },
+          "architecture": {
+            "required": [
+              "probe"
+            ],
+            "properties": {
+              "machine": {
+                "required": [
+                  "initial_state"
+                ]
+              },
+              "roles": {
+                "required": [
+                  "probe_adapter"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "architecture": {
       "type": "object",
@@ -124,6 +173,9 @@
         },
         "machine": {
           "$ref": "#/$defs/machine"
+        },
+        "probe": {
+          "$ref": "#/$defs/probe"
         },
         "protocol_bindings": {
           "type": "array",
@@ -199,6 +251,10 @@
           "type": "string",
           "minLength": 1
         },
+        "initial_state": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
         "types": {
           "$ref": "#/$defs/machineTypes"
         },
@@ -251,6 +307,32 @@
           "minLength": 1
         },
         "lifecycle_justification": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "probe": {
+      "type": "object",
+      "required": [
+        "protocol",
+        "command",
+        "runner"
+      ],
+      "properties": {
+        "protocol": {
+          "const": "rms/machine-probe/v0.1"
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "initial_state_function": {
           "type": "string",
           "minLength": 1
         }

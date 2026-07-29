@@ -713,6 +713,7 @@ Every implemented module should declare a domain-named machine. The canonical fi
 | `architecture.machine.name` | Domain-named machine role, such as `PaymentsMachine` or `NutritionAssistantMachine`. |
 | `architecture.machine.mode` | One of `stateless-decision-machine`, `stateful-transition-machine`, `workflow-effect-machine`, `boundary-machine`, `storage-machine`, `integration-machine`, or `projection-machine`. |
 | `architecture.machine.transition_signature` | `input-only` for a justified stateless decision machine; `state-and-input` for every stateful, boundary, workflow, storage, integration, or projection machine. |
+| `architecture.machine.initial_state` | Initial semantic state variant. Required for inspectable Rust, Swift, and JavaScript bindings and must name one declared state. |
 | `architecture.machine.driver_function` | Exact callable that drives an effectful stateful machine through transition, emitted effects, typed results, and follow-up transitions. |
 | `architecture.machine.transition_record_function` | Exact pure callable used by the live machine driver to construct each complete transition record. |
 | `architecture.machine.types` | Binding-native names for state, input, command, event, effect, effect result, reply, rejection, transition, transition record, and declared message-envelope containers. These are not semantic cases. |
@@ -722,6 +723,7 @@ Every implemented module should declare a domain-named machine. The canonical fi
 | `architecture.machine.resource_protocols` | Ownership plus closed acquire/use/release/transfer automata for lifetime-sensitive resources. Product and resource states are validated together so terminal machine paths cannot leak resources. |
 | `architecture.machine.transitions` | Accepted and rejected state/input/output transitions. Every branch has a stable `case` represented in declared transition source; source-only branches are drift. Trace provenance names that source file and exact case. |
 | `architecture.roles.*` | Binding files or artifacts that realize representation, transition, parser, adapter, machine driver, effect executor, private effect support, journal, replay, trace evidence, and related roles. |
+| `architecture.probe` | `rms/machine-probe/v0.1` protocol, command key, exact runner, and—on state-and-input machines—the binding-native complete initial-state constructor. |
 | `architecture.protocol_bindings` | Participant ownership and exact machine-case mapping for public protocol messages. |
 | `architecture.authority_bindings` | Declared authority roles, exact safe facade, and containment evidence. |
 | `dependencies.local_modules` | Language-neutral RMS module identities consumed by this implementation. Change them through `rms spec apply` `binding_dependencies`; the binding adapter realizes native allowlists and local package metadata. |
@@ -737,6 +739,8 @@ Composite modules may declare `verification.delegations[]` with `proves`, `provi
 Ordering, safety, bounded, normalization, parser, and numeric laws also declare semantic properties with input spaces and oracles. A fixed example corpus does not satisfy an open-ended generated-property or coverage-fuzzer claim. Every executable realization binds an exact relative `path#symbol` runner; generated-property and deterministic-exhaustive strategies also bind a generator. The runner calls the generator when required, executes a declared semantic operation, and applies an oracle. Generated property evidence remains an obligation until that exact realization executes.
 
 Production trace bundles declare `architecture.trace.producers[]` with a profile, bundle, command, and exact runner. Inspectable runners call `architecture.machine.transition_record_function` and serialize returned records. `rms trace run --record` validates before replacing committed bundles; normal runs regenerate into temporary paths and compare canonical values. Strict audit reruns smoke producers and property realizations from committed code, rebuilds reusable packages, and rejects proof commands that mutate production files.
+
+Inspectable Rust, Swift, and JavaScript implementations also declare `commands.probe`, `architecture.probe`, and `architecture.roles.probe_adapter`. The adapter receives temporary request/output paths through `RMS_PROBE_REQUEST` and `RMS_PROBE_OUTPUT`, is selected by `RMS_PROBE_RUNNER`, calls the exact transition-record function, and chains returned `state_after`. It must not call the driver or any effect executor. Fixture and opaque executable bindings are exempt.
 
 ### Applied Semantic Revision
 

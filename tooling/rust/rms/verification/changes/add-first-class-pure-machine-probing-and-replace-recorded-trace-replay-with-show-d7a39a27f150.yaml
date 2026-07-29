@@ -1,0 +1,154 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/seal-the-final-rms-0-1-0-rc-6-canonical-state-after-release-metadata-and-upstream-guidance-reconciliation-43b5d8060d51.yaml
+intent:
+  summary: Add first-class pure machine probing and replace recorded trace replay with show before the first public RMS release.
+laws:
+  add:
+  - id: machine-probes-are-pure-and-ephemeral
+    statement: Machine probes execute only the declared transition-record function, chain returned state, never interpret effects, and create no project evidence unless output is explicitly requested.
+    kind: invariant
+    authority: parser
+    enforced_by: probe-machine-validator
+  set: []
+  remove: []
+contracts:
+  add:
+  - name: probe-machine
+    kind: command
+    direction: provided
+    version: '1'
+    command: null
+    meaning: Execute normalized inputs through an implementation's declared pure transition-record path and report the observed timeline.
+    accepts:
+    - The target is one inspectable Rust, Swift, or JavaScript implementation with a valid rms/machine-probe/v0.1 binding.
+    - Each command, observed event, or effect result names a declared input and supplies schema-valid payload data.
+    ensures:
+    - Every step calls the exact transition-record function and the next step receives the preceding state_after.
+    - The result is a validated rms/trace-bundle/v0.1 timeline, optionally checked against caller expectations.
+    - Probing never invokes the machine driver or an effect executor and does not count as verification evidence.
+    - No project artifact is written unless the caller supplies --out.
+    rejects:
+    - Ambiguous discovery, invalid protocol data, unsafe bindings, runner failure, timeout, nonconforming output, or the first failed expectation.
+    protocol: null
+  set: []
+  remove: []
+properties: null
+trace_producers: null
+semantic_functions:
+  add:
+  - id: probe-machine-command
+    symbol: run_probe
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/probe-machine.v1.yaml
+      invariants:
+      - diagnostics-are-evidence-not-authority
+      - machine-probes-are-pure-and-ephemeral
+      - trace-records-conform-to-canonical-transitions
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - probe runners exchange temporary request and output files through the declared protocol
+      - probe traces are validated against canonical transition cases before expectations are reported
+    evidence:
+      contracts:
+      - verification/contracts/probe_machine.md
+  - id: probe-machine-validator
+    symbol: validate_machine_probe_binding
+    kind: parser
+    purity: pure
+    discharges:
+      contracts: []
+      invariants:
+      - machine-probes-are-pure-and-ephemeral
+      assumptions: []
+    assumptions:
+      requires: []
+      maintains: []
+      ensures:
+      - probe bindings resolve the exact transition-record function and exclude drivers and effect executors
+    evidence:
+      contracts:
+      - verification/contracts/probe_machine.md
+  set: []
+  remove: []
+machine:
+  mode: ''
+  justification: null
+  transition_signature: null
+  driver_function: null
+  transition_record_function: null
+  states:
+    set: null
+    add: []
+    remove: []
+  commands:
+    set: null
+    add:
+    - ProbeMachine
+    remove: []
+  observed_events:
+    set: null
+    add: []
+    remove: []
+  events:
+    set: null
+    add: []
+    remove: []
+  effects:
+    set: null
+    add: []
+    remove: []
+  effect_results:
+    set: null
+    add: []
+    remove: []
+  replies:
+    set: null
+    add: []
+    remove: []
+  rejections:
+    set: null
+    add: []
+    remove: []
+  effect_protocols:
+    set: null
+    add: []
+    remove: []
+  resource_protocols:
+    set: null
+    add: []
+    remove: []
+  transitions: null
+roles: null
+evidence:
+  add:
+  - kind: contract
+    proves: probe-machine
+    path: verification/contracts/probe_machine.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings:
+  set: null
+  add:
+  - id: probe-machine-public
+    public_kind: command
+    public_name: probe-machine
+    contract: contracts/probe-machine.v1.yaml
+    semantic_function: probe-machine-command
+    machine_inputs:
+    - ProbeMachine
+    machine_outputs: []
+  remove: []
+dependency_behavior_bindings: null

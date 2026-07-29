@@ -9,6 +9,7 @@ commands:
   verify: sh scripts/smoke.sh
   fuzz: node tests/boundary-smoke.mjs
   trace: node --input-type=module -e 'import { pathToFileURL } from "node:url"; const [path, name] = process.env.RMS_TRACE_RUNNER.split("#"); const module = await import(pathToFileURL(path)); await module[name]();'
+  probe: node tests/machine-probe.mjs
 toolchain:
   runner: node
 dependencies:
@@ -18,6 +19,11 @@ dependencies:
   - cargo
 architecture:
   shape: boundary-adapter
+  probe:
+    protocol: rms/machine-probe/v0.1
+    command: probe
+    runner: tests/machine-probe.mjs#probeMachine
+    initial_state_function: src/representation.mjs#initialState
   public_modules:
   - src/representation.mjs
   - src/parser.mjs
@@ -98,6 +104,7 @@ architecture:
     name: TicTacToeBoundaryMachine
     mode: boundary-machine
     transition_signature: state-and-input
+    initial_state: AwaitingInput
     types:
       state: TicTacToeBoundaryState
       input: TicTacToeBoundaryInput
@@ -211,6 +218,8 @@ architecture:
     - src/machine_driver.mjs
     trace_producer:
     - tests/trace-producer.mjs
+    probe_adapter:
+    - tests/machine-probe.mjs
   representation:
     closed_variants:
     - TicTacToeBoundaryState

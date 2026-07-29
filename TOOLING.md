@@ -167,6 +167,16 @@ Important mechanics remain invariant:
 
 The selected skill and rendered context carry the exact specialist command, fields, and evidence rules. This avoids duplicating a changing command encyclopedia in always-read documentation.
 
+For machine-shaped implementations, rendered context proactively offers `rms probe`. A probe is an ephemeral, pure diagnostic run through the implementation's exact transition-record function:
+
+```bash
+rms probe implementation.yaml --describe
+rms probe implementation.yaml \
+  --input '{"kind":"command","name":"PlaceMark","data":{"row":0,"column":0}}'
+```
+
+Probe adapters accept commands, observed events, and effect results, chain returned state, and validate the resulting trace against the canonical machine. They do not run the machine driver or effect executors, and they do not satisfy evidence obligations unless a separate declared proof lane produces that evidence.
+
 ## 4. Language-Binding Interface
 
 A binding adapter provides:

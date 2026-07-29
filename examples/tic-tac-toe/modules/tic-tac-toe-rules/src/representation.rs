@@ -161,6 +161,10 @@ impl Default for Game {
     }
 }
 
+pub fn initial_game() -> Game {
+    Game::new()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
     PlaceMark { cell: Cell },

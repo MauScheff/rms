@@ -8,6 +8,7 @@ description: Inspect an RMS module before planning or changing it; use when owne
 1. Run `rms check --environment` once per session when the CLI is available.
 2. Run `rms explain --module <module>` for a human-readable module doorway. If there is a specific uncertainty, pass it as the optional question; add `--details` only when the compact answer is insufficient.
 3. Run `rms inspect <module>` or `rms context <module> --task "<task>"` before planning a change.
+   - When the implementation is machine-shaped, run `rms probe <implementation.yaml> --describe` to discover its exact normalized states and inputs. For a focused diagnostic poke, copy one described example into `rms probe <implementation.yaml> --input '<JSON>'`; probing is pure, ephemeral, and does not replace verification evidence.
 4. Identify the system, bounded context, and target module.
 5. Read, in order:
    - the system manifest and context map;

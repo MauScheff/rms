@@ -19,6 +19,10 @@ export function awaitingRulesResult(acceptedMoveIndexes, move) {
   });
 }
 
+export function initialState() {
+  return awaitingInput();
+}
+
 export const TicTacToeBoundaryState = Object.freeze({
   AwaitingInput: awaitingInput,
   AwaitingRulesResult: awaitingRulesResult,

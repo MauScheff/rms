@@ -174,6 +174,8 @@ transition(current_state, command | observed_event | effect_result)
 
 Effects are requests, not hidden control flow. An executor performs one request and returns one result. If that result changes what should happen next, the result re-enters the machine and the transition owns sequencing, retry, compensation, and stop/continue policy. This is what makes a bad outcome replayable as a specific bad transition rather than an opaque failure inside IO code.
 
+During implementation or debugging, use `rms probe implementation.yaml --describe` to discover normalized inputs, then send one input or an ordered scenario through the real transition-record path. Probes are deliberately pure and ephemeral: effect results are explicit inputs, effect executors never run, and no evidence file is written unless `--out` is supplied.
+
 Invariant authority should be explicit. Constructors own value validity; parsers own boundary acceptance; transitions own lifecycle policy; effect executors own only the mechanics of touching the world; composition owns cross-module wiring.
 
 ---

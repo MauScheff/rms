@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:machine-probe:v0.1",
+  "title": "RMS Machine Probe Request v0.1",
+  "type": "object",
+  "required": ["spec", "operation"],
+  "properties": {
+    "spec": { "const": "rms/machine-probe/v0.1" },
+    "operation": { "enum": ["describe", "run"] },
+    "start": {
+      "oneOf": [
+        { "const": "initial" },
+        { "$ref": "#/$defs/variant" }
+      ]
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["input"],
+        "properties": {
+          "input": { "$ref": "#/$defs/input" },
+          "expect": { "$ref": "#/$defs/stepExpectation" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "expect": { "$ref": "#/$defs/runExpectation" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "operation": { "const": "describe" } },
+        "required": ["operation"]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            { "required": ["start"] },
+            { "required": ["steps"] },
+            { "required": ["expect"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "operation": { "const": "run" } },
+        "required": ["operation"]
+      },
+      "then": { "required": ["start", "steps"] }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "variant": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "data": true
+      },
+      "additionalProperties": false
+    },
+    "input": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": {
+          "enum": ["command", "observed-event", "effect-result"]
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "data": true
+      },
+      "additionalProperties": false
+    },
+    "stepExpectation": {
+      "type": "object",
+      "properties": {
+        "case": { "type": "string" },
+        "state_after": { "$ref": "#/$defs/variant" },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/variant" }
+        },
+        "commands": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/variant" }
+        },
+        "effects": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/variant" }
+        },
+        "reply": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/variant" }
+          ]
+        },
+        "rejection": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/variant" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "runExpectation": {
+      "type": "object",
+      "properties": {
+        "final_state": { "$ref": "#/$defs/variant" },
+        "final_case": { "type": "string" },
+        "state_path": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/variant" }
+        },
+        "case_path": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

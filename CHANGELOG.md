@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0-rc.8
+
+- Added first-class `rms probe` support for pure, ephemeral command/event/effect-result sequences through Rust, Swift, and JavaScript transition-record adapters, including discovery, protocol/schema validation, expectations, trace output, scaffold generation, verification handshakes, and maintained dogfood examples.
+- Replaced the former recorded-timeline replay subcommand directly with `rms trace show`; no compatibility alias is recognized.
+- Made probe bindings and initial machine state mandatory for inspectable Rust, Swift, and JavaScript implementations.
 - Narrowed managed agent routing so `rms next` begins software-change work, while read-only investigation, explanation, review, status/history inspection, ordinary Git or tool operations, and discussion remain native until a concrete change is proposed.
 
 ## 0.1.0-rc.7

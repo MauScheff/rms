@@ -26,7 +26,8 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - semantic properties and fuzz targets with `rms property check`;
    - property/fuzz commands with `rms property run <implementation.yaml> --profile smoke` when the binding declares them;
    - recorded counterexamples with `rms property replay <counterexample.yaml>`.
-   - local trace bundles with `rms trace check`, `rms trace replay`, or `rms trace diagnose` when transition evidence is recorded as JSON or YAML.
+   - local trace bundles with `rms trace check`, `rms trace show`, or `rms trace diagnose` when transition evidence is recorded as JSON or YAML.
+   - `rms probe <implementation.yaml> --describe` followed by one described smoke input when the binding is inspectable. Probe failures block verification, but successful probes remain ephemeral diagnostics rather than evidence.
 8. Check domain representation evidence:
    - closed domain alternatives use ADTs, sealed variants, enums, or an equivalent explicit representation;
    - values with validity rules cannot be constructed invalidly except through rejected boundary input;

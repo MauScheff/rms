@@ -787,7 +787,53 @@ enum Commands {
         command: RunCommands,
     },
 
-    /// Check, replay, and diagnose local trace bundles.
+    /// Execute inputs through a declared machine probe adapter.
+    Probe {
+        /// Optional implementation.yaml; RMS discovers the nearest binding when omitted.
+        implementation: Option<PathBuf>,
+
+        /// Describe accepted probe states and inputs.
+        #[arg(long, conflicts_with_all = ["inputs", "file"])]
+        describe: bool,
+
+        /// Inline normalized JSON input; repeat for an ordered sequence.
+        #[arg(long = "input", value_name = "JSON", conflicts_with_all = ["describe", "file"])]
+        inputs: Vec<String>,
+
+        /// YAML/JSON probe request path, or `-` for stdin.
+        #[arg(long, value_name = "PATH|-", conflicts_with_all = ["describe", "inputs"])]
+        file: Option<PathBuf>,
+
+        /// Explicit normalized JSON starting state for inline inputs.
+        #[arg(long, value_name = "JSON", requires = "inputs")]
+        state: Option<String>,
+
+        /// Assert the final state variant for an inline probe.
+        #[arg(long, requires = "inputs")]
+        expect_final_state: Option<String>,
+
+        /// Assert the final transition case for an inline probe.
+        #[arg(long, requires = "inputs")]
+        expect_final_case: Option<String>,
+
+        /// Write the validated execution trace bundle.
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// Emit a machine-readable probe report.
+        #[arg(long)]
+        json: bool,
+
+        /// Maximum duration for the probe runner.
+        #[arg(
+            long,
+            default_value_t = DEFAULT_PROOF_TIMEOUT_SECONDS,
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        timeout_seconds: u64,
+    },
+
+    /// Check, show, and diagnose local trace bundles.
     Trace {
         #[command(subcommand)]
         command: TraceCommands,
@@ -1596,6 +1642,38 @@ struct TraceReport {
     diagnostics: Vec<TraceDiagnostic>,
 }
 
+struct ProbeCliRequest {
+    implementation: Option<PathBuf>,
+    describe: bool,
+    inputs: Vec<String>,
+    file: Option<PathBuf>,
+    state: Option<String>,
+    expect_final_state: Option<String>,
+    expect_final_case: Option<String>,
+    out: Option<PathBuf>,
+    json: bool,
+    timeout_seconds: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ProbeExpectationFailure {
+    path: String,
+    expected: String,
+    observed: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ProbeReport {
+    spec: String,
+    result: String,
+    implementation: String,
+    machine: String,
+    records: Vec<TraceRecordSummary>,
+    expectations_checked: usize,
+    expectation_failures: Vec<ProbeExpectationFailure>,
+    diagnostics: Vec<TraceDiagnostic>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct PropertyCheckReport {
     result: String,
@@ -1825,6 +1903,11 @@ enum RmsWorkbenchState {
 }
 
 #[allow(dead_code)]
+fn initial_rms_workbench_state() -> RmsWorkbenchState {
+    RmsWorkbenchState::Ready
+}
+
+#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RmsWorkbenchCommand {
     ValidateRmsArtifacts,
@@ -1864,6 +1947,7 @@ enum RmsWorkbenchCommand {
     ViewRmsSystem,
     InspectImplementationStructure,
     InspectTraceBundle,
+    ProbeMachine,
     PlanMachineChange,
     ApplyMachineChange,
     PlanSemanticChange,
@@ -3295,6 +3379,7 @@ struct TraceRecordSummary {
     state_before: Option<String>,
     state_after: Option<String>,
     input: Option<String>,
+    transition_case: Option<String>,
     reply: Option<String>,
     rejection: Option<String>,
     events: usize,
@@ -3540,8 +3625,8 @@ enum TraceCommands {
         json: bool,
     },
 
-    /// Reconstruct a timeline from recorded transition records.
-    Replay {
+    /// Show a timeline reconstructed from recorded transition records.
+    Show {
         /// Path to a local trace bundle.
         bundle: PathBuf,
 
@@ -8211,7 +8296,7 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
     ("Meta", &["help"]),
     (
         "Understand",
-        &["inspect", "diagnose", "context", "route", "atlas"],
+        &["inspect", "diagnose", "context", "route", "atlas", "probe"],
     ),
     (
         "Design and guide",
@@ -8794,6 +8879,29 @@ fn main() -> Result<()> {
                 run_latest_run(&root, &run_root)
             }
         },
+        Commands::Probe {
+            implementation,
+            describe,
+            inputs,
+            file,
+            state,
+            expect_final_state,
+            expect_final_case,
+            out,
+            json,
+            timeout_seconds,
+        } => run_probe(ProbeCliRequest {
+            implementation,
+            describe,
+            inputs,
+            file,
+            state,
+            expect_final_state,
+            expect_final_case,
+            out,
+            json,
+            timeout_seconds,
+        }),
         Commands::Trace { command } => match command {
             TraceCommands::Run {
                 implementation,
@@ -8811,7 +8919,7 @@ fn main() -> Result<()> {
                 timeout_seconds,
             ),
             TraceCommands::Check { bundle, json } => run_trace_check(&bundle, json),
-            TraceCommands::Replay { bundle, json } => run_trace_replay(&bundle, json),
+            TraceCommands::Show { bundle, json } => run_trace_show(&bundle, json),
             TraceCommands::Diagnose { bundle, json } => run_trace_diagnose(&bundle, json),
             TraceCommands::Stitch {
                 bundles,
@@ -13101,6 +13209,876 @@ fn run_latest_run(root: &Path, run_root: &Path) -> Result<()> {
     print_run_record(&run_dir)
 }
 
+#[derive(Clone, Debug)]
+struct ProbeBinding {
+    implementation: LoadedManifest,
+    command: String,
+    runner: String,
+    machine: String,
+}
+
+fn run_probe(options: ProbeCliRequest) -> Result<()> {
+    let implementation_path = resolve_probe_implementation(options.implementation.as_deref())?;
+    let binding = load_probe_binding(&implementation_path)?;
+    let request = build_probe_request(&options)?;
+    validate_probe_request(&request, &binding.implementation)?;
+
+    let temp_root = std::env::temp_dir().join(format!(
+        "rms-probe-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_root)
+        .with_context(|| format!("failed to create `{}`", temp_root.display()))?;
+    let request_path = temp_root.join("request.json");
+    let output_path = temp_root.join("output.json");
+    let result = (|| {
+        let request_json = serde_json::to_vec_pretty(
+            &serde_json::to_value(&request).context("failed to normalize probe request")?,
+        )?;
+        fs::write(&request_path, request_json)
+            .with_context(|| format!("failed to write `{}`", request_path.display()))?;
+        let root = binding
+            .implementation
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        let request_display = request_path.display().to_string();
+        let output_display = output_path.display().to_string();
+        let process = execute_proof_command(
+            root,
+            &binding.command,
+            &[
+                ("RMS_PROBE_REQUEST", request_display.as_str()),
+                ("RMS_PROBE_OUTPUT", output_display.as_str()),
+                ("RMS_PROBE_RUNNER", binding.runner.as_str()),
+            ],
+            options.timeout_seconds,
+        )?;
+        if process.timed_out {
+            bail!(
+                "probe runner `{}` exceeded {} second(s)",
+                binding.runner,
+                options.timeout_seconds
+            );
+        }
+        if !process.status.success() {
+            bail!(
+                "probe runner `{}` failed with status {}{}",
+                binding.runner,
+                exit_status_label(process.status),
+                if process.stderr.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", process.stderr.trim())
+                }
+            );
+        }
+        if !output_path.is_file() {
+            bail!(
+                "probe runner `{}` did not write `{}`",
+                binding.runner,
+                output_path.display()
+            );
+        }
+
+        if options.describe {
+            let description = load_yaml_value(&output_path)?;
+            validate_probe_description(&description, &binding.implementation)?;
+            print_probe_description(&description, &binding.implementation.path, options.json)?;
+            return Ok(());
+        }
+
+        let bundle = load_trace_bundle(&output_path)?;
+        validate_probe_trace_shape(&bundle)?;
+        let mut trace = build_trace_report(&output_path)?;
+        apply_probe_trace_conformance(&output_path, &binding.implementation, &mut trace);
+        if trace_has_errors(&trace) {
+            if options.json {
+                println!("{}", serde_json::to_string_pretty(&trace)?);
+            } else {
+                print_probe_trace_failure(&trace);
+            }
+            bail!("RMS probe returned an invalid transition trace");
+        }
+
+        let (expectations_checked, expectation_failures) =
+            evaluate_probe_expectations(&request, &bundle);
+        let report = ProbeReport {
+            spec: "rms/probe-report/v0.1".to_string(),
+            result: if expectation_failures.is_empty() {
+                "pass".to_string()
+            } else {
+                "fail".to_string()
+            },
+            implementation: binding.implementation.path.display().to_string(),
+            machine: binding.machine.clone(),
+            records: probe_record_summaries(&bundle),
+            expectations_checked,
+            expectation_failures,
+            diagnostics: trace.diagnostics.clone(),
+        };
+
+        if let Some(destination) = options.out.as_deref() {
+            fs::copy(&output_path, destination).with_context(|| {
+                format!("failed to write probe trace `{}`", destination.display())
+            })?;
+        }
+        if options.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print_probe_report(&report);
+        }
+        if report.result == "fail" {
+            bail!("RMS probe expectations failed");
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&temp_root);
+    result
+}
+
+fn resolve_probe_implementation(explicit: Option<&Path>) -> Result<PathBuf> {
+    if let Some(path) = explicit {
+        let resolved = if path.is_dir() {
+            path.join("implementation.yaml")
+        } else {
+            path.to_path_buf()
+        };
+        if !resolved.is_file() {
+            bail!(
+                "probe implementation `{}` does not exist",
+                resolved.display()
+            );
+        }
+        return Ok(resolved);
+    }
+
+    let cwd = std::env::current_dir().context("failed to resolve current directory")?;
+    for directory in cwd.ancestors() {
+        let candidate = directory.join("implementation.yaml");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    let mut candidates = WalkDir::new(&cwd)
+        .into_iter()
+        .filter_entry(|entry| {
+            let name = entry.file_name().to_string_lossy();
+            !matches!(name.as_ref(), ".git" | "target" | "node_modules" | ".build")
+        })
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.into_path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name == "implementation.yaml")
+        })
+        .filter(|path| {
+            load_manifest(path).ok().is_some_and(|manifest| {
+                matches!(
+                    get_str(&manifest.value, &["binding"]),
+                    Some("rust" | "swift" | "js" | "javascript")
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    match candidates.as_slice() {
+        [only] => Ok(only.clone()),
+        [] => bail!(
+            "no probe-capable implementation.yaml was found from `{}`",
+            cwd.display()
+        ),
+        _ => bail!(
+            "probe implementation is ambiguous; pass one explicitly:\n{}",
+            candidates
+                .iter()
+                .map(|path| format!("  {}", path.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    }
+}
+
+fn load_probe_binding(path: &Path) -> Result<ProbeBinding> {
+    let implementation = load_manifest(path)?;
+    if get_str(&implementation.value, &["spec"]) != Some("rms/implementation/v0.1") {
+        bail!("`{}` is not an RMS implementation binding", path.display());
+    }
+    let binding = get_str(&implementation.value, &["binding"]).unwrap_or("");
+    if !matches!(binding, "rust" | "swift" | "js" | "javascript") {
+        bail!(
+            "binding `{binding}` does not support machine probing; supported bindings are rust, swift, and js"
+        );
+    }
+    if get_str(
+        &implementation.value,
+        &["architecture", "probe", "protocol"],
+    ) != Some("rms/machine-probe/v0.1")
+    {
+        bail!(
+            "`{}` must declare architecture.probe.protocol: rms/machine-probe/v0.1",
+            path.display()
+        );
+    }
+    let command_key = get_str(&implementation.value, &["architecture", "probe", "command"])
+        .ok_or_else(|| anyhow!("probe binding is missing architecture.probe.command"))?;
+    let command = get_str(&implementation.value, &["commands", command_key])
+        .ok_or_else(|| anyhow!("probe command `{command_key}` is not declared under commands"))?
+        .to_string();
+    let runner = get_str(&implementation.value, &["architecture", "probe", "runner"])
+        .ok_or_else(|| anyhow!("probe binding is missing architecture.probe.runner"))?
+        .to_string();
+    let machine = get_str(&implementation.value, &["architecture", "machine", "name"])
+        .ok_or_else(|| anyhow!("probe binding is missing architecture.machine.name"))?
+        .to_string();
+    Ok(ProbeBinding {
+        implementation,
+        command,
+        runner,
+        machine,
+    })
+}
+
+fn build_probe_request(options: &ProbeCliRequest) -> Result<YamlValue> {
+    if !options.describe && options.inputs.is_empty() && options.file.is_none() {
+        bail!("probe requires exactly one of --describe, --input, or --file");
+    }
+    if options.describe {
+        return serde_yaml::to_value(json!({
+            "spec": "rms/machine-probe/v0.1",
+            "operation": "describe"
+        }))
+        .context("failed to build probe description request");
+    }
+    if let Some(path) = options.file.as_deref() {
+        let source = if path == Path::new("-") {
+            let mut source = String::new();
+            std::io::stdin()
+                .read_to_string(&mut source)
+                .context("failed to read probe request from stdin")?;
+            source
+        } else {
+            fs::read_to_string(path)
+                .with_context(|| format!("failed to read `{}`", path.display()))?
+        };
+        return serde_yaml::from_str(&source).context("failed to parse probe request");
+    }
+
+    let inputs = options
+        .inputs
+        .iter()
+        .map(|source| {
+            serde_json::from_str::<JsonValue>(source)
+                .with_context(|| format!("invalid --input JSON `{source}`"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let start = match options.state.as_deref() {
+        Some(source) => serde_json::from_str::<JsonValue>(source)
+            .with_context(|| format!("invalid --state JSON `{source}`"))?,
+        None => JsonValue::String("initial".to_string()),
+    };
+    let mut expected = serde_json::Map::new();
+    if let Some(state) = options.expect_final_state.as_deref() {
+        expected.insert("final_state".to_string(), json!({"name": state}));
+    }
+    if let Some(case) = options.expect_final_case.as_deref() {
+        expected.insert(
+            "final_case".to_string(),
+            JsonValue::String(case.to_string()),
+        );
+    }
+    let mut request = json!({
+        "spec": "rms/machine-probe/v0.1",
+        "operation": "run",
+        "start": start,
+        "steps": inputs.into_iter().map(|input| json!({"input": input})).collect::<Vec<_>>()
+    });
+    if !expected.is_empty() {
+        let request_object = request
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("inline probe request was not constructed as an object"))?;
+        request_object.insert("expect".to_string(), JsonValue::Object(expected));
+    }
+    serde_yaml::to_value(request).context("failed to build inline probe request")
+}
+
+fn validate_probe_request(request: &YamlValue, implementation: &LoadedManifest) -> Result<()> {
+    let schema: JsonValue = serde_json::from_str(include_str!(
+        "../../../../schemas/machine-probe.schema.json"
+    ))
+    .context("embedded machine-probe schema could not be parsed")?;
+    let instance =
+        serde_json::to_value(request).context("probe request could not be converted to JSON")?;
+    let validator =
+        jsonschema::validator_for(&schema).context("machine-probe schema could not be compiled")?;
+    let schema_errors = validator
+        .iter_errors(&instance)
+        .map(|error| format!("{error} at `{}`", error.instance_path()))
+        .collect::<Vec<_>>();
+    if !schema_errors.is_empty() {
+        bail!("invalid probe request: {}", schema_errors.join("; "));
+    }
+    if get_str(request, &["spec"]) != Some("rms/machine-probe/v0.1") {
+        bail!("probe request must declare `spec: rms/machine-probe/v0.1`");
+    }
+    let operation = get_str(request, &["operation"])
+        .ok_or_else(|| anyhow!("probe request must declare operation: describe|run"))?;
+    if operation == "describe" {
+        return Ok(());
+    }
+    if operation != "run" {
+        bail!("unknown probe operation `{operation}`");
+    }
+    let steps = get_path(request, &["steps"])
+        .and_then(YamlValue::as_sequence)
+        .ok_or_else(|| anyhow!("probe run must contain a non-empty `steps` array"))?;
+    if steps.is_empty() {
+        bail!("probe run must contain at least one step");
+    }
+    let stateful = get_str(
+        &implementation.value,
+        &["architecture", "machine", "transition_signature"],
+    ) == Some("state-and-input");
+    let start = get_path(request, &["start"]);
+    if stateful && start.is_none() {
+        bail!("stateful probe run must declare `start: initial` or a normalized state");
+    }
+    if !stateful && start.is_some_and(|value| value.as_str() != Some("initial")) {
+        bail!("input-only probe machines do not accept an explicit start state");
+    }
+    for (index, step) in steps.iter().enumerate() {
+        let input = get_path(step, &["input"])
+            .ok_or_else(|| anyhow!("probe step {} is missing input", index + 1))?;
+        validate_normalized_probe_input(input, implementation)
+            .with_context(|| format!("invalid probe step {}", index + 1))?;
+    }
+    Ok(())
+}
+
+fn validate_normalized_probe_input(
+    input: &YamlValue,
+    implementation: &LoadedManifest,
+) -> Result<()> {
+    let kind = get_str(input, &["kind"]).ok_or_else(|| anyhow!("input must declare kind"))?;
+    let name = get_str(input, &["name"]).ok_or_else(|| anyhow!("input must declare name"))?;
+    let declared = match kind {
+        "command" => get_string_array(
+            &implementation.value,
+            &["architecture", "machine", "commands"],
+        ),
+        "observed-event" => get_string_array(
+            &implementation.value,
+            &["architecture", "machine", "observed_events"],
+        ),
+        "effect-result" => get_string_array(
+            &implementation.value,
+            &["architecture", "machine", "effect_results"],
+        ),
+        _ => bail!("input kind must be command, observed-event, or effect-result; found `{kind}`"),
+    };
+    if !declared.iter().any(|candidate| candidate == name) {
+        bail!("`{name}` is not a declared {kind} input");
+    }
+    Ok(())
+}
+
+fn validate_probe_description(
+    description: &YamlValue,
+    implementation: &LoadedManifest,
+) -> Result<()> {
+    reject_unknown_probe_fields(
+        description,
+        &["spec", "machine", "initial_state", "states", "inputs"],
+        "probe description",
+    )?;
+    if get_str(description, &["spec"]) != Some("rms/machine-probe-description/v0.1") {
+        bail!("probe description must declare `spec: rms/machine-probe-description/v0.1`");
+    }
+    let expected_machine =
+        get_str(&implementation.value, &["architecture", "machine", "name"]).unwrap_or("");
+    if get_str(description, &["machine"]) != Some(expected_machine) {
+        bail!("probe description machine does not match `{expected_machine}`");
+    }
+    let inputs = get_path(description, &["inputs"])
+        .and_then(YamlValue::as_sequence)
+        .ok_or_else(|| anyhow!("probe description must contain inputs"))?;
+    if inputs.is_empty() {
+        bail!("probe description must contain at least one input example");
+    }
+    for input in inputs {
+        reject_unknown_probe_fields(
+            input,
+            &["kind", "name", "data_schema", "example"],
+            "probe input description",
+        )?;
+        validate_normalized_probe_input(input, implementation)?;
+        let data_schema = get_path(input, &["data_schema"])
+            .ok_or_else(|| anyhow!("probe input description must contain data_schema"))?;
+        let schema_json = serde_json::to_value(data_schema)
+            .context("probe input data_schema could not be converted to JSON")?;
+        let validator = jsonschema::validator_for(&schema_json).with_context(|| {
+            format!(
+                "probe input schema for {}:{} is malformed",
+                get_str(input, &["kind"]).unwrap_or("?"),
+                get_str(input, &["name"]).unwrap_or("?")
+            )
+        })?;
+        let example = get_path(input, &["example"])
+            .ok_or_else(|| anyhow!("probe input description must contain example"))?;
+        validate_normalized_probe_input(example, implementation)?;
+        if get_str(example, &["kind"]) != get_str(input, &["kind"])
+            || get_str(example, &["name"]) != get_str(input, &["name"])
+        {
+            bail!("probe input example kind and name must match its description");
+        }
+        let example_data = get_path(example, &["data"]).unwrap_or(&YamlValue::Null);
+        let example_json = serde_json::to_value(example_data)?;
+        let errors = validator
+            .iter_errors(&example_json)
+            .map(|error| format!("{error} at `{}`", error.instance_path()))
+            .collect::<Vec<_>>();
+        if !errors.is_empty() {
+            bail!(
+                "probe input example does not satisfy data_schema: {}",
+                errors.join("; ")
+            );
+        }
+    }
+    let states = get_path(description, &["states"])
+        .and_then(YamlValue::as_sequence)
+        .ok_or_else(|| anyhow!("probe description must contain states"))?;
+    for state in states {
+        reject_unknown_probe_fields(state, &["name", "data_schema"], "probe state description")?;
+        let name = get_str(state, &["name"])
+            .ok_or_else(|| anyhow!("probe state description must contain name"))?;
+        let declared = get_string_array(
+            &implementation.value,
+            &["architecture", "machine", "states"],
+        );
+        if !declared.iter().any(|candidate| candidate == name) {
+            bail!("probe description contains undeclared state `{name}`");
+        }
+        let schema = get_path(state, &["data_schema"])
+            .ok_or_else(|| anyhow!("probe state description must contain data_schema"))?;
+        let schema_json = serde_json::to_value(schema)?;
+        jsonschema::validator_for(&schema_json)
+            .with_context(|| format!("probe state schema for `{name}` is malformed"))?;
+    }
+    let initial = get_str(
+        &implementation.value,
+        &["architecture", "machine", "initial_state"],
+    )
+    .ok_or_else(|| anyhow!("probe-capable machine must declare initial_state"))?;
+    if get_str(description, &["initial_state", "name"]) != Some(initial) {
+        bail!("probe description initial_state does not match `{initial}`");
+    }
+    Ok(())
+}
+
+fn reject_unknown_probe_fields(value: &YamlValue, allowed: &[&str], context: &str) -> Result<()> {
+    let mapping = value
+        .as_mapping()
+        .ok_or_else(|| anyhow!("{context} must be an object"))?;
+    for key in mapping.keys() {
+        let key = key
+            .as_str()
+            .ok_or_else(|| anyhow!("{context} field names must be strings"))?;
+        if !allowed.contains(&key) {
+            bail!("{context} contains unknown field `{key}`");
+        }
+    }
+    Ok(())
+}
+
+fn validate_probe_trace_shape(bundle: &YamlValue) -> Result<()> {
+    let (_, records) = trace_record_values(bundle)
+        .ok_or_else(|| anyhow!("probe output must contain transition records"))?;
+    if records.is_empty() {
+        bail!("probe output must contain at least one transition record");
+    }
+    for (index, record) in records.iter().enumerate() {
+        for path in [
+            &["state_before"][..],
+            &["state_after"][..],
+            &["output", "next_state"][..],
+        ] {
+            let value = get_path(record, path).ok_or_else(|| {
+                anyhow!(
+                    "probe record {} is missing normalized {}",
+                    index + 1,
+                    path.join(".")
+                )
+            })?;
+            if get_str(value, &["name"]).is_none() {
+                bail!(
+                    "probe record {} {} must be a normalized variant with `name`",
+                    index + 1,
+                    path.join(".")
+                );
+            }
+        }
+        let input = get_path(record, &["input"])
+            .ok_or_else(|| anyhow!("probe record {} is missing input", index + 1))?;
+        if get_str(input, &["kind"]).is_none() || get_str(input, &["name"]).is_none() {
+            bail!(
+                "probe record {} input must contain normalized kind and name",
+                index + 1
+            );
+        }
+    }
+    Ok(())
+}
+
+fn apply_probe_trace_conformance(
+    bundle: &Path,
+    implementation: &LoadedManifest,
+    report: &mut TraceReport,
+) {
+    inspect_trace_canonical_conformance(
+        bundle,
+        implementation,
+        &report.records,
+        &mut report.diagnostics,
+    );
+    report.first_bad_transition = first_bad_trace_transition(&report.diagnostics, &report.records);
+    report.result = trace_result(&report.diagnostics).to_string();
+}
+
+fn evaluate_probe_expectations(
+    request: &YamlValue,
+    bundle: &YamlValue,
+) -> (usize, Vec<ProbeExpectationFailure>) {
+    let Some((_, records)) = trace_record_values(bundle) else {
+        return (0, Vec::new());
+    };
+    let steps = get_path(request, &["steps"])
+        .and_then(YamlValue::as_sequence)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut checked = 0;
+    let mut failures = Vec::new();
+    for (index, step) in steps.iter().enumerate() {
+        let Some(expect) = get_path(step, &["expect"]) else {
+            continue;
+        };
+        let Some(record) = records.get(index) else {
+            failures.push(ProbeExpectationFailure {
+                path: format!("steps[{index}]"),
+                expected: "transition record".to_string(),
+                observed: "<missing>".to_string(),
+            });
+            continue;
+        };
+        for (field, actual_path) in [
+            ("state_after", &["state_after"][..]),
+            ("events", &["output", "events"][..]),
+            ("commands", &["output", "commands"][..]),
+            ("effects", &["output", "effects"][..]),
+            ("reply", &["output", "reply"][..]),
+            ("rejection", &["output", "rejection"][..]),
+        ] {
+            if let Some(expected) = get_path(expect, &[field]) {
+                checked += 1;
+                let actual = get_path(record, actual_path).unwrap_or(&YamlValue::Null);
+                if !probe_value_matches(actual, expected) {
+                    failures.push(probe_expectation_failure(
+                        format!("steps[{index}].expect.{field}"),
+                        expected,
+                        actual,
+                    ));
+                }
+            }
+        }
+        if let Some(expected) = get_str(expect, &["case"]) {
+            checked += 1;
+            let observed = get_str(record, &["source", "branch"]).unwrap_or("<missing>");
+            if expected != observed {
+                failures.push(ProbeExpectationFailure {
+                    path: format!("steps[{index}].expect.case"),
+                    expected: expected.to_string(),
+                    observed: observed.to_string(),
+                });
+            }
+        }
+    }
+
+    if let Some(expect) = get_path(request, &["expect"]) {
+        if let Some(expected) = get_path(expect, &["final_state"]) {
+            checked += 1;
+            let observed = records
+                .last()
+                .and_then(|record| get_path(record, &["state_after"]))
+                .unwrap_or(&YamlValue::Null);
+            if !probe_value_matches(observed, expected) {
+                failures.push(probe_expectation_failure(
+                    "expect.final_state".to_string(),
+                    expected,
+                    observed,
+                ));
+            }
+        }
+        if let Some(expected) = get_str(expect, &["final_case"]) {
+            checked += 1;
+            let observed = records
+                .last()
+                .and_then(|record| get_str(record, &["source", "branch"]))
+                .unwrap_or("<missing>");
+            if expected != observed {
+                failures.push(ProbeExpectationFailure {
+                    path: "expect.final_case".to_string(),
+                    expected: expected.to_string(),
+                    observed: observed.to_string(),
+                });
+            }
+        }
+        if let Some(expected) = get_path(expect, &["case_path"]).and_then(YamlValue::as_sequence) {
+            checked += 1;
+            let observed = YamlValue::Sequence(
+                records
+                    .iter()
+                    .map(|record| {
+                        YamlValue::String(
+                            get_str(record, &["source", "branch"])
+                                .unwrap_or("<missing>")
+                                .to_string(),
+                        )
+                    })
+                    .collect(),
+            );
+            let expected = YamlValue::Sequence(expected.clone());
+            if !probe_value_matches(&observed, &expected) {
+                failures.push(probe_expectation_failure(
+                    "expect.case_path".to_string(),
+                    &expected,
+                    &observed,
+                ));
+            }
+        }
+        if let Some(expected) = get_path(expect, &["state_path"]).and_then(YamlValue::as_sequence) {
+            checked += 1;
+            let mut observed_values = Vec::new();
+            if let Some(first) = records
+                .first()
+                .and_then(|record| get_path(record, &["state_before"]))
+            {
+                observed_values.push(first.clone());
+            }
+            observed_values.extend(
+                records
+                    .iter()
+                    .filter_map(|record| get_path(record, &["state_after"]).cloned()),
+            );
+            let observed = YamlValue::Sequence(observed_values);
+            let expected = YamlValue::Sequence(expected.clone());
+            if !probe_value_matches(&observed, &expected) {
+                failures.push(probe_expectation_failure(
+                    "expect.state_path".to_string(),
+                    &expected,
+                    &observed,
+                ));
+            }
+        }
+    }
+    (checked, failures)
+}
+
+fn probe_value_matches(actual: &YamlValue, expected: &YamlValue) -> bool {
+    match (actual, expected) {
+        (YamlValue::Mapping(actual), YamlValue::Mapping(expected)) => {
+            expected.iter().all(|(key, expected_value)| {
+                actual
+                    .get(key)
+                    .is_some_and(|actual_value| probe_value_matches(actual_value, expected_value))
+            })
+        }
+        (YamlValue::Sequence(actual), YamlValue::Sequence(expected)) => {
+            actual.len() == expected.len()
+                && actual
+                    .iter()
+                    .zip(expected)
+                    .all(|(actual, expected)| probe_value_matches(actual, expected))
+        }
+        (actual, YamlValue::String(expected_name)) if get_str(actual, &["name"]).is_some() => {
+            get_str(actual, &["name"]) == Some(expected_name.as_str())
+        }
+        _ => actual == expected,
+    }
+}
+
+fn probe_expectation_failure(
+    path: String,
+    expected: &YamlValue,
+    observed: &YamlValue,
+) -> ProbeExpectationFailure {
+    ProbeExpectationFailure {
+        path,
+        expected: trace_value_summary(expected),
+        observed: trace_value_summary(observed),
+    }
+}
+
+fn probe_record_summaries(bundle: &YamlValue) -> Vec<TraceRecordSummary> {
+    let Some((_, records)) = trace_record_values(bundle) else {
+        return Vec::new();
+    };
+    records
+        .iter()
+        .enumerate()
+        .map(|(index, record)| {
+            let output = get_path(record, &["output"]);
+            let mut summary = trace_record_summary(index, record);
+            summary.state_before = get_path(record, &["state_before"]).map(probe_value_summary);
+            summary.state_after = get_path(record, &["state_after"]).map(probe_value_summary);
+            summary.input = get_path(record, &["input"]).map(probe_value_summary);
+            summary.reply = output
+                .and_then(|value| yaml_mapping_get(value, "reply"))
+                .map(probe_value_summary);
+            summary.rejection = output
+                .and_then(|value| yaml_mapping_get(value, "rejection"))
+                .map(probe_value_summary);
+            summary.event_outputs = output
+                .map(|value| probe_output_summaries(value, "events"))
+                .unwrap_or_default();
+            summary.command_outputs = output
+                .map(|value| probe_output_summaries(value, "commands"))
+                .unwrap_or_default();
+            summary.effect_outputs = output
+                .map(|value| probe_output_summaries(value, "effects"))
+                .unwrap_or_default();
+            summary
+        })
+        .collect()
+}
+
+fn probe_output_summaries(output: &YamlValue, field: &str) -> Vec<String> {
+    yaml_mapping_get(output, field)
+        .and_then(YamlValue::as_sequence)
+        .map(|items| items.iter().map(probe_value_summary).collect())
+        .unwrap_or_default()
+}
+
+fn probe_value_summary(value: &YamlValue) -> String {
+    if value.is_null() {
+        return "null".to_string();
+    }
+    let name = get_str(value, &["name"]);
+    let kind = get_str(value, &["kind"]);
+    if let Some(name) = name {
+        let label = kind
+            .map(|kind| format!("{kind}:{name}"))
+            .unwrap_or_else(|| name.to_string());
+        let Some(data) = get_path(value, &["data"]) else {
+            return label;
+        };
+        let empty = data.is_null() || data.as_mapping().is_some_and(serde_yaml::Mapping::is_empty);
+        return if empty {
+            label
+        } else {
+            format!("{label} {{{}}}", atlas_yaml_inline(data, 88))
+        };
+    }
+    trace_value_summary(value)
+}
+
+fn print_probe_description(
+    description: &YamlValue,
+    implementation: &Path,
+    json_output: bool,
+) -> Result<()> {
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &serde_json::to_value(description)
+                    .context("failed to serialize probe description")?
+            )?
+        );
+        return Ok(());
+    }
+    println!("RMS probe description");
+    println!("implementation: {}", implementation.display());
+    println!(
+        "machine: {}",
+        get_str(description, &["machine"]).unwrap_or("<missing>")
+    );
+    println!(
+        "initial_state: {}",
+        get_str(description, &["initial_state", "name"]).unwrap_or("<missing>")
+    );
+    println!("inputs:");
+    if let Some(inputs) = get_path(description, &["inputs"]).and_then(YamlValue::as_sequence) {
+        for input in inputs {
+            println!(
+                "  {}:{} example={}",
+                get_str(input, &["kind"]).unwrap_or("?"),
+                get_str(input, &["name"]).unwrap_or("?"),
+                get_path(input, &["example"])
+                    .map(trace_value_summary)
+                    .unwrap_or_else(|| "<missing>".to_string())
+            );
+        }
+    }
+    Ok(())
+}
+
+fn print_probe_trace_failure(trace: &TraceReport) {
+    println!("RMS probe: fail");
+    print_trace_header(trace);
+    print_trace_findings(&trace.diagnostics);
+}
+
+fn print_probe_report(report: &ProbeReport) {
+    println!("RMS probe: {}", report.result);
+    println!("implementation: {}", report.implementation);
+    println!("machine: {}", report.machine);
+    println!("timeline:");
+    for record in &report.records {
+        println!(
+            "  {}. {} --{}--> {} [{}]",
+            record.index + 1,
+            record.state_before.as_deref().unwrap_or("<missing>"),
+            record.input.as_deref().unwrap_or("<missing>"),
+            record.state_after.as_deref().unwrap_or("<missing>"),
+            record.transition_case.as_deref().unwrap_or("<missing>"),
+        );
+        println!(
+            "     reply={} rejection={}",
+            record.reply.as_deref().unwrap_or("null"),
+            record.rejection.as_deref().unwrap_or("null")
+        );
+        if !record.event_outputs.is_empty() {
+            println!("     events: {}", record.event_outputs.join(", "));
+        }
+        if !record.command_outputs.is_empty() {
+            println!("     commands: {}", record.command_outputs.join(", "));
+        }
+        if !record.effect_outputs.is_empty() {
+            println!("     effects: {}", record.effect_outputs.join(", "));
+        }
+        if let Some(source) = record.source.as_deref() {
+            println!("     source: {source}");
+        }
+    }
+    if let Some(last) = report.records.last() {
+        println!(
+            "final_state: {}",
+            last.state_after.as_deref().unwrap_or("<missing>")
+        );
+    }
+    println!("expectations: {} checked", report.expectations_checked);
+    if let Some(failure) = report.expectation_failures.first() {
+        println!(
+            "first_failure: {} expected={} observed={}",
+            failure.path, failure.expected, failure.observed
+        );
+    }
+}
+
 fn run_trace_run(
     implementation: &Path,
     profile: PropertyProfile,
@@ -13426,15 +14404,15 @@ fn run_trace_check(bundle: &Path, json_output: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_trace_replay(bundle: &Path, json_output: bool) -> Result<()> {
+fn run_trace_show(bundle: &Path, json_output: bool) -> Result<()> {
     let report = build_trace_report(bundle)?;
     if json_output {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        print_trace_replay_report(&report);
+        print_trace_show_report(&report);
     }
     if trace_has_errors(&report) {
-        bail!("RMS trace replay failed");
+        bail!("RMS trace show failed");
     }
     Ok(())
 }
@@ -16278,6 +17256,7 @@ fn trace_record_summary(index: usize, record: &YamlValue) -> TraceRecordSummary 
         state_before: trace_record_state_before(record).map(trace_value_summary),
         state_after: trace_record_state_after(record).map(trace_value_summary),
         input: trace_record_input(record).map(trace_value_summary),
+        transition_case: get_str(record, &["source", "branch"]).map(str::to_string),
         reply: output
             .and_then(|value| yaml_mapping_get(value, "reply"))
             .map(trace_value_summary),
@@ -16423,8 +17402,8 @@ fn print_trace_check_report(report: &TraceReport) {
     print_trace_findings(&report.diagnostics);
 }
 
-fn print_trace_replay_report(report: &TraceReport) {
-    println!("RMS trace replay: {}", report.result);
+fn print_trace_show_report(report: &TraceReport) {
+    println!("RMS trace show: {}", report.result);
     print_trace_header(report);
     println!("timeline:");
     if report.records.is_empty() {
@@ -18036,11 +19015,141 @@ fn run_verify_implementation_captured(implementation: &Path) -> Result<String> {
         );
     }
 
+    let probe_summary = verify_probe_handshake(implementation, DEFAULT_PROOF_TIMEOUT_SECONDS)?;
     let trace_reports = verify_declared_trace_bundles(&manifest, root)?;
     Ok(format!(
-        "verify command passed: {command}{}",
+        "verify command passed: {command}{}{}",
+        probe_summary
+            .map(|summary| format!("; {summary}"))
+            .unwrap_or_default(),
         trace_verify_suffix(&trace_reports)
     ))
+}
+
+fn verify_probe_handshake(implementation: &Path, timeout_seconds: u64) -> Result<Option<String>> {
+    let manifest = load_manifest(implementation)?;
+    if get_path(&manifest.value, &["architecture", "probe"]).is_none() {
+        return Ok(None);
+    }
+    let binding = load_probe_binding(implementation)?;
+    let temp_root = std::env::temp_dir().join(format!(
+        "rms-verify-probe-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_root)?;
+    let result = (|| {
+        let description_request = serde_yaml::to_value(json!({
+            "spec": "rms/machine-probe/v0.1",
+            "operation": "describe"
+        }))?;
+        let description = execute_machine_probe_request(
+            &binding,
+            &description_request,
+            &temp_root,
+            "describe",
+            timeout_seconds,
+        )?;
+        validate_probe_description(&description, &binding.implementation)?;
+        let example = get_path(&description, &["inputs"])
+            .and_then(YamlValue::as_sequence)
+            .and_then(|inputs| inputs.first())
+            .and_then(|input| get_path(input, &["example"]))
+            .cloned()
+            .ok_or_else(|| anyhow!("probe description has no smoke input example"))?;
+        let smoke_request = serde_yaml::to_value(json!({
+            "spec": "rms/machine-probe/v0.1",
+            "operation": "run",
+            "start": "initial",
+            "steps": [{"input": serde_json::to_value(&example)?}]
+        }))?;
+        validate_probe_request(&smoke_request, &binding.implementation)?;
+        let output = execute_machine_probe_request(
+            &binding,
+            &smoke_request,
+            &temp_root,
+            "smoke",
+            timeout_seconds,
+        )?;
+        validate_probe_trace_shape(&output)?;
+        let output_path = temp_root.join("smoke-output.json");
+        let mut report = build_trace_report(&output_path)?;
+        apply_probe_trace_conformance(&output_path, &binding.implementation, &mut report);
+        if trace_has_errors(&report) {
+            bail!(
+                "probe smoke input failed canonical trace validation{}",
+                trace_error_suffix(&report)
+            );
+        }
+        Ok(Some(format!(
+            "probe handshake passed: {} describe + smoke",
+            binding.machine
+        )))
+    })();
+    let _ = fs::remove_dir_all(temp_root);
+    result
+}
+
+fn execute_machine_probe_request(
+    binding: &ProbeBinding,
+    request: &YamlValue,
+    temp_root: &Path,
+    label: &str,
+    timeout_seconds: u64,
+) -> Result<YamlValue> {
+    let request_path = temp_root.join(format!("{label}-request.json"));
+    let output_path = temp_root.join(format!("{label}-output.json"));
+    fs::write(
+        &request_path,
+        serde_json::to_vec_pretty(&serde_json::to_value(request)?)?,
+    )?;
+    let request_display = request_path.display().to_string();
+    let output_display = output_path.display().to_string();
+    let root = binding
+        .implementation
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let output = execute_proof_command(
+        root,
+        &binding.command,
+        &[
+            ("RMS_PROBE_REQUEST", request_display.as_str()),
+            ("RMS_PROBE_OUTPUT", output_display.as_str()),
+            ("RMS_PROBE_RUNNER", binding.runner.as_str()),
+        ],
+        timeout_seconds,
+    )?;
+    if output.timed_out {
+        bail!(
+            "probe runner `{}` exceeded {} second(s) during {label}",
+            binding.runner,
+            timeout_seconds
+        );
+    }
+    if !output.status.success() {
+        bail!(
+            "probe runner `{}` failed during {label} with status {}{}",
+            binding.runner,
+            exit_status_label(output.status),
+            if output.stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", output.stderr.trim())
+            }
+        );
+    }
+    if !output_path.is_file() {
+        bail!(
+            "probe runner `{}` did not write `{}` during {label}",
+            binding.runner,
+            output_path.display()
+        );
+    }
+    load_yaml_value(&output_path)
 }
 
 fn ensure_implementation_manifest_valid_for_verify(manifest: &LoadedManifest) -> Result<()> {
@@ -19254,6 +20363,9 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
         "rms/implementation/v0.1" => Some(include_str!(
             "../../../../schemas/implementation.schema.json"
         )),
+        "rms/machine-probe/v0.1" => Some(include_str!(
+            "../../../../schemas/machine-probe.schema.json"
+        )),
         "rms/conformance/v0.1" => Some(include_str!("../../../../schemas/conformance.schema.json")),
         _ => None,
     }
@@ -19739,6 +20851,7 @@ fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diag
     check_optional_path(manifest, diagnostics, &["source", "public_entrypoint"]);
     validate_semantic_function_declarations(manifest, diagnostics);
     validate_inner_structure(manifest, diagnostics);
+    validate_machine_probe_binding(manifest, diagnostics);
     validate_property_implementation(manifest, diagnostics);
     validate_implementation_universal_bindings(manifest, diagnostics);
     validate_active_evidence_semantic_references(manifest, diagnostics);
@@ -19749,6 +20862,188 @@ fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diag
         Some("js") => validate_js_implementation(manifest, diagnostics),
         Some("executable") => validate_executable_implementation(manifest, diagnostics),
         _ => {}
+    }
+}
+
+fn validate_machine_probe_binding(
+    implementation: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let binding = get_str(&implementation.value, &["binding"]).unwrap_or_default();
+    if !matches!(binding, "rust" | "swift" | "js" | "javascript") {
+        return;
+    }
+    if get_str(
+        &implementation.value,
+        &["architecture", "static_inspection"],
+    ) == Some("opaque")
+    {
+        return;
+    }
+
+    let states = get_string_array(
+        &implementation.value,
+        &["architecture", "machine", "states"],
+    );
+    let initial_state = get_str(
+        &implementation.value,
+        &["architecture", "machine", "initial_state"],
+    );
+    match initial_state {
+        None | Some("") => diagnostics.push(error(
+            "structure.probe-initial-state-missing",
+            &implementation.path,
+            "inspectable Rust, Swift, and JavaScript machines must declare `architecture.machine.initial_state`",
+        )),
+        Some(initial) if !states.iter().any(|state| state == initial) => diagnostics.push(error(
+            "structure.probe-initial-state-undeclared",
+            &implementation.path,
+            format!(
+                "probe initial state `{initial}` is not declared in `architecture.machine.states`"
+            ),
+        )),
+        _ => {}
+    }
+
+    let Some(probe) = get_path(&implementation.value, &["architecture", "probe"]) else {
+        diagnostics.push(error(
+            "structure.probe-binding-missing",
+            &implementation.path,
+            "inspectable Rust, Swift, and JavaScript machines must declare `architecture.probe`",
+        ));
+        return;
+    };
+    if get_str(probe, &["protocol"]) != Some("rms/machine-probe/v0.1") {
+        diagnostics.push(error(
+            "structure.probe-protocol-invalid",
+            &implementation.path,
+            "`architecture.probe.protocol` must be `rms/machine-probe/v0.1`",
+        ));
+    }
+    let command_name = get_str(probe, &["command"]).unwrap_or_default();
+    if command_name.is_empty()
+        || get_str(&implementation.value, &["commands", command_name]).is_none_or(str::is_empty)
+    {
+        diagnostics.push(error(
+            "structure.probe-command-unresolved",
+            &implementation.path,
+            format!(
+                "probe command `{command_name}` must resolve through `commands.{command_name}`"
+            ),
+        ));
+    }
+    let runner = get_str(probe, &["runner"]).unwrap_or_default();
+    let base = implementation
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    if runner.is_empty() || !binding_symbol_reference_exists(base, implementation, runner) {
+        diagnostics.push(error(
+            "structure.probe-runner-unresolved",
+            &implementation.path,
+            format!("probe runner `{runner}` does not resolve to a declared binding symbol"),
+        ));
+    }
+    let runner_path = binding_reference_parts(runner)
+        .map(|(path, _)| path)
+        .unwrap_or_default();
+    let probe_roles = structure_role_paths(implementation, "probe_adapter");
+    if runner_path.is_empty() || !probe_roles.iter().any(|path| path == runner_path) {
+        diagnostics.push(error(
+            "structure.probe-adapter-role-missing",
+            &implementation.path,
+            "the probe runner file must be declared in `architecture.roles.probe_adapter`",
+        ));
+    }
+
+    let transition_record = get_str(
+        &implementation.value,
+        &["architecture", "machine", "transition_record_function"],
+    )
+    .map(semantic_symbol_name)
+    .unwrap_or_default();
+    let runner_source = binding_reference_parts(runner)
+        .and_then(|(path, _)| fs::read_to_string(base.join(path)).ok())
+        .unwrap_or_default();
+    if transition_record.is_empty() || !source_identifier_occurs(&runner_source, transition_record)
+    {
+        diagnostics.push(error(
+            "structure.probe-transition-record-bypass",
+            &implementation.path,
+            "the probe adapter must call the exact declared `architecture.machine.transition_record_function`",
+        ));
+    }
+    if !runner_source.contains("RMS_PROBE_REQUEST") || !runner_source.contains("RMS_PROBE_OUTPUT") {
+        diagnostics.push(error(
+            "structure.probe-file-protocol-missing",
+            &implementation.path,
+            "the probe adapter must exchange requests and responses through `RMS_PROBE_REQUEST` and `RMS_PROBE_OUTPUT`",
+        ));
+    }
+    let mut forbidden_symbols = get_str(
+        &implementation.value,
+        &["architecture", "machine", "driver_function"],
+    )
+    .into_iter()
+    .map(semantic_symbol_name)
+    .map(ToString::to_string)
+    .collect::<BTreeSet<_>>();
+    forbidden_symbols.extend(
+        typed_yaml_sequence::<MachineEffectProtocol>(
+            &implementation.value,
+            &["architecture", "machine", "effect_protocols"],
+        )
+        .into_iter()
+        .filter_map(|protocol| protocol.executor_symbol)
+        .map(|symbol| semantic_symbol_name(&symbol).to_string()),
+    );
+    let called_by_rust_runner = if binding == "rust" {
+        rust_runner_called_symbols(base, runner).unwrap_or_default()
+    } else {
+        BTreeSet::new()
+    };
+    for forbidden in forbidden_symbols {
+        let invoked = if binding == "rust" {
+            called_by_rust_runner.contains(&forbidden)
+        } else {
+            binding_function_references_symbol(base, implementation, runner, &forbidden)
+        };
+        if invoked {
+            diagnostics.push(error(
+                "structure.probe-unsafe-execution",
+                &implementation.path,
+                format!(
+                    "probe adapter `{runner}` must not invoke machine driver or effect executor `{forbidden}`"
+                ),
+            ));
+        }
+    }
+
+    let transition_signature = get_str(
+        &implementation.value,
+        &["architecture", "machine", "transition_signature"],
+    );
+    let initial_state_function = get_str(probe, &["initial_state_function"]);
+    if transition_signature == Some("state-and-input") {
+        match initial_state_function {
+            None | Some("") => diagnostics.push(error(
+                "structure.probe-initial-state-function-missing",
+                &implementation.path,
+                "state-and-input probes must declare `architecture.probe.initial_state_function`",
+            )),
+            Some(reference)
+                if !binding_symbol_reference_exists(base, implementation, reference) =>
+            {
+                diagnostics.push(error(
+                    "structure.probe-initial-state-function-unresolved",
+                    &implementation.path,
+                    format!(
+                        "probe initial-state function `{reference}` does not resolve to a binding symbol"
+                    ),
+                ));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -38527,6 +39822,7 @@ fn trace_state_mentions(observed: &str, state: &str) -> bool {
         || observed.contains(&format!("::{state}"))
         || observed.contains(&format!(":{state}"))
         || observed.contains(&format!("tag: {state}"))
+        || observed.contains(&format!("name: {state}"))
 }
 
 fn append_workflow_trace_coverage_checks(
@@ -50105,6 +51401,11 @@ fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()>
 
     if dry_run {
         println!("{command}");
+        if let Some(probe_command) = get_str(&manifest.value, &["commands", "probe"]) {
+            println!(
+                "RMS_PROBE_REQUEST=<describe-or-smoke-request> RMS_PROBE_OUTPUT=<temporary-output> {probe_command}"
+            );
+        }
         for smoke in declared_surface_smoke_commands(&manifest)? {
             if smoke != command {
                 println!("{smoke}");
@@ -50122,6 +51423,10 @@ fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()>
 
     if !status.success() {
         bail!("verify command failed with status {status}");
+    }
+
+    if let Some(summary) = verify_probe_handshake(implementation, DEFAULT_PROOF_TIMEOUT_SECONDS)? {
+        println!("{summary}");
     }
 
     for report in verify_declared_trace_bundles(&manifest, root)? {
@@ -55779,6 +57084,10 @@ fn scaffold_rust_module(path: &Path, model: &BindingScaffoldModel) -> Result<()>
         &path.join("src").join("transition.rs"),
         &render_rust_transition_rs(model),
     )?;
+    write_new_file(
+        &path.join("tests").join("machine_probe.rs"),
+        &render_rust_machine_probe_rs(&package_name, model),
+    )?;
     if !scaffold_trace_bundle_files(model.shape).is_empty() {
         write_new_file(
             &path.join("tests").join("trace_producer.rs"),
@@ -55864,6 +57173,13 @@ fn scaffold_swift_module(path: &Path, model: &BindingScaffoldModel) -> Result<()
             .join(format!("{target_name}Tests.swift")),
         &render_swift_tests(&target_name, model),
     )?;
+    write_new_file(
+        &path
+            .join("Tests")
+            .join(format!("{target_name}Tests"))
+            .join("MachineProbeTests.swift"),
+        &render_swift_machine_probe_tests(&target_name, model),
+    )?;
     Ok(())
 }
 
@@ -55939,6 +57255,10 @@ fn scaffold_js_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
             &render_js_trace_producer_mjs(model),
         )?;
     }
+    write_new_file(
+        &path.join("tests").join("machine-probe.mjs"),
+        &render_js_machine_probe_mjs(model),
+    )?;
     write_new_file(&path.join("scripts").join("build.sh"), JS_BUILD_SH)?;
     write_new_file(&path.join("scripts").join("smoke.sh"), JS_SMOKE_SH)?;
     Ok(())
@@ -56444,7 +57764,14 @@ fn render_module_readme(
             .collect::<Vec<_>>()
             .join("\n")
     );
-    rendered
+    if matches!(binding, Some("rust" | "swift" | "js" | "javascript")) {
+        rendered.replace(
+            "\n## Agent Workflow\n",
+            "\n## Quick Machine Probe\n\nUse `rms probe implementation.yaml --describe`, then copy an advertised example into `rms probe implementation.yaml --input '<JSON>'`. Ordered scenario files can assert state and case paths. Probes call the real transition-record function without executing effects and remain ephemeral unless `--out` is supplied.\n\n## Agent Workflow\n",
+        )
+    } else {
+        rendered
+    }
 }
 
 fn render_contracts_readme() -> String {
@@ -56950,6 +58277,7 @@ fn render_machine_architecture_yaml(model: &BindingScaffoldModel, binding: &str)
         "    transition_signature: {}",
         model.transition_signature()
     );
+    let _ = writeln!(out, "    initial_state: {initial}");
     if model.shape == ScaffoldShape::DomainEngine {
         let _ = writeln!(out, "    stateless_justification: {}", yaml_quote("generated domain-engine starts as a pure decision machine; use rms spec apply when lifecycle state changes product meaning"));
     }
@@ -57097,6 +58425,17 @@ fn render_machine_architecture_yaml(model: &BindingScaffoldModel, binding: &str)
 
 fn render_property_commands_yaml(shape: ScaffoldShape, binding: &str) -> String {
     let mut out = String::new();
+    let probe_command = match binding {
+        "rust" => {
+            "cargo test --manifest-path Cargo.toml \"${RMS_PROBE_RUNNER##*#}\" -- --nocapture"
+        }
+        "swift" => "swift test --package-path . --filter \"${RMS_PROBE_RUNNER##*#}\"",
+        "js" => "node tests/machine-probe.mjs",
+        _ => "",
+    };
+    if !probe_command.is_empty() {
+        let _ = writeln!(out, "  probe: {probe_command}");
+    }
     if !scaffold_trace_bundle_files(shape).is_empty() {
         let command = match binding {
             "rust" => RUST_BINDING_ADAPTER.trace_proof_command(),
@@ -57134,6 +58473,24 @@ fn render_property_commands_yaml(shape: ScaffoldShape, binding: &str) -> String 
     out
 }
 
+fn render_probe_architecture_yaml(binding: &str, target_name: Option<&str>) -> String {
+    match binding {
+        "rust" => "  probe:\n    protocol: rms/machine-probe/v0.1\n    command: probe\n    runner: tests/machine_probe.rs#probe_machine\n    initial_state_function: src/representation.rs#initial_state\n".to_string(),
+        "swift" => {
+            let target = target_name.unwrap_or("Module");
+            format!(
+                "  probe:\n    protocol: rms/machine-probe/v0.1\n    command: probe\n    runner: Tests/{target}Tests/MachineProbeTests.swift#testProbeMachine\n    initial_state_function: Sources/{target}/Representation.swift#initialState\n"
+            )
+        }
+        "js" => "  probe:\n    protocol: rms/machine-probe/v0.1\n    command: probe\n    runner: tests/machine-probe.mjs#probeMachine\n    initial_state_function: src/representation.mjs#initialState\n".to_string(),
+        _ => String::new(),
+    }
+}
+
+fn render_probe_role_yaml(path: &str) -> String {
+    format!("    probe_adapter:\n      - {path}\n")
+}
+
 fn render_rust_implementation_yaml(
     module_name: &str,
     package_name: &str,
@@ -57144,14 +58501,16 @@ fn render_rust_implementation_yaml(
     let machine_yaml = render_machine_architecture_yaml(model, "rust");
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n{}  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules: []\n{}{}  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n{}  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules: []\n{}{}{}  roles:\n{}{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}{}",
         yaml_quote(module_name),
         render_property_commands_yaml(shape, "rust"),
         yaml_quote(package_name),
         yaml_quote(shape.as_str()),
         render_traceable_architecture_yaml(names, shape, "src/transition.rs"),
+        render_probe_architecture_yaml("rust", None),
         machine_yaml,
         render_traceable_roles_yaml(shape, "src/representation.rs", "src/transition.rs"),
+        render_probe_role_yaml("tests/machine_probe.rs"),
         closed_variants_yaml,
         yaml_quote(&names.label),
         names.label,
@@ -57168,6 +58527,7 @@ fn render_rust_implementation_yaml(
 fn render_rust_lib_rs(model: &BindingScaffoldModel) -> String {
     let names = &model.names;
     let mut representation_exports = vec![
+        "initial_state",
         names.command.as_str(),
         names.command_envelope.as_str(),
         names.event.as_str(),
@@ -57261,7 +58621,9 @@ fn render_rust_lib_rs(model: &BindingScaffoldModel) -> String {
 
 fn render_rust_representation_rs(model: &BindingScaffoldModel) -> String {
     let names = &model.names;
-    let state_variants = starter_states_for_shape(model.shape)
+    let states = starter_states_for_shape(model.shape);
+    let initial = states.first().map(String::as_str).unwrap_or("Ready");
+    let state_variants = states
         .iter()
         .map(|variant| format!("    {variant},"))
         .collect::<Vec<_>>()
@@ -57329,6 +58691,10 @@ pub enum {state} {{
 {state_variants}
 }}
 
+pub fn initial_state() -> {state} {{
+    {state}::{initial}
+}}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum {command} {{
     Accept({label}),
@@ -57390,6 +58756,7 @@ pub enum {reply} {{
         state = names.state,
         state_variants = state_variants,
         input_section = input_section,
+        initial = initial,
         malformed_rejection = malformed_rejection,
     )
 }
@@ -57891,6 +59258,234 @@ fn produce_transition_trace() {{
     )
 }
 
+fn render_rust_machine_probe_rs(package_name: &str, model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let crate_name = canonical_rust_crate_name(package_name);
+    let initial = starter_states_for_shape(model.shape)
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Ready".to_string());
+    let state_arms = starter_states_for_shape(model.shape)
+        .iter()
+        .map(|state| {
+            format!(
+                "        \"{state}\" => {state_type}::{state},",
+                state_type = names.state
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let observed_arms = model
+        .declared_observed_events()
+        .iter()
+        .map(|event| {
+            format!(
+                "        (\"observed-event\", \"{event}\") => {input}::ObservedEvent({event_type}::{event}),",
+                input = names.input,
+                event_type = names.event
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let effect_result_arms = if model.declares_effect_results {
+        format!(
+            r#"        ("effect-result", "Succeeded") => {input}::EffectResult({effect_result}::Succeeded),
+        ("effect-result", "Failed") => {input}::EffectResult({effect_result}::Failed({label}::new(probe_text(value, "reason")).expect("probe failure reason"))),"#,
+            input = names.input,
+            effect_result = names.effect_result,
+            label = names.label,
+        )
+    } else {
+        String::new()
+    };
+    let description_observed = model
+        .declared_observed_events()
+        .iter()
+        .map(|event| {
+            format!(
+                r#"json!({{"kind":"observed-event","name":"{event}","data_schema":{{"type":"object"}},"example":{{"kind":"observed-event","name":"{event}","data":{{}}}}}})"#
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut descriptions = vec![
+        r#"json!({"kind":"command","name":"Accept","data_schema":{"type":"object","properties":{"label":{"type":"string"}},"required":["label"]},"example":{"kind":"command","name":"Accept","data":{"label":"example"}}})"#.to_string(),
+        r#"json!({"kind":"command","name":"Reject","data_schema":{"type":"object","properties":{"reason":{"type":"string"}},"required":["reason"]},"example":{"kind":"command","name":"Reject","data":{"reason":"rejected"}}})"#.to_string(),
+    ];
+    descriptions.extend(description_observed);
+    if model.declares_effect_results {
+        descriptions.extend([
+            r#"json!({"kind":"effect-result","name":"Succeeded","data_schema":{"type":"object"},"example":{"kind":"effect-result","name":"Succeeded","data":{}}})"#.to_string(),
+            r#"json!({"kind":"effect-result","name":"Failed","data_schema":{"type":"object","properties":{"reason":{"type":"string"}},"required":["reason"]},"example":{"kind":"effect-result","name":"Failed","data":{"reason":"failed"}}})"#.to_string(),
+        ]);
+    }
+    let descriptions = descriptions.join(",\n            ");
+    let parse_and_run = if model.stateful() {
+        format!(
+            r#"fn parse_state(value: &serde_json::Value) -> {state} {{
+    let name = value.get("name").and_then(serde_json::Value::as_str).unwrap_or("{initial}");
+    match name {{
+{state_arms}
+        other => panic!("unknown probe state {{other}}"),
+    }}
+}}
+
+fn parse_input(value: &serde_json::Value) -> {input} {{
+    let kind = value.get("kind").and_then(serde_json::Value::as_str).expect("probe input kind");
+    let name = value.get("name").and_then(serde_json::Value::as_str).expect("probe input name");
+    match (kind, name) {{
+        ("command", "Accept") => {input}::Command({command}::Accept({label}::new(probe_text(value, "label")).expect("probe label"))),
+        ("command", "Reject") => {input}::Command({command}::Reject({label}::new(probe_text(value, "reason")).expect("probe reason"))),
+{observed_arms}
+{effect_result_arms}
+        _ => panic!("unsupported probe input {{kind}}:{{name}}"),
+    }}
+}}
+
+fn run_steps(request: &serde_json::Value) -> Vec<serde_json::Value> {{
+    let start = request.get("start").expect("probe start");
+    let mut state = if start.as_str() == Some("initial") {{
+        initial_state()
+    }} else {{
+        parse_state(start)
+    }};
+    request.get("steps").and_then(serde_json::Value::as_array).expect("probe steps")
+        .iter()
+        .map(|step| {{
+            let normalized = step.get("input").expect("probe step input");
+            let record = transition_record(state.clone(), parse_input(normalized));
+            state = record.state_after.clone();
+            record_json(&record, normalized)
+        }})
+        .collect()
+}}"#,
+            state = names.state,
+            initial = initial,
+            state_arms = state_arms,
+            input = names.input,
+            command = names.command,
+            label = names.label,
+            observed_arms = observed_arms,
+            effect_result_arms = effect_result_arms,
+        )
+    } else {
+        format!(
+            r#"fn parse_input(value: &serde_json::Value) -> {command} {{
+    let name = value.get("name").and_then(serde_json::Value::as_str).expect("probe input name");
+    match name {{
+        "Accept" => {command}::Accept({label}::new(probe_text(value, "label")).expect("probe label")),
+        "Reject" => {command}::Reject({label}::new(probe_text(value, "reason")).expect("probe reason")),
+        _ => panic!("unsupported probe command {{name}}"),
+    }}
+}}
+
+fn run_steps(request: &serde_json::Value) -> Vec<serde_json::Value> {{
+    request.get("steps").and_then(serde_json::Value::as_array).expect("probe steps")
+        .iter()
+        .map(|step| {{
+            let normalized = step.get("input").expect("probe step input");
+            let record = transition_record(parse_input(normalized));
+            record_json(&record, normalized)
+        }})
+        .collect()
+}}"#,
+            command = names.command,
+            label = names.label,
+        )
+    };
+    format!(
+        r#"use {crate_name}::*;
+use serde_json::{{json, Value}};
+
+fn case_name(value: &impl std::fmt::Debug) -> String {{
+    let rendered = format!("{{value:?}}");
+    rendered
+        .split([' ', '{{', '('])
+        .next()
+        .unwrap_or(rendered.as_str())
+        .rsplit("::")
+        .next()
+        .unwrap_or(rendered.as_str())
+        .to_string()
+}}
+
+fn variant_json(value: &impl std::fmt::Debug) -> Value {{
+    json!({{"name": case_name(value), "data": {{"debug": format!("{{value:?}}")}}}})
+}}
+
+fn probe_text(value: &Value, field: &str) -> String {{
+    value.get("data")
+        .and_then(|data| data.get(field).or_else(|| data.get("value")))
+        .and_then(Value::as_str)
+        .unwrap_or(field)
+        .to_string()
+}}
+
+fn record_json(record: &{transition_record}, normalized_input: &Value) -> Value {{
+    json!({{
+        "scenario_start": false,
+        "state_before": variant_json(&record.state_before),
+        "state_after": variant_json(&record.state_after),
+        "input": normalized_input,
+        "output": {{
+            "next_state": variant_json(&record.output.next_state),
+            "events": record.output.events.iter().map(variant_json).collect::<Vec<_>>(),
+            "commands": record.output.commands.iter().map(variant_json).collect::<Vec<_>>(),
+            "effects": record.output.effects.iter().map(variant_json).collect::<Vec<_>>(),
+            "reply": record.output.reply.as_ref().map(variant_json),
+            "rejection": record.output.rejection.as_ref().map(variant_json),
+        }},
+        "source": {{
+            "file": record.source.file,
+            "function": record.source.function,
+            "branch": record.source.branch,
+        }},
+    }})
+}}
+
+{parse_and_run}
+
+#[test]
+fn probe_machine() {{
+    let (Ok(request_path), Ok(output_path)) = (
+        std::env::var("RMS_PROBE_REQUEST"),
+        std::env::var("RMS_PROBE_OUTPUT"),
+    ) else {{
+        return;
+    }};
+    let request: Value = serde_json::from_slice(&std::fs::read(request_path).unwrap()).unwrap();
+    let output = if request.get("operation").and_then(Value::as_str) == Some("describe") {{
+        json!({{
+            "spec": "rms/machine-probe-description/v0.1",
+            "machine": "{machine}",
+            "initial_state": {{"name":"{initial}","data":{{}}}},
+            "states": [],
+            "inputs": [
+                {descriptions}
+            ],
+        }})
+    }} else {{
+        let mut records = run_steps(&request);
+        if let Some(first) = records.first_mut() {{
+            first["scenario_start"] = Value::Bool(true);
+        }}
+        json!({{
+            "spec": "rms/trace-bundle/v0.1",
+            "machine": "{machine}",
+            "records": records,
+        }})
+    }};
+    std::fs::write(output_path, serde_json::to_vec_pretty(&output).unwrap()).unwrap();
+}}
+"#,
+        crate_name = crate_name,
+        transition_record = names.transition_record,
+        parse_and_run = parse_and_run,
+        machine = names.machine,
+        initial = initial,
+        descriptions = descriptions,
+    )
+}
+
 fn render_rust_cargo_toml(package_name: &str) -> String {
     format!(
         "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n\n[workspace]\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\n\n[dev-dependencies]\nserde_json = \"1\"\n"
@@ -57910,7 +59505,7 @@ fn render_swift_implementation_yaml(
     let machine_yaml = render_machine_architecture_yaml(model, "swift");
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n{}\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}{}  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n{}\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}{}{}  roles:\n{}{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}{}",
         yaml_quote(module_name),
         yaml_quote(&source_root),
         yaml_quote(&public_entrypoint),
@@ -57926,12 +59521,16 @@ fn render_swift_implementation_yaml(
             shape,
             &format!("Sources/{target_name}/Transition.swift"),
         ),
+        render_probe_architecture_yaml("swift", Some(target_name)),
         machine_yaml,
         render_traceable_roles_yaml(
             shape,
             &format!("Sources/{target_name}/Representation.swift"),
             &format!("Sources/{target_name}/Transition.swift"),
         ),
+        render_probe_role_yaml(&format!(
+            "Tests/{target_name}Tests/MachineProbeTests.swift"
+        )),
         closed_variants_yaml,
         yaml_quote(&names.label),
         target_name,
@@ -57962,7 +59561,9 @@ fn render_swift_source(target_name: &str, shape: ScaffoldShape) -> String {
 
 fn render_swift_representation(model: &BindingScaffoldModel) -> String {
     let names = &model.names;
-    let state_variants = starter_states_for_shape(model.shape)
+    let states = starter_states_for_shape(model.shape);
+    let initial = swift_case_name(states.first().map(String::as_str).unwrap_or("Ready"));
+    let state_variants = states
         .iter()
         .map(|variant| format!("    case {}", swift_case_name(variant)))
         .collect::<Vec<_>>()
@@ -58024,6 +59625,10 @@ public enum {state}: Equatable {{
 {state_variants}
 }}
 
+public func initialState() -> {state} {{
+    .{initial}
+}}
+
 public enum {command}: Equatable {{
     case accept({label})
     case reject({label})
@@ -58074,6 +59679,7 @@ public enum {reply}: Equatable {{
         event_envelope = names.event_envelope,
         event_variants = event_variants,
         input_section = input_section,
+        initial = initial,
         label = names.label,
         malformed_rejection = malformed_rejection,
         rejection = names.rejection,
@@ -58535,6 +60141,242 @@ fn render_swift_tests(target_name: &str, model: &BindingScaffoldModel) -> String
     )
 }
 
+fn render_swift_machine_probe_tests(target_name: &str, model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let states = starter_states_for_shape(model.shape);
+    let initial = states
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Ready".to_string());
+    let state_arms = states
+        .iter()
+        .map(|state| {
+            format!(
+                "        case \"{state}\": return .{}",
+                swift_case_name(state)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let state_descriptions = states
+        .iter()
+        .map(|state| format!("[\"name\": \"{state}\", \"data_schema\": [\"type\": \"object\"]]"))
+        .collect::<Vec<_>>()
+        .join(",\n                ");
+    let observed_arms = model
+        .declared_observed_events()
+        .iter()
+        .map(|event| {
+            format!(
+                "        case (\"observed-event\", \"{event}\"): return .observedEvent(.{})",
+                swift_case_name(event)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let observed_descriptions = model
+        .declared_observed_events()
+        .iter()
+        .map(|event| {
+            format!(
+                "[\"kind\": \"observed-event\", \"name\": \"{event}\", \"data_schema\": [\"type\": \"object\"], \"example\": [\"kind\": \"observed-event\", \"name\": \"{event}\", \"data\": [:]]]"
+            )
+        })
+        .collect::<Vec<_>>();
+    let effect_arms = if model.declares_effect_results {
+        format!(
+            r#"        case ("effect-result", "Succeeded"): return .effectResult(.succeeded)
+        case ("effect-result", "Failed"): return .effectResult(.failed({label}(probeText(value, "reason"))!))"#,
+            label = names.label,
+        )
+    } else {
+        String::new()
+    };
+    let mut input_descriptions = vec![
+        r#"["kind": "command", "name": "Accept", "data_schema": ["type": "object", "properties": ["label": ["type": "string"]], "required": ["label"]], "example": ["kind": "command", "name": "Accept", "data": ["label": "example"]]]"#.to_string(),
+        r#"["kind": "command", "name": "Reject", "data_schema": ["type": "object", "properties": ["reason": ["type": "string"]], "required": ["reason"]], "example": ["kind": "command", "name": "Reject", "data": ["reason": "rejected"]]]"#.to_string(),
+    ];
+    input_descriptions.extend(observed_descriptions);
+    if model.declares_effect_results {
+        input_descriptions.extend([
+            r#"["kind": "effect-result", "name": "Succeeded", "data_schema": ["type": "object"], "example": ["kind": "effect-result", "name": "Succeeded", "data": [:]]]"#.to_string(),
+            r#"["kind": "effect-result", "name": "Failed", "data_schema": ["type": "object", "properties": ["reason": ["type": "string"]], "required": ["reason"]], "example": ["kind": "effect-result", "name": "Failed", "data": ["reason": "failed"]]]"#.to_string(),
+        ]);
+    }
+    let input_descriptions = input_descriptions.join(",\n                ");
+    let stateful_helpers = if model.stateful() {
+        format!(
+            r#"    private func parseState(_ value: Any) throws -> {state} {{
+        let object = value as? [String: Any]
+        let name = object?["name"] as? String ?? "{initial}"
+        switch name {{
+{state_arms}
+        default: throw ProbeFailure.message("unknown probe state \(name)")
+        }}
+    }}
+
+    private func parseInput(_ value: [String: Any]) throws -> {input} {{
+        let kind = value["kind"] as? String ?? ""
+        let name = value["name"] as? String ?? ""
+        switch (kind, name) {{
+        case ("command", "Accept"): return .command(.accept({label}(probeText(value, "label"))!))
+        case ("command", "Reject"): return .command(.reject({label}(probeText(value, "reason"))!))
+{observed_arms}
+{effect_arms}
+        default: throw ProbeFailure.message("unsupported probe input \(kind):\(name)")
+        }}
+    }}
+
+    private func runSteps(_ request: [String: Any]) throws -> [[String: Any]] {{
+        var state: {state}
+        if let start = request["start"] as? String, start == "initial" {{
+            state = initialState()
+        }} else {{
+            state = try parseState(request["start"] as Any)
+        }}
+        return try (request["steps"] as? [[String: Any]] ?? []).enumerated().map {{ index, step in
+            guard let normalized = step["input"] as? [String: Any] else {{
+                throw ProbeFailure.message("step \(index) has no input")
+            }}
+            let record = transitionRecord(state, try parseInput(normalized))
+            state = record.stateAfter
+            return recordJSON(record, normalized, scenarioStart: index == 0)
+        }}
+    }}"#,
+            state = names.state,
+            initial = initial,
+            state_arms = state_arms,
+            input = names.input,
+            label = names.label,
+            observed_arms = observed_arms,
+            effect_arms = effect_arms,
+        )
+    } else {
+        format!(
+            r#"    private func parseCommand(_ value: [String: Any]) throws -> {command} {{
+        let name = value["name"] as? String ?? ""
+        switch name {{
+        case "Accept": return .accept({label}(probeText(value, "label"))!)
+        case "Reject": return .reject({label}(probeText(value, "reason"))!)
+        default: throw ProbeFailure.message("unsupported probe command \(name)")
+        }}
+    }}
+
+    private func runSteps(_ request: [String: Any]) throws -> [[String: Any]] {{
+        try (request["steps"] as? [[String: Any]] ?? []).enumerated().map {{ index, step in
+            guard let normalized = step["input"] as? [String: Any] else {{
+                throw ProbeFailure.message("step \(index) has no input")
+            }}
+            return recordJSON(
+                transitionRecord(try parseCommand(normalized)),
+                normalized,
+                scenarioStart: index == 0
+            )
+        }}
+    }}"#,
+            command = names.command,
+            label = names.label,
+        )
+    };
+    format!(
+        r#"import Foundation
+import XCTest
+@testable import {target_name}
+
+private enum ProbeFailure: Error {{
+    case message(String)
+}}
+
+final class MachineProbeTests: XCTestCase {{
+    private func caseName(_ value: Any) -> String {{
+        let rendered = String(describing: value)
+        let withoutPayload = rendered.split(separator: "(", maxSplits: 1).first.map(String.init) ?? rendered
+        let raw = withoutPayload.split(separator: ".").last.map(String.init) ?? withoutPayload
+        return raw.prefix(1).uppercased() + raw.dropFirst()
+    }}
+
+    private func variantJSON(_ value: Any) -> [String: Any] {{
+        ["name": caseName(value), "data": ["debug": String(describing: value)]]
+    }}
+
+    private func probeText(_ value: [String: Any], _ field: String) -> String {{
+        let data = value["data"] as? [String: Any]
+        return data?[field] as? String ?? data?["value"] as? String ?? field
+    }}
+
+    private func recordJSON(
+        _ record: {transition_record},
+        _ normalizedInput: [String: Any],
+        scenarioStart: Bool
+    ) -> [String: Any] {{
+        [
+            "scenario_start": scenarioStart,
+            "state_before": variantJSON(record.stateBefore),
+            "state_after": variantJSON(record.stateAfter),
+            "input": normalizedInput,
+            "output": [
+                "next_state": variantJSON(record.output.nextState),
+                "events": record.output.events.map {{ variantJSON($0) }},
+                "commands": record.output.commands.map {{ variantJSON($0) }},
+                "effects": record.output.effects.map {{ variantJSON($0) }},
+                "reply": record.output.reply.map {{ variantJSON($0) }} ?? NSNull(),
+                "rejection": record.output.rejection.map {{ variantJSON($0) }} ?? NSNull(),
+            ],
+            "source": [
+                "file": record.source.file,
+                "function": record.source.function,
+                "branch": record.source.branch,
+            ],
+        ]
+    }}
+
+{stateful_helpers}
+
+    func testProbeMachine() throws {{
+        let environment = ProcessInfo.processInfo.environment
+        guard
+            let requestPath = environment["RMS_PROBE_REQUEST"],
+            let outputPath = environment["RMS_PROBE_OUTPUT"]
+        else {{ return }}
+        let data = try Data(contentsOf: URL(fileURLWithPath: requestPath))
+        guard let request = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {{
+            throw ProbeFailure.message("probe request must be an object")
+        }}
+        let output: [String: Any]
+        if request["operation"] as? String == "describe" {{
+            output = [
+                "spec": "rms/machine-probe-description/v0.1",
+                "machine": "{machine}",
+                "initial_state": ["name": "{initial}", "data": [:]],
+                "states": [
+                    {state_descriptions}
+                ],
+                "inputs": [
+                    {input_descriptions}
+                ],
+            ]
+        }} else {{
+            output = [
+                "spec": "rms/trace-bundle/v0.1",
+                "machine": "{machine}",
+                "records": try runSteps(request),
+            ]
+        }}
+        let encoded = try JSONSerialization.data(withJSONObject: output, options: [.prettyPrinted, .sortedKeys])
+        try encoded.write(to: URL(fileURLWithPath: outputPath))
+    }}
+}}
+"#,
+        target_name = target_name,
+        transition_record = names.transition_record,
+        stateful_helpers = stateful_helpers,
+        machine = names.machine,
+        initial = initial,
+        state_descriptions = state_descriptions,
+        input_descriptions = input_descriptions,
+    )
+}
+
 fn render_js_implementation_yaml(module_name: &str, model: &BindingScaffoldModel) -> String {
     let shape = model.shape;
     let names = &model.names;
@@ -58581,7 +60423,7 @@ fn render_js_implementation_yaml(module_name: &str, model: &BindingScaffoldModel
     let machine_yaml = render_machine_architecture_yaml(model, "js");
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n{}\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\n{}architecture:\n  shape: {}\n  public_modules:\n{}\n{}{}  roles:\n{}  representation:\n    closed_variants:\n{}    validated_values:\n      - make{}\n    transition_functions:\n      - {}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n{}{}{}{}",
+        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n{}\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\n{}architecture:\n  shape: {}\n  public_modules:\n{}\n{}{}{}  roles:\n{}{}  representation:\n    closed_variants:\n{}    validated_values:\n      - make{}\n    transition_functions:\n      - {}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n{}{}{}{}",
         yaml_quote(module_name),
         yaml_quote(public_entrypoint),
         render_property_commands_yaml(shape, "js"),
@@ -58589,8 +60431,10 @@ fn render_js_implementation_yaml(module_name: &str, model: &BindingScaffoldModel
         yaml_quote(shape.as_str()),
         public_modules,
         render_traceable_architecture_yaml(names, shape, "src/transition.mjs"),
+        render_probe_architecture_yaml("js", None),
         machine_yaml,
         roles,
+        render_probe_role_yaml("tests/machine-probe.mjs"),
         closed_variants_yaml,
         names.label,
         transition_function,
@@ -58637,6 +60481,15 @@ fn render_js_representation_mjs(model: &BindingScaffoldModel) -> String {
         })
         .collect::<Vec<_>>()
         .join("");
+    let state_container = format!(
+        "export const {state} = Object.freeze({{\n{members}\n}});\n",
+        state = names.state,
+        members = starter_states_for_shape(shape)
+            .iter()
+            .map(|variant| format!("  {variant},"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
     let effect_section = if scaffold_declares_effects_by_default(shape) {
         render_js_effect_representation_mjs(names)
     } else {
@@ -58677,6 +60530,7 @@ fn render_js_representation_mjs(model: &BindingScaffoldModel) -> String {
     };
     format!(
         r#"{state_variants}
+{state_container}
 export function make{label}(value) {{
   const label = typeof value === "string" ? value.trim() : "";
   if (!label) {{
@@ -58685,7 +60539,7 @@ export function make{label}(value) {{
   return Object.freeze({{ tag: "{label}", value: label }});
 }}
 
-export function initial{state}() {{
+export function initialState() {{
   return {initial_state};
 }}
 
@@ -58774,7 +60628,7 @@ export function make{transition_record}(fields) {{
         reply = names.reply,
         initial_state = initial_state,
         state_variants = state_variants,
-        state = names.state,
+        state_container = state_container,
         transition = names.transition,
         transition_record = names.transition_record,
     )
@@ -59410,6 +61264,224 @@ if (process.env.RMS_TRACE_RUNNER === "produceTransitionTrace") {{
     )
 }
 
+fn render_js_machine_probe_mjs(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let states = starter_states_for_shape(model.shape);
+    let initial = states
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Ready".to_string());
+    let mut imports = states.clone();
+    imports.extend([
+        "initialState".to_string(),
+        format!("make{}Accept", names.command),
+        format!("make{}Reject", names.command),
+        format!("make{}", names.label),
+    ]);
+    if model.stateful() {
+        imports.push(format!("make{}Command", names.input));
+    }
+    for event in model.declared_observed_events() {
+        imports.push(format!("make{}{}", names.event, event));
+    }
+    if !model.declared_observed_events().is_empty() {
+        imports.push(format!("make{}ObservedEvent", names.input));
+    }
+    if model.declares_effect_results {
+        imports.extend([
+            format!("make{}EffectResult", names.input),
+            format!("make{}Succeeded", names.effect_result),
+            format!("make{}Failed", names.effect_result),
+        ]);
+    }
+    imports.sort();
+    imports.dedup();
+    let state_map = states
+        .iter()
+        .map(|state| format!("  {state},"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let state_descriptions = states
+        .iter()
+        .map(|state| format!(r#"{{ name: "{state}", data_schema: {{ type: "object" }} }}"#))
+        .collect::<Vec<_>>()
+        .join(",\n    ");
+    let observed_arms = model
+        .declared_observed_events()
+        .iter()
+        .map(|event| {
+            format!(
+                r#"  if (kind === "observed-event" && name === "{event}") return make{input}ObservedEvent(make{event_type}{event}());"#,
+                input = names.input,
+                event_type = names.event,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let observed_descriptions = model
+        .declared_observed_events()
+        .iter()
+        .map(|event| {
+            format!(
+                r#"{{ kind: "observed-event", name: "{event}", data_schema: {{ type: "object" }}, example: {{ kind: "observed-event", name: "{event}", data: {{}} }} }}"#
+            )
+        })
+        .collect::<Vec<_>>();
+    let effect_arms = if model.declares_effect_results {
+        format!(
+            r#"  if (kind === "effect-result" && name === "Succeeded") return make{input}EffectResult(make{effect_result}Succeeded());
+  if (kind === "effect-result" && name === "Failed") return make{input}EffectResult(make{effect_result}Failed(probeText(value, "reason")));"#,
+            input = names.input,
+            effect_result = names.effect_result,
+        )
+    } else {
+        String::new()
+    };
+    let mut input_descriptions = vec![
+        r#"{ kind: "command", name: "Accept", data_schema: { type: "object", properties: { label: { type: "string" } }, required: ["label"] }, example: { kind: "command", name: "Accept", data: { label: "example" } } }"#.to_string(),
+        r#"{ kind: "command", name: "Reject", data_schema: { type: "object", properties: { reason: { type: "string" } }, required: ["reason"] }, example: { kind: "command", name: "Reject", data: { reason: "rejected" } } }"#.to_string(),
+    ];
+    input_descriptions.extend(observed_descriptions);
+    if model.declares_effect_results {
+        input_descriptions.extend([
+            r#"{ kind: "effect-result", name: "Succeeded", data_schema: { type: "object" }, example: { kind: "effect-result", name: "Succeeded", data: {} } }"#.to_string(),
+            r#"{ kind: "effect-result", name: "Failed", data_schema: { type: "object", properties: { reason: { type: "string" } }, required: ["reason"] }, example: { kind: "effect-result", name: "Failed", data: { reason: "failed" } } }"#.to_string(),
+        ]);
+    }
+    let parse_input = if model.stateful() {
+        format!(
+            r#"function parseInput(value) {{
+  const kind = value?.kind;
+  const name = value?.name;
+  if (kind === "command" && name === "Accept") return make{input}Command(make{command}Accept(make{label}(probeText(value, "label"))));
+  if (kind === "command" && name === "Reject") return make{input}Command(make{command}Reject(probeText(value, "reason")));
+{observed_arms}
+{effect_arms}
+  throw new Error(`unsupported probe input ${{kind}}:${{name}}`);
+}}"#,
+            input = names.input,
+            command = names.command,
+            label = names.label,
+            observed_arms = observed_arms,
+            effect_arms = effect_arms,
+        )
+    } else {
+        format!(
+            r#"function parseInput(value) {{
+  if (value?.name === "Accept") return make{command}Accept(make{label}(probeText(value, "label")));
+  if (value?.name === "Reject") return make{command}Reject(probeText(value, "reason"));
+  throw new Error(`unsupported probe command ${{value?.name}}`);
+}}"#,
+            command = names.command,
+            label = names.label,
+        )
+    };
+    let run_steps = if model.stateful() {
+        r#"function runSteps(request) {
+  let state = request.start === "initial"
+    ? initialState()
+    : statesByName[request.start?.name];
+  if (!state) throw new Error(`unknown probe state ${request.start?.name}`);
+  return request.steps.map((step, index) => {
+    const record = transitionRecord(state, parseInput(step.input));
+    state = record.state_after;
+    return recordJSON(record, step.input, index === 0);
+  });
+}"#
+        .to_string()
+    } else {
+        r#"function runSteps(request) {
+  return request.steps.map((step, index) =>
+    recordJSON(transitionRecord(parseInput(step.input)), step.input, index === 0));
+}"#
+        .to_string()
+    };
+    format!(
+        r#"import {{ readFile, writeFile }} from "node:fs/promises";
+import {{
+  {imports}
+}} from "../src/representation.mjs";
+import {{ transitionRecord }} from "../src/transition.mjs";
+
+const statesByName = Object.freeze({{
+{state_map}
+}});
+
+function caseName(value) {{
+  const tag = value?.tag;
+  if (typeof tag === "string") return tag.split(".").at(-1);
+  return String(value?.constructor?.name ?? value);
+}}
+
+function variantJSON(value) {{
+  if (value == null) return null;
+  return {{ name: caseName(value), data: {{ value }} }};
+}}
+
+function probeText(value, field) {{
+  return value?.data?.[field] ?? value?.data?.value ?? field;
+}}
+
+{parse_input}
+
+function recordJSON(record, normalizedInput, scenarioStart) {{
+  return {{
+    scenario_start: scenarioStart,
+    state_before: variantJSON(record.state_before),
+    state_after: variantJSON(record.state_after),
+    input: normalizedInput,
+    output: {{
+      next_state: variantJSON(record.output.next_state),
+      events: record.output.events.map(variantJSON),
+      commands: record.output.commands.map(variantJSON),
+      effects: record.output.effects.map(variantJSON),
+      reply: variantJSON(record.output.reply),
+      rejection: variantJSON(record.output.rejection),
+    }},
+    source: record.source,
+  }};
+}}
+
+{run_steps}
+
+export async function probeMachine() {{
+  const requestPath = process.env.RMS_PROBE_REQUEST;
+  const outputPath = process.env.RMS_PROBE_OUTPUT;
+  if (!requestPath || !outputPath) throw new Error("RMS_PROBE_REQUEST and RMS_PROBE_OUTPUT are required");
+  const request = JSON.parse(await readFile(requestPath, "utf8"));
+  const output = request.operation === "describe" ? {{
+    spec: "rms/machine-probe-description/v0.1",
+    machine: "{machine}",
+    initial_state: {{ name: "{initial}", data: {{}} }},
+    states: [
+    {state_descriptions}
+    ],
+    inputs: [
+    {input_descriptions}
+    ],
+  }} : {{
+    spec: "rms/trace-bundle/v0.1",
+    machine: "{machine}",
+    records: runSteps(request),
+  }};
+  await writeFile(outputPath, JSON.stringify(output, null, 2));
+}}
+
+if (process.env.RMS_PROBE_RUNNER?.split('#').at(-1) === "probeMachine") {{
+  await probeMachine();
+}}
+"#,
+        imports = imports.join(",\n  "),
+        state_map = state_map,
+        parse_input = parse_input,
+        run_steps = run_steps,
+        machine = names.machine,
+        initial = initial,
+        state_descriptions = state_descriptions,
+        input_descriptions = input_descriptions.join(",\n    "),
+    )
+}
+
 fn render_js_boundary_test_mjs(names: &InnerStructureNames) -> String {
     format!(
         r#"import assert from "node:assert/strict";
@@ -59576,7 +61648,7 @@ fn render_transition_trace_evidence(names: &InnerStructureNames) -> String {
 
 fn render_accepted_rejected_evidence(names: &InnerStructureNames) -> String {
     format!(
-        "# Scenario Evidence: accepted and rejected outcomes\n\nPromise:\n\n- `{machine}` exposes explicit accepted and rejected outcomes for expected failures.\n\nCommand/tool:\n\n- `rms verify implementation.yaml` runs the generated binding tests.\n- `rms trace replay verification/traces/transition_trace.yaml` reproduces the starter accepted/rejected sequence.\n\nExpected result:\n\n- Accepted input returns `{reply}.Accepted` through `reply`.\n- Rejected input returns `{rejection}` through `rejection`, with no success reply, instead of throwing or hiding the failure.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        "# Scenario Evidence: accepted and rejected outcomes\n\nPromise:\n\n- `{machine}` exposes explicit accepted and rejected outcomes for expected failures.\n\nCommand/tool:\n\n- `rms verify implementation.yaml` runs the generated binding tests.\n- `rms trace show verification/traces/transition_trace.yaml` shows the recorded starter accepted/rejected sequence.\n\nExpected result:\n\n- Accepted input returns `{reply}.Accepted` through `reply`.\n- Rejected input returns `{rejection}` through `rejection`, with no success reply, instead of throwing or hiding the failure.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
         machine = names.machine,
         reply = names.reply,
         rejection = names.rejection,
@@ -59622,7 +61694,7 @@ fn render_malformed_input_fuzz_evidence(names: &InnerStructureNames) -> String {
 
 fn render_parser_to_domain_command_evidence(names: &InnerStructureNames) -> String {
     format!(
-        "# Contract Evidence: parser to domain command\n\nPromise:\n\n- `{machine}` translates boundary input into an enveloped domain command or explicit rejection before core decisions run.\n\nCommand/tool:\n\n- `rms verify implementation.yaml` runs generated parser and adapter tests.\n- `rms trace replay verification/traces/boundary_parse.yaml` reproduces the parse/delegate/complete path.\n\nExpected result:\n\n- Parser success produces `{command}` or `{command_envelope}` values.\n- Parser rejection produces `{rejection}` without domain delegation.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
+        "# Contract Evidence: parser to domain command\n\nPromise:\n\n- `{machine}` translates boundary input into an enveloped domain command or explicit rejection before core decisions run.\n\nCommand/tool:\n\n- `rms verify implementation.yaml` runs generated parser and adapter tests.\n- `rms trace show verification/traces/boundary_parse.yaml` shows the recorded parse/delegate/complete path.\n\nExpected result:\n\n- Parser success produces `{command}` or `{command_envelope}` values.\n- Parser rejection produces `{rejection}` without domain delegation.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
         machine = names.machine,
         command = names.command,
         command_envelope = names.command_envelope,
@@ -61041,6 +63113,218 @@ mod tests {
         })
     }
 
+    fn probe_variant(name: &str, debug: String) -> JsonValue {
+        json!({"name": name, "data": {"debug": debug}})
+    }
+
+    fn workbench_state_json(state: &RmsWorkbenchState) -> JsonValue {
+        let name = match state {
+            RmsWorkbenchState::Ready => "Ready",
+            RmsWorkbenchState::WritingSemanticChangeRecord => "WritingSemanticChangeRecord",
+        };
+        probe_variant(name, format!("{state:?}"))
+    }
+
+    fn workbench_record_json(
+        record: &RmsWorkbenchTransitionRecord,
+        input: &JsonValue,
+        scenario_start: bool,
+    ) -> JsonValue {
+        let events = record
+            .output
+            .events
+            .iter()
+            .map(|event| {
+                probe_variant(
+                    match event {
+                        RmsWorkbenchEvent::CommandCompleted => "CommandCompleted",
+                        RmsWorkbenchEvent::SemanticChangeRecorded => "SemanticChangeRecorded",
+                    },
+                    format!("{event:?}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let effects = record
+            .output
+            .effects
+            .iter()
+            .map(|effect| probe_variant("WriteSemanticChangeRecord", format!("{effect:?}")))
+            .collect::<Vec<_>>();
+        let reply = record.output.reply.as_ref().map(|reply| {
+            probe_variant(
+                match reply {
+                    RmsWorkbenchReply::CommandCompleted => "CommandCompleted",
+                    RmsWorkbenchReply::SemanticChangeApplied => "SemanticChangeApplied",
+                    RmsWorkbenchReply::SemanticChangeRejected => "SemanticChangeRejected",
+                },
+                format!("{reply:?}"),
+            )
+        });
+        let rejection = record.output.rejection.as_ref().map(|rejection| {
+            probe_variant(
+                match rejection {
+                    RmsWorkbenchRejection::IllegalTransition => "IllegalTransition",
+                    RmsWorkbenchRejection::SemanticChangeRecordWriteFailed => {
+                        "SemanticChangeRecordWriteFailed"
+                    }
+                },
+                format!("{rejection:?}"),
+            )
+        });
+        json!({
+            "scenario_start": scenario_start,
+            "state_before": workbench_state_json(&record.state_before),
+            "state_after": workbench_state_json(&record.state_after),
+            "input": input,
+            "output": {
+                "next_state": workbench_state_json(&record.output.next_state),
+                "events": events,
+                "commands": [],
+                "effects": effects,
+                "reply": reply,
+                "rejection": rejection,
+            },
+            "source": {
+                "file": record.source.file,
+                "function": record.source.function,
+                "branch": record.source.branch,
+            },
+        })
+    }
+
+    fn parse_workbench_probe_input(value: &JsonValue) -> RmsWorkbenchInput {
+        let kind = value["kind"].as_str().expect("probe input kind");
+        let name = value["name"].as_str().expect("probe input name");
+        match (kind, name) {
+            ("command", "ValidateRmsArtifacts") => {
+                RmsWorkbenchInput::Command(RmsWorkbenchCommand::ValidateRmsArtifacts)
+            }
+            ("command", "ExplainModule") => {
+                RmsWorkbenchInput::Command(RmsWorkbenchCommand::ExplainModule)
+            }
+            ("command", "ApplySemanticChange") => {
+                let data = value["data"].as_object().expect("probe command data");
+                RmsWorkbenchInput::Command(RmsWorkbenchCommand::ApplySemanticChange {
+                    record_path: PathBuf::from(
+                        data.get("record_path")
+                            .and_then(JsonValue::as_str)
+                            .unwrap_or("verification/changes/probe.yaml"),
+                    ),
+                    record_contents: data
+                        .get("record_contents")
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or("spec: rms/semantic-change/v0.1\n")
+                        .to_string(),
+                })
+            }
+            ("effect-result", "SemanticChangeRecordWritten") => RmsWorkbenchInput::EffectResult(
+                RmsWorkbenchEffectResult::SemanticChangeRecordWritten,
+            ),
+            ("effect-result", "SemanticChangeRecordWriteRejected") => {
+                RmsWorkbenchInput::EffectResult(
+                    RmsWorkbenchEffectResult::SemanticChangeRecordWriteRejected,
+                )
+            }
+            _ => panic!("unsupported workbench probe input {kind}:{name}"),
+        }
+    }
+
+    #[test]
+    fn probe_machine() {
+        let (Ok(request_path), Ok(output_path)) = (
+            std::env::var("RMS_PROBE_REQUEST"),
+            std::env::var("RMS_PROBE_OUTPUT"),
+        ) else {
+            return;
+        };
+        let request: JsonValue =
+            serde_json::from_slice(&fs::read(request_path).expect("probe request")).unwrap();
+        let output = if request["operation"] == "describe" {
+            json!({
+                "spec": "rms/machine-probe-description/v0.1",
+                "machine": "RmsWorkbenchMachine",
+                "initial_state": {"name": "Ready", "data": {}},
+                "states": [
+                    {"name": "Ready", "data_schema": {"type": "object"}},
+                    {"name": "WritingSemanticChangeRecord", "data_schema": {"type": "object"}}
+                ],
+                "inputs": [
+                    {
+                        "kind": "command",
+                        "name": "ApplySemanticChange",
+                        "data_schema": {
+                            "type": "object",
+                            "properties": {
+                                "record_path": {"type": "string"},
+                                "record_contents": {"type": "string"}
+                            }
+                        },
+                        "example": {
+                            "kind": "command",
+                            "name": "ApplySemanticChange",
+                            "data": {
+                                "record_path": "verification/changes/probe.yaml",
+                                "record_contents": "spec: rms/semantic-change/v0.1\n"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "command",
+                        "name": "ValidateRmsArtifacts",
+                        "data_schema": {"type": "object"},
+                        "example": {"kind": "command", "name": "ValidateRmsArtifacts", "data": {}}
+                    },
+                    {
+                        "kind": "effect-result",
+                        "name": "SemanticChangeRecordWritten",
+                        "data_schema": {"type": "object"},
+                        "example": {
+                            "kind": "effect-result",
+                            "name": "SemanticChangeRecordWritten",
+                            "data": {}
+                        }
+                    },
+                    {
+                        "kind": "effect-result",
+                        "name": "SemanticChangeRecordWriteRejected",
+                        "data_schema": {"type": "object"},
+                        "example": {
+                            "kind": "effect-result",
+                            "name": "SemanticChangeRecordWriteRejected",
+                            "data": {}
+                        }
+                    }
+                ]
+            })
+        } else {
+            let mut state = match request["start"]["name"].as_str() {
+                Some("WritingSemanticChangeRecord") => {
+                    RmsWorkbenchState::WritingSemanticChangeRecord
+                }
+                _ => initial_rms_workbench_state(),
+            };
+            let records = request["steps"]
+                .as_array()
+                .expect("probe steps")
+                .iter()
+                .enumerate()
+                .map(|(index, step)| {
+                    let normalized = &step["input"];
+                    let record =
+                        transition_record(state.clone(), parse_workbench_probe_input(normalized));
+                    state = record.state_after.clone();
+                    workbench_record_json(&record, normalized, index == 0)
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "spec": "rms/trace-bundle/v0.1",
+                "machine": "RmsWorkbenchMachine",
+                "records": records
+            })
+        };
+        fs::write(output_path, serde_json::to_vec_pretty(&output).unwrap()).unwrap();
+    }
+
     fn record_generated_traces(root: &Path) {
         let report = execute_trace_producers(
             &root.join("implementation.yaml"),
@@ -61541,12 +63825,18 @@ source:
 commands:
   build: node --check src/transition.mjs
   verify: node --check src/transition.mjs
+  probe: node tests/machine-probe.mjs
 architecture:
   shape: domain-engine
+  probe:
+    protocol: rms/machine-probe/v0.1
+    command: probe
+    runner: tests/machine-probe.mjs#probeMachine
   machine:
     name: ExampleMachine
     mode: stateless-decision-machine
     transition_signature: input-only
+    initial_state: Ready
     stateless_justification: The decision has no lifecycle.
     types:
       state: ExampleState
@@ -61573,6 +63863,7 @@ architecture:
         events: [Accepted]
         reply: Accepted
   roles:
+    probe_adapter: [tests/machine-probe.mjs]
     representation: [src/representation.mjs]
     transition: [src/transition.mjs]
 "#;
@@ -61881,6 +64172,7 @@ architecture:
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(&root);
         let manifest = load_manifest(&root.join("implementation.yaml")).unwrap();
         let mut diagnostics = Vec::new();
 
@@ -65208,6 +67500,7 @@ architecture:
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(&root);
 
         run_surface_apply(SurfaceApplyRequest {
             implementation: root.join("implementation.yaml"),
@@ -65446,6 +67739,7 @@ architecture:
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(&root);
 
         run_surface_apply(SurfaceApplyRequest {
             implementation: root.join("implementation.yaml"),
@@ -65544,6 +67838,7 @@ architecture:
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(&root);
 
         run_machine_apply(
             &root.join("implementation.yaml"),
@@ -65744,6 +68039,7 @@ architecture:
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(&root);
 
         run_machine_apply(
             &root.join("implementation.yaml"),
@@ -65830,6 +68126,7 @@ architecture:
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(&root);
         let before = fs::read_to_string(root.join("implementation.yaml")).unwrap();
 
         run_machine_apply(
@@ -65927,6 +68224,7 @@ architecture:
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(&root);
 
         run_machine_apply(
             &root.join("implementation.yaml"),
@@ -66120,6 +68418,7 @@ architecture:
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(&root);
         run_machine_apply(
             &root.join("implementation.yaml"),
             None,
@@ -66224,6 +68523,7 @@ architecture:
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(&root);
 
         run_spec_apply(
             &root.join("module.yaml"),
@@ -70450,6 +72750,306 @@ topology: composite
     }
 
     #[test]
+    fn probe_cli_accepts_each_mode_and_rejects_conflicts() {
+        assert!(Cli::try_parse_from(["rms", "probe", "--describe"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "rms",
+            "probe",
+            "--input",
+            r#"{"kind":"command","name":"Validate"}"#,
+            "--input",
+            r#"{"kind":"effect-result","name":"SemanticChangeRecordWritten"}"#,
+            "--expect-final-state",
+            "Ready",
+            "--expect-final-case",
+            "SemanticChangeRecordWritten",
+            "--timeout-seconds",
+            "3",
+            "--json",
+            "--out",
+            "probe-trace.json",
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from(["rms", "probe", "--file", "-"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["rms", "probe", "--describe", "--timeout-seconds", "0",]).is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "rms",
+            "probe",
+            "--describe",
+            "--input",
+            r#"{"kind":"command","name":"Validate"}"#,
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "rms",
+            "probe",
+            "--file",
+            "scenario.yaml",
+            "--input",
+            r#"{"kind":"command","name":"Validate"}"#,
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["rms", "probe", "--state", r#"{"name":"Ready"}"#]).is_err());
+    }
+
+    #[test]
+    fn trace_show_replaces_replay_without_compatibility_alias() {
+        assert!(
+            Cli::try_parse_from(["rms", "trace", "show", "verification/traces/example.json"])
+                .is_ok()
+        );
+        let replay = match Cli::try_parse_from([
+            "rms",
+            "trace",
+            "replay",
+            "verification/traces/example.json",
+        ]) {
+            Ok(_) => panic!("removed trace replay command unexpectedly parsed"),
+            Err(error) => error,
+        };
+        assert_eq!(replay.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn probe_matching_uses_recursive_object_subsets_and_exact_sequences() {
+        let actual: YamlValue = serde_yaml::from_str(
+            r#"
+name: InProgress
+data:
+  nested:
+    selected: true
+    ignored: 7
+  ordered: [one, two]
+  absent: null
+"#,
+        )
+        .unwrap();
+        let subset: YamlValue = serde_yaml::from_str(
+            r#"
+name: InProgress
+data:
+  nested:
+    selected: true
+  ordered: [one, two]
+  absent: null
+"#,
+        )
+        .unwrap();
+        let reordered: YamlValue = serde_yaml::from_str(
+            r#"
+data:
+  ordered: [two, one]
+"#,
+        )
+        .unwrap();
+        let non_null: YamlValue = serde_yaml::from_str(
+            r#"
+data:
+  absent: present
+"#,
+        )
+        .unwrap();
+
+        assert!(probe_value_matches(&actual, &subset));
+        assert!(!probe_value_matches(&actual, &reordered));
+        assert!(!probe_value_matches(&actual, &non_null));
+        assert!(probe_value_matches(
+            &actual,
+            &YamlValue::String("InProgress".to_string())
+        ));
+    }
+
+    #[test]
+    fn probe_request_validation_rejects_unknown_fields_kinds_and_variants() {
+        let implementation =
+            load_manifest(&Path::new(env!("CARGO_MANIFEST_DIR")).join("implementation.yaml"))
+                .unwrap();
+        let valid: YamlValue = serde_yaml::from_str(
+            r#"
+spec: rms/machine-probe/v0.1
+operation: run
+start: initial
+steps:
+  - input: { kind: command, name: ValidateRmsArtifacts, data: {} }
+"#,
+        )
+        .unwrap();
+        assert!(validate_probe_request(&valid, &implementation).is_ok());
+
+        for invalid in [
+            r#"
+spec: rms/machine-probe/v0.1
+operation: run
+start: initial
+unknown: true
+steps:
+  - input: { kind: command, name: ValidateRmsArtifacts, data: {} }
+"#,
+            r#"
+spec: rms/machine-probe/v0.1
+operation: run
+start: initial
+steps:
+  - input: { kind: timer, name: ValidateRmsArtifacts, data: {} }
+"#,
+            r#"
+spec: rms/machine-probe/v0.1
+operation: run
+start: initial
+steps:
+  - input: { kind: command, name: NotDeclared, data: {} }
+"#,
+        ] {
+            let request: YamlValue = serde_yaml::from_str(invalid).unwrap();
+            assert!(validate_probe_request(&request, &implementation).is_err());
+        }
+    }
+
+    #[test]
+    fn probe_expectations_report_the_first_failure_deterministically() {
+        let request: YamlValue = serde_yaml::from_str(
+            r#"
+steps:
+  - input: { kind: command, name: Validate }
+    expect:
+      case: ExpectedCase
+      rejection: null
+expect:
+  final_state: { name: ExpectedState }
+"#,
+        )
+        .unwrap();
+        let bundle: YamlValue = serde_yaml::from_str(
+            r#"
+records:
+  - state_before: { name: Ready }
+    state_after: { name: Ready }
+    input: { kind: command, name: Validate }
+    output:
+      next_state: { name: Ready }
+      events: []
+      commands: []
+      effects: []
+      reply: { name: CommandCompleted }
+      rejection: null
+    source: { branch: CommandCompleted }
+"#,
+        )
+        .unwrap();
+        let (checked, failures) = evaluate_probe_expectations(&request, &bundle);
+        assert_eq!(checked, 3);
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].path, "steps[0].expect.case");
+        assert_eq!(failures[1].path, "expect.final_state");
+    }
+
+    #[test]
+    fn probe_protocol_rejects_unknown_description_fields_and_malformed_traces() {
+        let implementation =
+            load_manifest(&Path::new(env!("CARGO_MANIFEST_DIR")).join("implementation.yaml"))
+                .unwrap();
+        let unknown_description: YamlValue = serde_yaml::from_str(
+            r#"
+spec: rms/machine-probe-description/v0.1
+machine: RmsWorkbenchMachine
+initial_state: {name: Ready, data: {}}
+states: []
+inputs: []
+legacy: true
+"#,
+        )
+        .unwrap();
+        assert!(validate_probe_description(&unknown_description, &implementation).is_err());
+
+        let malformed_trace: YamlValue = serde_yaml::from_str(
+            r#"
+spec: rms/trace-bundle/v0.1
+machine: RmsWorkbenchMachine
+records:
+  - state_before: Ready
+    state_after: {name: Ready}
+    input: {kind: command, name: ValidateRmsArtifacts}
+    output: {next_state: {name: Ready}}
+"#,
+        )
+        .unwrap();
+        let error = validate_probe_trace_shape(&malformed_trace)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("state_before"));
+        assert!(error.contains("normalized variant"));
+    }
+
+    #[test]
+    fn structure_rejects_probe_adapters_that_invoke_the_machine_driver() {
+        let root = unique_test_dir("probe-unsafe-driver");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/transition.mjs"),
+            "export function transitionRecord() {}\nexport function driveMachine() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: unsafe-probe
+binding: js
+source: {root: ., public_entrypoint: src/transition.mjs}
+commands:
+  build: node --check src/transition.mjs
+  verify: node --check src/transition.mjs
+architecture:
+  shape: domain-engine
+  machine:
+    name: UnsafeProbeMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    driver_function: driveMachine
+    transition_record_function: transitionRecord
+    types:
+      state: UnsafeProbeState
+      input: UnsafeProbeInput
+      command: UnsafeProbeCommand
+      event: UnsafeProbeEvent
+      reply: UnsafeProbeReply
+      rejection: UnsafeProbeRejection
+      transition: UnsafeProbeTransition
+      transition_record: UnsafeProbeTransitionRecord
+    states: [Ready]
+    commands: [Run]
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: []
+    replies: [Accepted]
+    rejections: [Rejected]
+    effect_protocols: []
+    transition_function: transitionRecord
+    transitions:
+      - {case: Run, from: Ready, on: Run, to: Ready, reply: Accepted}
+  roles:
+    transition: [src/transition.mjs]
+"#,
+        )
+        .unwrap();
+        write_probe_fixture_support(&root);
+        fs::write(
+            root.join("src/probe_fixture.mjs"),
+            "export function initialState() { return {name: 'Ready', data: {}}; }\nfunction transitionRecord() {}\nfunction driveMachine() {}\nexport function probeMachine() { void process.env.RMS_PROBE_REQUEST; void process.env.RMS_PROBE_OUTPUT; transitionRecord(); driveMachine(); }\n",
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.probe-unsafe-execution"
+                && diagnostic.message.contains("driveMachine")
+        }));
+    }
+
+    #[test]
     fn boundary_adapter_shape_scaffold_gets_boundary_semantics() {
         let root = unique_test_dir("shape-boundary-adapter");
 
@@ -74403,6 +77003,125 @@ semantic_functions: []
         );
     }
 
+    fn write_probe_fixture_support(root: &Path) {
+        let implementation_path = root.join("implementation.yaml");
+        let mut implementation = load_manifest(&implementation_path).unwrap();
+        let binding = get_str(&implementation.value, &["binding"]).unwrap_or("js");
+        let (probe_path, probe_runner, initial_state_symbol, probe_command, probe_source) =
+            match binding {
+                "rust" => {
+                    let transition_record = get_str(
+                        &implementation.value,
+                        &["architecture", "machine", "transition_record_function"],
+                    )
+                    .map(semantic_symbol_name)
+                    .unwrap_or("transition_record");
+                    (
+                        "tests/probe_fixture.rs",
+                        "probe_machine",
+                        "initial_state",
+                        "cargo test --manifest-path Cargo.toml probe_machine",
+                        format!(
+                            "pub fn initial_state() {{}}\nfn {transition_record}() {{}}\n#[test]\npub fn probe_machine() {{ let _ = std::env::var(\"RMS_PROBE_REQUEST\"); let _ = std::env::var(\"RMS_PROBE_OUTPUT\"); {transition_record}(); }}\n"
+                        ),
+                    )
+                }
+                "swift" => {
+                    let transition_record = get_str(
+                        &implementation.value,
+                        &["architecture", "machine", "transition_record_function"],
+                    )
+                    .map(semantic_symbol_name)
+                    .unwrap_or("transitionRecord");
+                    (
+                        "Tests/ProbeFixture.swift",
+                        "probeMachine",
+                        "initialState",
+                        "swift test --filter probeMachine",
+                        format!(
+                            "func initialState() {{}}\nfunc {transition_record}() {{}}\nfunc probeMachine() {{ _ = ProcessInfo.processInfo.environment[\"RMS_PROBE_REQUEST\"]; _ = ProcessInfo.processInfo.environment[\"RMS_PROBE_OUTPUT\"]; {transition_record}() }}\n"
+                        ),
+                    )
+                }
+                _ => {
+                    let transition_record = get_str(
+                        &implementation.value,
+                        &["architecture", "machine", "transition_record_function"],
+                    )
+                    .map(semantic_symbol_name)
+                    .unwrap_or("transitionRecord");
+                    (
+                        "src/probe_fixture.mjs",
+                        "probeMachine",
+                        "initialState",
+                        "node --check src/probe_fixture.mjs",
+                        format!(
+                            "export function initialState() {{ return {{ name: 'Ready', data: {{}} }}; }}\nfunction {transition_record}() {{}}\nexport function probeMachine() {{ void process.env.RMS_PROBE_REQUEST; void process.env.RMS_PROBE_OUTPUT; return {transition_record}(); }}\n"
+                        ),
+                    )
+                }
+            };
+        let transition_record_function = get_str(
+            &implementation.value,
+            &["architecture", "machine", "transition_record_function"],
+        )
+        .map(semantic_symbol_name)
+        .unwrap_or(if binding == "rust" {
+            "transition_record"
+        } else {
+            "transitionRecord"
+        })
+        .to_string();
+        let initial_state = get_string_array(
+            &implementation.value,
+            &["architecture", "machine", "states"],
+        )
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "Ready".to_string());
+        let stateful = get_str(
+            &implementation.value,
+            &["architecture", "machine", "transition_signature"],
+        ) == Some("state-and-input");
+
+        ensure_yaml_mapping_path(&mut implementation.value, &["commands"]).insert(
+            yaml_key("probe"),
+            YamlValue::String(probe_command.to_string()),
+        );
+        let machine =
+            ensure_yaml_mapping_path(&mut implementation.value, &["architecture", "machine"]);
+        machine.insert(yaml_key("initial_state"), YamlValue::String(initial_state));
+        machine.insert(
+            yaml_key("transition_record_function"),
+            YamlValue::String(transition_record_function),
+        );
+        let probe = ensure_yaml_mapping_path(&mut implementation.value, &["architecture", "probe"]);
+        probe.insert(
+            yaml_key("protocol"),
+            YamlValue::String("rms/machine-probe/v0.1".to_string()),
+        );
+        probe.insert(yaml_key("command"), YamlValue::String("probe".to_string()));
+        probe.insert(
+            yaml_key("runner"),
+            YamlValue::String(format!("{probe_path}#{probe_runner}")),
+        );
+        if stateful {
+            probe.insert(
+                yaml_key("initial_state_function"),
+                YamlValue::String(format!("{probe_path}#{initial_state_symbol}")),
+            );
+        }
+        append_unique_yaml_string_path(
+            &mut implementation.value,
+            &["architecture", "roles", "probe_adapter"],
+            probe_path,
+        );
+        write_yaml_manifest(&implementation).unwrap();
+        let probe_file = root.join(probe_path);
+        fs::create_dir_all(probe_file.parent().unwrap()).unwrap();
+        fs::write(probe_file, probe_source).unwrap();
+    }
+
     fn write_package_fixture(root: &Path) {
         fs::create_dir_all(root.join("contracts")).unwrap();
         fs::create_dir_all(root.join("scripts")).unwrap();
@@ -74585,6 +77304,7 @@ verification:
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(root);
     }
 
     #[test]
@@ -76632,6 +79352,7 @@ architecture:
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(&root);
 
         let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
         let error = run_verify_implementation_captured(&root.join("implementation.yaml"))
@@ -77566,6 +80287,7 @@ semantic_functions: []
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(&root);
 
         run_spec_apply(
             &root.join("module.yaml"),
@@ -77823,6 +80545,7 @@ semantic_functions:
 "#,
         )
         .unwrap();
+        write_probe_fixture_support(&root);
 
         let change = r#"spec: rms/semantic-change/v0.1
 module: module.yaml

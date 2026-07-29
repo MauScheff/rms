@@ -11,6 +11,7 @@ commands:
   fuzz: cargo test --manifest-path Cargo.toml schema_validation_reports_shape_errors
   properties: cargo test --manifest-path Cargo.toml "${RMS_PROPERTY_RUNNER##*#}"
   trace: cargo test --manifest-path Cargo.toml "${RMS_TRACE_RUNNER##*#}"
+  probe: cargo test --manifest-path Cargo.toml "${RMS_PROBE_RUNNER##*#}" -- --nocapture
 toolchain:
   cargo_manifest: Cargo.toml
   package: rms
@@ -28,6 +29,11 @@ dependencies:
   - walkdir
 architecture:
   shape: boundary-adapter
+  probe:
+    protocol: rms/machine-probe/v0.1
+    command: probe
+    runner: src/main.rs#probe_machine
+    initial_state_function: src/main.rs#initial_rms_workbench_state
   public_modules: []
   reliability:
     fuzz_targets:
@@ -948,6 +954,7 @@ architecture:
     name: RmsWorkbenchMachine
     mode: boundary-machine
     transition_signature: state-and-input
+    initial_state: Ready
     types:
       state: RmsWorkbenchState
       input: RmsWorkbenchInput
@@ -998,6 +1005,7 @@ architecture:
     - InspectLatestWorkbenchRun
     - InspectModule
     - InspectTraceBundle
+    - ProbeMachine
     - InspectWorkbenchRun
     - ListWorkbenchRuns
     - PackageModule
@@ -1102,6 +1110,8 @@ architecture:
     machine_driver:
     - src/main.rs
     trace_producer:
+    - src/main.rs
+    probe_adapter:
     - src/main.rs
     distribution_support:
     - ../../../scripts/sync-rms-agent-distributions.sh
@@ -1373,6 +1383,14 @@ architecture:
     semantic_function: trace-bundle-check-command
     machine_inputs:
     - InspectTraceBundle
+    machine_outputs: []
+  - id: probe-machine-public
+    public_kind: command
+    public_name: probe-machine
+    contract: contracts/probe-machine.v1.yaml
+    semantic_function: probe-machine-command
+    machine_inputs:
+    - ProbeMachine
     machine_outputs: []
   - id: plan-machine-change-public
     public_kind: command
@@ -2133,8 +2151,39 @@ semantic_functions:
     - verification/contracts/inspect_trace_bundle.md
     properties:
     - verification/properties/canonical_transition_trace_conformance.md
-- id: trace-bundle-replay-command
-  symbol: run_trace_replay
+- id: probe-machine-command
+  symbol: run_probe
+  kind: adapter
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/probe-machine.v1.yaml
+    invariants:
+    - diagnostics-are-evidence-not-authority
+    - machine-probes-are-pure-and-ephemeral
+    - trace-records-conform-to-canonical-transitions
+  assumptions:
+    ensures:
+    - probe runners exchange temporary request and output files through the declared protocol
+    - probe traces are validated against canonical transition cases before expectations are reported
+  evidence:
+    contracts:
+    - verification/contracts/probe_machine.md
+- id: probe-machine-validator
+  symbol: validate_machine_probe_binding
+  kind: parser
+  purity: pure
+  discharges:
+    invariants:
+    - machine-probes-are-pure-and-ephemeral
+  assumptions:
+    ensures:
+    - probe bindings resolve the exact transition-record function and exclude drivers and effect executors
+  evidence:
+    contracts:
+    - verification/contracts/probe_machine.md
+- id: trace-bundle-show-command
+  symbol: run_trace_show
   kind: projector
   purity: effectful
   discharges:
@@ -2144,7 +2193,7 @@ semantic_functions:
     - diagnostics-are-evidence-not-authority
   assumptions:
     ensures:
-    - replay output reconstructs a deterministic timeline from recorded transition records rather than invoking a runtime
+    - show output reconstructs a deterministic timeline from recorded transition records rather than invoking a runtime
   evidence:
     contracts:
     - verification/contracts/inspect_trace_bundle.md
@@ -2781,7 +2830,7 @@ semantic_functions:
     - verification/laws/canonical_mutations_require_route_receipts.md
 x-rms:
   semantic_revision:
-    digest: sha256:c2a7ac40d694b720d0605a853e621b047942d7ffe926dd5732663c3394808e2d
-    change_record: verification/changes/seal-the-final-rms-0-1-0-rc-6-canonical-state-after-release-metadata-and-upstream-guidance-reconciliation-43b5d8060d51.yaml
+    digest: sha256:2c3030ddcbd18e7dcdc14d50a860245bef7a09815bab398e8db45578e0dc9508
+    change_record: verification/changes/add-first-class-pure-machine-probing-and-replace-recorded-trace-replay-with-show-d7a39a27f150.yaml
     applied_by: rms spec apply
-    change_record_digest: sha256:43b5d8060d51abac26e3e5ad88454b9b84092160e903d31449cb68425ea82866
+    change_record_digest: sha256:d7a39a27f150a89165fb456ce089ecc5584f119a2c887eaea2f7b50ed7fe9f0f

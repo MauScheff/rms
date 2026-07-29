@@ -8,6 +8,7 @@ commands:
   build: swift build --package-path .
   verify: if [ "$(sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ]; then arch -arm64 swift test --package-path . --disable-swift-testing; else swift test --package-path . --disable-swift-testing; fi
   trace: if [ "$(uname -s)" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then arch -arm64 swift test --package-path . --filter "${RMS_TRACE_RUNNER##*#}"; else swift test --package-path . --filter "${RMS_TRACE_RUNNER##*#}"; fi
+  probe: if [ "$(uname -s)" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then arch -arm64 swift test --package-path . --filter "${RMS_PROBE_RUNNER##*#}"; else swift test --package-path . --filter "${RMS_PROBE_RUNNER##*#}"; fi
 toolchain:
   package_manifest: Package.swift
   package: rms-swift-example
@@ -16,6 +17,10 @@ dependencies:
   allowed_external_modules: []
 architecture:
   shape: domain-engine
+  probe:
+    protocol: rms/machine-probe/v0.1
+    command: probe
+    runner: Tests/RmsSwiftExampleTests/MachineProbeTests.swift#testProbeMachine
   reliability:
     properties:
     - id: accepted-swift-widget-name-is-non-empty
@@ -72,6 +77,7 @@ architecture:
     name: SwiftExampleMachine
     mode: stateless-decision-machine
     transition_signature: input-only
+    initial_state: Ready
     stateless_justification: This example is a pure query over validated input with no lifecycle.
     types:
       state: SwiftExampleState
@@ -138,6 +144,8 @@ architecture:
     - verification/traces/transition_trace.yaml
     trace_producer:
     - Tests/RmsSwiftExampleTests/RmsSwiftExampleTests.swift
+    probe_adapter:
+    - Tests/RmsSwiftExampleTests/MachineProbeTests.swift
   representation:
     closed_variants:
     - DescribeSwiftWidgetCommand

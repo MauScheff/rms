@@ -2,7 +2,7 @@ spec: rms/contract/v0.1
 name: "inspect-trace-bundle"
 version: 1
 kind: command
-meaning: "Check, replay, diagnose, and stitch local RMS transition records across machines, protocols, and resources without requiring an RMS runtime."
+meaning: "Check, show, diagnose, and stitch local RMS transition records across machines, protocols, and resources without requiring an RMS runtime."
 preconditions:
   - id: "accepts-1"
     statement: "One local trace bundle or a set of bundles whose envelopes identify source, target, correlation, causation, sequence, and protocol message."
@@ -10,7 +10,7 @@ preconditions:
     statement: "Discoverable owning implementations and protocol contracts when semantic conformance is requested."
 postconditions:
   - id: "ensures-1"
-    statement: "Local replay reconstructs state, input, outputs, resource disposition, and source provenance."
+    statement: "The recorded-timeline view reconstructs state, input, outputs, resource disposition, and source provenance without executing the machine."
   - id: "ensures-2"
     statement: "Stitched timelines preserve causation and validate each cross-module handoff against participant and protocol semantics."
   - id: "ensures-3"

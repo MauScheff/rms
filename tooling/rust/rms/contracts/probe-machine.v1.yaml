@@ -1,0 +1,24 @@
+spec: rms/contract/v0.1
+name: probe-machine
+version: 1
+kind: command
+meaning: Execute normalized inputs through an implementation's declared pure transition-record path and report the observed timeline.
+preconditions:
+- id: accepts-1
+  statement: The target is one inspectable Rust, Swift, or JavaScript implementation with a valid rms/machine-probe/v0.1 binding.
+- id: accepts-2
+  statement: Each command, observed event, or effect result names a declared input and supplies schema-valid payload data.
+postconditions:
+- id: ensures-1
+  statement: Every step calls the exact transition-record function and the next step receives the preceding state_after.
+- id: ensures-2
+  statement: The result is a validated rms/trace-bundle/v0.1 timeline, optionally checked against caller expectations.
+- id: ensures-3
+  statement: Probing never invokes the machine driver or an effect executor and does not count as verification evidence.
+- id: ensures-4
+  statement: No project artifact is written unless the caller supplies --out.
+failure_categories:
+- id: rejects-1
+  statement: Ambiguous discovery, invalid protocol data, unsafe bindings, runner failure, timeout, nonconforming output, or the first failed expectation.
+compatibility:
+  policy: breaking-before-1.0
