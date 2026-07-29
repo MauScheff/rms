@@ -13354,7 +13354,12 @@ fn resolve_probe_implementation(explicit: Option<&Path>) -> Result<PathBuf> {
                 resolved.display()
             );
         }
-        return Ok(resolved);
+        return fs::canonicalize(&resolved).with_context(|| {
+            format!(
+                "failed to resolve probe implementation `{}`",
+                resolved.display()
+            )
+        });
     }
 
     let cwd = std::env::current_dir().context("failed to resolve current directory")?;
@@ -72792,6 +72797,20 @@ topology: composite
         ])
         .is_err());
         assert!(Cli::try_parse_from(["rms", "probe", "--state", r#"{"name":"Ready"}"#]).is_err());
+    }
+
+    #[test]
+    fn probe_explicit_relative_implementation_resolves_to_an_absolute_path() {
+        let resolved = resolve_probe_implementation(Some(Path::new("implementation.yaml")))
+            .expect("crate-local implementation binding");
+        assert!(resolved.is_absolute());
+        assert_eq!(
+            resolved.file_name().and_then(|name| name.to_str()),
+            Some("implementation.yaml")
+        );
+        assert!(resolved
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty()));
     }
 
     #[test]
