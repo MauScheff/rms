@@ -26,6 +26,8 @@ dependencies:
   - sha2
   - syn
   - toml
+  - tree-sitter
+  - tree-sitter-python
   - walkdir
 architecture:
   shape: boundary-adapter
@@ -179,7 +181,7 @@ architecture:
     - id: binding-transition-types-match-canonical-machine
       proves: binding-transition-signature-realizes-canonical-types
       kind: property
-      input_space: Rust, Swift, and JavaScript stateful binding fixtures with matching and mismatching transition parameters and outputs
+      input_space: Rust, Swift, JavaScript, and Python stateful binding fixtures with matching and mismatching transition parameters and outputs
       preconditions:
       - the implementation declares machine types, transition signature, and transition function
       operation: run binding conformance inspection
@@ -1387,7 +1389,7 @@ architecture:
   - id: probe-machine-public
     public_kind: command
     public_name: probe-machine
-    contract: contracts/probe-machine.v1.yaml
+    contract: contracts/probe-machine.v2.yaml
     semantic_function: probe-machine-command
     machine_inputs:
     - ProbeMachine
@@ -2157,7 +2159,7 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/probe-machine.v1.yaml
+    - contracts/probe-machine.v2.yaml
     invariants:
     - diagnostics-are-evidence-not-authority
     - machine-probes-are-pure-and-ephemeral

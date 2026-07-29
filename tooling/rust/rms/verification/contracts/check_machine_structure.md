@@ -2,7 +2,7 @@
 
 Promise: `check-machine-structure` reports whether semantic cases, binding types and envelopes, the closed machine input, exact state-and-input transition-record path, effect protocols, live record retention, total transition arithmetic, replay support, and trace roles agree.
 
-Scenario: generated Rust, Swift, and JavaScript bindings realize the same canonical model idiomatically. Malformed fixtures omit declared envelopes, return only transition outputs from live drivers, use unchecked numeric progress, collapse cases into type names, bypass effect results, hide orchestration in executors, or leave trace branches uncovered.
+Scenario: generated Rust, Swift, JavaScript, and Python bindings realize the same canonical model idiomatically. Malformed fixtures omit declared envelopes, return only transition outputs from live drivers, use unchecked numeric progress, collapse cases into type names, bypass effect results, hide orchestration in executors, or leave trace branches uncovered.
 
 Command: `cargo test --workspace --locked`
 

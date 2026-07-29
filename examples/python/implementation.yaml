@@ -1,0 +1,212 @@
+spec: rms/implementation/v0.1
+module: example-python
+binding: python
+source:
+  root: src/example_python
+  public_entrypoint: src/example_python/__init__.py
+commands:
+  build: python -m compileall -q src tests
+  verify: python -m unittest discover -s tests
+  probe: python tests/machine_probe.py
+  trace: python tests/rms_proof_runner.py RMS_TRACE_RUNNER
+  properties: python tests/rms_proof_runner.py RMS_PROPERTY_RUNNER
+semantic_functions:
+- id: representation-constructors
+  symbol: src/example_python/representation.py#make_label
+  kind: constructor
+  purity: pure
+  evidence:
+    laws:
+    - verification/laws/transition_trace.md
+    properties:
+    - verification/properties/transition_properties.md
+- id: transition-model
+  symbol: src/example_python/transition.py#transition
+  kind: transition
+  purity: pure
+  evidence:
+    laws:
+    - verification/laws/transition_trace.md
+toolchain:
+  runner: python
+  package_manifest: pyproject.toml
+  package: example-python
+  import_package: example_python
+  requires_python: '>=3.11'
+distribution:
+  reusable: true
+  public_facade: src/example_python/__init__.py
+  semantic_package:
+    output: dist/example-python-0.1.0.rms
+  native_package:
+    manifest: pyproject.toml
+    exports:
+    - src/example_python/__init__.py
+architecture:
+  shape: domain-engine
+  public_modules:
+  - src/example_python/__init__.py
+  - src/example_python/representation.py
+  - src/example_python/transition.py
+  allowed_public_field_structs:
+  - ExampleCommandEnvelope
+  - ExampleEventEnvelope
+  - ExampleTransition
+  - ExampleTransitionRecord
+  - ExampleSourceProvenance
+  messages:
+    command_envelope:
+    - command_id
+    - target_machine
+    - correlation_id
+    - causation_id
+    - idempotency_key
+    event_envelope:
+    - event_id
+    - source_machine
+    - correlation_id
+    - causation_id
+    - sequence
+    - schema_version
+    - occurred_at
+  transition:
+    output:
+    - next_state
+    - events
+    - commands
+    - effects
+    - reply
+    - rejection
+  numeric_safety:
+    validated_arithmetic: checked-or-bounded-or-proven
+  trace:
+    journal: transition-records
+    timeline_projection: transition-records
+    replay_bundle: transition-records
+    first_bad_transition: source-provenance-from-transition-record
+    producers:
+    - id: Example-transition-trace
+      profile: smoke
+      bundle: verification/traces/transition_trace.yaml
+      command: trace
+      runner: tests/trace_producer.py#produce_transition_trace
+  reliability:
+    properties:
+    - id: Example-transition-output-is-declared
+      proves: transition-trace
+      input_space: generated valid and rejected commands
+      oracle:
+      - transition outputs use declared variants
+      - replay records preserve source branch and state movement
+      command: properties
+      evidence: verification/properties/transition_properties.md
+      counterexamples: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: generated-property
+        command: properties
+        generator: src/example_python/transition.py#generate_property_cases
+        runner: tests/test_binding.py#run_transition_property
+  probe:
+    protocol: rms/machine-probe/v0.1
+    command: probe
+    runner: tests/machine_probe.py#probe_machine
+    initial_state_function: src/example_python/representation.py#initial_state
+  machine:
+    name: ExampleMachine
+    mode: stateless-decision-machine
+    transition_signature: input-only
+    initial_state: Ready
+    stateless_justification: generated domain-engine starts as a pure decision machine; use rms spec apply when lifecycle state changes product meaning
+    transition_record_function: transition_record
+    types:
+      state: ExampleState
+      command: ExampleCommand
+      command_envelope: ExampleCommandEnvelope
+      event: ExampleEvent
+      event_envelope: ExampleEventEnvelope
+      reply: ExampleReply
+      rejection: ExampleRejection
+      transition: ExampleTransition
+      transition_record: ExampleTransitionRecord
+    states:
+    - Ready
+    commands:
+    - Accept
+    - Reject
+    observed_events: []
+    events:
+    - Accepted
+    - Rejected
+    effects: []
+    effect_results: []
+    replies:
+    - Accepted
+    rejections:
+    - InvalidCommand
+    - IllegalTransition
+    effect_protocols: []
+    resource_protocols: []
+    transition_function: transition
+    transitions:
+    - from: Ready
+      on: Accept
+      to: Ready
+      case: Accept
+      events:
+      - Accepted
+      reply: Accepted
+    - from: Ready
+      on: Reject
+      to: Ready
+      case: Reject
+      events:
+      - Rejected
+      rejection: InvalidCommand
+  roles:
+    representation:
+    - src/example_python/representation.py
+    transition:
+    - src/example_python/transition.py
+    message_envelope:
+    - src/example_python/representation.py
+    transition_record:
+    - src/example_python/transition.py
+    journal:
+    - src/example_python/transition.py
+    timeline_projection:
+    - src/example_python/transition.py
+    trace_producer:
+    - tests/trace_producer.py
+    replay_bundle:
+    - src/example_python/transition.py
+    trace_evidence:
+    - verification/laws/transition_trace.md
+    property_generator:
+    - src/example_python/transition.py
+    property_oracle:
+    - src/example_python/transition.py
+    counterexample_replay:
+    - src/example_python/transition.py
+    probe_adapter:
+    - tests/machine_probe.py
+  representation:
+    closed_variants:
+    - ExampleState
+    - ExampleCommand
+    - ExampleCommandEnvelope
+    - ExampleEvent
+    - ExampleEventEnvelope
+    - ExampleReply
+    - ExampleRejection
+    - ExampleTransition
+    - ExampleTransitionRecord
+    - ExampleSourceProvenance
+    validated_values:
+    - makeExampleLabel
+    transition_functions:
+    - transition
+dependencies:
+  allowed_external_packages: []
+  allowed_local_packages: []
+  local_modules: []

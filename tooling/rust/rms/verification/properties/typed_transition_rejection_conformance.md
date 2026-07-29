@@ -21,6 +21,6 @@ Command/tool:
 
 Observed result:
 
-- Rust, Swift, and JavaScript fixtures without rejection-bearing transition output are all rejected with `structure.transition-rejection-channel-missing`.
+- Rust, Swift, JavaScript, and Python fixtures without rejection-bearing transition output are all rejected with `structure.transition-rejection-channel-missing`.
 
 Source revision: recorded by git commit or strict audit provenance before production use.

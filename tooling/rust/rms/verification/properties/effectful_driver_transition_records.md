@@ -26,7 +26,7 @@ Command/tool:
 Expected result:
 
 - An output-only driver reports `structure.machine-driver-transition-record-not-preserved`.
-- Conforming Rust, Swift, and JavaScript drivers call the declared record function, retain complete records, advance from `state_after`, and execute only `output.effects`.
+- Conforming Rust, Swift, JavaScript, and Python drivers call the declared record function, retain complete records, advance from `state_after`, and execute only `output.effects`.
 - Any future failing fixture is recorded under `verification/fuzz/counterexamples/effectful-driver-records` with `spec: rms/property-counterexample/v0.1`.
 
 Source revision: recorded by git commit or strict audit provenance before production use.

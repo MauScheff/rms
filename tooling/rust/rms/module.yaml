@@ -141,7 +141,7 @@ provides:
   - name: inspect-trace-bundle
     contract: contracts/inspect-trace-bundle.v1.yaml
   - name: probe-machine
-    contract: contracts/probe-machine.v1.yaml
+    contract: contracts/probe-machine.v2.yaml
   - name: plan-machine-change
     contract: contracts/plan-machine-change.v1.yaml
   - name: apply-machine-change
@@ -976,7 +976,7 @@ properties:
 - id: binding-transition-types-match-canonical-machine
   proves: binding-transition-signature-realizes-canonical-types
   kind: property
-  input_space: Rust, Swift, and JavaScript stateful binding fixtures with matching and mismatching transition parameters and outputs
+  input_space: Rust, Swift, JavaScript, and Python stateful binding fixtures with matching and mismatching transition parameters and outputs
   preconditions:
   - the implementation declares machine types, transition signature, and transition function
   operation: run binding conformance inspection

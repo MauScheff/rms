@@ -25,4 +25,6 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 syn = { version = "2", features = ["full", "visit"] }
 toml = "0.8"
+tree-sitter = "=0.25.10"
+tree-sitter-python = "=0.25.0"
 walkdir = "2.5"

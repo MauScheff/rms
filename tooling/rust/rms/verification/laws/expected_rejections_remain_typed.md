@@ -6,7 +6,7 @@ Promise:
 
 Scenario:
 
-- Rust, Swift, and JavaScript fixtures remove the transition rejection channel while retaining declared rejection variants.
+- Rust, Swift, JavaScript, and Python fixtures remove the transition rejection channel while retaining declared rejection variants.
 
 Command/tool:
 

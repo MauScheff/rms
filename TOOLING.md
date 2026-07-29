@@ -192,7 +192,7 @@ package(project) -> artifact
 
 Bindings should inspect native project shape and represent RMS roles idiomatically. RMS names semantic obligations, not universal folder layouts.
 
-The initial binding set includes Rust, Swift, JavaScript, and opaque executable projects. Native compilers and test frameworks remain the authority for language-specific correctness; RMS checks their declared relationship to canonical semantics.
+The initial binding set includes Rust, Swift, JavaScript, Python, and opaque executable projects. Native compilers and test frameworks remain the authority for language-specific correctness; RMS checks their declared relationship to canonical semantics.
 
 ## 5. Deterministic Enforcement
 

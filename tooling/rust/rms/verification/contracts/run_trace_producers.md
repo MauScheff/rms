@@ -20,7 +20,7 @@ Command/tool:
 
 Expected result:
 
-- Rust, Swift, and JavaScript producers record valid transition-derived bundles.
+- Rust, Swift, JavaScript, and Python producers record valid transition-derived bundles.
 - Normal comparison reports drift after committed evidence changes.
 - Timeout terminates the producer process group and reports the exact producer.
 

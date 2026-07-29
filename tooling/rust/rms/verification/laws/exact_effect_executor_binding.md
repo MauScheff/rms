@@ -4,7 +4,7 @@ Promise: `effect-protocols-bind-exact-executors`
 
 ## Scenarios
 
-- Rust, Swift, and JavaScript workflow scaffolds bind each effect protocol to a declared executor role and exact callable symbol.
+- Rust, Swift, JavaScript, and Python workflow scaffolds bind each effect protocol to a declared executor role and exact callable symbol.
 - Swift executors preserve their declared request and result types across synchronous, `async`, `throws`, `rethrows`, and typed-throws declarations.
 - A protocol with a missing symbol, wrong role, missing function, incompatible request/result signature, or executor-owned transition is diagnosed deterministically.
 - A one-request-one-result executor containing a lifecycle loop is rejected.

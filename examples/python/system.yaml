@@ -1,0 +1,15 @@
+spec: rms/system/v0.1
+system:
+  name: python-example-system
+  version: 0.1.0
+  purpose: Demonstrate the maintained inspectable Python implementation binding.
+contexts:
+- examples
+public_interfaces: []
+external_dependencies: []
+workflows: []
+invariants: []
+compatibility:
+  policy: backward-compatible-within-major
+glossary: GLOSSARY.md
+context_map: context-map.yaml

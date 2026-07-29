@@ -86,7 +86,7 @@ rms probe [IMPLEMENTATION] --input <JSON>... [--state <JSON>]
 rms probe [IMPLEMENTATION] --file <PATH|->
 ```
 
-It resolves the nearest `implementation.yaml`, or the only supported implementation beneath the RMS root. Ambiguity is an error with candidate paths. Rust, Swift, and JavaScript probe adapters exchange `rms/machine-probe/v0.1` requests through temporary files, call the exact declared transition-record function, chain `state_after`, and return `rms/trace-bundle/v0.1`. They never invoke the driver or an effect executor.
+It resolves the nearest `implementation.yaml`, or the only supported implementation beneath the RMS root. Ambiguity is an error with candidate paths. Rust, Swift, JavaScript, and Python probe adapters exchange `rms/machine-probe/v0.1` requests through temporary files, call the exact declared transition-record function, chain `state_after`, and return `rms/trace-bundle/v0.1`. They never invoke the driver or an effect executor.
 
 Inline probes may assert `--expect-final-state` and `--expect-final-case`. Scenario files may assert per-step cases and outputs plus whole-run state and case paths, with recursive object-subset matching and exact ordered array/scalar matching. Normal runs write nothing; `--out` explicitly preserves the validated trace.
 

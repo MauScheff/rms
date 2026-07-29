@@ -129,6 +129,8 @@ rms add-module ./my-system/modules/widget \
   --binding rust
 ```
 
+Inspectable bindings accept `rust`, `swift`, `js`, or `python`; use `executable` for an opaque command-driven binding. Python scaffolds target Python 3.11 or newer and use `pyproject.toml`, a `src/` package layout, and standard-library `unittest`.
+
 Alternatively, when design recommends a recursive public capability:
 
 ```bash

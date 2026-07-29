@@ -12,6 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - name: RMS release check
         run: |
           set -euo pipefail
@@ -38,3 +41,19 @@ jobs:
           chmod +x "$wrapper_dir/cargo"
 
           PATH="$wrapper_dir:$PATH" target/debug/rms release check --root .
+
+  python-binding:
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.14"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Generated Python binding tests
+        run: |
+          cargo test -p rms --locked tests::python_module_scaffold_generates_valid_binding_artifacts -- --exact
+          cargo test -p rms --locked tests::python_boundary_and_workflow_scaffolds_verify -- --exact

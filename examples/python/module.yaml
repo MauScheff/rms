@@ -1,0 +1,50 @@
+spec: rms/module/v0.1
+
+module:
+  name: "example-python"
+  version: 0.1.0
+  kind: "library"
+  purpose: "Demonstrate Python module scaffolding."
+
+profiles:
+  - "core"
+
+owns:
+  concepts: []
+  data: []
+  decisions: []
+
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+
+requires:
+  modules: []
+  capabilities: []
+
+invariants: []
+
+effects: []
+compatibility:
+  policy: backward-compatible-within-major
+
+verification:
+  laws:
+    - verification/laws/transition_trace.md
+  contracts: []
+  scenarios:
+    - verification/scenarios/accepted_rejected.md
+  boundaries: []
+  properties:
+    - verification/properties/transition_properties.md
+
+x-scaffold:
+  shape: "domain-engine"
+  roles:
+    - "representation"
+    - "commands"
+    - "transitions"
+    - "trace-replay"
+    - "law-evidence"

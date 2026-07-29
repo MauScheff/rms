@@ -21,6 +21,7 @@ use syn::{
     ImplItem, Item, ItemStruct, Macro, Meta, Type, UseTree, Visibility,
 };
 use toml::Value as TomlValue;
+use tree_sitter::{Node as TreeSitterNode, Parser as TreeSitterParser};
 use walkdir::WalkDir;
 
 mod effect_executor;
@@ -1123,7 +1124,7 @@ enum Commands {
         #[arg(long)]
         shape: Option<ScaffoldShape>,
 
-        /// Optional implementation binding to scaffold. Currently supports `rust`, `swift`, `js`, and `executable`.
+        /// Optional implementation binding to scaffold. Supports `rust`, `swift`, `js`, `python`, and `executable`.
         #[arg(long)]
         binding: Option<String>,
 
@@ -1176,7 +1177,7 @@ enum Commands {
         /// Path to module.yaml or the module directory.
         module: PathBuf,
 
-        /// Implementation binding to scaffold: rust, swift, js, or executable.
+        /// Implementation binding to scaffold: rust, swift, js, python, or executable.
         #[arg(long)]
         binding: String,
 
@@ -1218,11 +1219,11 @@ enum Commands {
         #[arg(long)]
         domain_command: Option<String>,
 
-        /// Optional implementation binding for the domain child.
+        /// Optional domain binding: `rust`, `swift`, `js`, `python`, or `executable`.
         #[arg(long)]
         domain_binding: Option<String>,
 
-        /// Optional implementation binding for the boundary child.
+        /// Optional boundary binding: `rust`, `swift`, `js`, `python`, or `executable`.
         #[arg(long)]
         boundary_binding: Option<String>,
 
@@ -6395,6 +6396,18 @@ fn run_release_check(root: &Path, skip_cargo_package: bool) -> Result<()> {
         command_with_args(&rms_exe, &["compose", "--root", "examples/swift"], root),
     )?;
     run_release_step(
+        "rms compose examples/python",
+        command_with_args(&rms_exe, &["compose", "--root", "examples/python"], root),
+    )?;
+    run_release_step(
+        "rms verify examples/python",
+        command_with_args(
+            &rms_exe,
+            &["verify", "examples/python/implementation.yaml"],
+            root,
+        ),
+    )?;
+    run_release_step(
         "rms compose examples/tic-tac-toe",
         command_with_args(
             &rms_exe,
@@ -6427,6 +6440,14 @@ fn run_release_check(root: &Path, skip_cargo_package: bool) -> Result<()> {
                 "--locked",
             ],
             root,
+        ),
+    )?;
+    run_release_step(
+        "example Python binding tests",
+        command_with_args(
+            "python",
+            &["-m", "unittest", "discover", "-s", "tests"],
+            &root.join("examples/python"),
         ),
     )?;
     run_release_binary_smoke(root)?;
@@ -6577,8 +6598,12 @@ fn run_release_scaffold_roundtrip(root: &Path, rms_exe: &Path) -> Result<()> {
     let executable_widget = app.join("modules/executable-widget");
     let executable_implementation = executable_widget.join("implementation.yaml");
     let executable_implementation_arg = executable_implementation.to_string_lossy().to_string();
+    let python_widget = app.join("modules/python-widget");
+    let python_implementation = python_widget.join("implementation.yaml");
+    let python_implementation_arg = python_implementation.to_string_lossy().to_string();
     let rust_intent = r#"{"spec":"rms/intent-model/v0.1","operation":"design","change_scope":"new-module","subjects":["widget"],"facts":{"domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"widget decision"},"lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No ordered lifecycle was requested."},"effects":{"disposition":"absent","basis":"inferred","rationale":"The decision module is pure."},"runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"No runnable surface was requested."},"reuse":{"disposition":"absent","basis":"inferred","rationale":"No reuse requirement was stated."}},"responsibilities":[{"id":"widget-decision","kind":"decision","summary":"Own widget decisions."}],"surface_kinds":[],"binding_preferences":["rust"],"open_questions":[]}"#;
     let swift_intent = r#"{"spec":"rms/intent-model/v0.1","operation":"design","change_scope":"new-module","subjects":["swift-widget"],"facts":{"domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"Swift widget decision"},"lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No ordered lifecycle was requested."},"effects":{"disposition":"absent","basis":"inferred","rationale":"The decision module is pure."},"runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"No runnable surface was requested."},"reuse":{"disposition":"absent","basis":"inferred","rationale":"No reuse requirement was stated."}},"responsibilities":[{"id":"swift-widget-decision","kind":"decision","summary":"Own Swift widget decisions."}],"surface_kinds":[],"binding_preferences":["swift"],"open_questions":[]}"#;
+    let python_intent = r#"{"spec":"rms/intent-model/v0.1","operation":"design","change_scope":"new-module","subjects":["python-widget"],"facts":{"domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"Python widget decision"},"lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No ordered lifecycle was requested."},"effects":{"disposition":"absent","basis":"inferred","rationale":"The decision module is pure."},"runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"No runnable surface was requested."},"reuse":{"disposition":"absent","basis":"inferred","rationale":"No reuse requirement was stated."}},"responsibilities":[{"id":"python-widget-decision","kind":"decision","summary":"Own Python widget decisions."}],"surface_kinds":[],"binding_preferences":["python"],"open_questions":[]}"#;
     let executable_intent = r#"{"spec":"rms/intent-model/v0.1","operation":"design","change_scope":"new-module","subjects":["executable-widget"],"facts":{"domain_decisions":{"disposition":"absent","basis":"inferred","rationale":"The module adapts an existing decision boundary."},"lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No ordered lifecycle was requested."},"effects":{"disposition":"required","basis":"explicit","source_quote":"executable widget boundary"},"runnable_surface":{"disposition":"required","basis":"explicit","source_quote":"executable"},"reuse":{"disposition":"absent","basis":"inferred","rationale":"No reuse requirement was stated."}},"responsibilities":[{"id":"executable-widget-boundary","kind":"boundary","summary":"Own the executable widget boundary."}],"surface_kinds":["executable"],"binding_preferences":["executable"],"open_questions":[]}"#;
 
     let result = (|| -> Result<()> {
@@ -6641,6 +6666,14 @@ fn run_release_scaffold_roundtrip(root: &Path, rms_exe: &Path) -> Result<()> {
             root,
             rms_exe,
             &app,
+            "rms add-module python scaffold",
+            "Create the Python widget decision module.",
+            python_intent,
+        )?;
+        run_release_design_scaffold(
+            root,
+            rms_exe,
+            &app,
             "rms add-module executable scaffold",
             "Create the executable widget boundary.",
             executable_intent,
@@ -6683,6 +6716,14 @@ fn run_release_scaffold_roundtrip(root: &Path, rms_exe: &Path) -> Result<()> {
             command_with_args(
                 rms_exe,
                 &["verify", executable_implementation_arg.as_str()],
+                root,
+            ),
+        )?;
+        run_release_step(
+            "rms verify scaffold python binding",
+            command_with_args(
+                rms_exe,
+                &["verify", python_implementation_arg.as_str()],
                 root,
             ),
         )?;
@@ -13384,10 +13425,9 @@ fn resolve_probe_implementation(explicit: Option<&Path>) -> Result<PathBuf> {
         })
         .filter(|path| {
             load_manifest(path).ok().is_some_and(|manifest| {
-                matches!(
-                    get_str(&manifest.value, &["binding"]),
-                    Some("rust" | "swift" | "js" | "javascript")
-                )
+                get_str(&manifest.value, &["binding"])
+                    .and_then(BindingKind::parse)
+                    .is_some_and(BindingKind::inspectable)
             })
         })
         .collect::<Vec<_>>();
@@ -13415,9 +13455,9 @@ fn load_probe_binding(path: &Path) -> Result<ProbeBinding> {
         bail!("`{}` is not an RMS implementation binding", path.display());
     }
     let binding = get_str(&implementation.value, &["binding"]).unwrap_or("");
-    if !matches!(binding, "rust" | "swift" | "js" | "javascript") {
+    if !BindingKind::parse(binding).is_some_and(BindingKind::inspectable) {
         bail!(
-            "binding `{binding}` does not support machine probing; supported bindings are rust, swift, and js"
+            "binding `{binding}` does not support machine probing; supported bindings are rust, swift, js, and python"
         );
     }
     if get_str(
@@ -15854,6 +15894,10 @@ fn binding_symbol_reference_exists(
                     inspect_js_source(&source, &mut summary);
                     summary.functions.contains(symbol) || summary.symbols.contains(symbol)
                 }
+                Some("python") => {
+                    python_function_source(&source, symbol).is_some()
+                        || source.contains(&format!("class {symbol}"))
+                }
                 _ => source_identifier_occurs(&source, symbol),
             }
         }
@@ -15901,6 +15945,8 @@ fn binding_function_references_symbol(
                     .is_some_and(|function| source_identifier_occurs(&function, target_symbol)),
                 Some("swift") => swift_function_source(&source, function_symbol)
                     .is_some_and(|function| source_identifier_occurs(&function, target_symbol)),
+                Some("python") => python_function_source(&source, function_symbol)
+                    .is_some_and(|function| source_identifier_occurs(function, target_symbol)),
                 Some("executable") => true,
                 _ => {
                     source_identifier_occurs(&source, function_symbol)
@@ -15951,6 +15997,12 @@ fn trace_producer_serializes_transition_records(
                     && function.contains("writeFile")
             })
         }
+        Some("python") => python_function_source(&source, runner_symbol).is_some_and(|function| {
+            function.contains("transition_record")
+                && function.contains("records")
+                && function.contains("json")
+                && function.contains("write_text")
+        }),
         _ => false,
     }
 }
@@ -16196,6 +16248,9 @@ fn property_runner_has_oracle(base: &Path, implementation: &LoadedManifest, runn
                         || function.contains("precondition(")
                         || function.contains("assert(")
                 }),
+                Some("python") => python_function_source(&source, symbol).is_some_and(|function| {
+                    function.contains("assert") || function.contains("self.assert")
+                }),
                 _ => false,
             }
         }
@@ -16264,6 +16319,12 @@ fn property_generator_is_fixed_literal_corpus(
                 Some("swift") => swift_function_source(&source, symbol).is_some_and(|function| {
                     function.contains('[')
                         && !function.contains(".map")
+                        && !function.contains("for ")
+                        && !function.contains("while ")
+                        && !function.to_ascii_lowercase().contains("random")
+                }),
+                Some("python") => python_function_source(&source, symbol).is_some_and(|function| {
+                    !function.contains("range(")
                         && !function.contains("for ")
                         && !function.contains("while ")
                         && !function.to_ascii_lowercase().contains("random")
@@ -20862,10 +20923,16 @@ fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diag
     validate_active_evidence_semantic_references(manifest, diagnostics);
 
     match get_str(&manifest.value, &["binding"]) {
-        Some("rust") => validate_rust_implementation(manifest, diagnostics),
-        Some("swift") => validate_swift_implementation(manifest, diagnostics),
-        Some("js") => validate_js_implementation(manifest, diagnostics),
-        Some("executable") => validate_executable_implementation(manifest, diagnostics),
+        Some(binding) => match BindingKind::parse(binding) {
+            Some(BindingKind::Rust) => validate_rust_implementation(manifest, diagnostics),
+            Some(BindingKind::Swift) => validate_swift_implementation(manifest, diagnostics),
+            Some(BindingKind::Js) => validate_js_implementation(manifest, diagnostics),
+            Some(BindingKind::Python) => validate_python_implementation(manifest, diagnostics),
+            Some(BindingKind::Executable) => {
+                validate_executable_implementation(manifest, diagnostics)
+            }
+            None => {}
+        },
         _ => {}
     }
 }
@@ -20875,7 +20942,7 @@ fn validate_machine_probe_binding(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let binding = get_str(&implementation.value, &["binding"]).unwrap_or_default();
-    if !matches!(binding, "rust" | "swift" | "js" | "javascript") {
+    if !BindingKind::parse(binding).is_some_and(BindingKind::inspectable) {
         return;
     }
     if get_str(
@@ -20898,7 +20965,7 @@ fn validate_machine_probe_binding(
         None | Some("") => diagnostics.push(error(
             "structure.probe-initial-state-missing",
             &implementation.path,
-            "inspectable Rust, Swift, and JavaScript machines must declare `architecture.machine.initial_state`",
+            "inspectable Rust, Swift, JavaScript, and Python machines must declare `architecture.machine.initial_state`",
         )),
         Some(initial) if !states.iter().any(|state| state == initial) => diagnostics.push(error(
             "structure.probe-initial-state-undeclared",
@@ -20914,7 +20981,7 @@ fn validate_machine_probe_binding(
         diagnostics.push(error(
             "structure.probe-binding-missing",
             &implementation.path,
-            "inspectable Rust, Swift, and JavaScript machines must declare `architecture.probe`",
+            "inspectable Rust, Swift, JavaScript, and Python machines must declare `architecture.probe`",
         ));
         return;
     };
@@ -21857,6 +21924,7 @@ fn source_declares_transition_function(binding: &str, source: &str, function: &s
                 || source.contains(&format!("let {function}"))
                 || source.contains(&format!("var {function}"))
         }
+        "python" => python_function_source(source, function).is_some(),
         _ => source.contains(function),
     }
 }
@@ -24704,6 +24772,7 @@ fn declared_source_type_names(source: &str, binding: &str) -> Vec<String> {
                 "public class ",
             ],
             "js" => &["export function make", "export const ", "export class "],
+            "python" => &["class ", "def "],
             _ => &[],
         };
         for prefix in candidates {
@@ -25507,6 +25576,497 @@ fn validate_js_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<D
     validate_js_semantic_function_symbols(manifest, diagnostics, &summary);
     validate_js_machine_shape(manifest, diagnostics, &source_root);
     validate_js_machine_execution_path(manifest, diagnostics, &summary, &source_root);
+}
+
+#[derive(Default)]
+struct PythonSourceSummary {
+    symbols: BTreeSet<String>,
+    functions: BTreeMap<String, String>,
+    imports: Vec<(String, PathBuf)>,
+    public_exports: BTreeSet<String>,
+    syntax_errors: Vec<PathBuf>,
+}
+
+fn python_source_files(source_root: &Path) -> Vec<PathBuf> {
+    WalkDir::new(source_root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .filter(|path| !path_has_component(path, "__pycache__"))
+        .filter(|path| !path_has_component(path, ".venv"))
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("py"))
+        .collect()
+}
+
+fn python_node_text<'a>(node: TreeSitterNode<'_>, source: &'a str) -> Option<&'a str> {
+    source.get(node.byte_range())
+}
+
+fn find_python_function_node<'tree>(
+    node: TreeSitterNode<'tree>,
+    source: &str,
+    function: &str,
+) -> Option<TreeSitterNode<'tree>> {
+    if node.kind() == "function_definition"
+        && node
+            .child_by_field_name("name")
+            .and_then(|name| python_node_text(name, source))
+            == Some(function)
+    {
+        return Some(node);
+    }
+    let mut cursor = node.walk();
+    let found = node
+        .named_children(&mut cursor)
+        .find_map(|child| find_python_function_node(child, source, function));
+    found
+}
+
+fn python_function_source<'a>(source: &'a str, function: &str) -> Option<&'a str> {
+    let mut parser = TreeSitterParser::new();
+    parser
+        .set_language(&tree_sitter_python::LANGUAGE.into())
+        .ok()?;
+    let tree = parser.parse(source, None)?;
+    let node = find_python_function_node(tree.root_node(), source, function)?;
+    python_node_text(node, source)
+}
+
+fn inspect_python_node(
+    node: TreeSitterNode<'_>,
+    source: &str,
+    path: &Path,
+    summary: &mut PythonSourceSummary,
+) {
+    match node.kind() {
+        "class_definition" | "function_definition" => {
+            if let Some(name) = node
+                .child_by_field_name("name")
+                .and_then(|name| python_node_text(name, source))
+            {
+                summary.symbols.insert(name.to_string());
+                if node.kind() == "function_definition" {
+                    summary.functions.insert(
+                        name.to_string(),
+                        python_node_text(node, source)
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        "import_statement" | "import_from_statement" => {
+            if let Some(text) = python_node_text(node, source) {
+                for import in python_import_roots(text) {
+                    summary.imports.push((import, path.to_path_buf()));
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        inspect_python_node(child, source, path, summary);
+    }
+}
+
+fn python_import_roots(statement: &str) -> Vec<String> {
+    let values = if let Some(rest) = statement.trim().strip_prefix("from ") {
+        rest.split_once(" import ")
+            .map(|(module, _)| vec![module])
+            .unwrap_or_default()
+    } else if let Some(rest) = statement.trim().strip_prefix("import ") {
+        rest.split(',').collect()
+    } else {
+        Vec::new()
+    };
+    values
+        .into_iter()
+        .filter_map(|value| {
+            let value = value.trim();
+            if value.starts_with('.') {
+                None
+            } else {
+                value
+                    .split(['.', ' '])
+                    .next()
+                    .filter(|root| !root.is_empty())
+                    .map(ToString::to_string)
+            }
+        })
+        .collect()
+}
+
+fn collect_python_all_exports(source: &str, exports: &mut BTreeSet<String>) {
+    let Some(start) = source.find("__all__") else {
+        return;
+    };
+    let tail = &source[start..];
+    let Some(open) = tail.find('[') else {
+        return;
+    };
+    let Some(close) = tail[open + 1..].find(']') else {
+        return;
+    };
+    let body = &tail[open + 1..open + 1 + close];
+    for item in body.split(',') {
+        let name = item.trim().trim_matches(['\'', '"']);
+        if is_checkable_identifier(name) {
+            exports.insert(name.to_string());
+        }
+    }
+}
+
+fn python_standard_library_modules() -> &'static [&'static str] {
+    &[
+        "__future__",
+        "abc",
+        "argparse",
+        "asyncio",
+        "collections",
+        "contextlib",
+        "copy",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "enum",
+        "functools",
+        "hashlib",
+        "importlib",
+        "inspect",
+        "io",
+        "itertools",
+        "json",
+        "logging",
+        "math",
+        "os",
+        "pathlib",
+        "random",
+        "re",
+        "shlex",
+        "shutil",
+        "socket",
+        "sqlite3",
+        "statistics",
+        "subprocess",
+        "sys",
+        "tempfile",
+        "threading",
+        "time",
+        "tomllib",
+        "typing",
+        "unittest",
+        "urllib",
+        "uuid",
+    ]
+}
+
+fn python_distribution_root(value: &str) -> String {
+    value
+        .split(['<', '>', '=', '!', '~', '[', ';', ' '])
+        .next()
+        .unwrap_or(value)
+        .replace('-', "_")
+        .to_ascii_lowercase()
+}
+
+fn validate_python_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let Some(source_root_ref) = get_str(&manifest.value, &["source", "root"]) else {
+        return;
+    };
+    let source_root = base.join(source_root_ref);
+    let public_entrypoint =
+        base.join(get_str(&manifest.value, &["source", "public_entrypoint"]).unwrap_or_default());
+    if public_entrypoint
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("py")
+        || (public_entrypoint.exists() && !public_entrypoint.starts_with(&source_root))
+    {
+        diagnostics.push(error(
+            "implementation.python.public-entrypoint",
+            &manifest.path,
+            "Python public entrypoint must be a .py file inside source.root",
+        ));
+    }
+
+    let pyproject_path = base.join(
+        get_str(&manifest.value, &["toolchain", "package_manifest"]).unwrap_or("pyproject.toml"),
+    );
+    match load_toml(&pyproject_path) {
+        Ok(pyproject) => {
+            let project = pyproject.get("project").and_then(TomlValue::as_table);
+            let name = project
+                .and_then(|project| project.get("name"))
+                .and_then(TomlValue::as_str);
+            let requires = project
+                .and_then(|project| project.get("requires-python"))
+                .and_then(TomlValue::as_str);
+            if name != get_str(&manifest.value, &["toolchain", "package"]) {
+                diagnostics.push(error(
+                    "implementation.python.package.match",
+                    &manifest.path,
+                    "toolchain.package must match [project].name",
+                ));
+            }
+            if requires.is_none_or(|requires| !requires.contains("3.11"))
+                || requires != get_str(&manifest.value, &["toolchain", "requires_python"])
+            {
+                diagnostics.push(error(
+                    "implementation.python.requires-python",
+                    &manifest.path,
+                    "Python bindings must consistently declare a Python 3.11 or newer floor",
+                ));
+            }
+            let declared = get_string_array(
+                &manifest.value,
+                &["dependencies", "allowed_external_packages"],
+            )
+            .into_iter()
+            .map(|item| python_distribution_root(&item))
+            .collect::<BTreeSet<_>>();
+            let actual = project
+                .and_then(|project| project.get("dependencies"))
+                .and_then(TomlValue::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(TomlValue::as_str)
+                .map(python_distribution_root)
+                .collect::<BTreeSet<_>>();
+            if declared != actual {
+                diagnostics.push(error(
+                    "implementation.python.dependencies.match",
+                    &manifest.path,
+                    "allowed_external_packages must match pyproject project dependencies",
+                ));
+            }
+        }
+        Err(load_error) => diagnostics.push(error(
+            "implementation.python.package-manifest",
+            &manifest.path,
+            format!("Python binding requires a valid pyproject.toml: {load_error}"),
+        )),
+    }
+
+    let mut summary = PythonSourceSummary::default();
+    for path in python_source_files(&source_root) {
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let mut parser = TreeSitterParser::new();
+        if parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .is_err()
+        {
+            summary.syntax_errors.push(path);
+            continue;
+        }
+        let Some(tree) = parser.parse(&source, None) else {
+            summary.syntax_errors.push(path);
+            continue;
+        };
+        if tree.root_node().has_error() {
+            summary.syntax_errors.push(path.clone());
+        }
+        inspect_python_node(tree.root_node(), &source, &path, &mut summary);
+        if path.file_name().and_then(|name| name.to_str()) == Some("__init__.py") {
+            collect_python_all_exports(&source, &mut summary.public_exports);
+        }
+    }
+    for path in &summary.syntax_errors {
+        diagnostics.push(error(
+            "implementation.python.source.parse",
+            &manifest.path,
+            format!("Python source `{}` contains syntax errors", path.display()),
+        ));
+    }
+    for declared in declared_architecture_symbols(&manifest.value) {
+        if !summary.symbols.contains(&declared.symbol) {
+            diagnostics.push(error(
+                declared_architecture_symbol_missing_check(&declared),
+                &manifest.path,
+                format!("declared Python symbol `{}` was not found", declared.symbol),
+            ));
+        }
+    }
+    let allowed_external = get_string_array(
+        &manifest.value,
+        &["dependencies", "allowed_external_packages"],
+    )
+    .into_iter()
+    .map(|item| python_distribution_root(&item))
+    .collect::<BTreeSet<_>>();
+    let allowed_local =
+        get_string_array(&manifest.value, &["dependencies", "allowed_local_packages"])
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+    let own = get_str(&manifest.value, &["toolchain", "import_package"]).unwrap_or_default();
+    for (import, path) in &summary.imports {
+        if import != own
+            && !python_standard_library_modules().contains(&import.as_str())
+            && !allowed_external.contains(&python_distribution_root(import))
+            && !allowed_local.contains(import)
+        {
+            diagnostics.push(error(
+                "implementation.python.imports.declared",
+                &manifest.path,
+                format!(
+                    "Python source `{}` imports undeclared package `{import}`",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    if let Some(functions) = semantic_function_items(manifest) {
+        for function in functions {
+            let Some(symbol) = get_str(function, &["symbol"]) else {
+                continue;
+            };
+            let name = semantic_symbol_name(symbol);
+            let Some(source) = summary.functions.get(name) else {
+                diagnostics.push(error(
+                    "implementation.python.semantic-functions.symbol",
+                    &manifest.path,
+                    format!("semantic function `{symbol}` was not found"),
+                ));
+                continue;
+            };
+            if get_str(function, &["purity"]) == Some("pure")
+                && contains_hidden_effect_marker(source)
+            {
+                diagnostics.push(error(
+                    "structure.effectful-helper-in-pure-role",
+                    &manifest.path,
+                    format!("pure Python semantic function `{name}` performs an effect"),
+                ));
+            }
+            if get_str(function, &["kind"]) == Some("transition")
+                && source.contains("raise ")
+                && !get_string_array(&manifest.value, &["architecture", "machine", "rejections"])
+                    .is_empty()
+            {
+                diagnostics.push(error(
+                    "structure.transition-ambient-exception",
+                    &manifest.path,
+                    "Python transition raises instead of returning a declared rejection",
+                ));
+            }
+        }
+    }
+    if let Some(transition_name) = get_str(
+        &manifest.value,
+        &["architecture", "machine", "transition_function"],
+    ) {
+        if let Some(source) = summary.functions.get(transition_name) {
+            let declaration = source.lines().next().unwrap_or_default();
+            let types = machine_types_from_value(&manifest.value);
+            let parameters_match =
+                match get_str(
+                    &manifest.value,
+                    &["architecture", "machine", "transition_signature"],
+                ) {
+                    Some("state-and-input") => {
+                        types
+                            .state
+                            .as_deref()
+                            .is_some_and(|state| declaration.contains(&format!("state: {state}")))
+                            && types.input.as_deref().is_some_and(|input| {
+                                declaration.contains(&format!("input: {input}"))
+                            })
+                    }
+                    Some("input-only") => types.command.as_deref().is_some_and(|command| {
+                        declaration.contains(&format!("command: {command}"))
+                    }),
+                    _ => true,
+                };
+            let return_matches = types
+                .transition
+                .as_deref()
+                .is_some_and(|output| declaration.contains(&format!("-> {output}")));
+            if !parameters_match || !return_matches {
+                diagnostics.push(error(
+                    "structure.transition-function-not-transition-shaped",
+                    &manifest.path,
+                    "Python transition annotations must realize the declared canonical input and transition output types",
+                ));
+            }
+            let lower = source.to_ascii_lowercase();
+            let numeric = ["count", "index", "size", "limit", "amount", "quantity"]
+                .iter()
+                .any(|token| lower.contains(token));
+            let division_or_indexing = lower.lines().any(|line| {
+                (line.contains('/') && !line.trim_start().starts_with('#'))
+                    || (line.contains("index") && line.contains('[') && line.contains(']'))
+            });
+            let guarded = lower.contains("if ")
+                && (lower.contains("== 0")
+                    || lower.contains("<= 0")
+                    || lower.contains("< len(")
+                    || lower.contains(">= 0"));
+            if numeric && division_or_indexing && !guarded {
+                diagnostics.push(error(
+                    "structure.python-numeric-guard-missing",
+                    &manifest.path,
+                    "Python integers are unbounded, but division, indexing, and declared numeric-domain constraints still require explicit guards and rejection",
+                ));
+            }
+        }
+    }
+    for required in ["transition", "transition_record"] {
+        if !summary.public_exports.contains(required) {
+            diagnostics.push(error(
+                "implementation.python.public-facade",
+                &manifest.path,
+                format!("Python facade __all__ must export `{required}`"),
+            ));
+        }
+    }
+    if let Some(driver) = get_str(
+        &manifest.value,
+        &["architecture", "machine", "driver_function"],
+    ) {
+        let source = summary
+            .functions
+            .get(semantic_symbol_name(driver))
+            .map(String::as_str)
+            .unwrap_or_default();
+        if !source.contains("transition_record(") {
+            diagnostics.push(error(
+                "structure.machine-driver-transition-record-missing",
+                &manifest.path,
+                "Python driver must call the canonical transition-record function",
+            ));
+        }
+    }
+    for protocol in existing_effect_protocols(manifest) {
+        let Some(executor) = protocol.executor_symbol.as_deref() else {
+            continue;
+        };
+        let source = summary
+            .functions
+            .get(semantic_symbol_name(executor))
+            .map(String::as_str)
+            .unwrap_or_default();
+        if protocol.atomicity == "one-request-one-result"
+            && (source.contains("for ") || source.contains("while "))
+        {
+            diagnostics.push(error(
+                "structure.effect-protocol-not-atomic",
+                &manifest.path,
+                "one-request/one-result Python effect executor must not loop",
+            ));
+        }
+        if source.contains("transition(") || source.contains("transition_record(") {
+            diagnostics.push(error(
+                "structure.effect-result-bypasses-transition",
+                &manifest.path,
+                "Python effect executor must not invoke the machine transition",
+            ));
+        }
+    }
 }
 
 fn validate_executable_implementation(
@@ -44684,7 +45244,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out)?;
     writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and non-empty `accepts`, `ensures`, and `rejects`. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
     if context.implementation.is_none() {
-        writeln!(out, "This target has no implementation binding, so `semantic_functions`, `machine`, `roles`, and `surfaces` are null. Keep them null for contract/law/property-only work. Before requesting implementation bindings, machine roles, or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
+        writeln!(out, "This target has no implementation binding, so `semantic_functions`, `machine`, `roles`, and `surfaces` are null. Keep them null for contract/law/property-only work. Before requesting implementation bindings, machine roles, or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|python|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
     }
     writeln!(out)?;
     writeln!(out, "Surface add entries use `name`, `kind: runnable-boundary`, `surface`, `entrypoint`, `delegates_to.role` or `delegates_to.symbol`, `delegates_to.command`, `effects` or `no_effects_justification`, `usage_document`, `smoke_command`, and `evidence`. `smoke_command` names a key under implementation `commands`, and `rms verify` executes it. A delegated role must exist in `architecture.roles`; effect-emitting surfaces use an exact callable symbol that reaches the declared machine driver.")?;
@@ -56133,6 +56693,12 @@ fn configure_scaffold_dependency_behavior_binding(
             format!("Sources/{target}/Transition.swift#transition")
         }
         "js" => "src/adapter.mjs#handleBoundaryInput".to_string(),
+        "python" => format!(
+            "src/{}/adapter.py#handle_boundary_input",
+            sanitize_python_import_package(
+                get_str(&implementation.value, &["module"]).unwrap_or("module")
+            )
+        ),
         "executable" => "scripts/smoke.sh#run".to_string(),
         other => bail!("unsupported scaffold binding `{other}`"),
     };
@@ -56285,7 +56851,8 @@ fn scaffold_binding_if_requested(
 
 fn validate_scaffold_binding(binding: Option<&str>) -> Result<()> {
     match binding {
-        Some("rust" | "swift" | "js" | "executable") | None => Ok(()),
+        Some(binding) if BindingKind::scaffold_supported(binding) => Ok(()),
+        None => Ok(()),
         Some(other) => bail!("unsupported scaffold binding `{other}`"),
     }
 }
@@ -56463,9 +57030,50 @@ trait BindingAdapter {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BindingKind {
+    Rust,
+    Swift,
+    Js,
+    Python,
+    Executable,
+}
+
+impl BindingKind {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "rust" => Some(Self::Rust),
+            "swift" => Some(Self::Swift),
+            "js" | "javascript" => Some(Self::Js),
+            "python" => Some(Self::Python),
+            "executable" => Some(Self::Executable),
+            _ => None,
+        }
+    }
+
+    fn canonical_id(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::Swift => "swift",
+            Self::Js => "js",
+            Self::Python => "python",
+            Self::Executable => "executable",
+        }
+    }
+
+    fn inspectable(self) -> bool {
+        !matches!(self, Self::Executable)
+    }
+
+    fn scaffold_supported(value: &str) -> bool {
+        Self::parse(value).is_some_and(|binding| binding.canonical_id() == value)
+    }
+}
+
 struct RustBindingAdapter;
 struct SwiftBindingAdapter;
 struct JsBindingAdapter;
+struct PythonBindingAdapter;
 struct ExecutableBindingAdapter;
 
 impl BindingAdapter for RustBindingAdapter {
@@ -56618,6 +57226,60 @@ impl BindingAdapter for JsBindingAdapter {
     }
 }
 
+impl BindingAdapter for PythonBindingAdapter {
+    fn id(&self) -> &'static str {
+        "python"
+    }
+
+    fn scaffold(&self, path: &Path, model: &BindingScaffoldModel) -> Result<()> {
+        scaffold_python_module(path, model)
+    }
+
+    fn trace_proof_command(&self) -> &'static str {
+        "python tests/rms_proof_runner.py RMS_TRACE_RUNNER"
+    }
+
+    fn property_proof_command(&self) -> &'static str {
+        "python tests/rms_proof_runner.py RMS_PROPERTY_RUNNER"
+    }
+
+    fn realize_proof_support(&self, implementation: &mut LoadedManifest) -> Result<()> {
+        let base = implementation
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        let runner = base.join("tests/rms_proof_runner.py");
+        if !runner.exists() {
+            write_new_file(&runner, PYTHON_PROOF_RUNNER)?;
+        }
+        Ok(())
+    }
+
+    fn proof_support_writes(&self, implementation: &LoadedManifest) -> Vec<PathBuf> {
+        vec![implementation
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("tests/rms_proof_runner.py")]
+    }
+
+    fn realize_local_dependencies(
+        &self,
+        implementation: &mut LoadedManifest,
+        previous: &[String],
+        final_dependencies: &[String],
+    ) -> Result<()> {
+        realize_binding_dependency_metadata(
+            &mut implementation.value,
+            previous,
+            final_dependencies,
+            "allowed_local_packages",
+            |name| sanitize_python_import_package(name),
+        );
+        Ok(())
+    }
+}
+
 impl BindingAdapter for ExecutableBindingAdapter {
     fn id(&self) -> &'static str {
         "executable"
@@ -56653,15 +57315,17 @@ impl BindingAdapter for ExecutableBindingAdapter {
 static RUST_BINDING_ADAPTER: RustBindingAdapter = RustBindingAdapter;
 static SWIFT_BINDING_ADAPTER: SwiftBindingAdapter = SwiftBindingAdapter;
 static JS_BINDING_ADAPTER: JsBindingAdapter = JsBindingAdapter;
+static PYTHON_BINDING_ADAPTER: PythonBindingAdapter = PythonBindingAdapter;
 static EXECUTABLE_BINDING_ADAPTER: ExecutableBindingAdapter = ExecutableBindingAdapter;
 
 fn binding_adapter(binding: &str) -> Result<&'static dyn BindingAdapter> {
-    match binding {
-        "rust" => Ok(&RUST_BINDING_ADAPTER),
-        "swift" => Ok(&SWIFT_BINDING_ADAPTER),
-        "js" => Ok(&JS_BINDING_ADAPTER),
-        "executable" => Ok(&EXECUTABLE_BINDING_ADAPTER),
-        other => bail!("unsupported scaffold binding `{other}`"),
+    match BindingKind::parse(binding) {
+        Some(BindingKind::Rust) => Ok(&RUST_BINDING_ADAPTER),
+        Some(BindingKind::Swift) => Ok(&SWIFT_BINDING_ADAPTER),
+        Some(BindingKind::Js) if binding == "js" => Ok(&JS_BINDING_ADAPTER),
+        Some(BindingKind::Python) => Ok(&PYTHON_BINDING_ADAPTER),
+        Some(BindingKind::Executable) => Ok(&EXECUTABLE_BINDING_ADAPTER),
+        _ => bail!("unsupported scaffold binding `{binding}`"),
     }
 }
 
@@ -57269,6 +57933,64 @@ fn scaffold_js_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
     Ok(())
 }
 
+fn scaffold_python_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
+    let package = sanitize_python_import_package(&model.module_name);
+    let source = path.join("src").join(&package);
+    fs::create_dir_all(&source)?;
+    fs::create_dir_all(path.join("tests"))?;
+    write_new_file(
+        &path.join("implementation.yaml"),
+        &render_python_implementation_yaml(model)?,
+    )?;
+    write_new_file(
+        &path.join("pyproject.toml"),
+        &render_python_pyproject(model),
+    )?;
+    write_new_file(
+        &source.join("representation.py"),
+        &render_python_representation(model),
+    )?;
+    write_new_file(
+        &source.join("transition.py"),
+        &render_python_transition(model),
+    )?;
+    if model.declares_effects {
+        write_new_file(
+            &source.join("effect_executor.py"),
+            &render_python_effect_executor(model),
+        )?;
+        if model.stateful() {
+            write_new_file(
+                &source.join("machine_driver.py"),
+                &render_python_machine_driver(model),
+            )?;
+        }
+    }
+    if parser_expected_for_shape(model.shape.as_str()) {
+        write_new_file(&source.join("parser.py"), &render_python_parser(model))?;
+        write_new_file(&source.join("ports.py"), PYTHON_PORTS)?;
+        write_new_file(&source.join("adapter.py"), &render_python_adapter(model))?;
+    }
+    write_new_file(&source.join("__init__.py"), &render_python_public(model))?;
+    write_new_file(&path.join("tests/__init__.py"), "")?;
+    write_new_file(
+        &path.join("tests/test_binding.py"),
+        &render_python_tests(model),
+    )?;
+    write_new_file(
+        &path.join("tests/machine_probe.py"),
+        &render_python_machine_probe(model),
+    )?;
+    write_new_file(&path.join("tests/rms_proof_runner.py"), PYTHON_PROOF_RUNNER)?;
+    if !scaffold_trace_bundle_files(model.shape).is_empty() {
+        write_new_file(
+            &path.join("tests/trace_producer.py"),
+            &render_python_trace_producer(model),
+        )?;
+    }
+    Ok(())
+}
+
 fn scaffold_executable_module(path: &Path, model: &BindingScaffoldModel) -> Result<()> {
     fs::create_dir_all(path.join("scripts"))?;
     write_new_file(
@@ -57769,7 +58491,10 @@ fn render_module_readme(
             .collect::<Vec<_>>()
             .join("\n")
     );
-    if matches!(binding, Some("rust" | "swift" | "js" | "javascript")) {
+    if matches!(
+        binding.and_then(BindingKind::parse),
+        Some(BindingKind::Rust | BindingKind::Swift | BindingKind::Js | BindingKind::Python)
+    ) {
         rendered.replace(
             "\n## Agent Workflow\n",
             "\n## Quick Machine Probe\n\nUse `rms probe implementation.yaml --describe`, then copy an advertised example into `rms probe implementation.yaml --input '<JSON>'`. Ordered scenario files can assert state and case paths. Probes call the real transition-record function without executing effects and remain ephemeral unless `--out` is supplied.\n\n## Agent Workflow\n",
@@ -58006,6 +58731,8 @@ fn scaffold_trace_producer_reference(transition_source_path: &str) -> String {
         "tests/trace_producer.rs#produce_transition_trace".to_string()
     } else if transition_source_path.ends_with(".mjs") {
         "tests/trace-producer.mjs#produceTransitionTrace".to_string()
+    } else if transition_source_path.ends_with(".py") {
+        "tests/trace_producer.py#produce_transition_trace".to_string()
     } else if transition_source_path.ends_with(".swift") {
         let target = Path::new(transition_source_path)
             .components()
@@ -58043,6 +58770,15 @@ fn scaffold_property_runner_reference(transition_source_path: &str, malformed: b
                 "runMalformedInputProperty"
             } else {
                 "runTransitionProperty"
+            }
+        )
+    } else if transition_source_path.ends_with(".py") {
+        format!(
+            "tests/test_binding.py#{}",
+            if malformed {
+                "run_malformed_input_fuzz"
+            } else {
+                "run_transition_property"
             }
         )
     } else if transition_source_path.ends_with(".swift") {
@@ -58436,6 +59172,7 @@ fn render_property_commands_yaml(shape: ScaffoldShape, binding: &str) -> String 
         }
         "swift" => "swift test --package-path . --filter \"${RMS_PROBE_RUNNER##*#}\"",
         "js" => "node tests/machine-probe.mjs",
+        "python" => "python tests/machine_probe.py",
         _ => "",
     };
     if !probe_command.is_empty() {
@@ -58446,6 +59183,7 @@ fn render_property_commands_yaml(shape: ScaffoldShape, binding: &str) -> String 
             "rust" => RUST_BINDING_ADAPTER.trace_proof_command(),
             "swift" => SWIFT_BINDING_ADAPTER.trace_proof_command(),
             "js" => JS_BINDING_ADAPTER.trace_proof_command(),
+            "python" => PYTHON_BINDING_ADAPTER.trace_proof_command(),
             "executable" => EXECUTABLE_BINDING_ADAPTER.trace_proof_command(),
             _ => "",
         };
@@ -58458,6 +59196,7 @@ fn render_property_commands_yaml(shape: ScaffoldShape, binding: &str) -> String 
             "rust" => RUST_BINDING_ADAPTER.property_proof_command(),
             "swift" => SWIFT_BINDING_ADAPTER.property_proof_command(),
             "js" => JS_BINDING_ADAPTER.property_proof_command(),
+            "python" => PYTHON_BINDING_ADAPTER.property_proof_command(),
             _ => "",
         };
         if !command.is_empty() {
@@ -58469,6 +59208,7 @@ fn render_property_commands_yaml(shape: ScaffoldShape, binding: &str) -> String 
             "rust" => RUST_BINDING_ADAPTER.property_proof_command(),
             "swift" => SWIFT_BINDING_ADAPTER.property_proof_command(),
             "js" => JS_BINDING_ADAPTER.property_proof_command(),
+            "python" => PYTHON_BINDING_ADAPTER.property_proof_command(),
             _ => "",
         };
         if !command.is_empty() {
@@ -58488,6 +59228,7 @@ fn render_probe_architecture_yaml(binding: &str, target_name: Option<&str>) -> S
             )
         }
         "js" => "  probe:\n    protocol: rms/machine-probe/v0.1\n    command: probe\n    runner: tests/machine-probe.mjs#probeMachine\n    initial_state_function: src/representation.mjs#initialState\n".to_string(),
+        "python" => "  probe:\n    protocol: rms/machine-probe/v0.1\n    command: probe\n    runner: tests/machine_probe.py#probe_machine\n    initial_state_function: src/representation.py#initial_state\n".to_string(),
         _ => String::new(),
     }
 }
@@ -60379,6 +61120,1102 @@ final class MachineProbeTests: XCTestCase {{
         initial = initial,
         state_descriptions = state_descriptions,
         input_descriptions = input_descriptions,
+    )
+}
+
+fn sanitize_python_import_package(value: &str) -> String {
+    let mut package = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    while package.contains("__") {
+        package = package.replace("__", "_");
+    }
+    package = package.trim_matches('_').to_string();
+    if package
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_digit())
+    {
+        package.insert(0, '_');
+    }
+    if package.is_empty() {
+        "rms_module".to_string()
+    } else {
+        package
+    }
+}
+
+fn replace_yaml_strings(value: &mut YamlValue, replacements: &[(&str, &str)]) {
+    match value {
+        YamlValue::String(text) => {
+            for (from, to) in replacements {
+                *text = text.replace(from, to);
+            }
+        }
+        YamlValue::Sequence(items) => {
+            for item in items {
+                replace_yaml_strings(item, replacements);
+            }
+        }
+        YamlValue::Mapping(mapping) => {
+            for (_, item) in mapping {
+                replace_yaml_strings(item, replacements);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn render_python_implementation_yaml(model: &BindingScaffoldModel) -> Result<String> {
+    let package = sanitize_python_import_package(&model.module_name);
+    let source_root = format!("src/{package}");
+    let boundary = parser_expected_for_shape(model.shape.as_str());
+    let public_entrypoint = format!("{source_root}/__init__.py");
+    let js = render_js_implementation_yaml(&model.module_name, model);
+    let mut value: YamlValue = serde_yaml::from_str(&js)?;
+    let path_pairs = [
+        (
+            "src/representation.mjs",
+            format!("{source_root}/representation.py"),
+        ),
+        ("src/transition.mjs", format!("{source_root}/transition.py")),
+        ("src/parser.mjs", format!("{source_root}/parser.py")),
+        ("src/ports.mjs", format!("{source_root}/ports.py")),
+        ("src/adapter.mjs", format!("{source_root}/adapter.py")),
+        ("src/public.mjs", public_entrypoint.clone()),
+        (
+            "src/effect_executor.mjs",
+            format!("{source_root}/effect_executor.py"),
+        ),
+        (
+            "src/machine_driver.mjs",
+            format!("{source_root}/machine_driver.py"),
+        ),
+        (
+            "tests/trace-producer.mjs",
+            "tests/trace_producer.py".to_string(),
+        ),
+        (
+            "tests/machine-probe.mjs",
+            "tests/machine_probe.py".to_string(),
+        ),
+        ("tests/trace-smoke.mjs", "tests/test_binding.py".to_string()),
+        (
+            "tests/boundary-smoke.mjs",
+            "tests/test_binding.py".to_string(),
+        ),
+    ];
+    let owned = path_pairs
+        .iter()
+        .map(|(from, to)| (*from, to.as_str()))
+        .collect::<Vec<_>>();
+    replace_yaml_strings(
+        &mut value,
+        &[
+            ("makeLabel", "make_label"),
+            ("parseCommand", "parse_command"),
+            ("handleBoundaryTransition", "handle_boundary_transition"),
+            ("handleBoundaryInput", "handle_boundary_input"),
+            ("transitionRecord", "transition_record"),
+            ("executeEffect", "execute_effect"),
+            ("driveMachine", "drive_machine"),
+            ("produceTransitionTrace", "produce_transition_trace"),
+            ("generatePropertyCases", "generate_property_cases"),
+            (
+                "generateMalformedInputCases",
+                "generate_malformed_input_cases",
+            ),
+            (
+                "tests/trace-smoke.mjs#runTransitionProperty",
+                "tests/test_binding.py#run_transition_property",
+            ),
+            (
+                "tests/boundary-smoke.mjs#runMalformedInputFuzz",
+                "tests/test_binding.py#run_malformed_input_fuzz",
+            ),
+        ],
+    );
+    replace_yaml_strings(&mut value, &owned);
+    set_yaml_string_path(&mut value, &["binding"], "python");
+    set_yaml_string_path(&mut value, &["source", "root"], &source_root);
+    set_yaml_string_path(
+        &mut value,
+        &["source", "public_entrypoint"],
+        &public_entrypoint,
+    );
+    set_yaml_string_path(
+        &mut value,
+        &["commands", "build"],
+        "python -m compileall -q src tests",
+    );
+    set_yaml_string_path(
+        &mut value,
+        &["commands", "verify"],
+        "python -m unittest discover -s tests",
+    );
+    set_yaml_string_path(
+        &mut value,
+        &["commands", "probe"],
+        "python tests/machine_probe.py",
+    );
+    if get_path(&value, &["commands", "trace"]).is_some() {
+        set_yaml_string_path(
+            &mut value,
+            &["commands", "trace"],
+            "python tests/rms_proof_runner.py RMS_TRACE_RUNNER",
+        );
+    }
+    if get_path(&value, &["commands", "properties"]).is_some() {
+        set_yaml_string_path(
+            &mut value,
+            &["commands", "properties"],
+            "python tests/rms_proof_runner.py RMS_PROPERTY_RUNNER",
+        );
+    }
+    if get_path(&value, &["commands", "fuzz"]).is_some() {
+        set_yaml_string_path(
+            &mut value,
+            &["commands", "fuzz"],
+            "python tests/rms_proof_runner.py RMS_PROPERTY_RUNNER",
+        );
+    }
+    remove_yaml_path(&mut value, &["toolchain"]);
+    set_yaml_string_path(&mut value, &["toolchain", "runner"], "python");
+    set_yaml_string_path(
+        &mut value,
+        &["toolchain", "package_manifest"],
+        "pyproject.toml",
+    );
+    set_yaml_string_path(&mut value, &["toolchain", "package"], &model.module_name);
+    set_yaml_string_path(&mut value, &["toolchain", "import_package"], &package);
+    set_yaml_string_path(&mut value, &["toolchain", "requires_python"], ">=3.11");
+    remove_yaml_path(&mut value, &["dependencies"]);
+    set_yaml_string_sequence_path(
+        &mut value,
+        &["dependencies", "allowed_external_packages"],
+        &[],
+    );
+    set_yaml_string_sequence_path(&mut value, &["dependencies", "allowed_local_packages"], &[]);
+    set_yaml_string_sequence_path(&mut value, &["dependencies", "local_modules"], &[]);
+    set_yaml_string_path(
+        &mut value,
+        &["architecture", "probe", "runner"],
+        "tests/machine_probe.py#probe_machine",
+    );
+    set_yaml_string_path(
+        &mut value,
+        &["architecture", "probe", "initial_state_function"],
+        &format!("{source_root}/representation.py#initial_state"),
+    );
+    if let Some(functions) =
+        get_path_mut(&mut value, &["semantic_functions"]).and_then(YamlValue::as_sequence_mut)
+    {
+        if let Some(constructor) = functions
+            .iter_mut()
+            .find(|function| get_str(function, &["id"]) == Some("representation-constructors"))
+        {
+            set_yaml_string_path(
+                constructor,
+                &["symbol"],
+                &format!("{source_root}/representation.py#make_label"),
+            );
+        }
+        if let Some(transition) = functions
+            .iter_mut()
+            .find(|function| get_str(function, &["id"]) == Some("transition-model"))
+        {
+            match model.shape {
+                ScaffoldShape::RuntimeMonitor => {
+                    remove_yaml_path(transition, &["evidence", "laws"]);
+                    set_yaml_string_sequence_path(
+                        transition,
+                        &["evidence", "runtime"],
+                        &["verification/runtime/trigger_cases.md".to_string()],
+                    );
+                }
+                ScaffoldShape::Composite => {
+                    remove_yaml_path(transition, &["evidence", "laws"]);
+                    set_yaml_string_sequence_path(
+                        transition,
+                        &["evidence", "contracts"],
+                        &["verification/contracts/parent_export.md".to_string()],
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    if model.shape == ScaffoldShape::DomainEngine {
+        set_yaml_string_path(
+            &mut value,
+            &["distribution", "public_facade"],
+            &public_entrypoint,
+        );
+        set_yaml_string_path(
+            &mut value,
+            &["distribution", "native_package", "manifest"],
+            "pyproject.toml",
+        );
+        set_yaml_string_sequence_path(
+            &mut value,
+            &["distribution", "native_package", "exports"],
+            std::slice::from_ref(&public_entrypoint),
+        );
+    }
+    match model.shape {
+        ScaffoldShape::RuntimeMonitor => set_yaml_string_sequence_path(
+            &mut value,
+            &["architecture", "roles", "trace_evidence"],
+            &["verification/runtime/trigger_cases.md".to_string()],
+        ),
+        ScaffoldShape::Composite => set_yaml_string_sequence_path(
+            &mut value,
+            &["architecture", "roles", "trace_evidence"],
+            &["verification/contracts/parent_export.md".to_string()],
+        ),
+        _ => {}
+    }
+    if boundary {
+        append_unique_yaml_string_path(
+            &mut value,
+            &["architecture", "public_modules"],
+            &public_entrypoint,
+        );
+    }
+    serde_yaml::to_string(&value).context("failed to render Python implementation binding")
+}
+
+fn render_python_pyproject(model: &BindingScaffoldModel) -> String {
+    let package = sanitize_python_import_package(&model.module_name);
+    format!(
+        r#"[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "{distribution}"
+version = "0.1.0"
+description = "RMS implementation binding for {distribution}"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["{package}*"]
+"#,
+        distribution = model.module_name,
+    )
+}
+
+fn python_enum_member(value: &str) -> String {
+    identifier_word_tokens(value)
+        .into_iter()
+        .map(|word| word.to_ascii_uppercase())
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+fn render_python_representation(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let states = starter_states_for_shape(model.shape);
+    let state_members = states
+        .iter()
+        .map(|state| format!("    {} = {state:?}", python_enum_member(state)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let initial = python_enum_member(states.first().map(String::as_str).unwrap_or("Ready"));
+    let effect = if model.declares_effects {
+        format!(
+            r#"
+@dataclass(frozen=True, slots=True)
+class {effect}:
+    kind: Literal["Execute"]
+    value: {label}
+
+
+@dataclass(frozen=True, slots=True)
+class {effect_envelope}:
+    effect_id: str
+    requester: str
+    correlation_id: str
+    causation_id: str
+    effect: {effect}
+"#,
+            effect = names.effect,
+            effect_envelope = names.effect_envelope,
+            label = names.label,
+        )
+    } else {
+        String::new()
+    };
+    let effect_result = if model.declares_effect_results {
+        format!(
+            r#"
+@dataclass(frozen=True, slots=True)
+class {result}:
+    kind: Literal["Succeeded", "Failed"]
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class {envelope}:
+    effect_id: str
+    executor: str
+    correlation_id: str
+    causation_id: str
+    result: {result}
+"#,
+            result = names.effect_result,
+            envelope = names.effect_result_envelope,
+        )
+    } else {
+        String::new()
+    };
+    let input = if model.stateful() {
+        let union = if model.declares_effect_results {
+            format!("{} | {}", names.command, names.effect_result)
+        } else {
+            names.command.clone()
+        };
+        format!(
+            r#"
+@dataclass(frozen=True, slots=True)
+class {input}:
+    kind: Literal["command", "effect-result", "observed-event"]
+    value: {union}
+
+
+def command_input(command: {command}) -> {input}:
+    return {input}("command", command)
+"#,
+            input = names.input,
+            command = names.command,
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+from typing import Literal
+
+
+class {label}:
+    __slots__ = ("_value",)
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    @property
+    def value(self) -> str:
+        return self._value
+
+
+def make_label(value: object) -> {label} | None:
+    normalized = value.strip() if isinstance(value, str) else ""
+    return {label}(normalized) if normalized else None
+
+
+class {state}(str, Enum):
+{state_members}
+
+
+def initial_state() -> {state}:
+    return {state}.{initial}
+
+
+@dataclass(frozen=True, slots=True)
+class {command}:
+    kind: Literal["Accept", "Reject"]
+    value: {label}
+
+
+def accept_command(label: {label}) -> {command}:
+    return {command}("Accept", label)
+
+
+def reject_command(reason: {label}) -> {command}:
+    return {command}("Reject", reason)
+
+
+@dataclass(frozen=True, slots=True)
+class {command_envelope}:
+    command_id: str
+    target_machine: str
+    correlation_id: str
+    causation_id: str | None
+    idempotency_key: str | None
+    command: {command}
+
+
+@dataclass(frozen=True, slots=True)
+class {event}:
+    kind: str
+    rejection: object | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class {event_envelope}:
+    event_id: str
+    source_machine: str
+    correlation_id: str
+    causation_id: str
+    sequence: int
+    schema_version: int
+    occurred_at: str
+    event: {event}
+
+{effect}
+{effect_result}
+{input}
+
+@dataclass(frozen=True, slots=True)
+class {reply}:
+    kind: Literal["Accepted"]
+
+
+@dataclass(frozen=True, slots=True)
+class {rejection}:
+    kind: Literal["InvalidCommand", "IllegalTransition", "MalformedInput"]
+    reason: str | None = None
+"#,
+        label = names.label,
+        state = names.state,
+        command = names.command,
+        command_envelope = names.command_envelope,
+        event = names.event,
+        event_envelope = names.event_envelope,
+        reply = names.reply,
+        rejection = names.rejection,
+    )
+}
+
+fn render_python_transition(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    let states = starter_states_for_shape(model.shape);
+    let initial = python_enum_member(states.first().map(String::as_str).unwrap_or("Ready"));
+    let completed = states
+        .iter()
+        .find(|state| state.as_str() == "Completed")
+        .map(|state| python_enum_member(state))
+        .unwrap_or_else(|| initial.clone());
+    let waiting = states
+        .iter()
+        .find(|state| state.as_str() == "WaitingForEffect")
+        .map(|state| python_enum_member(state))
+        .unwrap_or_else(|| completed.clone());
+    let rejected = states
+        .iter()
+        .find(|state| matches!(state.as_str(), "Rejected" | "Failed"))
+        .map(|state| python_enum_member(state))
+        .unwrap_or_else(|| initial.clone());
+    let imports = if model.stateful() {
+        format!(", {}", names.input)
+    } else {
+        String::new()
+    };
+    let effect_import = if model.declares_effects {
+        format!(", {}", names.effect)
+    } else {
+        String::new()
+    };
+    let result_import = if model.declares_effect_results {
+        format!(", {}", names.effect_result)
+    } else {
+        String::new()
+    };
+    let effect_type = if model.declares_effects {
+        names.effect.as_str()
+    } else {
+        "object"
+    };
+    let body = if model.stateful() {
+        let accept = if model.declares_effects {
+            format!(
+                "next_state = {state}.{waiting}\n        events = ({event}(\"EffectRequested\"),)\n        effects = ({effect}(\"Execute\", input.value.value),)\n        reply = None",
+                state = names.state,
+                event = names.event,
+                effect = names.effect,
+            )
+        } else {
+            format!(
+                "next_state = {state}.{completed}\n        events = ({event}(\"Accepted\"),)\n        effects = ()\n        reply = {reply}(\"Accepted\")",
+                state = names.state,
+                event = names.event,
+                reply = names.reply,
+            )
+        };
+        let result_arms = if model.declares_effect_results {
+            format!(
+                r#"    elif input.kind == "effect-result" and isinstance(input.value, {result}) and input.value.kind == "Succeeded":
+        next_state = {state}.{completed}
+        events = ({event}("EffectCompleted"),)
+        effects = ()
+        reply = {reply}("Accepted")
+        rejection = None
+        branch = "Succeeded"
+    elif input.kind == "effect-result" and isinstance(input.value, {result}):
+        next_state = {state}.{rejected}
+        rejection = {rejection_type}("InvalidCommand", input.value.reason)
+        events = ({event}("Rejected", rejection),)
+        effects = ()
+        reply = None
+        branch = "Failed"
+"#,
+                result = names.effect_result,
+                state = names.state,
+                event = names.event,
+                reply = names.reply,
+                rejection_type = names.rejection,
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            r#"def transition(state: {state}, input: {input}) -> {transition}:
+    return transition_record(state, input).output
+
+
+def transition_record(state: {state}, input: {input}) -> {record}:
+    if input.kind == "command" and isinstance(input.value, {command}) and input.value.kind == "Accept":
+        {accept}
+        rejection = None
+        branch = "Accept"
+    elif input.kind == "command" and isinstance(input.value, {command}) and input.value.kind == "Reject":
+        next_state = {state}.{rejected}
+        rejection = {rejection_type}("InvalidCommand", input.value.value.value)
+        events = ({event}("Rejected", rejection),)
+        effects = ()
+        reply = None
+        branch = "Reject"
+{result_arms}    else:
+        next_state = state
+        rejection = {rejection_type}("IllegalTransition")
+        events = ({event}("Rejected", rejection),)
+        effects = ()
+        reply = None
+        branch = "IllegalTransition"
+    output = {transition}(next_state, events, (), effects, reply, rejection)
+    return {record}(state, next_state, input, output, {source}(
+        "src/{package}/transition.py", "transition_record", branch
+    ))
+
+
+def replay_trace(initial: {state}, inputs: Iterable[{input}]) -> tuple[{record}, ...]:
+    state = initial
+    records: list[{record}] = []
+    for item in inputs:
+        record = transition_record(state, item)
+        state = record.state_after
+        records.append(record)
+    return tuple(records)
+"#,
+            state = names.state,
+            input = names.input,
+            transition = names.transition,
+            record = names.transition_record,
+            command = names.command,
+            rejection_type = names.rejection,
+            event = names.event,
+            source = names.source_provenance,
+            package = sanitize_python_import_package(&model.module_name),
+        )
+    } else {
+        format!(
+            r#"def transition(command: {command}) -> {transition}:
+    return transition_record(command).output
+
+
+def transition_record(command: {command}) -> {record}:
+    state = {state}.{initial}
+    if command.kind == "Accept":
+        event = {event}("Accepted")
+        reply = {reply}("Accepted")
+        rejection = None
+        branch = "Accept"
+    else:
+        rejection = {rejection_type}("InvalidCommand", command.value.value)
+        event = {event}("Rejected", rejection)
+        reply = None
+        branch = "Reject"
+    output = {transition}(state, (event,), (), (), reply, rejection)
+    return {record}(state, state, command, output, {source}(
+        "src/{package}/transition.py", "transition_record", branch
+    ))
+
+
+def replay_trace(commands: Iterable[{command}]) -> tuple[{record}, ...]:
+    return tuple(transition_record(command) for command in commands)
+"#,
+            command = names.command,
+            transition = names.transition,
+            record = names.transition_record,
+            state = names.state,
+            event = names.event,
+            reply = names.reply,
+            rejection_type = names.rejection,
+            source = names.source_provenance,
+            package = sanitize_python_import_package(&model.module_name),
+        )
+    };
+    format!(
+        r#"from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable
+
+from .representation import (
+    {state}, {command}, {event}, {reply}, {rejection}{imports}{effect_import}{result_import}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class {source}:
+    file: str
+    function: str
+    branch: str
+
+
+@dataclass(frozen=True, slots=True)
+class {transition}:
+    next_state: {state}
+    events: tuple[{event}, ...]
+    commands: tuple[{command}, ...]
+    effects: tuple[{effect_type}, ...]
+    reply: {reply} | None
+    rejection: {rejection} | None
+
+
+@dataclass(frozen=True, slots=True)
+class {record}:
+    state_before: {state}
+    state_after: {state}
+    input: object
+    output: {transition}
+    source: {source}
+
+
+{body}
+
+class {machine}:
+    transition = staticmethod(transition)
+
+
+def generate_property_cases() -> tuple[str, ...]:
+    return tuple(f"generated-case-{{index}}" for index in range(64))
+
+
+def generate_malformed_input_cases() -> tuple[str, ...]:
+    return tuple(" " * width for width in range(64))
+"#,
+        state = names.state,
+        command = names.command,
+        event = names.event,
+        reply = names.reply,
+        rejection = names.rejection,
+        source = names.source_provenance,
+        transition = names.transition,
+        record = names.transition_record,
+        machine = names.machine,
+    )
+}
+
+fn render_python_effect_executor(model: &BindingScaffoldModel) -> String {
+    format!(
+        "from .representation import {effect}, {result}\n\n\ndef execute_effect(effect: {effect}) -> {result}:\n    return {result}(\"Succeeded\") if effect.kind == \"Execute\" else {result}(\"Failed\", \"unsupported effect\")\n",
+        effect = model.names.effect,
+        result = model.names.effect_result,
+    )
+}
+
+fn render_python_machine_driver(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    format!(
+        r#"from .effect_executor import execute_effect
+from .representation import {input}, {state}
+from .transition import {record}, transition_record
+
+
+def drive_machine(initial: {state}, input: {input}) -> tuple[{record}, ...]:
+    records: list[{record}] = []
+    state = initial
+    pending = input
+    while True:
+        record = transition_record(state, pending)
+        records.append(record)
+        state = record.state_after
+        if not record.output.effects:
+            return tuple(records)
+        result = execute_effect(record.output.effects[0])
+        pending = {input}("effect-result", result)
+"#,
+        input = names.input,
+        state = names.state,
+        record = names.transition_record,
+    )
+}
+
+fn render_python_parser(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    format!(
+        r#"from .representation import {command}, {rejection}, accept_command, make_label
+
+
+def parse_command(raw: object) -> {command} | {rejection}:
+    if not isinstance(raw, dict):
+        return {rejection}("MalformedInput", "expected an object")
+    label = make_label(raw.get("label"))
+    if label is None:
+        return {rejection}("MalformedInput", "label must be non-empty")
+    return accept_command(label)
+"#,
+        command = names.command,
+        rejection = names.rejection,
+    )
+}
+
+const PYTHON_PORTS: &str = r#"from typing import Protocol
+
+
+class DomainPort(Protocol):
+    def handle(self, command: object) -> object: ...
+"#;
+
+fn render_python_adapter(model: &BindingScaffoldModel) -> String {
+    let names = &model.names;
+    if model.stateful() {
+        format!(
+            r#"from .parser import parse_command
+from .representation import {rejection}, command_input, initial_state
+from .transition import transition
+
+
+def handle_boundary_transition(raw: object) -> object:
+    parsed = parse_command(raw)
+    if isinstance(parsed, {rejection}):
+        return parsed
+    return transition(initial_state(), command_input(parsed))
+
+
+def handle_boundary_input(raw: object) -> object:
+    return handle_boundary_transition(raw)
+"#,
+            rejection = names.rejection,
+        )
+    } else {
+        format!(
+            r#"from .parser import parse_command
+from .representation import {rejection}
+from .transition import transition
+
+
+def handle_boundary_transition(raw: object) -> object:
+    parsed = parse_command(raw)
+    if isinstance(parsed, {rejection}):
+        return parsed
+    return transition(parsed)
+
+
+def handle_boundary_input(raw: object) -> object:
+    return handle_boundary_transition(raw)
+"#,
+            rejection = names.rejection,
+        )
+    }
+}
+
+fn render_python_public(model: &BindingScaffoldModel) -> String {
+    let boundary = if parser_expected_for_shape(model.shape.as_str()) {
+        "from .adapter import handle_boundary_input, handle_boundary_transition\n"
+    } else {
+        ""
+    };
+    let effects = if model.declares_effects {
+        "from .effect_executor import execute_effect\n"
+    } else {
+        ""
+    };
+    format!(
+        r#"from .representation import *
+from .transition import {record}, {transition}, replay_trace, transition, transition_record
+{boundary}{effects}
+__all__ = [
+    "{record}", "{transition}", "replay_trace", "transition", "transition_record",
+]
+"#,
+        record = model.names.transition_record,
+        transition = model.names.transition,
+    )
+}
+
+fn render_python_tests(model: &BindingScaffoldModel) -> String {
+    let package = sanitize_python_import_package(&model.module_name);
+    let accept_call = if model.stateful() {
+        "transition(initial_state(), command_input(accept_command(label)))"
+    } else {
+        "transition(accept_command(label))"
+    };
+    let reject_call = if model.stateful() {
+        "transition(initial_state(), command_input(reject_command(label)))"
+    } else {
+        "transition(reject_command(label))"
+    };
+    let imports = if model.stateful() {
+        ", command_input, initial_state"
+    } else {
+        ""
+    };
+    let boundary_test = if parser_expected_for_shape(model.shape.as_str()) {
+        format!(
+            r#"
+    def test_boundary_rejects_malformed_input(self) -> None:
+        from {package}.adapter import handle_boundary_input
+        self.assertEqual(handle_boundary_input({{}}).kind, "MalformedInput")
+"#
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"import pathlib
+import sys
+import unittest
+
+sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "src"))
+
+from {package}.representation import accept_command, make_label, reject_command{imports}
+from {package}.transition import (
+    generate_malformed_input_cases,
+    generate_property_cases,
+    transition,
+)
+
+
+def run_transition_property() -> None:
+    cases = generate_property_cases()
+    assert len(cases) >= 64
+    for raw in cases:
+        label = make_label(raw)
+        assert label is not None
+        assert {accept_call}.rejection is None
+        assert {reject_call}.rejection is not None
+
+
+def run_malformed_input_fuzz() -> None:
+    cases = generate_malformed_input_cases()
+    assert len(cases) >= 64
+    for raw in cases:
+        assert make_label(raw) is None
+
+
+class BindingTests(unittest.TestCase):
+    def test_accepts_valid_label(self) -> None:
+        label = make_label("widget")
+        self.assertIsNotNone(label)
+        output = {accept_call}
+        self.assertIsNone(output.rejection)
+{boundary_test}
+
+
+if __name__ == "__main__":
+    unittest.main()
+"#,
+    )
+}
+
+const PYTHON_PROOF_RUNNER: &str = r##"from __future__ import annotations
+
+import importlib.util
+import os
+import pathlib
+import sys
+
+
+def main() -> None:
+    environment = sys.argv[1]
+    reference = os.environ[environment]
+    path_text, callable_name = reference.split("#", 1)
+    path = pathlib.Path(path_text).resolve()
+    sys.path.insert(0, str(path.parents[1] / "src"))
+    spec = importlib.util.spec_from_file_location("rms_generated_proof", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load proof runner {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    getattr(module, callable_name)()
+
+
+if __name__ == "__main__":
+    main()
+"##;
+
+fn render_python_trace_producer(model: &BindingScaffoldModel) -> String {
+    let package = sanitize_python_import_package(&model.module_name);
+    let inputs = if model.stateful() {
+        "[command_input(accept_command(accepted)), command_input(reject_command(rejected))]"
+    } else {
+        "[accept_command(accepted), reject_command(rejected)]"
+    };
+    let call = if model.stateful() {
+        "transition_record(initial_state(), item)"
+    } else {
+        "transition_record(item)"
+    };
+    let imports = if model.stateful() {
+        ", command_input, initial_state"
+    } else {
+        ""
+    };
+    format!(
+        r#"import json
+import os
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "src"))
+
+from {package}.representation import accept_command, make_label, reject_command{imports}
+from {package}.transition import transition_record
+
+
+def variant(value: object) -> dict[str, object]:
+    raw = getattr(value, "kind", None)
+    if raw is None:
+        raw = getattr(value, "value", value)
+    return {{"name": str(raw), "data": {{}}}}
+
+
+def produce_transition_trace() -> None:
+    accepted = make_label("accepted")
+    rejected = make_label("rejected")
+    assert accepted is not None and rejected is not None
+    inputs = {inputs}
+    records = []
+    for index, item in enumerate(inputs):
+        record = {call}
+        records.append({{
+            "scenario_start": True,
+            "state_before": variant(record.state_before),
+            "state_after": variant(record.state_after),
+            "input": {{"name": "Accept" if index == 0 else "Reject", "data": {{}}}},
+            "output": {{
+                "next_state": variant(record.output.next_state),
+                "events": [variant(value) for value in record.output.events],
+                "commands": [],
+                "effects": [variant(value) for value in record.output.effects],
+                "reply": variant(record.output.reply) if record.output.reply else None,
+                "rejection": variant(record.output.rejection) if record.output.rejection else None,
+            }},
+            "source": {{
+                "file": record.source.file,
+                "function": record.source.function,
+                "branch": record.source.branch,
+            }},
+        }})
+    bundle = {{
+        "spec": "rms/trace-bundle/v0.1",
+        "machine": "{machine}",
+        "records": records,
+    }}
+    pathlib.Path(os.environ["RMS_TRACE_OUTPUT"]).write_text(json.dumps(bundle), encoding="utf-8")
+"#,
+        machine = model.names.machine,
+    )
+}
+
+fn render_python_machine_probe(model: &BindingScaffoldModel) -> String {
+    let package = sanitize_python_import_package(&model.module_name);
+    let initial = starter_states_for_shape(model.shape)
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Ready".to_string());
+    let imports = if model.stateful() {
+        ", command_input, initial_state"
+    } else {
+        ""
+    };
+    let record_call = if model.stateful() {
+        "transition_record(initial_state(), command_input(command))"
+    } else {
+        "transition_record(command)"
+    };
+    format!(
+        r#"import json
+import os
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "src"))
+
+from {package}.representation import accept_command, make_label, reject_command{imports}
+from {package}.transition import transition_record
+
+
+def variant(value: object) -> dict[str, object]:
+    raw = getattr(value, "kind", None)
+    if raw is None:
+        raw = getattr(value, "value", value)
+    return {{"name": str(raw), "data": {{}}}}
+
+
+def probe_machine() -> None:
+    request = json.loads(pathlib.Path(os.environ["RMS_PROBE_REQUEST"]).read_text(encoding="utf-8"))
+    if request.get("operation") == "describe":
+        output = {{
+            "spec": "rms/machine-probe-description/v0.1",
+            "machine": "{machine}",
+            "initial_state": {{"name": "{initial}", "data": {{}}}},
+            "states": [{{"name": "{initial}", "data_schema": {{"type": "object"}}}}],
+            "inputs": [
+                {{"kind": "command", "name": "Accept", "data_schema": {{"type": "object", "properties": {{"label": {{"type": "string"}}}}}}, "example": {{"kind": "command", "name": "Accept", "data": {{"label": "example"}}}}}},
+                {{"kind": "command", "name": "Reject", "data_schema": {{"type": "object", "properties": {{"reason": {{"type": "string"}}}}}}, "example": {{"kind": "command", "name": "Reject", "data": {{"reason": "rejected"}}}}}},
+            ],
+        }}
+    else:
+        records = []
+        for index, step in enumerate(request.get("steps", [])):
+            normalized = step.get("input", {{}})
+            label = make_label(normalized.get("data", {{}}).get("value", "probe"))
+            if label is None:
+                raise ValueError("probe label must be non-empty")
+            command = reject_command(label) if normalized.get("name") == "Reject" else accept_command(label)
+            record = {record_call}
+            records.append({{
+                "scenario_start": index == 0,
+                "state_before": variant(record.state_before),
+                "state_after": variant(record.state_after),
+                "input": normalized,
+                "output": {{
+                    "next_state": variant(record.output.next_state),
+                    "events": [variant(item) for item in record.output.events],
+                    "commands": [],
+                    "effects": [variant(item) for item in record.output.effects],
+                    "reply": variant(record.output.reply) if record.output.reply else None,
+                    "rejection": variant(record.output.rejection) if record.output.rejection else None,
+                }},
+                "source": {{
+                    "file": record.source.file,
+                    "function": record.source.function,
+                    "branch": record.source.branch,
+                }},
+            }})
+        output = {{"spec": "rms/trace-bundle/v0.1", "machine": "{machine}", "records": records}}
+    pathlib.Path(os.environ["RMS_PROBE_OUTPUT"]).write_text(json.dumps(output), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    probe_machine()
+"#,
+        machine = model.names.machine,
     )
 }
 
@@ -66303,6 +68140,150 @@ architecture:
             .diagnostics
             .iter()
             .all(|diagnostic| !diagnostic.check.starts_with("structure.")));
+    }
+
+    #[test]
+    fn python_module_scaffold_generates_valid_binding_artifacts() {
+        let root = unique_test_dir("python-module");
+        run_add_module(
+            add_module_request(
+                &root,
+                "example-python",
+                "Demonstrate Python module scaffolding.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("python"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        record_generated_traces(&root);
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        let representation =
+            fs::read_to_string(root.join("src/example_python/representation.py")).unwrap();
+        let pyproject = fs::read_to_string(root.join("pyproject.toml")).unwrap();
+        let mut diagnostics = Vec::new();
+        let manifest = load_manifest(&root.join("implementation.yaml")).unwrap();
+        validate_loaded_manifest(&manifest, &mut diagnostics);
+        run_verify(&root.join("implementation.yaml"), false).unwrap();
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+        let package = root.join("dist/example-python.rms");
+        package_module(&root.join("module.yaml"), Some(&package), false).unwrap();
+        assert_eq!(
+            verify_package(&package).unwrap().result,
+            VerifyPackageResult::Pass
+        );
+        fs::remove_dir_all(&root).unwrap();
+        assert_no_error_diagnostics(&diagnostics);
+        assert!(implementation.contains("binding: python"));
+        assert!(implementation.contains("requires_python:"));
+        assert!(pyproject.contains("requires-python = \">=3.11\""));
+        assert!(representation.contains("@dataclass(frozen=True, slots=True)"));
+        assert!(report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.check.starts_with("structure.")));
+    }
+
+    #[test]
+    fn python_boundary_and_workflow_scaffolds_verify() {
+        for (suffix, shape, kind, profiles) in [
+            (
+                "boundary",
+                ScaffoldShape::BoundaryAdapter,
+                "adapter",
+                vec!["boundary".to_string()],
+            ),
+            (
+                "workflow",
+                ScaffoldShape::Workflow,
+                "workflow",
+                vec!["workflow".to_string()],
+            ),
+        ] {
+            let root = unique_test_dir(&format!("python-{suffix}"));
+            run_add_module(
+                add_module_request(
+                    &root,
+                    &format!("python-{suffix}"),
+                    "Exercise Python binding shape coverage.",
+                    kind,
+                    &profiles,
+                    Some(shape),
+                    Some("python"),
+                ),
+                &no_provider_options(),
+            )
+            .unwrap();
+            if !scaffold_trace_bundle_files(shape).is_empty() {
+                record_generated_traces(&root);
+            }
+            run_verify(&root.join("implementation.yaml"), false).unwrap();
+            let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+            if shape == ScaffoldShape::BoundaryAdapter {
+                assert!(root.join("src/python_boundary/parser.py").exists());
+                assert!(root.join("src/python_boundary/adapter.py").exists());
+            } else {
+                assert!(root.join("src/python_workflow/effect_executor.py").exists());
+                assert!(root.join("src/python_workflow/machine_driver.py").exists());
+            }
+            fs::remove_dir_all(&root).unwrap();
+            assert!(report
+                .diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.check.starts_with("structure.")));
+        }
+    }
+
+    #[test]
+    fn python_binding_supports_remaining_scaffold_shapes() {
+        for (suffix, shape, kind, profiles) in [
+            (
+                "storage",
+                ScaffoldShape::StorageAdapter,
+                "adapter",
+                vec!["boundary".to_string(), "distributed".to_string()],
+            ),
+            (
+                "integration",
+                ScaffoldShape::IntegrationAdapter,
+                "adapter",
+                vec!["boundary".to_string(), "distributed".to_string()],
+            ),
+            (
+                "monitor",
+                ScaffoldShape::RuntimeMonitor,
+                "monitor",
+                vec!["monitor".to_string()],
+            ),
+            (
+                "composite",
+                ScaffoldShape::Composite,
+                "composite",
+                Vec::new(),
+            ),
+        ] {
+            let root = unique_test_dir(&format!("python-{suffix}"));
+            run_add_module(
+                add_module_request(
+                    &root,
+                    &format!("python-{suffix}"),
+                    "Exercise complete Python shape coverage.",
+                    kind,
+                    &profiles,
+                    Some(shape),
+                    Some("python"),
+                ),
+                &no_provider_options(),
+            )
+            .unwrap();
+            if !scaffold_trace_bundle_files(shape).is_empty() {
+                record_generated_traces(&root);
+            }
+            run_verify(&root.join("implementation.yaml"), false).unwrap();
+            fs::remove_dir_all(&root).unwrap();
+        }
     }
 
     #[test]
@@ -74851,6 +76832,120 @@ public_behavior_bindings:
     }
 
     #[test]
+    fn add_binding_attaches_python_without_changing_module_semantics() {
+        let root = unique_test_dir("add-binding-python");
+        run_add_module(
+            add_module_request(
+                &root,
+                "python-binding-domain",
+                "Attach Python to declared semantics.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                None,
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let before = fs::read_to_string(root.join("module.yaml")).unwrap();
+        run_add_binding(AddBindingRequest {
+            module: root.join("module.yaml"),
+            binding: "python".to_string(),
+        })
+        .unwrap();
+        let after = fs::read_to_string(root.join("module.yaml")).unwrap();
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(before, after);
+        assert!(implementation.contains("binding: python"));
+        assert!(implementation.contains("import_package: python_binding_domain"));
+    }
+
+    #[test]
+    fn python_capability_tree_realizes_local_package_dependency() {
+        let root = unique_test_dir("python-capability-tree");
+        run_init(
+            &root,
+            "python-capability-fixture",
+            "Exercise Python capability dependencies.",
+            "0.1.0",
+            &["fixture".to_string()],
+        )
+        .unwrap();
+        run_add_capability_tree(AddCapabilityTreeRequest {
+            path: root.join("modules/pick-lines"),
+            name: "pick-lines".to_string(),
+            purpose: "Expose line selection.".to_string(),
+            public_command: Some("pick-lines".to_string()),
+            domain_child: None,
+            boundary_child: None,
+            domain_command: Some("select-lines".to_string()),
+            domain_binding: Some("python".to_string()),
+            boundary_binding: Some("python".to_string()),
+            surface: None,
+        })
+        .unwrap();
+        let boundary = root.join("modules/pick-lines-boundary");
+        let implementation = fs::read_to_string(boundary.join("implementation.yaml")).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(implementation.contains("allowed_local_packages:"));
+        assert!(implementation.contains("pick_lines_domain"));
+        assert!(implementation
+            .contains("consumer: src/pick_lines_boundary/adapter.py#handle_boundary_input"));
+    }
+
+    #[test]
+    fn python_static_inspection_rejects_malformed_and_unsafe_sources() {
+        let root = unique_test_dir("python-static-negative");
+        run_add_module(
+            add_module_request(
+                &root,
+                "python-negative",
+                "Exercise Python static inspection.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("python"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let representation_path = root.join("src/python_negative/representation.py");
+        let transition_path = root.join("src/python_negative/transition.py");
+        let facade_path = root.join("src/python_negative/__init__.py");
+        let mut representation = fs::read_to_string(&representation_path).unwrap();
+        representation.push_str("\nimport undeclared_framework\n");
+        fs::write(&representation_path, representation).unwrap();
+        let mut transition = fs::read_to_string(&transition_path).unwrap();
+        transition = transition.replace(
+            "return transition_record(command).output",
+            "count = 10 / divisor\n    raise ValueError(count)",
+        );
+        fs::write(&transition_path, transition).unwrap();
+        let facade = fs::read_to_string(&facade_path)
+            .unwrap()
+            .replace("\"transition_record\",", "");
+        fs::write(&facade_path, facade).unwrap();
+        let manifest = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_loaded_manifest(&manifest, &mut diagnostics);
+        fs::remove_dir_all(&root).unwrap();
+        for check in [
+            "implementation.python.imports.declared",
+            "structure.transition-ambient-exception",
+            "structure.python-numeric-guard-missing",
+            "implementation.python.public-facade",
+        ] {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.check == check),
+                "missing {check}: {diagnostics:#?}"
+            );
+        }
+    }
+
+    #[test]
     fn spec_apply_realizes_language_neutral_binding_dependencies() {
         let root = unique_test_dir("spec-binding-dependency");
         let provider = root.join("line-selection-domain");
@@ -76498,7 +78593,11 @@ semantic_functions: []
             TaskLane::RepositoryOperation
         );
         assert_eq!(repository_surface.lane, "repository-operation");
-        assert!(repository_surface.envelope.warnings.is_empty());
+        assert!(
+            repository_surface.envelope.warnings.is_empty(),
+            "unexpected repository-operation warnings: {:#?}",
+            repository_surface.envelope.warnings
+        );
         assert!(repository_surface
             .steps
             .iter()

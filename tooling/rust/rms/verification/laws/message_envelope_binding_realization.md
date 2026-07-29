@@ -7,7 +7,7 @@ Promise:
 Scenario:
 
 - A JavaScript fixture declares a command envelope but omits its constructor from the representation role.
-- Generated Rust, Swift, and JavaScript workflow fixtures declare and realize command, event, effect, and effect-result envelopes.
+- Generated Rust, Swift, JavaScript, and Python workflow fixtures declare and realize command, event, effect, and effect-result envelopes.
 - Generated stateless no-effect fixtures omit effect and effect-result envelopes from both semantics and source.
 
 Command/tool:

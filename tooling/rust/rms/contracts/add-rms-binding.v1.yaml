@@ -7,7 +7,7 @@ preconditions:
   - id: "accepts-1"
     statement: "a readable RMS module manifest whose directory has no implementation.yaml"
   - id: "accepts-2"
-    statement: "one supported binding identifier: rust, swift, js, or executable"
+    statement: "one supported binding identifier: rust, swift, js, python, or executable"
 postconditions:
   - id: "ensures-1"
     statement: "the selected binding adapter creates implementation.yaml and its declared source, verification, and build artifacts"

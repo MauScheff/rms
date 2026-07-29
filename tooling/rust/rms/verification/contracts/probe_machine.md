@@ -1,6 +1,6 @@
 # Contract Evidence: probe-machine
 
-Covered by the RMS CLI test suite and maintained Rust, Swift, and JavaScript binding roundtrips.
+Covered by the RMS CLI test suite and maintained Rust, Swift, JavaScript, and Python binding roundtrips.
 
 - `rms probe implementation.yaml --describe` validates the handshake and payload schemas.
 - Inline and file probes call the exact transition-record path, chain `state_after`, validate canonical cases, and report the first expectation failure.

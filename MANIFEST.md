@@ -713,7 +713,7 @@ Every implemented module should declare a domain-named machine. The canonical fi
 | `architecture.machine.name` | Domain-named machine role, such as `PaymentsMachine` or `NutritionAssistantMachine`. |
 | `architecture.machine.mode` | One of `stateless-decision-machine`, `stateful-transition-machine`, `workflow-effect-machine`, `boundary-machine`, `storage-machine`, `integration-machine`, or `projection-machine`. |
 | `architecture.machine.transition_signature` | `input-only` for a justified stateless decision machine; `state-and-input` for every stateful, boundary, workflow, storage, integration, or projection machine. |
-| `architecture.machine.initial_state` | Initial semantic state variant. Required for inspectable Rust, Swift, and JavaScript bindings and must name one declared state. |
+| `architecture.machine.initial_state` | Initial semantic state variant. Required for inspectable Rust, Swift, JavaScript, and Python bindings and must name one declared state. |
 | `architecture.machine.driver_function` | Exact callable that drives an effectful stateful machine through transition, emitted effects, typed results, and follow-up transitions. |
 | `architecture.machine.transition_record_function` | Exact pure callable used by the live machine driver to construct each complete transition record. |
 | `architecture.machine.types` | Binding-native names for state, input, command, event, effect, effect result, reply, rejection, transition, transition record, and declared message-envelope containers. These are not semantic cases. |
@@ -740,7 +740,7 @@ Ordering, safety, bounded, normalization, parser, and numeric laws also declare 
 
 Production trace bundles declare `architecture.trace.producers[]` with a profile, bundle, command, and exact runner. Inspectable runners call `architecture.machine.transition_record_function` and serialize returned records. `rms trace run --record` validates before replacing committed bundles; normal runs regenerate into temporary paths and compare canonical values. Strict audit reruns smoke producers and property realizations from committed code, rebuilds reusable packages, and rejects proof commands that mutate production files.
 
-Inspectable Rust, Swift, and JavaScript implementations also declare `commands.probe`, `architecture.probe`, and `architecture.roles.probe_adapter`. The adapter receives temporary request/output paths through `RMS_PROBE_REQUEST` and `RMS_PROBE_OUTPUT`, is selected by `RMS_PROBE_RUNNER`, calls the exact transition-record function, and chains returned `state_after`. It must not call the driver or any effect executor. Fixture and opaque executable bindings are exempt.
+Inspectable Rust, Swift, JavaScript, and Python implementations also declare `commands.probe`, `architecture.probe`, and `architecture.roles.probe_adapter`. The adapter receives temporary request/output paths through `RMS_PROBE_REQUEST` and `RMS_PROBE_OUTPUT`, is selected by `RMS_PROBE_RUNNER`, calls the exact transition-record function, and chains returned `state_after`. It must not call the driver or any effect executor. Fixture and opaque executable bindings are exempt.
 
 ### Applied Semantic Revision
 
