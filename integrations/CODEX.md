@@ -47,6 +47,8 @@ For agent automation, use `--json`. The `rms.surface/v2` envelope exposes typed 
 
 Provider-backed prompts remain explicit specialist workflows. They are advisory until canonical apply and deterministic checks succeed. Review and pin executable skill and plugin content before installation.
 
+Executable temporal properties use one specialist loop: `property check` type-checks observations, assumptions, expressions, and units; `evaluate` reads a real trace; `search` finds a finite witness or counterexample; `analyze` relates properties; `monitor` consumes trace or observation prefixes; and `replay` rechecks recorded analysis evidence. Codex must not translate temporal prose into an implicit oracle or call a bounded search proof.
+
 ## Plugin Wrapper
 
 The optional plugin wrapper lives at:

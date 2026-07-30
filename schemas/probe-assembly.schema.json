@@ -34,7 +34,7 @@
         "properties": {
           "id": { "$ref": "#/$defs/id" },
           "target": { "$ref": "#/$defs/id" },
-          "at": { "type": "integer", "minimum": 0, "default": 0 },
+          "at": { "$ref": "#/$defs/timeQuantity" },
           "input": { "$ref": "#/$defs/input" }
         },
         "additionalProperties": false
@@ -72,7 +72,7 @@
               "properties": {
                 "id": { "$ref": "#/$defs/id" },
                 "target": { "$ref": "#/$defs/id" },
-                "after": { "type": "integer", "minimum": 0, "default": 0 },
+                "after": { "$ref": "#/$defs/timeQuantity" },
                 "input": { "$ref": "#/$defs/input" }
               },
               "additionalProperties": false
@@ -92,7 +92,7 @@
           "id": { "$ref": "#/$defs/id" },
           "when": { "enum": ["always", "quiescent", "within"] },
           "within_steps": { "type": "integer", "minimum": 1 },
-          "within_time": { "type": "integer", "minimum": 0 },
+          "within_time": { "$ref": "#/$defs/timeQuantity" },
           "assert": {
             "oneOf": [
               {
@@ -175,7 +175,7 @@
           "route": { "type": "string", "minLength": 1 },
           "kind": { "enum": ["delay", "duplicate", "drop", "timeout"] },
           "budget": { "type": "integer", "minimum": 1 },
-          "delay": { "type": "integer", "minimum": 1 }
+          "delay": { "$ref": "#/$defs/timeQuantity" }
         },
         "additionalProperties": false
       },
@@ -213,6 +213,15 @@
       "properties": {
         "kind": { "enum": ["event", "command", "effect", "reply", "rejection"] },
         "name": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "timeQuantity": {
+      "type": "object",
+      "required": ["value", "unit"],
+      "properties": {
+        "value": { "type": "integer", "minimum": 0 },
+        "unit": { "enum": ["ns", "us", "ms", "s", "min", "h"] }
       },
       "additionalProperties": false
     }

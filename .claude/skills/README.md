@@ -32,3 +32,7 @@ Typed intent is reserved for CI, offline, or intentionally pre-structured caller
 RMS records schema-constrained fact extraction without accepting provider topology. CI, offline, and intentionally pre-structured callers use `--intent-json`, `--intent-yaml`, or `--intent-file`. Pass the returned `run_id`, run directory, or receipt file through `--route-receipt` on prescribed canonical semantic and topology mutations, including dry-runs.
 
 Use `rms explain ["<question>"]` when the compact prescription needs clarification and `rms help --all` for specialist commands. Load the catalog skill selected by the task lane; detailed machine, surface, property, trace, and completion rules live in selected skills and rendered RMS context.
+
+## Executable Property Loop
+
+Temporal promises use typed observations, explicit assumptions, closed expressions, and dimensionally valid quantities. Use `property check` to type-check, `evaluate` for a real trace, `search` for a witness or counterexample, `analyze` for finite relationships, `monitor` for an offline or streaming prefix, and `replay` for recorded `rms/property-analysis/v0.1` evidence. A bounded or open run is inconclusive, never proof.

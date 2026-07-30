@@ -554,10 +554,6 @@ architecture:
         strategy: model-checker
         command: properties
         runner: src/main.rs#compose_requires_one_protocol_owner_and_route_per_message
-      temporal:
-        pattern: always
-        scope: composition
-        condition: every public protocol message has exactly one compatible sender and receiver
     - id: resource-lifecycle-closure
       proves: resource-lifecycles-close-on-terminal-paths
       kind: conformance
@@ -577,10 +573,6 @@ architecture:
         strategy: model-checker
         command: properties
         runner: src/main.rs#resource_protocol_detects_terminal_path_leak
-      temporal:
-        pattern: resource-closure
-        scope: resource
-        condition: every acquired resource reaches a declared terminal disposition on every terminal machine path
     - id: artifact-transformation-compatibility
       proves: artifact-transformations-preserve-declared-contracts
       kind: conformance
@@ -600,10 +592,6 @@ architecture:
         strategy: model-checker
         command: properties
         runner: src/main.rs#compose_matches_required_and_provided_artifact_contracts
-      temporal:
-        pattern: always
-        scope: artifact
-        condition: every required artifact resolves to exactly one compatible provider contract
     - id: authority-containment
       proves: privileged-authority-is-explicit-and-contained
       kind: conformance
@@ -623,21 +611,17 @@ architecture:
         strategy: static-analyzer
         command: properties
         runner: src/main.rs#authority_check_rejects_unsafe_source_outside_bound_role
-      temporal:
-        pattern: always
-        scope: platform
-        condition: every privileged unsafe or foreign operation remains inside its declared authority role
     - id: temporal-realization-conformance
       proves: temporal-properties-have-matching-realizations
       kind: conformance
-      subject: structured temporal and bounded properties
+      subject: executable temporal observations expressions assumptions and quantities
       input_space:
-        fixtures: finite always, eventually, precedence, exclusion, at-most-once, bounded-response, resource-closure, and platform-budget claims
-      operation: compare every temporal pattern and scope with its declared proof realization
+        fixtures: closed always eventually precedence exclusion at-most-once and bounded-response expressions plus invalid legacy and dimensional cases
+      operation: type-check every executable property and compare its scope with declared proof realization
       oracle:
       - finite semantic scopes require exhaustive or model-checking realization
       - runtime and platform scopes require a model checker static analyzer sanitizer or benchmark
-      - bounded-response claims carry exactly one complete bound
+      - bounded-response bounds use a quantity compatible with their metric observation
       evidence:
         path: verification/properties/temporal_realization_conformance.md
       counterexamples:
@@ -647,10 +631,6 @@ architecture:
         strategy: model-checker
         command: properties
         runner: src/main.rs#temporal_property_rejects_corpus_only_finite_proof
-      temporal:
-        pattern: always
-        scope: composition
-        condition: every declared temporal property uses a realization capable of proving its scope and bound
     - id: cross-module-trace-causation
       proves: system-traces-preserve-message-causation
       kind: conformance
@@ -671,11 +651,6 @@ architecture:
         strategy: model-checker
         command: properties
         runner: src/main.rs#trace_stitch_reports_first_cross_module_handoff
-      temporal:
-        pattern: precedence
-        scope: composition
-        trigger: protocol message is received
-        condition: a matching causally prior send exists in the same correlation
     - id: property-realization-runner-conformance
       proves: non-corpus-property-realization-is-code-backed
       kind: property
@@ -992,6 +967,11 @@ architecture:
     - CheckRunnableSurface
     - CheckSemanticChange
     - CheckSemanticProperties
+    - EvaluateSemanticProperties
+    - SearchSemanticProperties
+    - AnalyzeSemanticProperties
+    - MonitorSemanticProperties
+    - ReplayPropertyAnalysis
     - ComposeRmsSystem
     - ConfigureAgentIntegration
     - DesignRmsSystem
@@ -1507,6 +1487,46 @@ architecture:
     semantic_function: semantic-property-run-command
     machine_inputs:
     - RunSemanticProperties
+    machine_outputs: []
+  - id: evaluate-semantic-properties-public
+    public_kind: command
+    public_name: evaluate-semantic-properties
+    contract: contracts/evaluate-semantic-properties.v1.yaml
+    semantic_function: semantic-property-evaluate-command
+    machine_inputs:
+    - EvaluateSemanticProperties
+    machine_outputs: []
+  - id: search-semantic-properties-public
+    public_kind: command
+    public_name: search-semantic-properties
+    contract: contracts/search-semantic-properties.v1.yaml
+    semantic_function: semantic-property-search-command
+    machine_inputs:
+    - SearchSemanticProperties
+    machine_outputs: []
+  - id: analyze-semantic-properties-public
+    public_kind: command
+    public_name: analyze-semantic-properties
+    contract: contracts/analyze-semantic-properties.v1.yaml
+    semantic_function: semantic-property-analyze-command
+    machine_inputs:
+    - AnalyzeSemanticProperties
+    machine_outputs: []
+  - id: monitor-semantic-properties-public
+    public_kind: command
+    public_name: monitor-semantic-properties
+    contract: contracts/monitor-semantic-properties.v1.yaml
+    semantic_function: semantic-property-monitor-command
+    machine_inputs:
+    - MonitorSemanticProperties
+    machine_outputs: []
+  - id: replay-property-analysis-public
+    public_kind: command
+    public_name: replay-property-analysis
+    contract: contracts/replay-property-analysis.v1.yaml
+    semantic_function: property-analysis-replay-command
+    machine_inputs:
+    - ReplayPropertyAnalysis
     machine_outputs: []
   - id: replay-property-counterexample-public
     public_kind: command
@@ -2445,6 +2465,56 @@ semantic_functions:
   evidence:
     contracts:
     - verification/contracts/run_semantic_properties.md
+- id: semantic-property-evaluate-command
+  symbol: run_property_evaluate
+  kind: interpreter
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/evaluate-semantic-properties.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/executable_property_loop.md
+- id: semantic-property-search-command
+  symbol: run_property_search
+  kind: interpreter
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/search-semantic-properties.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/executable_property_loop.md
+- id: semantic-property-analyze-command
+  symbol: run_property_analyze
+  kind: projector
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/analyze-semantic-properties.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/executable_property_loop.md
+- id: semantic-property-monitor-command
+  symbol: run_property_monitor
+  kind: interpreter
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/monitor-semantic-properties.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/executable_property_loop.md
+- id: property-analysis-replay-command
+  symbol: run_property_replay
+  kind: projector
+  purity: effectful
+  discharges:
+    contracts:
+    - contracts/replay-property-analysis.v1.yaml
+  evidence:
+    contracts:
+    - verification/contracts/executable_property_loop.md
 - id: property-counterexample-replay-command
   symbol: run_property_replay
   kind: projector
@@ -2838,7 +2908,7 @@ semantic_functions:
     - verification/laws/canonical_mutations_require_route_receipts.md
 x-rms:
   semantic_revision:
-    digest: sha256:d11414e7e5d2d0e3b96a59f5ccdb57d962d31e97fdc243218b72f45170e3e031
-    change_record: verification/changes/authorize-independent-rms-self-development-sealing-and-seal-probe-v2-multi-module-semantics-f89e6ecc40f0.yaml
+    digest: sha256:9f2bcaa5778a1ae7c2b492cf494fb0a6ca9d17128e64cde9f0cf9902c6429597
+    change_record: verification/changes/implement-rms-executable-property-loop.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:f89e6ecc40f0df83efd636539ba930746cd87bf46608c837aff03a6895565e24
+    change_record_digest: sha256:9472e4e3c17a69bc6cccdc27c5f4320e4fa17c2876270698ce6057e24c7b289f

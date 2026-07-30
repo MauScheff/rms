@@ -26,6 +26,7 @@ use walkdir::WalkDir;
 
 mod effect_executor;
 mod probe;
+mod property;
 mod semantic_graph;
 mod viewer;
 mod viewer_request;
@@ -1744,8 +1745,14 @@ struct PropertyTargetReport {
     evidence: Option<String>,
     counterexamples: Option<String>,
     realizations: Vec<PropertyRealization>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    observations: Vec<YamlValue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    assumptions: Vec<YamlValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    temporal: Option<SemanticTemporalProperty>,
+    temporal: Option<YamlValue>,
+    #[serde(skip)]
+    definition: YamlValue,
     status: String,
 }
 
@@ -1839,6 +1846,21 @@ enum PropertyProfile {
     Smoke,
     Ci,
     Nightly,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PropertySearchGoal {
+    Satisfy,
+    Violate,
+}
+
+impl PropertySearchGoal {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Satisfy => "satisfy",
+            Self::Violate => "violate",
+        }
+    }
 }
 
 impl PropertyProfile {
@@ -2014,6 +2036,11 @@ enum RmsWorkbenchCommand {
     VerifyImplementation,
     CheckSemanticProperties,
     RunSemanticProperties,
+    EvaluateSemanticProperties,
+    SearchSemanticProperties,
+    AnalyzeSemanticProperties,
+    MonitorSemanticProperties,
+    ReplayPropertyAnalysis,
     RunTraceProducers,
     ReplayPropertyCounterexample,
     InspectModule,
@@ -2989,32 +3016,11 @@ struct SemanticPropertyChange {
     #[serde(default)]
     realizations: Vec<PropertyRealization>,
     #[serde(default)]
-    temporal: Option<SemanticTemporalProperty>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SemanticTemporalProperty {
-    pattern: String,
-    scope: String,
+    observations: Vec<YamlValue>,
     #[serde(default)]
-    trigger: Option<String>,
-    condition: String,
+    assumptions: Vec<YamlValue>,
     #[serde(default)]
-    bound: Option<SemanticTemporalBound>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SemanticTemporalBound {
-    #[serde(default)]
-    transitions: Option<u64>,
-    #[serde(default)]
-    metric: Option<String>,
-    #[serde(default)]
-    value: Option<f64>,
-    #[serde(default)]
-    unit: Option<String>,
+    temporal: Option<YamlValue>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3775,10 +3781,106 @@ enum PropertyCommands {
         timeout_seconds: u64,
     },
 
-    /// Replay a recorded RMS property/fuzz counterexample.
+    /// Evaluate executable properties over a real RMS trace.
+    Evaluate {
+        /// Path to module.yaml or implementation.yaml.
+        target: PathBuf,
+
+        /// RMS trace bundle or probe system trace.
+        #[arg(long)]
+        trace: PathBuf,
+
+        /// Select one or more property ids; omit to evaluate all executable properties.
+        #[arg(long = "property")]
+        properties: Vec<String>,
+
+        /// Write rms/property-analysis/v0.1 evidence.
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Search a finite probe assembly for a witness or counterexample.
+    Search {
+        /// Path to module.yaml or implementation.yaml.
+        target: PathBuf,
+
+        /// Canonical rms/probe-assembly/v0.1 input.
+        #[arg(long)]
+        assembly: PathBuf,
+
+        /// Search for satisfaction or violation.
+        #[arg(long, value_enum)]
+        goal: PropertySearchGoal,
+
+        /// Select one property id; omit when the target has exactly one executable property.
+        #[arg(long = "property")]
+        property: Option<String>,
+
+        #[arg(long)]
+        max_steps: Option<usize>,
+        #[arg(long)]
+        max_schedules: Option<usize>,
+        #[arg(long)]
+        max_states: Option<usize>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long, default_value_t = DEFAULT_PROOF_TIMEOUT_SECONDS)]
+        timeout_seconds: u64,
+    },
+
+    /// Analyze finite relationships among executable properties.
+    Analyze {
+        /// Path to module.yaml or implementation.yaml.
+        target: PathBuf,
+        /// Canonical rms/probe-assembly/v0.1 input.
+        #[arg(long)]
+        assembly: PathBuf,
+        /// Select property ids; omit to analyze all executable properties.
+        #[arg(long = "property")]
+        properties: Vec<String>,
+        #[arg(long)]
+        max_steps: Option<usize>,
+        #[arg(long)]
+        max_schedules: Option<usize>,
+        #[arg(long)]
+        max_states: Option<usize>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long, default_value_t = DEFAULT_PROOF_TIMEOUT_SECONDS)]
+        timeout_seconds: u64,
+    },
+
+    /// Incrementally evaluate a trace or normalized observation stream.
+    Monitor {
+        /// Path to module.yaml or implementation.yaml.
+        target: PathBuf,
+        /// Trace file, observation document, NDJSON stream, or `-` for stdin.
+        #[arg(long)]
+        input: PathBuf,
+        /// Select one property id; omit when the target has exactly one executable property.
+        #[arg(long = "property")]
+        property: Option<String>,
+        /// Treat the final input as a closed trace.
+        #[arg(long)]
+        complete: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Replay a recorded RMS property analysis or legacy fuzz counterexample.
     Replay {
-        /// Path to a property counterexample YAML file.
-        counterexample: PathBuf,
+        /// Path to rms/property-analysis/v0.1 or a legacy property counterexample.
+        analysis: PathBuf,
 
         /// Emit machine-readable JSON.
         #[arg(long)]
@@ -9066,10 +9168,73 @@ fn main() -> Result<()> {
                 dry_run,
                 timeout_seconds,
             } => run_property_run(&implementation, profile, dry_run, json, timeout_seconds),
-            PropertyCommands::Replay {
-                counterexample,
+            PropertyCommands::Evaluate {
+                target,
+                trace,
+                properties,
+                out,
                 json,
-            } => run_property_replay(&counterexample, json),
+            } => run_property_evaluate(&target, &trace, &properties, out.as_deref(), json),
+            PropertyCommands::Search {
+                target,
+                assembly,
+                goal,
+                property,
+                max_steps,
+                max_schedules,
+                max_states,
+                out,
+                json,
+                timeout_seconds,
+            } => run_property_search(
+                &target,
+                &assembly,
+                goal,
+                property.as_deref(),
+                max_steps,
+                max_schedules,
+                max_states,
+                out.as_deref(),
+                json,
+                timeout_seconds,
+            ),
+            PropertyCommands::Analyze {
+                target,
+                assembly,
+                properties,
+                max_steps,
+                max_schedules,
+                max_states,
+                out,
+                json,
+                timeout_seconds,
+            } => run_property_analyze(
+                &target,
+                &assembly,
+                &properties,
+                max_steps,
+                max_schedules,
+                max_states,
+                out.as_deref(),
+                json,
+                timeout_seconds,
+            ),
+            PropertyCommands::Monitor {
+                target,
+                input,
+                property,
+                complete,
+                out,
+                json,
+            } => run_property_monitor(
+                &target,
+                &input,
+                property.as_deref(),
+                complete,
+                out.as_deref(),
+                json,
+            ),
+            PropertyCommands::Replay { analysis, json } => run_property_replay(&analysis, json),
         },
         Commands::Machine { command } => match command {
             MachineCommands::Plan {
@@ -15462,8 +15627,633 @@ fn proof_command_selects_runner(command: &str, runner: &str, environment: &str) 
         || command.contains(&format!("${{{environment}"))
 }
 
+fn executable_property_targets(target: &Path) -> Result<Vec<PropertyTargetReport>> {
+    let context = load_spec_target(target)?;
+    let mut targets = Vec::new();
+    if let Some(module) = &context.module {
+        targets.extend(property_targets_from_module(module, "property"));
+    }
+    if let Some(implementation) = &context.implementation {
+        targets.extend(property_targets_from_implementation(
+            implementation,
+            &["architecture", "reliability", "properties"],
+            "property",
+        ));
+    }
+    Ok(dedupe_property_targets(targets)
+        .into_iter()
+        .filter(|target| target.temporal.is_some())
+        .collect())
+}
+
+fn compile_selected_properties(
+    target: &Path,
+    selected: &[String],
+) -> Result<Vec<(PropertyTargetReport, property::CompiledProperty)>> {
+    let targets = executable_property_targets(target)?;
+    if targets.is_empty() {
+        bail!(
+            "`{}` declares no executable temporal properties",
+            target.display()
+        );
+    }
+    let known = targets
+        .iter()
+        .map(|target| target.id.as_str())
+        .collect::<BTreeSet<_>>();
+    for id in selected {
+        if !known.contains(id.as_str()) {
+            bail!(
+                "unknown executable property `{id}`; available: {}",
+                known.into_iter().collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
+    targets
+        .into_iter()
+        .filter(|target| selected.is_empty() || selected.contains(&target.id))
+        .map(|target| {
+            let definition = serde_json::to_value(&target.definition)?;
+            let compiled = property::compile_property(&definition)
+                .map_err(|issues| anyhow!(issues.join("; ")))?;
+            Ok((target, compiled))
+        })
+        .collect()
+}
+
+fn compile_one_property(
+    target: &Path,
+    selected: Option<&str>,
+) -> Result<(PropertyTargetReport, property::CompiledProperty)> {
+    let selected = selected
+        .map(|value| vec![value.to_string()])
+        .unwrap_or_default();
+    let mut properties = compile_selected_properties(target, &selected)?;
+    if properties.len() != 1 {
+        bail!(
+            "`{}` has {} executable properties; select one with `--property`",
+            target.display(),
+            properties.len()
+        );
+    }
+    Ok(properties.remove(0))
+}
+
+fn load_json_yaml_value(path: &Path) -> Result<JsonValue> {
+    let source =
+        fs::read_to_string(path).with_context(|| format!("failed to read `{}`", path.display()))?;
+    let yaml: YamlValue = serde_yaml::from_str(&source)
+        .with_context(|| format!("failed to parse `{}`", path.display()))?;
+    serde_json::to_value(yaml).context("failed to normalize YAML/JSON")
+}
+
+fn property_file_digest(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read `{}`", path.display()))?;
+    Ok(sha256_bytes(&bytes))
+}
+
+fn property_definition_digest(target: &PropertyTargetReport) -> Result<String> {
+    Ok(sha256_bytes(&serde_json::to_vec(&serde_json::to_value(
+        &target.definition,
+    )?)?))
+}
+
+fn write_property_analysis(path: Option<&Path>, analysis: &JsonValue) -> Result<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    let bytes = if path.extension().and_then(|value| value.to_str()) == Some("json") {
+        serde_json::to_vec_pretty(analysis)?
+    } else {
+        serde_yaml::to_string(analysis)?.into_bytes()
+    };
+    fs::write(path, bytes)
+        .with_context(|| format!("failed to write property analysis `{}`", path.display()))
+}
+
+fn print_property_analysis(analysis: &JsonValue, json_output: bool) -> Result<()> {
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(analysis)?);
+        return Ok(());
+    }
+    println!(
+        "RMS property {}: {}",
+        analysis
+            .get("operation")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("analysis"),
+        analysis
+            .get("result")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("invalid")
+    );
+    if let Some(evaluations) = analysis.get("evaluations").and_then(JsonValue::as_array) {
+        for evaluation in evaluations {
+            println!(
+                "  - {}: {} — {}",
+                evaluation
+                    .get("property")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("<unknown>"),
+                evaluation
+                    .get("verdict")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("<unknown>"),
+                evaluation
+                    .pointer("/explanation/summary")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("")
+            );
+        }
+    }
+    if let Some(relations) = analysis.get("relationships").and_then(JsonValue::as_array) {
+        for relation in relations {
+            println!(
+                "  - {}: {}",
+                relation
+                    .get("relation")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("relationship"),
+                relation
+                    .get("result")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("invalid")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn run_property_evaluate(
+    target: &Path,
+    trace: &Path,
+    selected: &[String],
+    out: Option<&Path>,
+    json_output: bool,
+) -> Result<()> {
+    let trace_value = load_json_yaml_value(trace)?;
+    let properties = compile_selected_properties(target, selected)?;
+    let mut evaluations = Vec::new();
+    let mut definitions = Vec::new();
+    let mut normalized_observations = BTreeMap::new();
+    for (target_property, compiled) in properties {
+        evaluations.push(serde_json::to_value(property::evaluate_trace(
+            &compiled,
+            &trace_value,
+        )?)?);
+        normalized_observations.insert(
+            target_property.id.clone(),
+            serde_json::to_value(property::normalize_trace(&compiled, &trace_value)?)?,
+        );
+        definitions.push(serde_json::to_value(&target_property.definition)?);
+    }
+    let result = aggregate_property_evaluation_result(&evaluations);
+    let analysis = json!({
+        "spec": property::ANALYSIS_SPEC,
+        "operation": "evaluate",
+        "result": result,
+        "target": target.display().to_string(),
+        "source": {
+            "path": trace.display().to_string(),
+            "digest": property_file_digest(trace)?
+        },
+        "property_definitions": definitions,
+        "evaluations": evaluations,
+        "evidence_observations": normalized_observations,
+        "coverage": {
+            "kind": "trace",
+            "complete": trace_value.get("exhausted").and_then(JsonValue::as_bool)
+                .unwrap_or_else(|| trace_value.get("complete").and_then(JsonValue::as_bool).unwrap_or(true))
+        },
+        "evidence_trace": trace_value,
+        "replay": {
+            "operation": "evaluate",
+            "target": target.display().to_string(),
+            "trace": trace.display().to_string()
+        }
+    });
+    write_property_analysis(out, &analysis)?;
+    print_property_analysis(&analysis, json_output)?;
+    if result == "violated" || result == "invalid" {
+        bail!("one or more executable properties did not pass");
+    }
+    Ok(())
+}
+
+fn aggregate_property_evaluation_result(evaluations: &[JsonValue]) -> &'static str {
+    if evaluations.iter().any(|evaluation| {
+        matches!(
+            evaluation.get("verdict").and_then(JsonValue::as_str),
+            Some("violated")
+        )
+    }) {
+        "violated"
+    } else if evaluations.iter().any(|evaluation| {
+        matches!(
+            evaluation.get("verdict").and_then(JsonValue::as_str),
+            Some("invalid") | Some("unsupported")
+        )
+    }) {
+        "invalid"
+    } else if evaluations.iter().any(|evaluation| {
+        evaluation.get("verdict").and_then(JsonValue::as_str) == Some("inconclusive")
+    }) {
+        "inconclusive"
+    } else {
+        "satisfied"
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_property_search(
+    target: &Path,
+    assembly: &Path,
+    goal: PropertySearchGoal,
+    selected: Option<&str>,
+    max_steps: Option<usize>,
+    max_schedules: Option<usize>,
+    max_states: Option<usize>,
+    out: Option<&Path>,
+    json_output: bool,
+    timeout_seconds: u64,
+) -> Result<()> {
+    let (target_property, compiled) = compile_one_property(target, selected)?;
+    let exploration = probe::explore_property_traces(
+        assembly,
+        max_steps,
+        max_schedules,
+        max_states,
+        timeout_seconds,
+    )?;
+    let mut candidates = exploration
+        .traces()
+        .iter()
+        .map(|trace| {
+            property::evaluate_trace(&compiled, trace).map(|evaluation| (trace.clone(), evaluation))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    candidates.sort_by(|left, right| {
+        property_trace_len(&left.0)
+            .cmp(&property_trace_len(&right.0))
+            .then_with(|| {
+                sha256_bytes(&serde_json::to_vec(&left.0).unwrap_or_default()).cmp(&sha256_bytes(
+                    &serde_json::to_vec(&right.0).unwrap_or_default(),
+                ))
+            })
+    });
+    let desired = match goal {
+        PropertySearchGoal::Satisfy => property::Verdict::Satisfied,
+        PropertySearchGoal::Violate => property::Verdict::Violated,
+    };
+    let found = candidates
+        .iter()
+        .find(|(_, evaluation)| evaluation.verdict() == &desired);
+    let result = match (goal, found.is_some(), exploration.exhausted()) {
+        (PropertySearchGoal::Satisfy, true, _) => "satisfied-witness",
+        (PropertySearchGoal::Violate, true, _) => "violated-counterexample",
+        (PropertySearchGoal::Satisfy, false, true) => "exhaustively-unsatisfiable",
+        (PropertySearchGoal::Violate, false, true) => "exhaustively-satisfied",
+        _ => "inconclusive",
+    };
+    let (evidence_trace, evaluations) = found
+        .map(|(trace, evaluation)| {
+            (
+                Some(trace.clone()),
+                vec![serde_json::to_value(evaluation).unwrap_or(JsonValue::Null)],
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                None,
+                candidates
+                    .iter()
+                    .map(|(_, evaluation)| {
+                        serde_json::to_value(evaluation).unwrap_or(JsonValue::Null)
+                    })
+                    .collect(),
+            )
+        });
+    let analysis = json!({
+        "spec": property::ANALYSIS_SPEC,
+        "operation": "search",
+        "result": result,
+        "goal": goal.label(),
+        "target": target.display().to_string(),
+        "source": {
+            "path": assembly.display().to_string(),
+            "digest": property_file_digest(assembly)?,
+            "assembly_digest": exploration.assembly_digest()
+        },
+        "property_definitions": [serde_json::to_value(&target_property.definition)?],
+        "property_digest": property_definition_digest(&target_property)?,
+        "evaluations": evaluations,
+        "coverage": {
+            "exhausted": exploration.exhausted(),
+            "probe": exploration.coverage(),
+            "bounds": exploration.bounds()
+        },
+        "evidence_trace": evidence_trace,
+        "replay": {
+            "operation": "search",
+            "target": target.display().to_string(),
+            "assembly": assembly.display().to_string(),
+            "property": target_property.id,
+            "goal": goal.label()
+        }
+    });
+    write_property_analysis(out, &analysis)?;
+    print_property_analysis(&analysis, json_output)
+}
+
+fn property_trace_len(trace: &JsonValue) -> usize {
+    trace
+        .get("timeline")
+        .or_else(|| trace.get("records"))
+        .and_then(JsonValue::as_array)
+        .map(Vec::len)
+        .unwrap_or(usize::MAX)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_property_analyze(
+    target: &Path,
+    assembly: &Path,
+    selected: &[String],
+    max_steps: Option<usize>,
+    max_schedules: Option<usize>,
+    max_states: Option<usize>,
+    out: Option<&Path>,
+    json_output: bool,
+    timeout_seconds: u64,
+) -> Result<()> {
+    let properties = compile_selected_properties(target, selected)?;
+    let exploration = probe::explore_property_traces(
+        assembly,
+        max_steps,
+        max_schedules,
+        max_states,
+        timeout_seconds,
+    )?;
+    let mut matrix = BTreeMap::<String, Vec<property::Evaluation>>::new();
+    let mut definitions = Vec::new();
+    for (target_property, compiled) in &properties {
+        definitions.push(serde_json::to_value(&target_property.definition)?);
+        let evaluations = exploration
+            .traces()
+            .iter()
+            .map(|trace| property::evaluate_trace(compiled, trace))
+            .collect::<Result<Vec<_>>>()?;
+        matrix.insert(target_property.id.clone(), evaluations);
+    }
+    let mut relationships = Vec::new();
+    for (target_property, compiled) in &properties {
+        let evaluations = &matrix[&target_property.id];
+        let any_satisfied = evaluations
+            .iter()
+            .any(|evaluation| evaluation.verdict() == &property::Verdict::Satisfied);
+        let any_violated = evaluations
+            .iter()
+            .any(|evaluation| evaluation.verdict() == &property::Verdict::Violated);
+        relationships.push(json!({
+            "relation": format!("satisfiable({})", target_property.id),
+            "result": if any_satisfied {"holds"} else if exploration.exhausted() {"refuted"} else {"inconclusive"}
+        }));
+        relationships.push(json!({
+            "relation": format!("valid({})", target_property.id),
+            "result": if any_violated {"refuted"} else if exploration.exhausted() {"holds"} else {"inconclusive"}
+        }));
+        let trigger_seen = evaluations
+            .iter()
+            .any(property::Evaluation::has_trigger_or_response);
+        relationships.push(json!({
+            "relation": format!("vacuous({})", target_property.id),
+            "result": if !compiled.supports_vacuity_analysis() {
+                "unsupported"
+            } else if trigger_seen {
+                "refuted"
+            } else if exploration.exhausted() {
+                "holds"
+            } else {
+                "inconclusive"
+            }
+        }));
+    }
+    for left_index in 0..properties.len() {
+        for right_index in (left_index + 1)..properties.len() {
+            let left = &properties[left_index].0.id;
+            let right = &properties[right_index].0.id;
+            let left_evaluations = &matrix[left];
+            let right_evaluations = &matrix[right];
+            let implication_refuted =
+                |antecedent: &[property::Evaluation], consequent: &[property::Evaluation]| {
+                    antecedent.iter().zip(consequent).position(|(left, right)| {
+                        left.verdict() == &property::Verdict::Satisfied
+                            && right.verdict() == &property::Verdict::Violated
+                    })
+                };
+            let left_right_refutation = implication_refuted(left_evaluations, right_evaluations);
+            let right_left_refutation = implication_refuted(right_evaluations, left_evaluations);
+            relationships.push(json!({
+                "relation": format!("implies({left},{right})"),
+                "result": if left_right_refutation.is_some() {"refuted"} else if exploration.exhausted() {"holds"} else {"inconclusive"},
+                "refuting_trace": left_right_refutation.map(|index| exploration.traces()[index].clone())
+            }));
+            relationships.push(json!({
+                "relation": format!("equivalent({left},{right})"),
+                "result": if left_right_refutation.is_some() || right_left_refutation.is_some() {"refuted"} else if exploration.exhausted() {"holds"} else {"inconclusive"},
+                "refuting_trace": left_right_refutation.or(right_left_refutation).map(|index| exploration.traces()[index].clone())
+            }));
+            let jointly_satisfied =
+                left_evaluations
+                    .iter()
+                    .zip(right_evaluations)
+                    .position(|(left, right)| {
+                        left.verdict() == &property::Verdict::Satisfied
+                            && right.verdict() == &property::Verdict::Satisfied
+                    });
+            relationships.push(json!({
+                "relation": format!("conflicts({left},{right})"),
+                "result": if jointly_satisfied.is_some() {"refuted"} else if exploration.exhausted() {"holds"} else {"inconclusive"},
+                "refuting_trace": jointly_satisfied.map(|index| exploration.traces()[index].clone())
+            }));
+            relationships.push(json!({
+                "relation": format!("redundant({right}|{left})"),
+                "result": if left_right_refutation.is_some() {"refuted"} else if exploration.exhausted() {"holds"} else {"inconclusive"},
+                "refuting_trace": left_right_refutation.map(|index| exploration.traces()[index].clone())
+            }));
+        }
+    }
+    let result = if relationships
+        .iter()
+        .any(|relation| relation.get("result").and_then(JsonValue::as_str) == Some("inconclusive"))
+    {
+        "inconclusive"
+    } else {
+        "complete"
+    };
+    let analysis = json!({
+        "spec": property::ANALYSIS_SPEC,
+        "operation": "analyze",
+        "result": result,
+        "target": target.display().to_string(),
+        "source": {
+            "path": assembly.display().to_string(),
+            "digest": property_file_digest(assembly)?,
+            "assembly_digest": exploration.assembly_digest()
+        },
+        "property_definitions": definitions,
+        "relationships": relationships,
+        "coverage": {
+            "exhausted": exploration.exhausted(),
+            "probe": exploration.coverage(),
+            "bounds": exploration.bounds()
+        },
+        "replay": {
+            "operation": "analyze",
+            "target": target.display().to_string(),
+            "assembly": assembly.display().to_string()
+        }
+    });
+    write_property_analysis(out, &analysis)?;
+    print_property_analysis(&analysis, json_output)
+}
+
+fn run_property_monitor(
+    target: &Path,
+    input: &Path,
+    selected: Option<&str>,
+    complete: bool,
+    out: Option<&Path>,
+    json_output: bool,
+) -> Result<()> {
+    let (target_property, compiled) = compile_one_property(target, selected)?;
+    let source = if input == Path::new("-") {
+        let mut source = String::new();
+        std::io::stdin().read_to_string(&mut source)?;
+        source
+    } else {
+        fs::read_to_string(input)
+            .with_context(|| format!("failed to read `{}`", input.display()))?
+    };
+    let parsed_document = serde_yaml::from_str::<YamlValue>(&source)
+        .ok()
+        .and_then(|value| serde_json::to_value(value).ok());
+    let (evaluation, evidence) = if let Some(document) = parsed_document.as_ref().filter(|value| {
+        matches!(
+            value.get("spec").and_then(JsonValue::as_str),
+            Some("rms/probe-system-trace/v0.1") | Some("rms/trace-bundle/v0.1")
+        )
+    }) {
+        (
+            property::evaluate_trace(&compiled, document)?,
+            document.clone(),
+        )
+    } else {
+        let envelopes = parse_observation_stream(&source, parsed_document.as_ref())?;
+        (
+            property::evaluate_observation_envelopes(&compiled, &envelopes, complete)?,
+            serde_json::to_value(&envelopes)?,
+        )
+    };
+    let result = evaluation.verdict().label();
+    let analysis = json!({
+        "spec": property::ANALYSIS_SPEC,
+        "operation": "monitor",
+        "result": result,
+        "target": target.display().to_string(),
+        "source": {
+            "path": input.display().to_string(),
+            "digest": sha256_bytes(source.as_bytes())
+        },
+        "property_definitions": [serde_json::to_value(&target_property.definition)?],
+        "evaluations": [evaluation],
+        "coverage": {"kind": "monitor-prefix", "complete": complete},
+        "evidence_observations": evidence,
+        "replay": {
+            "operation": "monitor",
+            "target": target.display().to_string(),
+            "input": input.display().to_string(),
+            "property": target_property.id
+        }
+    });
+    write_property_analysis(out, &analysis)?;
+    print_property_analysis(&analysis, json_output)
+}
+
+fn parse_observation_stream(
+    source: &str,
+    parsed: Option<&JsonValue>,
+) -> Result<Vec<property::ObservationEnvelope>> {
+    if let Some(items) = parsed.and_then(JsonValue::as_array) {
+        return items
+            .iter()
+            .cloned()
+            .map(|value| serde_json::from_value(value).context("invalid observation envelope"))
+            .collect();
+    }
+    if let Some(value) = parsed.filter(|value| {
+        value.get("spec").and_then(JsonValue::as_str) == Some(property::OBSERVATION_SPEC)
+    }) {
+        return Ok(vec![serde_json::from_value(value.clone())?]);
+    }
+    source
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str::<property::ObservationEnvelope>(line)
+                .context("invalid newline-delimited property observation")
+        })
+        .collect()
+}
+
 fn run_property_replay(counterexample: &Path, json_output: bool) -> Result<()> {
     let value = load_yaml_value(counterexample)?;
+    if get_str(&value, &["spec"]) == Some(property::ANALYSIS_SPEC) {
+        let json_value = serde_json::to_value(&value)?;
+        let definitions = json_value
+            .get("property_definitions")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| anyhow!("property analysis has no embedded property definitions"))?;
+        let evidence = json_value
+            .get("evidence_trace")
+            .filter(|value| !value.is_null())
+            .or_else(|| {
+                json_value
+                    .pointer("/relationships/0/refuting_trace")
+                    .filter(|value| !value.is_null())
+            });
+        let Some(evidence) = evidence else {
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "spec": property::ANALYSIS_SPEC,
+                        "result": "recorded-exhaustive-result",
+                        "analysis": counterexample.display().to_string()
+                    }))?
+                );
+            } else {
+                println!("RMS property replay: recorded-exhaustive-result");
+                println!("analysis: {}", counterexample.display());
+            }
+            return Ok(());
+        };
+        let evaluations = definitions
+            .iter()
+            .map(|definition| {
+                let compiled = property::compile_property(definition)
+                    .map_err(|issues| anyhow!(issues.join("; ")))?;
+                property::evaluate_trace(&compiled, evidence)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let report = json!({
+            "spec": property::ANALYSIS_SPEC,
+            "result": "replayed",
+            "analysis": counterexample.display().to_string(),
+            "evaluations": evaluations
+        });
+        return print_property_analysis(&report, json_output);
+    }
     let mut summary = property_counterexample_summary(counterexample, &value);
     if summary.status == "fail" {
         if json_output {
@@ -16235,38 +17025,68 @@ fn validate_temporal_target_report(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let Some(temporal) = &target.temporal else {
+        if !target.observations.is_empty() || !target.assumptions.is_empty() {
+            diagnostics.push(error(
+                "semantic.executable-property-incomplete",
+                &manifest.path,
+                format!(
+                    "property `{}` declares observations or assumptions without executable `temporal` semantics",
+                    target.id
+                ),
+            ));
+        }
         return;
     };
+    let scope = get_str(temporal, &["scope"]).unwrap_or_default();
     if !matches!(
-        temporal.pattern.as_str(),
-        "always"
-            | "eventually"
-            | "precedence"
-            | "exclusion"
-            | "at-most-once"
-            | "bounded-response"
-            | "resource-closure"
-            | "bounded-resource"
-    ) || !matches!(
-        temporal.scope.as_str(),
+        scope,
         "machine" | "protocol" | "resource" | "artifact" | "composition" | "runtime" | "platform"
     ) {
-        push_unique_warning(
-            diagnostics,
+        diagnostics.push(error(
             "semantic.temporal-property-invalid",
             &manifest.path,
             format!(
-                "temporal property `{}` has unsupported pattern `{}` or scope `{}`",
-                target.id, temporal.pattern, temporal.scope
+                "temporal property `{}` has unsupported or missing scope `{scope}`",
+                target.id
             ),
-        );
+        ));
+    }
+    let definition = match serde_json::to_value(&target.definition) {
+        Ok(definition) => definition,
+        Err(error_value) => {
+            diagnostics.push(error(
+                "semantic.executable-property-invalid",
+                &manifest.path,
+                format!(
+                    "property `{}` could not be normalized: {error_value}",
+                    target.id
+                ),
+            ));
+            return;
+        }
+    };
+    if let Err(issues) = property::compile_property(&definition) {
+        for issue in issues {
+            diagnostics.push(error(
+                if issue.contains("removed descriptive temporal fields") {
+                    "semantic.temporal-property-legacy"
+                } else if issue.contains("dimension") || issue.contains("unit") {
+                    "semantic.property-unit-invalid"
+                } else {
+                    "semantic.executable-property-invalid"
+                },
+                &manifest.path,
+                issue,
+            ));
+        }
+        return;
     }
     let strategies = target
         .realizations
         .iter()
         .map(|realization| realization.strategy.as_str())
         .collect::<BTreeSet<_>>();
-    let supported = match temporal.scope.as_str() {
+    let supported = match scope {
         "machine" | "protocol" | "resource" | "artifact" | "composition" => strategies
             .iter()
             .any(|strategy| matches!(*strategy, "deterministic-exhaustive" | "model-checker")),
@@ -16279,15 +17099,14 @@ fn validate_temporal_target_report(
         _ => true,
     };
     if !supported {
-        push_unique_warning(
-            diagnostics,
+        diagnostics.push(error(
             "evidence.temporal-realization-mismatch",
             &manifest.path,
             format!(
                 "temporal property `{}` has no realization capable of proving `{}` scope",
-                target.id, temporal.scope
+                target.id, scope
             ),
-        );
+        ));
     }
 }
 
@@ -16913,8 +17732,15 @@ fn property_target_from_yaml(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let temporal =
-        get_path(item, &["temporal"]).and_then(|value| serde_yaml::from_value(value.clone()).ok());
+    let observations = get_path(item, &["observations"])
+        .and_then(YamlValue::as_sequence)
+        .cloned()
+        .unwrap_or_default();
+    let assumptions = get_path(item, &["assumptions"])
+        .and_then(YamlValue::as_sequence)
+        .cloned()
+        .unwrap_or_default();
+    let temporal = get_path(item, &["temporal"]).cloned();
     let status =
         if proves.is_some() && input_space.is_some() && !oracle.is_empty() && evidence.is_some() {
             "declared"
@@ -16932,7 +17758,10 @@ fn property_target_from_yaml(
         evidence,
         counterexamples,
         realizations,
+        observations,
+        assumptions,
         temporal,
+        definition: item.clone(),
         status,
     }
 }
@@ -18417,7 +19246,7 @@ fn append_semantic_structure_checklist(out: &mut String, kind: PromptKind) -> Re
     writeln!(out, "- Public protocols: model cross-module conversations as closed participant/message/state automata; bind each message send and receive exactly once at composition.")?;
     writeln!(out, "- Resource ownership: model acquire, use, release, and transfer for resources whose lifecycle affects correctness; every terminal machine path must close the resource protocol.")?;
     writeln!(out, "- Authority: contain privileged, unsafe, and foreign operations behind declared authority roles and exact safe facade symbols.")?;
-    writeln!(out, "- Temporal proof: turn always, eventually, precedence, exclusion, at-most-once, and bounded-response claims into temporal properties with scope-appropriate realizations.")?;
+    writeln!(out, "- Temporal proof: declare typed observations, assumptions, closed expressions, and dimensionally valid bounds; evaluate real traces and require exhausted finite search for universal finite claims.")?;
     writeln!(out, "- Constructor audit: check whether public constructors can create contradictory values or impossible state combinations.")?;
     writeln!(out, "- Boundaries: parse untrusted input into domain commands before pure decisions, and keep external effects behind ports or adapters.")?;
     writeln!(out, "- Numeric safety: if validated values represent counts, money, quantities, rates, sizes, scores, or other numeric facts, choose checked, saturating, bounded, or explicitly proven arithmetic before implementation.")?;
@@ -20875,6 +21704,12 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
         )),
         "rms/probe-counterexample/v0.1" => Some(include_str!(
             "../../../../schemas/probe-counterexample.schema.json"
+        )),
+        "rms/property-analysis/v0.1" => Some(include_str!(
+            "../../../../schemas/property-analysis.schema.json"
+        )),
+        "rms/property-observation/v0.1" => Some(include_str!(
+            "../../../../schemas/property-observation.schema.json"
         )),
         "rms/conformance/v0.1" => Some(include_str!("../../../../schemas/conformance.schema.json")),
         _ => None,
@@ -45804,7 +46639,8 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact: `laws.add[]` and `laws.set[]` use scalar strings `id`, `statement`, `kind`, `authority`, and `enforced_by`. `contracts.add[]` and `contracts.set[]` use scalar strings `name`, required `kind: command|query|event|capability`, optional `direction: provided|required`, `version`, optional binding-facing `command`, and `meaning`, plus non-empty string lists `accepts`, `ensures`, and `rejects`; only capability contracts may be required. Cross-module conversations add `protocol` with participants, closed messages, states, initial/terminal states, and transitions. `artifacts` declare `name`, `version`, `direction: provided|required|internal`, `contract`, and invariant ids. `transformations` declare input/output artifact names, an exact semantic function, rejection cases, and property ids. `authorities` declare an `id`, `kind: privileged|unsafe|foreign`, capabilities, and rationale. `properties.add[]` and `properties.set[]` use scalar strings `id`, `proves`, and `kind`; structured `input_space` and `operation`; string lists `preconditions` and non-empty `oracle`; `evidence: {{kind: property, path: <relative-path>}}` (or kind `fuzz` for a fuzz property); `counterexamples: {{path: <relative-path>}}`; `realizations: [{{profile, strategy, command, generator, runner}}]`, where `generator` is required for generated-property and deterministic-exhaustive strategies and `runner` is always required; and optional `temporal: {{pattern, scope, trigger, condition, bound}}`. `trace_producers.add[]` and `trace_producers.set[]` use scalar `id`, `profile`, `bundle`, `command`, and exact `runner`; removals contain producer ids. `properties.remove[]` contains existing property ids. `semantic_functions.add[]` and `semantic_functions.set[]` use scalar `id`, exact binding `symbol`, `kind`, and `purity`; optional string-list mappings under `discharges` and `assumptions`; optional declared `authorities`; and non-empty categorized evidence paths. `semantic_functions.remove[]` contains existing function ids. `public_behavior_bindings` connect `id`, `public_kind: command|query|capability`, `public_name`, `contract`, `semantic_function`, and exact semantic `machine_inputs`/`machine_outputs`. `dependency_behavior_bindings` connect `id`, required `capability`, optional required `contract`, exact local `consumer: path#symbol`, and `resolution: module|external`; module resolution also names `provider_module` and `provider_contract`. `evidence.add[]` uses scalar strings `kind`, `proves`, and `path`.")?;
+    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; and exact realizations. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "`properties.remove[]` contains existing property ids. Binding-native realizations name a `path#symbol` runner and an exact generator. Protocol observations reference a public protocol automaton. `semantic_functions.add[]` and `semantic_functions.set[]` use the rendered function shape; `semantic_functions.remove[]` contains existing function ids.")?;
     writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module.")?;
     writeln!(out, "`rms spec apply` automatically adds every currently active semantic revision to `supersedes` and hash-seals the exact new record. Use explicit `supersedes` only for additional branches that are not locally discoverable. Applied records are append-only: never edit or delete them.")?;
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
@@ -45815,7 +46651,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically.")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
-    writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and non-empty `accepts`, `ensures`, and `rejects`. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
+    writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and non-empty string lists `accepts`, `ensures`, and `rejects`. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`: only capability contracts may be required. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
     if context.implementation.is_none() {
         writeln!(out, "This target has no implementation binding, so `semantic_functions`, `machine`, `roles`, and `surfaces` are null. Keep them null for contract/law/property-only work. Before requesting implementation bindings, machine roles, or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|python|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
     }
@@ -45837,7 +46673,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         "Owned, shared, or borrowed resources use lifecycle automata whose reachable terminal product paths close or transfer the resource explicitly.",
         "Artifacts have versioned contracts, and transformations name input/output artifacts, explicit rejection cases, semantic functions, and preserving properties.",
         "Unsafe, foreign, or privileged operations occur only behind declared authority bindings and exact safe facade symbols.",
-        "Always, eventually, precedence, exclusion, at-most-once, and bounded-response claims use temporal properties with a realization appropriate to their scope.",
+        "Temporal claims use typed observations, explicit assumptions, closed executable expressions, dimensionally valid quantities, and evidence appropriate to their scope.",
         "Effectful stateful machines declare exact machine-driver and transition-record callables. The driver retains each complete record, advances from state_after, invokes exact executors for output.effects, feeds typed results back as inputs, and owns the complete repeated cycle.",
         "Effect-emitting runnable surfaces delegate to an exact callable that reaches the machine driver; the driver owns the complete repeated transition/effect/result cycle, while surfaces and adapters do not hide lifecycle loops even when public and machine command names differ.",
         "Runnable app, UI, CLI, browser, HTTP, batch, mobile, desktop, or executable entrypoints are declared as surfaces before files own product behavior.",
@@ -49005,30 +49841,21 @@ fn validate_temporal_property(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let Some(temporal) = &property.temporal else {
+        if !property.observations.is_empty() || !property.assumptions.is_empty() {
+            diagnostics.push(error(
+                "semantic.executable-property-incomplete",
+                &context.target,
+                format!(
+                    "property `{}` declares observations or assumptions without executable temporal semantics",
+                    property.id
+                ),
+            ));
+        }
         return;
     };
+    let scope = get_str(temporal, &["scope"]).unwrap_or_default();
     if !matches!(
-        temporal.pattern.as_str(),
-        "always"
-            | "eventually"
-            | "precedence"
-            | "exclusion"
-            | "at-most-once"
-            | "bounded-response"
-            | "resource-closure"
-            | "bounded-resource"
-    ) {
-        diagnostics.push(error(
-            "semantic.temporal-pattern-invalid",
-            &context.target,
-            format!(
-                "property `{}` declares unsupported temporal pattern `{}`",
-                property.id, temporal.pattern
-            ),
-        ));
-    }
-    if !matches!(
-        temporal.scope.as_str(),
+        scope,
         "machine" | "protocol" | "resource" | "artifact" | "composition" | "runtime" | "platform"
     ) {
         diagnostics.push(error(
@@ -49036,55 +49863,46 @@ fn validate_temporal_property(
             &context.target,
             format!(
                 "property `{}` declares unsupported temporal scope `{}`",
-                property.id, temporal.scope
+                property.id, scope
             ),
         ));
     }
-    if temporal.condition.trim().is_empty() {
-        diagnostics.push(error(
-            "semantic.temporal-condition-missing",
-            &context.target,
-            format!(
-                "property `{}` must declare a temporal condition",
-                property.id
-            ),
-        ));
-    }
-    if temporal.pattern == "bounded-response" && temporal.bound.is_none() {
-        diagnostics.push(error(
-            "semantic.temporal-bound-missing",
-            &context.target,
-            format!(
-                "bounded-response property `{}` must declare a transition or metric bound",
-                property.id
-            ),
-        ));
-    }
-    if let Some(bound) = &temporal.bound {
-        let transition_bound = bound.transitions.is_some();
-        let metric_bound = bound.metric.is_some() || bound.value.is_some() || bound.unit.is_some();
-        if transition_bound == metric_bound
-            || (metric_bound
-                && (bound.metric.as_deref().is_none_or(str::is_empty)
-                    || bound.value.is_none()
-                    || bound.unit.as_deref().is_none_or(str::is_empty)))
-        {
+    let definition = match serde_json::to_value(property) {
+        Ok(value) => value,
+        Err(error_value) => {
             diagnostics.push(error(
-                "semantic.temporal-bound-invalid",
+                "semantic.executable-property-invalid",
                 &context.target,
                 format!(
-                    "property `{}` must declare exactly one complete transition or metric bound",
+                    "property `{}` could not be normalized: {error_value}",
                     property.id
                 ),
             ));
+            return;
         }
+    };
+    if let Err(issues) = property::compile_property(&definition) {
+        for issue in issues {
+            diagnostics.push(error(
+                if issue.contains("removed descriptive temporal fields") {
+                    "semantic.temporal-property-legacy"
+                } else if issue.contains("dimension") || issue.contains("unit") {
+                    "semantic.property-unit-invalid"
+                } else {
+                    "semantic.executable-property-invalid"
+                },
+                &context.target,
+                issue,
+            ));
+        }
+        return;
     }
     let strategies = property
         .realizations
         .iter()
         .map(|realization| realization.strategy.as_str())
         .collect::<BTreeSet<_>>();
-    let supported = match temporal.scope.as_str() {
+    let supported = match scope {
         "machine" | "protocol" | "resource" | "artifact" | "composition" => strategies
             .iter()
             .any(|strategy| matches!(*strategy, "deterministic-exhaustive" | "model-checker")),
@@ -49102,7 +49920,7 @@ fn validate_temporal_property(
             &context.target,
             format!(
                 "temporal property `{}` has no realization capable of proving `{}` scope",
-                property.id, temporal.scope
+                property.id, scope
             ),
         ));
     }
@@ -51493,50 +52311,20 @@ fn semantic_property_yaml(property: &SemanticPropertyChange) -> YamlValue {
             ),
         );
     }
-    if let Some(temporal) = &property.temporal {
+    if !property.observations.is_empty() {
         mapping.insert(
-            yaml_key("temporal"),
-            semantic_temporal_property_yaml(temporal),
+            yaml_key("observations"),
+            YamlValue::Sequence(property.observations.clone()),
         );
     }
-    YamlValue::Mapping(mapping)
-}
-
-fn semantic_temporal_property_yaml(temporal: &SemanticTemporalProperty) -> YamlValue {
-    let mut mapping = serde_yaml::Mapping::new();
-    mapping.insert(
-        yaml_key("pattern"),
-        YamlValue::String(temporal.pattern.clone()),
-    );
-    mapping.insert(yaml_key("scope"), YamlValue::String(temporal.scope.clone()));
-    if let Some(trigger) = &temporal.trigger {
-        mapping.insert(yaml_key("trigger"), YamlValue::String(trigger.clone()));
+    if !property.assumptions.is_empty() {
+        mapping.insert(
+            yaml_key("assumptions"),
+            YamlValue::Sequence(property.assumptions.clone()),
+        );
     }
-    mapping.insert(
-        yaml_key("condition"),
-        YamlValue::String(temporal.condition.clone()),
-    );
-    if let Some(bound) = &temporal.bound {
-        let mut bound_mapping = serde_yaml::Mapping::new();
-        if let Some(transitions) = bound.transitions {
-            bound_mapping.insert(
-                yaml_key("transitions"),
-                YamlValue::Number(serde_yaml::Number::from(transitions)),
-            );
-        }
-        if let Some(metric) = &bound.metric {
-            bound_mapping.insert(yaml_key("metric"), YamlValue::String(metric.clone()));
-        }
-        if let Some(value) = bound.value {
-            bound_mapping.insert(
-                yaml_key("value"),
-                YamlValue::Number(serde_yaml::Number::from(value)),
-            );
-        }
-        if let Some(unit) = &bound.unit {
-            bound_mapping.insert(yaml_key("unit"), YamlValue::String(unit.clone()));
-        }
-        mapping.insert(yaml_key("bound"), YamlValue::Mapping(bound_mapping));
+    if let Some(temporal) = &property.temporal {
+        mapping.insert(yaml_key("temporal"), temporal.clone());
     }
     YamlValue::Mapping(mapping)
 }
@@ -80535,7 +81323,8 @@ verification:
         assert!(semantic.contains("protocol_bindings:"));
         assert!(semantic.contains("authority_bindings:"));
         assert!(semantic.contains("resource_protocols:"));
-        assert!(semantic.contains("optional `temporal:"));
+        assert!(semantic.contains("Executable temporal properties"));
+        assert!(semantic.contains("Descriptive `pattern`"));
         assert!(semantic.contains("public protocol automaton"));
         assert!(semantic.contains("RMS module ids, not language package spellings"));
         assert!(semantic.contains("semantic_functions:"));
@@ -83242,10 +84031,14 @@ properties:
           strategy: model-checker
           command: property-ci
           runner: src/properties.rs#check_lowering
+      observations:
+        - id: valid-lowering
+          source: {kind: transition, case: Compile}
+          value: occurrence
       temporal:
-        pattern: always
         scope: artifact
-        condition: accepted source artifacts remain valid through lowering
+        expression:
+          always: {occurred: valid-lowering}
 "#;
         let change: SemanticChange = serde_yaml::from_str(source).unwrap();
         assert_eq!(
@@ -83257,12 +84050,14 @@ properties:
             "native-backend"
         );
         assert_eq!(
-            change.properties.as_ref().unwrap().add[0]
-                .temporal
-                .as_ref()
-                .unwrap()
-                .pattern,
-            "always"
+            get_str(
+                change.properties.as_ref().unwrap().add[0]
+                    .temporal
+                    .as_ref()
+                    .unwrap(),
+                &["scope"]
+            ),
+            Some("artifact")
         );
     }
 
@@ -83422,10 +84217,14 @@ properties:
       counterexamples: {path: verification/fuzz/counterexamples/lowering}
       realizations:
         - {profile: ci, strategy: model-checker, command: property-ci, runner: src/transform.mjs#checkLowering}
+      observations:
+        - id: valid-lowering
+          source: {kind: transition, case: Compile}
+          value: occurrence
       temporal:
-        pattern: always
         scope: artifact
-        condition: accepted source artifacts remain valid through lowering
+        expression:
+          always: {occurred: valid-lowering}
 semantic_functions:
   add:
     - id: lower-source
@@ -83858,6 +84657,20 @@ architecture:
             "module.yaml",
             "spec: rms/module/v0.1\nmodule: {name: temporal, version: 0.1.0, kind: library, purpose: test}\n",
         );
+        let definition: YamlValue = serde_yaml::from_str(
+            r#"
+id: eventually-done
+observations:
+  - id: done
+    source: {kind: transition, case: Done}
+    value: occurrence
+temporal:
+  scope: machine
+  expression:
+    eventually: {occurred: done}
+"#,
+        )
+        .unwrap();
         let target = PropertyTargetReport {
             id: "eventually-done".to_string(),
             kind: "property".to_string(),
@@ -83875,13 +84688,13 @@ architecture:
                 runner: "src/main.rs#eventually_done".to_string(),
                 exhaustive: false,
             }],
-            temporal: Some(SemanticTemporalProperty {
-                pattern: "eventually".to_string(),
-                scope: "machine".to_string(),
-                trigger: Some("Start".to_string()),
-                condition: "Done is reached".to_string(),
-                bound: None,
-            }),
+            observations: get_path(&definition, &["observations"])
+                .and_then(YamlValue::as_sequence)
+                .cloned()
+                .unwrap(),
+            assumptions: Vec::new(),
+            temporal: get_path(&definition, &["temporal"]).cloned(),
+            definition,
             status: "declared".to_string(),
         };
         let mut diagnostics = Vec::new();
@@ -83889,6 +84702,80 @@ architecture:
         assert!(diagnostics
             .iter()
             .any(|diagnostic| { diagnostic.check == "evidence.temporal-realization-mismatch" }));
+    }
+
+    #[test]
+    fn property_evaluate_writes_replayable_analysis_and_observations() {
+        let root = unique_test_dir("property-evaluate");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: {name: delivery, version: 0.1.0, kind: library, purpose: Verify delivery.}
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides: {commands: [], queries: [], events: [], capabilities: []}
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: []
+properties:
+  - id: accepted-after-submit
+    proves: accepted-after-submit
+    input_space: {kind: trace}
+    oracle: [acceptance follows submission]
+    observations:
+      - id: submitted
+        source: {kind: input, input_kind: command, name: Submit}
+        value: occurrence
+      - id: accepted
+        source: {kind: output, output_kind: event, name: Accepted}
+        value: occurrence
+    temporal:
+      scope: machine
+      expression:
+        precedence:
+          before: {occurred: submitted}
+          after: {occurred: accepted}
+compatibility: {policy: breaking-until-v1}
+verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("trace.yaml"),
+            r#"spec: rms/trace-bundle/v0.1
+complete: true
+machine: DeliveryMachine
+records:
+  - input: {kind: command, name: Submit, data: {}}
+    state_before: {name: Ready, data: {}}
+    state_after: {name: Ready, data: {}}
+    output:
+      next_state: {name: Ready, data: {}}
+      events: [{name: Accepted, data: {}}]
+      commands: []
+      effects: []
+      reply: null
+      rejection: null
+    source: {branch: Submit}
+"#,
+        )
+        .unwrap();
+        let analysis = root.join("analysis.yaml");
+        run_property_evaluate(
+            &root.join("module.yaml"),
+            &root.join("trace.yaml"),
+            &[],
+            Some(&analysis),
+            true,
+        )
+        .unwrap();
+        let value = load_yaml_value(&analysis).unwrap();
+        assert_eq!(get_str(&value, &["spec"]), Some(property::ANALYSIS_SPEC));
+        assert_eq!(get_str(&value, &["result"]), Some("satisfied"));
+        assert!(get_path(&value, &["evidence_observations"]).is_some());
+        run_property_replay(&analysis, true).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

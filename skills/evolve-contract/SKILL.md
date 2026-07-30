@@ -28,6 +28,7 @@ description: Change an RMS public contract safely; use for commands, queries, ev
    - artifact version and transformation compatibility;
    - protocol participants, messages, legal ordering, and terminal states;
    - resource ownership or temporal guarantees exposed to consumers;
+   - observation schemas, assumption meaning, quantity dimensions, verdicts, and replay artifact shapes for executable properties;
    - privileged, unsafe, or foreign authority assumptions.
 6. Preserve the existing version when compatibility can be maintained cleanly.
 7. Introduce a new version for breaking changes.

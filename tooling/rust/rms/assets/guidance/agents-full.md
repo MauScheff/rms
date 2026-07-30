@@ -57,6 +57,8 @@ New or adopted systems follow `rms init [--adopt]` → authorized bootstrap comm
 - Generate traces and properties through the declared executable paths, not copied examples.
 - Treat reports, diffs, packages, atlases, prompts, and logs as evidence, not live semantics.
 
+- Temporal promises use typed observations, explicit assumptions, closed expressions, and dimensionally valid quantities. Evaluate real traces; only exhausted finite search supports universal finite conclusions.
+
 ## Completion
 Use focused native and RMS proof → `rms check --changes --root . [--module <module.yaml>]` → authorized candidate commit → `rms check --committed --root . [--module <module.yaml>]`.
 

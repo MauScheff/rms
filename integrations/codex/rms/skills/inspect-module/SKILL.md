@@ -40,7 +40,7 @@ description: Inspect an RMS module before planning or changing it; use when owne
    - public protocol participants/message mappings and whether composition closes every route;
    - resource protocols and terminal-path closure;
    - privileged, unsafe, or foreign authority bindings and exact safe facades;
-   - temporal properties and whether each realization can prove its declared scope.
+   - executable temporal properties, their observation schemas and assumptions, dimensional validity, and whether trace/search evidence can prove the declared scope.
 8. For a proposed task, identify the owning module and the smallest affected contract surface.
 9. Identify whether the task should use:
    - an ADT, sealed variant, or enum for closed alternatives;

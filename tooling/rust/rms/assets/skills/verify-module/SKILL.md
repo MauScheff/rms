@@ -25,7 +25,7 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - boundaries when applicable.
    - semantic properties and fuzz targets with `rms property check`;
    - property/fuzz commands with `rms property run <implementation.yaml> --profile smoke` when the binding declares them;
-   - recorded counterexamples with `rms property replay <counterexample.yaml>`.
+   - executable trace verdicts, finite witnesses/counterexamples or relationship analyses as applicable, and recorded results with `rms property replay <analysis.yaml>`.
    - local trace bundles with `rms trace check`, `rms trace show`, or `rms trace diagnose` when transition evidence is recorded as JSON or YAML.
    - `rms probe <implementation.yaml> --describe` followed by one described smoke input when the binding is inspectable. Probe failures block verification, but successful probes remain ephemeral diagnostics rather than evidence.
 8. Check domain representation evidence:
@@ -59,7 +59,7 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - each public protocol has one owner per participant and one sender/receiver mapping per message; cross-module traces preserve envelope identity, correlation, causation, endpoints, and sequence.
    - every declared resource operation is legal in its resource state and every reachable terminal machine path closes or transfers the resource.
    - privileged, unsafe, and foreign source operations occur only in authority-bound roles behind exact safe facade symbols.
-   - temporal claims use a realization capable of proving their scope; finite semantic scopes use exhaustive or model-checking evidence, while runtime/platform bounds use model checking, static analysis, sanitizers, or benchmarks as declared.
+   - temporal claims use typed observations, explicit assumptions, dimensionally valid bounds, and evidence capable of proving their scope; only exhausted finite search may make universal finite claims, while runtime/platform bounds use monitoring, model checking, static analysis, sanitizers, or benchmarks as declared.
 9. Check negative cases. Verification should reject or make unrepresentable impossible variants, invalid constructors, malformed boundary input, and illegal state transitions.
 10. Check all declared profile obligations:
    - Stateful: transitions, concurrency, persistence, migration;

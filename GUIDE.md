@@ -552,6 +552,10 @@ Authorization policies
 
 RMS properties are semantic declarations: the input space to explore, the operation to run, and the oracle that judges the result. Property-based testing, generated state-machine exploration, model checking, ordinary examples, or binding-native fuzzers are implementation techniques. Use the smallest technique that strongly demonstrates the law, but keep the property itself in RMS artifacts.
 
+Temporal properties go one step further: declare typed observations and a closed executable expression, then use the same evaluator for traces, finite search, replay, and monitoring. Do not describe temporal meaning in `pattern`, `trigger`, `condition`, or `bound` prose fields; those fields are invalid in v1.
+
+For bounded behavior, declare the metric and quantity explicitly. A latency bound is a time quantity, a retry bound is an attempt quantity, and a delivery-count bound is a message quantity. RMS rejects dimensionally meaningless comparisons before running evidence.
+
 ### Contract verification
 
 Checks module and adapter boundaries:

@@ -2,18 +2,20 @@
 
 Promise: `temporal-realization-conformance` proves `temporal-properties-have-matching-realizations`.
 
-Input space: always, eventually, precedence, exclusion, at-most-once, bounded-response, resource-closure, bounded-resource, finite semantic, runtime, and platform property declarations.
+Input space: typed observation sources and values; environment and search-preference assumptions; always, eventually, precedence, exclusion, at-most-once, and bounded-response expressions; valid and invalid unit combinations; removed descriptive fields; and finite semantic, runtime, and platform scopes.
 
 Oracle:
 
 - finite machine, protocol, resource, artifact, and composition scopes require exhaustive or model-checking realization;
 - runtime and platform scopes require a declared benchmark, static analyzer, sanitizer, or model checker;
-- bounded response declares exactly one complete transition or metric bound.
+- every predicate reference resolves to a typed observation;
+- bounded responses use a quantity dimension compatible with their metric observation;
+- descriptive pattern, trigger, condition, and bound fields are rejected.
 
-Realization: `src/main.rs#validate_temporal_target_report` checks every declared temporal target and realization pair.
+Realization: `src/property.rs#compile_property` type-checks executable property meaning, and `src/main.rs#validate_temporal_target_report` checks every declared scope and realization pair.
 
 Command/tool: `cargo test -p rms`.
 
-Observed result: corpus-only finite temporal proof was rejected with `evidence.temporal-realization-mismatch`, and the complete 262-test RMS suite passed.
+Observed result: focused property-core and conformance tests cover closed expressions, exact unit conversion, dimensional rejection, real-trace evaluation, assumptions, and corpus-only finite-proof rejection. The current complete-suite result is recorded by the candidate audit.
 
 Source provenance: the clean committed candidate revision resolved by strict audit.

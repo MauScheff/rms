@@ -15,6 +15,10 @@ state a person or agent must hold in mind:
 - the amount of unrelated machinery required to explain or change one concern;
 - the number of histories that lead to observably different results.
 
+Executable properties follow the same principle. RMS exposes one small vocabulary of observations, predicates, temporal expressions, quantities, verdicts, and analysis artifacts. Evaluation, search, relationship analysis, replay, monitoring, and the Explorer all project that vocabulary instead of inventing command-specific meanings.
+
+Nondeterministic schedules are explored through one deterministic breadth-first policy. “Choose any” remains understandable because every choice is treated uniformly, witnesses are shortest, counterexamples are minimized, and incomplete exploration is never called proof.
+
 Completeness does not excuse unnecessary state. Explicitly modeling five
 independent booleans still creates thirty-two combinations.
 

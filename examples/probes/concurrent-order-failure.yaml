@@ -7,11 +7,11 @@ instances:
 stimuli:
   - id: start-a
     target: source
-    at: 0
+    at: {value: 0, unit: ms}
     input: {kind: command, name: Start, data: {request: a}}
   - id: start-b
     target: source
-    at: 0
+    at: {value: 0, unit: ms}
     input: {kind: command, name: Start, data: {request: b}}
 checks:
   - id: no-request-is-rejected-busy

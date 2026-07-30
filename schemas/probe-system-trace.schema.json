@@ -12,7 +12,19 @@
     "assembly_digest": { "type": "string", "minLength": 1 },
     "source_revision": { "type": ["string", "null"] },
     "instances": { "type": "array" },
-    "timeline": { "type": "array" },
+    "timeline": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["step", "time", "action"],
+        "properties": {
+          "step": { "type": "integer", "minimum": 0 },
+          "time": { "$ref": "#/$defs/timeQuantity" },
+          "action": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": true
+      }
+    },
     "protocols": {
       "type": "object",
       "additionalProperties": { "type": "string" }
@@ -22,5 +34,16 @@
     "coverage": { "type": "object" },
     "bounds": { "type": "object" }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "timeQuantity": {
+      "type": "object",
+      "required": ["value", "unit"],
+      "properties": {
+        "value": { "type": "integer", "minimum": 0 },
+        "unit": { "enum": ["ns", "us", "ms", "s", "min", "h"] }
+      },
+      "additionalProperties": false
+    }
+  }
 }

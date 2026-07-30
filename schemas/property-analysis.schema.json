@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:property-analysis:v0.1",
+  "title": "RMS Property Analysis v0.1",
+  "type": "object",
+  "required": ["spec", "operation", "result"],
+  "properties": {
+    "spec": { "const": "rms/property-analysis/v0.1" },
+    "operation": { "enum": ["evaluate", "search", "analyze", "monitor"] },
+    "result": {
+      "enum": [
+        "satisfied",
+        "violated",
+        "inconclusive",
+        "invalid",
+        "complete",
+        "satisfied-witness",
+        "violated-counterexample",
+        "exhaustively-satisfied",
+        "exhaustively-unsatisfiable"
+      ]
+    },
+    "goal": { "enum": ["satisfy", "violate"] },
+    "target": { "type": "string" },
+    "source": { "type": "object" },
+    "property_definitions": { "type": "array" },
+    "property_digest": { "type": "string" },
+    "evaluations": { "type": "array" },
+    "relationships": { "type": "array" },
+    "coverage": { "type": "object" },
+    "evidence_trace": {},
+    "evidence_observations": {},
+    "replay": { "type": "object" }
+  },
+  "additionalProperties": false
+}

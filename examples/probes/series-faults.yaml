@@ -21,7 +21,7 @@ checks:
 - id: source-eventually-returns-ready
   when: within
   within_steps: 4
-  within_time: 1
+  within_time: {value: 1, unit: ms}
   assert:
     kind: state
     instance: source
@@ -32,7 +32,7 @@ faults:
 - route: work-provider
   kind: delay
   budget: 1
-  delay: 2
+  delay: {value: 2, unit: ms}
 - route: work-provider
   kind: duplicate
   budget: 1

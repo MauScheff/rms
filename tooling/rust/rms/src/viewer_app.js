@@ -6,6 +6,7 @@
     { id: "proofs", label: "Laws", description: "Plain-language laws and their exact implementation and proof chains." },
     { id: "behaviors", label: "Behaviors", description: "Public promises and required capabilities through declared bindings." },
     { id: "machines", label: "Machines", description: "States, classified inputs, transition cases, outputs, and effects." },
+    { id: "properties", label: "Properties", description: "Executable observations, assumptions, temporal expressions, verdicts, and relationships." },
     { id: "gaps", label: "Findings", description: "Missing, unresolved, recommended, satisfied, and inapplicable obligations." },
     { id: "debug", label: "Traces", description: "Execution-derived transition records and source provenance." },
   ];
@@ -394,6 +395,7 @@ function initializeApplication(model) {
     if (viewId === "proofs") return model.nodes(state.index, { kinds: ["invariant"] }).length;
     if (viewId === "behaviors") return model.nodes(state.index, { kinds: [...model.BEHAVIOR_KINDS] }).length;
     if (viewId === "machines") return model.nodes(state.index, { kinds: ["machine"] }).length;
+    if (viewId === "properties") return state.snapshot.properties?.length ?? 0;
     if (viewId === "gaps") return state.index.graph.obligations.filter((item) => !["satisfied", "not-applicable"].includes(item.status)).length;
     return model.nodes(state.index, { kinds: ["trace-record"] }).length;
   }
@@ -406,6 +408,7 @@ function initializeApplication(model) {
       proofs: renderLaws,
       behaviors: renderBehaviors,
       machines: renderMachines,
+      properties: renderProperties,
       gaps: renderFindings,
       debug: renderTraces,
     };
@@ -624,6 +627,42 @@ function initializeApplication(model) {
     return `
       ${viewHeader("Findings", "Missing, unresolved, recommended, satisfied, and inapplicable are kept distinct.", tools)}
       <div class="list">${items.map(renderObligationRow).join("") || `<div class="empty">No findings match this filter.</div>`}</div>
+    `;
+  }
+
+  function renderProperties() {
+    const properties = (state.snapshot.properties ?? []).filter((property) => {
+      if (state.moduleId && !state.moduleId.endsWith(`:${property.module_id}`)) return false;
+      if (!state.query) return true;
+      return text(JSON.stringify(property)).includes(text(state.query));
+    });
+    const analyses = (state.snapshot.property_analyses ?? []).filter((analysis) => {
+      if (!state.query) return true;
+      return text(JSON.stringify(analysis)).includes(text(state.query));
+    });
+    return `
+      ${viewHeader("Executable properties", "Typed observations and assumptions feed one evaluator used by traces, search, replay, and monitors.")}
+      <div class="summary">
+        <span><strong>${properties.length}</strong> declarations</span>
+        <span><strong>${analyses.length}</strong> recorded analyses</span>
+      </div>
+      ${section("Declarations", properties.length, `<div class="list">${properties.map((property) => `
+        <article class="row">
+          <span class="row-kind">${statusMarkup(property.status === "declared" ? "satisfied" : "required-gap")}</span>
+          <span class="row-main">
+            <strong>${escapeHtml(property.id)}</strong>
+            <p>${escapeHtml(property.module_id)} · ${escapeHtml(property.scope)} · ${property.observations.length} observations · ${property.assumptions.length} assumptions</p>
+            <pre>${escapeHtml(JSON.stringify(property.expression, null, 2))}</pre>
+          </span>
+        </article>
+      `).join("") || `<div class="empty">No executable properties match this scope.</div>`}</div>`)}
+      ${section("Analysis history", analyses.length, `<div class="list">${analyses.map((analysis) => `
+        <article class="row">
+          <span class="row-kind">${escapeHtml(analysis.result)}</span>
+          <span class="row-main"><strong>${escapeHtml(analysis.operation)}</strong><p>${escapeHtml(analysis.path)}</p></span>
+          <span class="row-side">${analysis.evaluations.length} verdicts<br>${analysis.relationships.length} relationships</span>
+        </article>
+      `).join("") || `<div class="empty">No rms/property-analysis/v0.1 artifacts are recorded.</div>`}</div>`)}
     `;
   }
 

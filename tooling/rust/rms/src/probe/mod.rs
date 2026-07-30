@@ -19,6 +19,82 @@ const DEFAULT_MAX_STEPS: usize = 30;
 const DEFAULT_MAX_SCHEDULES: usize = 100;
 const DEFAULT_MAX_STATES: usize = 10_000;
 
+mod time_quantity {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::Value;
+
+    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serde_json::json!({"value": value, "unit": "ns"}).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        parse(&value).map_err(serde::de::Error::custom)
+    }
+
+    pub fn parse(value: &Value) -> Result<u64, String> {
+        if let Some(value) = value.as_u64() {
+            return value
+                .checked_mul(1_000_000)
+                .ok_or_else(|| "legacy millisecond time quantity overflow".to_string());
+        }
+        let amount = value
+            .get("value")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "time quantity requires non-negative integer `value`".to_string())?;
+        let unit = value
+            .get("unit")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "time quantity requires `unit`".to_string())?;
+        let factor = match unit {
+            "ns" => 1,
+            "us" => 1_000,
+            "ms" => 1_000_000,
+            "s" => 1_000_000_000,
+            "min" => 60_000_000_000,
+            "h" => 3_600_000_000_000,
+            other => return Err(format!("unsupported probe time unit `{other}`")),
+        };
+        amount
+            .checked_mul(factor)
+            .ok_or_else(|| "time quantity overflow".to_string())
+    }
+}
+
+mod optional_time_quantity {
+    use super::time_quantity;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::Value;
+
+    pub fn serialize<S>(value: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serde_json::json!({"value": value, "unit": "ns"}).serialize(serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Option::<Value>::deserialize(deserializer)?;
+        value
+            .as_ref()
+            .map(time_quantity::parse)
+            .transpose()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct AssemblyCliOptions {
     file: PathBuf,
@@ -31,6 +107,37 @@ pub(super) struct AssemblyCliOptions {
     out: Option<PathBuf>,
     json: bool,
     timeout_seconds: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct PropertyExploration {
+    traces: Vec<Value>,
+    exhausted: bool,
+    assembly_digest: String,
+    coverage: Value,
+    bounds: Value,
+}
+
+impl PropertyExploration {
+    pub(super) fn traces(&self) -> &[Value] {
+        &self.traces
+    }
+
+    pub(super) fn exhausted(&self) -> bool {
+        self.exhausted
+    }
+
+    pub(super) fn assembly_digest(&self) -> &str {
+        &self.assembly_digest
+    }
+
+    pub(super) fn coverage(&self) -> &Value {
+        &self.coverage
+    }
+
+    pub(super) fn bounds(&self) -> &Value {
+        &self.bounds
+    }
 }
 
 impl AssemblyCliOptions {
@@ -100,7 +207,7 @@ struct Stimulus {
     #[serde(default)]
     id: Option<String>,
     target: String,
-    #[serde(default)]
+    #[serde(default, with = "time_quantity")]
     at: u64,
     input: Value,
 }
@@ -129,7 +236,7 @@ struct SubstituteOutcome {
     #[serde(default)]
     id: Option<String>,
     target: String,
-    #[serde(default)]
+    #[serde(default, with = "time_quantity")]
     after: u64,
     input: Value,
 }
@@ -148,7 +255,7 @@ struct CheckSpec {
     when: CheckWhen,
     #[serde(default)]
     within_steps: Option<usize>,
-    #[serde(default)]
+    #[serde(default, with = "optional_time_quantity")]
     within_time: Option<u64>,
     assert: CheckAssertion,
 }
@@ -201,7 +308,7 @@ struct FaultSpec {
     route: String,
     kind: FaultKind,
     budget: usize,
-    #[serde(default)]
+    #[serde(default, with = "optional_time_quantity")]
     delay: Option<u64>,
 }
 
@@ -332,6 +439,7 @@ struct Envelope {
     idempotency_key: String,
     route: String,
     target: String,
+    #[serde(with = "time_quantity")]
     at: u64,
     input: Value,
     source: Option<String>,
@@ -343,6 +451,7 @@ struct Envelope {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TimelineEntry {
     step: usize,
+    #[serde(with = "time_quantity")]
     time: u64,
     action: String,
     envelope: String,
@@ -401,6 +510,7 @@ struct World {
 struct ProbeFailure {
     check: String,
     step: usize,
+    #[serde(with = "time_quantity")]
     time: u64,
     message: String,
 }
@@ -643,6 +753,33 @@ pub(super) fn run(options: AssemblyCliOptions) -> Result<i32> {
         "fail" | "inconclusive" => Ok(1),
         result => bail!("probe engine produced unknown result `{result}`"),
     }
+}
+
+pub(super) fn explore_property_traces(
+    file: &Path,
+    max_steps: Option<usize>,
+    max_schedules: Option<usize>,
+    max_states: Option<usize>,
+    timeout_seconds: u64,
+) -> Result<PropertyExploration> {
+    let (assembly_value, base_dir) = load_input(file)?;
+    validate_schema(
+        &assembly_value,
+        include_str!("../../../../../schemas/probe-assembly.schema.json"),
+        "probe assembly",
+    )?;
+    let assembly: ProbeAssembly =
+        serde_json::from_value(assembly_value.clone()).context("invalid probe assembly")?;
+    let mut engine = Engine::new(
+        assembly,
+        assembly_value,
+        base_dir,
+        max_steps,
+        max_schedules,
+        max_states,
+        timeout_seconds,
+    )?;
+    engine.collect_property_traces()
 }
 
 fn replay(options: AssemblyCliOptions) -> Result<i32> {
@@ -1622,6 +1759,116 @@ impl Engine {
         let terminal = last_terminal.unwrap_or(self.initial_world()?);
         let trace = self.trace_from_world(&terminal, "pass", "exploration", true, None, coverage);
         Ok((trace, None))
+    }
+
+    fn collect_property_traces(&mut self) -> Result<PropertyExploration> {
+        let initial = self.initial_world()?;
+        let mut frontier = VecDeque::from([initial]);
+        let mut visited = BTreeSet::new();
+        let mut coverage = empty_coverage();
+        let mut traces = Vec::new();
+        let mut exhausted = true;
+        while let Some(mut world) = frontier.pop_front() {
+            if coverage.states >= self.bounds.max_states
+                || coverage.schedules >= self.bounds.max_schedules
+            {
+                exhausted = false;
+                break;
+            }
+            advance_time(&mut world);
+            if world.step > 0 || world.time > 0 {
+                if let Some(failure) = self.evaluate_checks(&mut world, false)? {
+                    let trace = self.trace_from_world(
+                        &world,
+                        "fail",
+                        "exploration",
+                        false,
+                        Some(failure),
+                        coverage.clone(),
+                    );
+                    traces.push(serde_json::to_value(trace)?);
+                    continue;
+                }
+            }
+            let hash = world_hash(&world)?;
+            if !visited.insert(hash) {
+                continue;
+            }
+            coverage.states += 1;
+            if world.queue.is_empty() {
+                coverage.schedules += 1;
+                let failure = self.evaluate_checks(&mut world, true)?;
+                let result = if failure.is_some() { "fail" } else { "pass" };
+                let trace = self.trace_from_world(
+                    &world,
+                    result,
+                    "exploration",
+                    false,
+                    failure,
+                    coverage.clone(),
+                );
+                traces.push(serde_json::to_value(trace)?);
+                continue;
+            }
+            if world.step >= self.bounds.max_steps {
+                exhausted = false;
+                let trace = self.trace_from_world(
+                    &world,
+                    "inconclusive",
+                    "exploration",
+                    false,
+                    None,
+                    coverage.clone(),
+                );
+                traces.push(serde_json::to_value(trace)?);
+                continue;
+            }
+            let choices = self.choices(&world);
+            self.prefetch_transitions(&world, &choices)?;
+            for choice in choices {
+                let mut next = world.clone();
+                let mut branch_coverage = coverage.clone();
+                if let Some(failure) =
+                    self.apply_choice(&mut next, &choice, true, &mut branch_coverage)?
+                {
+                    let trace = self.trace_from_world(
+                        &next,
+                        "fail",
+                        "exploration",
+                        false,
+                        Some(failure),
+                        branch_coverage,
+                    );
+                    traces.push(serde_json::to_value(trace)?);
+                    continue;
+                }
+                coverage.transitions = coverage.transitions.max(branch_coverage.transitions);
+                coverage
+                    .transition_cases
+                    .extend(branch_coverage.transition_cases);
+                coverage.routes.extend(branch_coverage.routes);
+                coverage.faults.extend(branch_coverage.faults);
+                frontier.push_back(next);
+            }
+        }
+        if traces.is_empty() && exhausted {
+            let world = self.initial_world()?;
+            traces.push(serde_json::to_value(self.trace_from_world(
+                &world,
+                "pass",
+                "exploration",
+                false,
+                None,
+                coverage.clone(),
+            ))?);
+        }
+        Ok(PropertyExploration {
+            traces,
+            exhausted,
+            assembly_digest: self.assembly_digest.clone(),
+            coverage: serde_json::to_value(&coverage)?,
+            bounds: serde_json::to_value(&self.bounds)?,
+        })
     }
 
     fn minimize_counterexample(&self, original: Counterexample) -> Result<Counterexample> {

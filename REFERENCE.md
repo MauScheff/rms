@@ -323,6 +323,25 @@ Focused proof is selected from the promises affected by the change:
 | Reusable module | `rms package`, `rms verify-package` |
 | Compatibility | `rms check-compat` |
 
+### Executable property loop
+
+Temporal guarantees are executable declarations, not prose. A property names typed public observations, optional `environment` or `search-preference` assumptions, a scope, and one closed expression: `always`, `eventually`, `precedence`, `exclusion`, `at_most_once`, or `bounded_response`.
+
+```text
+rms property check TARGET
+rms property evaluate TARGET --trace TRACE [--property ID] [--out ANALYSIS]
+rms property search TARGET --assembly ASSEMBLY --goal satisfy|violate [--property ID]
+rms property analyze TARGET --assembly ASSEMBLY
+rms property monitor TARGET --input TRACE|- [--property ID]
+rms property replay ANALYSIS
+```
+
+`evaluate` reports satisfaction only for the supplied trace. System-wide conclusions require exhausted finite exploration; a reached search bound is always inconclusive. Search produces shortest positive witnesses or counterexamples with deterministic tie-breaking. `analyze` checks satisfiability, validity, vacuity, implication, equivalence, redundancy, and conflict over that same finite model.
+
+Metric observations and bounds use exact quantities. RMS v1 supports time, information, ratio, and nominal transition/message/attempt/item units. Compatible units normalize exactly; cross-dimensional comparisons are invalid.
+
+All operations share `rms/property-analysis/v0.1`. Streaming monitors consume `rms/property-observation/v0.1` and remain observe-only derived evidence.
+
 The project completion order is:
 
 ```text

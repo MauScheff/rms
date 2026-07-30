@@ -10,4 +10,6 @@ Begin work that requests or may require a software change with `rms next "<exact
 
 Detected skill copies are observable evidence only. Runtime activation and precedence are host-defined; do not claim that a detected copy is active in the current thread.
 
+Temporal promises use executable observations, assumptions, closed expressions, and dimensionally valid quantities. Evaluate real traces and require exhausted finite search for universal finite claims.
+
 <!-- RMS managed Claude guidance: end -->

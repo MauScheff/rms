@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:property-observation:v0.1",
+  "title": "RMS Property Observation v0.1",
+  "type": "object",
+  "required": ["spec", "sequence", "facts"],
+  "properties": {
+    "spec": { "const": "rms/property-observation/v0.1" },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "source": {
+      "type": "object",
+      "properties": {
+        "instance": { "type": "string" },
+        "route": { "type": "string" },
+        "correlation_id": { "type": "string" },
+        "causation_id": { "type": "string" },
+        "transition_case": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "facts": { "type": "object" }
+  },
+  "additionalProperties": false
+}

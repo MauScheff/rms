@@ -51,3 +51,5 @@ Canonical RMS artifacts and deterministic checks remain authoritative over conve
 Skill-source detection does not prove runtime activation. The agent host's injected catalog is authoritative; RMS reports activation as unknown and precedence as host-defined.
 
 Provider execution, filesystem writes, credentials, Git operations, and external publication remain explicit host-authorized capabilities. Do not make model-specific prompting part of the semantic specification.
+
+For executable temporal work, declare typed observations and assumptions before choosing a closed expression. Use `rms property check`, then evaluate a real trace or search an explicit finite probe assembly. A non-exhausted result is inconclusive. Record and replay `rms/property-analysis/v0.1` rather than summarizing a witness or counterexample by hand.

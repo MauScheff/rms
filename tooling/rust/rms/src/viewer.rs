@@ -8,12 +8,13 @@ use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
+use walkdir::WalkDir;
 
 use super::semantic_graph::{build_semantic_system_graph, SemanticSystemGraph};
 use super::viewer_request::{parse_view_request, ViewRoute};
 use super::{
-    build_module_atlas, discover_module_manifests, get_str, source_revision, stable_atlas_id,
-    validate_loaded_manifest, AtlasDocument, Diagnostic, LoadedManifest, Severity,
+    build_module_atlas, discover_module_manifests, get_path, get_str, source_revision,
+    stable_atlas_id, validate_loaded_manifest, AtlasDocument, Diagnostic, LoadedManifest, Severity,
     VALIDATOR_VERSION,
 };
 
@@ -29,6 +30,8 @@ pub(super) struct SystemViewDocument {
     graph: SemanticSystemGraph,
     journeys: Vec<SystemViewJourney>,
     modules: Vec<SystemViewModule>,
+    properties: Vec<SystemViewProperty>,
+    property_analyses: Vec<SystemViewPropertyAnalysis>,
     relationships: Vec<SystemViewRelationship>,
     gaps: Vec<SystemViewGap>,
     diagnostics: Vec<Diagnostic>,
@@ -52,6 +55,7 @@ struct SystemViewSummary {
     relationship_count: usize,
     semantic_node_count: usize,
     trace_count: usize,
+    property_count: usize,
     gap_count: usize,
     diagnostic_count: usize,
 }
@@ -71,6 +75,27 @@ struct SystemViewModule {
     purpose: String,
     manifest_path: String,
     atlas: AtlasDocument,
+}
+
+#[derive(Debug, Serialize)]
+struct SystemViewProperty {
+    id: String,
+    module_id: String,
+    scope: String,
+    observations: Vec<YamlValue>,
+    assumptions: Vec<YamlValue>,
+    expression: YamlValue,
+    status: &'static str,
+    source: SystemViewSourceRef,
+}
+
+#[derive(Debug, Serialize)]
+struct SystemViewPropertyAnalysis {
+    path: String,
+    operation: String,
+    result: String,
+    evaluations: Vec<YamlValue>,
+    relationships: Vec<YamlValue>,
 }
 
 #[derive(Debug, Serialize)]
@@ -182,6 +207,7 @@ pub(super) fn build_system_view(root: &Path, watch: bool) -> Result<SystemViewDo
         });
     }
     let mut modules = Vec::new();
+    let mut properties = Vec::new();
     let semantic_node_count = graph.nodes.len();
     let mut trace_count = 0usize;
 
@@ -196,7 +222,49 @@ pub(super) fn build_system_view(root: &Path, watch: bool) -> Result<SystemViewDo
             manifest_path: relative_path(root, &manifest.path),
             atlas,
         });
+        let module_id = get_str(&manifest.value, &["module", "name"])
+            .unwrap_or("<unknown>")
+            .to_string();
+        if let Some(items) =
+            get_path(&manifest.value, &["properties"]).and_then(YamlValue::as_sequence)
+        {
+            for item in items {
+                let Some(temporal) = get_path(item, &["temporal"]) else {
+                    continue;
+                };
+                let Some(expression) = get_path(temporal, &["expression"]) else {
+                    continue;
+                };
+                properties.push(SystemViewProperty {
+                    id: get_str(item, &["id"]).unwrap_or("<unnamed>").to_string(),
+                    module_id: module_id.clone(),
+                    scope: get_str(temporal, &["scope"])
+                        .unwrap_or("<missing>")
+                        .to_string(),
+                    observations: get_path(item, &["observations"])
+                        .and_then(YamlValue::as_sequence)
+                        .cloned()
+                        .unwrap_or_default(),
+                    assumptions: get_path(item, &["assumptions"])
+                        .and_then(YamlValue::as_sequence)
+                        .cloned()
+                        .unwrap_or_default(),
+                    expression: expression.clone(),
+                    status: "declared",
+                    source: SystemViewSourceRef {
+                        role: "module-property",
+                        path: relative_path(root, &manifest.path),
+                    },
+                });
+            }
+        }
     }
+    properties.sort_by(|left, right| {
+        left.module_id
+            .cmp(&right.module_id)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let property_analyses = discover_property_analyses(root);
     gaps.sort_by(|left, right| left.id.cmp(&right.id));
     gaps.dedup_by(|left, right| left.id == right.id);
 
@@ -208,6 +276,7 @@ pub(super) fn build_system_view(root: &Path, watch: bool) -> Result<SystemViewDo
         relationship_count: relationships.len(),
         semantic_node_count,
         trace_count,
+        property_count: properties.len(),
         gap_count: gaps.len(),
         diagnostic_count: diagnostics.len(),
     };
@@ -226,10 +295,53 @@ pub(super) fn build_system_view(root: &Path, watch: bool) -> Result<SystemViewDo
         graph,
         journeys: view_journeys(),
         modules,
+        properties,
+        property_analyses,
         relationships,
         gaps,
         diagnostics,
     })
+}
+
+fn discover_property_analyses(root: &Path) -> Vec<SystemViewPropertyAnalysis> {
+    let mut analyses = WalkDir::new(root)
+        .max_depth(10)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            !matches!(
+                entry.file_name().to_str(),
+                Some(".git") | Some("target") | Some("node_modules")
+            )
+        })
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| {
+            let source = fs::read_to_string(entry.path()).ok()?;
+            let value: YamlValue = serde_yaml::from_str(&source).ok()?;
+            (get_str(&value, &["spec"]) == Some("rms/property-analysis/v0.1")).then(|| {
+                SystemViewPropertyAnalysis {
+                    path: relative_path(root, entry.path()),
+                    operation: get_str(&value, &["operation"])
+                        .unwrap_or("analysis")
+                        .to_string(),
+                    result: get_str(&value, &["result"])
+                        .unwrap_or("invalid")
+                        .to_string(),
+                    evaluations: get_path(&value, &["evaluations"])
+                        .and_then(YamlValue::as_sequence)
+                        .cloned()
+                        .unwrap_or_default(),
+                    relationships: get_path(&value, &["relationships"])
+                        .and_then(YamlValue::as_sequence)
+                        .cloned()
+                        .unwrap_or_default(),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    analyses.sort_by(|left, right| left.path.cmp(&right.path));
+    analyses
 }
 
 fn handle_connection(mut stream: TcpStream, root: &Path, watch: bool) -> Result<()> {

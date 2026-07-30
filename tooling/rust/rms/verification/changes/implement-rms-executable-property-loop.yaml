@@ -1,0 +1,99 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/authorize-independent-rms-self-development-sealing-and-seal-probe-v2-multi-module-semantics-f89e6ecc40f0.yaml
+intent:
+  summary: Replace descriptive temporal declarations with the typed executable property loop and bind evaluation, exploration, relationship analysis, monitoring, replay, exact quantities, observation artifacts, and viewer evidence.
+contracts:
+  add:
+  - name: evaluate-semantic-properties
+    kind: command
+    direction: provided
+    version: '1'
+    command: null
+    meaning: Type-check executable property declarations and evaluate them over a real RMS trace through normalized observations.
+    accepts:
+    - A module or implementation with typed observations, assumptions, and one closed temporal expression.
+    - A readable RMS trace or normalized rms/property-observation/v0.1 stream.
+    ensures:
+    - Results use the closed verdict vocabulary and identify decisive structural evidence.
+    - Exact quantities normalize only within compatible dimensions.
+    - Analysis artifacts are written only when requested.
+    rejects:
+    - Invalid schemas, references, assumptions, dimensions, units, arithmetic, traces, or unsupported sources.
+    protocol: null
+  - name: search-semantic-properties
+    kind: command
+    direction: provided
+    version: '1'
+    command: null
+    meaning: Explore a finite probe assembly deterministically for the shortest satisfying witness or minimized replayable violation.
+    accepts:
+    - One executable property, one finite probe assembly, and a satisfy or violate goal.
+    ensures:
+    - Breadth-first search and stable tie-breaking choose the shortest matching trace.
+    - Exhaustive conclusions require exhausted state, schedule, and step spaces.
+    rejects:
+    - Invalid or unsupported declarations, assemblies, bounds, runner results, or timeouts.
+    protocol: null
+  - name: analyze-semantic-properties
+    kind: command
+    direction: provided
+    version: '1'
+    command: null
+    meaning: Relate executable properties through finite-model satisfiability, validity, vacuity, implication, equivalence, redundancy, and conflict analysis.
+    accepts:
+    - One or more executable properties and a finite probe assembly.
+    ensures:
+    - Relations return holds, refuted, inconclusive, invalid, or unsupported.
+    - Refutations retain replayable traces and exhaustive claims require exhaustion.
+    rejects:
+    - Invalid declarations, incompatible scopes, invalid assemblies, or failed probe execution.
+    protocol: null
+  - name: monitor-semantic-properties
+    kind: command
+    direction: provided
+    version: '1'
+    command: null
+    meaning: Incrementally evaluate executable properties over an offline trace or normalized observation stream.
+    accepts:
+    - An executable property and a readable trace, observation file, or standard-input stream.
+    ensures:
+    - Prefix evaluation uses the same pure evaluator as offline evaluation.
+    - Monitor output remains derived observe-only evidence without enforcement authority.
+    rejects:
+    - Malformed envelopes, invalid properties, or unreadable streams.
+    protocol: null
+  - name: replay-property-analysis
+    kind: command
+    direction: provided
+    version: '1'
+    command: null
+    meaning: Re-evaluate a recorded witness, counterexample, or relational refutation from its property, evidence, source digests, and decisions.
+    accepts:
+    - A readable rms/property-analysis/v0.1 artifact with replay evidence.
+    ensures:
+    - Recorded digests and embedded evidence are checked before re-evaluation.
+    - Replay reports the current verdict without changing canonical semantics.
+    rejects:
+    - Malformed analyses, missing evidence, digest drift, invalid properties, or non-reproducible decisions.
+    protocol: null
+  set: []
+  remove: []
+evidence:
+  add:
+  - kind: contract
+    proves: evaluate-semantic-properties
+    path: verification/contracts/executable_property_loop.md
+  - kind: contract
+    proves: search-semantic-properties
+    path: verification/contracts/executable_property_loop.md
+  - kind: contract
+    proves: analyze-semantic-properties
+    path: verification/contracts/executable_property_loop.md
+  - kind: contract
+    proves: monitor-semantic-properties
+    path: verification/contracts/executable_property_loop.md
+  - kind: contract
+    proves: replay-property-analysis
+    path: verification/contracts/executable_property_loop.md

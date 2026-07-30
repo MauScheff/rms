@@ -1,0 +1,18 @@
+spec: rms/contract/v0.1
+name: monitor-semantic-properties
+version: 1
+kind: command
+meaning: Incrementally evaluate executable properties over an offline trace or newline-delimited normalized observation stream.
+preconditions:
+- id: accepts-1
+  statement: An executable property and a readable trace, observation file, or standard-input stream.
+postconditions:
+- id: ensures-1
+  statement: Prefix evaluation uses the same pure evaluator and verdict semantics as offline trace evaluation.
+- id: ensures-2
+  statement: Monitor output is derived observe-only evidence and never architectural or enforcement authority.
+failure_categories:
+- id: rejects-1
+  statement: Malformed envelopes, non-monotonic observation input, invalid property declarations, or unreadable streams.
+compatibility:
+  policy: backward-compatible-within-major

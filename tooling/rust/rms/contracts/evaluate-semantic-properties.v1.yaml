@@ -1,0 +1,22 @@
+spec: rms/contract/v0.1
+name: evaluate-semantic-properties
+version: 1
+kind: command
+meaning: Type-check executable property declarations and evaluate them over a real RMS trace through normalized observations.
+preconditions:
+- id: accepts-1
+  statement: A module or implementation with typed observations, assumptions, and one closed temporal expression.
+- id: accepts-2
+  statement: A readable RMS trace or normalized rms/property-observation/v0.1 stream.
+postconditions:
+- id: ensures-1
+  statement: The result is satisfied, violated, inconclusive, invalid, or unsupported and identifies decisive structural evidence.
+- id: ensures-2
+  statement: Exact quantities are normalized only within compatible dimensions and retain their original values and units.
+- id: ensures-3
+  statement: An rms/property-analysis/v0.1 artifact is written only when the caller supplies --out.
+failure_categories:
+- id: rejects-1
+  statement: Invalid schemas, references, assumptions, dimensions, units, arithmetic, traces, or unsupported observation sources.
+compatibility:
+  policy: backward-compatible-within-major
