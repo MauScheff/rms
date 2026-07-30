@@ -1,0 +1,25 @@
+spec: rms/probe-assembly/v0.1
+instances:
+- id: source
+  implementation: ../probe-topologies/source/implementation.fixture
+- id: worker
+  implementation: ../probe-topologies/worker/implementation.fixture
+stimuli:
+- id: start
+  target: source
+  input:
+    kind: command
+    name: Start
+    data:
+      request: example
+checks:
+- id: source-completes
+  when: quiescent
+  assert:
+    kind: message-count
+    name: Completed
+    min: 1
+exploration:
+  max_steps: 10
+  max_schedules: 20
+  max_states: 200

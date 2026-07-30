@@ -1,0 +1,32 @@
+spec: rms/probe-assembly/v0.1
+instances:
+- id: left
+  implementation: ../rust/implementation.yaml
+- id: right
+  implementation: ../rust/implementation.yaml
+stimuli:
+- id: start-left
+  target: left
+  input:
+    kind: command
+    name: Describe
+    data:
+      name: left
+- id: start-right
+  target: right
+  input:
+    kind: command
+    name: Describe
+    data:
+      name: right
+checks:
+- id: three-descriptions-are-impossible
+  when: quiescent
+  assert:
+    kind: message-count
+    name: WidgetDescribed
+    equals: 3
+exploration:
+  max_steps: 10
+  max_schedules: 10
+  max_states: 100

@@ -63,7 +63,7 @@ Command actions are represented as data, never shell fragments:
 
 ```yaml
 kind: command
-phase: inspect | declare | implement | verify | complete
+phase: clarify | inspect | declare | implement | verify | complete
 program: rms
 args: [check, --root, .]
 display: rms check --root .
@@ -173,9 +173,13 @@ For machine-shaped implementations, rendered context proactively offers `rms pro
 rms probe implementation.yaml --describe
 rms probe implementation.yaml \
   --input '{"kind":"command","name":"PlaceMark","data":{"row":0,"column":0}}'
+rms probe --file verification/probes/checkout.yaml --explore
+rms probe --replay verification/probes/checkout-failure.yaml
 ```
 
-Probe adapters accept commands, observed events, and effect results, chain returned state, and validate the resulting trace against the canonical machine. They do not run the machine driver or effect executors, and they do not satisfy evidence obligations unless a separate declared proof lane produces that evidence.
+Probe adapters accept commands, observed events, and effect results, chain returned state, and validate the resulting trace against the canonical machine. v0.2 adapters can evaluate independent frontier cases in one process while v0.1 remains a one-transition fallback.
+
+A probe assembly is an ephemeral development laboratory for a bounded slice of instances. RMS resolves only canonical protocol mappings and dependency probe bridges, schedules virtual deliveries deterministically, branches over declared outcomes and transport faults, checks laws after each microstep, and emits a minimal replayable counterexample. It is not an application runtime or a general model checker. Assemblies do not satisfy evidence obligations unless canonical verification explicitly references and reruns them.
 
 ## 4. Language-Binding Interface
 

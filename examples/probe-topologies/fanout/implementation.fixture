@@ -1,0 +1,119 @@
+spec: rms/implementation/v0.1
+module: probe-fanout
+binding: python
+source:
+  root: .
+  public_entrypoint: machine_probe.fixture
+commands:
+  probe: python machine_probe.fixture
+architecture:
+  shape: domain-engine
+  probe:
+    protocol: rms/machine-probe/v0.2
+    command: probe
+    runner: machine_probe.fixture#probe_machine
+    initial_state_function: machine_probe.fixture#initial_state
+  machine:
+    name: ProbeFanoutMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    initial_state: Ready
+    types:
+      state: ProbeState
+      command: ProbeCommand
+      event: ProbeEvent
+      effect: ProbeEffect
+      effect_result: ProbeEffectResult
+      reply: ProbeReply
+      rejection: ProbeRejection
+      transition: ProbeTransition
+      transition_record: ProbeTransitionRecord
+    states: [Ready, WaitingBoth, WaitingA, WaitingB]
+    commands: [Start]
+    observed_events: []
+    events: [Completed]
+    effects: [WorkA, WorkB]
+    effect_results: [DoneA, DoneB]
+    replies: [Completed]
+    rejections: [IllegalTransition]
+    effect_protocols: []
+    resource_protocols: []
+    transition_function: transition
+    transition_record_function: transition_record
+    transitions:
+    - from: Ready
+      on: Start
+      to: WaitingBoth
+      case: StartBoth
+      effects: [WorkA, WorkB]
+    - from: WaitingBoth
+      on: DoneA
+      to: WaitingB
+      case: FinishAFirst
+    - from: WaitingBoth
+      on: DoneB
+      to: WaitingA
+      case: FinishBFirst
+    - from: WaitingA
+      on: DoneA
+      to: Ready
+      case: FinishASecond
+      events: [Completed]
+      reply: Completed
+    - from: WaitingB
+      on: DoneB
+      to: Ready
+      case: FinishBSecond
+      events: [Completed]
+      reply: Completed
+  roles:
+    representation: [machine_probe.fixture]
+    transition: [machine_probe.fixture]
+    transition_record: [machine_probe.fixture]
+    probe_adapter: [machine_probe.fixture]
+  public_behavior_bindings:
+  - id: start-public
+    public_kind: command
+    public_name: start
+    contract: contracts/start.v1.yaml
+    semantic_function: transition
+    machine_inputs: [Start]
+    machine_outputs: [WorkA, WorkB, Completed]
+  dependency_behavior_bindings:
+  - id: work-a-provider
+    capability: work-a
+    contract: contracts/work.v1.yaml
+    consumer: machine_probe.fixture#transition
+    resolution: module
+    provider_module: probe-worker
+    provider_contract: contracts/work.v1.yaml
+    probe_bridge:
+      request:
+        from: { kind: effect, name: WorkA }
+        to: { kind: command, name: DoWork }
+      outcomes:
+      - from: { kind: reply, name: Done }
+        to: { kind: effect-result, name: DoneA }
+  - id: work-b-provider
+    capability: work-b
+    contract: contracts/work.v1.yaml
+    consumer: machine_probe.fixture#transition
+    resolution: module
+    provider_module: probe-worker
+    provider_contract: contracts/work.v1.yaml
+    probe_bridge:
+      request:
+        from: { kind: effect, name: WorkB }
+        to: { kind: command, name: DoWork }
+      outcomes:
+      - from: { kind: reply, name: Done }
+        to: { kind: effect-result, name: DoneB }
+semantic_functions:
+- id: transition
+  symbol: machine_probe.fixture#transition
+  kind: transition
+  purity: pure
+dependencies:
+  allowed_external_packages: []
+  allowed_local_packages: []
+  local_modules: [probe-worker]

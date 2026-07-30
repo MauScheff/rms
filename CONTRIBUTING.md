@@ -19,6 +19,8 @@ Problem and intended outcome
 Affected normative sections
 Compatibility impact
 New artifacts and their semantic necessity
+State-space delta: states added, removed, derived, or made impossible
+Local explanation boundary and comprehension evidence
 Updated schemas and examples when applicable
 Validation and link-check results
 Migration guidance for breaking changes
@@ -29,6 +31,10 @@ For new files, helpers, abstractions, fixtures, generated artifacts, compatibili
 ## Scope test
 
 A new core concept should be added only when it is semantically important, language-neutral, agent-neutral, observable or verifiable, useful across more than one implementation, and difficult to express as an extension or profile.
+
+Apply the [understandability review](UNDERSTANDABILITY.md) before adding a new
+status, optional field, workflow phase, routing choice, or proof mode. Prefer a
+closed variant or derived projection when it removes invalid combinations.
 
 ## Pilot rule
 

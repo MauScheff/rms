@@ -1,0 +1,28 @@
+spec: rms/contract/v0.1
+name: work
+version: 1
+kind: command
+meaning: A source requests one unit of work and a worker reports its completion.
+preconditions:
+  - id: source-ready
+    statement: The source has a work request ready for a worker.
+postconditions:
+  - id: completion-observed
+    statement: Every completed conversation records the worker completion at the source.
+failure_categories:
+  - id: illegal-order
+    statement: A protocol message is sent outside its declared conversation state.
+compatibility:
+  policy: backward-compatible-within-major
+semantics:
+  protocol:
+    participants: [source, worker]
+    messages:
+      - {id: WorkRequested, kind: command, from: source, to: worker}
+      - {id: WorkFinished, kind: reply, from: worker, to: source}
+    states: [Ready, Working, Finished]
+    initial_state: Ready
+    terminal_states: [Finished]
+    transitions:
+      - {from: Ready, on: WorkRequested, to: Working}
+      - {from: Working, on: WorkFinished, to: Finished}

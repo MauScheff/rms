@@ -1,11 +1,15 @@
 # Contract Evidence: probe-machine
 
-Covered by the RMS CLI test suite and maintained Rust, Swift, JavaScript, and Python binding roundtrips.
+Covered by native Rust tests, CLI smoke tests, schema fixtures, topology fixtures, and maintained Rust, Swift, JavaScript, and Python adapter roundtrips.
 
-- `rms probe implementation.yaml --describe` validates the handshake and payload schemas.
-- Inline and file probes call the exact transition-record path, chain `state_after`, validate canonical cases, and report the first expectation failure.
-- The Tic-Tac-Toe dogfood probe reaches `Won` through five `PlaceMark` commands.
-- The RMS workbench dogfood probe observes `ApplySemanticChange` followed by `SemanticChangeRecordWritten` without running the write executor.
-- Structural tests reject probe adapters that call a driver or effect executor, bypass the transition-record function, or omit the temporary-file protocol.
+- Existing describe, inline, and file probes call the exact transition-record path, chain `state_after`, validate canonical cases, and report the first expectation failure.
+- v0.2 adapters batch independent `{state,input}` evaluations; v0.1 adapters retain the one-transition fallback.
+- Assembly fixtures exercise series, fan-in, fan-out, cycles, simultaneous commands, repeated modules, and five-instance slices.
+- Route resolution accepts canonical dependency bridges and protocols while rejecting missing, invented, incompatible, or ambiguous wiring before machine execution.
+- Breadth-first exploration uses stable ordering, virtual time, explicit substitutes and faults, global-state deduplication, and returns `inconclusive` rather than `pass` at a bound.
+- Every failure preserves the exact failing check while reducing stimuli, fault decisions, delays, and payloads; replay distinguishes resolved (`0`), reproduced (`1`), and invalid (`2`).
+- System traces retain source provenance, local transitions, envelopes, routes, correlation, causation, idempotency, protocol state, faults, checks, coverage, bounds, mode, and exhaustion.
+- The Lawbook renders canonically referenced probe evidence as a plain causal timeline.
+- Structural tests reject adapters that call a driver or effect executor, bypass the transition-record function, or omit the temporary-file protocol.
 
-Probe output is ephemeral diagnostic evidence unless `--out` is supplied. It never satisfies declared trace, scenario, property, or release evidence.
+Probe output is an ephemeral diagnostic unless canonical verification explicitly references it. Referenced assemblies are rerun and must exhaust successfully; referenced counterexamples must replay as resolved.

@@ -112,6 +112,24 @@ fn probe_machine() {
                 }
             ]
         })
+    } else if request["operation"] == "evaluate" {
+        let results = request["cases"]
+            .as_array()
+            .expect("probe evaluation cases")
+            .iter()
+            .map(|case| {
+                let input = &case["input"];
+                json!({
+                    "id": case["id"],
+                    "record": record_json(&transition_record(parse_input(input)), input, true)
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "spec": "rms/machine-probe-evaluation/v0.2",
+            "machine": "RustExampleMachine",
+            "results": results
+        })
     } else {
         let records = request["steps"]
             .as_array()

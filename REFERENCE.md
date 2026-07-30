@@ -84,11 +84,18 @@ Command-specific fields are additive:
 rms probe [IMPLEMENTATION] --describe
 rms probe [IMPLEMENTATION] --input <JSON>... [--state <JSON>]
 rms probe [IMPLEMENTATION] --file <PATH|->
+rms probe --file <ASSEMBLY> --describe
+rms probe --file <ASSEMBLY> [--explore] [--max-steps N] [--max-schedules N] [--max-states N]
+rms probe --replay <COUNTEREXAMPLE>
 ```
 
-It resolves the nearest `implementation.yaml`, or the only supported implementation beneath the RMS root. Ambiguity is an error with candidate paths. Rust, Swift, JavaScript, and Python probe adapters exchange `rms/machine-probe/v0.1` requests through temporary files, call the exact declared transition-record function, chain `state_after`, and return `rms/trace-bundle/v0.1`. They never invoke the driver or an effect executor.
+It resolves the nearest `implementation.yaml`, or the only supported implementation beneath the RMS root. Ambiguity is an error with candidate paths. Rust, Swift, JavaScript, and Python probe adapters accept `rms/machine-probe/v0.1`; v0.2 additionally batches independent `{state,input}` evaluations. Both call the exact declared transition-record function and never invoke the driver or an effect executor.
 
 Inline probes may assert `--expect-final-state` and `--expect-final-case`. Scenario files may assert per-step cases and outputs plus whole-run state and case paths, with recursive object-subset matching and exact ordered array/scalar matching. Normal runs write nothing; `--out` explicitly preserves the validated trace.
+
+An `rms/probe-assembly/v0.1` file composes any bounded set of instances through canonical dependency bridges and protocol bindings. Its scheduler is deterministic and virtual: exploration branches only across causally valid same-time deliveries, declared substitute outcomes, and explicitly enabled delay, duplicate, drop, or timeout faults. Checks run after microsteps and at quiescence or bounded deadlines. Passing exploration means the bounded reachable space was exhausted; reaching any bound is `inconclusive`, never `pass`.
+
+A failure writes one minimized `rms/probe-counterexample/v0.1` only when `--out` is supplied. Replay exits `0` when resolved, `1` when reproduced, and `2` when invalid or no longer executable. Assemblies remain ephemeral diagnostics until canonical verification references them; referenced assemblies must exhaust successfully, and referenced counterexamples must replay as resolved.
 
 ### Typed actions
 
@@ -375,6 +382,7 @@ Specialist commands remain directly callable. Their absence from default help is
 | [README.md](README.md) | Project introduction and shortest successful path |
 | [QUICKSTART.md](QUICKSTART.md) | Runnable onboarding and first complete change |
 | [EXPLAINED.md](EXPLAINED.md) | Conceptual model and motivation |
+| [UNDERSTANDABILITY.md](UNDERSTANDABILITY.md) | Understandability laws, state-space review, and future self-hosting foundations |
 | [PRODUCTION.md](PRODUCTION.md) | Production-pilot requirements and completion policy |
 | [TOOLING.md](TOOLING.md) | Narrow-waist CLI and deterministic tooling model |
 | [SPEC.md](SPEC.md) | Normative RMS semantic specification |

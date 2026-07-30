@@ -161,6 +161,7 @@ pub(super) fn semantic_system_graph_diagnostics(root: &Path) -> Result<Vec<Diagn
                 ("invariant-proof-chain", "required-gap" | "unresolved-link") => {
                     "semantic.invariant-proof-chain-incomplete"
                 }
+                ("public-proof-chain", "required-gap") => "semantic.public-proof-chain-incomplete",
                 ("trace-case", "required-gap" | "unresolved-link") => {
                     "semantic.trace-case-unrepresented"
                 }
@@ -390,8 +391,49 @@ fn project_trace_records(
         let Ok(document) = serde_yaml::from_str::<YamlValue>(&contents) else {
             continue;
         };
+        let artifact_spec = get_str(&document, &["spec"]).unwrap_or("");
+        let probe_trace = match artifact_spec {
+            "rms/probe-system-trace/v0.1" => Some(&document),
+            "rms/probe-counterexample/v0.1" => get_path(&document, &["trace"]),
+            _ => None,
+        };
         let source = source_ref(root, &bundle_path, "trace-bundle");
         let bundle_id = graph_id(&module.module_name, "trace-bundle", producer_id);
+        let mut bundle_details = BTreeMap::from([
+            ("bundle".to_string(), bundle.to_string()),
+            (
+                "profile".to_string(),
+                get_str(producer, &["profile"]).unwrap_or("").to_string(),
+            ),
+            (
+                "command".to_string(),
+                get_str(producer, &["command"]).unwrap_or("").to_string(),
+            ),
+            (
+                "runner".to_string(),
+                get_str(producer, &["runner"]).unwrap_or("").to_string(),
+            ),
+        ]);
+        if let Some(trace) = probe_trace {
+            bundle_details.insert(
+                "result".to_string(),
+                get_str(trace, &["result"]).unwrap_or("").to_string(),
+            );
+            bundle_details.insert(
+                "assembly_digest".to_string(),
+                get_str(trace, &["assembly_digest"])
+                    .unwrap_or("")
+                    .to_string(),
+            );
+            bundle_details.insert(
+                "states_explored".to_string(),
+                yaml_text(get_path(trace, &["coverage", "states"])),
+            );
+            bundle_details.insert(
+                "schedules_completed".to_string(),
+                yaml_text(get_path(trace, &["coverage", "schedules"])),
+            );
+        }
         push_node(
             graph,
             node_ids,
@@ -400,26 +442,29 @@ fn project_trace_records(
                 module_id: module.module_id.clone(),
                 kind: "trace-bundle".to_string(),
                 label: producer_id.to_string(),
-                summary: format!("Execution-derived transition records from {bundle}."),
-                details: BTreeMap::from([
-                    ("bundle".to_string(), bundle.to_string()),
-                    (
-                        "profile".to_string(),
-                        get_str(producer, &["profile"]).unwrap_or("").to_string(),
-                    ),
-                    (
-                        "command".to_string(),
-                        get_str(producer, &["command"]).unwrap_or("").to_string(),
-                    ),
-                    (
-                        "runner".to_string(),
-                        get_str(producer, &["runner"]).unwrap_or("").to_string(),
-                    ),
-                ]),
+                summary: if probe_trace.is_some() {
+                    format!("Deterministic multi-module probe timeline from {bundle}.")
+                } else {
+                    format!("Execution-derived transition records from {bundle}.")
+                },
+                details: bundle_details,
                 lists: BTreeMap::new(),
                 source_refs: vec![source.clone()],
             },
         );
+        if let Some(trace) = probe_trace {
+            project_probe_timeline(
+                module,
+                graph,
+                node_ids,
+                edge_ids,
+                producer_id,
+                &bundle_id,
+                trace,
+                &source,
+            );
+            continue;
+        }
         let Some(records) = get_path(&document, &["records"]).and_then(YamlValue::as_sequence)
         else {
             continue;
@@ -526,6 +571,138 @@ fn project_trace_records(
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_probe_timeline(
+    module: &ModuleProjection,
+    graph: &mut SemanticSystemGraph,
+    node_ids: &mut BTreeSet<String>,
+    edge_ids: &mut BTreeSet<String>,
+    producer_id: &str,
+    bundle_id: &str,
+    trace: &YamlValue,
+    source: &SemanticGraphSourceRef,
+) {
+    let Some(entries) = get_path(trace, &["timeline"]).and_then(YamlValue::as_sequence) else {
+        return;
+    };
+    for (index, entry) in entries.iter().enumerate() {
+        let case = get_str(entry, &["transition_case"]).unwrap_or("");
+        let action = get_str(entry, &["action"]).unwrap_or("step");
+        let target = get_str(entry, &["target"]).unwrap_or("unknown");
+        let step = yaml_text(get_path(entry, &["step"]));
+        let record_id = graph_id(
+            &module.module_name,
+            "trace-record",
+            &format!("{producer_id}-{index}-{target}-{case}-{action}"),
+        );
+        push_node(
+            graph,
+            node_ids,
+            SemanticGraphNode {
+                id: record_id.clone(),
+                module_id: module.module_id.clone(),
+                kind: "trace-record".to_string(),
+                label: format!(
+                    "{} · {} · {}",
+                    if step.is_empty() {
+                        (index + 1).to_string()
+                    } else {
+                        step
+                    },
+                    target,
+                    if case.is_empty() { action } else { case }
+                ),
+                summary: yaml_text(get_path(entry, &["input"])),
+                details: BTreeMap::from([
+                    ("case".to_string(), case.to_string()),
+                    ("action".to_string(), action.to_string()),
+                    ("time".to_string(), yaml_text(get_path(entry, &["time"]))),
+                    (
+                        "route".to_string(),
+                        get_str(entry, &["route"]).unwrap_or("").to_string(),
+                    ),
+                    (
+                        "source".to_string(),
+                        get_str(entry, &["source"]).unwrap_or("").to_string(),
+                    ),
+                    ("target".to_string(), target.to_string()),
+                    (
+                        "correlation".to_string(),
+                        get_str(entry, &["correlation_id"])
+                            .unwrap_or("")
+                            .to_string(),
+                    ),
+                    (
+                        "causation".to_string(),
+                        get_str(entry, &["causation_id"]).unwrap_or("").to_string(),
+                    ),
+                    (
+                        "idempotency".to_string(),
+                        get_str(entry, &["idempotency_key"])
+                            .unwrap_or("")
+                            .to_string(),
+                    ),
+                    (
+                        "attempt".to_string(),
+                        yaml_text(get_path(entry, &["attempt"])),
+                    ),
+                    (
+                        "state_before".to_string(),
+                        yaml_text(get_path(entry, &["state_before"])),
+                    ),
+                    (
+                        "state_after".to_string(),
+                        yaml_text(get_path(entry, &["state_after"])),
+                    ),
+                    (
+                        "source_file".to_string(),
+                        get_str(entry, &["source_file"]).unwrap_or("").to_string(),
+                    ),
+                    (
+                        "source_function".to_string(),
+                        get_str(entry, &["source_function"])
+                            .unwrap_or("")
+                            .to_string(),
+                    ),
+                ]),
+                lists: BTreeMap::new(),
+                source_refs: vec![source.clone()],
+            },
+        );
+        push_edge(
+            graph,
+            edge_ids,
+            "contains",
+            bundle_id,
+            &record_id,
+            "probe timeline step",
+            vec![source.clone()],
+        );
+        if !case.is_empty() {
+            push_edge(
+                graph,
+                edge_ids,
+                "records",
+                &record_id,
+                &graph_id(&module.module_name, "transition-case", case),
+                "records transition case",
+                vec![source.clone()],
+            );
+        }
+    }
+}
+
+fn yaml_text(value: Option<&YamlValue>) -> String {
+    value
+        .and_then(|value| serde_json::to_value(value).ok())
+        .and_then(|value| match value {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(value) => Some(value),
+            other => serde_json::to_string(&other).ok(),
+        })
+        .unwrap_or_default()
 }
 
 fn project_module_topology(
@@ -1310,6 +1487,28 @@ fn project_public_bindings(
                 .iter()
                 .any(|item| item == contract)
         });
+        let function_evidence = semantic_function
+            .into_iter()
+            .flat_map(|function| {
+                get_path(function, &["evidence"])
+                    .and_then(YamlValue::as_mapping)
+                    .into_iter()
+                    .flat_map(|mapping| {
+                        mapping.iter().flat_map(|(category, paths)| {
+                            let category = category.as_str().unwrap_or("evidence").to_string();
+                            paths
+                                .as_sequence()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(YamlValue::as_str)
+                                .map(move |path| (category.clone(), path.to_string()))
+                        })
+                    })
+            })
+            .collect::<Vec<_>>();
+        let has_concrete_evidence = function_evidence
+            .iter()
+            .any(|(_, path)| module.base().join(path).is_file());
         let binding_valid = binding.contract == *contract
             && function_ids.contains_key(&binding.semantic_function)
             && discharges_contract
@@ -1344,6 +1543,67 @@ fn project_public_bindings(
             },
             vec![source.clone()],
         );
+        push_obligation(
+            graph,
+            module,
+            "public-proof-chain",
+            if !binding_valid {
+                "not-applicable"
+            } else if has_concrete_evidence {
+                "satisfied"
+            } else {
+                "required-gap"
+            },
+            format!("Prove public {kind} `{name}`"),
+            if !binding_valid {
+                format!(
+                    "public {kind} `{name}` must first resolve its contract, semantic function, and machine cases"
+                )
+            } else if has_concrete_evidence {
+                format!(
+                    "public {kind} `{name}` reaches an exact code symbol and concrete evidence through `{}`",
+                    binding.semantic_function
+                )
+            } else {
+                format!(
+                    "semantic function `{}` discharges public {kind} `{name}` but has no concrete evidence",
+                    binding.semantic_function
+                )
+            },
+            vec![source.clone()],
+        );
+        if let Some(function_id) = function_ids.get(&binding.semantic_function) {
+            for (category, path) in function_evidence {
+                let evidence_id = graph_id(&module.module_name, "evidence", &path);
+                let evidence_ref = source_ref(root, &module.base().join(&path), &category);
+                push_node(
+                    graph,
+                    node_ids,
+                    SemanticGraphNode {
+                        id: evidence_id.clone(),
+                        module_id: module.module_id.clone(),
+                        kind: "evidence".to_string(),
+                        label: path.clone(),
+                        summary: format!("{category} evidence"),
+                        details: BTreeMap::from([
+                            ("category".to_string(), category.clone()),
+                            ("path".to_string(), path),
+                        ]),
+                        lists: BTreeMap::new(),
+                        source_refs: vec![evidence_ref.clone()],
+                    },
+                );
+                push_edge(
+                    graph,
+                    edge_ids,
+                    "evidences",
+                    &evidence_id,
+                    function_id,
+                    "proves semantic function",
+                    vec![evidence_ref],
+                );
+            }
+        }
         for input in &binding.machine_inputs {
             push_edge(
                 graph,
@@ -1930,6 +2190,22 @@ fn recorded_trace_cases(base: &Path, value: &YamlValue) -> BTreeSet<String> {
         let Ok(document) = serde_yaml::from_str::<YamlValue>(&contents) else {
             continue;
         };
+        let artifact_spec = get_str(&document, &["spec"]).unwrap_or("");
+        let probe_trace = match artifact_spec {
+            "rms/probe-system-trace/v0.1" => Some(&document),
+            "rms/probe-counterexample/v0.1" => get_path(&document, &["trace"]),
+            _ => None,
+        };
+        if let Some(trace) = probe_trace {
+            if let Some(entries) = get_path(trace, &["timeline"]).and_then(YamlValue::as_sequence) {
+                for entry in entries {
+                    if let Some(case) = get_str(entry, &["transition_case"]) {
+                        cases.insert(case.to_string());
+                    }
+                }
+            }
+            continue;
+        }
         let Some(records) = get_path(&document, &["records"]).and_then(YamlValue::as_sequence)
         else {
             continue;
@@ -2139,6 +2415,120 @@ semantic_functions: []
     }
 
     #[test]
+    fn canonical_probe_trace_projects_a_plain_causal_timeline() {
+        let root = fixture_root("probe-timeline");
+        write_fixture(
+            &root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: probe-view, version: 0.1.0, kind: library, purpose: Show probe evidence }
+profiles: [core]
+owns: { concepts: [], data: [], decisions: [] }
+provides: { commands: [], queries: [], events: [], capabilities: [] }
+requires: { modules: [], capabilities: [] }
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        );
+        write_fixture(
+            &root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: probe-view
+binding: fixture
+source: { root: ., public_entrypoint: src/lib }
+commands: { probe-regression: noop }
+architecture:
+  shape: domain-engine
+  trace:
+    producers:
+      - id: checkout-integration
+        profile: smoke
+        bundle: verification/traces/checkout-probe.json
+        command: probe-regression
+        runner: probes/checkout.yaml#explore
+  machine:
+    name: ProbeViewMachine
+    mode: stateful-transition-machine
+    states: [Ready, Waiting]
+    commands: [Start]
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: [Done]
+    replies: []
+    rejections: []
+    transitions:
+      - { from: Ready, on: Start, to: Waiting, case: StartWork }
+semantic_functions: []
+"#,
+        );
+        write_fixture(
+            &root.join("verification/traces/checkout-probe.json"),
+            r#"{
+  "spec": "rms/probe-system-trace/v0.1",
+  "result": "pass",
+  "mode": "exploration",
+  "exhausted": true,
+  "assembly_digest": "assembly-1",
+  "instances": [],
+  "timeline": [{
+    "step": 1,
+    "time": 0,
+    "action": "deliver",
+    "envelope": "start",
+    "idempotency_key": "start",
+    "route": "stimulus/start",
+    "source": null,
+    "target": "source",
+    "input": {"kind":"command","name":"Start","data":{}},
+    "correlation_id": "start",
+    "causation_id": null,
+    "attempt": 1,
+    "state_before": {"name":"Ready"},
+    "state_after": {"name":"Waiting"},
+    "transition_case": "StartWork",
+    "outputs": []
+  }],
+  "protocols": {},
+  "checks": [],
+  "failure": null,
+  "coverage": {"states":2,"schedules":1,"transitions":1,"transition_cases":["source:StartWork"],"routes":["stimulus/start"],"faults":[]},
+  "bounds": {"max_steps":30,"max_schedules":100,"max_states":10000}
+}"#,
+        );
+
+        let graph = build_semantic_system_graph(&root).unwrap();
+        let bundle = graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == "trace-bundle")
+            .expect("probe trace bundle");
+        assert_eq!(
+            bundle.details.get("result").map(String::as_str),
+            Some("pass")
+        );
+        let step = graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == "trace-record")
+            .expect("probe timeline step");
+        assert_eq!(
+            step.details.get("correlation").map(String::as_str),
+            Some("start")
+        );
+        assert_eq!(
+            step.details.get("idempotency").map(String::as_str),
+            Some("start")
+        );
+        assert!(graph
+            .obligations
+            .iter()
+            .any(|item| item.kind == "trace" && item.status == "satisfied"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn exact_public_binding_closes_contract_to_machine_path() {
         let root = fixture_root("public-binding-closed");
         write_public_binding_fixture(&root, true);
@@ -2152,6 +2542,19 @@ semantic_functions: []
         let graph = build_semantic_system_graph(&root).unwrap();
         assert!(graph.edges.iter().any(|edge| edge.kind == "bound-through"));
         assert!(graph.edges.iter().any(|edge| edge.kind == "maps-to"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn public_binding_requires_concrete_evidence_to_close_its_proof_chain() {
+        let root = fixture_root("public-proof-chain-gap");
+        write_public_binding_fixture(&root, true);
+        fs::remove_file(root.join("verification/contracts/choose.md")).unwrap();
+
+        let diagnostics = semantic_system_graph_diagnostics(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|item| item.check == "semantic.public-proof-chain-incomplete"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2236,6 +2639,7 @@ semantic_functions: []
 
     fn write_public_binding_fixture(root: &Path, include_binding: bool) {
         fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::create_dir_all(root.join("verification/contracts")).unwrap();
         write_fixture(
             &root.join("module.yaml"),
             r#"spec: rms/module/v0.1
@@ -2258,6 +2662,10 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
         write_fixture(
             &root.join("contracts/choose.v1.yaml"),
             "spec: rms/contract/v0.1\nname: choose\nversion: 1\nkind: command\nmeaning: Choose one value.\n",
+        );
+        write_fixture(
+            &root.join("verification/contracts/choose.md"),
+            "# Choose contract\n\nCommand/tool: fixture verify\n\nSource revision: fixture\n",
         );
         let binding = if include_binding {
             r#"
@@ -2303,6 +2711,8 @@ semantic_functions:
     purity: pure
     discharges:
       contracts: [contracts/choose.v1.yaml]
+    evidence:
+      contracts: [verification/contracts/choose.md]
 "#
             ),
         );

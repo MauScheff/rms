@@ -2,23 +2,29 @@ spec: rms/contract/v0.1
 name: probe-machine
 version: 2
 kind: command
-meaning: Execute normalized inputs through an implementation's declared pure transition-record path and report the observed timeline.
+meaning: Execute one or more bounded module instances through their declared pure transition-record paths, explore canonical message schedules and declared faults, and report a deterministic replayable timeline.
 preconditions:
 - id: accepts-1
-  statement: The target is one inspectable Rust, Swift, JavaScript, or Python implementation with a valid rms/machine-probe/v0.1 binding.
+  statement: The target is one inspectable Rust, Swift, JavaScript, or Python implementation, or an rms/probe-assembly/v0.1 containing such instances.
 - id: accepts-2
   statement: Each command, observed event, or effect result names a declared input and supplies schema-valid payload data.
+- id: accepts-3
+  statement: Multi-module routes are resolved from canonical protocol bindings, dependency probe bridges, explicit instance selections, and explicit substitutes; the assembly cannot invent semantic transformations or private inputs.
 postconditions:
 - id: ensures-1
   statement: Every step calls the exact transition-record function and the next step receives the preceding state_after.
 - id: ensures-2
-  statement: The result is a validated rms/trace-bundle/v0.1 timeline, optionally checked against caller expectations.
+  statement: Single-machine results are validated trace bundles; assembly results are rms/probe-system-trace/v0.1 timelines with source, causation, correlation, idempotency, routing, fault, check, bound, and coverage data.
 - id: ensures-3
-  statement: Probing never invokes the machine driver or an effect executor and does not count as verification evidence.
+  statement: Probing never invokes a machine driver or real effect executor; ordinary deterministic execution is stable and breadth-first exploration returns pass only after exhausting the declared bounded state space.
 - id: ensures-4
   statement: No project artifact is written unless the caller supplies --out.
+- id: ensures-5
+  statement: Every discovered failure is reduced to a deterministic rms/probe-counterexample/v0.1 whose exact schedule and fault decisions replay as reproduced, resolved, or invalid.
+- id: ensures-6
+  statement: Probe artifacts are ephemeral unless canonical verification explicitly references them, at which point assemblies must exhaust successfully and counterexamples must replay as resolved.
 failure_categories:
 - id: rejects-1
-  statement: Ambiguous discovery, invalid protocol data, unsafe bindings, runner failure, timeout, nonconforming output, or the first failed expectation.
+  statement: Ambiguous or incompatible wiring, invalid protocol data, unsafe bindings, runner failure, timeout, nonconforming output, a failed law, a reproduced or invalid canonical counterexample, or inconclusive bounded exploration.
 compatibility:
   policy: breaking-before-1.0

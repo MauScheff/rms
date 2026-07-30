@@ -15,6 +15,8 @@ Expected result:
 - missing property/fuzz commands fail with `property.command-missing`;
 - selected realization commands run from the implementation directory;
 - fixed corpora cannot satisfy open-ended fuzz claims;
-- the report records property, profile, strategy, command text, status, and exit code.
+- the report records property, profile, strategy, command text, status, and exit code;
+- replayable files emitted into a declared counterexample directory are discovered and run as durable regressions on the current and every later property run;
+- a malformed or still-failing recorded counterexample fails the property run rather than remaining passive evidence.
 
 Source provenance: the candidate commit and this command are recorded by strict audit before a production claim.

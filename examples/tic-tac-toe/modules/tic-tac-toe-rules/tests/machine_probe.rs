@@ -112,6 +112,25 @@ fn parse_input(value: &Value) -> TicTacToeInput {
     let data = &value["data"];
     let cell = if let Some(index) = data["cell"].as_u64() {
         Cell::from_index(index as u8)
+    } else if request["operation"] == "evaluate" {
+        let results = request["cases"]
+            .as_array()
+            .expect("probe evaluation cases")
+            .iter()
+            .map(|case| {
+                let input = &case["input"];
+                let record = transition_record(parse_state(&case["state"]), parse_input(input));
+                json!({
+                    "id": case["id"],
+                    "record": record_json(&record, input, true)
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "spec": "rms/machine-probe-evaluation/v0.2",
+            "machine": "TicTacToeMachine",
+            "results": results
+        })
     } else {
         Cell::new(
             data["row"].as_u64().expect("PlaceMark.data.row") as u8,

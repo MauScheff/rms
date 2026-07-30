@@ -8,6 +8,7 @@
 | `ROADMAP.md` | Non-normative implementation sequence | No |
 | `GUIDE.md` | Intelligible architectural explanation | No |
 | `EXPLAINED.md` | Conceptual explanation of RMS modules, machines, effects, and evidence | No |
+| `UNDERSTANDABILITY.md` | RMS design criteria, state-space review, comprehension evidence, and future self-hosting foundations | No; maintainer guidance |
 | `QUICKSTART.md` | Runnable onboarding and first complete RMS change | No |
 | `SPEC.md` | Core requirements and profiles | **Yes** |
 | `MANIFEST.md` | Manifest semantics and examples | Yes where it restates the spec |

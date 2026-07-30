@@ -1,0 +1,25 @@
+spec: rms/probe-assembly/v0.1
+instances:
+- id: source
+  implementation: ../probe-topologies/source-protocol/implementation.fixture
+- id: worker
+  implementation: ../probe-topologies/worker-protocol/implementation.fixture
+stimuli:
+- target: source
+  input:
+    kind: command
+    name: Start
+    data: {}
+checks:
+- id: protocol-cycle-quiesces
+  when: quiescent
+  assert:
+    kind: state
+    instance: source
+    equals:
+      name: Ready
+      data: {}
+exploration:
+  max_steps: 10
+  max_schedules: 20
+  max_states: 200

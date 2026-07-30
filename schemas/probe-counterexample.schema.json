@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:probe-counterexample:v0.1",
+  "title": "RMS Probe Counterexample v0.1",
+  "type": "object",
+  "required": ["spec", "assembly", "assembly_digest", "implementation_digests", "decisions", "failure", "trace"],
+  "properties": {
+    "spec": { "const": "rms/probe-counterexample/v0.1" },
+    "assembly": { "type": "object" },
+    "assembly_digest": { "type": "string", "minLength": 1 },
+    "source_revision": { "type": ["string", "null"] },
+    "implementation_digests": { "type": "object" },
+    "decisions": { "type": "array" },
+    "failure": { "type": "object" },
+    "trace": { "type": "object" }
+  },
+  "additionalProperties": false
+}

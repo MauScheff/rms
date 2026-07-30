@@ -18,7 +18,7 @@ dependencies:
 architecture:
   shape: domain-engine
   probe:
-    protocol: rms/machine-probe/v0.1
+    protocol: rms/machine-probe/v0.2
     command: probe
     runner: Tests/RmsSwiftExampleTests/MachineProbeTests.swift#testProbeMachine
   reliability:

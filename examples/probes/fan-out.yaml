@@ -1,0 +1,33 @@
+spec: rms/probe-assembly/v0.1
+instances:
+- id: source
+  implementation: ../probe-topologies/fanout/implementation.fixture
+- id: worker-a
+  implementation: ../probe-topologies/worker/implementation.fixture
+- id: worker-b
+  implementation: ../probe-topologies/worker/implementation.fixture
+routing:
+- binding: work-a-provider
+  provider: worker-a
+- binding: work-b-provider
+  provider: worker-b
+stimuli:
+- id: start
+  target: source
+  input:
+    kind: command
+    name: Start
+    data: {}
+checks:
+- id: both-workers-complete
+  when: quiescent
+  assert:
+    kind: state
+    instance: source
+    equals:
+      name: Ready
+      data: {}
+exploration:
+  max_steps: 12
+  max_schedules: 50
+  max_states: 500

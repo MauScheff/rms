@@ -723,10 +723,12 @@ Every implemented module should declare a domain-named machine. The canonical fi
 | `architecture.machine.resource_protocols` | Ownership plus closed acquire/use/release/transfer automata for lifetime-sensitive resources. Product and resource states are validated together so terminal machine paths cannot leak resources. |
 | `architecture.machine.transitions` | Accepted and rejected state/input/output transitions. Every branch has a stable `case` represented in declared transition source; source-only branches are drift. Trace provenance names that source file and exact case. |
 | `architecture.roles.*` | Binding files or artifacts that realize representation, transition, parser, adapter, machine driver, effect executor, private effect support, journal, replay, trace evidence, and related roles. |
-| `architecture.probe` | `rms/machine-probe/v0.1` protocol, command key, exact runner, and—on state-and-input machines—the binding-native complete initial-state constructor. |
+| `architecture.probe` | `rms/machine-probe/v0.1` or batched v0.2 protocol, command key, exact runner, optional pure payload mappers, and—on state-and-input machines—the binding-native complete initial-state constructor. |
 | `architecture.protocol_bindings` | Participant ownership and exact machine-case mapping for public protocol messages. |
 | `architecture.authority_bindings` | Declared authority roles, exact safe facade, and containment evidence. |
 | `dependencies.local_modules` | Language-neutral RMS module identities consumed by this implementation. Change them through `rms spec apply` `binding_dependencies`; the binding adapter realizes native allowlists and local package metadata. |
+
+`architecture.dependency_behavior_bindings[].probe_bridge` may bind one emitted consumer command/effect to a provider public input and provider replies, events, or rejections back to consumer effect results or observed events. Protocol message mappings and bridge legs may name an exact pure probe mapper when payload schemas differ. Assemblies select instances for canonical roles but cannot redefine those transformations or inject private machine inputs.
 
 Use `rms machine apply` to add or change these architecture fields only when the semantic layer is already correct. RMS validates the complete final candidate and records the focused change, but it does not synthesize active trace evidence from transition declarations. Implemented transition paths must populate and replay the declared evidence roles. If laws, public contracts, effects, or evidence obligations change, use `rms spec apply` instead.
 

@@ -13,8 +13,10 @@ postconditions:
     statement: "Shared shell commands still execute once per property and receive the requested property and runner identities."
   - id: "ensures-2"
     statement: "Reports identify each property, strategy, runner, result, output, and counterexample independently."
+  - id: "ensures-3"
+    statement: "Every replayable counterexample already present in a property's declared counterexample directory is executed as a regression in the same run."
 failure_categories:
   - id: "rejects-1"
-    statement: "Missing runners or generators, fixed corpora mislabeled as generated coverage, commands that cannot select the requested runner, timeout, failed oracle, or unexecuted realizations."
+    statement: "Missing runners or generators, fixed corpora mislabeled as generated coverage, commands that cannot select the requested runner, timeout, failed oracle, unexecuted realizations, malformed counterexamples, or failed counterexample replays."
 compatibility:
   policy: backward-compatible-within-major

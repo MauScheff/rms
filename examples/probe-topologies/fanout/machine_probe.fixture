@@ -1,0 +1,105 @@
+import json
+import os
+from pathlib import Path
+
+
+def named(name, data=None):
+    return {"name": name, "data": data or {}}
+
+
+def initial_state():
+    return named("Ready")
+
+
+def transition(state, value):
+    pair = (state["name"], value["name"])
+    if pair == ("Ready", "Start"):
+        return named("WaitingBoth"), [], [named("WorkA"), named("WorkB")], None, "StartBoth"
+    if pair == ("WaitingBoth", "DoneA"):
+        return named("WaitingB"), [], [], None, "FinishAFirst"
+    if pair == ("WaitingBoth", "DoneB"):
+        return named("WaitingA"), [], [], None, "FinishBFirst"
+    if pair == ("WaitingA", "DoneA"):
+        return named("Ready"), [named("Completed")], [], named("Completed"), "FinishASecond"
+    if pair == ("WaitingB", "DoneB"):
+        return named("Ready"), [named("Completed")], [], named("Completed"), "FinishBSecond"
+    raise ValueError(f"illegal transition {pair}")
+
+
+def record(state, value):
+    next_state, events, effects, reply, branch = transition(state, value)
+    return {
+        "scenario_start": True,
+        "state_before": state,
+        "state_after": next_state,
+        "input": value,
+        "output": {
+            "next_state": next_state,
+            "events": events,
+            "commands": [],
+            "effects": effects,
+            "reply": reply,
+            "rejection": None,
+        },
+        "source": {"file": "machine_probe.fixture", "function": "transition", "branch": branch},
+    }
+
+
+def probe_machine():
+    request = json.loads(Path(os.environ["RMS_PROBE_REQUEST"]).read_text())
+    if request["operation"] == "describe":
+        output = {
+            "spec": "rms/machine-probe-description/v0.1",
+            "machine": "ProbeFanoutMachine",
+            "initial_state": initial_state(),
+            "states": [
+                {"name": name, "data_schema": {"type": "object"}}
+                for name in ["Ready", "WaitingBoth", "WaitingA", "WaitingB"]
+            ],
+            "inputs": [
+                {
+                    "kind": "command",
+                    "name": "Start",
+                    "data_schema": {"type": "object"},
+                    "example": {"kind": "command", "name": "Start", "data": {}},
+                },
+                {
+                    "kind": "effect-result",
+                    "name": "DoneA",
+                    "data_schema": {"type": "object"},
+                    "example": {"kind": "effect-result", "name": "DoneA", "data": {}},
+                },
+                {
+                    "kind": "effect-result",
+                    "name": "DoneB",
+                    "data_schema": {"type": "object"},
+                    "example": {"kind": "effect-result", "name": "DoneB", "data": {}},
+                },
+            ],
+        }
+    elif request["operation"] == "evaluate":
+        output = {
+            "spec": "rms/machine-probe-evaluation/v0.2",
+            "machine": "ProbeFanoutMachine",
+            "results": [
+                {"id": case["id"], "record": record(case["state"], case["input"])}
+                for case in request["cases"]
+            ],
+        }
+    else:
+        state = initial_state() if request["start"] == "initial" else request["start"]
+        records = []
+        for step in request["steps"]:
+            item = record(state, step["input"])
+            records.append(item)
+            state = item["state_after"]
+        output = {
+            "spec": "rms/trace-bundle/v0.1",
+            "machine": "ProbeFanoutMachine",
+            "records": records,
+        }
+    Path(os.environ["RMS_PROBE_OUTPUT"]).write_text(json.dumps(output))
+
+
+if __name__ == "__main__":
+    probe_machine()

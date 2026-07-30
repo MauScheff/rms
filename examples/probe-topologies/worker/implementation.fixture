@@ -1,0 +1,70 @@
+spec: rms/implementation/v0.1
+module: probe-worker
+binding: python
+source:
+  root: .
+  public_entrypoint: machine_probe.fixture
+commands:
+  probe: python machine_probe.fixture
+architecture:
+  shape: domain-engine
+  probe:
+    protocol: rms/machine-probe/v0.2
+    command: probe
+    runner: machine_probe.fixture#probe_machine
+    initial_state_function: machine_probe.fixture#initial_state
+  machine:
+    name: ProbeWorkerMachine
+    mode: stateless-decision-machine
+    transition_signature: input-only
+    initial_state: Ready
+    stateless_justification: each request produces one deterministic outcome
+    types:
+      state: ProbeState
+      command: ProbeCommand
+      event: ProbeEvent
+      reply: ProbeReply
+      rejection: ProbeRejection
+      transition: ProbeTransition
+      transition_record: ProbeTransitionRecord
+    states: [Ready]
+    commands: [DoWork]
+    observed_events: []
+    events: [Worked]
+    effects: []
+    effect_results: []
+    replies: [Done]
+    rejections: [IllegalTransition]
+    effect_protocols: []
+    resource_protocols: []
+    transition_function: transition
+    transition_record_function: transition_record
+    transitions:
+    - from: Ready
+      on: DoWork
+      to: Ready
+      case: DoWork
+      events: [Worked]
+      reply: Done
+  roles:
+    representation: [machine_probe.fixture]
+    transition: [machine_probe.fixture]
+    transition_record: [machine_probe.fixture]
+    probe_adapter: [machine_probe.fixture]
+  public_behavior_bindings:
+  - id: work-public
+    public_kind: command
+    public_name: work
+    contract: contracts/work.v1.yaml
+    semantic_function: transition
+    machine_inputs: [DoWork]
+    machine_outputs: [Worked, Done]
+semantic_functions:
+- id: transition
+  symbol: machine_probe.fixture#transition
+  kind: transition
+  purity: pure
+dependencies:
+  allowed_external_packages: []
+  allowed_local_packages: []
+  local_modules: []

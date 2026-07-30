@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added deterministic bounded multi-module probing with canonical protocol/dependency routing, virtual-time scheduling, explicit transport faults and substitutes, batched v0.2 adapters with v0.1 fallback, minimized replayable counterexamples, canonical regression execution, and plain Lawbook causal timelines.
+- Added maintainer understandability laws, state-space review, comprehension evidence, and staged self-hosting guidance; made public workflow actions and ownership resolution construction-safe internally while preserving `rms.surface/v2`.
 - Added first-class inspectable Python implementation bindings with `pyproject.toml` packaging, role-separated source, `unittest` proof runners, probes, traces, properties, native tree-sitter inspection, dependency allowlists, capability composition, examples, CI, and release-gate coverage.
 - Published `probe-machine.v2` with Python support while retaining v1 unchanged.
 

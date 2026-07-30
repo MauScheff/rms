@@ -32,7 +32,7 @@ dependencies:
 architecture:
   shape: boundary-adapter
   probe:
-    protocol: rms/machine-probe/v0.1
+    protocol: rms/machine-probe/v0.2
     command: probe
     runner: src/main.rs#probe_machine
     initial_state_function: src/main.rs#initial_rms_workbench_state
@@ -2168,6 +2168,9 @@ semantic_functions:
     ensures:
     - probe runners exchange temporary request and output files through the declared protocol
     - probe traces are validated against canonical transition cases before expectations are reported
+    - assembly routing is derived only from canonical protocol bindings and dependency probe bridges
+    - bounded breadth-first exploration is deterministic and pass means the reachable bounded space was exhausted
+    - failures are minimized without changing the exact failing check and retain replayable schedule and fault decisions
   evidence:
     contracts:
     - verification/contracts/probe_machine.md
@@ -2181,6 +2184,7 @@ semantic_functions:
   assumptions:
     ensures:
     - probe bindings resolve the exact transition-record function and exclude drivers and effect executors
+    - canonical probe evidence reruns assemblies and requires saved counterexamples to replay as resolved
   evidence:
     contracts:
     - verification/contracts/probe_machine.md

@@ -136,6 +136,18 @@ export async function probeMachine() {
         },
       ],
     };
+  } else if (request.operation === "evaluate") {
+    output = {
+      spec: "rms/machine-probe-evaluation/v0.2",
+      machine: "TicTacToeBoundaryMachine",
+      results: request.cases.map((item) => {
+        const record = transitionRecord(parseState(item.state), parseInput(item.input));
+        return {
+          id: item.id,
+          record: recordJSON(record, item.input, true),
+        };
+      }),
+    };
   } else {
     let state = request.start === "initial" ? initialState() : parseState(request.start);
     const records = request.steps.map((step, index) => {

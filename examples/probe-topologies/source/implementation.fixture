@@ -1,0 +1,106 @@
+spec: rms/implementation/v0.1
+module: probe-source
+binding: python
+source:
+  root: .
+  public_entrypoint: machine_probe.fixture
+commands:
+  probe: python machine_probe.fixture
+architecture:
+  shape: domain-engine
+  probe:
+    protocol: rms/machine-probe/v0.2
+    command: probe
+    runner: machine_probe.fixture#probe_machine
+    initial_state_function: machine_probe.fixture#initial_state
+  machine:
+    name: ProbeSourceMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    initial_state: Ready
+    types:
+      state: ProbeState
+      command: ProbeCommand
+      event: ProbeEvent
+      effect: ProbeEffect
+      effect_result: ProbeEffectResult
+      reply: ProbeReply
+      rejection: ProbeRejection
+      transition: ProbeTransition
+      transition_record: ProbeTransitionRecord
+    states: [Ready, Waiting]
+    commands: [Start]
+    observed_events: []
+    events: [Completed]
+    effects: [Work]
+    effect_results: [Done, Failed]
+    replies: [Completed]
+    rejections: [IllegalTransition, WorkFailed]
+    effect_protocols: []
+    resource_protocols: []
+    transition_function: transition
+    transition_record_function: transition_record
+    transitions:
+    - from: Ready
+      on: Start
+      to: Waiting
+      case: StartWork
+      effects: [Work]
+    - from: Waiting
+      on: Done
+      to: Ready
+      case: FinishWork
+      events: [Completed]
+      reply: Completed
+    - from: Waiting
+      on: Start
+      to: Waiting
+      case: RejectBusy
+      rejection: IllegalTransition
+    - from: Ready
+      on: Done
+      to: Ready
+      case: RejectUnexpectedResult
+      rejection: IllegalTransition
+    - from: Waiting
+      on: Failed
+      to: Waiting
+      case: WorkFailed
+      rejection: WorkFailed
+  roles:
+    representation: [machine_probe.fixture]
+    transition: [machine_probe.fixture]
+    transition_record: [machine_probe.fixture]
+    probe_adapter: [machine_probe.fixture]
+  public_behavior_bindings:
+  - id: start-public
+    public_kind: command
+    public_name: start
+    contract: contracts/start.v1.yaml
+    semantic_function: transition
+    machine_inputs: [Start]
+    machine_outputs: [Work, Completed]
+  dependency_behavior_bindings:
+  - id: work-provider
+    capability: work
+    contract: contracts/work.v1.yaml
+    consumer: machine_probe.fixture#transition
+    resolution: module
+    provider_module: probe-worker
+    provider_contract: contracts/work.v1.yaml
+    probe_bridge:
+      request:
+        from: { kind: effect, name: Work }
+        to: { kind: command, name: DoWork }
+      outcomes:
+      - from: { kind: reply, name: Done }
+        to: { kind: effect-result, name: Done }
+semantic_functions:
+- id: transition
+  symbol: machine_probe.fixture#transition
+  kind: transition
+  purity: pure
+dependencies:
+  allowed_external_packages: []
+  allowed_local_packages: []
+  local_modules: [probe-worker]

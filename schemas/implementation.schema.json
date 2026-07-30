@@ -323,7 +323,7 @@
       ],
       "properties": {
         "protocol": {
-          "const": "rms/machine-probe/v0.1"
+          "enum": ["rms/machine-probe/v0.1", "rms/machine-probe/v0.2"]
         },
         "command": {
           "type": "string",
@@ -336,6 +336,20 @@
         "initial_state_function": {
           "type": "string",
           "minLength": 1
+        },
+        "mappers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "command", "runner"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "command": { "type": "string", "minLength": 1 },
+              "runner": { "type": "string", "pattern": "^[^#]+#[^#]+$" }
+            },
+            "additionalProperties": false
+          },
+          "uniqueItems": true
         }
       },
       "additionalProperties": false
@@ -446,7 +460,8 @@
             "properties": {
               "machine_case": { "type": "string" },
               "message": { "type": "string" },
-              "direction": { "enum": ["send", "receive"] }
+              "direction": { "enum": ["send", "receive"] },
+              "mapper": { "type": "string", "minLength": 1 }
             },
             "additionalProperties": false
           },
@@ -519,7 +534,8 @@
         },
         "resolution": { "enum": ["module", "external"] },
         "provider_module": { "type": "string", "minLength": 1 },
-        "provider_contract": { "type": "string", "minLength": 1 }
+        "provider_contract": { "type": "string", "minLength": 1 },
+        "probe_bridge": { "$ref": "#/$defs/probeBridge" }
       },
       "allOf": [
         {
@@ -538,6 +554,48 @@
           }
         }
       ],
+      "additionalProperties": false
+    },
+    "probeBridge": {
+      "type": "object",
+      "required": ["request", "outcomes"],
+      "properties": {
+        "request": { "$ref": "#/$defs/probeBridgeLeg" },
+        "outcomes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/probeBridgeLeg" },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "probeBridgeLeg": {
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "$ref": "#/$defs/probeNamedKind" },
+        "to": { "$ref": "#/$defs/probeNamedKind" },
+        "mapper": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "probeNamedKind": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "command",
+            "observed-event",
+            "effect-result",
+            "event",
+            "effect",
+            "reply",
+            "rejection"
+          ]
+        },
+        "name": { "type": "string", "minLength": 1 }
+      },
       "additionalProperties": false
     },
     "semanticFunction": {

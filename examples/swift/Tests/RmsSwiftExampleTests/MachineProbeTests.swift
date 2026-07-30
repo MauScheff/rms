@@ -121,6 +121,27 @@ final class MachineProbeTests: XCTestCase {
                     ],
                 ],
             ]
+        } else if request["operation"] as? String == "evaluate" {
+            let cases = request["cases"] as? [[String: Any]] ?? []
+            let results = try cases.map { item -> [String: Any] in
+                guard
+                    let id = item["id"] as? String,
+                    let input = item["input"] as? [String: Any]
+                else { throw ProbeFailure.message("evaluation case is incomplete") }
+                return [
+                    "id": id,
+                    "record": recordJSON(
+                        transitionRecord(try parseInput(input)),
+                        input,
+                        scenarioStart: true
+                    ),
+                ]
+            }
+            output = [
+                "spec": "rms/machine-probe-evaluation/v0.2",
+                "machine": "SwiftExampleMachine",
+                "results": results,
+            ]
         } else {
             let steps = request["steps"] as? [[String: Any]] ?? []
             let records = try steps.enumerated().map { index, step in

@@ -14,6 +14,7 @@ Expected result:
 
 - replayable counterexamples pass metadata validation;
 - missing property/proves/replay metadata fails before production evidence can rely on the counterexample;
-- replay commands, when present, are run from the counterexample directory.
+- replay commands, when present, are run from the counterexample directory with `RMS_COUNTEREXAMPLE` naming the exact artifact;
+- machine-readable output includes the observed replay result rather than reporting only that metadata was valid.
 
 Source revision: recorded by git commit and strict audit provenance before production use.

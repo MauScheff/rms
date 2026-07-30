@@ -29,6 +29,42 @@ def probe_machine() -> None:
                 {"kind": "command", "name": "Reject", "data_schema": {"type": "object", "properties": {"reason": {"type": "string"}}}, "example": {"kind": "command", "name": "Reject", "data": {"reason": "rejected"}}},
             ],
         }
+    elif request.get("operation") == "evaluate":
+        results = []
+        for case in request.get("cases", []):
+            normalized = case["input"]
+            label = make_label(normalized.get("data", {}).get("value", "probe"))
+            if label is None:
+                raise ValueError("probe label must be non-empty")
+            command = reject_command(label) if normalized.get("name") == "Reject" else accept_command(label)
+            item = transition_record(command)
+            results.append({
+                "id": case["id"],
+                "record": {
+                    "scenario_start": True,
+                    "state_before": variant(item.state_before),
+                    "state_after": variant(item.state_after),
+                    "input": normalized,
+                    "output": {
+                        "next_state": variant(item.output.next_state),
+                        "events": [variant(value) for value in item.output.events],
+                        "commands": [],
+                        "effects": [variant(value) for value in item.output.effects],
+                        "reply": variant(item.output.reply) if item.output.reply else None,
+                        "rejection": variant(item.output.rejection) if item.output.rejection else None,
+                    },
+                    "source": {
+                        "file": item.source.file,
+                        "function": item.source.function,
+                        "branch": item.source.branch,
+                    },
+                },
+            })
+        output = {
+            "spec": "rms/machine-probe-evaluation/v0.2",
+            "machine": "ExampleMachine",
+            "results": results,
+        }
     else:
         records = []
         for index, step in enumerate(request.get("steps", [])):

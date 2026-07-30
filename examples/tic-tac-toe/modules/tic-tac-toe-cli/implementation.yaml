@@ -20,7 +20,7 @@ dependencies:
 architecture:
   shape: boundary-adapter
   probe:
-    protocol: rms/machine-probe/v0.1
+    protocol: rms/machine-probe/v0.2
     command: probe
     runner: tests/machine-probe.mjs#probeMachine
     initial_state_function: src/representation.mjs#initialState

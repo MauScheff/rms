@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:machine-probe:v0.2",
+  "title": "RMS Machine Probe Request v0.2",
+  "type": "object",
+  "required": ["spec", "operation"],
+  "properties": {
+    "spec": { "const": "rms/machine-probe/v0.2" },
+    "operation": { "enum": ["describe", "run", "evaluate"] },
+    "start": {
+      "oneOf": [
+        { "const": "initial" },
+        { "$ref": "#/$defs/variant" }
+      ]
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["input"],
+        "properties": {
+          "input": { "$ref": "#/$defs/input" },
+          "expect": { "type": "object" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "state", "input"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "state": { "$ref": "#/$defs/variant" },
+          "input": { "$ref": "#/$defs/input" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "operation": { "const": "run" } } },
+      "then": { "required": ["start", "steps"] }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "evaluate" } } },
+      "then": { "required": ["cases"] }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "variant": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "data": true
+      },
+      "additionalProperties": false
+    },
+    "input": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": { "enum": ["command", "observed-event", "effect-result"] },
+        "name": { "type": "string", "minLength": 1 },
+        "data": true
+      },
+      "additionalProperties": false
+    }
+  }
+}

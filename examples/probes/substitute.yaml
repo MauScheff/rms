@@ -1,0 +1,22 @@
+spec: rms/probe-assembly/v0.1
+instances:
+- id: source
+  implementation: ../probe-topologies/source/implementation.fixture
+stimuli:
+- target: source
+  input: { kind: command, name: Start, data: {} }
+substitutes:
+- id: work-substitute
+  source: source
+  output: { kind: effect, name: Work }
+  outcomes:
+  - id: success
+    target: source
+    input: { kind: effect-result, name: Done, data: {} }
+checks:
+- id: substitute-completes
+  when: quiescent
+  assert:
+    kind: state
+    instance: source
+    equals: { name: Ready, data: {} }

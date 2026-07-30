@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:probe-system-trace:v0.1",
+  "title": "RMS Probe System Trace v0.1",
+  "type": "object",
+  "required": ["spec", "result", "mode", "exhausted", "assembly_digest", "instances", "timeline", "protocols", "coverage", "bounds"],
+  "properties": {
+    "spec": { "const": "rms/probe-system-trace/v0.1" },
+    "result": { "enum": ["pass", "fail", "inconclusive"] },
+    "mode": { "enum": ["deterministic", "exploration", "replay"] },
+    "exhausted": { "type": "boolean" },
+    "assembly_digest": { "type": "string", "minLength": 1 },
+    "source_revision": { "type": ["string", "null"] },
+    "instances": { "type": "array" },
+    "timeline": { "type": "array" },
+    "protocols": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "checks": { "type": "array" },
+    "failure": { "type": ["object", "null"] },
+    "coverage": { "type": "object" },
+    "bounds": { "type": "object" }
+  },
+  "additionalProperties": false
+}

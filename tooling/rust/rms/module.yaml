@@ -215,7 +215,7 @@ invariants:
   enforced_by: diagnose-rms-environment-command
   verified_by: verification/laws/diagnostics_are_evidence_not_authority.md
 - id: machine-probes-are-pure-and-ephemeral
-  statement: Machine probes execute only the declared transition-record function, chain returned state, never interpret effects, and create no project evidence unless output is explicitly requested.
+  statement: Machine probes execute only declared pure transition-record functions, route outputs through canonical bindings or explicit substitutes without executing real effects, and remain ephemeral unless canonical verification explicitly references them.
   authority: parser
   enforced_by: probe-machine-validator
   verified_by: verification/contracts/probe_machine.md

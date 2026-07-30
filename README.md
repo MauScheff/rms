@@ -89,6 +89,7 @@ init → authorized bootstrap commit
 | --- | --- |
 | Try the complete workflow | [Quickstart](QUICKSTART.md) |
 | Understand the model | [RMS, Explained](EXPLAINED.md) |
+| Understand RMS design and future self-hosting foundations | [Designing RMS for Understandability](UNDERSTANDABILITY.md) |
 | Look up commands, results, artifacts, and proof rules | [Reference](REFERENCE.md) |
 | Operate RMS in a production-intended project | [Production Pilot Guide](PRODUCTION.md) |
 | Understand the CLI and JSON model | [Tooling Model](TOOLING.md) |

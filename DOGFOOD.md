@@ -2,6 +2,13 @@
 
 The `rms` CLI is itself an RMS module. This walkthrough uses the same narrow surface expected in downstream projects.
 
+The walkthrough exercises RMS as the system under test. Its output is evidence,
+not authority over ordinary RMS maintenance. Until a user explicitly requests a
+self-hosted change or rewrite, maintainers use the native repository workflow
+and an independent native oracle. See
+[Designing RMS for Understandability](UNDERSTANDABILITY.md) for the staged
+self-hosting boundary.
+
 ## Target
 
 | Role | Path |

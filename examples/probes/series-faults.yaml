@@ -1,0 +1,48 @@
+spec: rms/probe-assembly/v0.1
+instances:
+- id: source
+  implementation: ../probe-topologies/source/implementation.fixture
+- id: worker
+  implementation: ../probe-topologies/worker/implementation.fixture
+stimuli:
+- id: start
+  target: source
+  input:
+    kind: command
+    name: Start
+    data: {}
+checks:
+- id: no-transport-fault-is-observed
+  when: always
+  assert:
+    kind: message-count
+    name: IllegalTransition
+    max: 0
+- id: source-eventually-returns-ready
+  when: within
+  within_steps: 4
+  within_time: 1
+  assert:
+    kind: state
+    instance: source
+    equals:
+      name: Ready
+      data: {}
+faults:
+- route: work-provider
+  kind: delay
+  budget: 1
+  delay: 2
+- route: work-provider
+  kind: duplicate
+  budget: 1
+- route: work-provider
+  kind: drop
+  budget: 1
+- route: work-provider
+  kind: timeout
+  budget: 1
+exploration:
+  max_steps: 10
+  max_schedules: 50
+  max_states: 500

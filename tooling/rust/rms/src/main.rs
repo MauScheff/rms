@@ -25,9 +25,13 @@ use tree_sitter::{Node as TreeSitterNode, Parser as TreeSitterParser};
 use walkdir::WalkDir;
 
 mod effect_executor;
+mod probe;
 mod semantic_graph;
 mod viewer;
 mod viewer_request;
+mod workflow;
+
+use crate::workflow::{ActionPhase, Authorization};
 
 const VALIDATOR_NAME: &str = "rms";
 const VALIDATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -794,7 +798,7 @@ enum Commands {
         implementation: Option<PathBuf>,
 
         /// Describe accepted probe states and inputs.
-        #[arg(long, conflicts_with_all = ["inputs", "file"])]
+        #[arg(long, conflicts_with = "inputs")]
         describe: bool,
 
         /// Inline normalized JSON input; repeat for an ordered sequence.
@@ -802,8 +806,32 @@ enum Commands {
         inputs: Vec<String>,
 
         /// YAML/JSON probe request path, or `-` for stdin.
-        #[arg(long, value_name = "PATH|-", conflicts_with_all = ["describe", "inputs"])]
+        #[arg(long, value_name = "PATH|-", conflicts_with = "inputs")]
         file: Option<PathBuf>,
+
+        /// Explore every reachable schedule within the assembly bounds.
+        #[arg(long, requires = "file", conflicts_with = "describe")]
+        explore: bool,
+
+        /// Replay a saved rms/probe-counterexample/v0.1 artifact.
+        #[arg(
+            long,
+            value_name = "PATH",
+            conflicts_with_all = ["implementation", "describe", "inputs", "file", "state", "expect_final_state", "expect_final_case", "explore", "max_steps", "max_schedules", "max_states", "out"]
+        )]
+        replay: Option<PathBuf>,
+
+        /// Override the assembly transition-step bound.
+        #[arg(long)]
+        max_steps: Option<usize>,
+
+        /// Override the assembly completed-schedule bound.
+        #[arg(long)]
+        max_schedules: Option<usize>,
+
+        /// Override the assembly global-state bound.
+        #[arg(long)]
+        max_states: Option<usize>,
 
         /// Explicit normalized JSON starting state for inline inputs.
         #[arg(long, value_name = "JSON", requires = "inputs")]
@@ -1656,6 +1684,24 @@ struct ProbeCliRequest {
     timeout_seconds: u64,
 }
 
+struct ProbeDispatchRequest {
+    implementation: Option<PathBuf>,
+    describe: bool,
+    inputs: Vec<String>,
+    file: Option<PathBuf>,
+    explore: bool,
+    replay: Option<PathBuf>,
+    max_steps: Option<usize>,
+    max_schedules: Option<usize>,
+    max_states: Option<usize>,
+    state: Option<String>,
+    expect_final_state: Option<String>,
+    expect_final_case: Option<String>,
+    out: Option<PathBuf>,
+    json: bool,
+    timeout_seconds: u64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct ProbeExpectationFailure {
     path: String,
@@ -1734,6 +1780,8 @@ struct PropertyCounterexampleSummary {
     proves: Option<String>,
     replay_command: Option<String>,
     trace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_result: Option<String>,
     status: String,
 }
 
@@ -2378,6 +2426,8 @@ struct ProtocolMessageMapping {
     machine_case: String,
     message: String,
     direction: String,
+    #[serde(default)]
+    mapper: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -2449,6 +2499,31 @@ struct DependencyBehaviorBinding {
     provider_module: Option<String>,
     #[serde(default)]
     provider_contract: Option<String>,
+    #[serde(default)]
+    probe_bridge: Option<CanonicalProbeBridge>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalProbeBridge {
+    request: CanonicalProbeBridgeLeg,
+    outcomes: Vec<CanonicalProbeBridgeLeg>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalProbeBridgeLeg {
+    from: CanonicalProbeEndpoint,
+    to: CanonicalProbeEndpoint,
+    #[serde(default)]
+    mapper: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalProbeEndpoint {
+    kind: String,
+    name: String,
 }
 
 fn typed_yaml_sequence<T: DeserializeOwned>(value: &YamlValue, path: &[&str]) -> Vec<T> {
@@ -8925,17 +9000,27 @@ fn main() -> Result<()> {
             describe,
             inputs,
             file,
+            explore,
+            replay,
+            max_steps,
+            max_schedules,
+            max_states,
             state,
             expect_final_state,
             expect_final_case,
             out,
             json,
             timeout_seconds,
-        } => run_probe(ProbeCliRequest {
+        } => run_probe(ProbeDispatchRequest {
             implementation,
             describe,
             inputs,
             file,
+            explore,
+            replay,
+            max_steps,
+            max_schedules,
+            max_states,
             state,
             expect_final_state,
             expect_final_case,
@@ -10601,9 +10686,9 @@ fn build_explain_report(
             "overview",
             format!("{module_name} is declared as `{module_kind}`. Purpose: {purpose}"),
             surface_projection::SurfaceAction::manual(
-                "inspect",
+                ActionPhase::Inspect,
                 "Ask a focused question, or use `rms next \"<intent>\"` to route prospective work.",
-                false,
+                Authorization::None,
             ),
             vec!["The module purpose and boundary are understood well enough to ask or route the next concrete question.".to_string()],
         )
@@ -10614,7 +10699,7 @@ fn build_explain_report(
             "insufficient-evidence",
             "Canonical artifacts do not support a specialized deterministic answer to this question.".to_string(),
             surface_projection::SurfaceAction::command(
-                "inspect",
+                ActionPhase::Inspect,
                 "rms",
                 vec![
                     "context".to_string(),
@@ -11007,9 +11092,9 @@ fn build_explain_report(
             "answered",
             sentences.join(" "),
             surface_projection::SurfaceAction::manual(
-                "inspect",
+                ActionPhase::Inspect,
                 "Use the cited canonical evidence; add `--details` only when the full inventory is needed.",
-                false,
+                Authorization::None,
             ),
             vec!["The answer is traceable to the cited canonical artifacts and no section is repeated.".to_string()],
         )
@@ -11065,9 +11150,9 @@ fn blocked_explain_report(
         warnings: Vec::new(),
         evidence: vec![module_path.display().to_string()],
         next_action: surface_projection::SurfaceAction::manual(
-            "declare",
+            ActionPhase::Declare,
             "Repair the canonical module artifact through the applicable RMS declaration workflow, then rerun `rms explain`.",
-            false,
+            Authorization::None,
         ),
         done_when: vec![
             "The canonical module validates and a deterministic answer can be constructed."
@@ -13253,15 +13338,81 @@ fn run_latest_run(root: &Path, run_root: &Path) -> Result<()> {
 #[derive(Clone, Debug)]
 struct ProbeBinding {
     implementation: LoadedManifest,
+    protocol: String,
     command: String,
     runner: String,
     machine: String,
 }
 
-fn run_probe(options: ProbeCliRequest) -> Result<()> {
+fn run_probe(request: ProbeDispatchRequest) -> Result<()> {
+    let assembly_file = request.replay.as_ref().or(request.file.as_ref());
+    let assembly_mode = request.replay.is_some()
+        || request.explore
+        || (request.implementation.is_none() && request.file.as_deref() == Some(Path::new("-")))
+        || request
+            .file
+            .as_deref()
+            .filter(|path| *path != Path::new("-"))
+            .and_then(|path| probe::file_spec(path).ok().flatten())
+            .as_deref()
+            == Some(probe::ASSEMBLY_SPEC);
+    if assembly_mode {
+        if request.implementation.is_some()
+            || !request.inputs.is_empty()
+            || request.state.is_some()
+            || request.expect_final_state.is_some()
+            || request.expect_final_case.is_some()
+        {
+            bail!(
+                "probe assembly execution cannot be combined with a positional implementation or inline machine-probe inputs"
+            );
+        }
+        let exit_code = probe::run(probe::AssemblyCliOptions::new(
+            assembly_file
+                .cloned()
+                .ok_or_else(|| anyhow!("probe assembly requires --file or --replay"))?,
+            request.describe,
+            request.explore,
+            request.replay.is_some(),
+            request.max_steps,
+            request.max_schedules,
+            request.max_states,
+            request.out,
+            request.json,
+            request.timeout_seconds,
+        ))?;
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        return Ok(());
+    }
+    if request.describe && request.file.is_some() {
+        bail!("`--describe --file` requires an rms/probe-assembly/v0.1 file");
+    }
+    if request.max_steps.is_some()
+        || request.max_schedules.is_some()
+        || request.max_states.is_some()
+    {
+        bail!("probe exploration bounds require an rms/probe-assembly/v0.1 file");
+    }
+    run_single_machine_probe(ProbeCliRequest {
+        implementation: request.implementation,
+        describe: request.describe,
+        inputs: request.inputs,
+        file: request.file,
+        state: request.state,
+        expect_final_state: request.expect_final_state,
+        expect_final_case: request.expect_final_case,
+        out: request.out,
+        json: request.json,
+        timeout_seconds: request.timeout_seconds,
+    })
+}
+
+fn run_single_machine_probe(options: ProbeCliRequest) -> Result<()> {
     let implementation_path = resolve_probe_implementation(options.implementation.as_deref())?;
     let binding = load_probe_binding(&implementation_path)?;
-    let request = build_probe_request(&options)?;
+    let request = build_probe_request(&options, &binding.protocol)?;
     validate_probe_request(&request, &binding.implementation)?;
 
     let temp_root = std::env::temp_dir().join(format!(
@@ -13332,6 +13483,27 @@ fn run_probe(options: ProbeCliRequest) -> Result<()> {
             print_probe_description(&description, &binding.implementation.path, options.json)?;
             return Ok(());
         }
+        if get_str(&request, &["operation"]) == Some("evaluate") {
+            let evaluation = load_yaml_value(&output_path)?;
+            validate_probe_evaluation(&evaluation, &request, &binding, &temp_root)?;
+            if let Some(destination) = options.out.as_deref() {
+                fs::copy(&output_path, destination).with_context(|| {
+                    format!(
+                        "failed to write probe evaluation `{}`",
+                        destination.display()
+                    )
+                })?;
+            }
+            if options.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::to_value(&evaluation)?)?
+                );
+            } else {
+                print!("{}", serde_yaml::to_string(&evaluation)?);
+            }
+            return Ok(());
+        }
 
         let bundle = load_trace_bundle(&output_path)?;
         validate_probe_trace_shape(&bundle)?;
@@ -13380,6 +13552,64 @@ fn run_probe(options: ProbeCliRequest) -> Result<()> {
     })();
     let _ = fs::remove_dir_all(&temp_root);
     result
+}
+
+fn validate_probe_evaluation(
+    evaluation: &YamlValue,
+    request: &YamlValue,
+    binding: &ProbeBinding,
+    temp_root: &Path,
+) -> Result<()> {
+    if get_str(evaluation, &["spec"]) != Some("rms/machine-probe-evaluation/v0.2") {
+        bail!("probe evaluation must declare `spec: rms/machine-probe-evaluation/v0.2`");
+    }
+    if get_str(evaluation, &["machine"]) != Some(binding.machine.as_str()) {
+        bail!(
+            "probe evaluation machine does not match `{}`",
+            binding.machine
+        );
+    }
+    let requested = get_path(request, &["cases"])
+        .and_then(YamlValue::as_sequence)
+        .ok_or_else(|| anyhow!("probe evaluation request has no cases"))?;
+    let results = get_path(evaluation, &["results"])
+        .and_then(YamlValue::as_sequence)
+        .ok_or_else(|| anyhow!("probe evaluation output has no results"))?;
+    if results.len() != requested.len() {
+        bail!(
+            "probe evaluation returned {} results for {} requested cases",
+            results.len(),
+            requested.len()
+        );
+    }
+    for (index, (expected, result)) in requested.iter().zip(results).enumerate() {
+        let expected_id = get_str(expected, &["id"]).unwrap_or("");
+        let observed_id = get_str(result, &["id"]).unwrap_or("");
+        if observed_id != expected_id {
+            bail!(
+                "probe evaluation result {} has id `{observed_id}`, expected `{expected_id}`",
+                index + 1
+            );
+        }
+        let record = get_path(result, &["record"])
+            .cloned()
+            .ok_or_else(|| anyhow!("probe evaluation result `{expected_id}` has no record"))?;
+        let bundle = serde_yaml::to_value(json!({
+            "spec": "rms/trace-bundle/v0.1",
+            "machine": binding.machine,
+            "records": [serde_json::to_value(record)?]
+        }))?;
+        validate_probe_trace_shape(&bundle)
+            .with_context(|| format!("invalid evaluation result `{expected_id}`"))?;
+        let path = temp_root.join(format!("evaluation-{index}.json"));
+        fs::write(&path, serde_json::to_vec_pretty(&bundle)?)?;
+        let mut trace = build_trace_report(&path)?;
+        apply_probe_trace_conformance(&path, &binding.implementation, &mut trace);
+        if trace_has_errors(&trace) {
+            bail!("probe evaluation result `{expected_id}` is nonconforming");
+        }
+    }
+    Ok(())
 }
 
 fn resolve_probe_implementation(explicit: Option<&Path>) -> Result<PathBuf> {
@@ -13460,13 +13690,18 @@ fn load_probe_binding(path: &Path) -> Result<ProbeBinding> {
             "binding `{binding}` does not support machine probing; supported bindings are rust, swift, js, and python"
         );
     }
-    if get_str(
+    let protocol = get_str(
         &implementation.value,
         &["architecture", "probe", "protocol"],
-    ) != Some("rms/machine-probe/v0.1")
-    {
+    )
+    .unwrap_or("")
+    .to_string();
+    if !matches!(
+        protocol.as_str(),
+        "rms/machine-probe/v0.1" | "rms/machine-probe/v0.2"
+    ) {
         bail!(
-            "`{}` must declare architecture.probe.protocol: rms/machine-probe/v0.1",
+            "`{}` must declare architecture.probe.protocol: rms/machine-probe/v0.1|v0.2",
             path.display()
         );
     }
@@ -13483,19 +13718,20 @@ fn load_probe_binding(path: &Path) -> Result<ProbeBinding> {
         .to_string();
     Ok(ProbeBinding {
         implementation,
+        protocol,
         command,
         runner,
         machine,
     })
 }
 
-fn build_probe_request(options: &ProbeCliRequest) -> Result<YamlValue> {
+fn build_probe_request(options: &ProbeCliRequest, protocol: &str) -> Result<YamlValue> {
     if !options.describe && options.inputs.is_empty() && options.file.is_none() {
         bail!("probe requires exactly one of --describe, --input, or --file");
     }
     if options.describe {
         return serde_yaml::to_value(json!({
-            "spec": "rms/machine-probe/v0.1",
+            "spec": protocol,
             "operation": "describe"
         }))
         .context("failed to build probe description request");
@@ -13538,7 +13774,7 @@ fn build_probe_request(options: &ProbeCliRequest) -> Result<YamlValue> {
         );
     }
     let mut request = json!({
-        "spec": "rms/machine-probe/v0.1",
+        "spec": protocol,
         "operation": "run",
         "start": start,
         "steps": inputs.into_iter().map(|input| json!({"input": input})).collect::<Vec<_>>()
@@ -13553,10 +13789,14 @@ fn build_probe_request(options: &ProbeCliRequest) -> Result<YamlValue> {
 }
 
 fn validate_probe_request(request: &YamlValue, implementation: &LoadedManifest) -> Result<()> {
-    let schema: JsonValue = serde_json::from_str(include_str!(
-        "../../../../schemas/machine-probe.schema.json"
-    ))
-    .context("embedded machine-probe schema could not be parsed")?;
+    let protocol = get_str(request, &["spec"]).unwrap_or("");
+    let schema_source = if protocol == "rms/machine-probe/v0.2" {
+        include_str!("../../../../schemas/machine-probe-v2.schema.json")
+    } else {
+        include_str!("../../../../schemas/machine-probe.schema.json")
+    };
+    let schema: JsonValue = serde_json::from_str(schema_source)
+        .context("embedded machine-probe schema could not be parsed")?;
     let instance =
         serde_json::to_value(request).context("probe request could not be converted to JSON")?;
     let validator =
@@ -13568,12 +13808,34 @@ fn validate_probe_request(request: &YamlValue, implementation: &LoadedManifest) 
     if !schema_errors.is_empty() {
         bail!("invalid probe request: {}", schema_errors.join("; "));
     }
-    if get_str(request, &["spec"]) != Some("rms/machine-probe/v0.1") {
-        bail!("probe request must declare `spec: rms/machine-probe/v0.1`");
+    let declared_protocol = get_str(
+        &implementation.value,
+        &["architecture", "probe", "protocol"],
+    )
+    .unwrap_or("");
+    if protocol != declared_protocol {
+        bail!(
+            "probe request `{protocol}` does not match implementation protocol `{declared_protocol}`"
+        );
     }
     let operation = get_str(request, &["operation"])
-        .ok_or_else(|| anyhow!("probe request must declare operation: describe|run"))?;
+        .ok_or_else(|| anyhow!("probe request must declare operation: describe|run|evaluate"))?;
     if operation == "describe" {
+        return Ok(());
+    }
+    if operation == "evaluate" {
+        let cases = get_path(request, &["cases"])
+            .and_then(YamlValue::as_sequence)
+            .ok_or_else(|| anyhow!("probe evaluation must contain a non-empty `cases` array"))?;
+        if cases.is_empty() {
+            bail!("probe evaluation must contain at least one case");
+        }
+        for (index, case) in cases.iter().enumerate() {
+            let input = get_path(case, &["input"])
+                .ok_or_else(|| anyhow!("probe evaluation case {} is missing input", index + 1))?;
+            validate_normalized_probe_input(input, implementation)
+                .with_context(|| format!("invalid probe evaluation case {}", index + 1))?;
+        }
         return Ok(());
     }
     if operation != "run" {
@@ -14946,7 +15208,7 @@ fn execute_property_realizations(
                 counts
             },
         );
-    for target in targets {
+    for target in &targets {
         let matching = target
             .realizations
             .iter()
@@ -15054,6 +15316,110 @@ fn execute_property_realizations(
             });
         }
     }
+    let base = implementation.parent().unwrap_or_else(|| Path::new("."));
+    for target in &targets {
+        let Some(counterexample_directory) = target.counterexamples.as_deref() else {
+            continue;
+        };
+        let directory = base.join(counterexample_directory);
+        if !directory.is_dir() {
+            continue;
+        }
+        let mut paths = WalkDir::new(&directory)
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| entry.into_path())
+            .filter(|path| {
+                matches!(
+                    path.extension().and_then(|extension| extension.to_str()),
+                    Some("yaml") | Some("yml")
+                )
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        for path in paths {
+            let value = match load_yaml_value(&path) {
+                Ok(value) => value,
+                Err(failure) => {
+                    diagnostics.push(error(
+                        "semantic.counterexample-unreplayable",
+                        &path,
+                        failure.to_string(),
+                    ));
+                    continue;
+                }
+            };
+            let summary = property_counterexample_summary(&path, &value);
+            if summary.property.as_deref() != Some(target.id.as_str()) {
+                continue;
+            }
+            if summary.status == "fail" {
+                diagnostics.push(error(
+                    "semantic.counterexample-unreplayable",
+                    &path,
+                    "property counterexample is missing replay metadata",
+                ));
+                continue;
+            }
+            let replay_command = summary
+                .replay_command
+                .clone()
+                .unwrap_or_else(|| format!("trace {}", summary.trace.as_deref().unwrap_or("")));
+            if dry_run {
+                commands.push(PropertyRunCommandReport {
+                    kind: "counterexample:replay".to_string(),
+                    property: target.id.clone(),
+                    command: replay_command,
+                    runner: path.display().to_string(),
+                    generator: None,
+                    status: "planned".to_string(),
+                    exit_code: None,
+                    elapsed_ms: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                });
+                continue;
+            }
+            let replay = execute_property_counterexample(&path, &summary, timeout_seconds)?;
+            let timed_out = replay.as_ref().is_some_and(|output| output.timed_out);
+            let passed = replay
+                .as_ref()
+                .is_none_or(|output| output.status.success() && !output.timed_out);
+            let exit_code = replay.as_ref().and_then(|output| output.status.code());
+            let elapsed_ms = replay.as_ref().map_or(0, |output| output.elapsed_ms);
+            let stdout = replay
+                .as_ref()
+                .map(|output| output.stdout.clone())
+                .unwrap_or_default();
+            let stderr = replay
+                .as_ref()
+                .map(|output| output.stderr.clone())
+                .unwrap_or_default();
+            if timed_out {
+                diagnostics.push(error(
+                    "proof.command-timeout",
+                    &path,
+                    format!(
+                        "counterexample for property `{}` exceeded {} second(s)",
+                        target.id, timeout_seconds
+                    ),
+                ));
+            }
+            commands.push(PropertyRunCommandReport {
+                kind: "counterexample:replay".to_string(),
+                property: target.id.clone(),
+                command: replay_command,
+                runner: path.display().to_string(),
+                generator: None,
+                status: if passed { "pass" } else { "fail" }.to_string(),
+                exit_code,
+                elapsed_ms,
+                stdout,
+                stderr,
+            });
+        }
+    }
     if commands.is_empty() {
         diagnostics.push(error(
             "property.command-missing",
@@ -15098,11 +15464,31 @@ fn proof_command_selects_runner(command: &str, runner: &str, environment: &str) 
 
 fn run_property_replay(counterexample: &Path, json_output: bool) -> Result<()> {
     let value = load_yaml_value(counterexample)?;
-    let summary = property_counterexample_summary(counterexample, &value);
+    let mut summary = property_counterexample_summary(counterexample, &value);
+    if summary.status == "fail" {
+        if json_output {
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        bail!("RMS property counterexample is not replayable");
+    }
+    let replay =
+        execute_property_counterexample(counterexample, &summary, DEFAULT_PROOF_TIMEOUT_SECONDS)?;
+    summary.replay_result = Some(
+        match replay.as_ref() {
+            Some(output) if output.timed_out => "timeout",
+            Some(output) if output.status.success() => "pass",
+            Some(_) => "fail",
+            None => "trace-recorded",
+        }
+        .to_string(),
+    );
     if json_output {
         println!("{}", serde_json::to_string_pretty(&summary)?);
     } else {
-        println!("RMS property replay: {}", summary.status);
+        println!(
+            "RMS property replay: {}",
+            summary.replay_result.as_deref().unwrap_or("unknown")
+        );
         println!("counterexample: {}", summary.path);
         if let Some(property) = &summary.property {
             println!("property: {property}");
@@ -15117,22 +15503,64 @@ fn run_property_replay(counterexample: &Path, json_output: bool) -> Result<()> {
             println!("replay command: {command}");
         }
     }
-    if summary.status == "fail" {
-        bail!("RMS property counterexample is not replayable");
-    }
-    if let Some(command) = summary.replay_command.as_deref() {
-        let root = counterexample.parent().unwrap_or_else(|| Path::new("."));
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .current_dir(root)
-            .status()
-            .with_context(|| format!("failed to run replay command `{command}`"))?;
-        if !status.success() {
-            bail!("property replay command failed with status {status}");
+    if let Some(output) = replay {
+        if output.timed_out {
+            bail!(
+                "property replay command exceeded {} second(s)",
+                DEFAULT_PROOF_TIMEOUT_SECONDS
+            );
+        }
+        if !output.status.success() {
+            bail!(
+                "property replay command failed with status {}{}",
+                exit_status_label(output.status),
+                if output.stderr.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", output.stderr.trim())
+                }
+            );
         }
     }
     Ok(())
+}
+
+fn execute_property_counterexample(
+    counterexample: &Path,
+    summary: &PropertyCounterexampleSummary,
+    timeout_seconds: u64,
+) -> Result<Option<ProofProcessOutput>> {
+    let root = counterexample.parent().unwrap_or_else(|| Path::new("."));
+    if let Some(command) = summary.replay_command.as_deref() {
+        let counterexample_path = fs::canonicalize(counterexample)
+            .unwrap_or_else(|_| counterexample.to_path_buf())
+            .display()
+            .to_string();
+        return execute_proof_command(
+            root,
+            command,
+            &[("RMS_COUNTEREXAMPLE", counterexample_path.as_str())],
+            timeout_seconds,
+        )
+        .map(Some);
+    }
+    if let Some(trace) = summary.trace.as_deref() {
+        let trace_path = root.join(trace);
+        let report = build_trace_report(&trace_path).with_context(|| {
+            format!(
+                "counterexample trace `{}` could not be read",
+                trace_path.display()
+            )
+        })?;
+        if report.result == "fail" {
+            bail!(
+                "counterexample trace `{}` is not structurally replayable",
+                trace_path.display()
+            );
+        }
+        return Ok(None);
+    }
+    bail!("property counterexample is missing replay metadata")
 }
 
 fn build_property_check_report(target: &Path) -> Result<PropertyCheckReport> {
@@ -16532,6 +16960,7 @@ fn property_counterexample_summary(
         proves: get_str(value, &["proves"]).map(ToString::to_string),
         replay_command,
         trace,
+        replay_result: None,
         status,
     }
 }
@@ -19109,7 +19538,7 @@ fn verify_probe_handshake(implementation: &Path, timeout_seconds: u64) -> Result
     fs::create_dir_all(&temp_root)?;
     let result = (|| {
         let description_request = serde_yaml::to_value(json!({
-            "spec": "rms/machine-probe/v0.1",
+            "spec": binding.protocol.as_str(),
             "operation": "describe"
         }))?;
         let description = execute_machine_probe_request(
@@ -19127,7 +19556,7 @@ fn verify_probe_handshake(implementation: &Path, timeout_seconds: u64) -> Result
             .cloned()
             .ok_or_else(|| anyhow!("probe description has no smoke input example"))?;
         let smoke_request = serde_yaml::to_value(json!({
-            "spec": "rms/machine-probe/v0.1",
+            "spec": binding.protocol.as_str(),
             "operation": "run",
             "start": "initial",
             "steps": [{"input": serde_json::to_value(&example)?}]
@@ -19240,6 +19669,9 @@ fn verify_declared_trace_bundles(
 ) -> Result<Vec<TraceReport>> {
     let mut reports = Vec::new();
     for bundle in implementation_trace_bundle_paths(manifest, module_root) {
+        if probe::verify_evidence(&bundle, DEFAULT_PROOF_TIMEOUT_SECONDS)?.is_some() {
+            continue;
+        }
         let report = build_trace_report(&bundle)?;
         if trace_has_errors(&report) {
             bail!(
@@ -20432,6 +20864,18 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
         "rms/machine-probe/v0.1" => Some(include_str!(
             "../../../../schemas/machine-probe.schema.json"
         )),
+        "rms/machine-probe/v0.2" => Some(include_str!(
+            "../../../../schemas/machine-probe-v2.schema.json"
+        )),
+        "rms/probe-assembly/v0.1" => Some(include_str!(
+            "../../../../schemas/probe-assembly.schema.json"
+        )),
+        "rms/probe-system-trace/v0.1" => Some(include_str!(
+            "../../../../schemas/probe-system-trace.schema.json"
+        )),
+        "rms/probe-counterexample/v0.1" => Some(include_str!(
+            "../../../../schemas/probe-counterexample.schema.json"
+        )),
         "rms/conformance/v0.1" => Some(include_str!("../../../../schemas/conformance.schema.json")),
         _ => None,
     }
@@ -20985,11 +21429,14 @@ fn validate_machine_probe_binding(
         ));
         return;
     };
-    if get_str(probe, &["protocol"]) != Some("rms/machine-probe/v0.1") {
+    if !matches!(
+        get_str(probe, &["protocol"]),
+        Some("rms/machine-probe/v0.1" | "rms/machine-probe/v0.2")
+    ) {
         diagnostics.push(error(
             "structure.probe-protocol-invalid",
             &implementation.path,
-            "`architecture.probe.protocol` must be `rms/machine-probe/v0.1`",
+            "`architecture.probe.protocol` must be `rms/machine-probe/v0.1|v0.2`",
         ));
     }
     let command_name = get_str(probe, &["command"]).unwrap_or_default();
@@ -30956,14 +31403,130 @@ impl OwnerStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 struct OwnerResolution {
-    status: OwnerStatus,
+    selection: OwnerSelection,
     reason: String,
-    selected: Option<RouteModuleSummary>,
     candidates: Vec<RouteCandidate>,
     route: Vec<String>,
     warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+enum OwnerSelection {
+    Selected(RouteModuleSummary),
+    Ambiguous,
+    None,
+    Invalid,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UnselectedOwnerStatus {
+    Ambiguous,
+    None,
+    Invalid,
+}
+
+impl OwnerSelection {
+    fn status(&self) -> OwnerStatus {
+        match self {
+            Self::Selected(_) => OwnerStatus::Selected,
+            Self::Ambiguous => OwnerStatus::Ambiguous,
+            Self::None => OwnerStatus::None,
+            Self::Invalid => OwnerStatus::Invalid,
+        }
+    }
+
+    fn selected(&self) -> Option<&RouteModuleSummary> {
+        match self {
+            Self::Selected(selected) => Some(selected),
+            Self::Ambiguous | Self::None | Self::Invalid => None,
+        }
+    }
+}
+
+impl OwnerResolution {
+    fn selected(
+        reason: String,
+        selected: RouteModuleSummary,
+        candidates: Vec<RouteCandidate>,
+        route: Vec<String>,
+        warnings: Vec<String>,
+    ) -> Self {
+        Self {
+            selection: OwnerSelection::Selected(selected),
+            reason,
+            candidates,
+            route,
+            warnings,
+        }
+    }
+
+    fn unresolved(
+        status: UnselectedOwnerStatus,
+        reason: String,
+        candidates: Vec<RouteCandidate>,
+        route: Vec<String>,
+        warnings: Vec<String>,
+    ) -> Self {
+        let selection = match status {
+            UnselectedOwnerStatus::Ambiguous => OwnerSelection::Ambiguous,
+            UnselectedOwnerStatus::None => OwnerSelection::None,
+            UnselectedOwnerStatus::Invalid => OwnerSelection::Invalid,
+        };
+        Self {
+            selection,
+            reason,
+            candidates,
+            route,
+            warnings,
+        }
+    }
+
+    fn status(&self) -> OwnerStatus {
+        self.selection.status()
+    }
+
+    fn selected_module(&self) -> Option<&RouteModuleSummary> {
+        self.selection.selected()
+    }
+
+    fn take_selected(&mut self) -> Option<RouteModuleSummary> {
+        match std::mem::replace(&mut self.selection, OwnerSelection::None) {
+            OwnerSelection::Selected(selected) => Some(selected),
+            OwnerSelection::Ambiguous => {
+                self.selection = OwnerSelection::Ambiguous;
+                None
+            }
+            OwnerSelection::None => None,
+            OwnerSelection::Invalid => {
+                self.selection = OwnerSelection::Invalid;
+                None
+            }
+        }
+    }
+
+    fn clear_selection(&mut self) {
+        self.selection = OwnerSelection::None;
+    }
+}
+
+impl Serialize for OwnerResolution {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let mut state = serializer.serialize_struct("OwnerResolution", 6)?;
+        state.serialize_field("status", self.status().label())?;
+        state.serialize_field("reason", &self.reason)?;
+        state.serialize_field("selected", &self.selected_module())?;
+        state.serialize_field("candidates", &self.candidates)?;
+        state.serialize_field("route", &self.route)?;
+        state.serialize_field("warnings", &self.warnings)?;
+        state.end()
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -31000,7 +31563,7 @@ struct NextStep {
 
 #[derive(Clone, Debug, Serialize)]
 struct NextStepGroup {
-    phase: String,
+    phase: ActionPhase,
     steps: Vec<NextStep>,
 }
 
@@ -31036,6 +31599,8 @@ struct NextReport {
 
 mod surface_projection {
     use super::*;
+
+    pub(crate) use crate::workflow::SurfaceAction;
 
     pub const SCHEMA: &str = "rms.surface/v2";
 
@@ -31077,73 +31642,6 @@ mod surface_projection {
                 details_available: true,
                 details,
             }
-        }
-    }
-
-    #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-    pub struct SurfaceAction {
-        pub kind: String,
-        pub phase: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub program: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub args: Option<Vec<String>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub display: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub instruction: Option<String>,
-        pub authorization: String,
-    }
-
-    impl SurfaceAction {
-        pub fn command(
-            phase: impl Into<String>,
-            program: impl Into<String>,
-            args: Vec<String>,
-        ) -> Self {
-            let program = program.into();
-            let display = std::iter::once(program.as_str())
-                .chain(args.iter().map(String::as_str))
-                .map(shell_arg)
-                .collect::<Vec<_>>()
-                .join(" ");
-            Self {
-                kind: "command".to_string(),
-                phase: phase.into(),
-                program: Some(program),
-                args: Some(args),
-                display: Some(display),
-                instruction: None,
-                authorization: "none".to_string(),
-            }
-        }
-
-        pub fn manual(
-            phase: impl Into<String>,
-            instruction: impl Into<String>,
-            host_authority_required: bool,
-        ) -> Self {
-            Self {
-                kind: "manual".to_string(),
-                phase: phase.into(),
-                program: None,
-                args: None,
-                display: None,
-                instruction: Some(instruction.into()),
-                authorization: if host_authority_required {
-                    "host-required"
-                } else {
-                    "none"
-                }
-                .to_string(),
-            }
-        }
-
-        pub fn display_text(&self) -> &str {
-            self.display
-                .as_deref()
-                .or(self.instruction.as_deref())
-                .unwrap_or("No further action.")
         }
     }
 
@@ -31263,7 +31761,7 @@ mod surface_projection {
         let _ = writeln!(out, "\nNext:");
         if let Some(action) = &envelope.next_action {
             let _ = writeln!(out, "- {}", action.display_text());
-            if action.authorization == "host-required" {
+            if action.authorization().is_host_required() {
                 let _ = writeln!(out, "- Authorization: host-required");
             }
         } else {
@@ -32494,12 +32992,12 @@ fn changes_check_report_from_gate(root: &Path, gate: GateReport) -> CheckReport 
     let warnings = gate.manual_checks.clone();
     let next_action = if result == CheckResult::Pass {
         Some(surface_projection::SurfaceAction::manual(
-            "complete",
+            ActionPhase::Complete,
             format!(
                 "Create the prescribed candidate commit only when task and host policy authorize it, then run `rms check --committed --root {}`.",
                 root.display()
             ),
-            true,
+            Authorization::HostRequired,
         ))
     } else {
         check_follow_up(root, CheckMode::Changes, result)
@@ -32607,9 +33105,9 @@ fn check_follow_up(
             CheckMode::Committed => None,
             CheckMode::Project | CheckMode::Environment => {
                 Some(surface_projection::SurfaceAction::manual(
-                    "inspect",
+                    ActionPhase::Inspect,
                     "Continue with `rms next \"<intent>\"`; use `rms explain` only when focused evidence is needed.",
-                    false,
+                    Authorization::None,
                 ))
             }
             CheckMode::Changes => None,
@@ -32625,7 +33123,9 @@ fn check_follow_up(
         "--details".to_string(),
     ]);
     Some(surface_projection::SurfaceAction::command(
-        "verify", "rms", args,
+        ActionPhase::Verify,
+        "rms",
+        args,
     ))
 }
 
@@ -32706,7 +33206,7 @@ fn enforce_non_ready_ownerlessness(
     if matches!(result, NextResult::Ready | NextResult::NoRmsChange) {
         return;
     }
-    if let Some(selected) = owner.selected.take() {
+    if let Some(selected) = owner.take_selected() {
         if !owner
             .candidates
             .iter()
@@ -32721,7 +33221,7 @@ fn enforce_non_ready_ownerlessness(
             });
         }
     }
-    owner.status = OwnerStatus::None;
+    owner.clear_selection();
     owner.route.clear();
     owner.reason = format!(
         "route result `{}` is non-ready; RMS selected no owner, and candidates or inspection context must not be used as substitute ownership authority",
@@ -32808,16 +33308,15 @@ fn build_next_report_with_intent(
             errors > 0,
         )?
     } else {
-        OwnerResolution {
-            status: OwnerStatus::None,
-            reason: "ownership routing requires structured intent subjects".to_string(),
-            selected: None,
-            candidates: Vec::new(),
-            route: Vec::new(),
-            warnings: Vec::new(),
-        }
+        OwnerResolution::unresolved(
+            UnselectedOwnerStatus::None,
+            "ownership routing requires structured intent subjects".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
     };
-    let mut context = build_next_context(&root, &profile.report, owner.selected.as_ref())?;
+    let mut context = build_next_context(&root, &profile.report, owner.selected_module())?;
     let skill_sources = detect_skill_sources(&root, home_dir().ok().as_deref());
     let mut warnings = if classification.lane == TaskLane::RepositoryOperation {
         Vec::new()
@@ -32854,7 +33353,7 @@ fn build_next_report_with_intent(
             )
         })
         .collect::<Vec<_>>();
-    if owner.status == OwnerStatus::Invalid {
+    if owner.status() == OwnerStatus::Invalid {
         blockers.push(owner.reason.clone());
     }
     blockers.sort();
@@ -32881,7 +33380,7 @@ fn build_next_report_with_intent(
         NextResult::BootstrapRequired
     } else if profile.report.module_manifests.is_empty() {
         NextResult::DesignRequired
-    } else if matches!(owner.status, OwnerStatus::Ambiguous | OwnerStatus::None) {
+    } else if matches!(owner.status(), OwnerStatus::Ambiguous | OwnerStatus::None) {
         NextResult::NeedsOwner
     } else if matches!(
         classification.lane,
@@ -32969,8 +33468,7 @@ fn build_next_report_with_intent(
         }
     }
     let owner_path = owner
-        .selected
-        .as_ref()
+        .selected_module()
         .map(|selected| PathBuf::from(&selected.path));
     let implementation_path = context.implementation.as_ref().map(PathBuf::from);
     let target_paths = owner_path
@@ -33544,27 +34042,25 @@ fn resolve_next_owner(
                 Vec::new(),
             ),
             Ok(_) => {
-                return Ok(OwnerResolution {
-                    status: OwnerStatus::Invalid,
-                    reason: format!(
+                return Ok(OwnerResolution::unresolved(
+                    UnselectedOwnerStatus::Invalid,
+                    format!(
                         "explicit module `{}` is not an rms/module/v0.1 manifest",
                         path.display()
                     ),
-                    selected: None,
-                    candidates: Vec::new(),
-                    route: Vec::new(),
-                    warnings: Vec::new(),
-                });
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ));
             }
             Err(error) => {
-                return Ok(OwnerResolution {
-                    status: OwnerStatus::Invalid,
-                    reason: format!("invalid explicit module `{}`: {error}", path.display()),
-                    selected: None,
-                    candidates: Vec::new(),
-                    route: Vec::new(),
-                    warnings: Vec::new(),
-                });
+                return Ok(OwnerResolution::unresolved(
+                    UnselectedOwnerStatus::Invalid,
+                    format!("invalid explicit module `{}`: {error}", path.display()),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ));
             }
         }
     } else if let Some(direct) = modules
@@ -33607,36 +34103,36 @@ fn resolve_next_owner(
     };
 
     let Some(initial_path) = initial_path else {
-        return Ok(OwnerResolution {
-            status: if candidates.is_empty() {
-                OwnerStatus::None
-            } else {
-                OwnerStatus::Ambiguous
-            },
+        let status = if candidates.is_empty() {
+            UnselectedOwnerStatus::None
+        } else {
+            UnselectedOwnerStatus::Ambiguous
+        };
+        return Ok(OwnerResolution::unresolved(
+            status,
             reason,
-            selected: None,
             candidates,
-            route: Vec::new(),
-            warnings: vec![
-                "RMS will not guess through an ownership tie or a non-positive match".to_string(),
-            ],
-        });
+            Vec::new(),
+            vec!["RMS will not guess through an ownership tie or a non-positive match".to_string()],
+        ));
     };
 
     if canonical_blocked {
         let selected = load_manifest(&initial_path)
             .ok()
             .and_then(|manifest| route_summary_from_manifest(&manifest));
-        return Ok(OwnerResolution {
-            status: selected
-                .as_ref()
-                .map(|_| OwnerStatus::Selected)
-                .unwrap_or(OwnerStatus::Invalid),
-            reason,
-            selected,
-            candidates,
-            route: vec![initial_path.display().to_string()],
-            warnings: Vec::new(),
+        let route = vec![initial_path.display().to_string()];
+        return Ok(match selected {
+            Some(selected) => {
+                OwnerResolution::selected(reason, selected, candidates, route, Vec::new())
+            }
+            None => OwnerResolution::unresolved(
+                UnselectedOwnerStatus::Invalid,
+                reason,
+                candidates,
+                route,
+                Vec::new(),
+            ),
         });
     }
 
@@ -33714,67 +34210,59 @@ fn route_next_owner(
     loop {
         let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         if !visited.insert(key) {
-            return Ok(OwnerResolution {
-                status: OwnerStatus::Invalid,
-                reason: format!(
+            return Ok(OwnerResolution::unresolved(
+                UnselectedOwnerStatus::Invalid,
+                format!(
                     "composite ownership route contains a cycle at `{}`",
                     path.display()
                 ),
-                selected: None,
                 candidates,
                 route,
                 warnings,
-            });
+            ));
         }
         route.push(path.display().to_string());
         let report = match build_route_report(&path, root, task) {
             Ok(report) => report,
             Err(error) => {
-                return Ok(OwnerResolution {
-                    status: OwnerStatus::Invalid,
-                    reason: format!("failed to route owner from `{}`: {error}", path.display()),
-                    selected: None,
+                return Ok(OwnerResolution::unresolved(
+                    UnselectedOwnerStatus::Invalid,
+                    format!("failed to route owner from `{}`: {error}", path.display()),
                     candidates,
                     route,
                     warnings,
-                });
+                ));
             }
         };
         warnings.extend(report.warnings);
         match report.result {
             RouteResult::TargetOnly => {
-                return Ok(OwnerResolution {
-                    status: OwnerStatus::Selected,
-                    reason,
-                    selected: report.recommendation.or(Some(report.target)),
-                    candidates,
-                    route,
-                    warnings,
-                });
+                let selected = report.recommendation.unwrap_or(report.target);
+                return Ok(OwnerResolution::selected(
+                    reason, selected, candidates, route, warnings,
+                ));
             }
             RouteResult::Routed => {
                 let Some(recommendation) = report.recommendation else {
-                    return Ok(OwnerResolution {
-                        status: OwnerStatus::Invalid,
-                        reason: "routed report omitted its recommendation".to_string(),
-                        selected: None,
+                    return Ok(OwnerResolution::unresolved(
+                        UnselectedOwnerStatus::Invalid,
+                        "routed report omitted its recommendation".to_string(),
                         candidates,
                         route,
                         warnings,
-                    });
+                    ));
                 };
                 candidates = report.candidates;
                 path = PathBuf::from(recommendation.path);
             }
             RouteResult::Ambiguous => {
-                return Ok(OwnerResolution {
-                    status: OwnerStatus::Ambiguous,
-                    reason: "recursive composite route is ambiguous".to_string(),
-                    selected: None,
-                    candidates: report.candidates,
+                return Ok(OwnerResolution::unresolved(
+                    UnselectedOwnerStatus::Ambiguous,
+                    "recursive composite route is ambiguous".to_string(),
+                    report.candidates,
                     route,
                     warnings,
-                });
+                ));
             }
         }
     }
@@ -33911,33 +34399,33 @@ fn build_next_steps(
             "Resolve every material unknown with the user, update the typed intent model, and rerun `rms next`; RMS will not guess architecture."
         };
         return Ok(vec![NextStepGroup {
-            phase: "clarify".to_string(),
+            phase: ActionPhase::Clarify,
             steps: vec![manual_next_step(description, None)],
         }]);
     }
     if result == NextResult::NoRmsChange {
         return Ok(vec![
             NextStepGroup {
-                phase: "inspect".to_string(),
+                phase: ActionPhase::Inspect,
                 steps: vec![manual_next_step(
                     "No RMS declaration or implementation workflow is required. Perform the requested repository or tool operation only when task and host policy authorize it.",
                     Some("Repository, installation, plugin, and Git authority remain host-defined."),
                 )],
             },
             NextStepGroup {
-                phase: "declare".to_string(),
+                phase: ActionPhase::Declare,
                 steps: Vec::new(),
             },
             NextStepGroup {
-                phase: "implement".to_string(),
+                phase: ActionPhase::Implement,
                 steps: Vec::new(),
             },
             NextStepGroup {
-                phase: "verify".to_string(),
+                phase: ActionPhase::Verify,
                 steps: Vec::new(),
             },
             NextStepGroup {
-                phase: "complete".to_string(),
+                phase: ActionPhase::Complete,
                 steps: Vec::new(),
             },
         ]);
@@ -33946,7 +34434,7 @@ fn build_next_steps(
     let mut inspect = Vec::new();
     if result == NextResult::Blocked {
         // Invalid canonical evidence must be repaired before it is inspected or projected.
-    } else if let Some(selected) = &owner.selected {
+    } else if let Some(selected) = owner.selected_module() {
         if classification.confidence == "low" {
             inspect.push(executable_next_step(
                 "Clarify the selected owner's canonical meaning before acting",
@@ -34061,7 +34549,7 @@ fn build_next_steps(
             "No declaration or owner-scoped implementation is safe until an explicit caller decision or canonical modeling change resolves ownership.",
             None,
         ));
-    } else if let Some(selected) = &owner.selected {
+    } else if let Some(selected) = owner.selected_module() {
         let semantic_target = context
             .implementation
             .clone()
@@ -34150,7 +34638,7 @@ fn build_next_steps(
     let verify = if result == NextResult::Blocked {
         Vec::new()
     } else {
-        build_focused_verification_steps(root, owner.selected.as_ref(), context, classification)?
+        build_focused_verification_steps(root, owner.selected_module(), context, classification)?
     };
     let mut complete = Vec::new();
     if result != NextResult::Blocked && result != NextResult::NeedsOwner {
@@ -34191,23 +34679,23 @@ fn build_next_steps(
 
     Ok(vec![
         NextStepGroup {
-            phase: "inspect".to_string(),
+            phase: ActionPhase::Inspect,
             steps: inspect,
         },
         NextStepGroup {
-            phase: "declare".to_string(),
+            phase: ActionPhase::Declare,
             steps: declare,
         },
         NextStepGroup {
-            phase: "implement".to_string(),
+            phase: ActionPhase::Implement,
             steps: implement,
         },
         NextStepGroup {
-            phase: "verify".to_string(),
+            phase: ActionPhase::Verify,
             steps: verify,
         },
         NextStepGroup {
-            phase: "complete".to_string(),
+            phase: ActionPhase::Complete,
             steps: complete,
         },
     ])
@@ -34461,11 +34949,11 @@ fn project_next_report(
         .iter()
         .flat_map(|group| {
             group.steps.iter().map(|step| match step.kind {
-                NextStepKind::Executable => project_executable_next_action(&group.phase, step),
+                NextStepKind::Executable => project_executable_next_action(group.phase, step),
                 NextStepKind::Manual => surface_projection::SurfaceAction::manual(
-                    group.phase.clone(),
+                    group.phase,
                     step.description.clone(),
-                    step.authorization.is_some(),
+                    Authorization::from_host_requirement(step.authorization.is_some()),
                 ),
             })
         })
@@ -34557,16 +35045,14 @@ fn project_next_report(
         }
     } else {
         surface_projection::SurfaceOwner {
-            status: report.owner.status.label().to_string(),
+            status: report.owner.status().label().to_string(),
             module: report
                 .owner
-                .selected
-                .as_ref()
+                .selected_module()
                 .map(|owner| owner.name.clone()),
             path: report
                 .owner
-                .selected
-                .as_ref()
+                .selected_module()
                 .map(|owner| owner.path.clone()),
         }
     };
@@ -34592,7 +35078,7 @@ fn project_next_report(
 }
 
 fn project_executable_next_action(
-    phase: &str,
+    phase: ActionPhase,
     step: &NextStep,
 ) -> surface_projection::SurfaceAction {
     let program = step.program.clone().unwrap_or_default();
@@ -34603,7 +35089,7 @@ fn project_executable_next_action(
             args[1] = format!("cd -- {} && {}", shell_arg(cwd), args[1]);
         }
     }
-    surface_projection::SurfaceAction::command(phase.to_string(), program, args)
+    surface_projection::SurfaceAction::command(phase, program, args)
 }
 
 fn render_next_surface_report(
@@ -34685,9 +35171,9 @@ fn render_next_report(report: &NextReport) -> String {
     }
 
     let _ = writeln!(out, "\n## Owner");
-    let _ = writeln!(out, "Status: {}", report.owner.status.label());
+    let _ = writeln!(out, "Status: {}", report.owner.status().label());
     let _ = writeln!(out, "Reason: {}", report.owner.reason);
-    if let Some(selected) = &report.owner.selected {
+    if let Some(selected) = report.owner.selected_module() {
         let _ = writeln!(
             out,
             "Selected: name={:?} path={:?} kind={:?} shape={:?} visibility={:?}",
@@ -56711,6 +57197,7 @@ fn configure_scaffold_dependency_behavior_binding(
         resolution: "module".to_string(),
         provider_module: Some(provider_module.to_string()),
         provider_contract: Some(contract),
+        probe_bridge: None,
     };
     set_yaml_sequence_path(
         &mut implementation.value,
@@ -59220,15 +59707,15 @@ fn render_property_commands_yaml(shape: ScaffoldShape, binding: &str) -> String 
 
 fn render_probe_architecture_yaml(binding: &str, target_name: Option<&str>) -> String {
     match binding {
-        "rust" => "  probe:\n    protocol: rms/machine-probe/v0.1\n    command: probe\n    runner: tests/machine_probe.rs#probe_machine\n    initial_state_function: src/representation.rs#initial_state\n".to_string(),
+        "rust" => "  probe:\n    protocol: rms/machine-probe/v0.2\n    command: probe\n    runner: tests/machine_probe.rs#probe_machine\n    initial_state_function: src/representation.rs#initial_state\n".to_string(),
         "swift" => {
             let target = target_name.unwrap_or("Module");
             format!(
-                "  probe:\n    protocol: rms/machine-probe/v0.1\n    command: probe\n    runner: Tests/{target}Tests/MachineProbeTests.swift#testProbeMachine\n    initial_state_function: Sources/{target}/Representation.swift#initialState\n"
+                "  probe:\n    protocol: rms/machine-probe/v0.2\n    command: probe\n    runner: Tests/{target}Tests/MachineProbeTests.swift#testProbeMachine\n    initial_state_function: Sources/{target}/Representation.swift#initialState\n"
             )
         }
-        "js" => "  probe:\n    protocol: rms/machine-probe/v0.1\n    command: probe\n    runner: tests/machine-probe.mjs#probeMachine\n    initial_state_function: src/representation.mjs#initialState\n".to_string(),
-        "python" => "  probe:\n    protocol: rms/machine-probe/v0.1\n    command: probe\n    runner: tests/machine_probe.py#probe_machine\n    initial_state_function: src/representation.py#initial_state\n".to_string(),
+        "js" => "  probe:\n    protocol: rms/machine-probe/v0.2\n    command: probe\n    runner: tests/machine-probe.mjs#probeMachine\n    initial_state_function: src/representation.mjs#initialState\n".to_string(),
+        "python" => "  probe:\n    protocol: rms/machine-probe/v0.2\n    command: probe\n    runner: tests/machine_probe.py#probe_machine\n    initial_state_function: src/representation.py#initial_state\n".to_string(),
         _ => String::new(),
     }
 }
@@ -60103,6 +60590,18 @@ fn run_steps(request: &serde_json::Value) -> Vec<serde_json::Value> {{
             record_json(&record, normalized)
         }})
         .collect()
+}}
+
+fn evaluate_cases(request: &serde_json::Value) -> Vec<serde_json::Value> {{
+    request.get("cases").and_then(serde_json::Value::as_array).expect("probe cases")
+        .iter()
+        .map(|case| {{
+            let normalized = case.get("input").expect("probe case input");
+            let state = parse_state(case.get("state").expect("probe case state"));
+            let record = transition_record(state, parse_input(normalized));
+            json!({{"id": case.get("id").expect("probe case id"), "record": record_json(&record, normalized)}})
+        }})
+        .collect()
 }}"#,
             state = names.state,
             initial = initial,
@@ -60131,6 +60630,17 @@ fn run_steps(request: &serde_json::Value) -> Vec<serde_json::Value> {{
             let normalized = step.get("input").expect("probe step input");
             let record = transition_record(parse_input(normalized));
             record_json(&record, normalized)
+        }})
+        .collect()
+}}
+
+fn evaluate_cases(request: &serde_json::Value) -> Vec<serde_json::Value> {{
+    request.get("cases").and_then(serde_json::Value::as_array).expect("probe cases")
+        .iter()
+        .map(|case| {{
+            let normalized = case.get("input").expect("probe case input");
+            let record = transition_record(parse_input(normalized));
+            json!({{"id": case.get("id").expect("probe case id"), "record": record_json(&record, normalized)}})
         }})
         .collect()
 }}"#,
@@ -60208,6 +60718,12 @@ fn probe_machine() {{
             "inputs": [
                 {descriptions}
             ],
+        }})
+    }} else if request.get("operation").and_then(Value::as_str) == Some("evaluate") {{
+        json!({{
+            "spec": "rms/machine-probe-evaluation/v0.2",
+            "machine": "{machine}",
+            "results": evaluate_cases(&request),
         }})
     }} else {{
         let mut records = run_steps(&request);
@@ -60988,6 +61504,21 @@ fn render_swift_machine_probe_tests(target_name: &str, model: &BindingScaffoldMo
             state = record.stateAfter
             return recordJSON(record, normalized, scenarioStart: index == 0)
         }}
+    }}
+
+    private func evaluateCases(_ request: [String: Any]) throws -> [[String: Any]] {{
+        try (request["cases"] as? [[String: Any]] ?? []).map {{ item in
+            guard
+                let id = item["id"] as? String,
+                let normalized = item["input"] as? [String: Any]
+            else {{ throw ProbeFailure.message("evaluation case is incomplete") }}
+            let state = try parseState(item["state"] as Any)
+            let record = transitionRecord(state, try parseInput(normalized))
+            return [
+                "id": id,
+                "record": recordJSON(record, normalized, scenarioStart: true),
+            ]
+        }}
     }}"#,
             state = names.state,
             initial = initial,
@@ -61018,6 +61549,23 @@ fn render_swift_machine_probe_tests(target_name: &str, model: &BindingScaffoldMo
                 normalized,
                 scenarioStart: index == 0
             )
+        }}
+    }}
+
+    private func evaluateCases(_ request: [String: Any]) throws -> [[String: Any]] {{
+        try (request["cases"] as? [[String: Any]] ?? []).map {{ item in
+            guard
+                let id = item["id"] as? String,
+                let normalized = item["input"] as? [String: Any]
+            else {{ throw ProbeFailure.message("evaluation case is incomplete") }}
+            return [
+                "id": id,
+                "record": recordJSON(
+                    transitionRecord(try parseCommand(normalized)),
+                    normalized,
+                    scenarioStart: true
+                ),
+            ]
         }}
     }}"#,
             command = names.command,
@@ -61100,6 +61648,12 @@ final class MachineProbeTests: XCTestCase {{
                 "inputs": [
                     {input_descriptions}
                 ],
+            ]
+        }} else if request["operation"] as? String == "evaluate" {{
+            output = [
+                "spec": "rms/machine-probe-evaluation/v0.2",
+                "machine": "{machine}",
+                "results": try evaluateCases(request),
             ]
         }} else {{
             output = [
@@ -61970,9 +62524,9 @@ fn render_python_tests(model: &BindingScaffoldModel) -> String {
         "transition(reject_command(label))"
     };
     let imports = if model.stateful() {
-        ", command_input, initial_state"
+        format!(", command_input, initial_state, {}", model.names.state)
     } else {
-        ""
+        String::new()
     };
     let boundary_test = if parser_expected_for_shape(model.shape.as_str()) {
         format!(
@@ -62148,6 +62702,14 @@ fn render_python_machine_probe(model: &BindingScaffoldModel) -> String {
     } else {
         "transition_record(command)"
     };
+    let evaluation_record_call = if model.stateful() {
+        format!(
+            "transition_record({}(case[\"state\"][\"name\"]), command_input(command))",
+            model.names.state
+        )
+    } else {
+        "transition_record(command)".to_string()
+    };
     format!(
         r#"import json
 import os
@@ -62180,6 +62742,38 @@ def probe_machine() -> None:
                 {{"kind": "command", "name": "Reject", "data_schema": {{"type": "object", "properties": {{"reason": {{"type": "string"}}}}}}, "example": {{"kind": "command", "name": "Reject", "data": {{"reason": "rejected"}}}}}},
             ],
         }}
+    elif request.get("operation") == "evaluate":
+        results = []
+        for case in request.get("cases", []):
+            normalized = case.get("input", {{}})
+            label = make_label(normalized.get("data", {{}}).get("value", "probe"))
+            if label is None:
+                raise ValueError("probe label must be non-empty")
+            command = reject_command(label) if normalized.get("name") == "Reject" else accept_command(label)
+            record = {evaluation_record_call}
+            results.append({{
+                "id": case["id"],
+                "record": {{
+                    "scenario_start": True,
+                    "state_before": variant(record.state_before),
+                    "state_after": variant(record.state_after),
+                    "input": normalized,
+                    "output": {{
+                        "next_state": variant(record.output.next_state),
+                        "events": [variant(item) for item in record.output.events],
+                        "commands": [],
+                        "effects": [variant(item) for item in record.output.effects],
+                        "reply": variant(record.output.reply) if record.output.reply else None,
+                        "rejection": variant(record.output.rejection) if record.output.rejection else None,
+                    }},
+                    "source": {{
+                        "file": record.source.file,
+                        "function": record.source.function,
+                        "branch": record.source.branch,
+                    }},
+                }},
+            }})
+        output = {{"spec": "rms/machine-probe-evaluation/v0.2", "machine": "{machine}", "results": results}}
     else:
         records = []
         for index, step in enumerate(request.get("steps", [])):
@@ -62216,6 +62810,7 @@ if __name__ == "__main__":
     probe_machine()
 "#,
         machine = model.names.machine,
+        evaluation_record_call = evaluation_record_call,
     )
 }
 
@@ -63229,12 +63824,30 @@ fn render_js_machine_probe_mjs(model: &BindingScaffoldModel) -> String {
     state = record.state_after;
     return recordJSON(record, step.input, index === 0);
   });
+}
+
+function evaluateCases(request) {
+  return request.cases.map((item) => {
+    const state = statesByName[item.state?.name];
+    if (!state) throw new Error(`unknown probe state ${item.state?.name}`);
+    return {
+      id: item.id,
+      record: recordJSON(transitionRecord(state, parseInput(item.input)), item.input, true),
+    };
+  });
 }"#
         .to_string()
     } else {
         r#"function runSteps(request) {
   return request.steps.map((step, index) =>
     recordJSON(transitionRecord(parseInput(step.input)), step.input, index === 0));
+}
+
+function evaluateCases(request) {
+  return request.cases.map((item) => ({
+    id: item.id,
+    record: recordJSON(transitionRecord(parseInput(item.input)), item.input, true),
+  }));
 }"#
         .to_string()
     };
@@ -63291,21 +63904,32 @@ export async function probeMachine() {{
   const outputPath = process.env.RMS_PROBE_OUTPUT;
   if (!requestPath || !outputPath) throw new Error("RMS_PROBE_REQUEST and RMS_PROBE_OUTPUT are required");
   const request = JSON.parse(await readFile(requestPath, "utf8"));
-  const output = request.operation === "describe" ? {{
-    spec: "rms/machine-probe-description/v0.1",
-    machine: "{machine}",
-    initial_state: {{ name: "{initial}", data: {{}} }},
-    states: [
-    {state_descriptions}
-    ],
-    inputs: [
-    {input_descriptions}
-    ],
-  }} : {{
-    spec: "rms/trace-bundle/v0.1",
-    machine: "{machine}",
-    records: runSteps(request),
-  }};
+  let output;
+  if (request.operation === "describe") {{
+    output = {{
+      spec: "rms/machine-probe-description/v0.1",
+      machine: "{machine}",
+      initial_state: {{ name: "{initial}", data: {{}} }},
+      states: [
+      {state_descriptions}
+      ],
+      inputs: [
+      {input_descriptions}
+      ],
+    }};
+  }} else if (request.operation === "evaluate") {{
+    output = {{
+      spec: "rms/machine-probe-evaluation/v0.2",
+      machine: "{machine}",
+      results: evaluateCases(request),
+    }};
+  }} else {{
+    output = {{
+      spec: "rms/trace-bundle/v0.1",
+      machine: "{machine}",
+      records: runSteps(request),
+    }};
+  }}
   await writeFile(outputPath, JSON.stringify(output, null, 2));
 }}
 
@@ -65137,6 +65761,31 @@ mod tests {
                         }
                     }
                 ]
+            })
+        } else if request["operation"] == "evaluate" {
+            let results = request["cases"]
+                .as_array()
+                .expect("probe evaluation cases")
+                .iter()
+                .map(|case| {
+                    let state = match case["state"]["name"].as_str() {
+                        Some("WritingSemanticChangeRecord") => {
+                            RmsWorkbenchState::WritingSemanticChangeRecord
+                        }
+                        _ => initial_rms_workbench_state(),
+                    };
+                    let normalized = &case["input"];
+                    let record = transition_record(state, parse_workbench_probe_input(normalized));
+                    json!({
+                        "id": case["id"],
+                        "record": workbench_record_json(&record, normalized, true)
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "spec": "rms/machine-probe-evaluation/v0.2",
+                "machine": "RmsWorkbenchMachine",
+                "results": results
             })
         } else {
             let mut state = match request["start"]["name"].as_str() {
@@ -72160,6 +72809,80 @@ architecture:
     }
 
     #[test]
+    fn property_run_promotes_recorded_counterexamples_into_regressions() {
+        let root = unique_test_dir("property-counterexample-regression");
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::create_dir_all(root.join("verification/properties")).unwrap();
+        fs::create_dir_all(root.join("verification/fuzz/counterexamples")).unwrap();
+        fs::write(
+            root.join("scripts/properties.sh"),
+            "#!/bin/sh\nset -eu\nexit 0\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("verification/properties/regression.md"),
+            "# Regression property proof\n\nCommand/tool: fixture\n\nObserved result: pass.\n\nSource revision: git:test\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("verification/fuzz/counterexamples/minimal.yaml"),
+            r#"spec: rms/property-counterexample/v0.1
+property: regression-property
+proves: regression-law
+replay_command: 'test -f "$RMS_COUNTEREXAMPLE" && printf replayed > ../../../counterexample-runs.log'
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: counterexample-regression
+binding: executable
+source: { root: ., public_entrypoint: scripts/properties.sh }
+commands:
+  build: sh -n scripts/properties.sh
+  verify: sh -n scripts/properties.sh
+  properties: sh scripts/properties.sh
+toolchain: { runner: shell }
+architecture:
+  shape: domain-engine
+  reliability:
+    properties:
+      - id: regression-property
+        proves: regression-law
+        input_space: finite regression cases
+        oracle: [the historical input remains valid]
+        evidence: verification/properties/regression.md
+        counterexamples: verification/fuzz/counterexamples
+        realizations:
+          - { profile: smoke, strategy: deterministic-corpus, command: properties, runner: scripts/properties.sh#run_property }
+  machine: {}
+  roles: {}
+"#,
+        )
+        .unwrap();
+
+        let report = execute_property_realizations(
+            &root.join("implementation.yaml"),
+            PropertyProfile::Smoke,
+            false,
+            30,
+        )
+        .unwrap();
+        let replayed = fs::read_to_string(root.join("counterexample-runs.log")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, "pass");
+        assert_eq!(report.commands.len(), 2);
+        assert!(report.commands.iter().any(|command| {
+            command.kind == "counterexample:replay"
+                && command.property == "regression-property"
+                && command.status == "pass"
+        }));
+        assert_eq!(replayed, "replayed");
+    }
+
+    #[test]
     fn property_command_accepts_shell_parameter_expansion_for_runner_selection() {
         assert!(proof_command_selects_runner(
             "cargo test \"${RMS_PROPERTY_RUNNER##*#}\"",
@@ -74758,6 +75481,27 @@ topology: composite
         .is_ok());
         assert!(Cli::try_parse_from(["rms", "probe", "--file", "-"]).is_ok());
         assert!(
+            Cli::try_parse_from(["rms", "probe", "--file", "assembly.yaml", "--describe",]).is_ok()
+        );
+        assert!(Cli::try_parse_from([
+            "rms",
+            "probe",
+            "--file",
+            "assembly.yaml",
+            "--describe",
+            "--explore",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "rms",
+            "probe",
+            "--replay",
+            "failure.yaml",
+            "--max-steps",
+            "10",
+        ])
+        .is_err());
+        assert!(
             Cli::try_parse_from(["rms", "probe", "--describe", "--timeout-seconds", "0",]).is_err()
         );
         assert!(Cli::try_parse_from([
@@ -74868,7 +75612,7 @@ data:
                 .unwrap();
         let valid: YamlValue = serde_yaml::from_str(
             r#"
-spec: rms/machine-probe/v0.1
+spec: rms/machine-probe/v0.2
 operation: run
 start: initial
 steps:
@@ -74880,7 +75624,7 @@ steps:
 
         for invalid in [
             r#"
-spec: rms/machine-probe/v0.1
+spec: rms/machine-probe/v0.2
 operation: run
 start: initial
 unknown: true
@@ -74888,14 +75632,14 @@ steps:
   - input: { kind: command, name: ValidateRmsArtifacts, data: {} }
 "#,
             r#"
-spec: rms/machine-probe/v0.1
+spec: rms/machine-probe/v0.2
 operation: run
 start: initial
 steps:
   - input: { kind: timer, name: ValidateRmsArtifacts, data: {} }
 "#,
             r#"
-spec: rms/machine-probe/v0.1
+spec: rms/machine-probe/v0.2
 operation: run
 start: initial
 steps:
@@ -74905,6 +75649,19 @@ steps:
             let request: YamlValue = serde_yaml::from_str(invalid).unwrap();
             assert!(validate_probe_request(&request, &implementation).is_err());
         }
+
+        let evaluation: YamlValue = serde_yaml::from_str(
+            r#"
+spec: rms/machine-probe/v0.2
+operation: evaluate
+cases:
+  - id: ready-validation
+    state: { name: Ready }
+    input: { kind: command, name: ValidateRmsArtifacts, data: {} }
+"#,
+        )
+        .unwrap();
+        assert!(validate_probe_request(&evaluation, &implementation).is_ok());
     }
 
     #[test]
@@ -78283,10 +79040,10 @@ semantic_functions: []
             false,
         )
         .unwrap();
-        assert_eq!(direct.status, OwnerStatus::Selected);
+        assert_eq!(direct.status(), OwnerStatus::Selected);
         assert_eq!(direct.reason, "direct root module");
         assert_eq!(
-            direct.selected.as_ref().map(|module| module.name.as_str()),
+            direct.selected_module().map(|module| module.name.as_str()),
             Some("direct-owner")
         );
         fs::remove_dir_all(&direct_root).unwrap();
@@ -78307,10 +79064,10 @@ semantic_functions: []
             false,
         )
         .unwrap();
-        assert_eq!(sole.status, OwnerStatus::Selected);
+        assert_eq!(sole.status(), OwnerStatus::Selected);
         assert_eq!(sole.reason, "sole top-level module");
         assert_eq!(
-            sole.selected.as_ref().map(|module| module.name.as_str()),
+            sole.selected_module().map(|module| module.name.as_str()),
             Some("sole-owner")
         );
         fs::remove_dir_all(&sole_root).unwrap();
@@ -78337,11 +79094,10 @@ semantic_functions: []
             false,
         )
         .unwrap();
-        assert_eq!(explicit.status, OwnerStatus::Selected);
+        assert_eq!(explicit.status(), OwnerStatus::Selected);
         assert_eq!(
             explicit
-                .selected
-                .as_ref()
+                .selected_module()
                 .map(|module| module.name.as_str()),
             Some("beta-games")
         );
@@ -78354,17 +79110,17 @@ semantic_functions: []
             false,
         )
         .unwrap();
-        assert_eq!(unique.status, OwnerStatus::Selected);
+        assert_eq!(unique.status(), OwnerStatus::Selected);
         assert_eq!(
-            unique.selected.as_ref().map(|module| module.name.as_str()),
+            unique.selected_module().map(|module| module.name.as_str()),
             Some("alpha-payments")
         );
 
         let no_match =
             resolve_next_owner(&root, None, "make dragons sparkle", &profile.modules, false)
                 .unwrap();
-        assert_eq!(no_match.status, OwnerStatus::Ambiguous);
-        assert!(no_match.selected.is_none());
+        assert_eq!(no_match.status(), OwnerStatus::Ambiguous);
+        assert!(no_match.selected_module().is_none());
 
         fs::write(
             root.join("alpha.module.yaml"),
@@ -78385,7 +79141,7 @@ semantic_functions: []
             false,
         )
         .unwrap();
-        assert_eq!(tied.status, OwnerStatus::Ambiguous);
+        assert_eq!(tied.status(), OwnerStatus::Ambiguous);
         assert_eq!(tied.candidates[0].score, tied.candidates[1].score);
         fs::remove_dir_all(&root).unwrap();
 
@@ -78400,9 +79156,9 @@ semantic_functions: []
         )
         .unwrap();
         fs::remove_dir_all(&recursive).unwrap();
-        assert_eq!(routed.status, OwnerStatus::Selected);
+        assert_eq!(routed.status(), OwnerStatus::Selected);
         assert_eq!(
-            routed.selected.as_ref().map(|module| module.name.as_str()),
+            routed.selected_module().map(|module| module.name.as_str()),
             Some("play-game-domain")
         );
         assert!(routed.route.len() >= 2);
@@ -78421,7 +79177,7 @@ semantic_functions: []
         )
         .unwrap();
         fs::remove_dir_all(&cycle_root).unwrap();
-        assert_eq!(cycle.status, OwnerStatus::Invalid);
+        assert_eq!(cycle.status(), OwnerStatus::Invalid);
         assert!(cycle.reason.contains("cycle"), "{}", cycle.reason);
         assert_eq!(cycle.route.len(), 2);
     }
@@ -78474,8 +79230,8 @@ semantic_functions: []
             after.task_classification.lane
         );
         assert_eq!(
-            before.owner.selected.as_ref().map(|module| &module.path),
-            after.owner.selected.as_ref().map(|module| &module.path)
+            before.owner.selected_module().map(|module| &module.path),
+            after.owner.selected_module().map(|module| &module.path)
         );
         assert_eq!(
             serde_json::to_value(&before.steps).unwrap(),
@@ -78538,28 +79294,27 @@ semantic_functions: []
                 .envelope
                 .next_action
                 .as_ref()
-                .and_then(|action| action.args.as_deref())
+                .and_then(|action| action.args())
                 .and_then(|args| args.first())
                 .map(String::as_str),
             Some("context")
         );
         assert!(!first_surface.steps.iter().any(|action| {
             action
-                .args
-                .as_deref()
+                .args()
                 .is_some_and(|args| args.first().is_some_and(|argument| argument == "explain"))
         }));
         for action in &first_surface.steps {
-            assert_ne!(action.program.as_deref(), Some("git"));
-            assert_ne!(action.program.as_deref(), Some("codex"));
-            assert_ne!(action.program.as_deref(), Some("claude"));
+            assert_ne!(action.program(), Some("git"));
+            assert_ne!(action.program(), Some("codex"));
+            assert_ne!(action.program(), Some("claude"));
         }
         let native_proof = first_surface
             .steps
             .iter()
-            .find(|action| action.program.as_deref() == Some("sh"))
+            .find(|action| action.program() == Some("sh"))
             .unwrap();
-        let native_args = native_proof.args.as_deref().unwrap();
+        let native_args = native_proof.args().unwrap();
         assert!(native_args[1].starts_with("cd -- "));
         assert!(Command::new("sh")
             .args(native_args)
@@ -78572,16 +79327,15 @@ semantic_functions: []
             .iter()
             .find(|action| {
                 action
-                    .args
-                    .as_ref()
+                    .args()
                     .is_some_and(|args| args.iter().any(|argument| argument == task))
             })
             .unwrap();
-        assert!(task_step.display.as_deref().unwrap().contains("'\\''boom"));
+        assert!(task_step.display().unwrap().contains("'\\''boom"));
         assert!(first_surface.steps.iter().any(|action| {
-            action.kind == "manual"
-                && action.authorization == "host-required"
-                && action.program.is_none()
+            action.kind() == "manual"
+                && action.authorization().is_host_required()
+                && action.program().is_none()
         }));
 
         let repository_operation =
@@ -78601,11 +79355,10 @@ semantic_functions: []
         assert!(repository_surface
             .steps
             .iter()
-            .all(|action| action.kind == "manual"));
+            .all(|action| action.kind() == "manual"));
         assert!(!repository_surface.steps.iter().any(|action| {
             action
-                .args
-                .as_deref()
+                .args()
                 .unwrap_or_default()
                 .iter()
                 .any(|arg| matches!(arg.as_str(), "design" | "spec" | "gate" | "audit" | "check"))
@@ -78736,10 +79489,10 @@ semantic_functions: []
         assert_eq!(changes.mode, CheckMode::Changes);
         assert_eq!(changes.result, CheckResult::Pass);
         let candidate = changes.next_action.as_ref().unwrap();
-        assert_eq!(candidate.kind, "manual");
-        assert_eq!(candidate.authorization, "host-required");
-        assert!(candidate.program.is_none());
-        assert!(candidate.args.is_none());
+        assert_eq!(candidate.kind(), "manual");
+        assert!(candidate.authorization().is_host_required());
+        assert!(candidate.program().is_none());
+        assert!(candidate.args().is_none());
 
         let audit = AuditReport {
             result: "pass".to_string(),
@@ -80034,11 +80787,10 @@ evidence:
         let unsupported = build_explain_report(&root, None, Some("why is blue lucky?")).unwrap();
         assert_eq!(unsupported.result, "insufficient-evidence");
         assert!(!unsupported.reasons.is_empty());
-        assert_eq!(unsupported.next_action.program.as_deref(), Some("rms"));
+        assert_eq!(unsupported.next_action.program(), Some("rms"));
         assert!(unsupported
             .next_action
-            .args
-            .as_deref()
+            .args()
             .unwrap_or_default()
             .iter()
             .any(|argument| argument == "context"));
@@ -83546,6 +84298,45 @@ open_questions: []
     }
 
     #[test]
+    fn owner_resolution_variants_preserve_the_v2_wire_shape() {
+        let selected = RouteModuleSummary {
+            name: "payments".to_string(),
+            path: "/repository/modules/payments/module.yaml".to_string(),
+            kind: "library".to_string(),
+            shape: "domain-engine".to_string(),
+            visibility: Some("public".to_string()),
+        };
+        let resolution = OwnerResolution::selected(
+            "explicit owner".to_string(),
+            selected,
+            Vec::new(),
+            vec!["payments".to_string()],
+            Vec::new(),
+        );
+        let selected_json = serde_json::to_value(&resolution).unwrap();
+        assert_eq!(selected_json["status"], "selected");
+        assert_eq!(selected_json["selected"]["name"], "payments");
+
+        for (status, expected) in [
+            (UnselectedOwnerStatus::Ambiguous, OwnerStatus::Ambiguous),
+            (UnselectedOwnerStatus::None, OwnerStatus::None),
+            (UnselectedOwnerStatus::Invalid, OwnerStatus::Invalid),
+        ] {
+            let resolution = OwnerResolution::unresolved(
+                status,
+                "not selected".to_string(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            let unresolved_json = serde_json::to_value(&resolution).unwrap();
+            assert_eq!(unresolved_json["status"], expected.label());
+            assert!(unresolved_json["selected"].is_null());
+            assert!(resolution.selected_module().is_none());
+        }
+    }
+
+    #[test]
     fn non_ready_routes_never_select_an_owner() {
         for result in generate_non_ready_route_cases() {
             let selected = RouteModuleSummary {
@@ -83555,14 +84346,13 @@ open_questions: []
                 shape: "boundary-adapter".to_string(),
                 visibility: Some("public".to_string()),
             };
-            let mut owner = OwnerResolution {
-                status: OwnerStatus::Selected,
-                reason: "tentative match".to_string(),
-                selected: Some(selected),
-                candidates: Vec::new(),
-                route: vec!["candidate".to_string()],
-                warnings: Vec::new(),
-            };
+            let mut owner = OwnerResolution::selected(
+                "tentative match".to_string(),
+                selected,
+                Vec::new(),
+                vec!["candidate".to_string()],
+                Vec::new(),
+            );
             let mut context = NextContext {
                 files: vec![ReadinessItem {
                     name: "candidate".to_string(),
@@ -83581,8 +84371,8 @@ open_questions: []
 
             enforce_non_ready_ownerlessness(result, &mut owner, &mut context);
 
-            assert_eq!(owner.status, OwnerStatus::None);
-            assert!(owner.selected.is_none());
+            assert_eq!(owner.status(), OwnerStatus::None);
+            assert!(owner.selected_module().is_none());
             assert!(owner.route.is_empty());
             assert_eq!(owner.candidates.len(), 1);
             assert!(context.files.is_empty());

@@ -108,7 +108,7 @@ architecture:
         generator: src/example_python/transition.py#generate_property_cases
         runner: tests/test_binding.py#run_transition_property
   probe:
-    protocol: rms/machine-probe/v0.1
+    protocol: rms/machine-probe/v0.2
     command: probe
     runner: tests/machine_probe.py#probe_machine
     initial_state_function: src/example_python/representation.py#initial_state
