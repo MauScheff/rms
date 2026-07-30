@@ -308,11 +308,7 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
             .position(|index| lane_phase(&lanes[*index]) != phase)
             .map(|offset| cursor + offset)
             .unwrap_or(pending.len());
-        let phase_parallelism = if matches!(phase, 0 | 1 | 2 | 6) {
-            1
-        } else {
-            jobs
-        };
+        let phase_parallelism = phase_parallelism(phase, jobs);
         let batch_end = (cursor + phase_parallelism)
             .min(phase_end)
             .min(pending.len());
@@ -990,6 +986,9 @@ fn execute_lane(
     if output.timed_out {
         report.status = "inconclusive".to_string();
         report.diagnostic = Some("lane budget exhausted".to_string());
+        report
+            .metrics
+            .insert("executed".to_string(), JsonValue::Bool(true));
         return Ok((report, Vec::new()));
     }
     let mut findings = Vec::new();
@@ -1196,6 +1195,9 @@ fn execute_lane(
             }
         }
     }
+    report
+        .metrics
+        .insert("executed".to_string(), JsonValue::Bool(true));
     Ok((report, findings))
 }
 
@@ -1262,6 +1264,14 @@ fn lane_phase(lane: &HuntLane) -> u8 {
     }
 }
 
+fn phase_parallelism(phase: u8, jobs: usize) -> usize {
+    if matches!(phase, 0 | 2 | 6) {
+        1
+    } else {
+        jobs
+    }
+}
+
 fn finish_report(
     root: &Path,
     worktree: &Path,
@@ -1320,6 +1330,7 @@ fn proof_scope(lanes: &[HuntLaneReport]) -> HuntProofScope {
     let mut exhausted_lanes = Vec::new();
     let mut bounded_lanes = Vec::new();
     let mut unsupported_lanes = Vec::new();
+    let mut unexecuted_lanes = 0usize;
     for lane in lanes {
         if lane.status == "unsupported" {
             unsupported_lanes.push(lane.id.clone());
@@ -1327,12 +1338,21 @@ fn proof_scope(lanes: &[HuntLaneReport]) -> HuntProofScope {
             && matches!(lane.metrics.get("exhausted"), Some(JsonValue::Bool(true)))
         {
             exhausted_lanes.push(lane.id.clone());
-        } else {
+        } else if matches!(lane.metrics.get("executed"), Some(JsonValue::Bool(true))) {
             bounded_lanes.push(lane.id.clone());
+        } else {
+            unexecuted_lanes += 1;
         }
     }
+    let unexecuted = if unexecuted_lanes == 0 {
+        String::new()
+    } else {
+        format!(" {unexecuted_lanes} planned lane(s) did not execute and contribute no evidence.")
+    };
     HuntProofScope {
-        claim: "No global bug-free claim is made; exhausted lanes prove only their declared finite model, while all other lanes are bounded evidence.".to_string(),
+        claim: format!(
+            "No global bug-free claim is made; exhausted lanes prove only their declared finite model, while executed non-exhaustive lanes are bounded evidence.{unexecuted}"
+        ),
         exhausted_lanes,
         bounded_lanes,
         unsupported_lanes,
@@ -1444,7 +1464,13 @@ fn ensure_resume_tool_identities(
 fn ensure_clean_commit(root: &Path) -> Result<()> {
     let status = git_output(root, &["status", "--porcelain", "--untracked-files=normal"])?;
     if !status.trim().is_empty() {
-        bail!("`rms hunt` requires a clean committed checkout");
+        let paths = status
+            .lines()
+            .take(20)
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join("\n  ");
+        bail!("`rms hunt` requires a clean committed checkout; changed paths:\n  {paths}");
     }
     Ok(())
 }
@@ -1730,6 +1756,44 @@ mod tests {
         assert_eq!(hunt_result(&report), "proof-gaps-found");
         report.findings[0].kind = "crash".to_string();
         assert_eq!(hunt_result(&report), "bugs-found");
+    }
+
+    #[test]
+    fn hunt_scope_excludes_unstarted_lanes_and_baselines_use_parallelism() {
+        let mut executed = lane_report(
+            "executed".to_string(),
+            "module",
+            None,
+            "baseline",
+            "deterministic-baseline",
+            10,
+            "true".to_string(),
+            None,
+        );
+        executed.status = "pass".to_string();
+        executed
+            .metrics
+            .insert("executed".to_string(), JsonValue::Bool(true));
+        let mut unstarted = lane_report(
+            "unstarted".to_string(),
+            "module",
+            None,
+            "baseline",
+            "deterministic-baseline",
+            10,
+            "true".to_string(),
+            None,
+        );
+        unstarted.status = "inconclusive".to_string();
+        unstarted.diagnostic = Some("total hunt budget exhausted".to_string());
+
+        let scope = proof_scope(&[executed, unstarted]);
+        assert_eq!(scope.bounded_lanes, vec!["executed"]);
+        assert!(!scope.bounded_lanes.contains(&"unstarted".to_string()));
+        assert!(scope.claim.contains("1 planned lane(s) did not execute"));
+        assert_eq!(phase_parallelism(1, 4), 4);
+        assert_eq!(phase_parallelism(2, 4), 1);
+        assert_eq!(phase_parallelism(6, 4), 1);
     }
 
     #[test]

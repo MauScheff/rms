@@ -6682,14 +6682,13 @@ fn run_release_check(root: &Path, skip_cargo_package: bool) -> Result<()> {
         "rms compose examples/python",
         command_with_args(&rms_exe, &["compose", "--root", "examples/python"], root),
     )?;
-    run_release_step(
-        "rms verify examples/python",
-        command_with_args(
-            &rms_exe,
-            &["verify", "examples/python/implementation.yaml"],
-            root,
-        ),
-    )?;
+    let mut verify_python = command_with_args(
+        &rms_exe,
+        &["verify", "examples/python/implementation.yaml"],
+        root,
+    );
+    verify_python.env("PYTHONDONTWRITEBYTECODE", "1");
+    run_release_step("rms verify examples/python", verify_python)?;
     run_release_step(
         "rms compose examples/tic-tac-toe",
         command_with_args(
@@ -6725,14 +6724,13 @@ fn run_release_check(root: &Path, skip_cargo_package: bool) -> Result<()> {
             root,
         ),
     )?;
-    run_release_step(
-        "example Python binding tests",
-        command_with_args(
-            "python",
-            &["-m", "unittest", "discover", "-s", "tests"],
-            &root.join("examples/python"),
-        ),
-    )?;
+    let mut python_tests = command_with_args(
+        "python",
+        &["-m", "unittest", "discover", "-s", "tests"],
+        &root.join("examples/python"),
+    );
+    python_tests.env("PYTHONDONTWRITEBYTECODE", "1");
+    run_release_step("example Python binding tests", python_tests)?;
     run_release_binary_smoke(root)?;
     if !skip_cargo_package {
         run_release_step(
