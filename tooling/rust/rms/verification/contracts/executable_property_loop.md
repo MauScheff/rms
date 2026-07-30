@@ -37,6 +37,12 @@ embedded property definitions and evidence trace. The same artifact accepted
 by `rms property replay` is not misclassified by the older counterexample
 scanner.
 
+Composite module purposes may summarize bounded behavior owned and proved by
+contained children. Numeric-property heuristics therefore inspect the
+composite's owned semantic sections rather than requiring a duplicate parent
+property solely because the design purpose mentions the child's bound.
+Numeric invariants actually owned by the composite remain subject to the gate.
+
 Raw language-binding variants such as `MachineReply.Accepted` project to the
 same declared observation as probe-normalized `Accepted` names. Regression
 coverage requires the raw trace, its normalized observation envelopes, and

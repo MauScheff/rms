@@ -17885,7 +17885,26 @@ fn module_has_concrete_fuzz_evidence(module: &LoadedManifest) -> bool {
 }
 
 fn module_has_numeric_or_range_semantics(value: &YamlValue) -> bool {
-    let rendered = serde_yaml::to_string(value).unwrap_or_default();
+    let semantic_value = if get_str(value, &["module", "kind"]) == Some("composite") {
+        let mut projection = serde_yaml::Mapping::new();
+        for field in [
+            "owns",
+            "invariants",
+            "effects",
+            "properties",
+            "artifacts",
+            "transformations",
+            "authorities",
+        ] {
+            if let Some(section) = get_path(value, &[field]) {
+                projection.insert(yaml_key(field), section.clone());
+            }
+        }
+        YamlValue::Mapping(projection)
+    } else {
+        value.clone()
+    };
+    let rendered = serde_yaml::to_string(&semantic_value).unwrap_or_default();
     let tokens = semantic_id_segment(&rendered)
         .split('-')
         .map(str::to_string)
@@ -75567,6 +75586,52 @@ verification:
 
         assert!(!module_has_numeric_or_range_semantics(&boundary));
         assert!(module_has_numeric_or_range_semantics(&bounded));
+    }
+
+    #[test]
+    fn composite_purpose_does_not_duplicate_child_numeric_proof() {
+        let delegated_purpose: YamlValue = serde_yaml::from_str(
+            r#"
+module:
+  name: delivery
+  kind: composite
+  purpose: Compose a child workflow whose retry limit is 3 attempts.
+owns:
+  concepts: [child composition]
+  data: []
+  decisions: [public export composition]
+invariants:
+  - id: export-is-child-backed
+    statement: The public export is backed by the contained child.
+"#,
+        )
+        .unwrap();
+        let owned_numeric_invariant: YamlValue = serde_yaml::from_str(
+            r#"
+module: {name: delivery, kind: composite, purpose: Compose delivery.}
+invariants:
+  - id: parent-limit
+    statement: The parent permits at most 3 attempts.
+"#,
+        )
+        .unwrap();
+        let standalone_numeric_purpose: YamlValue = serde_yaml::from_str(
+            r#"
+module:
+  name: delivery
+  kind: library
+  purpose: Own a retry limit of 3 attempts.
+"#,
+        )
+        .unwrap();
+
+        assert!(!module_has_numeric_or_range_semantics(&delegated_purpose));
+        assert!(module_has_numeric_or_range_semantics(
+            &owned_numeric_invariant
+        ));
+        assert!(module_has_numeric_or_range_semantics(
+            &standalone_numeric_purpose
+        ));
     }
 
     #[test]
