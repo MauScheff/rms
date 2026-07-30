@@ -21,8 +21,10 @@ cargo test --workspace --locked spec_apply_gates_semantic_function_add_set_and_r
 cargo test --workspace --locked spec_apply_rejects_ambiguous_empty_surface_replacement
 cargo test --workspace --locked semantic_change_treats_noop_machine_section_as_empty
 cargo test --workspace --locked semantic_revision_detects_direct_canonical_manifest_drift
+cargo test --workspace --locked semantic_change_record_names_are_bounded
+cargo test --workspace --locked semantic_apply_rolls_back_when_change_record_cannot_be_written
 ```
 
-Expected result: semantic changes update canonical artifacts and records together; dry-run exposes the final model; empty machine sections remain inert; contract kind, direction, capability publication, and behavior bindings remain atomic; a standalone module can publish its first capability without generating directories; shared artifacts are retained while referenced; authority gaps are rejected; and direct manifest edits after apply invalidate semantic revision integrity.
+Expected result: semantic changes update canonical artifacts and records together or restore the complete pre-apply filesystem state; derived record names remain within portable component limits; dry-run exposes the final model; empty machine sections remain inert; contract kind, direction, capability publication, and behavior bindings remain atomic; a standalone module can publish its first capability without generating directories; shared artifacts are retained while referenced; authority gaps are rejected; and direct manifest edits after apply invalidate semantic revision integrity.
 
 Source provenance: the clean committed candidate revision resolved by `rms audit --root . --strict`.

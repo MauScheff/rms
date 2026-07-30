@@ -15625,6 +15625,7 @@ fn proof_command_selects_runner(command: &str, runner: &str, environment: &str) 
         || command.contains(&format!("${environment}"))
         || command.contains(&format!("${{{environment}}}"))
         || command.contains(&format!("${{{environment}"))
+        || command.contains(&format!("process.env.{environment}"))
 }
 
 fn executable_property_targets(target: &Path) -> Result<Vec<PropertyTargetReport>> {
@@ -34871,11 +34872,21 @@ fn resolve_next_owner(
         fs::read_to_string(&path)
             .with_context(|| format!("failed to read explicit module `{}`", path.display()))?;
         match load_manifest(&path) {
-            Ok(manifest) if get_str(&manifest.value, &["spec"]) == Some("rms/module/v0.1") => (
-                Some(path),
-                "explicit --module override".to_string(),
-                Vec::new(),
-            ),
+            Ok(manifest) if get_str(&manifest.value, &["spec"]) == Some("rms/module/v0.1") => {
+                let selected = route_summary_from_manifest(&manifest).ok_or_else(|| {
+                    anyhow!(
+                        "explicit module `{}` has no readable module identity",
+                        path.display()
+                    )
+                })?;
+                return Ok(OwnerResolution::selected(
+                    "explicit --module override".to_string(),
+                    selected,
+                    Vec::new(),
+                    vec![path.display().to_string()],
+                    Vec::new(),
+                ));
+            }
             Ok(_) => {
                 return Ok(OwnerResolution::unresolved(
                     UnselectedOwnerStatus::Invalid,
@@ -51524,6 +51535,59 @@ fn apply_semantic_change(
     change: &SemanticChange,
     machine_change: Option<&MachineChange>,
 ) -> Result<()> {
+    let original_context = context.clone();
+    let snapshots = planned_spec_apply_writes(context, change, machine_change)
+        .into_iter()
+        .map(PathBuf::from)
+        .map(|path| {
+            let contents = if path.is_file() {
+                Some(
+                    fs::read(&path)
+                        .with_context(|| format!("failed to snapshot `{}`", path.display()))?,
+                )
+            } else {
+                None
+            };
+            Ok((path, contents))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    if let Err(error) = apply_semantic_change_inner(context, candidate, change, machine_change) {
+        *context = original_context;
+        let mut rollback_failures = Vec::new();
+        for (path, contents) in snapshots.into_iter().rev() {
+            let result = match contents {
+                Some(contents) => {
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent).and_then(|_| fs::write(&path, contents))
+                    } else {
+                        fs::write(&path, contents)
+                    }
+                }
+                None if path.is_file() => fs::remove_file(&path),
+                None => Ok(()),
+            };
+            if let Err(rollback_error) = result {
+                rollback_failures.push(format!("{}: {rollback_error}", path.display()));
+            }
+        }
+        if rollback_failures.is_empty() {
+            return Err(error).context("semantic apply rolled back without filesystem changes");
+        }
+        return Err(error).context(format!(
+            "semantic apply failed and rollback was incomplete: {}",
+            rollback_failures.join("; ")
+        ));
+    }
+    Ok(())
+}
+
+fn apply_semantic_change_inner(
+    context: &mut SpecTargetContext,
+    candidate: &SpecTargetContext,
+    change: &SemanticChange,
+    machine_change: Option<&MachineChange>,
+) -> Result<()> {
     let implementation_changed =
         semantic_change_modifies_implementation(context, change, machine_change);
     let previous_dependencies = context
@@ -51651,7 +51715,16 @@ fn semantic_change_record_path(context: &SpecTargetContext, change: &SemanticCha
             })
         })
         .unwrap_or("semantic-change");
-    let stem = semantic_id_segment(slug_source);
+    // Leave room for the digest and extension under common filesystem
+    // component-length limits.
+    let mut stem = semantic_id_segment(slug_source);
+    stem.truncate(120);
+    let stem = stem.trim_end_matches('-');
+    let stem = if stem.is_empty() {
+        "semantic-change"
+    } else {
+        stem
+    };
     let short_hash = digest.get(..12).unwrap_or(&digest);
     base.join("verification")
         .join("changes")
@@ -57835,6 +57908,7 @@ fn scaffold_capability_domain_child(
     domain_command: &str,
     binding: Option<&str>,
 ) -> Result<()> {
+    let domain_capability = domain_capability_name(domain_command);
     create_module_skeleton(path)?;
     write_new_file(
         &path.join("module.yaml"),
@@ -57862,6 +57936,17 @@ fn scaffold_capability_domain_child(
         &render_capability_contract(domain_command, "domain decision command"),
     )?;
     write_new_file(
+        &path.join("contracts").join(format!(
+            "{}-capability.v1.yaml",
+            contract_file_stem(domain_command)
+        )),
+        &render_typed_capability_contract(
+            &domain_capability,
+            "reusable domain decision capability",
+            "capability",
+        ),
+    )?;
+    write_new_file(
         &path
             .join("verification")
             .join("contracts")
@@ -57870,6 +57955,21 @@ fn scaffold_capability_domain_child(
             name,
             domain_command,
             &format!("contracts/{}.v1.yaml", contract_file_stem(domain_command)),
+            None,
+        ),
+    )?;
+    write_new_file(
+        &path.join("verification").join("contracts").join(format!(
+            "{}-capability.md",
+            contract_file_stem(domain_command)
+        )),
+        &render_capability_contract_evidence(
+            name,
+            &domain_capability,
+            &format!(
+                "contracts/{}-capability.v1.yaml",
+                contract_file_stem(domain_command)
+            ),
             None,
         ),
     )?;
@@ -57914,6 +58014,7 @@ fn scaffold_capability_boundary_child(
     domain_command: &str,
     binding: Option<&str>,
 ) -> Result<()> {
+    let domain_capability = domain_capability_name(domain_command);
     create_module_skeleton(path)?;
     write_new_file(
         &path.join("module.yaml"),
@@ -57940,13 +58041,18 @@ fn scaffold_capability_boundary_child(
             .join(format!("{}.v1.yaml", contract_file_stem(public_command))),
         &render_capability_contract(public_command, "boundary adapter public command"),
     )?;
-    let required_domain_contract = path
-        .join("contracts")
-        .join(format!("{}.v1.yaml", contract_file_stem(domain_command)));
+    let required_domain_contract = path.join("contracts").join(format!(
+        "{}-capability.v1.yaml",
+        contract_file_stem(domain_command)
+    ));
     if !required_domain_contract.exists() {
         write_new_file(
             &required_domain_contract,
-            &render_capability_contract(domain_command, "required domain decision command"),
+            &render_typed_capability_contract(
+                &domain_capability,
+                "required domain decision capability",
+                "capability",
+            ),
         )?;
     }
     write_new_file(
@@ -57969,8 +58075,11 @@ fn scaffold_capability_boundary_child(
         &render_capability_dependency_contract_evidence(
             name,
             domain_child,
-            domain_command,
-            &format!("contracts/{}.v1.yaml", contract_file_stem(domain_command)),
+            &domain_capability,
+            &format!(
+                "contracts/{}-capability.v1.yaml",
+                contract_file_stem(domain_command)
+            ),
         ),
     )?;
     scaffold_shape_evidence(
@@ -57998,7 +58107,7 @@ fn scaffold_capability_boundary_child(
             path,
             binding,
             domain_child,
-            domain_command,
+            &domain_capability,
         )?;
     }
     Ok(())
@@ -58022,7 +58131,9 @@ fn configure_scaffold_public_behavior_binding(
     };
     let public_behaviors = declared_public_behaviors(&module.value)
         .into_iter()
-        .filter(|((_, name), _)| name == public_command)
+        .filter(|((kind, name), _)| {
+            name == public_command || (shape == ScaffoldShape::DomainEngine && kind == "capability")
+        })
         .collect::<Vec<_>>();
     if let Some(functions) = get_path_mut(&mut implementation.value, &["semantic_functions"])
         .and_then(YamlValue::as_sequence_mut)
@@ -58041,6 +58152,10 @@ fn configure_scaffold_public_behavior_binding(
         .map(
             |((public_kind, public_name), contract)| PublicBehaviorBinding {
                 id: if public_kind == "command" {
+                    format!("{}-public", semantic_id_segment(&public_name))
+                } else if public_kind == "capability"
+                    && semantic_id_segment(&public_name).ends_with("-capability")
+                {
                     format!("{}-public", semantic_id_segment(&public_name))
                 } else {
                     format!(
@@ -58093,8 +58208,12 @@ fn configure_scaffold_dependency_behavior_binding(
         other => bail!("unsupported scaffold binding `{other}`"),
     };
     let contract = format!("contracts/{}.v1.yaml", contract_file_stem(capability));
+    let binding_stem = semantic_id_segment(capability);
+    let binding_stem = binding_stem
+        .strip_suffix("-capability")
+        .unwrap_or(&binding_stem);
     let behavior = DependencyBehaviorBinding {
-        id: format!("{}-provider", semantic_id_segment(capability)),
+        id: format!("{binding_stem}-provider"),
         capability: capability.to_string(),
         contract: Some(contract.clone()),
         consumer,
@@ -58212,6 +58331,10 @@ fn default_domain_child_name(capability_name: &str) -> String {
 
 fn default_boundary_child_name(capability_name: &str) -> String {
     format!("{}-boundary", semantic_id_segment(capability_name))
+}
+
+fn domain_capability_name(domain_command: &str) -> String {
+    format!("{}-capability", semantic_id_segment(domain_command))
 }
 
 fn create_module_skeleton(path: &Path) -> Result<()> {
@@ -59691,12 +59814,14 @@ fn render_capability_parent_module_yaml(
 }
 
 fn render_capability_domain_module_yaml(name: &str, domain_command: &str) -> String {
+    let domain_capability = domain_capability_name(domain_command);
     strip_unrecorded_trace_evidence(format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"library\"\n  purpose: \"Own pure capability decisions, validated values, and transition evidence.\"\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - domain command\n    - transition outcome\n  data: []\n  decisions:\n    - command acceptance\n    - command rejection\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws/transition_trace.md\n  contracts:\n    - verification/contracts/{}.md\n  scenarios:\n    - verification/scenarios/accepted_rejected.md\n    - verification/scenarios/reusable_package.md\n  boundaries: []\n  traces:\n    - verification/traces/transition_trace.yaml\n  properties:\n    - verification/properties/transition_properties.md\n\nx-rms:\n  reusable: true\n\nx-scaffold:\n  shape: \"domain-engine\"\n  roles:\n{}\n",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"library\"\n  purpose: \"Own pure capability decisions, validated values, and transition evidence.\"\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - domain command\n    - transition outcome\n  data: []\n  decisions:\n    - command acceptance\n    - command rejection\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities:\n    - name: {}\n      contract: contracts/{}-capability.v1.yaml\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws/transition_trace.md\n  contracts:\n    - verification/contracts/{}.md\n    - verification/contracts/{}-capability.md\n  scenarios:\n    - verification/scenarios/accepted_rejected.md\n    - verification/scenarios/reusable_package.md\n  boundaries: []\n  traces:\n    - verification/traces/transition_trace.yaml\n  properties:\n    - verification/properties/transition_properties.md\n\nx-rms:\n  reusable: true\n\nx-scaffold:\n  shape: \"domain-engine\"\n  roles:\n{}\n",
         yaml_quote(name),
         yaml_quote(domain_command),
         contract_file_stem(domain_command),
-        yaml_quote(domain_command),
+        yaml_quote(&domain_capability),
+        contract_file_stem(domain_command),
         contract_file_stem(domain_command),
         contract_file_stem(domain_command),
         yaml_string_list(
@@ -59716,13 +59841,14 @@ fn render_capability_boundary_module_yaml(
     domain_child: &str,
     domain_command: &str,
 ) -> String {
+    let domain_capability = domain_capability_name(domain_command);
     strip_unrecorded_trace_evidence(format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"adapter\"\n  purpose: \"Adapt untrusted input and effects to the pure domain child.\"\n\nprofiles:\n  - \"boundary\"\n  - \"core\"\n\nowns:\n  concepts:\n    - boundary input\n    - parsed domain command\n    - domain child port\n  data: []\n  decisions:\n    - boundary input parsing\n    - malformed input rejection\n    - domain command delegation\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules:\n    - name: {}\n  capabilities:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n\ninvariants: []\n\neffects:\n  - name: local-boundary-io\n    kind: local-ui\n\nboundary:\n  trust_boundary: generated-boundary-adapter\n  inputs: []\n  outputs: []\n  validation:\n    - Reject malformed input before domain delegation.\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts:\n    - verification/contracts/{}.md\n    - verification/contracts/{}-dependency.md\n    - verification/contracts/parser_to_domain_command.md\n  scenarios: []\n  boundaries:\n    - verification/boundaries/malformed_input.md\n  traces:\n    - verification/traces/boundary_parse.yaml\n    - verification/traces/malformed_input_trace.yaml\n  fuzz:\n    - verification/fuzz/malformed_input_fuzz.md\n\nx-scaffold:\n  shape: \"boundary-adapter\"\n  roles:\n{}\n",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"adapter\"\n  purpose: \"Adapt untrusted input and effects to the pure domain child.\"\n\nprofiles:\n  - \"boundary\"\n  - \"core\"\n\nowns:\n  concepts:\n    - boundary input\n    - parsed domain command\n    - domain child port\n  data: []\n  decisions:\n    - boundary input parsing\n    - malformed input rejection\n    - domain command delegation\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules:\n    - name: {}\n  capabilities:\n    - name: {}\n      contract: contracts/{}-capability.v1.yaml\n\ninvariants: []\n\neffects:\n  - name: local-boundary-io\n    kind: local-ui\n\nboundary:\n  trust_boundary: generated-boundary-adapter\n  inputs: []\n  outputs: []\n  validation:\n    - Reject malformed input before domain delegation.\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts:\n    - verification/contracts/{}.md\n    - verification/contracts/{}-dependency.md\n    - verification/contracts/parser_to_domain_command.md\n  scenarios: []\n  boundaries:\n    - verification/boundaries/malformed_input.md\n  traces:\n    - verification/traces/boundary_parse.yaml\n    - verification/traces/malformed_input_trace.yaml\n  fuzz:\n    - verification/fuzz/malformed_input_fuzz.md\n\nx-scaffold:\n  shape: \"boundary-adapter\"\n  roles:\n{}\n",
         yaml_quote(name),
         yaml_quote(public_command),
         contract_file_stem(public_command),
         yaml_quote(domain_child),
-        yaml_quote(domain_command),
+        yaml_quote(&domain_capability),
         contract_file_stem(domain_command),
         contract_file_stem(public_command),
         contract_file_stem(domain_command),
@@ -59750,9 +59876,14 @@ fn strip_unrecorded_trace_evidence(rendered: String) -> String {
 }
 
 fn render_capability_contract(name: &str, meaning: &str) -> String {
+    render_typed_capability_contract(name, meaning, "command")
+}
+
+fn render_typed_capability_contract(name: &str, meaning: &str, kind: &str) -> String {
     format!(
-        "spec: rms/contract/v0.1\nname: {}\nversion: 1\nkind: command\nmeaning: {}\npreconditions:\n  - id: valid-request\n    statement: The caller supplies input accepted by this command boundary.\npostconditions:\n  - id: explicit-outcome\n    statement: The command returns an accepted result or an explicit rejection.\nfailure_categories:\n  - id: rejected-request\n    statement: The request is rejected by boundary validation or domain rules.\ncompatibility:\n  policy: backward-compatible-within-major\nx-rms:\n  scaffold: true\n",
+        "spec: rms/contract/v0.1\nname: {}\nversion: 1\nkind: {}\nmeaning: {}\npreconditions:\n  - id: valid-request\n    statement: The caller supplies input accepted by this command boundary.\npostconditions:\n  - id: explicit-outcome\n    statement: The command returns an accepted result or an explicit rejection.\nfailure_categories:\n  - id: rejected-request\n    statement: The request is rejected by boundary validation or domain rules.\ncompatibility:\n  policy: backward-compatible-within-major\nx-rms:\n  scaffold: true\n",
         yaml_quote(name),
+        yaml_quote(kind),
         yaml_quote(meaning),
     )
 }
@@ -72182,6 +72313,53 @@ evidence:
     }
 
     #[test]
+    fn semantic_change_record_names_are_bounded() {
+        let root = route_capability_fixture("semantic-record-name-bounded");
+        let context = load_spec_target(&root.join("modules/play-game-domain/module.yaml")).unwrap();
+        let summary = "very-long-semantic-intent-".repeat(40);
+        let change: SemanticChange = serde_yaml::from_str(&format!(
+            "spec: rms/semantic-change/v0.1\nintent:\n  summary: {summary}\n"
+        ))
+        .unwrap();
+
+        let path = semantic_change_record_path(&context, &change);
+        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(file_name.len() <= 138, "{file_name}");
+        assert!(file_name.ends_with(".yaml"));
+    }
+
+    #[test]
+    fn semantic_apply_rolls_back_when_change_record_cannot_be_written() {
+        let root = route_capability_fixture("semantic-apply-rollback");
+        let target = root.join("modules/play-game-domain/module.yaml");
+        let mut context = load_spec_target(&target).unwrap();
+        let change: SemanticChange = serde_yaml::from_str(
+            "spec: rms/semantic-change/v0.1\nintent:\n  summary: exercise-transactional-rollback\n",
+        )
+        .unwrap();
+        let candidate = spec_apply_candidate_context(&context, &change, None).unwrap();
+        let module_before = fs::read(&target).unwrap();
+        let implementation_path = target.parent().unwrap().join("implementation.yaml");
+        let implementation_before = fs::read(&implementation_path).unwrap();
+        let record_path = semantic_change_record_path(&context, &change);
+        fs::create_dir_all(&record_path).unwrap();
+
+        let error = apply_semantic_change(&mut context, &candidate, &change, None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("rolled back"), "{error}");
+        assert_eq!(fs::read(&target).unwrap(), module_before);
+        assert_eq!(
+            fs::read(&implementation_path).unwrap(),
+            implementation_before
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn spec_apply_law_set_revises_existing_authority() {
         let root = unique_test_dir("spec-apply-law-set");
         fs::create_dir_all(&root).unwrap();
@@ -73790,6 +73968,15 @@ architecture:
     fn property_command_accepts_shell_parameter_expansion_for_runner_selection() {
         assert!(proof_command_selects_runner(
             "cargo test \"${RMS_PROPERTY_RUNNER##*#}\"",
+            "run_property",
+            "RMS_PROPERTY_RUNNER",
+        ));
+    }
+
+    #[test]
+    fn property_command_accepts_generated_javascript_environment_selection() {
+        assert!(proof_command_selects_runner(
+            "node --input-type=module -e 'const [path, name] = process.env.RMS_PROPERTY_RUNNER.split(\"#\");'",
             "run_property",
             "RMS_PROPERTY_RUNNER",
         ));
@@ -78280,6 +78467,14 @@ verification:
             fs::read_to_string(root.join("modules/play-game-rules/implementation.yaml")).unwrap();
         let boundary_implementation =
             fs::read_to_string(root.join("modules/play-game-cli/implementation.yaml")).unwrap();
+        let provider_capability = load_manifest(
+            &root.join("modules/play-game-rules/contracts/resolve-move-capability.v1.yaml"),
+        )
+        .unwrap();
+        let consumer_capability = load_manifest(
+            &root.join("modules/play-game-cli/contracts/resolve-move-capability.v1.yaml"),
+        )
+        .unwrap();
         let has_parent_export_evidence = root
             .join("modules/play-game/verification/contracts/parent_export.md")
             .exists();
@@ -78320,11 +78515,22 @@ verification:
         assert!(parent.contains("name: \"play-game-cli\""));
         assert!(domain.contains("capabilities:"));
         assert!(domain.contains("name: \"resolve-move\""));
+        assert!(domain.contains("name: \"resolve-move-capability\""));
+        assert!(domain.contains("contract: contracts/resolve-move-capability.v1.yaml"));
+        assert!(boundary.contains("contract: contracts/resolve-move-capability.v1.yaml"));
+        assert_eq!(
+            get_str(&provider_capability.value, &["kind"]),
+            Some("capability")
+        );
+        assert_eq!(
+            get_str(&consumer_capability.value, &["kind"]),
+            Some("capability")
+        );
         assert!(domain.contains("x-rms:"));
         assert!(domain.contains("reusable: true"));
         assert!(domain.contains("verification/scenarios/reusable_package.md"));
         assert!(parent_scenario_evidence.contains("public-command-is-child-backed"));
-        assert!(boundary.contains("name: \"resolve-move\""));
+        assert!(boundary.contains("name: \"resolve-move-capability\""));
         assert!(
             domain_implementation.contains("name: \"PlayGameMachine\"")
                 || domain_implementation.contains("name: PlayGameMachine")
@@ -78344,6 +78550,8 @@ verification:
         assert!(boundary_implementation.contains("id: resolve-move-provider"));
         assert!(boundary_implementation.contains("consumer: src/adapter.mjs#handleBoundaryInput"));
         assert!(boundary_implementation.contains("provider_module: play-game-rules"));
+        assert!(boundary_implementation
+            .contains("provider_contract: contracts/resolve-move-capability.v1.yaml"));
         assert!(has_parent_export_evidence);
         assert!(has_transition_trace_evidence);
         assert!(has_accepted_rejected_evidence);
@@ -78464,12 +78672,12 @@ public_behavior_bindings:
 dependency_behavior_bindings:
   set:
     - id: resolve-move-provider-v2
-      capability: resolve-move
-      contract: contracts/resolve-move.v1.yaml
+      capability: resolve-move-capability
+      contract: contracts/resolve-move-capability.v1.yaml
       consumer: src/adapter.mjs#handleBoundaryInput
       resolution: module
       provider_module: play-game-domain
-      provider_contract: contracts/resolve-move.v1.yaml
+      provider_contract: contracts/resolve-move-capability.v1.yaml
 "#;
         run_spec_apply(
             &boundary.join("module.yaml"),
@@ -80142,27 +80350,25 @@ semantic_functions: []
         assert_eq!(routed.status(), OwnerStatus::Selected);
         assert_eq!(
             routed.selected_module().map(|module| module.name.as_str()),
-            Some("play-game-domain")
+            Some("play-game")
         );
-        assert!(routed.route.len() >= 2);
+        assert_eq!(routed.route.len(), 1);
 
         let cycle_root = unique_test_dir("next-recursive-cycle");
         fs::create_dir_all(&cycle_root).unwrap();
         write_recursive_parent(&cycle_root, "alpha", "beta", "internal", false);
         write_recursive_parent(&cycle_root, "beta", "alpha", "internal", false);
-        let cycle_profile = build_repository_profile(&cycle_root).unwrap();
-        let cycle = resolve_next_owner(
+        let cycle = route_next_owner(
             &cycle_root,
-            Some(&cycle_root.join("alpha.module.yaml")),
-            "change alpha beta rules",
-            &cycle_profile.modules,
-            false,
+            "change alpha rules",
+            cycle_root.join("alpha.module.yaml"),
+            "recursive route".to_string(),
+            Vec::new(),
         )
         .unwrap();
         fs::remove_dir_all(&cycle_root).unwrap();
-        assert_eq!(cycle.status(), OwnerStatus::Invalid);
-        assert!(cycle.reason.contains("cycle"), "{}", cycle.reason);
-        assert_eq!(cycle.route.len(), 2);
+        assert_eq!(cycle.status(), OwnerStatus::Ambiguous);
+        assert_eq!(cycle.route.len(), 1);
     }
 
     #[test]

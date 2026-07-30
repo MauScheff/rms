@@ -14,7 +14,7 @@ Executable coverage:
 - `runtime_monitor_shape_scaffold_gets_monitor_semantics` verifies `--shape runtime-monitor` records monitor kind, Monitor-profile obligations, monitor authority placeholders, runtime verification references, and trigger evidence placeholders.
 - `module_scaffold_generates_required_profile_sections` verifies requested Stateful, Distributed, Workflow, Boundary, and Monitor profiles produce the required empty profile sections while keeping module-specific semantics unset.
 - `composite_module_scaffold_generates_composition_section` verifies `--shape composite` records `kind: composite` and an explicit empty `composition` block.
-- `add_capability_scaffolds_recursive_tree_that_verifies` verifies recursive capability scaffolds include parent export, domain transition, accepted/rejected, malformed input, parser-to-domain-command evidence placeholders, generated trace bundles, and composite verification that checks child bundles.
+- `add_capability_scaffolds_recursive_tree_that_verifies` verifies recursive capability scaffolds include parent export, distinct command and capability-kind provider contracts, an exact matching consumer capability contract and dependency binding, domain transition, accepted/rejected, malformed input, parser-to-domain-command evidence placeholders, generated trace bundles, and composite verification that checks child bundles.
 - `rms release check --root .` runs a scaffold roundtrip that initializes a new RMS system, adds Rust, Swift, and Boundary-profile executable modules, validates and composes the scaffold, verifies the generated executable binding, and verifies the generated Rust binding.
 
 Compatibility:

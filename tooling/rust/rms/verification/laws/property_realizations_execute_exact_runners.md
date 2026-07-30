@@ -17,6 +17,7 @@ Command/tool:
 Expected result:
 
 - The shared command executes twice with distinct `RMS_PROPERTY_ID` and `RMS_PROPERTY_RUNNER` values.
+- Generated JavaScript dispatch through `process.env.RMS_PROPERTY_RUNNER` is recognized as exact runner selection.
 - Missing generator, runner, operation, and oracle ownership produce distinct diagnostics.
 
 Observed result: both focused regressions passed. Source revision is resolved from the committed candidate by strict audit.

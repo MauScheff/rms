@@ -867,12 +867,12 @@ x-rms:
     scope: rms-self-development
     semantic_revision_authority: repository maintainer seal
     evidence: verification/laws/rms_self_application_boundary.md
-  last_semantic_intent: Authorize independent repository-maintainer sealing for RMS self-development and seal probe v2, Python adapters, deterministic multi-module exploration, replayable counterexamples, and canonical probe evidence.
+  last_semantic_intent: Fix blind dogfood gaps in semantic apply atomicity, explicit owner routing, generated capability contracts, and JavaScript property runner selection.
   semantic_revision:
-    digest: sha256:9f2bcaa5778a1ae7c2b492cf494fb0a6ca9d17128e64cde9f0cf9902c6429597
-    change_record: verification/changes/implement-rms-executable-property-loop.yaml
+    digest: sha256:90adfe0f78dd943454bed266f8afe9045024a7eb49a7c8a6e049681d5167d037
+    change_record: verification/changes/fix-dogfood-atomic-routing-capability-and-runner-gaps.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:9472e4e3c17a69bc6cccdc27c5f4320e4fa17c2876270698ce6057e24c7b289f
+    change_record_digest: sha256:143570ed865374b2383e33e171a8cc4ce5fb10ca2e518605167075c8d0cad814
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-authorized-revision

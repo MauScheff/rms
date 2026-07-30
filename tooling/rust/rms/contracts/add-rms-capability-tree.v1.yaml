@@ -11,6 +11,8 @@ postconditions:
     statement: "The complete recursive topology is generated from explicit structured design output with canonical composition and no purpose-text inference."
   - id: "ensures-2"
     statement: "No existing standalone module is changed and no runnable surface is inferred from natural-language words."
+  - id: "ensures-3"
+    statement: "The domain child publishes a command contract and a distinct capability-kind contract with stable non-colliding identities; the boundary child requires and binds that exact provider capability contract."
 failure_categories:
   - id: "rejects-1"
     statement: "Existing generated targets, unsupported bindings or surface kinds, and incomplete recursive topology inputs."

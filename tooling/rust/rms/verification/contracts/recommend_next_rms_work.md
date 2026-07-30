@@ -9,7 +9,7 @@ Promise:
 Deterministic scenarios:
 
 - Classify fixtures for `system-root`, `module-root`, `system-container`, `multi-system-workspace`, `module-workspace`, and `uninitialized`. Root-level system/context readiness is `not-applicable` only where repository shape makes those artifacts inapplicable; a partial canonical root remains missing or invalid.
-- Resolve an explicit module, direct root module, sole top-level module, unique positive task match, and recursive composite route. Preserve ranked candidates and return `needs-owner` for a tie or no positive match.
+- Resolve an explicit module, direct root module, sole top-level module, unique positive task match, and inferred recursive composite route. An explicit `--module` is the caller-owned terminal owner even when it is a composite; preserve ranked candidates and return `needs-owner` for a tie or no positive match.
 - Classify read-only, design, semantic, surface, semantic-plus-surface, implementation-candidate, and undetermined task lanes from task text and canonical artifacts alone.
 - Compare reports produced before and after an unrelated dirty-file fixture. Owner, lane, confidence, and prescribed steps remain equal.
 - Serialize the same report model to text and JSON. Every executable step has `program`, `args`, and an independently escaped display value; a candidate commit is a manual authorization step and has no executable Git program.
@@ -27,7 +27,7 @@ cargo test --manifest-path tooling/rust/rms/Cargo.toml --locked next_text_and_js
 Acceptance oracle:
 
 - Stable fixture input produces byte-stable ordering and equal semantic fields in text and JSON.
-- Explicit ownership outranks inferred ownership; recursive routing terminates through a visited set; equal top scores and non-positive matches never select an owner.
+- Explicit ownership selects exactly the named module; inferred recursive routing terminates through a visited set; equal top scores and non-positive matches never select an owner.
 - Dirty working-tree state cannot alter the prospective classification.
 - Shell-significant task and path text remains one argument in `args`, while display escaping is presentation only.
 - Successful construction performs no writes or child-process/provider execution and never represents a commit as an executable step.
