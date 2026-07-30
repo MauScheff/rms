@@ -13,3 +13,9 @@ This evidence proves `evaluate-semantic-properties`,
 Focused evaluator, CLI, probe, relationship, monitor, replay, viewer, schema,
 and distribution tests run under `cargo test -p rms`. Repository validation and
 the maintainer release gate check contract closure and native proof integration.
+
+Semantic planning renders an exact bounded-response example, including
+`trace-metric` sources and scalar `value.quantity` dimensions. Invalid nested
+quantity shapes preserve their causal diagnostic instead of collapsing to an
+observation label, so agents can correct declarations without reading RMS
+source or prior examples.

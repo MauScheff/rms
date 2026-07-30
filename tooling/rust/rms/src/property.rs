@@ -370,7 +370,7 @@ pub(super) fn compile_property(
                 .filter_map(|item| match parse_observation(item) {
                     Ok(observation) => Some(observation),
                     Err(error) => {
-                        issues.push(error.to_string());
+                        issues.push(format!("{error:#}"));
                         None
                     }
                 })
@@ -392,7 +392,7 @@ pub(super) fn compile_property(
                 .filter_map(|item| match parse_assumption(item) {
                     Ok(assumption) => Some(assumption),
                     Err(error) => {
-                        issues.push(error.to_string());
+                        issues.push(format!("{error:#}"));
                         None
                     }
                 })
@@ -418,7 +418,7 @@ pub(super) fn compile_property(
                 {
                     Ok(expression) => Some(expression),
                     Err(error) => {
-                        issues.push(error.to_string());
+                        issues.push(format!("{error:#}"));
                         None
                     }
                 }
@@ -1769,5 +1769,74 @@ mod tests {
             .any(|issue| issue.contains("dimension")));
         assert!(parse_quantity(&json!({"value": 1, "unit": "fortnight"})).is_err());
         assert!(parse_quantity(&json!({"value": "1e3", "unit": "ms"})).is_err());
+    }
+
+    #[test]
+    fn quantity_observation_errors_preserve_the_actionable_inner_cause() {
+        let definition = json!({
+            "id": "bad-quantity-shape",
+            "observations": [
+                {
+                    "id": "transition_count",
+                    "source": {"kind": "trace-metric", "name": "transition-count"},
+                    "value": {"quantity": {"dimension": "transition", "unit": "transition"}}
+                }
+            ],
+            "temporal": {
+                "scope": "machine",
+                "expression": {
+                    "always": {"compare": {
+                        "observation": "transition_count",
+                        "operator": "gte",
+                        "value": 0,
+                        "unit": "transition"
+                    }}
+                }
+            }
+        });
+        let issues = compile_property(&definition).unwrap_err();
+        assert!(issues.iter().any(|issue| {
+            issue.contains("observation `transition_count`")
+                && issue.contains("quantity observation must declare `value.quantity`")
+        }));
+    }
+
+    #[test]
+    fn transition_count_is_a_dimensionally_typed_trace_metric() {
+        let definition = json!({
+            "id": "one-transition-response",
+            "observations": [
+                {
+                    "id": "accepted",
+                    "source": {"kind": "output", "output_kind": "reply", "name": "Accepted"},
+                    "value": "occurrence"
+                },
+                {
+                    "id": "updated",
+                    "source": {"kind": "output", "output_kind": "event", "name": "Updated"},
+                    "value": "occurrence"
+                },
+                {
+                    "id": "transition_count",
+                    "source": {"kind": "trace-metric", "name": "transition-count"},
+                    "value": {"quantity": "transition"}
+                }
+            ],
+            "temporal": {
+                "scope": "machine",
+                "expression": {
+                    "bounded_response": {
+                        "trigger": {"occurred": "accepted"},
+                        "response": {"occurred": "updated"},
+                        "within": {
+                            "metric": "transition_count",
+                            "value": 1,
+                            "unit": "transition"
+                        }
+                    }
+                }
+            }
+        });
+        assert!(compile_property(&definition).is_ok());
     }
 }

@@ -46654,6 +46654,41 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "```")?;
     writeln!(out)?;
     writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; and exact realizations. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out)?;
+    writeln!(out, "A bounded response measured in nominal transitions uses this exact executable shape inside `properties.add[]` or `properties.set[]`:")?;
+    writeln!(out, "```yaml")?;
+    writeln!(out, "observations:")?;
+    writeln!(out, "  - id: accepted")?;
+    writeln!(
+        out,
+        "    source: {{kind: output, output_kind: reply, name: Accepted}}"
+    )?;
+    writeln!(out, "    value: occurrence")?;
+    writeln!(out, "  - id: updated")?;
+    writeln!(
+        out,
+        "    source: {{kind: output, output_kind: event, name: Updated}}"
+    )?;
+    writeln!(out, "    value: occurrence")?;
+    writeln!(out, "  - id: transition_count")?;
+    writeln!(
+        out,
+        "    source: {{kind: trace-metric, name: transition-count}}"
+    )?;
+    writeln!(out, "    value: {{quantity: transition}}")?;
+    writeln!(out, "assumptions: []")?;
+    writeln!(out, "temporal:")?;
+    writeln!(out, "  scope: machine")?;
+    writeln!(out, "  expression:")?;
+    writeln!(out, "    bounded_response:")?;
+    writeln!(out, "      trigger: {{occurred: accepted}}")?;
+    writeln!(out, "      response: {{occurred: updated}}")?;
+    writeln!(
+        out,
+        "      within: {{metric: transition_count, value: 1, unit: transition}}"
+    )?;
+    writeln!(out, "```")?;
+    writeln!(out, "Closed trace metrics are `elapsed` with `value: {{quantity: time}}`, `transition-count` with `value: {{quantity: transition}}`, `attempt-count` with `value: {{quantity: attempt}}`, and `message-count` with `value: {{quantity: message}}`. Quantity dimensions are scalar strings under `value.quantity`; units belong on predicate comparison values and temporal bounds, not in the observation type.")?;
     writeln!(out, "`properties.remove[]` contains existing property ids. Binding-native realizations name a `path#symbol` runner and an exact generator. Protocol observations reference a public protocol automaton. `semantic_functions.add[]` and `semantic_functions.set[]` use the rendered function shape; `semantic_functions.remove[]` contains existing function ids.")?;
     writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module.")?;
     writeln!(out, "`rms spec apply` automatically adds every currently active semantic revision to `supersedes` and hash-seals the exact new record. Use explicit `supersedes` only for additional branches that are not locally discoverable. Applied records are append-only: never edit or delete them.")?;
@@ -81546,6 +81581,10 @@ verification:
         assert!(semantic.contains("authority_bindings:"));
         assert!(semantic.contains("resource_protocols:"));
         assert!(semantic.contains("Executable temporal properties"));
+        assert!(semantic.contains("source: {kind: trace-metric, name: transition-count}"));
+        assert!(semantic.contains("value: {quantity: transition}"));
+        assert!(semantic.contains("within: {metric: transition_count, value: 1, unit: transition}"));
+        assert!(semantic.contains("Quantity dimensions are scalar strings under `value.quantity`"));
         assert!(semantic.contains("Descriptive `pattern`"));
         assert!(semantic.contains("public protocol automaton"));
         assert!(semantic.contains("RMS module ids, not language package spellings"));
