@@ -1309,8 +1309,23 @@ fn evaluate_temporal(
                     pending.push((frame.index, current.clone()));
                 }
                 if evaluate_predicate(response, frame, &mut quantities)? {
-                    if let Some((trigger_index, _)) = pending.first() {
+                    if let Some((trigger_index, started)) = pending.first() {
                         let trigger_index = *trigger_index;
+                        let elapsed = current.difference(started)?;
+                        quantities.push(elapsed.normalized());
+                        if elapsed.compare(bound)? == Ordering::Greater {
+                            return Ok(TemporalResult {
+                                verdict: Verdict::Violated,
+                                summary: "bounded response arrived after its deadline".to_string(),
+                                decisive: vec![trigger_index, frame.index],
+                                trigger: Some(trigger_index),
+                                response: Some(frame.index),
+                                pending: Some(format!(
+                                    "expired response for trigger at {trigger_index}"
+                                )),
+                                quantities,
+                            });
+                        }
                         pending.remove(0);
                         last_match = Some((trigger_index, frame.index));
                     }
@@ -1647,6 +1662,52 @@ mod tests {
         let envelopes = normalize_trace(&property, &trace).unwrap();
         let streamed = evaluate_observation_envelopes(&property, &envelopes, true).unwrap();
         assert_eq!(streamed.verdict, evaluation.verdict);
+    }
+
+    #[test]
+    fn bounded_response_rejects_a_late_probe_response() {
+        let compiled = property(json!({
+            "bounded_response": {
+                "trigger": {"occurred": "submitted"},
+                "response": {"occurred": "accepted"},
+                "within": {"metric": "elapsed", "value": 250, "unit": "ms"}
+            }
+        }));
+        let delayed = trace(
+            vec![
+                json!({
+                    "time": {"value": 0, "unit": "ns"},
+                    "input": {"kind": "command", "name": "Submit"},
+                    "outputs": []
+                }),
+                json!({
+                    "time": {"value": 0, "unit": "ns"},
+                    "action": "delay",
+                    "outputs": []
+                }),
+                json!({
+                    "time": {"value": 251000000, "unit": "ns"},
+                    "input": {"kind": "effect-result", "name": "Acknowledged"},
+                    "outputs": [{"kind": "event", "name": "Accepted", "value": {}}]
+                }),
+            ],
+            true,
+        );
+
+        let evaluation = evaluate_trace(&compiled, &delayed).unwrap();
+
+        assert_eq!(evaluation.verdict, Verdict::Violated);
+        assert_eq!(
+            evaluation.explanation.summary,
+            "bounded response arrived after its deadline"
+        );
+        assert_eq!(evaluation.explanation.trigger_observation, Some(0));
+        assert_eq!(evaluation.explanation.response_observation, Some(2));
+        assert!(evaluation
+            .explanation
+            .normalized_quantities
+            .iter()
+            .any(|quantity| quantity.normalized_numerator == "251000000"));
     }
 
     #[test]

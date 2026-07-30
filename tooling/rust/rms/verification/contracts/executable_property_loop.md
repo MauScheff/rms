@@ -26,6 +26,11 @@ Finite-scope temporal proof requires either a model checker or a
 semantic gate diagnoses its omission directly, and property checking never
 promotes an unflagged finite enumeration to exhaustive evidence.
 
+Bounded-response evaluation compares the metric at the matching response
+against the trigger metric before discharging the obligation. A response that
+arrives after the declared bound is a violation with both trigger and response
+indices retained, even when no intermediate observation crosses the deadline.
+
 Raw language-binding variants such as `MachineReply.Accepted` project to the
 same declared observation as probe-normalized `Accepted` names. Regression
 coverage requires the raw trace, its normalized observation envelopes, and
