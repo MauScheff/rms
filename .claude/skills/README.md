@@ -38,3 +38,5 @@ Use `rms explain ["<question>"]` when the compact prescription needs clarificati
 Temporal promises use typed observations, explicit assumptions, closed expressions, and dimensionally valid quantities. Use `property check` to type-check, `evaluate` for a real trace, `search` for a witness or counterexample, `analyze` for finite relationships, `monitor` for an offline or streaming prefix, and `replay` for recorded `rms/property-analysis/v0.1` evidence. A bounded or open run is inconclusive, never proof.
 
 For a transition-count bound, declare the metric observation exactly as `source: {kind: trace-metric, name: transition-count}` with `value: {quantity: transition}`; put `{metric: <observation-id>, value: <decimal>, unit: transition}` in the temporal bound. `rms spec plan` renders a complete bounded-response example for other agents and dimensions.
+
+For finite machine-, protocol-, resource-, artifact-, or composition-scope proof, use `strategy: deterministic-exhaustive` with `exhaustive: true`. Without the explicit flag RMS treats the realization as non-exhaustive.

@@ -340,6 +340,8 @@ rms property replay ANALYSIS
 
 Metric observations and bounds use exact quantities. RMS v1 supports time, information, ratio, and nominal transition/message/attempt/item units. Compatible units normalize exactly; cross-dimensional comparisons are invalid.
 
+Finite machine-, protocol-, resource-, artifact-, or composition-scope proof realizations use `strategy: deterministic-exhaustive` with `exhaustive: true`, or a model checker. The explicit flag prevents a finite sample from being mistaken for an exhausted space.
+
 All operations share `rms/property-analysis/v0.1`. Streaming monitors consume `rms/property-observation/v0.1` and remain observe-only derived evidence.
 
 The project completion order is:

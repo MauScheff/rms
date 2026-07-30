@@ -20,6 +20,12 @@ quantity shapes preserve their causal diagnostic instead of collapsing to an
 observation label, so agents can correct declarations without reading RMS
 source or prior examples.
 
+Finite-scope temporal proof requires either a model checker or a
+`deterministic-exhaustive` realization that explicitly declares
+`exhaustive: true`. Planning and agent guidance render the exact field, the
+semantic gate diagnoses its omission directly, and property checking never
+promotes an unflagged finite enumeration to exhaustive evidence.
+
 Raw language-binding variants such as `MachineReply.Accepted` project to the
 same declared observation as probe-normalized `Accepted` names. Regression
 coverage requires the raw trace, its normalized observation envelopes, and

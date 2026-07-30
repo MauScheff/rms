@@ -17104,18 +17104,14 @@ fn validate_temporal_target_report(
         }
         return;
     }
-    let strategies = target
-        .realizations
-        .iter()
-        .map(|realization| realization.strategy.as_str())
-        .collect::<BTreeSet<_>>();
     let supported = match scope {
-        "machine" | "protocol" | "resource" | "artifact" | "composition" => strategies
+        "machine" | "protocol" | "resource" | "artifact" | "composition" => target
+            .realizations
             .iter()
-            .any(|strategy| matches!(*strategy, "deterministic-exhaustive" | "model-checker")),
-        "runtime" | "platform" => strategies.iter().any(|strategy| {
+            .any(property_realization_supports_finite_scope),
+        "runtime" | "platform" => target.realizations.iter().any(|realization| {
             matches!(
-                *strategy,
+                realization.strategy.as_str(),
                 "benchmark" | "static-analyzer" | "sanitizer" | "model-checker"
             )
         }),
@@ -46753,7 +46749,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         "Pure transitions reject illegal states instead of throwing or doing IO.",
         "Boundary adapters parse raw input into command envelopes or typed rejections before delegation.",
         "Boundary parsers and runnable surfaces have fuzz-style semantic targets or a concrete no-fuzz justification.",
-        "Open-ended fuzz targets use generated-property or coverage-fuzzer realization; fixed corpora are labeled deterministic-corpus and finite complete spaces deterministic-exhaustive. Every realization names an exact relative path#symbol runner; generated-property and deterministic-exhaustive realizations also name an exact generator. The runner calls the generator when declared, executes the semantic operation, and applies an oracle.",
+        "Open-ended fuzz targets use generated-property or coverage-fuzzer realization; fixed corpora are labeled deterministic-corpus and finite complete spaces use `strategy: deterministic-exhaustive` with `exhaustive: true`. Every realization names an exact relative path#symbol runner; generated-property and deterministic-exhaustive realizations also name an exact generator. The runner calls the generator when declared, executes the semantic operation, and applies an oracle.",
         "Unknown, duplicate, stale, partial, conflicting, delayed, or corrected external outcomes have reconciliation or recovery evidence when they affect correctness.",
     ] {
         writeln!(out, "- {item}")?;
@@ -49659,13 +49655,22 @@ fn validate_semantic_properties(
             if !matches!(realization.profile.as_str(), "smoke" | "ci" | "nightly")
                 || !valid_strategy
                 || realization.command.trim().is_empty()
-                || (realization.strategy == "deterministic-exhaustive" && !realization.exhaustive)
             {
                 diagnostics.push(error(
                     "evidence.property-realization-invalid",
                     &context.target,
                     format!(
                         "property `{}` has an invalid realization profile, strategy, or command",
+                        property.id
+                    ),
+                ));
+            }
+            if realization.strategy == "deterministic-exhaustive" && !realization.exhaustive {
+                diagnostics.push(error(
+                    "evidence.property-realization-not-exhaustive",
+                    &context.target,
+                    format!(
+                        "property `{}` uses `deterministic-exhaustive` but does not declare `exhaustive: true`",
                         property.id
                     ),
                 ));
@@ -49906,6 +49911,11 @@ fn property_realization_requires_generator(strategy: &str) -> bool {
     matches!(strategy, "deterministic-exhaustive" | "generated-property")
 }
 
+fn property_realization_supports_finite_scope(realization: &PropertyRealization) -> bool {
+    realization.strategy == "model-checker"
+        || (realization.strategy == "deterministic-exhaustive" && realization.exhaustive)
+}
+
 fn validate_temporal_property(
     context: &SpecTargetContext,
     property: &SemanticPropertyChange,
@@ -49968,18 +49978,14 @@ fn validate_temporal_property(
         }
         return;
     }
-    let strategies = property
-        .realizations
-        .iter()
-        .map(|realization| realization.strategy.as_str())
-        .collect::<BTreeSet<_>>();
     let supported = match scope {
-        "machine" | "protocol" | "resource" | "artifact" | "composition" => strategies
+        "machine" | "protocol" | "resource" | "artifact" | "composition" => property
+            .realizations
             .iter()
-            .any(|strategy| matches!(*strategy, "deterministic-exhaustive" | "model-checker")),
-        "runtime" | "platform" => strategies.iter().any(|strategy| {
+            .any(property_realization_supports_finite_scope),
+        "runtime" | "platform" => property.realizations.iter().any(|realization| {
             matches!(
-                *strategy,
+                realization.strategy.as_str(),
                 "benchmark" | "static-analyzer" | "sanitizer" | "model-checker"
             )
         }),
@@ -81615,6 +81621,7 @@ verification:
         assert!(semantic.contains("`properties.remove[]` contains existing property ids"));
         assert!(semantic.contains("path#symbol runner"));
         assert!(semantic.contains("exact generator"));
+        assert!(semantic.contains("`strategy: deterministic-exhaustive` with `exhaustive: true`"));
         assert!(semantic.contains("Every changed law and every added or changed contract"));
         assert!(semantic.contains("automatically adds every currently active semantic revision"));
         assert!(semantic.contains("Applied records are append-only"));
@@ -85008,6 +85015,66 @@ temporal:
         let mut diagnostics = Vec::new();
         validate_temporal_target_report(&manifest, &target, &mut diagnostics);
         assert!(diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "evidence.temporal-realization-mismatch" }));
+    }
+
+    #[test]
+    fn temporal_property_requires_explicit_exhaustive_claim() {
+        let manifest = loaded_module_manifest(
+            "module.yaml",
+            "spec: rms/module/v0.1\nmodule: {name: temporal, version: 0.1.0, kind: library, purpose: test}\n",
+        );
+        let definition: YamlValue = serde_yaml::from_str(
+            r#"
+id: eventually-done
+observations:
+  - id: done
+    source: {kind: transition, case: Done}
+    value: occurrence
+temporal:
+  scope: machine
+  expression:
+    eventually: {occurred: done}
+"#,
+        )
+        .unwrap();
+        let target = |exhaustive| PropertyTargetReport {
+            id: "eventually-done".to_string(),
+            kind: "property".to_string(),
+            proves: Some("eventually-done".to_string()),
+            input_space: Some("finite".to_string()),
+            oracle: vec!["done is eventually reached".to_string()],
+            command: Some("property".to_string()),
+            evidence: Some("verification/properties/eventually.md".to_string()),
+            counterexamples: None,
+            realizations: vec![PropertyRealization {
+                profile: "smoke".to_string(),
+                strategy: "deterministic-exhaustive".to_string(),
+                command: "property".to_string(),
+                generator: Some("src/main.rs#generate_cases".to_string()),
+                runner: "src/main.rs#eventually_done".to_string(),
+                exhaustive,
+            }],
+            observations: get_path(&definition, &["observations"])
+                .and_then(YamlValue::as_sequence)
+                .cloned()
+                .unwrap(),
+            assumptions: Vec::new(),
+            temporal: get_path(&definition, &["temporal"]).cloned(),
+            definition: definition.clone(),
+            status: "declared".to_string(),
+        };
+
+        let mut incomplete_diagnostics = Vec::new();
+        validate_temporal_target_report(&manifest, &target(false), &mut incomplete_diagnostics);
+        assert!(incomplete_diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "evidence.temporal-realization-mismatch" }));
+
+        let mut exhaustive_diagnostics = Vec::new();
+        validate_temporal_target_report(&manifest, &target(true), &mut exhaustive_diagnostics);
+        assert!(!exhaustive_diagnostics
             .iter()
             .any(|diagnostic| { diagnostic.check == "evidence.temporal-realization-mismatch" }));
     }
