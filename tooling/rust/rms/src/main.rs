@@ -1787,6 +1787,8 @@ struct PropertyCounterexampleSummary {
     proves: Option<String>,
     replay_command: Option<String>,
     trace: Option<String>,
+    #[serde(skip)]
+    analysis: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     replay_result: Option<String>,
     status: String,
@@ -15549,10 +15551,13 @@ fn execute_property_realizations(
                 ));
                 continue;
             }
-            let replay_command = summary
-                .replay_command
-                .clone()
-                .unwrap_or_else(|| format!("trace {}", summary.trace.as_deref().unwrap_or("")));
+            let replay_command = summary.replay_command.clone().unwrap_or_else(|| {
+                if summary.analysis {
+                    format!("rms property replay {}", path.display())
+                } else {
+                    format!("trace {}", summary.trace.as_deref().unwrap_or(""))
+                }
+            });
             if dry_run {
                 commands.push(PropertyRunCommandReport {
                     kind: "counterexample:replay".to_string(),
@@ -16232,20 +16237,7 @@ fn parse_observation_stream(
 fn run_property_replay(counterexample: &Path, json_output: bool) -> Result<()> {
     let value = load_yaml_value(counterexample)?;
     if get_str(&value, &["spec"]) == Some(property::ANALYSIS_SPEC) {
-        let json_value = serde_json::to_value(&value)?;
-        let definitions = json_value
-            .get("property_definitions")
-            .and_then(JsonValue::as_array)
-            .ok_or_else(|| anyhow!("property analysis has no embedded property definitions"))?;
-        let evidence = json_value
-            .get("evidence_trace")
-            .filter(|value| !value.is_null())
-            .or_else(|| {
-                json_value
-                    .pointer("/relationships/0/refuting_trace")
-                    .filter(|value| !value.is_null())
-            });
-        let Some(evidence) = evidence else {
+        let Some(evaluations) = evaluate_recorded_property_analysis(&value)? else {
             if json_output {
                 println!(
                     "{}",
@@ -16261,14 +16253,6 @@ fn run_property_replay(counterexample: &Path, json_output: bool) -> Result<()> {
             }
             return Ok(());
         };
-        let evaluations = definitions
-            .iter()
-            .map(|definition| {
-                let compiled = property::compile_property(definition)
-                    .map_err(|issues| anyhow!(issues.join("; ")))?;
-                property::evaluate_trace(&compiled, evidence)
-            })
-            .collect::<Result<Vec<_>>>()?;
         let report = json!({
             "spec": property::ANALYSIS_SPEC,
             "result": "replayed",
@@ -16338,12 +16322,48 @@ fn run_property_replay(counterexample: &Path, json_output: bool) -> Result<()> {
     Ok(())
 }
 
+fn evaluate_recorded_property_analysis(
+    value: &YamlValue,
+) -> Result<Option<Vec<property::Evaluation>>> {
+    let json_value = serde_json::to_value(value)?;
+    let definitions = json_value
+        .get("property_definitions")
+        .and_then(JsonValue::as_array)
+        .filter(|definitions| !definitions.is_empty())
+        .ok_or_else(|| anyhow!("property analysis has no embedded property definitions"))?;
+    let evidence = json_value
+        .get("evidence_trace")
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            json_value
+                .pointer("/relationships/0/refuting_trace")
+                .filter(|value| !value.is_null())
+        });
+    let Some(evidence) = evidence else {
+        return Ok(None);
+    };
+    definitions
+        .iter()
+        .map(|definition| {
+            let compiled = property::compile_property(definition)
+                .map_err(|issues| anyhow!(issues.join("; ")))?;
+            property::evaluate_trace(&compiled, evidence)
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
 fn execute_property_counterexample(
     counterexample: &Path,
     summary: &PropertyCounterexampleSummary,
     timeout_seconds: u64,
 ) -> Result<Option<ProofProcessOutput>> {
     let root = counterexample.parent().unwrap_or_else(|| Path::new("."));
+    if summary.analysis {
+        let value = load_yaml_value(counterexample)?;
+        evaluate_recorded_property_analysis(&value)?;
+        return Ok(None);
+    }
     if let Some(command) = summary.replay_command.as_deref() {
         let counterexample_path = fs::canonicalize(counterexample)
             .unwrap_or_else(|_| counterexample.to_path_buf())
@@ -17790,13 +17810,42 @@ fn property_counterexample_summary(
     value: &YamlValue,
 ) -> PropertyCounterexampleSummary {
     let spec = get_str(value, &["spec"]);
+    let analysis = spec == Some(property::ANALYSIS_SPEC);
+    let json_value = analysis.then(|| serde_json::to_value(value).ok()).flatten();
     let replay_command = get_str(value, &["replay_command"]).map(ToString::to_string);
     let trace = get_str(value, &["trace"]).map(ToString::to_string);
-    let status = if spec == Some("rms/property-counterexample/v0.1")
-        && get_str(value, &["property"]).is_some()
-        && get_str(value, &["proves"]).is_some()
-        && (replay_command.is_some() || trace.is_some())
-    {
+    let property = if analysis {
+        json_value
+            .as_ref()
+            .and_then(|value| {
+                value
+                    .pointer("/evaluations/0/property")
+                    .or_else(|| value.pointer("/property_definitions/0/id"))
+            })
+            .and_then(JsonValue::as_str)
+            .map(ToString::to_string)
+    } else {
+        get_str(value, &["property"]).map(ToString::to_string)
+    };
+    let proves = if analysis {
+        json_value
+            .as_ref()
+            .and_then(|value| value.pointer("/property_definitions/0/proves"))
+            .and_then(JsonValue::as_str)
+            .map(ToString::to_string)
+    } else {
+        get_str(value, &["proves"]).map(ToString::to_string)
+    };
+    let analysis_has_definitions = json_value
+        .as_ref()
+        .and_then(|value| value.get("property_definitions"))
+        .and_then(JsonValue::as_array)
+        .is_some_and(|definitions| !definitions.is_empty());
+    let legacy_replayable = spec == Some("rms/property-counterexample/v0.1")
+        && property.is_some()
+        && proves.is_some()
+        && (replay_command.is_some() || trace.is_some());
+    let status = if legacy_replayable || (analysis && analysis_has_definitions) {
         "pass"
     } else {
         "fail"
@@ -17804,10 +17853,11 @@ fn property_counterexample_summary(
     .to_string();
     PropertyCounterexampleSummary {
         path: path.display().to_string(),
-        property: get_str(value, &["property"]).map(ToString::to_string),
-        proves: get_str(value, &["proves"]).map(ToString::to_string),
+        property,
+        proves,
         replay_command,
         trace,
+        analysis,
         replay_result: None,
         status,
     }
@@ -85149,6 +85199,10 @@ records:
         assert_eq!(get_str(&value, &["spec"]), Some(property::ANALYSIS_SPEC));
         assert_eq!(get_str(&value, &["result"]), Some("satisfied"));
         assert!(get_path(&value, &["evidence_observations"]).is_some());
+        let summary = property_counterexample_summary(&analysis, &value);
+        assert_eq!(summary.status, "pass");
+        assert_eq!(summary.property.as_deref(), Some("accepted-after-submit"));
+        execute_property_counterexample(&analysis, &summary, 30).unwrap();
         run_property_replay(&analysis, true).unwrap();
         fs::remove_dir_all(root).unwrap();
     }

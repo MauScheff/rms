@@ -31,6 +31,12 @@ against the trigger metric before discharging the obligation. A response that
 arrives after the declared bound is a violation with both trigger and response
 indices retained, even when no intermediate observation crosses the deadline.
 
+Property checking and binding-native regression runs recognize
+`rms/property-analysis/v0.1` artifacts as replayable evidence through their
+embedded property definitions and evidence trace. The same artifact accepted
+by `rms property replay` is not misclassified by the older counterexample
+scanner.
+
 Raw language-binding variants such as `MachineReply.Accepted` project to the
 same declared observation as probe-normalized `Accepted` names. Regression
 coverage requires the raw trace, its normalized observation envelopes, and
