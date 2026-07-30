@@ -13771,10 +13771,32 @@ fn validate_probe_evaluation(
         let mut trace = build_trace_report(&path)?;
         apply_probe_trace_conformance(&path, &binding.implementation, &mut trace);
         if trace_has_errors(&trace) {
-            bail!("probe evaluation result `{expected_id}` is nonconforming");
+            bail!(
+                "probe evaluation result `{expected_id}` is nonconforming: {}",
+                probe_conformance_diagnostic_summary(&trace.diagnostics)
+            );
         }
     }
     Ok(())
+}
+
+fn probe_conformance_diagnostic_summary(diagnostics: &[TraceDiagnostic]) -> String {
+    let details = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .map(|diagnostic| {
+            let record = diagnostic
+                .record_index
+                .map(|index| format!(" at record {}", index + 1))
+                .unwrap_or_default();
+            format!("[{}]{record} {}", diagnostic.check, diagnostic.message)
+        })
+        .collect::<Vec<_>>();
+    if details.is_empty() {
+        "trace conformance failed without an error diagnostic".to_string()
+    } else {
+        details.join("; ")
+    }
 }
 
 fn resolve_probe_implementation(explicit: Option<&Path>) -> Result<PathBuf> {
@@ -76916,6 +76938,31 @@ records:
         assert_eq!(failures.len(), 2);
         assert_eq!(failures[0].path, "steps[0].expect.case");
         assert_eq!(failures[1].path, "expect.final_state");
+    }
+
+    #[test]
+    fn probe_conformance_failure_preserves_exact_trace_diagnostics() {
+        let diagnostics = vec![
+            TraceDiagnostic {
+                severity: Severity::Warning,
+                check: "trace.review".to_string(),
+                path: "trace.yaml".to_string(),
+                message: "review this separately".to_string(),
+                record_index: None,
+            },
+            TraceDiagnostic {
+                severity: Severity::Error,
+                check: "trace.output-mismatch".to_string(),
+                path: "trace.yaml".to_string(),
+                message: "expected event `MovePlaced`, observed no events".to_string(),
+                record_index: Some(0),
+            },
+        ];
+        let summary = probe_conformance_diagnostic_summary(&diagnostics);
+        assert_eq!(
+            summary,
+            "[trace.output-mismatch] at record 1 expected event `MovePlaced`, observed no events"
+        );
     }
 
     #[test]

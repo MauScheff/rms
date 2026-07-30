@@ -19,3 +19,10 @@ Semantic planning renders an exact bounded-response example, including
 quantity shapes preserve their causal diagnostic instead of collapsing to an
 observation label, so agents can correct declarations without reading RMS
 source or prior examples.
+
+Raw language-binding variants such as `MachineReply.Accepted` project to the
+same declared observation as probe-normalized `Accepted` names. Regression
+coverage requires the raw trace, its normalized observation envelopes, and
+streaming evaluation to retain the same non-vacuous decisive evidence.
+Rejected probe evaluations include the exact failing trace-conformance checks
+and record indices instead of only reporting that the result is nonconforming.

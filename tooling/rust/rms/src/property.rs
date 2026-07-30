@@ -955,7 +955,7 @@ fn project_observation(
             let observed_name = input.and_then(variant_name);
             let observed_kind = input.and_then(|input| input.get("kind")).and_then(Value::as_str);
             Value::Bool(
-                observed_name == Some(name.as_str())
+                observed_name.is_some_and(|observed| variant_matches(observed, name))
                     && input_kind
                         .as_deref()
                         .is_none_or(|expected| observed_kind.is_none_or(|kind| kind == expected)),
@@ -1068,7 +1068,10 @@ fn output_occurs(raw: &Value, output_kind: &str, name: &str) -> bool {
     if let Some(outputs) = raw.get("outputs").and_then(Value::as_array) {
         if outputs.iter().any(|output| {
             output.get("kind").and_then(Value::as_str) == Some(output_kind)
-                && output.get("name").and_then(Value::as_str) == Some(name)
+                && output
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|observed| variant_matches(observed, name))
         }) {
             return true;
         }
@@ -1080,14 +1083,16 @@ fn output_occurs(raw: &Value, output_kind: &str, name: &str) -> bool {
             output
                 .and_then(|output| output.get(&field))
                 .and_then(Value::as_array)
-                .is_some_and(|items| items.iter().any(|item| variant_name(item) == Some(name)))
+                .is_some_and(|items| {
+                    items.iter().any(|item| {
+                        variant_name(item).is_some_and(|observed| variant_matches(observed, name))
+                    })
+                })
         }
-        "reply" | "rejection" => {
-            output
-                .and_then(|output| output.get(output_kind))
-                .and_then(variant_name)
-                == Some(name)
-        }
+        "reply" | "rejection" => output
+            .and_then(|output| output.get(output_kind))
+            .and_then(variant_name)
+            .is_some_and(|observed| variant_matches(observed, name)),
         _ => false,
     }
 }
@@ -1520,6 +1525,14 @@ fn variant_name(value: &Value) -> Option<&str> {
         .or_else(|| value.as_str())
 }
 
+fn variant_matches(observed: &str, expected: &str) -> bool {
+    observed == expected
+        || observed
+            .rsplit(['.', ':', '#'])
+            .next()
+            .is_some_and(|suffix| suffix == expected)
+}
+
 fn number_text(value: &Value) -> Option<String> {
     match value {
         Value::Number(number) => Some(number.to_string()),
@@ -1838,5 +1851,48 @@ mod tests {
             }
         });
         assert!(compile_property(&definition).is_ok());
+    }
+
+    #[test]
+    fn raw_qualified_variants_and_normalized_probe_names_project_identically() {
+        let compiled = property(json!({
+            "bounded_response": {
+                "trigger": {"occurred": "submitted"},
+                "response": {"occurred": "accepted"},
+                "within": {"metric": "elapsed", "value": 10, "unit": "ms"}
+            }
+        }));
+        let raw = json!({
+            "spec": "rms/trace-bundle/v0.1",
+            "complete": true,
+            "machine": "DeliveryMachine",
+            "records": [{
+                "input": {"kind": "command", "tag": "DeliveryCommand.Submit"},
+                "state_before": {"tag": "DeliveryState.Ready"},
+                "state_after": {"tag": "DeliveryState.Ready"},
+                "output": {
+                    "next_state": {"tag": "DeliveryState.Ready"},
+                    "events": [{"tag": "DeliveryEvent.Accepted"}],
+                    "commands": [],
+                    "effects": [],
+                    "reply": null,
+                    "rejection": null
+                },
+                "time": 5
+            }]
+        });
+        let evaluation = evaluate_trace(&compiled, &raw).unwrap();
+        let envelopes = normalize_trace(&compiled, &raw).unwrap();
+        let streamed = evaluate_observation_envelopes(&compiled, &envelopes, true).unwrap();
+
+        assert_eq!(evaluation.verdict, Verdict::Satisfied);
+        assert_eq!(evaluation.explanation.trigger_observation, Some(0));
+        assert_eq!(evaluation.explanation.response_observation, Some(0));
+        assert_eq!(streamed.verdict, evaluation.verdict);
+        assert_eq!(
+            envelopes[0].facts.get("submitted"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(envelopes[0].facts.get("accepted"), Some(&Value::Bool(true)));
     }
 }
