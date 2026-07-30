@@ -118,6 +118,14 @@ artifacts describing RMS are test subjects and architectural records; they do
 not govern ordinary RMS maintenance unless the user explicitly requests
 self-hosting.
 
+Semantic revisions made during ordinary RMS maintenance are sealed by the
+repository maintainer workflow. This authority is a closed, explicitly
+declared self-application variant: it is valid only for the RMS
+self-development module, retains immutable change-record and canonical
+projection digests, and is rejected for ordinary downstream modules. The seal
+records maintainer authority; it does not claim that the candidate RMS binary
+authorized or certified its own change.
+
 A later rewrite should be evolutionary rather than a flag-day replacement. The
 target seams are:
 

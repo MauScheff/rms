@@ -63,15 +63,17 @@ architecture:
         runner: src/main.rs#schema_validation_reports_shape_errors
     properties:
     - id: canonical-semantic-revision-drift-is-rejected
-      proves: canonical-semantics-match-cli-applied-revision
+      proves: canonical-semantics-match-authorized-revision
       kind: property
-      input_space: RMS-applied module and implementation manifests followed by one canonical semantic mutation
+      input_space: RMS-applied manifests, ordinary modules falsely labeled with repository maintainer authority, the declared RMS self-development module sealed by maintainers, and directly mutated canonical projections
       preconditions:
-      - the semantic revision was produced by RMS apply
+      - the semantic revision record and canonical manifests are available
       operation: run strict audit before and after the mutation
       oracle:
-      - the applied revision passes
-      - the directly mutated canonical artifact fails semantic revision integrity
+      - RMS-applied revisions pass
+      - repository maintainer authority fails without the canonical RMS module identity, declaration, evidence, and public ownership
+      - the declared RMS self-development maintainer revision passes
+      - a directly mutated canonical artifact fails semantic revision integrity
       evidence:
         path: verification/properties/canonical_semantic_revision.md
       counterexamples:
@@ -2068,6 +2070,7 @@ semantic_functions:
     - production-contracts-are-semantically-specific
     - release-evidence-does-not-disclaim-provenance
     - transition-cases-are-declared-and-replayed
+    - canonical-semantics-match-authorized-revision
   assumptions:
     ensures:
     - audit reports are derived from validation diagnostics, composition findings, implementation structure reports, trace bundles, verification declarations, compatibility evidence, and RMS run provenance
@@ -2375,7 +2378,6 @@ semantic_functions:
     - contracts/apply-semantic-change.v2.yaml
     invariants:
     - semantic-contract-revisions-are-cli-applied
-    - canonical-semantics-match-cli-applied-revision
     - semantic-function-bindings-are-cli-applied
     - canonical-mutations-require-route-receipts
   evidence:
@@ -2836,7 +2838,7 @@ semantic_functions:
     - verification/laws/canonical_mutations_require_route_receipts.md
 x-rms:
   semantic_revision:
-    digest: sha256:2c3030ddcbd18e7dcdc14d50a860245bef7a09815bab398e8db45578e0dc9508
-    change_record: verification/changes/add-first-class-pure-machine-probing-and-replace-recorded-trace-replay-with-show-d7a39a27f150.yaml
-    applied_by: rms spec apply
-    change_record_digest: sha256:d7a39a27f150a89165fb456ce089ecc5584f119a2c887eaea2f7b50ed7fe9f0f
+    digest: sha256:d11414e7e5d2d0e3b96a59f5ccdb57d962d31e97fdc243218b72f45170e3e031
+    change_record: verification/changes/authorize-independent-rms-self-development-sealing-and-seal-probe-v2-multi-module-semantics-f89e6ecc40f0.yaml
+    applied_by: repository maintainer seal
+    change_record_digest: sha256:f89e6ecc40f0df83efd636539ba930746cd87bf46608c837aff03a6895565e24

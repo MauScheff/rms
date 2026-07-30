@@ -1,6 +1,6 @@
 # Semantic Contract Revisions Are CLI Applied
 
-Promise: `rms spec apply` can replace, add, or remove provided and required capability contracts while preserving ownership, canonical references, shared files, and the committed semantic-change record.
+Promise: `rms spec apply` can replace, add, or remove provided and required capability contracts while preserving ownership, canonical references, shared files, and the committed semantic-change record. RMS self-development is the single explicit exception: repository maintainers may seal its native changes independently because the candidate tool cannot confer authority on its own implementation.
 
 Scenarios: replace a generated provider contract without duplicating its command; revise a required capability contract without publishing it; reject an implicit add that would transfer requirement ownership; require direction when one name is both provided and required; preserve a shared contract file when only one direction is removed.
 
@@ -16,6 +16,6 @@ cargo test --workspace --locked spec_apply_contract_set_requires_direction_when_
 cargo test --workspace --locked spec_apply_required_contract_remove_preserves_shared_provider_artifact
 ```
 
-Expected result: `direction: provided|required` selects the correct ownership lane; unambiguous set/remove operations are normalized to an explicit direction in the sealed record; consumer revisions never publish provider commands; ambiguous or ownership-transferring operations fail before mutation; and a contract file remains while any canonical reference still uses it.
+Expected result: `direction: provided|required` selects the correct ownership lane; unambiguous set/remove operations are normalized to an explicit direction in the sealed record; consumer revisions never publish provider commands; ambiguous or ownership-transferring operations fail before mutation; and a contract file remains while any canonical reference still uses it. The independent maintainer seal is accepted only for the canonical `rms-cli` module with its explicit self-application declaration, evidence, and public ownership prerequisites.
 
 Source provenance: the clean committed candidate revision resolved by `rms audit --root . --strict`.

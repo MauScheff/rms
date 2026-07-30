@@ -1,0 +1,211 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/add-first-class-pure-machine-probing-and-replace-recorded-trace-replay-with-show-d7a39a27f150.yaml
+intent:
+  summary: Authorize independent repository-maintainer sealing for RMS self-development and seal probe v2, Python adapters, deterministic multi-module exploration, replayable counterexamples, and canonical probe evidence.
+laws:
+  add:
+  - id: canonical-semantics-match-authorized-revision
+    statement: Production canonical semantics must match the latest authorized semantic revision, produced by RMS apply or by the explicitly declared independent RMS repository-maintainer seal; direct manifest surgery cannot satisfy strict audit.
+    kind: safety
+    authority: parser
+    enforced_by: audit-rms-project-command
+  set:
+  - id: semantic-contract-revisions-are-cli-applied
+    statement: Provided contracts and required capability contracts are revised or removed through RMS spec apply without transferring ownership or deleting still-referenced artifacts; the explicitly declared RMS self-development module instead uses the independent repository maintainer seal.
+    kind: invariant
+    authority: effect-executor
+    enforced_by: semantic-change-apply-command
+  - id: machine-probes-are-pure-and-ephemeral
+    statement: Machine probes execute only declared pure transition-record functions, route outputs through canonical bindings or explicit substitutes without executing real effects, and remain ephemeral unless canonical verification explicitly references them.
+    authority: parser
+    enforced_by: probe-machine-validator
+  remove:
+  - canonical-semantics-match-cli-applied-revision
+contracts:
+  add: []
+  set:
+  - name: probe-machine
+    kind: command
+    direction: provided
+    version: '2'
+    command: null
+    meaning: Execute one or more bounded module instances through their declared pure transition-record paths, explore canonical message schedules and declared faults, and report a deterministic replayable timeline.
+    accepts:
+    - The target is one inspectable Rust, Swift, JavaScript, or Python implementation, or an rms/probe-assembly/v0.1 containing such instances.
+    - Each command, observed event, or effect result names a declared input and supplies schema-valid payload data.
+    - Multi-module routes are resolved from canonical protocol bindings, dependency probe bridges, explicit instance selections, and explicit substitutes; the assembly cannot invent semantic transformations or private inputs.
+    ensures:
+    - Every step calls the exact transition-record function and the next step receives the preceding state_after.
+    - Single-machine results are validated trace bundles; assembly results are rms/probe-system-trace/v0.1 timelines with source, causation, correlation, idempotency, routing, fault, check, bound, and coverage data.
+    - Probing never invokes a machine driver or real effect executor; ordinary deterministic execution is stable and breadth-first exploration returns pass only after exhausting the declared bounded state space.
+    - No project artifact is written unless the caller supplies --out.
+    - Every discovered failure is reduced to a deterministic rms/probe-counterexample/v0.1 whose exact schedule and fault decisions replay as reproduced, resolved, or invalid.
+    - Probe artifacts are ephemeral unless canonical verification explicitly references them, at which point assemblies must exhaust successfully and counterexamples must replay as resolved.
+    rejects:
+    - Ambiguous or incompatible wiring, invalid protocol data, unsafe bindings, runner failure, timeout, nonconforming output, a failed law, a reproduced or invalid canonical counterexample, or inconclusive bounded exploration.
+    protocol: null
+  remove: []
+properties:
+  add: []
+  set:
+  - id: canonical-semantic-revision-drift-is-rejected
+    proves: canonical-semantics-match-authorized-revision
+    kind: property
+    subject: null
+    input_space: RMS-applied manifests, ordinary modules falsely labeled with repository maintainer authority, the declared RMS self-development module sealed by maintainers, and directly mutated canonical projections
+    preconditions:
+    - the semantic revision record and canonical manifests are available
+    operation: run strict audit before and after the mutation
+    oracle:
+    - RMS-applied revisions pass
+    - repository maintainer authority fails without the canonical RMS module identity, declaration, evidence, and public ownership
+    - the declared RMS self-development maintainer revision passes
+    - a directly mutated canonical artifact fails semantic revision integrity
+    evidence:
+      kind: property
+      path: verification/properties/canonical_semantic_revision.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: properties
+      runner: src/main.rs#semantic_revision_detects_direct_canonical_manifest_drift
+  - id: binding-transition-types-match-canonical-machine
+    proves: binding-transition-signature-realizes-canonical-types
+    kind: property
+    subject: null
+    input_space: Rust, Swift, JavaScript, and Python stateful binding fixtures with matching and mismatching transition parameters and outputs
+    preconditions:
+    - the implementation declares machine types, transition signature, and transition function
+    operation: run binding conformance inspection
+    oracle:
+    - matching State and Input parameters with Transition or TransitionRecord output pass
+    - same-arity unrelated parameters fail
+    - reply-only or ambient Result outputs fail canonical transition shape
+    evidence:
+      kind: property
+      path: verification/properties/binding_transition_signature.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: properties
+      runner: src/main.rs#rust_typing_rejects_same_arity_noncanonical_transition_signature
+  remove: []
+trace_producers: null
+semantic_functions:
+  add: []
+  set:
+  - id: audit-rms-project-command
+    symbol: run_audit
+    kind: projector
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/audit-rms-project.v1.yaml
+      invariants:
+      - canonical-artifacts-remain-authoritative
+      - diagnostics-are-evidence-not-authority
+      - production-contracts-are-semantically-specific
+      - release-evidence-does-not-disclaim-provenance
+      - transition-cases-are-declared-and-replayed
+      - canonical-semantics-match-authorized-revision
+    assumptions:
+      ensures:
+      - audit reports are derived from validation diagnostics, composition findings, implementation structure reports, trace bundles, verification declarations, compatibility evidence, and RMS run provenance
+      - strict mode promotes production-readiness blockers to failures without invoking optional AI providers or mutating project artifacts
+      - strict mode rejects active scaffold contracts and evidence that disclaims committed source provenance
+      - audit reports list verification targets but leave native execution to `rms verify`, `rms gate`, or release checks
+    evidence:
+      contracts:
+      - verification/contracts/audit_rms_project.md
+  - id: semantic-change-apply-command
+    symbol: run_spec_apply
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/apply-semantic-change.v2.yaml
+      invariants:
+      - semantic-contract-revisions-are-cli-applied
+      - semantic-function-bindings-are-cli-applied
+      - canonical-mutations-require-route-receipts
+    evidence:
+      contracts:
+      - verification/contracts/apply_semantic_change_v2.md
+      laws:
+      - verification/laws/semantic_function_bindings_are_cli_applied.md
+      - verification/laws/canonical_mutations_require_route_receipts.md
+      traces:
+      - verification/traces/semantic_change_record.yaml
+  - id: probe-machine-command
+    symbol: run_probe
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/probe-machine.v2.yaml
+      invariants:
+      - diagnostics-are-evidence-not-authority
+      - machine-probes-are-pure-and-ephemeral
+      - trace-records-conform-to-canonical-transitions
+    assumptions:
+      ensures:
+      - probe runners exchange temporary request and output files through the declared protocol
+      - probe traces are validated against canonical transition cases before expectations are reported
+      - assembly routing is derived only from canonical protocol bindings and dependency probe bridges
+      - bounded breadth-first exploration is deterministic and pass means the reachable bounded space was exhausted
+      - failures are minimized without changing the exact failing check and retain replayable schedule and fault decisions
+    evidence:
+      contracts:
+      - verification/contracts/probe_machine.md
+  - id: probe-machine-validator
+    symbol: validate_machine_probe_binding
+    kind: parser
+    purity: pure
+    discharges:
+      invariants:
+      - machine-probes-are-pure-and-ephemeral
+    assumptions:
+      ensures:
+      - probe bindings resolve the exact transition-record function and exclude drivers and effect executors
+      - canonical probe evidence reruns assemblies and requires saved counterexamples to replay as resolved
+    evidence:
+      contracts:
+      - verification/contracts/probe_machine.md
+  remove: []
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: semantic-contract-revisions-are-cli-applied
+    path: verification/laws/semantic_contract_revisions_are_cli_applied.md
+  - kind: law
+    proves: canonical-semantics-match-authorized-revision
+    path: verification/laws/rms_self_application_boundary.md
+  - kind: law
+    proves: machine-probes-are-pure-and-ephemeral
+    path: verification/laws/machine_probes_are_pure_and_ephemeral.md
+  - kind: contract
+    proves: probe-machine
+    path: verification/contracts/probe_machine.md
+  - kind: property
+    proves: canonical-semantic-revision-drift-is-rejected
+    path: verification/properties/canonical_semantic_revision.md
+  - kind: property
+    proves: binding-transition-types-match-canonical-machine
+    path: verification/properties/binding_transition_signature.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

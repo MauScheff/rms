@@ -218,7 +218,7 @@ invariants:
   statement: Machine probes execute only declared pure transition-record functions, route outputs through canonical bindings or explicit substitutes without executing real effects, and remain ephemeral unless canonical verification explicitly references them.
   authority: parser
   enforced_by: probe-machine-validator
-  verified_by: verification/contracts/probe_machine.md
+  verified_by: verification/laws/machine_probes_are_pure_and_ephemeral.md
 - id: composite-evidence-lanes-are-concrete
   statement: Composite capability-tree scaffolds declare only concrete evidence lanes for production claims.
   kind: invariant
@@ -320,15 +320,15 @@ invariants:
   authority: parser
   enforced_by: check_evidence_source_quality
 - id: semantic-contract-revisions-are-cli-applied
-  statement: Provided contracts and required capability contracts are revised or removed through RMS spec apply without transferring ownership, deleting still-referenced artifacts, or requiring direct manifest edits.
+  statement: Provided contracts and required capability contracts are revised or removed through RMS spec apply without transferring ownership or deleting still-referenced artifacts; the explicitly declared RMS self-development module instead uses the independent repository maintainer seal.
   kind: invariant
   authority: effect-executor
   enforced_by: semantic-change-apply-command
-- id: canonical-semantics-match-cli-applied-revision
-  statement: Production canonical semantics must match the latest RMS-applied semantic revision; direct manifest surgery cannot satisfy strict audit.
+- id: canonical-semantics-match-authorized-revision
+  statement: Production canonical semantics must match the latest authorized semantic revision, produced by RMS apply or by the explicitly declared independent RMS repository-maintainer seal; direct manifest surgery cannot satisfy strict audit.
   kind: safety
-  authority: effect-executor
-  enforced_by: semantic-change-apply-command
+  authority: parser
+  enforced_by: audit-rms-project-command
 - id: transition-cases-are-declared-and-replayed
   statement: Every state and input branch that changes destination or outputs is declared as a named transition case and covered by replay evidence.
   kind: traceability
@@ -673,6 +673,8 @@ compatibility:
 verification:
   laws:
   - verification/laws
+  - verification/laws/rms_self_application_boundary.md
+  - verification/laws/machine_probes_are_pure_and_ephemeral.md
   - verification/laws/bindings_realize_canonical_semantics.md
   - verification/laws/no_effect_scaffolds_have_no_effect_residue.md
   - verification/laws/bootstrap_provenance_is_visible.md
@@ -850,23 +852,29 @@ verification:
   fuzz:
   - verification/fuzz/malformed_artifacts.md
 x-rms:
-  last_semantic_intent: Add first-class pure machine probing and replace recorded trace replay with show before the first public RMS release.
+  self_application:
+    scope: rms-self-development
+    semantic_revision_authority: repository maintainer seal
+    evidence: verification/laws/rms_self_application_boundary.md
+  last_semantic_intent: Authorize independent repository-maintainer sealing for RMS self-development and seal probe v2, Python adapters, deterministic multi-module exploration, replayable counterexamples, and canonical probe evidence.
   semantic_revision:
-    digest: sha256:2c3030ddcbd18e7dcdc14d50a860245bef7a09815bab398e8db45578e0dc9508
-    change_record: verification/changes/add-first-class-pure-machine-probing-and-replace-recorded-trace-replay-with-show-d7a39a27f150.yaml
-    applied_by: rms spec apply
-    change_record_digest: sha256:d7a39a27f150a89165fb456ce089ecc5584f119a2c887eaea2f7b50ed7fe9f0f
+    digest: sha256:d11414e7e5d2d0e3b96a59f5ccdb57d962d31e97fdc243218b72f45170e3e031
+    change_record: verification/changes/authorize-independent-rms-self-development-sealing-and-seal-probe-v2-multi-module-semantics-f89e6ecc40f0.yaml
+    applied_by: repository maintainer seal
+    change_record_digest: sha256:f89e6ecc40f0df83efd636539ba930746cd87bf46608c837aff03a6895565e24
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
-  proves: canonical-semantics-match-cli-applied-revision
+  proves: canonical-semantics-match-authorized-revision
   kind: property
-  input_space: RMS-applied module and implementation manifests followed by one canonical semantic mutation
+  input_space: RMS-applied manifests, ordinary modules falsely labeled with repository maintainer authority, the declared RMS self-development module sealed by maintainers, and directly mutated canonical projections
   preconditions:
-  - the semantic revision was produced by RMS apply
+  - the semantic revision record and canonical manifests are available
   operation: run strict audit before and after the mutation
   oracle:
-  - the applied revision passes
-  - the directly mutated canonical artifact fails semantic revision integrity
+  - RMS-applied revisions pass
+  - repository maintainer authority fails without the canonical RMS module identity, declaration, evidence, and public ownership
+  - the declared RMS self-development maintainer revision passes
+  - a directly mutated canonical artifact fails semantic revision integrity
   evidence:
     path: verification/properties/canonical_semantic_revision.md
   counterexamples:

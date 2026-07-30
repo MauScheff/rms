@@ -40402,7 +40402,7 @@ fn append_semantic_revision_artifacts_audit_check(
             "semantic",
             if strict { "fail" } else { "review-required" },
             evidence_path,
-            "production modules must carry an RMS-applied semantic revision with an exact change-record digest; run `rms spec apply`, `rms machine apply`, or `rms surface apply` instead of editing canonical manifests directly",
+            "production modules must carry an authorized semantic revision with an exact change-record digest; use the applicable RMS apply command, or the explicitly declared RMS self-development maintainer workflow, instead of editing canonical manifests directly",
         ));
         return;
     }
@@ -40431,7 +40431,7 @@ fn append_semantic_revision_artifacts_audit_check(
                 if strict { "fail" } else { "review-required" },
                 evidence_path,
                 format!(
-                    "semantic revision record `{record}` changed after RMS apply: declared `{record_digest}`, current `sha256:{actual}`"
+                    "semantic revision record `{record}` changed after sealing: declared `{record_digest}`, current `sha256:{actual}`"
                 ),
             ));
             return;
@@ -40447,10 +40447,7 @@ fn append_semantic_revision_artifacts_audit_check(
             return;
         }
     }
-    if !matches!(
-        applied_by,
-        "rms spec apply" | "rms machine apply" | "rms surface apply"
-    ) {
+    let Some(revision_authority) = SemanticRevisionAuthority::parse(applied_by) else {
         checks.push(audit_check(
             "semantic.revision-authority-invalid",
             "semantic",
@@ -40459,6 +40456,18 @@ fn append_semantic_revision_artifacts_audit_check(
             format!("semantic revision names unsupported authority `{applied_by}`"),
         ));
         return;
+    };
+    if revision_authority == SemanticRevisionAuthority::RepositoryMaintainerSeal {
+        if let Err(reason) = validate_repository_maintainer_seal_declaration(module) {
+            checks.push(audit_check(
+                "semantic.revision-authority-invalid",
+                "semantic",
+                if strict { "fail" } else { "review-required" },
+                evidence_path,
+                reason,
+            ));
+            return;
+        }
     }
     if let (Some(module), Some(_)) = (module, implementation) {
         let module_digest = get_str(&module.value, &["x-rms", "semantic_revision", "digest"]);
@@ -40479,7 +40488,7 @@ fn append_semantic_revision_artifacts_audit_check(
                 "semantic",
                 if strict { "fail" } else { "review-required" },
                 evidence_path,
-                "module.yaml and implementation.yaml do not name the same RMS-applied semantic revision",
+                "module.yaml and implementation.yaml do not name the same authorized semantic revision",
             ));
             return;
         }
@@ -40490,7 +40499,10 @@ fn append_semantic_revision_artifacts_audit_check(
             "semantic",
             "pass",
             evidence_path,
-            format!("canonical semantics match RMS-applied revision `{record}`"),
+            format!(
+                "canonical semantics match {} revision `{record}`",
+                revision_authority.label()
+            ),
         )),
         Ok(current) => checks.push(audit_check(
             "semantic.revision-drift",
@@ -40498,7 +40510,7 @@ fn append_semantic_revision_artifacts_audit_check(
             if strict { "fail" } else { "review-required" },
             evidence_path,
             format!(
-                "canonical semantics changed after RMS apply: declared `{digest}`, current `sha256:{current}`; apply a new semantic change instead of editing manifests directly"
+                "canonical semantics changed after sealing: declared `{digest}`, current `sha256:{current}`; authorize and seal a new semantic change instead of editing manifests directly"
             ),
         )),
         Err(error) => checks.push(audit_check(
@@ -40509,6 +40521,73 @@ fn append_semantic_revision_artifacts_audit_check(
             format!("semantic revision could not be recomputed: {error}"),
         )),
     }
+}
+
+fn validate_repository_maintainer_seal_declaration(
+    module: Option<&LoadedManifest>,
+) -> Result<(), String> {
+    let module = module.ok_or_else(|| {
+        "repository maintainer sealing requires an owning module manifest".to_string()
+    })?;
+    let module_name = get_str(&module.value, &["module", "name"]);
+    if module_name != Some("rms-cli") {
+        return Err(
+            "repository maintainer sealing is restricted to the canonical `rms-cli` self-development module"
+                .to_string(),
+        );
+    }
+    let scope = get_str(&module.value, &["x-rms", "self_application", "scope"]);
+    let authority = get_str(
+        &module.value,
+        &["x-rms", "self_application", "semantic_revision_authority"],
+    );
+    if scope != Some("rms-self-development")
+        || authority != Some(SemanticRevisionAuthority::RepositoryMaintainerSeal.label())
+    {
+        return Err(
+            "repository maintainer sealing is restricted to a module that explicitly declares the `rms-self-development` self-application scope and matching semantic revision authority"
+                .to_string(),
+        );
+    }
+    let evidence =
+        get_str(&module.value, &["x-rms", "self_application", "evidence"]).ok_or_else(|| {
+            "repository maintainer sealing requires module-local self-application evidence"
+                .to_string()
+        })?;
+    if !is_safe_relative_artifact_path(evidence) {
+        return Err(
+            "repository maintainer self-application evidence must be a safe module-relative path"
+                .to_string(),
+        );
+    }
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    if !base.join(evidence).is_file() {
+        return Err(format!(
+            "repository maintainer self-application evidence `{evidence}` is missing"
+        ));
+    }
+    let commands = get_path(&module.value, &["provides", "commands"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| get_str(item, &["name"]))
+        .collect::<BTreeSet<_>>();
+    let required = [
+        "apply-semantic-change",
+        "audit-rms-project",
+        "prepare-rms-release",
+    ];
+    let missing = required
+        .into_iter()
+        .filter(|command| !commands.contains(command))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!(
+            "repository maintainer sealing is restricted to the RMS self-development module; missing public commands: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 fn append_command_log_audit_checks(root: &Path, strict: bool, checks: &mut Vec<AuditCheck>) {
@@ -42194,7 +42273,11 @@ fn run_machine_apply(
         write_machine_manifest(&manifest)?;
         write_machine_apply_placeholders(&manifest, &change)?;
         let record_path = write_machine_change_record(&manifest, &change)?;
-        seal_implementation_semantics(&mut manifest, &record_path, "rms machine apply")?;
+        seal_implementation_semantics(
+            &mut manifest,
+            &record_path,
+            SemanticRevisionAuthority::MachineApply,
+        )?;
     }
 
     let report = MachineApplyReport {
@@ -44701,7 +44784,11 @@ fn run_surface_apply(request: SurfaceApplyRequest) -> Result<()> {
         write_surface_usage_document(&manifest, &declaration)?;
         write_surface_evidence_placeholders(&manifest, &declaration)?;
         let record_path = write_surface_change_record(&manifest, &declaration)?;
-        seal_implementation_semantics(&mut manifest, &record_path, "rms surface apply")?;
+        seal_implementation_semantics(
+            &mut manifest,
+            &record_path,
+            SemanticRevisionAuthority::SurfaceApply,
+        )?;
     }
 
     let report = SurfaceApplyReport {
@@ -50685,7 +50772,7 @@ fn apply_semantic_change(
         write_yaml_manifest(implementation)?;
     }
     let record_path = write_semantic_change_record(context, change)?;
-    seal_spec_target_semantics(context, &record_path, "rms spec apply")?;
+    seal_spec_target_semantics(context, &record_path, SemanticRevisionAuthority::SpecApply)?;
     Ok(())
 }
 
@@ -50776,10 +50863,39 @@ fn write_semantic_change_record(
     Ok(path)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SemanticRevisionAuthority {
+    SpecApply,
+    MachineApply,
+    SurfaceApply,
+    RepositoryMaintainerSeal,
+}
+
+impl SemanticRevisionAuthority {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SpecApply => "rms spec apply",
+            Self::MachineApply => "rms machine apply",
+            Self::SurfaceApply => "rms surface apply",
+            Self::RepositoryMaintainerSeal => "repository maintainer seal",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "rms spec apply" => Some(Self::SpecApply),
+            "rms machine apply" => Some(Self::MachineApply),
+            "rms surface apply" => Some(Self::SurfaceApply),
+            "repository maintainer seal" => Some(Self::RepositoryMaintainerSeal),
+            _ => None,
+        }
+    }
+}
+
 fn seal_spec_target_semantics(
     context: &mut SpecTargetContext,
     record_path: &Path,
-    applied_by: &str,
+    authority: SemanticRevisionAuthority,
 ) -> Result<()> {
     let record_digest = format!("sha256:{}", sha256_file(record_path)?);
     let digest =
@@ -50804,7 +50920,7 @@ fn seal_spec_target_semantics(
             &digest,
             &record,
             &record_digest,
-            applied_by,
+            authority,
         );
         write_yaml_manifest(module)?;
     }
@@ -50814,7 +50930,7 @@ fn seal_spec_target_semantics(
             &digest,
             &record,
             &record_digest,
-            applied_by,
+            authority,
         );
         write_yaml_manifest(implementation)?;
     }
@@ -50824,7 +50940,7 @@ fn seal_spec_target_semantics(
 fn seal_implementation_semantics(
     implementation: &mut LoadedManifest,
     record_path: &Path,
-    applied_by: &str,
+    authority: SemanticRevisionAuthority,
 ) -> Result<()> {
     let base = implementation
         .path
@@ -50845,7 +50961,7 @@ fn seal_implementation_semantics(
             &digest,
             &record,
             &record_digest,
-            applied_by,
+            authority,
         );
         write_yaml_manifest(module)?;
     }
@@ -50854,7 +50970,7 @@ fn seal_implementation_semantics(
         &digest,
         &record,
         &record_digest,
-        applied_by,
+        authority,
     );
     write_yaml_manifest(implementation)?;
     Ok(())
@@ -50865,7 +50981,7 @@ fn set_semantic_revision_metadata(
     digest: &str,
     record: &str,
     record_digest: &str,
-    applied_by: &str,
+    authority: SemanticRevisionAuthority,
 ) {
     set_yaml_string_path(
         value,
@@ -50885,7 +51001,7 @@ fn set_semantic_revision_metadata(
     set_yaml_string_path(
         value,
         &["x-rms", "semantic_revision", "applied_by"],
-        applied_by,
+        authority.label(),
     );
 }
 
@@ -73533,8 +73649,82 @@ architecture:
         )
         .unwrap();
         let mut implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
-        seal_implementation_semantics(&mut implementation, &record, "rms spec apply").unwrap();
+        seal_implementation_semantics(
+            &mut implementation,
+            &record,
+            SemanticRevisionAuthority::SpecApply,
+        )
+        .unwrap();
 
+        let implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let mut checks = Vec::new();
+        append_semantic_revision_audit_check(&implementation, true, &mut checks);
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.id == "semantic.revision-integrity" && check.result == "pass"),
+            "{checks:#?}"
+        );
+
+        let mut implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        set_yaml_string_path(
+            &mut implementation.value,
+            &["x-rms", "semantic_revision", "applied_by"],
+            SemanticRevisionAuthority::RepositoryMaintainerSeal.label(),
+        );
+        write_yaml_manifest(&implementation).unwrap();
+        let implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let mut checks = Vec::new();
+        append_semantic_revision_audit_check(&implementation, true, &mut checks);
+        assert!(checks.iter().any(|check| {
+            check.id == "semantic.revision-authority-invalid" && check.result == "fail"
+        }));
+
+        fs::create_dir_all(root.join("verification/laws")).unwrap();
+        fs::write(
+            root.join("verification/laws/self_application.md"),
+            "Repository maintainers independently seal this RMS self-development module.\n",
+        )
+        .unwrap();
+        let mut module = load_manifest(&root.join("module.yaml")).unwrap();
+        set_yaml_string_path(&mut module.value, &["module", "name"], "rms-cli");
+        set_yaml_string_path(
+            &mut module.value,
+            &["x-rms", "self_application", "scope"],
+            "rms-self-development",
+        );
+        set_yaml_string_path(
+            &mut module.value,
+            &["x-rms", "self_application", "semantic_revision_authority"],
+            SemanticRevisionAuthority::RepositoryMaintainerSeal.label(),
+        );
+        set_yaml_string_path(
+            &mut module.value,
+            &["x-rms", "self_application", "evidence"],
+            "verification/laws/self_application.md",
+        );
+        let commands = ensure_yaml_sequence_path(&mut module.value, &["provides", "commands"]);
+        for name in [
+            "apply-semantic-change",
+            "audit-rms-project",
+            "prepare-rms-release",
+        ] {
+            commands.push(yaml_mapping_value([
+                ("name", YamlValue::String(name.to_string())),
+                (
+                    "contract",
+                    YamlValue::String(format!("contracts/{name}.v1.yaml")),
+                ),
+            ]));
+        }
+        write_yaml_manifest(&module).unwrap();
+        let mut implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        seal_implementation_semantics(
+            &mut implementation,
+            &record,
+            SemanticRevisionAuthority::RepositoryMaintainerSeal,
+        )
+        .unwrap();
         let implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
         let mut checks = Vec::new();
         append_semantic_revision_audit_check(&implementation, true, &mut checks);
@@ -77675,6 +77865,10 @@ public_behavior_bindings:
         fs::write(&representation_path, representation).unwrap();
         let mut transition = fs::read_to_string(&transition_path).unwrap();
         transition = transition.replace(
+            "def transition(command: PythonNegativeCommand) -> PythonNegativeTransition:",
+            "def transition(command: object) -> object:",
+        );
+        transition = transition.replace(
             "return transition_record(command).output",
             "count = 10 / divisor\n    raise ValueError(count)",
         );
@@ -77689,6 +77883,7 @@ public_behavior_bindings:
         fs::remove_dir_all(&root).unwrap();
         for check in [
             "implementation.python.imports.declared",
+            "structure.transition-function-not-transition-shaped",
             "structure.transition-ambient-exception",
             "structure.python-numeric-guard-missing",
             "implementation.python.public-facade",
