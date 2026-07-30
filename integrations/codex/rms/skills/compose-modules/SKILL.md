@@ -16,7 +16,7 @@ description: Check or design the composition of RMS modules by matching capabili
 9. Check dependency direction and reject forbidden or ownership-breaking cycles.
 10. Confirm the provider passes the required conformance suite.
 11. When a composite parent repeats an exported child law, use `verification.delegations` rather than inventing a duplicate parent property. Confirm the parent law, contained provider, provider law, provider property, public export, and concrete parent evidence all resolve through `rms compose`.
-12. For cross-module temporal promises, declare composition-scoped observations over public messages, transitions, and trace metrics; evaluate stitched or probe-system traces, preserve causation in explanations, and require exhausted search for universal finite conclusions.
+12. For cross-module temporal promises, declare composition-scoped observations over public messages, transitions, and trace metrics; evaluate stitched or probe-system traces, preserve causation in explanations, and require exhausted search for universal finite conclusions. Attach canonical `explorations` to the property so `rms hunt` automatically exercises deterministic message schedules and declared faults, then records exact bounds and replay recipes.
 13. When replacing a stateful implementation, verify export, migration, coexistence, rollback, and cutover behavior.
 14. When a scenario spans modules, stitch execution-derived trace bundles and require message identity, correlation, causation, source, target, and sequence to survive each handoff. Diagnose the first broken handoff rather than inferring it from local traces.
 15. Produce a composition result listing satisfied, incompatible, unresolved, and not-applicable requirements.

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:hunt-lane-result:v0.1",
+  "title": "RMS Hunt Lane Result v0.1",
+  "type": "object",
+  "required": ["spec", "status"],
+  "properties": {
+    "spec": { "const": "rms/hunt-lane-result/v0.1" },
+    "status": {
+      "enum": ["pass", "finding", "inconclusive", "invalid", "unsupported"]
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [
+          { "type": "integer", "minimum": 0 },
+          { "type": "number", "minimum": 0 },
+          { "type": "string" },
+          { "type": "boolean" }
+        ]
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "summary"],
+        "properties": {
+          "kind": {
+            "enum": [
+              "behavioral-counterexample",
+              "crash",
+              "sanitizer-failure",
+              "deadlock",
+              "vacuous-property",
+              "relationship-refutation",
+              "surviving-mutant",
+              "coverage-gap"
+            ]
+          },
+          "summary": { "type": "string", "minLength": 1 },
+          "artifact": { "type": "string", "minLength": 1 },
+          "replay": { "type": "string", "minLength": 1 },
+          "equivalent": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": false
+}

@@ -7,6 +7,7 @@
     { id: "behaviors", label: "Behaviors", description: "Public promises and required capabilities through declared bindings." },
     { id: "machines", label: "Machines", description: "States, classified inputs, transition cases, outputs, and effects." },
     { id: "properties", label: "Properties", description: "Executable observations, assumptions, temporal expressions, verdicts, and relationships." },
+    { id: "hunts", label: "Hunts", description: "Unattended proof lanes, recorded bounds, findings, coverage, and replay evidence." },
     { id: "gaps", label: "Findings", description: "Missing, unresolved, recommended, satisfied, and inapplicable obligations." },
     { id: "debug", label: "Traces", description: "Execution-derived transition records and source provenance." },
   ];
@@ -409,6 +410,7 @@ function initializeApplication(model) {
       behaviors: renderBehaviors,
       machines: renderMachines,
       properties: renderProperties,
+      hunts: renderHunts,
       gaps: renderFindings,
       debug: renderTraces,
     };
@@ -663,6 +665,43 @@ function initializeApplication(model) {
           <span class="row-side">${analysis.evaluations.length} verdicts<br>${analysis.relationships.length} relationships</span>
         </article>
       `).join("") || `<div class="empty">No rms/property-analysis/v0.1 artifacts are recorded.</div>`}</div>`)}
+    `;
+  }
+
+  function renderHunts() {
+    const hunts = (state.snapshot.hunts ?? []).filter((hunt) => {
+      if (!state.query) return true;
+      return text(JSON.stringify(hunt)).includes(text(state.query));
+    });
+    const latest = hunts.at(-1);
+    return `
+      ${viewHeader("Proof-first bug hunts", "Exhausted finite lanes are proofs only for their declared models; fuzzing, sanitizers, generated cases, and mutation testing remain bounded evidence.")}
+      <div class="summary">
+        <span><strong>${hunts.length}</strong> recorded hunts</span>
+        <span><strong>${latest?.lanes?.length ?? 0}</strong> latest lanes</span>
+        <span><strong>${latest?.findings?.length ?? 0}</strong> latest findings</span>
+      </div>
+      <div class="list">${hunts.map((hunt) => {
+        const completeStatuses = new Set(["pass", "finding", "invalid", "unsupported"]);
+        const completed = hunt.lanes.filter((lane) => completeStatuses.has(lane.status)).length;
+        const elapsedSeconds = Math.max(0, ((hunt.finished_at_unix_ms ?? Date.now()) - hunt.started_at_unix_ms) / 1000);
+        const remainingSeconds = Math.max(0, Number(hunt.configuration?.budget_seconds ?? 0) - elapsedSeconds);
+        const metricLines = hunt.lanes
+          .filter((lane) => lane.metrics && Object.keys(lane.metrics).length)
+          .map((lane) => `${lane.id}: ${JSON.stringify(lane.metrics)}`);
+        return `
+        <article class="row">
+          <span class="row-kind">${escapeHtml(hunt.result)}</span>
+          <span class="row-main">
+            <strong>${escapeHtml(hunt.run_id)}</strong>
+            <p>${escapeHtml(hunt.path)} · ${hunt.finished ? "finished" : "checkpointed"} · seed ${escapeHtml(hunt.configuration?.seed)} · ${completed}/${hunt.lanes.length} lanes · ${Math.ceil(remainingSeconds)}s remaining</p>
+            <pre>${escapeHtml(hunt.proof_scope?.claim ?? "")}</pre>
+            ${metricLines.length ? `<pre>${escapeHtml(metricLines.join("\n"))}</pre>` : ""}
+            ${(hunt.findings ?? []).map((finding) => `<p><strong>${escapeHtml(finding.kind)}</strong>: ${escapeHtml(finding.summary)}${finding.replay ? `<br><code>${escapeHtml(finding.replay)}</code>` : ""}</p>`).join("")}
+          </span>
+          <span class="row-side">${hunt.lanes.length} lanes<br>${hunt.findings.length} findings</span>
+        </article>
+      `;}).join("") || `<div class="empty">No rms/hunt-report/v0.1 artifacts are recorded.</div>`}</div>
     `;
   }
 

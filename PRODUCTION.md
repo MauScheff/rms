@@ -184,3 +184,14 @@ A production pilot is ready when:
 - every implemented promise has concrete source-pinned evidence;
 - agents can start from concise managed guidance without hidden conversation context;
 - release owners treat every failed committed check as a blocker.
+
+## Scheduled Bug Hunts
+
+Keep commit checks fast and schedule expensive reliability work separately:
+
+```bash
+rms hunt --root . --dry-run
+rms hunt --root . --budget 8h --out artifacts/nightly-hunt.yaml
+```
+
+The scheduler or CI owns recurrence; RMS remains a foreground, checkpointed process and resumes with `--resume latest`. Treat `bugs-found` as replayable product failure, `proof-gaps-found` as inadequate oracle or coverage strength, and `clean-under-recorded-bounds` as bounded evidence only. Promote minimized findings to smoke regressions before the next candidate.

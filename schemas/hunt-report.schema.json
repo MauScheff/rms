@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:hunt-report:v0.1",
+  "title": "RMS Hunt Report v0.1",
+  "type": "object",
+  "required": [
+    "spec",
+    "run_id",
+    "result",
+    "source",
+    "configuration",
+    "lanes",
+    "findings",
+    "proof_scope"
+  ],
+  "properties": {
+    "spec": { "const": "rms/hunt-report/v0.1" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "result": {
+      "enum": [
+        "bugs-found",
+        "proof-gaps-found",
+        "clean-under-recorded-bounds",
+        "inconclusive",
+        "invalid",
+        "unsupported"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "required": ["revision", "declaration_digest"],
+      "properties": {
+        "revision": { "type": "string", "minLength": 1 },
+        "declaration_digest": { "type": "string", "minLength": 1 },
+        "root": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "configuration": {
+      "type": "object",
+      "required": ["budget_seconds", "seed", "jobs", "tools"],
+      "properties": {
+        "budget_seconds": { "type": "integer", "minimum": 1 },
+        "seed": { "type": "integer", "minimum": 0 },
+        "jobs": { "type": "integer", "minimum": 1 },
+        "module": { "type": ["string", "null"] },
+        "tools": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "lanes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "module",
+          "kind",
+          "strategy",
+          "status",
+          "budget_seconds"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "module": { "type": "string", "minLength": 1 },
+          "property": { "type": ["string", "null"] },
+          "kind": {
+            "enum": [
+              "historical-replay",
+              "baseline",
+              "trace-regeneration",
+              "trace-evaluation",
+              "declared-realization",
+              "probe-exploration",
+              "relationship-analysis"
+            ]
+          },
+          "strategy": { "type": "string", "minLength": 1 },
+          "status": {
+            "enum": [
+              "planned",
+              "running",
+              "pass",
+              "finding",
+              "inconclusive",
+              "invalid",
+              "unsupported"
+            ]
+          },
+          "budget_seconds": { "type": "integer", "minimum": 1 },
+          "elapsed_ms": { "type": "integer", "minimum": 0 },
+          "command": { "type": "string" },
+          "runner": { "type": ["string", "null"] },
+          "metrics": { "type": "object" },
+          "artifacts": { "type": "array", "items": { "type": "string" } },
+          "diagnostic": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["lane", "kind", "summary"],
+        "properties": {
+          "lane": { "type": "string", "minLength": 1 },
+          "kind": {
+            "enum": [
+              "behavioral-counterexample",
+              "crash",
+              "sanitizer-failure",
+              "deadlock",
+              "vacuous-property",
+              "relationship-refutation",
+              "surviving-mutant",
+              "coverage-gap"
+            ]
+          },
+          "summary": { "type": "string", "minLength": 1 },
+          "artifact": { "type": ["string", "null"] },
+          "replay": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "proof_scope": {
+      "type": "object",
+      "required": ["claim", "exhausted_lanes", "bounded_lanes", "unsupported_lanes"],
+      "properties": {
+        "claim": { "type": "string", "minLength": 1 },
+        "exhausted_lanes": { "type": "array", "items": { "type": "string" } },
+        "bounded_lanes": { "type": "array", "items": { "type": "string" } },
+        "unsupported_lanes": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "started_at_unix_ms": { "type": "integer", "minimum": 0 },
+    "finished_at_unix_ms": { "type": ["integer", "null"], "minimum": 0 }
+  },
+  "additionalProperties": false
+}

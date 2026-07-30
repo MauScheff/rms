@@ -36,6 +36,9 @@ owns:
   - RMS local trace bundle report
   - RMS machine probe report
   - RMS runnable surface declaration
+  - RMS proof-first hunt
+  - RMS hunt lane result
+  - RMS hunt report
   data:
   - embedded RMS schemas
   - embedded RMS prompt templates
@@ -54,6 +57,8 @@ owns:
   - local trace bundle artifacts
   - ephemeral machine probe requests and reports
   - generated runnable surface evidence
+  - checkpointed local hunt campaigns
+  - generated hunt lane results and reports
   - optional workbench configuration
   decisions:
   - manifest-validation-result
@@ -80,6 +85,8 @@ owns:
   - machine-probe-expectation-result
   - runnable-surface-declaration-result
   - runnable-surface-wiring-result
+  - risk-derived-verification-posture
+  - hunt-campaign-outcome
   - package-inclusion-set
   - conformance-outcome
 provides:
@@ -182,6 +189,8 @@ provides:
     contract: contracts/replay-property-analysis.v1.yaml
   - name: replay-property-counterexample
     contract: contracts/replay-property-counterexample.v1.yaml
+  - name: hunt-rms-system
+    contract: contracts/hunt-rms-system.v1.yaml
   - name: add-rms-binding
     contract: contracts/add-rms-binding.v2.yaml
   - name: run-trace-producers
@@ -259,6 +268,11 @@ invariants:
   authority: parser
   enforced_by: check-runnable-surface-command
   verified_by: verification/contracts/check_runnable_surface.md
+- id: proof-first-hunts-are-bounded-and-replayable
+  statement: Strong verification lanes are derived from declared risk, unattended execution is isolated and resumable, behavioral findings replay, and bounded empirical evidence is never promoted to a global proof.
+  authority: effect-executor
+  enforced_by: hunt-rms-system-command
+  verified_by: verification/laws/proof_first_hunts_are_bounded_and_replayable.md
 - id: runnable-launch-assets-route-through-boundaries
   statement: Launch assets reachable from a runnable surface must route through the declared RMS entrypoint or adapter and must not duplicate parser or domain decision logic outside declared roles.
   authority: parser
@@ -755,6 +769,7 @@ verification:
   - verification/laws/check_projections_distinguish_declared_and_observed_proof.md
   - verification/laws/non_ready_routes_remain_ownerless.md
   - verification/laws/provider_intent_extraction_terminal_runs.md
+  - verification/laws/proof_first_hunts_are_bounded_and_replayable.md
   contracts:
   - verification/contracts
   - verification/contracts/apply_runnable_surface.md
@@ -812,6 +827,7 @@ verification:
   - verification/contracts/prepare_rms_release.md
   - verification/contracts/recommend_next_rms_work_v4.md
   - verification/contracts/configure_agent_integration_v3.md
+  - verification/contracts/hunt_rms_system.md
   scenarios:
   - verification/scenarios
   - verification/scenarios/reusable_module_package.md
@@ -860,19 +876,23 @@ verification:
   - verification/properties/check_proof_projection_truthfulness.md
   - verification/properties/intent_extraction_terminal_runs.md
   - verification/properties/non_ready_route_owner_closure.md
+  - verification/properties/hunt_orchestration.md
   fuzz:
   - verification/fuzz/malformed_artifacts.md
+  hunt_exceptions:
+  - obligation: boundary-fuzz
+    reason: The RMS CLI boundary is already exercised by generated malformed-artifact properties; coverage-guided engine integration is intentionally delegated to downstream language-specific runners.
 x-rms:
   self_application:
     scope: rms-self-development
     semantic_revision_authority: repository maintainer seal
     evidence: verification/laws/rms_self_application_boundary.md
-  last_semantic_intent: Fix blind dogfood gaps in semantic apply atomicity, explicit owner routing, generated capability contracts, and JavaScript property runner selection.
+  last_semantic_intent: Add risk-derived strong verification obligations and a checkpointed, resumable RMS bug hunt whose findings are minimized, replayable, and honest about proof scope.
   semantic_revision:
-    digest: sha256:90adfe0f78dd943454bed266f8afe9045024a7eb49a7c8a6e049681d5167d037
-    change_record: verification/changes/fix-dogfood-atomic-routing-capability-and-runner-gaps.yaml
+    digest: sha256:c1432cb515ff97cd70d468fa5e8032f22e0735543e7d5be9e00f0625348b564b
+    change_record: verification/changes/add-proof-first-resumable-bug-hunts.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:143570ed865374b2383e33e171a8cc4ce5fb10ca2e518605167075c8d0cad814
+    change_record_digest: sha256:694f6a6826d2870157636273ee4a0e7d0fe542e47a1adc8b9c70dc3dd7b5b0ee
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-authorized-revision
@@ -1695,6 +1715,47 @@ properties:
     strategy: deterministic-corpus
     command: properties
     runner: src/main.rs#non_ready_routes_never_select_an_owner
+- id: risk-derived-hunt-lanes-are-required
+  proves: proof-first-hunts-are-bounded-and-replayable
+  kind: property
+  input_space: Modules crossing pure, numeric, stateful, workflow, boundary, distributed, reusable, unsafe, and temporal risk with matching and missing strong verification lanes.
+  preconditions:
+  - The module and implementation declarations are readable.
+  operation: Derive the required hunt obligations and compare them with declared realizations, explorations, and focused exceptions.
+  oracle:
+  - each risk class requires its matching strong lane
+  - a missing lane blocks change and committed checks
+  - only a closed obligation with a focused reason is accepted as an exception
+  evidence:
+    path: verification/properties/hunt_orchestration.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: deterministic-corpus
+    command: properties
+    runner: src/main.rs#hunt_posture_derives_boundary_and_reusable_obligations_with_closed_exceptions
+- id: hunt-outcomes-preserve-proof-scope
+  proves: proof-first-hunts-are-bounded-and-replayable
+  kind: property
+  input_space: Passing, finding, inconclusive, invalid, unsupported, exhausted, fuzz, coverage, and mutation lane results.
+  preconditions:
+  - Every behavioral finding supplies a replay recipe.
+  operation: Classify lane results, findings, and recorded exhaustion into the closed hunt outcome and proof-scope vocabularies.
+  oracle:
+  - behavioral failures become bugs only after replay
+  - surviving mutants and inadequate coverage become proof gaps
+  - open-ended success remains clean only under recorded bounds
+  - finite proof scope names only lanes that record exhaustion
+  evidence:
+    path: verification/properties/hunt_orchestration.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: deterministic-corpus
+    command: properties
+    runner: src/hunt.rs#hunt_outcomes_distinguish_bugs_gaps_and_bounds
 fuzz_targets:
 - id: rms-cli-malformed-artifacts-produce-diagnostics
   proves: canonical-artifacts-remain-authoritative

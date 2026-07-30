@@ -1,0 +1,131 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/fix-dogfood-atomic-routing-capability-and-runner-gaps.yaml
+intent:
+  summary: Add risk-derived strong verification obligations and a checkpointed, resumable RMS bug hunt whose findings are minimized, replayable, and honest about proof scope.
+laws:
+  add:
+  - id: proof-first-hunts-are-bounded-and-replayable
+    statement: RMS derives strong verification obligations from declared risk, runs expensive lanes in an isolated checkpointed hunt, retains behavioral findings only after replay, and claims finite proof only for recorded exhaustion.
+    kind: invariant
+    authority: module
+    enforced_by: hunt-rms-system-command
+contracts:
+  add:
+  - name: hunt-rms-system
+    kind: command
+    direction: provided
+    version: '1'
+    command: rms-hunt
+    meaning: Run a checkpointed, reproducible campaign of risk-derived strong verification lanes without confusing bounded evidence with a global proof.
+    accepts:
+    - A clean committed RMS project, an optional selected module closure, a positive wall-clock budget, and available declared tools.
+    - Nightly runners that honor the recorded seed and budget and write rms/hunt-lane-result/v0.1 to RMS_HUNT_OUTPUT.
+    ensures:
+    - Execution occurs in an isolated checkout at the recorded source revision and leaves the caller's tracked source unchanged.
+    - Checkpoints bind source, declarations, tool identities, and seed; compatible runs resume without repeating completed lanes.
+    - Every retained behavioral finding has a successful replay and the final rms/hunt-report/v0.1 records bounds, evidence, findings, and proof scope.
+    - Only recorded finite exhaustion is classified as proof; fuzzing, sanitizers, generated cases, and mutation testing remain bounded evidence.
+    rejects:
+    - Dirty source, invalid declarations, unavailable tools, incompatible resume state, malformed lane results, non-replayable findings, or orchestration failure.
+properties:
+  add:
+  - id: risk-derived-hunt-lanes-are-required
+    proves: proof-first-hunts-are-bounded-and-replayable
+    kind: property
+    input_space: Modules crossing pure, numeric, stateful, workflow, boundary, distributed, reusable, unsafe, and temporal risk with matching and missing strong verification lanes.
+    preconditions: []
+    operation: null
+    oracle:
+    - each risk class requires its matching strong lane
+    - a missing lane blocks change and committed checks
+    - only a closed obligation with a focused reason is accepted as an exception
+    evidence:
+      kind: property
+      path: verification/properties/hunt_orchestration.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: properties
+      runner: src/main.rs#hunt_posture_derives_boundary_and_reusable_obligations_with_closed_exceptions
+      exhaustive: false
+  - id: hunt-outcomes-preserve-proof-scope
+    proves: proof-first-hunts-are-bounded-and-replayable
+    kind: property
+    input_space: Passing, finding, inconclusive, invalid, unsupported, exhausted, fuzz, coverage, and mutation lane results.
+    preconditions: []
+    operation: null
+    oracle:
+    - behavioral failures become bugs only after replay
+    - surviving mutants and inadequate coverage become proof gaps
+    - open-ended success remains clean only under recorded bounds
+    - finite proof scope names only lanes that record exhaustion
+    evidence:
+      kind: property
+      path: verification/properties/hunt_orchestration.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: properties
+      runner: src/hunt.rs#hunt_outcomes_distinguish_bugs_gaps_and_bounds
+      exhaustive: false
+hunt_exceptions:
+  add:
+  - obligation: boundary-fuzz
+    reason: The RMS CLI boundary is already exercised by generated malformed-artifact properties; coverage-guided engine integration is intentionally delegated to downstream language-specific runners.
+semantic_functions:
+  add:
+  - id: hunt-rms-system-command
+    symbol: src/hunt.rs#run
+    kind: interpreter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/hunt-rms-system.v1.yaml
+      invariants:
+      - proof-first-hunts-are-bounded-and-replayable
+    assumptions:
+      requires:
+      - the source checkout is clean and committed
+      ensures:
+      - project lanes execute only in the isolated checkout
+      - checkpoints bind source declarations tool identities and seed
+      - behavioral findings are retained only after replay
+      - the report distinguishes finite exhaustion from bounded empirical evidence
+    evidence:
+      contracts:
+      - verification/contracts/hunt_rms_system.md
+      laws:
+      - verification/laws/proof_first_hunts_are_bounded_and_replayable.md
+      properties:
+      - verification/properties/hunt_orchestration.md
+machine:
+  commands:
+    add:
+    - HuntRmsSystem
+public_behavior_bindings:
+  add:
+  - id: hunt-rms-system-public
+    public_kind: command
+    public_name: hunt-rms-system
+    contract: contracts/hunt-rms-system.v1.yaml
+    semantic_function: hunt-rms-system-command
+    machine_inputs:
+    - HuntRmsSystem
+    machine_outputs: []
+evidence:
+  add:
+  - kind: contract
+    proves: hunt-rms-system
+    path: verification/contracts/hunt_rms_system.md
+  - kind: invariant
+    proves: proof-first-hunts-are-bounded-and-replayable
+    path: verification/laws/proof_first_hunts_are_bounded_and_replayable.md
+  - kind: property
+    proves: proof-first-hunts-are-bounded-and-replayable
+    path: verification/properties/hunt_orchestration.md

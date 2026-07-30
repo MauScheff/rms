@@ -372,6 +372,12 @@ The module MUST additionally declare:
 
 Boundary verification SHOULD include semantic fuzz properties or generated adversarial cases when parser complexity or security risk justifies it. The semantic property SHOULD name the raw input space, parse/delegation oracle, evidence path, replayable counterexample policy, and realization strategy. A fixed deterministic corpus MUST NOT satisfy an open-ended fuzz claim. Complete finite spaces MAY use deterministic exhaustive evidence; open spaces require generated-property or coverage-guided evidence for a production claim.
 
+### 5.4.1 Risk-derived strong verification
+
+Implemented modules MUST declare strong verification lanes derived from their semantics: generated or exhaustive properties for pure and numeric decisions; finite exploration for stateful machines and workflows; coverage fuzzing for untrusted boundary, parser, storage, and external-result input; deterministic schedule and fault exploration for distributed behavior; static analysis or sanitizers for unsafe, foreign, or privileged authority; mutation testing for important reusable semantic oracles; and real-trace evaluation plus violation search for temporal promises.
+
+A module MAY declare a closed `verification.hunt_exceptions` item only when the named obligation is genuinely inapplicable, and MUST give a focused reason. Fast candidate checks validate that posture but do not require a fresh expensive campaign. `rms hunt` executes declared nightly lanes in an isolated committed checkout and records bounded evidence. Only exhausted finite exploration MAY support a universal finite conclusion; fuzzing, sanitizers, generated cases, bounded search, and mutation testing MUST NOT be described as global proof. Every retained behavioral failure MUST be replayable.
+
 ### 5.5 Monitor profile
 
 The Monitor profile applies when a module observes runtime inputs over time to compute derived facts, check envelopes or invariants, and emit findings, events, or declared supervisory commands.

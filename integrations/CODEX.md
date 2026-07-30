@@ -51,6 +51,8 @@ Executable temporal properties use one specialist loop: `property check` type-ch
 
 Quantity observation dimensions are scalar declarations such as `value: {quantity: transition}`. Bounds carry their decimal and unit separately. Use the complete executable example rendered by `rms spec plan`; do not infer nested quantity shapes.
 
+For “find bugs,” “fuzz,” “harden,” “soak,” “overnight,” or reliability-audit requests, select `hunt-bugs`. Inspect the campaign with `rms hunt --dry-run`; run it only from a clean commit, preserve its seed and replay recipes, and report bounded proof scope honestly.
+
 ## Plugin Wrapper
 
 The optional plugin wrapper lives at:
@@ -66,6 +68,8 @@ Refresh all managed RMS skill distributions through its compatibility entrypoint
 ```
 
 The wrapper calls the canonical repository sync script. It must preserve unrelated local skills and remain packaging rather than semantic authority.
+
+After `rms agent plugin sync --target codex`, RMS removes obsolete RMS-owned cache versions and verifies packaged skill equivalence. Start a new Codex task so the host loads the refreshed catalog.
 
 ## Hooks
 

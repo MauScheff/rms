@@ -1,0 +1,26 @@
+spec: rms/contract/v0.1
+name: hunt-rms-system
+version: 1
+kind: command
+meaning: Run a checkpointed, reproducible campaign of risk-derived strong verification lanes without confusing bounded evidence with a global proof.
+preconditions:
+- id: accepts-1
+  statement: A clean committed RMS project, an optional selected module closure, a positive wall-clock budget, and available declared tools.
+- id: accepts-2
+  statement: Nightly runners honor the recorded seed and budget and write rms/hunt-lane-result/v0.1 to RMS_HUNT_OUTPUT.
+postconditions:
+- id: ensures-1
+  statement: Execution occurs in an isolated checkout at the recorded source revision and leaves the caller's tracked source unchanged.
+- id: ensures-2
+  statement: Historical failures, smoke proof, real traces, bounded proof lanes, probe relationships, generated cases, fuzzers, and mutation lanes run in deterministic phase order within the total budget.
+- id: ensures-3
+  statement: Checkpoints bind source, declarations, tool identities, and seed; compatible runs resume without repeating completed lanes.
+- id: ensures-4
+  statement: Every behavioral finding has a successful replay, and the final rms/hunt-report/v0.1 records exact commands, bounds, metrics, artifacts, findings, and proof scope.
+- id: ensures-5
+  statement: Only recorded finite exhaustion is classified as proof; all fuzzing and time-bounded work remains bounded evidence.
+failure_categories:
+- id: rejects-1
+  statement: Dirty source, invalid declarations, unavailable tools, incompatible resume state, malformed lane results, non-replayable findings, or orchestration failure.
+compatibility:
+  policy: backward-compatible-within-major

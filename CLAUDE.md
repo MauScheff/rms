@@ -12,4 +12,6 @@ Detected skill copies are observable evidence only. Runtime activation and prece
 
 Temporal promises use executable observations, assumptions, closed expressions, and dimensionally valid quantities. Evaluate real traces and require exhausted finite search for universal finite claims.
 
+Derive strong verification lanes from declared risk. Use `rms hunt --dry-run` to inspect expensive work, run budgeted hunts only from a clean commit, require every behavioral finding to replay, and never turn bounded evidence into a bug-free claim.
+
 <!-- RMS managed Claude guidance: end -->

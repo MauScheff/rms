@@ -42,6 +42,8 @@ The plugin carries a copy of the canonical skills so it can be distributed as a 
 
 Do not edit `integrations/codex/rms/skills/` directly unless the same change is made in canonical `skills/`.
 
+After local plugin synchronization, start a new Codex task. The existing task retains the skill catalog injected when it started.
+
 ## Validation
 
 From the repository root:

@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Reliable Modular Systems",
     "shortDescription": "Build software through explicit module contracts.",
-    "longDescription": "RMS gives Codex bounded workflows for inspecting modules, implementing changes, pruning semantic residue, evolving contracts, composing modules, and verifying conformance against canonical manifests.",
+    "longDescription": "RMS gives Codex bounded workflows for inspecting modules, implementing changes, pruning semantic residue, evolving contracts, composing modules, verifying conformance, and running replayable proof-first bug hunts against canonical manifests.",
     "developerName": "Reliable Modular Systems",
     "category": "Developer Tools",
     "capabilities": [
@@ -32,7 +32,8 @@
       "Inspect this RMS module before changing it.",
       "Implement this change within the owning module.",
       "Prune semantic residue from this module without changing public behavior.",
-      "Verify this module against its RMS contracts."
+      "Verify this module against its RMS contracts.",
+      "Find and replay bugs with the risk-derived RMS hunt lanes."
     ],
     "brandColor": "#2563EB"
   }

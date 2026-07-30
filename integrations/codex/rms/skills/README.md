@@ -16,6 +16,7 @@ Product intent is sufficient input. Apply semantic changes before code, edit onl
 - `evolve-contract`: change commands, queries, events, APIs, schemas, or failure semantics.
 - `compose-modules`: verify provider/consumer fit and cross-module behavior.
 - `verify-module`: prove declared laws, contracts, boundaries, profiles, and compatibility promises.
+- `hunt-bugs`: run resumable proof, fuzz, sanitizer, schedule, and mutation campaigns; minimize and replay every behavioral failure.
 
 ## Doorway
 
@@ -40,3 +41,9 @@ Temporal promises use typed observations, explicit assumptions, closed expressio
 For a transition-count bound, declare the metric observation exactly as `source: {kind: trace-metric, name: transition-count}` with `value: {quantity: transition}`; put `{metric: <observation-id>, value: <decimal>, unit: transition}` in the temporal bound. `rms spec plan` renders a complete bounded-response example for other agents and dimensions.
 
 For finite machine-, protocol-, resource-, artifact-, or composition-scope proof, use `strategy: deterministic-exhaustive` with `exhaustive: true`. Without the explicit flag RMS treats the realization as non-exhaustive.
+
+## Proof-First Bug Hunting
+
+Derive strong lanes from risk when adding or changing software: generated or exhaustive checks for pure and numeric decisions; finite exploration for machines and workflows; coverage fuzzing for untrusted boundaries; schedule and fault exploration for distributed behavior; analyzers or sanitizers for unsafe authority; mutation testing for important reusable oracles; and real-trace evaluation plus violation search for temporal promises. Preserve historical counterexamples as smoke replays.
+
+Fast commit checks require the appropriate lane or a focused `verification.hunt_exceptions` reason, but do not run overnight work. Use `rms hunt --root . --dry-run` to inspect the campaign and `rms hunt --root . --budget 8h` from a clean commit to run it. `clean-under-recorded-bounds` is bounded evidence, not a bug-free guarantee.

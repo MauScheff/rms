@@ -170,3 +170,129 @@ fn probe_without_out_writes_no_artifacts() {
 
     fs::remove_dir(&working_directory).expect("remove isolated probe working directory");
 }
+
+#[test]
+fn hunt_runs_nightly_lane_in_an_isolated_checkout_and_resumes() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("rms-hunt-cli-{unique}"));
+    fs::create_dir_all(&root).expect("create hunt fixture");
+    fs::write(root.join(".gitignore"), ".rms/\n").expect("write ignore file");
+    fs::write(
+        root.join("implementation.yaml"),
+        r#"spec: rms/implementation/v0.1
+module: hunt-fixture
+binding: executable
+source:
+  root: .
+  public_entrypoint: runner.sh
+commands:
+  nightly: sh runner.sh
+architecture:
+  shape: domain-engine
+  reliability:
+    properties:
+      - id: overnight-oracle
+        proves: overnight-law
+        kind: property
+        input_space: generated cases
+        operation: exercise the fixture
+        oracle: [the runner completes]
+        evidence: { path: evidence.md }
+        counterexamples: { path: counterexamples }
+        realizations:
+          - profile: nightly
+            strategy: mutation-tester
+            command: nightly
+            runner: runner.sh#run
+"#,
+    )
+    .expect("write implementation");
+    fs::write(root.join("evidence.md"), "Fixture evidence.\n").expect("write evidence");
+    fs::create_dir(root.join("counterexamples")).expect("create counterexample directory");
+    fs::write(
+        root.join("runner.sh"),
+        r#"#!/bin/sh
+set -eu
+test -n "${RMS_HUNT_RUN_ID:-}"
+test -n "${RMS_HUNT_SEED:-}"
+test -n "${RMS_HUNT_BUDGET_SECONDS:-}"
+test -n "${RMS_HUNT_OUTPUT:-}"
+printf '%s\n' \
+  'spec: rms/hunt-lane-result/v0.1' \
+  'status: pass' \
+  'metrics:' \
+  '  mutants: 1' > "$RMS_HUNT_OUTPUT"
+"#,
+    )
+    .expect("write runner");
+    for arguments in [
+        ["init"].as_slice(),
+        ["config", "user.email", "rms@example.test"].as_slice(),
+        ["config", "user.name", "RMS Test"].as_slice(),
+        ["add", "."].as_slice(),
+        ["commit", "-m", "baseline"].as_slice(),
+    ] {
+        let output = Command::new("git")
+            .current_dir(&root)
+            .args(arguments)
+            .output()
+            .expect("prepare hunt git fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let first = Command::new(env!("CARGO_BIN_EXE_rms"))
+        .current_dir(&root)
+        .args([
+            "hunt", "--root", ".", "--budget", "10s", "--seed", "17", "--jobs", "2", "--json",
+        ])
+        .output()
+        .expect("run hunt");
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let report: Value = serde_json::from_slice(&first.stdout).expect("hunt report JSON");
+    assert_eq!(report["spec"], "rms/hunt-report/v0.1");
+    assert_eq!(report["result"], "clean-under-recorded-bounds");
+    assert_eq!(report["configuration"]["seed"], 17);
+    assert_eq!(report["lanes"][0]["status"], "pass");
+    assert_eq!(report["lanes"][0]["metrics"]["mutants"], 1);
+
+    let resumed = Command::new(env!("CARGO_BIN_EXE_rms"))
+        .current_dir(&root)
+        .args([
+            "hunt", "--root", ".", "--budget", "10s", "--resume", "latest", "--json",
+        ])
+        .output()
+        .expect("resume hunt");
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let resumed_report: Value =
+        serde_json::from_slice(&resumed.stdout).expect("resumed hunt report JSON");
+    assert_eq!(resumed_report["run_id"], report["run_id"]);
+    assert_eq!(resumed_report["result"], "clean-under-recorded-bounds");
+    assert!(!root.join("checkout").exists());
+    assert!(
+        Command::new("git")
+            .current_dir(&root)
+            .args(["status", "--porcelain", "--untracked-files=normal"])
+            .output()
+            .expect("inspect hunt fixture")
+            .stdout
+            .is_empty(),
+        "hunt mutated the committed source checkout"
+    );
+
+    fs::remove_dir_all(root).expect("remove hunt fixture");
+}

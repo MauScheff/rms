@@ -39,6 +39,9 @@ verification:
   boundaries: []
   properties:
     - verification/properties/transition_properties.md
+  hunt_exceptions:
+    - obligation: oracle-mutation
+      reason: The minimal Python example demonstrates packaging and generated properties; mutation tooling is intentionally omitted from this small distribution fixture.
 
 x-scaffold:
   shape: "domain-engine"

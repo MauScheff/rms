@@ -75,6 +75,9 @@ verification:
   - verification/traces
   fuzz:
   - verification/fuzz/malformed_input_fuzz.md
+  hunt_exceptions:
+  - obligation: boundary-fuzz
+    reason: The finite Tic-Tac-Toe coordinate grammar is generated completely by the declared property runner, so a coverage-guided engine adds no additional input domain.
 fuzz_targets:
 - id: tic-tac-toe-cli-malformed-input-stops-before-domain
   proves: boundary-parse
@@ -109,8 +112,8 @@ x-scaffold:
   - boundary-evidence
 x-rms:
   semantic_revision:
-    digest: sha256:1696791eaa87a19839c23d957bad8b57bc233e12b7ca1b2e47225edeb151ce76
-    change_record: verification/changes/bind-the-tic-tac-toe-cli-command-and-its-rules-dependency-through-exact-boundary-symbols-1411830423e3.yaml
-    change_record_digest: sha256:1411830423e3ad531b0b2205e8bc6621b9d004f7e62eda2922adbf054bdc5047
+    digest: sha256:8a3f74dca0121a552eed16a0143c35f64670f59c8bd7c89349cece92a695a901
+    change_record: verification/changes/explain-why-the-finite-coordinate-grammar-does-not-require-a-coverage-fuzzer.yaml
+    change_record_digest: sha256:ed81295c905261ddfccce6a9339ccda3c788711d2026bdf0fa02aa9ca1a05b2f
     applied_by: rms spec apply
-  last_semantic_intent: Bind the Tic-Tac-Toe CLI command and its rules dependency through exact boundary symbols.
+  last_semantic_intent: Record the focused proof-lane exception for a finite coordinate grammar already generated completely by the declared boundary property.

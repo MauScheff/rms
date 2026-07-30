@@ -54,6 +54,7 @@ Use this skill when the requested outcome is better internal shape, clearer boun
    - illegal state transitions are rejected or unrepresentable;
    - boundary validation still rejects malformed input;
    - public contract behavior remains compatible.
+   - Preserve hunt declarations, corpora, seeds, minimized counterexamples, replay recipes, and risk-derived lane coverage unless the refactor explicitly and canonically replaces them.
    - Use `rms probe <implementation.yaml> --describe` and a short inline or file sequence to compare state/case paths before and after a machine refactor. This is a diagnostic equivalence check, not verification evidence.
 12. Run `rms review <module>` before finalizing when a diff exists. Run `rms validate --root <root>`, `rms spec check <module.yaml|implementation.yaml>`, `rms machine check <implementation.yaml>`, `rms surface check <implementation.yaml> --strict` when runnable surfaces exist, and `rms structure <implementation.yaml>` when implementation structure exists, plus the implementation binding's build and verification commands. Use `rms check-compat` when public manifests changed. Treat public-command representation and runnable-surface diagnostics as refactor blockers unless the canonical artifacts declare a real exception.
 13. Summarize:

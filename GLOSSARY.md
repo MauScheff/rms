@@ -182,6 +182,10 @@ A process that compares internal state with external or authoritative reality an
 
 A module or implementation role that observes declared runtime inputs over time, computes derived facts or streams, and triggers declared outputs when conditions hold.
 
+## Hunt
+
+A checkpointed, reproducible RMS campaign that replays historical failures, regenerates traces, evaluates properties, explores finite models, and orchestrates declared generated, fuzz, sanitizer, static-analysis, and mutation lanes. Its report states exact bounds and never claims that bounded empirical evidence proves a system bug-free.
+
 ## Safety envelope
 
 A declared runtime condition or boundary that must remain true for a system, module, operation, or controlled behavior to be considered acceptable.

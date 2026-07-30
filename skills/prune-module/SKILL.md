@@ -65,6 +65,7 @@ Every retained artifact should serve a current manifest promise, public contract
    - laws and invariants still hold;
    - public contract behavior remains compatible;
    - invalid constructors, malformed boundary input, impossible variants, and illegal transitions are rejected or unrepresentable when applicable.
+   - Preserve active hunt declarations, useful fuzz corpora, recorded seeds, minimized counterexamples, and replay recipes. Delete them only when a canonical semantic change removes the obligation or a replacement demonstrates equivalent coverage.
 11. Do not hide a semantic change as pruning. If removal changes public meaning, switch to `evolve-contract` or `implement-change` and make compatibility impact explicit.
 12. Run `rms validate --root <root>` and the implementation binding's build and verification commands.
 13. Summarize:

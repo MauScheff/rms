@@ -25,6 +25,7 @@ use tree_sitter::{Node as TreeSitterNode, Parser as TreeSitterParser};
 use walkdir::WalkDir;
 
 mod effect_executor;
+mod hunt;
 mod probe;
 mod property;
 mod semantic_graph;
@@ -69,6 +70,7 @@ const CANONICAL_SKILLS: &[&str] = &[
     "evolve-contract",
     "compose-modules",
     "verify-module",
+    "hunt-bugs",
 ];
 const INIT_AGENT_SKILLS: &[(&str, &str)] = &[
     ("README.md", include_str!("../assets/skills/README.md")),
@@ -103,6 +105,10 @@ const INIT_AGENT_SKILLS: &[(&str, &str)] = &[
     (
         "verify-module/SKILL.md",
         include_str!("../assets/skills/verify-module/SKILL.md"),
+    ),
+    (
+        "hunt-bugs/SKILL.md",
+        include_str!("../assets/skills/hunt-bugs/SKILL.md"),
     ),
 ];
 
@@ -873,6 +879,45 @@ enum Commands {
     Property {
         #[command(subcommand)]
         command: PropertyCommands,
+    },
+
+    /// Run a resumable proof-first bug hunt over declared verification lanes.
+    Hunt {
+        /// Repository or system root to hunt.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// Restrict the hunt to one module and its declared provider closure.
+        #[arg(long)]
+        module: Option<PathBuf>,
+
+        /// Total wall-clock budget using s, m, h, or d.
+        #[arg(long, default_value = "8h", value_parser = hunt::parse_budget)]
+        budget: String,
+
+        /// Reproducible base seed; generated and recorded when omitted.
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Maximum concurrent lanes.
+        #[arg(long, default_value_t = 4)]
+        jobs: usize,
+
+        /// Resume a checkpointed run by id or use `latest`.
+        #[arg(long)]
+        resume: Option<String>,
+
+        /// Also write the final rms/hunt-report/v0.1 to this path.
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// Plan lanes without executing project code.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Emit the final report as JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Plan, apply, check, and diff RMS semantic machine structure.
@@ -2043,6 +2088,7 @@ enum RmsWorkbenchCommand {
     AnalyzeSemanticProperties,
     MonitorSemanticProperties,
     ReplayPropertyAnalysis,
+    HuntRmsSystem,
     RunTraceProducers,
     ReplayPropertyCounterexample,
     InspectModule,
@@ -2315,6 +2361,8 @@ struct SemanticChange {
     contracts: Option<SemanticContractsChange>,
     #[serde(default)]
     properties: Option<SemanticPropertiesChange>,
+    #[serde(default)]
+    hunt_exceptions: Option<SemanticHuntExceptionsChange>,
     #[serde(default)]
     trace_producers: Option<TraceProducersChange>,
     #[serde(default)]
@@ -3018,11 +3066,31 @@ struct SemanticPropertyChange {
     #[serde(default)]
     realizations: Vec<PropertyRealization>,
     #[serde(default)]
+    explorations: Vec<YamlValue>,
+    #[serde(default)]
     observations: Vec<YamlValue>,
     #[serde(default)]
     assumptions: Vec<YamlValue>,
     #[serde(default)]
     temporal: Option<YamlValue>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticHuntExceptionsChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<SemanticHuntException>>,
+    #[serde(default)]
+    add: Vec<SemanticHuntException>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticHuntException {
+    obligation: String,
+    reason: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -6033,6 +6101,7 @@ fn run_agent_plugin_install(
     ensure_personal_marketplace_entry(&paths)?;
     if !skip_codex_add {
         run_codex_plugin_add("rms", "personal")?;
+        prune_stale_codex_plugin_cache()?;
     }
     let report = build_agent_plugin_report(target, Some(&paths.marketplace_path))?;
     print_agent_plugin_report(&report);
@@ -6050,6 +6119,7 @@ fn run_agent_plugin_sync(
     ensure_personal_marketplace_entry(&paths)?;
     if !skip_codex_add {
         run_codex_plugin_add("rms", "personal")?;
+        prune_stale_codex_plugin_cache()?;
     }
     let report = build_agent_plugin_report(target, Some(&paths.marketplace_path))?;
     print_agent_plugin_report(&report);
@@ -6186,14 +6256,16 @@ fn render_codex_plugin_manifest() -> String {
         "interface": {
             "displayName": "Reliable Modular Systems",
             "shortDescription": "Build software through explicit module contracts.",
-            "longDescription": "RMS gives Codex bounded workflows for inspecting modules, implementing changes, pruning semantic residue, evolving contracts, composing modules, and verifying conformance against canonical manifests.",
+            "longDescription": "RMS gives Codex bounded workflows for inspecting modules, implementing changes, pruning semantic residue, evolving contracts, composing modules, verifying conformance, and running replayable proof-first bug hunts against canonical manifests.",
             "developerName": "Reliable Modular Systems",
             "category": "Developer Tools",
             "capabilities": ["Code", "Review", "Workflow"],
             "defaultPrompt": [
                 "Inspect this RMS module before changing it.",
                 "Implement this change within the owning module.",
-                "Verify this module against its RMS contracts."
+                "Prune semantic residue from this module without changing public behavior.",
+                "Verify this module against its RMS contracts.",
+                "Find and replay bugs with the risk-derived RMS hunt lanes."
             ],
             "brandColor": "#2563EB"
         }
@@ -6424,11 +6496,43 @@ fn codex_plugin_cache_readiness() -> CodexPluginCacheReadiness {
     }
 }
 
+fn prune_stale_codex_plugin_cache() -> Result<()> {
+    prune_stale_codex_plugin_cache_at(&home_dir()?)
+}
+
+fn prune_stale_codex_plugin_cache_at(home: &Path) -> Result<()> {
+    let cache_root = home.join(".codex/plugins/cache/personal/rms");
+    if !cache_root.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&cache_root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        if !codex_plugin_cached_skills_match_embedded(&entry.path()) {
+            fs::remove_dir_all(entry.path()).with_context(|| {
+                format!(
+                    "failed to remove stale RMS-owned plugin cache `{}`",
+                    entry.path().display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn codex_plugin_cached_skills_match_embedded(cache_version_root: &Path) -> bool {
-    INIT_AGENT_SKILLS.iter().all(|(relative_path, contents)| {
-        fs::read_to_string(cache_version_root.join("skills").join(relative_path))
-            .is_ok_and(|actual| actual == *contents)
-    })
+    let Ok(actual) = collect_distribution_files(&cache_version_root.join("skills")) else {
+        return false;
+    };
+    let expected = INIT_AGENT_SKILLS
+        .iter()
+        .map(|(relative_path, contents)| {
+            (PathBuf::from(relative_path), contents.as_bytes().to_vec())
+        })
+        .collect::<BTreeMap<_, _>>();
+    actual == expected
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -8552,6 +8656,7 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
             "gate",
             "trace",
             "property",
+            "hunt",
             "conformance",
             "audit",
             "check-compat",
@@ -9238,6 +9343,19 @@ fn main() -> Result<()> {
             ),
             PropertyCommands::Replay { analysis, json } => run_property_replay(&analysis, json),
         },
+        Commands::Hunt {
+            root,
+            module,
+            budget,
+            seed,
+            jobs,
+            resume,
+            out,
+            dry_run,
+            json,
+        } => hunt::run(hunt::HuntRequest::from_cli(
+            root, module, budget, seed, jobs, resume, out, dry_run, json,
+        )),
         Commands::Machine { command } => match command {
             MachineCommands::Plan {
                 implementation,
@@ -16569,6 +16687,187 @@ fn validate_property_module(module: &LoadedManifest, diagnostics: &mut Vec<Diagn
             "numeric, bounded, or range semantics should have semantic property/fuzz evidence or an explicit justification",
         );
     }
+    validate_hunt_posture(module, diagnostics);
+}
+
+fn validate_hunt_posture(module: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    let implementation_path = base.join("implementation.yaml");
+    let Ok(implementation) = load_manifest(&implementation_path) else {
+        return;
+    };
+    let exception_items = get_path(&module.value, &["verification", "hunt_exceptions"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let exceptions = exception_items
+        .iter()
+        .filter_map(|item| get_str(item, &["obligation"]))
+        .collect::<BTreeSet<_>>();
+    if exceptions.len() != exception_items.len() {
+        diagnostics.push(error(
+            "semantic.hunt-exception-duplicate",
+            &module.path,
+            "verification.hunt_exceptions must name each closed obligation at most once",
+        ));
+    }
+    let targets = property_targets_from_implementation(
+        &implementation,
+        &["architecture", "reliability", "properties"],
+        "property",
+    )
+    .into_iter()
+    .chain(property_targets_from_implementation(
+        &implementation,
+        &["architecture", "reliability", "fuzz_targets"],
+        "fuzz",
+    ))
+    .collect::<Vec<_>>();
+    let strategies = targets
+        .iter()
+        .flat_map(|target| {
+            target
+                .realizations
+                .iter()
+                .map(|realization| realization.strategy.as_str())
+        })
+        .collect::<BTreeSet<_>>();
+    let has_exploration = targets.iter().any(|target| {
+        get_path(&target.definition, &["explorations"])
+            .and_then(YamlValue::as_sequence)
+            .is_some_and(|items| !items.is_empty())
+    });
+    let has_violation_exploration = targets.iter().any(|target| {
+        get_path(&target.definition, &["explorations"])
+            .and_then(YamlValue::as_sequence)
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| get_str(item, &["goal"]) == Some("violate"))
+            })
+    });
+    let has_fault_exploration = targets.iter().any(|target| {
+        get_path(&target.definition, &["explorations"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| get_str(item, &["assembly"]))
+            .any(|assembly| {
+                load_manifest(&base.join(assembly))
+                    .ok()
+                    .and_then(|manifest| {
+                        get_path(&manifest.value, &["faults"])
+                            .and_then(YamlValue::as_sequence)
+                            .map(|faults| !faults.is_empty())
+                    })
+                    .unwrap_or(false)
+            })
+    });
+    let profiles = get_string_array(&module.value, &["profiles"]);
+    let mut obligations = Vec::new();
+    if !targets.is_empty()
+        && !strategies.iter().any(|strategy| {
+            matches!(
+                *strategy,
+                "generated-property"
+                    | "deterministic-exhaustive"
+                    | "coverage-fuzzer"
+                    | "model-checker"
+                    | "static-analyzer"
+                    | "sanitizer"
+                    | "mutation-tester"
+            )
+        })
+    {
+        obligations.push((
+            "generated-input",
+            "declare generated, exhaustive, coverage-guided, model, analyzer, sanitizer, or mutation evidence",
+        ));
+    }
+    let shape = get_str(&implementation.value, &["architecture", "shape"]).unwrap_or("");
+    if (profiles.iter().any(|profile| profile == "boundary")
+        || matches!(shape, "storage-machine" | "integration-machine"))
+        && !strategies.contains("coverage-fuzzer")
+    {
+        obligations.push((
+            "boundary-fuzz",
+            "boundary modules require a coverage-fuzzer realization",
+        ));
+    }
+    if profiles
+        .iter()
+        .any(|profile| matches!(profile.as_str(), "stateful" | "workflow"))
+        && !has_exploration
+        && !strategies
+            .iter()
+            .any(|strategy| matches!(*strategy, "deterministic-exhaustive" | "model-checker"))
+    {
+        obligations.push((
+            "finite-state-exploration",
+            "stateful/workflow modules require exhaustive, model, or probe exploration",
+        ));
+    }
+    if profiles.iter().any(|profile| profile == "distributed") && !has_fault_exploration {
+        obligations.push((
+            "schedule-fault-exploration",
+            "distributed modules require declared schedule/fault probe exploration",
+        ));
+    }
+    let has_unsafe_authority = get_path(&module.value, &["authorities"])
+        .and_then(YamlValue::as_sequence)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                matches!(
+                    get_str(item, &["kind"]),
+                    Some("unsafe") | Some("foreign") | Some("privileged")
+                )
+            })
+        });
+    if has_unsafe_authority
+        && !strategies
+            .iter()
+            .any(|strategy| matches!(*strategy, "static-analyzer" | "sanitizer"))
+    {
+        obligations.push((
+            "unsafe-code-analysis",
+            "unsafe, foreign, or privileged authority requires analyzer or sanitizer evidence",
+        ));
+    }
+    let reusable = get_bool(&implementation.value, &["distribution", "reusable"]) == Some(true);
+    if reusable && !strategies.contains("mutation-tester") {
+        obligations.push((
+            "oracle-mutation",
+            "reusable modules require mutation evidence for important semantic oracles",
+        ));
+    }
+    let has_temporal = targets.iter().any(|target| target.temporal.is_some());
+    let has_trace_producer = !trace_producers_from_implementation(&implementation).is_empty();
+    if has_temporal
+        && (!has_trace_producer
+            || (!has_violation_exploration
+                && !strategies.iter().any(|strategy| {
+                    matches!(*strategy, "deterministic-exhaustive" | "model-checker")
+                })))
+    {
+        obligations.push((
+            "temporal-violation-search",
+            "temporal properties require violation search or proof-capable finite realization",
+        ));
+    }
+    for (obligation, requirement) in obligations {
+        if exceptions.contains(obligation) {
+            continue;
+        }
+        push_unique_warning(
+            diagnostics,
+            "structure.hunt-lane-missing",
+            &module.path,
+            format!(
+                "risk-derived hunt obligation `{obligation}` is unmet: {requirement}; declare the lane or a focused verification.hunt_exceptions entry"
+            ),
+        );
+    }
 }
 
 fn validate_trace_producer_declarations(
@@ -16891,6 +17190,7 @@ fn validate_property_target_report(
                 | "benchmark"
                 | "static-analyzer"
                 | "sanitizer"
+                | "mutation-tester"
         ) {
             push_unique_warning(
                 diagnostics,
@@ -17059,7 +17359,74 @@ fn validate_property_target_report(
             ),
         );
     }
+    validate_property_explorations(manifest, base, target, diagnostics);
     validate_temporal_target_report(manifest, target, diagnostics);
+}
+
+fn validate_property_explorations(
+    manifest: &LoadedManifest,
+    base: &Path,
+    target: &PropertyTargetReport,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(explorations) =
+        get_path(&target.definition, &["explorations"]).and_then(YamlValue::as_sequence)
+    else {
+        return;
+    };
+    for (index, exploration) in explorations.iter().enumerate() {
+        let Some(assembly) = get_str(exploration, &["assembly"]) else {
+            diagnostics.push(error(
+                "semantic.property-exploration-invalid",
+                &manifest.path,
+                format!(
+                    "property `{}` exploration {} is missing `assembly`",
+                    target.id,
+                    index + 1
+                ),
+            ));
+            continue;
+        };
+        if !is_safe_relative_artifact_path(assembly) || !base.join(assembly).is_file() {
+            diagnostics.push(error(
+                "semantic.property-exploration-invalid",
+                &manifest.path,
+                format!(
+                    "property `{}` exploration {} assembly `{assembly}` is missing or unsafe",
+                    target.id,
+                    index + 1
+                ),
+            ));
+        }
+        let goal = get_str(exploration, &["goal"]).unwrap_or_default();
+        if !matches!(goal, "satisfy" | "violate") {
+            diagnostics.push(error(
+                "semantic.property-exploration-invalid",
+                &manifest.path,
+                format!(
+                    "property `{}` exploration {} has unsupported goal `{goal}`",
+                    target.id,
+                    index + 1
+                ),
+            ));
+        }
+        for field in ["max_steps", "max_schedules", "max_states"] {
+            if get_path(exploration, &["bounds", field])
+                .and_then(YamlValue::as_u64)
+                .is_none_or(|value| value == 0)
+            {
+                diagnostics.push(error(
+                    "semantic.property-exploration-invalid",
+                    &manifest.path,
+                    format!(
+                        "property `{}` exploration {} needs a positive `bounds.{field}`",
+                        target.id,
+                        index + 1
+                    ),
+                ));
+            }
+        }
+    }
 }
 
 fn validate_temporal_target_report(
@@ -17930,6 +18297,7 @@ fn property_blocking_diagnostic(check: &str) -> bool {
                 | "structure.boundary-parser-without-fuzz-property"
                 | "structure.numeric-law-without-property"
                 | "structure.transition-law-without-property"
+                | "structure.hunt-lane-missing"
                 | "structure.property-target-missing"
                 | "property.runner-missing"
                 | "property.generator-missing"
@@ -21802,6 +22170,10 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
         "rms/property-observation/v0.1" => Some(include_str!(
             "../../../../schemas/property-observation.schema.json"
         )),
+        "rms/hunt-lane-result/v0.1" => Some(include_str!(
+            "../../../../schemas/hunt-lane-result.schema.json"
+        )),
+        "rms/hunt-report/v0.1" => Some(include_str!("../../../../schemas/hunt-report.schema.json")),
         "rms/conformance/v0.1" => Some(include_str!("../../../../schemas/conformance.schema.json")),
         _ => None,
     }
@@ -33086,6 +33458,7 @@ fn declared_proof_entries(root: &Path) -> Result<Vec<surface_projection::ProofEn
         "benchmark",
         "static-analyzer",
         "sanitizer",
+        "mutation-tester",
     ];
     let mut entries = Vec::new();
     for module in discover_module_manifests(root)? {
@@ -42196,6 +42569,7 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "structure.boundary-parser-without-fuzz-property"
                 | "structure.numeric-law-without-property"
                 | "structure.transition-law-without-property"
+                | "structure.hunt-lane-missing"
                 | "structure.property-target-missing"
                 | "property.runner-missing"
                 | "property.generator-missing"
@@ -46636,6 +47010,10 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "  set: []")?;
     writeln!(out, "  remove: []")?;
+    writeln!(out, "hunt_exceptions:")?;
+    writeln!(out, "  set: null")?;
+    writeln!(out, "  add: []")?;
+    writeln!(out, "  remove: []")?;
     if let Some(implementation) = &context.implementation {
         writeln!(out, "semantic_functions:")?;
         writeln!(out, "  add: []")?;
@@ -46740,7 +47118,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; and exact realizations. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations` with `assembly`, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
     writeln!(out)?;
     writeln!(out, "A bounded response measured in nominal transitions uses this exact executable shape inside `properties.add[]` or `properties.set[]`:")?;
     writeln!(out, "```yaml")?;
@@ -46777,6 +47155,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "```")?;
     writeln!(out, "Closed trace metrics are `elapsed` with `value: {{quantity: time}}`, `transition-count` with `value: {{quantity: transition}}`, `attempt-count` with `value: {{quantity: attempt}}`, and `message-count` with `value: {{quantity: message}}`. Quantity dimensions are scalar strings under `value.quantity`; units belong on predicate comparison values and temporal bounds, not in the observation type.")?;
     writeln!(out, "`properties.remove[]` contains existing property ids. Binding-native realizations name a `path#symbol` runner and an exact generator. Protocol observations reference a public protocol automaton. `semantic_functions.add[]` and `semantic_functions.set[]` use the rendered function shape; `semantic_functions.remove[]` contains existing function ids.")?;
+    writeln!(out, "`hunt_exceptions.set` replaces the complete list, `add` replaces an existing item with the same obligation, and `remove` contains obligation names. Obligations are exactly `generated-input`, `boundary-fuzz`, `finite-state-exploration`, `schedule-fault-exploration`, `unsafe-code-analysis`, `oracle-mutation`, and `temporal-violation-search`; every exception needs a focused reason and is valid only when that lane is genuinely inapplicable.")?;
     writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module.")?;
     writeln!(out, "`rms spec apply` automatically adds every currently active semantic revision to `supersedes` and hash-seals the exact new record. Use explicit `supersedes` only for additional branches that are not locally discoverable. Applied records are append-only: never edit or delete them.")?;
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
@@ -48074,6 +48453,9 @@ fn validate_semantic_change(
             || !properties.replace.is_empty()
             || !properties.remove.is_empty()
     });
+    let has_hunt_exceptions = change.hunt_exceptions.as_ref().is_some_and(|exceptions| {
+        exceptions.replace.is_some() || !exceptions.add.is_empty() || !exceptions.remove.is_empty()
+    });
     let has_trace_producers = change
         .trace_producers
         .as_ref()
@@ -48127,6 +48509,7 @@ fn validate_semantic_change(
     if !has_laws
         && !has_contracts
         && !has_properties
+        && !has_hunt_exceptions
         && !has_trace_producers
         && !has_semantic_functions
         && !has_machine
@@ -48144,7 +48527,7 @@ fn validate_semantic_change(
         diagnostics.push(error(
             "semantic-change.empty",
             &context.target,
-            "semantic change must revise laws, contracts, properties, trace producers, semantic functions, machine structure, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, behavior bindings, or evidence obligations",
+            "semantic change must revise laws, contracts, properties, hunt exceptions, trace producers, semantic functions, machine structure, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, behavior bindings, or evidence obligations",
         ));
     }
 
@@ -49720,6 +50103,7 @@ fn validate_semantic_properties(
                     | "benchmark"
                     | "static-analyzer"
                     | "sanitizer"
+                    | "mutation-tester"
             );
             if !matches!(realization.profile.as_str(), "smoke" | "ci" | "nightly")
                 || !valid_strategy
@@ -52138,6 +52522,9 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
     if let Some(properties) = &change.properties {
         apply_semantic_property_changes_to_module(value, properties);
     }
+    if let Some(exceptions) = &change.hunt_exceptions {
+        apply_semantic_hunt_exceptions(value, exceptions);
+    }
     if let Some(artifacts) = change
         .artifacts
         .as_ref()
@@ -52186,6 +52573,36 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
             );
         }
     }
+}
+
+fn apply_semantic_hunt_exceptions(value: &mut YamlValue, change: &SemanticHuntExceptionsChange) {
+    let mut items = change.replace.clone().unwrap_or_else(|| {
+        get_path(value, &["verification", "hunt_exceptions"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| serde_yaml::from_value(item.clone()).ok())
+            .collect()
+    });
+    let removed = change
+        .remove
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    items.retain(|item| !removed.contains(item.obligation.as_str()));
+    for addition in &change.add {
+        items.retain(|item| item.obligation != addition.obligation);
+        items.push(addition.clone());
+    }
+    items.sort_by(|left, right| left.obligation.cmp(&right.obligation));
+    set_yaml_sequence_path(
+        value,
+        &["verification", "hunt_exceptions"],
+        items
+            .into_iter()
+            .filter_map(|item| serde_yaml::to_value(item).ok())
+            .collect(),
+    );
 }
 
 fn apply_semantic_property_changes_to_module(
@@ -52517,6 +52934,12 @@ fn semantic_property_yaml(property: &SemanticPropertyChange) -> YamlValue {
                     .map(property_realization_yaml)
                     .collect(),
             ),
+        );
+    }
+    if !property.explorations.is_empty() {
+        mapping.insert(
+            yaml_key("explorations"),
+            YamlValue::Sequence(property.explorations.clone()),
         );
     }
     if !property.observations.is_empty() {
@@ -86203,6 +86626,261 @@ printf '%s\n' "$response" > "$output"
         ] {
             fs::remove_dir_all(path).unwrap();
         }
+    }
+
+    #[test]
+    fn hunt_posture_derives_boundary_and_reusable_obligations_with_closed_exceptions() {
+        let root = unique_test_dir("hunt-posture");
+        fs::create_dir_all(&root).unwrap();
+        write_test_file(
+            &root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: hunt-posture
+  version: 0.1.0
+  kind: library
+  purpose: Exercise risk-derived hunt obligations.
+profiles: [core, boundary]
+verification:
+  hunt_exceptions: []
+"#,
+        );
+        write_test_file(
+            &root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: hunt-posture
+binding: rust
+source: { root: ., public_entrypoint: src/lib.rs }
+commands: { properties: "true" }
+distribution: { reusable: true }
+architecture:
+  shape: boundary-adapter
+  reliability:
+    properties:
+      - id: generated-boundary
+        proves: boundary-law
+        kind: property
+        input_space: generated inputs
+        operation: parse
+        oracle: [parsing is total]
+        evidence: { path: evidence.md }
+        counterexamples: { path: counterexamples }
+        realizations:
+          - profile: smoke
+            strategy: generated-property
+            command: properties
+            generator: src/lib.rs#cases
+            runner: src/lib.rs#property
+"#,
+        );
+        let module = load_manifest(&root.join("module.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_hunt_posture(&module, &mut diagnostics);
+        let messages = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>();
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("boundary-fuzz")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("oracle-mutation")));
+
+        let mut module = module;
+        set_yaml_sequence_path(
+            &mut module.value,
+            &["verification", "hunt_exceptions"],
+            vec![
+                serde_yaml::from_str(
+                    "{ obligation: boundary-fuzz, reason: finite generated grammar is completely enumerated }",
+                )
+                .unwrap(),
+                serde_yaml::from_str(
+                    "{ obligation: oracle-mutation, reason: fixture has no reusable semantic oracle to mutate }",
+                )
+                .unwrap(),
+            ],
+        );
+        write_yaml_manifest(&module).unwrap();
+        let module = load_manifest(&root.join("module.yaml")).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_hunt_posture(&module, &mut diagnostics);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "structure.hunt-lane-missing"),
+            "{diagnostics:#?}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hunt_posture_covers_each_declared_risk_class() {
+        let cases = [
+            ("pure", "[core]", "", "", "", "generated-input"),
+            (
+                "stateful",
+                "[core, stateful]",
+                "",
+                "",
+                "",
+                "finite-state-exploration",
+            ),
+            (
+                "workflow",
+                "[core, workflow]",
+                "",
+                "",
+                "",
+                "finite-state-exploration",
+            ),
+            (
+                "boundary",
+                "[core, boundary]",
+                "",
+                "",
+                "",
+                "boundary-fuzz",
+            ),
+            (
+                "distributed",
+                "[core, distributed]",
+                "",
+                "",
+                "",
+                "schedule-fault-exploration",
+            ),
+            (
+                "unsafe",
+                "[core]",
+                "authorities:\n  - id: ffi\n    kind: unsafe\n",
+                "",
+                "",
+                "unsafe-code-analysis",
+            ),
+            (
+                "reusable",
+                "[core]",
+                "",
+                "distribution: { reusable: true }\n",
+                "",
+                "oracle-mutation",
+            ),
+            (
+                "monitor",
+                "[core, monitor]",
+                "",
+                "",
+                "        temporal:\n          scope: runtime\n          expression: { always: { occurred: observed } }\n",
+                "temporal-violation-search",
+            ),
+        ];
+        for (label, profiles, authority, distribution, temporal, obligation) in cases {
+            let root = unique_test_dir(&format!("hunt-risk-{label}"));
+            fs::create_dir_all(&root).unwrap();
+            write_test_file(
+                &root.join("module.yaml"),
+                &format!(
+                    "spec: rms/module/v0.1\nmodule:\n  name: {label}\n  version: 0.1.0\n  kind: library\n  purpose: Exercise {label} risk.\nprofiles: {profiles}\n{authority}verification: {{ hunt_exceptions: [] }}\n"
+                ),
+            );
+            write_test_file(
+                &root.join("implementation.yaml"),
+                &format!(
+                    "spec: rms/implementation/v0.1\nmodule: {label}\nbinding: rust\nsource: {{ root: ., public_entrypoint: src/lib.rs }}\ncommands: {{ properties: \"true\" }}\n{distribution}architecture:\n  shape: domain-engine\n  reliability:\n    properties:\n      - id: risk\n        proves: risk-law\n        kind: property\n        input_space: fixed and generated inputs\n        operation: decide\n        oracle: [the decision is total]\n        evidence: {{ path: evidence.md }}\n        counterexamples: {{ path: counterexamples }}\n        realizations:\n          - profile: smoke\n            strategy: deterministic-corpus\n            command: properties\n            runner: src/lib.rs#property\n{temporal}"
+                ),
+            );
+            let module = load_manifest(&root.join("module.yaml")).unwrap();
+            let mut diagnostics = Vec::new();
+            validate_hunt_posture(&module, &mut diagnostics);
+            assert!(
+                diagnostics.iter().any(|diagnostic| {
+                    diagnostic.check == "structure.hunt-lane-missing"
+                        && diagnostic.message.contains(obligation)
+                }),
+                "{label} did not derive {obligation}: {diagnostics:#?}"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn semantic_change_renders_explorations_and_updates_hunt_exceptions() {
+        let property: SemanticPropertyChange = serde_yaml::from_str(
+            r#"id: bounded-response
+proves: response-law
+kind: property
+input_space: finite probe assembly
+operation: explore
+oracle: [violations are replayable]
+evidence: { kind: property, path: verification/property.md }
+counterexamples: { path: verification/counterexamples }
+explorations:
+  - assembly: verification/probe-assembly.yaml
+    goal: violate
+    bounds: { max_steps: 30, max_schedules: 1000, max_states: 10000 }
+"#,
+        )
+        .unwrap();
+        let rendered = semantic_property_yaml(&property);
+        assert_eq!(
+            get_path(&rendered, &["explorations"])
+                .and_then(YamlValue::as_sequence)
+                .and_then(|items| items.first())
+                .and_then(|item| get_str(item, &["goal"])),
+            Some("violate")
+        );
+
+        let mut module: YamlValue = serde_yaml::from_str(
+            "verification:\n  hunt_exceptions:\n    - obligation: boundary-fuzz\n      reason: old focused reason remains long enough\n",
+        )
+        .unwrap();
+        let change: SemanticHuntExceptionsChange = serde_yaml::from_str(
+            r#"remove: [boundary-fuzz]
+add:
+  - obligation: oracle-mutation
+    reason: mutation does not apply to this generated transport-only fixture
+"#,
+        )
+        .unwrap();
+        apply_semantic_hunt_exceptions(&mut module, &change);
+        let exceptions = get_path(&module, &["verification", "hunt_exceptions"])
+            .and_then(YamlValue::as_sequence)
+            .unwrap();
+        assert_eq!(exceptions.len(), 1);
+        assert_eq!(
+            get_str(&exceptions[0], &["obligation"]),
+            Some("oracle-mutation")
+        );
+    }
+
+    #[test]
+    fn plugin_cache_pruning_removes_only_non_equivalent_rms_versions() {
+        let home = unique_test_dir("plugin-cache-prune");
+        let cache = home.join(".codex/plugins/cache/personal/rms");
+        let matching = cache.join("matching");
+        let stale = cache.join("stale");
+        write_embedded_skill_set(&matching.join("skills"));
+        write_embedded_skill_set(&stale.join("skills"));
+        write_test_file(
+            &stale.join("skills/verify-module/SKILL.md"),
+            "stale skill\n",
+        );
+        write_test_file(
+            &matching.join("skills/obsolete/SKILL.md"),
+            "obsolete extra skill\n",
+        );
+        assert!(
+            !codex_plugin_cached_skills_match_embedded(&matching),
+            "extra cached RMS skills must make the version non-equivalent"
+        );
+        fs::remove_dir_all(matching.join("skills/obsolete")).unwrap();
+        assert!(codex_plugin_cached_skills_match_embedded(&matching));
+        prune_stale_codex_plugin_cache_at(&home).unwrap();
+        assert!(matching.is_dir());
+        assert!(!stale.exists());
+        fs::remove_dir_all(home).unwrap();
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {

@@ -1,0 +1,10 @@
+spec: rms/semantic-change/v0.1
+module: examples/tic-tac-toe/modules/tic-tac-toe-cli/module.yaml
+supersedes:
+- verification/changes/bind-the-tic-tac-toe-cli-command-and-its-rules-dependency-through-exact-boundary-symbols-1411830423e3.yaml
+intent:
+  summary: Record the focused proof-lane exception for a finite coordinate grammar already generated completely by the declared boundary property.
+hunt_exceptions:
+  add:
+  - obligation: boundary-fuzz
+    reason: The finite Tic-Tac-Toe coordinate grammar is generated completely by the declared property runner, so a coverage-guided engine adds no additional input domain.

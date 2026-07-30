@@ -83,6 +83,8 @@ init → authorized bootstrap commit
 
 `next`, `explain`, and `check` render `Outcome or answer → Why → Next → Done when`. Add `--details` for deeper evidence, `--json` for their versioned `rms.surface/v2` agent contract, and use `rms help --all` only when prescribed work requires a specialist command.
 
+For unattended reliability work, the specialist command `rms hunt --root . --budget 8h` replays old failures, regenerates traces, explores finite models, and orchestrates declared fuzz, sanitizer, and mutation lanes in an isolated checkout. Every behavioral finding must replay. A clean result is explicitly bounded evidence, never a global bug-free claim.
+
 ## Documentation
 
 | Goal | Read |

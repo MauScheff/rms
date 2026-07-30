@@ -58,6 +58,7 @@ New or adopted systems follow `rms init [--adopt]` → authorized bootstrap comm
 - Treat reports, diffs, packages, atlases, prompts, and logs as evidence, not live semantics.
 
 - Temporal promises use typed observations, explicit assumptions, closed expressions, and dimensionally valid quantities. Evaluate real traces; only exhausted finite search supports universal finite conclusions.
+- Derive strong verification lanes from declared risk. Fast checks require the lane or a focused exception; use `rms hunt --dry-run` to inspect expensive work and a budgeted `rms hunt` from a clean commit for unattended discovery. Every behavioral finding must replay, and bounded evidence never means bug-free.
 
 ## Completion
 Use focused native and RMS proof → `rms check --changes --root . [--module <module.yaml>]` → authorized candidate commit → `rms check --committed --root . [--module <module.yaml>]`.

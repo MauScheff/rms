@@ -207,6 +207,29 @@
             },
             "additionalProperties": false
           }
+        },
+        "hunt_exceptions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["obligation", "reason"],
+            "properties": {
+              "obligation": {
+                "enum": [
+                  "generated-input",
+                  "boundary-fuzz",
+                  "finite-state-exploration",
+                  "schedule-fault-exploration",
+                  "unsafe-code-analysis",
+                  "oracle-mutation",
+                  "temporal-violation-search"
+                ]
+              },
+              "reason": { "type": "string", "minLength": 20 }
+            },
+            "additionalProperties": false
+          },
+          "uniqueItems": true
         }
       },
       "additionalProperties": true

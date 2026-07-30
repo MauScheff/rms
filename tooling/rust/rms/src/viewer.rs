@@ -32,6 +32,7 @@ pub(super) struct SystemViewDocument {
     modules: Vec<SystemViewModule>,
     properties: Vec<SystemViewProperty>,
     property_analyses: Vec<SystemViewPropertyAnalysis>,
+    hunts: Vec<SystemViewHunt>,
     relationships: Vec<SystemViewRelationship>,
     gaps: Vec<SystemViewGap>,
     diagnostics: Vec<Diagnostic>,
@@ -56,6 +57,7 @@ struct SystemViewSummary {
     semantic_node_count: usize,
     trace_count: usize,
     property_count: usize,
+    hunt_count: usize,
     gap_count: usize,
     diagnostic_count: usize,
 }
@@ -96,6 +98,20 @@ struct SystemViewPropertyAnalysis {
     result: String,
     evaluations: Vec<YamlValue>,
     relationships: Vec<YamlValue>,
+}
+
+#[derive(Debug, Serialize)]
+struct SystemViewHunt {
+    path: String,
+    run_id: String,
+    result: String,
+    lanes: Vec<YamlValue>,
+    findings: Vec<YamlValue>,
+    configuration: YamlValue,
+    proof_scope: YamlValue,
+    started_at_unix_ms: u64,
+    finished_at_unix_ms: Option<u64>,
+    finished: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -265,6 +281,7 @@ pub(super) fn build_system_view(root: &Path, watch: bool) -> Result<SystemViewDo
             .then_with(|| left.id.cmp(&right.id))
     });
     let property_analyses = discover_property_analyses(root);
+    let hunts = discover_hunts(root);
     gaps.sort_by(|left, right| left.id.cmp(&right.id));
     gaps.dedup_by(|left, right| left.id == right.id);
 
@@ -277,6 +294,7 @@ pub(super) fn build_system_view(root: &Path, watch: bool) -> Result<SystemViewDo
         semantic_node_count,
         trace_count,
         property_count: properties.len(),
+        hunt_count: hunts.len(),
         gap_count: gaps.len(),
         diagnostic_count: diagnostics.len(),
     };
@@ -297,10 +315,68 @@ pub(super) fn build_system_view(root: &Path, watch: bool) -> Result<SystemViewDo
         modules,
         properties,
         property_analyses,
+        hunts,
         relationships,
         gaps,
         diagnostics,
     })
+}
+
+fn discover_hunts(root: &Path) -> Vec<SystemViewHunt> {
+    let mut hunts = WalkDir::new(root)
+        .max_depth(12)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            !matches!(
+                entry.file_name().to_str(),
+                Some(".git") | Some("target") | Some("node_modules")
+            )
+        })
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| {
+            let source = fs::read_to_string(entry.path()).ok()?;
+            let value: YamlValue = serde_yaml::from_str(&source).ok()?;
+            (get_str(&value, &["spec"]) == Some("rms/hunt-report/v0.1")).then(|| SystemViewHunt {
+                path: relative_path(root, entry.path()),
+                run_id: get_str(&value, &["run_id"])
+                    .unwrap_or("<unknown>")
+                    .to_string(),
+                result: get_str(&value, &["result"])
+                    .unwrap_or("invalid")
+                    .to_string(),
+                lanes: get_path(&value, &["lanes"])
+                    .and_then(YamlValue::as_sequence)
+                    .cloned()
+                    .unwrap_or_default(),
+                findings: get_path(&value, &["findings"])
+                    .and_then(YamlValue::as_sequence)
+                    .cloned()
+                    .unwrap_or_default(),
+                configuration: get_path(&value, &["configuration"])
+                    .cloned()
+                    .unwrap_or(YamlValue::Null),
+                proof_scope: get_path(&value, &["proof_scope"])
+                    .cloned()
+                    .unwrap_or(YamlValue::Null),
+                started_at_unix_ms: get_path(&value, &["started_at_unix_ms"])
+                    .and_then(YamlValue::as_u64)
+                    .unwrap_or(0),
+                finished_at_unix_ms: get_path(&value, &["finished_at_unix_ms"])
+                    .and_then(YamlValue::as_u64),
+                finished: get_path(&value, &["finished_at_unix_ms"])
+                    .is_some_and(|value| !value.is_null()),
+            })
+        })
+        .collect::<Vec<_>>();
+    hunts.sort_by(|left, right| {
+        left.run_id
+            .cmp(&right.run_id)
+            .then_with(|| right.finished.cmp(&left.finished))
+    });
+    hunts.dedup_by(|left, right| left.run_id == right.run_id);
+    hunts
 }
 
 fn discover_property_analyses(root: &Path) -> Vec<SystemViewPropertyAnalysis> {
@@ -669,5 +745,67 @@ assert.deepEqual(model.semanticDiff(snapshot, changed), { added: 1, changed: 1, 
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn viewer_discovers_live_and_completed_hunt_reports() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("rms-view-hunts-{unique}"));
+        let run = root.join(".rms/hunts/test-run");
+        fs::create_dir_all(&run).unwrap();
+        fs::write(
+            run.join("report.yaml"),
+            r#"spec: rms/hunt-report/v0.1
+run_id: test-run
+result: proof-gaps-found
+source:
+  revision: git:test
+  declaration_digest: sha256:test
+  root: .
+configuration:
+  budget_seconds: 30
+  seed: 7
+  jobs: 1
+  module: null
+  tools: { rms: test }
+lanes:
+  - id: mutation
+    module: example
+    property: oracle
+    kind: declared-realization
+    strategy: mutation-tester
+    status: finding
+    budget_seconds: 30
+    elapsed_ms: 2
+    command: mutate
+    runner: test#mutate
+    metrics: { mutants: 1 }
+    artifacts: []
+    diagnostic: null
+findings:
+  - lane: mutation
+    kind: surviving-mutant
+    summary: one equivalent-unclassified mutant survived
+    artifact: null
+    replay: null
+proof_scope:
+  claim: No global bug-free claim is made.
+  exhausted_lanes: []
+  bounded_lanes: [mutation]
+  unsupported_lanes: []
+started_at_unix_ms: 1
+finished_at_unix_ms: 2
+"#,
+        )
+        .unwrap();
+        let hunts = discover_hunts(&root);
+        assert_eq!(hunts.len(), 1);
+        assert_eq!(hunts[0].result, "proof-gaps-found");
+        assert!(hunts[0].finished);
+        assert_eq!(hunts[0].lanes.len(), 1);
+        fs::remove_dir_all(root).unwrap();
     }
 }

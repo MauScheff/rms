@@ -685,7 +685,9 @@ Product meaning changes move through `rms spec apply` before code. The canonical
 | `artifacts.add/set/remove` | Versioned provided, required, or internal artifact contracts. |
 | `transformations.add/set/remove` | Artifact input/output mappings with exact semantic owner, rejection cases, and preservation properties. |
 | `authorities.add/set/remove` | Privileged, unsafe, or foreign capabilities and their rationale. |
-| `properties.*.temporal` | Optional always, eventually, precedence, exclusion, at-most-once, bounded-response, resource-closure, or bounded-resource property semantics. |
+| `properties.*.temporal` | Optional executable `always`, `eventually`, `precedence`, `exclusion`, `at_most_once`, or `bounded_response` semantics over typed observations and assumptions. |
+| `properties.*.explorations` | Canonical probe assembly, satisfy/violate goal, and finite step, schedule, and state bounds discovered by `rms hunt`. |
+| `hunt_exceptions.set/add/remove` | Closed risk-derived verification obligations that are genuinely inapplicable, each with a focused reason. |
 | `protocol_bindings.add/set/remove` | Implementation ownership and send/receive mapping for public contract protocol messages. |
 | `authority_bindings.add/set/remove` | Implementation roles, exact safe facade, and evidence for declared elevated authority. |
 | `public_behavior_bindings.add/set/remove` | One exact path from each implemented public command, query, or capability contract through a discharging semantic function into classified machine inputs and outputs. |
@@ -738,7 +740,9 @@ Invariant entries declare `authority` as `representation`, `constructor`, `parse
 
 Composite modules may declare `verification.delegations[]` with `proves`, `provider_module`, `provider_law`, `provider_property`, `through_export`, and `evidence`. The record discharges a parent property obligation only when `rms compose` resolves every link.
 
-Ordering, safety, bounded, normalization, parser, and numeric laws also declare semantic properties with input spaces and oracles. A fixed example corpus does not satisfy an open-ended generated-property or coverage-fuzzer claim. Every executable realization binds an exact relative `path#symbol` runner; generated-property and deterministic-exhaustive strategies also bind a generator. The runner calls the generator when required, executes a declared semantic operation, and applies an oracle. Generated property evidence remains an obligation until that exact realization executes.
+Ordering, safety, bounded, normalization, parser, and numeric laws also declare semantic properties with input spaces and oracles. A fixed example corpus does not satisfy an open-ended generated-property or coverage-fuzzer claim. Every executable realization binds an exact relative `path#symbol` runner; generated-property and deterministic-exhaustive strategies also bind a generator. The runner calls the generator when required, executes a declared semantic operation, and applies an oracle. `mutation-tester` is the closed strategy for project-declared oracle-strength campaigns. Generated property evidence remains an obligation until that exact realization executes.
+
+Risk-derived hunt posture requires generated or exhaustive checks for pure and numeric decisions, finite exploration for stateful machines and workflows, coverage fuzzing for untrusted boundaries, schedule/fault exploration for distributed behavior, analyzer or sanitizer lanes for unsafe authority, mutation testing for reusable semantic oracles, and real-trace evaluation plus violation search for temporal promises. A focused `verification.hunt_exceptions` item may discharge only a genuinely inapplicable obligation. Fast checks validate this posture; `rms hunt` executes expensive nightly realizations separately.
 
 Production trace bundles declare `architecture.trace.producers[]` with a profile, bundle, command, and exact runner. Inspectable runners call `architecture.machine.transition_record_function` and serialize returned records. `rms trace run --record` validates before replacing committed bundles; normal runs regenerate into temporary paths and compare canonical values. Strict audit reruns smoke producers and property realizations from committed code, rebuilds reusable packages, and rejects proof commands that mutate production files.
 

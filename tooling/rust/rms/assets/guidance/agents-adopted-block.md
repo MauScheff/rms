@@ -11,6 +11,7 @@ Project instructions outside this section remain authoritative. Canonical RMS ar
 - Publish standalone capabilities through `rms spec apply`; use `rms add-capability-tree` only for an explicitly recommended recursive topology.
 - Keep pure roles pure, IO in declared effects, cross-module access on public facades, and runnable surfaces delegated to exact callables.
 - Temporal promises use typed observations, explicit assumptions, closed expressions, and dimensionally valid quantities; bounded exploration is inconclusive unless exhausted.
+- Derive strong verification lanes from risk. Inspect unattended work with `rms hunt --dry-run`; run it from a clean commit, require replayable behavioral findings, and never call bounded evidence bug-free.
 - Finish with focused proof → `rms check --changes --root .` → authorized candidate commit → `rms check --committed --root .`.
 - Without commit authority, stop at exactly `candidate prepared; strict audit pending authorized commit`.
 - Progressive checks certify RMS module closures only, not unrelated repository paths.

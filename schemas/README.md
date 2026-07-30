@@ -13,6 +13,8 @@ These JSON Schemas validate the structural shape of RMS 0.1 manifests:
 - `probe-system-trace.schema.json`
 - `property-analysis.schema.json`
 - `property-observation.schema.json`
+- `hunt-lane-result.schema.json`
+- `hunt-report.schema.json`
 - `probe-counterexample.schema.json`
 - `conformance.schema.json`
 

@@ -96,6 +96,8 @@ Git commits are required evidence, not implied authority. This guidance does not
 
 `view` is an experimental loopback-only, read-only semantic explorer. It does not edit canonical artifacts or become another semantic source.
 
+`hunt` is the resumable specialist path for expensive verification. From a clean commit, `rms hunt --root . --dry-run` shows risk-derived lanes and tool gaps; `rms hunt --root . --budget 8h` runs them in an isolated checkout, minimizes and replays behavioral findings, and records bounded proof scope. It never turns fuzzing or a time budget into a global bug-free claim.
+
 Detected skill sources are observable evidence only. The CLI cannot inspect the current thread's injected skill catalog, so runtime activation is unknown and precedence is host-defined.
 
 ## Configuration and Providers
