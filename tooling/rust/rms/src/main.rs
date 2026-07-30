@@ -17818,13 +17818,16 @@ fn module_has_concrete_fuzz_evidence(module: &LoadedManifest) -> bool {
 
 fn module_has_numeric_or_range_semantics(value: &YamlValue) -> bool {
     let rendered = serde_yaml::to_string(value).unwrap_or_default();
-    semantic_name_contains_any(
-        &rendered,
-        &[
-            "numeric", "number", "integer", "money", "price", "quantity", "count", "rate",
-            "percent", "range", "bound", "limit", "overflow", "rounding",
-        ],
-    )
+    let tokens = semantic_id_segment(&rendered)
+        .split('-')
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    [
+        "numeric", "number", "integer", "money", "price", "quantity", "count", "rate", "percent",
+        "range", "bound", "bounded", "limit", "overflow", "rounding",
+    ]
+    .into_iter()
+    .any(|term| tokens.contains(term))
 }
 
 fn property_blocking_diagnostic(check: &str) -> bool {
@@ -75438,6 +75441,19 @@ verification:
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.check == "semantic.law-without-property"));
+    }
+
+    #[test]
+    fn numeric_semantics_detection_does_not_split_boundary_words() {
+        let boundary: YamlValue = serde_yaml::from_str(
+            "module:\n  purpose: Compose a boundary child.\ncomposition:\n  contains: []\n",
+        )
+        .unwrap();
+        let bounded: YamlValue =
+            serde_yaml::from_str("invariants:\n  - statement: Attempts are bounded.\n").unwrap();
+
+        assert!(!module_has_numeric_or_range_semantics(&boundary));
+        assert!(module_has_numeric_or_range_semantics(&bounded));
     }
 
     #[test]
