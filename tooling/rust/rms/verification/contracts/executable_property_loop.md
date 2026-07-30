@@ -26,3 +26,5 @@ coverage requires the raw trace, its normalized observation envelopes, and
 streaming evaluation to retain the same non-vacuous decisive evidence.
 Rejected probe evaluations include the exact failing trace-conformance checks
 and record indices instead of only reporting that the result is nonconforming.
+The direct probe command and the finite property-search executor share this
+diagnostic projection so search failures cannot collapse richer probe evidence.

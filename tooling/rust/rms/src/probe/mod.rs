@@ -1,7 +1,7 @@
 use super::{
     apply_probe_trace_conformance, execute_proof_command, get_path, get_str, load_manifest,
-    load_probe_binding, load_yaml_value, sha256_bytes, trace_has_errors,
-    validate_probe_description, validate_probe_trace_shape, ProbeBinding,
+    load_probe_binding, load_yaml_value, probe_conformance_diagnostic_summary, sha256_bytes,
+    trace_has_errors, validate_probe_description, validate_probe_trace_shape, ProbeBinding,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use jsonschema::validator_for;
@@ -2869,7 +2869,10 @@ fn execute_binding_request(
                     &mut trace,
                 );
                 if trace_has_errors(&trace) {
-                    bail!("v0.2 probe evaluation result {index} is nonconforming");
+                    bail!(
+                        "v0.2 probe evaluation result {index} is nonconforming: {}",
+                        probe_conformance_diagnostic_summary(&trace.diagnostics)
+                    );
                 }
             }
         } else {
@@ -2882,8 +2885,9 @@ fn execute_binding_request(
             );
             if trace_has_errors(&trace) {
                 bail!(
-                    "probe runner `{}` returned a nonconforming transition",
-                    instance.binding.runner
+                    "probe runner `{}` returned a nonconforming transition: {}",
+                    instance.binding.runner,
+                    probe_conformance_diagnostic_summary(&trace.diagnostics)
                 );
             }
         }
