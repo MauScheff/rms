@@ -5,6 +5,8 @@ description: Find, minimize, and replay software bugs with RMS proof exploration
 
 # Hunt Bugs
 
+When the repository provides `FIRST_BUG_HUNT.md` and the user is learning or dogfooding the workflow, use its runnable teaching hunt before beginning an open-ended campaign.
+
 1. Require a clean committed source revision, then inspect the selected module closure with `rms hunt --root <root> --dry-run` to see exact lanes, tools, budgets, and unsupported obligations. Dry runs use the same committed revision and reproducibility checks as execution; if refused, inspect the changed paths named by RMS.
 2. Treat proof methods honestly:
    - exhausted finite exploration proves only the declared finite model;

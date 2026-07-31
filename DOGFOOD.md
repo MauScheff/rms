@@ -2,6 +2,8 @@
 
 The `rms` CLI is itself an RMS module. This walkthrough uses the same narrow surface expected in downstream projects.
 
+For a shorter finding-and-replay introduction followed by a context-free visual game exercise, start with [Your First RMS Bug Hunt](FIRST_BUG_HUNT.md).
+
 The walkthrough exercises RMS as the system under test. Its output is evidence,
 not authority over ordinary RMS maintenance. Until a user explicitly requests a
 self-hosted change or rewrite, maintainers use the native repository workflow

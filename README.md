@@ -90,6 +90,7 @@ For unattended reliability work, the specialist command `rms hunt --root . --bud
 | Goal | Read |
 | --- | --- |
 | Try the complete workflow | [Quickstart](QUICKSTART.md) |
+| Run a replayable bug hunt, then try it on a visual game | [Your First RMS Bug Hunt](FIRST_BUG_HUNT.md) |
 | Understand the model | [RMS, Explained](EXPLAINED.md) |
 | Understand RMS design and future self-hosting foundations | [Designing RMS for Understandability](UNDERSTANDABILITY.md) |
 | Look up commands, results, artifacts, and proof rules | [Reference](REFERENCE.md) |

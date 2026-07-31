@@ -14,6 +14,7 @@ This document is derived guidance, not an independent source of system meaning. 
 | JSON behavior | Active contracts in `tooling/rust/rms/contracts/` and the CLI serializer; [TOOLING.md](TOOLING.md) is derived guidance |
 | Conceptual explanation | [EXPLAINED.md](EXPLAINED.md) |
 | First complete workflow | [QUICKSTART.md](QUICKSTART.md) |
+| First replayable hunt and visual dogfood exercise | [FIRST_BUG_HUNT.md](FIRST_BUG_HUNT.md) |
 | Production completion policy | [PRODUCTION.md](PRODUCTION.md) |
 | Agent workflow | Project `AGENTS.md`, selected project skills, and rendered RMS context |
 | Maintainer release process | [RELEASE.md](RELEASE.md) |
@@ -430,6 +431,7 @@ Specialist commands remain directly callable. Their absence from default help is
 | --- | --- |
 | [README.md](README.md) | Project introduction and shortest successful path |
 | [QUICKSTART.md](QUICKSTART.md) | Runnable onboarding and first complete change |
+| [FIRST_BUG_HUNT.md](FIRST_BUG_HUNT.md) | Runnable finding-and-replay tutorial plus a visual Snake dogfood exercise |
 | [EXPLAINED.md](EXPLAINED.md) | Conceptual model and motivation |
 | [UNDERSTANDABILITY.md](UNDERSTANDABILITY.md) | Understandability laws, state-space review, and future self-hosting foundations |
 | [PRODUCTION.md](PRODUCTION.md) | Production-pilot requirements and completion policy |

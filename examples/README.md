@@ -9,4 +9,6 @@
 
 The examples illustrate semantics rather than prescribing a language, framework, deployment topology, or persistence model.
 
+For a runnable guided failure followed by a context-free visual game exercise, use [Your First RMS Bug Hunt](../FIRST_BUG_HUNT.md).
+
 The minimal example also includes a machine-readable partial-conformance report. Current examples keep referenced contracts and evidence paths present so the reference validator can run cleanly.
