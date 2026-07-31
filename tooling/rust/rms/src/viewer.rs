@@ -338,7 +338,11 @@ fn discover_hunts(root: &Path) -> Vec<SystemViewHunt> {
         .filter_map(|entry| {
             let source = fs::read_to_string(entry.path()).ok()?;
             let value: YamlValue = serde_yaml::from_str(&source).ok()?;
-            (get_str(&value, &["spec"]) == Some("rms/hunt-report/v0.1")).then(|| SystemViewHunt {
+            matches!(
+                get_str(&value, &["spec"]),
+                Some("rms/hunt-report/v0.1" | "rms/hunt-report/v0.2")
+            )
+            .then(|| SystemViewHunt {
                 path: relative_path(root, entry.path()),
                 run_id: get_str(&value, &["run_id"])
                     .unwrap_or("<unknown>")

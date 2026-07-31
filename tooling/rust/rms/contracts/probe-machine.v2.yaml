@@ -5,7 +5,7 @@ kind: command
 meaning: Execute one or more bounded module instances through their declared pure transition-record paths, explore canonical message schedules and declared faults, and report a deterministic replayable timeline.
 preconditions:
 - id: accepts-1
-  statement: The target is one inspectable Rust, Swift, JavaScript, or Python implementation, or an rms/probe-assembly/v0.1 containing such instances.
+  statement: The target is one inspectable Rust, Swift, JavaScript, or Python implementation, or an rms/probe-assembly/v0.1 or v0.2 containing such instances.
 - id: accepts-2
   statement: Each command, observed event, or effect result names a declared input and supplies schema-valid payload data.
 - id: accepts-3
@@ -20,9 +20,11 @@ postconditions:
 - id: ensures-4
   statement: No project artifact is written unless the caller supplies --out.
 - id: ensures-5
-  statement: Every discovered failure is reduced to a deterministic rms/probe-counterexample/v0.1 whose exact schedule and fault decisions replay as reproduced, resolved, or invalid.
+  statement: Every discovered failure is reduced to a deterministic rms/probe-counterexample/v0.1 whose exact schedule and fault decisions replay as reproduced, resolved, or invalid; human replay leads with the failed check, first bad transition when available, source drift, exit meaning, and a copyable full-trace command.
 - id: ensures-6
   statement: Probe artifacts are ephemeral unless canonical verification explicitly references them, at which point assemblies must exhaust successfully and counterexamples must replay as resolved.
+- id: ensures-7
+  statement: A v0.2 public-input-examples workload injects only exact schema-valid public command examples within the per-action budget and records each normalized input for deterministic replay.
 failure_categories:
 - id: rejects-1
   statement: Ambiguous or incompatible wiring, invalid protocol data, unsafe bindings, runner failure, timeout, nonconforming output, a failed law, a reproduced or invalid canonical counterexample, or inconclusive bounded exploration.

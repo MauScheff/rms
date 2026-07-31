@@ -7,17 +7,33 @@ use anyhow::{anyhow, bail, Context, Result};
 use jsonschema::validator_for;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::cmp::{Ordering, Reverse};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(super) const ASSEMBLY_SPEC: &str = "rms/probe-assembly/v0.1";
+pub(super) const ASSEMBLY_SPEC_V2: &str = "rms/probe-assembly/v0.2";
 const TRACE_SPEC: &str = "rms/probe-system-trace/v0.1";
 const COUNTEREXAMPLE_SPEC: &str = "rms/probe-counterexample/v0.1";
 const DEFAULT_MAX_STEPS: usize = 30;
 const DEFAULT_MAX_SCHEDULES: usize = 100;
 const DEFAULT_MAX_STATES: usize = 10_000;
+static PROBE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn probe_temp_root(prefix: &str) -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = PROBE_TEMP_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "{prefix}-{}-{timestamp}-{sequence}",
+        std::process::id()
+    ))
+}
 
 mod time_quantity {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -140,6 +156,52 @@ impl PropertyExploration {
     }
 }
 
+struct GuidedExploration {
+    findings: Vec<(Counterexample, usize)>,
+    coverage: Coverage,
+    exhausted: bool,
+    stopped_by: String,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct GuidedScore {
+    new_check_outcomes: usize,
+    new_transition_cases: usize,
+    new_state: usize,
+    new_routes: usize,
+    new_faults: usize,
+    depth: Reverse<usize>,
+    tie_break: String,
+}
+
+struct GuidedEntry {
+    score: GuidedScore,
+    serial: Reverse<u64>,
+    world: World,
+}
+
+impl PartialEq for GuidedEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score && self.serial == other.serial
+    }
+}
+
+impl Eq for GuidedEntry {}
+
+impl PartialOrd for GuidedEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for GuidedEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score
+            .cmp(&other.score)
+            .then(self.serial.cmp(&other.serial))
+    }
+}
+
 impl AssemblyCliOptions {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -186,6 +248,28 @@ struct ProbeAssembly {
     exploration: ExplorationSpec,
     #[serde(default)]
     faults: Vec<FaultSpec>,
+    #[serde(default)]
+    workload: Option<WorkloadSpec>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct WorkloadSpec {
+    source: WorkloadSource,
+    budget_per_action: usize,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum WorkloadSource {
+    PublicInputExamples,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct WorkloadAction {
+    id: String,
+    target: String,
+    input: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -503,7 +587,11 @@ struct World {
     message_counts: BTreeMap<String, usize>,
     fault_remaining: BTreeMap<String, usize>,
     satisfied_within: BTreeSet<String>,
+    violated_checks: BTreeSet<String>,
     protocol_states: BTreeMap<String, String>,
+    workload_actions: Vec<WorkloadAction>,
+    action_remaining: BTreeMap<String, usize>,
+    action_invocations: BTreeMap<String, usize>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -585,13 +673,14 @@ struct Engine {
 
 #[derive(Clone)]
 struct StepChoice {
-    envelope_index: usize,
+    envelope_index: Option<usize>,
     action: StepAction,
     substitute_choices: BTreeMap<String, usize>,
 }
 
 #[derive(Clone)]
 enum StepAction {
+    Inject { action_id: String, input: Value },
     Deliver,
     Fault(FaultKind),
 }
@@ -607,18 +696,30 @@ pub(super) fn file_spec(path: &Path) -> Result<Option<String>> {
         .map(str::to_string))
 }
 
+pub(super) fn is_assembly_spec(spec: Option<&str>) -> bool {
+    matches!(spec, Some(ASSEMBLY_SPEC | ASSEMBLY_SPEC_V2))
+}
+
+fn validate_assembly_schema(value: &Value) -> Result<()> {
+    let schema = match value.get("spec").and_then(Value::as_str) {
+        Some(ASSEMBLY_SPEC) => include_str!("../../../../../schemas/probe-assembly.schema.json"),
+        Some(ASSEMBLY_SPEC_V2) => {
+            include_str!("../../../../../schemas/probe-assembly-v0.2.schema.json")
+        }
+        Some(spec) => bail!("unsupported probe assembly spec `{spec}`"),
+        None => bail!("probe assembly is missing `spec`"),
+    };
+    validate_schema(value, schema, "probe assembly")
+}
+
 pub(super) fn verify_evidence(path: &Path, timeout_seconds: u64) -> Result<Option<String>> {
     let Some(spec) = file_spec(path)? else {
         return Ok(None);
     };
     match spec.as_str() {
-        ASSEMBLY_SPEC => {
+        ASSEMBLY_SPEC | ASSEMBLY_SPEC_V2 => {
             let (assembly_value, base_dir) = load_input(path)?;
-            validate_schema(
-                &assembly_value,
-                include_str!("../../../../../schemas/probe-assembly.schema.json"),
-                "probe assembly",
-            )?;
+            validate_assembly_schema(&assembly_value)?;
             let assembly: ProbeAssembly = serde_json::from_value(assembly_value.clone())
                 .context("invalid canonical probe assembly")?;
             let mut engine = Engine::new(
@@ -707,11 +808,7 @@ pub(super) fn run(options: AssemblyCliOptions) -> Result<i32> {
         return replay(options);
     }
     let (assembly_value, base_dir) = load_input(&options.file)?;
-    validate_schema(
-        &assembly_value,
-        include_str!("../../../../../schemas/probe-assembly.schema.json"),
-        "probe assembly",
-    )?;
+    validate_assembly_schema(&assembly_value)?;
     let assembly: ProbeAssembly =
         serde_json::from_value(assembly_value.clone()).context("invalid probe assembly")?;
     let mut engine = Engine::new(
@@ -763,11 +860,7 @@ pub(super) fn explore_property_traces(
     timeout_seconds: u64,
 ) -> Result<PropertyExploration> {
     let (assembly_value, base_dir) = load_input(file)?;
-    validate_schema(
-        &assembly_value,
-        include_str!("../../../../../schemas/probe-assembly.schema.json"),
-        "probe assembly",
-    )?;
+    validate_assembly_schema(&assembly_value)?;
     let assembly: ProbeAssembly =
         serde_json::from_value(assembly_value.clone()).context("invalid probe assembly")?;
     let mut engine = Engine::new(
@@ -782,10 +875,123 @@ pub(super) fn explore_property_traces(
     engine.collect_property_traces()
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_guided_hunt(
+    file: &Path,
+    seed: u64,
+    max_findings: usize,
+    max_steps: Option<usize>,
+    max_schedules: Option<usize>,
+    max_states: Option<usize>,
+    timeout_seconds: u64,
+    checkout_root: &Path,
+    source_root: &Path,
+    output_dir: &Path,
+    lane_output: &Path,
+) -> Result<()> {
+    let (assembly_value, base_dir) = load_input(file)?;
+    validate_assembly_schema(&assembly_value)?;
+    let assembly: ProbeAssembly =
+        serde_json::from_value(assembly_value.clone()).context("invalid probe assembly")?;
+    let mut engine = Engine::new(
+        assembly,
+        assembly_value,
+        base_dir,
+        max_steps,
+        max_schedules,
+        max_states,
+        timeout_seconds,
+    )?;
+    let guided = engine.explore_guided(seed, max_findings)?;
+    let executable = std::env::current_exe()?;
+    fs::create_dir_all(output_dir)?;
+    let mut artifacts = Vec::new();
+    let mut findings = Vec::new();
+    for (index, (counterexample, _occurrences)) in guided.findings.iter().enumerate() {
+        let mut counterexample = counterexample.clone();
+        rebase_counterexample_paths(&mut counterexample, checkout_root, source_root);
+        let artifact = output_dir.join(format!("finding-{}.yaml", index + 1));
+        write_artifact(&artifact, &serde_json::to_value(&counterexample)?)?;
+        let artifact_display = artifact.display().to_string();
+        artifacts.push(artifact_display.clone());
+        findings.push(json!({
+            "kind": "behavioral-counterexample",
+            "summary": format!(
+                "check `{}` failed: {}",
+                counterexample.failure.check,
+                counterexample.failure.message
+            ),
+            "artifact": artifact_display,
+            "replay": format!(
+                "{} probe --replay {} --json",
+                shell_escape(&executable.display().to_string()),
+                shell_escape(&artifact.display().to_string())
+            )
+        }));
+    }
+    let status = if findings.is_empty() {
+        if guided.exhausted {
+            "pass"
+        } else {
+            "inconclusive"
+        }
+    } else {
+        "finding"
+    };
+    let result = json!({
+        "spec": "rms/hunt-lane-result/v0.1",
+        "status": status,
+        "metrics": {
+            "strategy": "guided-semantic-novelty-v1",
+            "policy": "semantic-novelty-then-shallowest",
+            "seed": seed,
+            "states": guided.coverage.states,
+            "schedules": guided.coverage.schedules,
+            "transitions": guided.coverage.transitions,
+            "search_frontier_exhausted": guided.exhausted,
+            "proof_model_exhausted": false,
+            "exhausted": false,
+            "stopped_by": guided.stopped_by
+        },
+        "findings": findings,
+        "artifacts": artifacts
+    });
+    if let Some(parent) = lane_output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_artifact(lane_output, &result)
+}
+
+fn rebase_counterexample_paths(counterexample: &mut Counterexample, from: &Path, to: &Path) {
+    if let Some(instances) = counterexample
+        .assembly
+        .get_mut("instances")
+        .and_then(Value::as_array_mut)
+    {
+        for instance in instances {
+            if let Some(implementation) = instance
+                .get("implementation")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+            {
+                if let Ok(relative) = Path::new(&implementation).strip_prefix(from) {
+                    instance["implementation"] =
+                        Value::String(to.join(relative).display().to_string());
+                }
+            }
+        }
+    }
+    for instance in &mut counterexample.trace.instances {
+        if let Ok(relative) = Path::new(&instance.implementation).strip_prefix(from) {
+            instance.implementation = to.join(relative).display().to_string();
+        }
+    }
+}
+
 fn replay(options: AssemblyCliOptions) -> Result<i32> {
     match replay_inner(&options) {
         Ok((report, reproduced)) => {
-            print_value(&report, options.json)?;
+            print_replay_report(&report, &options.file, options.json)?;
             Ok(i32::from(reproduced))
         }
         Err(error) => {
@@ -794,10 +1000,78 @@ fn replay(options: AssemblyCliOptions) -> Result<i32> {
                 "result": "invalid",
                 "error": format!("{error:#}")
             });
-            print_value(&report, options.json)?;
+            print_replay_report(&report, &options.file, options.json)?;
             Ok(2)
         }
     }
+}
+
+fn print_replay_report(report: &Value, artifact: &Path, json_output: bool) -> Result<()> {
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(report)?);
+        return Ok(());
+    }
+    let result = report
+        .get("result")
+        .and_then(Value::as_str)
+        .unwrap_or("invalid");
+    println!("RMS probe replay: {result}");
+    if let Some(failure) = report
+        .get("observed_failure")
+        .filter(|value| !value.is_null())
+        .or_else(|| report.get("recorded_failure"))
+    {
+        if let Some(check) = failure.get("check").and_then(Value::as_str) {
+            println!("check: {check}");
+        }
+        if let Some(message) = failure.get("message").and_then(Value::as_str) {
+            println!("failure: {message}");
+        }
+        if let Some(step) = failure.get("step").and_then(Value::as_u64) {
+            if let Some(entry) = report
+                .get("trace")
+                .and_then(|trace| trace.get("timeline"))
+                .and_then(Value::as_array)
+                .and_then(|timeline| {
+                    timeline.iter().rev().find(|entry| {
+                        entry
+                            .get("step")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|entry_step| entry_step <= step)
+                            && entry
+                                .get("transition_case")
+                                .and_then(Value::as_str)
+                                .is_some()
+                    })
+                })
+            {
+                let target = entry.get("target").and_then(Value::as_str);
+                let case = entry.get("transition_case").and_then(Value::as_str);
+                if let Some(case) = case {
+                    println!(
+                        "first bad transition: {}{case}",
+                        target
+                            .map(|target| format!("{target}:"))
+                            .unwrap_or_default()
+                    );
+                }
+            }
+        }
+    }
+    if let Some(drift) = report.get("source_drift").and_then(Value::as_bool) {
+        println!("source drift: {drift}");
+    }
+    match result {
+        "reproduced" => println!("exit: 1 (the recorded failure reproduced)"),
+        "resolved" => println!("exit: 0 (the recorded failure did not reproduce)"),
+        _ => println!("exit: 2 (the replay artifact is invalid or no longer executable)"),
+    }
+    println!(
+        "full trace: {} probe --replay {} --json",
+        shell_escape(&std::env::current_exe()?.display().to_string()),
+        shell_escape(&artifact.display().to_string())
+    );
+    Ok(())
 }
 
 fn replay_inner(options: &AssemblyCliOptions) -> Result<(Value, bool)> {
@@ -820,7 +1094,7 @@ fn replay_inner(options: &AssemblyCliOptions) -> Result<(Value, bool)> {
         options.max_states,
         options.timeout_seconds,
     )?;
-    let (trace, _) = engine.run_forced(&counterexample.decisions)?;
+    let (trace, _) = engine.run_forced(&counterexample.decisions, Some(&counterexample.failure))?;
     let reproduced = trace.failure.as_ref().is_some_and(|failure| {
         failure.check == counterexample.failure.check
             && failure.message == counterexample.failure.message
@@ -853,8 +1127,13 @@ impl Engine {
         max_states: Option<usize>,
         timeout_seconds: u64,
     ) -> Result<Self> {
-        if assembly.spec != ASSEMBLY_SPEC {
-            bail!("probe assembly must declare `spec: {ASSEMBLY_SPEC}`");
+        if !is_assembly_spec(Some(&assembly.spec)) {
+            bail!(
+                "probe assembly must declare `spec: {ASSEMBLY_SPEC}` or `spec: {ASSEMBLY_SPEC_V2}`"
+            );
+        }
+        if assembly.workload.is_some() && assembly.spec != ASSEMBLY_SPEC_V2 {
+            bail!("probe workloads require `spec: {ASSEMBLY_SPEC_V2}`");
         }
         validate_unique_ids(&assembly)?;
         let mut instances = BTreeMap::new();
@@ -1477,6 +1756,20 @@ impl Engine {
                 })?;
             }
         }
+        let workload_actions = self.derive_workload_actions(&descriptions)?;
+        let action_remaining = workload_actions
+            .iter()
+            .map(|action| {
+                (
+                    action.id.clone(),
+                    self.assembly
+                        .workload
+                        .as_ref()
+                        .map(|workload| workload.budget_per_action)
+                        .unwrap_or(0),
+                )
+            })
+            .collect();
         let mut queue = self
             .assembly
             .stimuli
@@ -1518,15 +1811,73 @@ impl Engine {
             message_counts: BTreeMap::new(),
             fault_remaining,
             satisfied_within: BTreeSet::new(),
+            violated_checks: BTreeSet::new(),
             protocol_states: BTreeMap::new(),
+            workload_actions,
+            action_remaining,
+            action_invocations: BTreeMap::new(),
         })
+    }
+
+    fn derive_workload_actions(
+        &self,
+        descriptions: &BTreeMap<String, Value>,
+    ) -> Result<Vec<WorkloadAction>> {
+        let Some(workload) = self.assembly.workload.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if workload.source != WorkloadSource::PublicInputExamples {
+            bail!("unsupported probe workload source");
+        }
+        let mut actions = Vec::new();
+        for (instance_id, instance) in &self.instances {
+            let public_inputs = json_array(
+                &instance.manifest,
+                &["architecture", "public_behavior_bindings"],
+            )
+            .iter()
+            .flat_map(|binding| json_array(binding, &["machine_inputs"]))
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+            let description = descriptions
+                .get(instance_id)
+                .ok_or_else(|| anyhow!("missing probe description for `{instance_id}`"))?;
+            for input in description
+                .get("inputs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let kind = input.get("kind").and_then(Value::as_str).unwrap_or("");
+                let name = input.get("name").and_then(Value::as_str).unwrap_or("");
+                if kind != "command" || !public_inputs.contains(name) {
+                    continue;
+                }
+                let example = input.get("example").cloned().ok_or_else(|| {
+                    anyhow!("public probe input `{instance_id}:{name}` has no validated example")
+                })?;
+                validate_input_payload(description, &example).with_context(|| {
+                    format!("public workload action `{instance_id}:{name}` is schema-invalid")
+                })?;
+                actions.push(WorkloadAction {
+                    id: format!("{instance_id}.{name}"),
+                    target: instance_id.clone(),
+                    input: example,
+                });
+            }
+        }
+        actions.sort_by(|left, right| left.id.cmp(&right.id));
+        if actions.is_empty() {
+            bail!("probe workload found no public command input examples");
+        }
+        Ok(actions)
     }
 
     fn deterministic(&mut self) -> Result<(SystemTrace, Option<Counterexample>)> {
         let mut world = self.initial_world()?;
         let mut coverage = empty_coverage();
         let mut failure = None;
-        while !world.queue.is_empty() && world.step < self.bounds.max_steps {
+        while !world_is_complete(&world) && world.step < self.bounds.max_steps {
             advance_time(&mut world);
             if world.step > 0 || world.time > 0 {
                 if let Some(expired) = self.evaluate_checks(&mut world, false)? {
@@ -1534,12 +1885,11 @@ impl Engine {
                     break;
                 }
             }
-            let choice = StepChoice {
-                envelope_index: first_enabled_index(&world)
-                    .ok_or_else(|| anyhow!("scheduler has no enabled envelope"))?,
-                action: StepAction::Deliver,
-                substitute_choices: BTreeMap::new(),
-            };
+            let choice = self
+                .choices(&world)
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("scheduler has no enabled probe choice"))?;
             failure = self.apply_choice(&mut world, &choice, false, &mut coverage)?;
             if failure.is_some() {
                 break;
@@ -1549,10 +1899,10 @@ impl Engine {
             failure = self.evaluate_checks(&mut world, true)?;
         }
         coverage.states = world.step + 1;
-        coverage.schedules = usize::from(world.queue.is_empty());
+        coverage.schedules = usize::from(world_is_complete(&world));
         let result = if failure.is_some() {
             "fail"
-        } else if world.queue.is_empty() {
+        } else if world_is_complete(&world) {
             "pass"
         } else {
             "inconclusive"
@@ -1572,42 +1922,70 @@ impl Engine {
     fn run_forced(
         &mut self,
         decisions: &[Decision],
+        expected_failure: Option<&ProbeFailure>,
     ) -> Result<(SystemTrace, Option<Counterexample>)> {
         let mut world = self.initial_world()?;
         let mut coverage = empty_coverage();
         let mut failure = None;
         for decision in decisions {
-            if world.queue.is_empty() || world.step >= self.bounds.max_steps {
+            if world_is_complete(&world) || world.step >= self.bounds.max_steps {
                 break;
             }
             advance_time(&mut world);
             if world.step > 0 || world.time > 0 {
-                if let Some(expired) = self.evaluate_checks(&mut world, false)? {
+                let failures = self.evaluate_new_check_failures(&mut world, false)?;
+                if let Some(expired) = select_replay_failure(failures, expected_failure) {
                     failure = Some(expired);
                     break;
                 }
             }
-            let envelope_index = world
-                .queue
-                .iter()
-                .position(|envelope| envelope.id == decision.envelope && envelope.at <= world.time)
-                .ok_or_else(|| {
-                    anyhow!(
-                        "recorded decision references unavailable envelope `{}`",
-                        decision.envelope
-                    )
-                })?;
-            let action = match decision.action.as_str() {
-                "deliver" => StepAction::Deliver,
-                "delay" => StepAction::Fault(FaultKind::Delay),
-                "duplicate" => StepAction::Fault(FaultKind::Duplicate),
-                "drop" => StepAction::Fault(FaultKind::Drop),
-                "timeout" => StepAction::Fault(FaultKind::Timeout),
-                other => bail!("unknown recorded probe action `{other}`"),
+            let (envelope_index, action) = if decision.action == "inject" {
+                let input = decision
+                    .choice
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .context("recorded workload input is invalid JSON")?
+                    .ok_or_else(|| anyhow!("recorded workload injection has no input"))?;
+                (
+                    None,
+                    StepAction::Inject {
+                        action_id: decision.envelope.clone(),
+                        input,
+                    },
+                )
+            } else {
+                let action = match decision.action.as_str() {
+                    "deliver" => StepAction::Deliver,
+                    "delay" => StepAction::Fault(FaultKind::Delay),
+                    "duplicate" => StepAction::Fault(FaultKind::Duplicate),
+                    "drop" => StepAction::Fault(FaultKind::Drop),
+                    "timeout" => StepAction::Fault(FaultKind::Timeout),
+                    other => bail!("unknown recorded probe action `{other}`"),
+                };
+                let index = world
+                    .queue
+                    .iter()
+                    .position(|envelope| {
+                        envelope.id == decision.envelope && envelope.at <= world.time
+                    })
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "recorded decision references unavailable envelope `{}`",
+                            decision.envelope
+                        )
+                    })?;
+                (Some(index), action)
             };
-            let mut substitute_choices = parse_substitute_choices(decision.choice.as_deref())?;
+            let mut substitute_choices = if decision.action == "inject" {
+                BTreeMap::new()
+            } else {
+                parse_substitute_choices(decision.choice.as_deref())?
+            };
             if let Some(index) = substitute_choices.remove("*") {
-                let target = &world.queue[envelope_index].target;
+                let target = &world.queue[envelope_index
+                    .ok_or_else(|| anyhow!("injection cannot select substitute outcomes"))?]
+                .target;
                 for substitute in self
                     .assembly
                     .substitutes
@@ -1617,7 +1995,8 @@ impl Engine {
                     substitute_choices.insert(substitute.id.clone(), index);
                 }
             }
-            failure = self.apply_choice(
+            let previously_violated = world.violated_checks.clone();
+            let applied_failure = self.apply_choice(
                 &mut world,
                 &StepChoice {
                     envelope_index,
@@ -1627,18 +2006,43 @@ impl Engine {
                 true,
                 &mut coverage,
             )?;
-            if failure.is_some() {
+            if let Some(expected) = expected_failure {
+                if applied_failure.as_ref().is_none_or(|candidate| {
+                    candidate.check != expected.check || candidate.message != expected.message
+                }) && world.violated_checks.contains(&expected.check)
+                    && !previously_violated.contains(&expected.check)
+                {
+                    if let Some(check) = self
+                        .assembly
+                        .checks
+                        .iter()
+                        .find(|check| check.id == expected.check)
+                    {
+                        failure = Some(check_failure(check, &world, check_failure_detail(check)));
+                        break;
+                    }
+                }
+            }
+            if applied_failure.as_ref().is_some_and(|candidate| {
+                expected_failure.is_none_or(|expected| {
+                    candidate.check == expected.check && candidate.message == expected.message
+                })
+            }) {
+                failure = applied_failure;
                 break;
             }
         }
-        if failure.is_none() && world.queue.is_empty() {
-            failure = self.evaluate_checks(&mut world, true)?;
+        if failure.is_none() && world_is_complete(&world) {
+            failure = select_replay_failure(
+                self.evaluate_new_check_failures(&mut world, true)?,
+                expected_failure,
+            );
         }
         coverage.states = world.step + 1;
-        coverage.schedules = usize::from(world.queue.is_empty());
+        coverage.schedules = usize::from(world_is_complete(&world));
         let result = if failure.is_some() {
             "fail"
-        } else if world.queue.is_empty() {
+        } else if world_is_complete(&world) {
             "pass"
         } else {
             "inconclusive"
@@ -1699,7 +2103,7 @@ impl Engine {
                 continue;
             }
             coverage.states += 1;
-            if world.queue.is_empty() {
+            if world_is_complete(&world) {
                 coverage.schedules += 1;
                 if let Some(failure) = self.evaluate_checks(&mut world, true)? {
                     let trace = self.trace_from_world(
@@ -1761,6 +2165,152 @@ impl Engine {
         Ok((trace, None))
     }
 
+    fn explore_guided(&mut self, seed: u64, max_findings: usize) -> Result<GuidedExploration> {
+        let initial = self.initial_world()?;
+        let mut frontier = BinaryHeap::new();
+        let mut serial = 0u64;
+        let mut visited = BTreeSet::new();
+        let mut seen_checks = BTreeSet::new();
+        let mut seen_cases = BTreeSet::new();
+        let mut seen_states = BTreeSet::new();
+        let mut seen_routes = BTreeSet::new();
+        let mut seen_faults = BTreeSet::new();
+        let mut findings = BTreeMap::<String, (Counterexample, usize)>::new();
+        let mut coverage = empty_coverage();
+        let mut exhausted = true;
+        let mut stopped_by = "search-frontier-exhausted".to_string();
+        push_guided_world(
+            &mut frontier,
+            initial,
+            seed,
+            &mut serial,
+            &seen_checks,
+            &seen_cases,
+            &seen_states,
+            &seen_routes,
+            &seen_faults,
+        )?;
+
+        while let Some(entry) = frontier.pop() {
+            if coverage.states >= self.bounds.max_states
+                || coverage.schedules >= self.bounds.max_schedules
+            {
+                exhausted = false;
+                stopped_by = "state-or-schedule-bound".to_string();
+                break;
+            }
+            let mut world = entry.world;
+            advance_time(&mut world);
+            let hash = world_hash(&world)?;
+            if !visited.insert(hash) {
+                continue;
+            }
+            coverage.states += 1;
+
+            if world.step > 0 || world.time > 0 {
+                for failure in self.evaluate_new_check_failures(&mut world, false)? {
+                    record_guided_finding(self, &world, failure, &coverage, &mut findings);
+                }
+            }
+            observe_guided_world(
+                &world,
+                &mut seen_checks,
+                &mut seen_cases,
+                &mut seen_states,
+                &mut seen_routes,
+                &mut seen_faults,
+            )?;
+            if findings.len() >= max_findings {
+                exhausted = false;
+                stopped_by = "finding-cap".to_string();
+                break;
+            }
+
+            if world_is_complete(&world) {
+                coverage.schedules += 1;
+                for failure in self.evaluate_new_check_failures(&mut world, true)? {
+                    record_guided_finding(self, &world, failure, &coverage, &mut findings);
+                }
+                continue;
+            }
+            if world.step >= self.bounds.max_steps {
+                exhausted = false;
+                stopped_by = "step-bound".to_string();
+                continue;
+            }
+
+            let choices = self.choices(&world);
+            self.prefetch_transitions(&world, &choices)?;
+            for choice in choices {
+                let mut next = world.clone();
+                let previously_violated = next.violated_checks.clone();
+                let mut branch_coverage = empty_coverage();
+                if let Some(failure) =
+                    self.apply_choice(&mut next, &choice, true, &mut branch_coverage)?
+                {
+                    let primary_check = failure.check.clone();
+                    record_guided_finding(self, &next, failure, &coverage, &mut findings);
+                    for check_id in next
+                        .violated_checks
+                        .difference(&previously_violated)
+                        .filter(|check_id| check_id.as_str() != primary_check)
+                    {
+                        if let Some(check) = self
+                            .assembly
+                            .checks
+                            .iter()
+                            .find(|check| check.id == *check_id)
+                        {
+                            record_guided_finding(
+                                self,
+                                &next,
+                                check_failure(check, &next, check_failure_detail(check)),
+                                &coverage,
+                                &mut findings,
+                            );
+                        }
+                    }
+                    continue;
+                }
+                coverage.transitions = coverage.transitions.max(branch_coverage.transitions);
+                coverage
+                    .transition_cases
+                    .extend(branch_coverage.transition_cases);
+                coverage.routes.extend(branch_coverage.routes);
+                coverage.faults.extend(branch_coverage.faults);
+                push_guided_world(
+                    &mut frontier,
+                    next,
+                    seed,
+                    &mut serial,
+                    &seen_checks,
+                    &seen_cases,
+                    &seen_states,
+                    &seen_routes,
+                    &seen_faults,
+                )?;
+            }
+        }
+
+        let mut minimized = Vec::new();
+        for (_, (counterexample, occurrences)) in findings {
+            minimized.push((self.minimize_counterexample(counterexample)?, occurrences));
+        }
+        minimized.sort_by(|left, right| {
+            left.0
+                .failure
+                .check
+                .cmp(&right.0.failure.check)
+                .then(left.0.decisions.len().cmp(&right.0.decisions.len()))
+        });
+        Ok(GuidedExploration {
+            findings: minimized,
+            coverage,
+            exhausted,
+            stopped_by,
+        })
+    }
+
     fn collect_property_traces(&mut self) -> Result<PropertyExploration> {
         let initial = self.initial_world()?;
         let mut frontier = VecDeque::from([initial]);
@@ -1795,7 +2345,7 @@ impl Engine {
                 continue;
             }
             coverage.states += 1;
-            if world.queue.is_empty() {
+            if world_is_complete(&world) {
                 coverage.schedules += 1;
                 let failure = self.evaluate_checks(&mut world, true)?;
                 let result = if failure.is_some() { "fail" } else { "pass" };
@@ -1974,6 +2524,18 @@ impl Engine {
 
     fn choices(&self, world: &World) -> Vec<StepChoice> {
         let mut choices = Vec::new();
+        for action in &world.workload_actions {
+            if world.action_remaining.get(&action.id).copied().unwrap_or(0) > 0 {
+                choices.push(StepChoice {
+                    envelope_index: None,
+                    action: StepAction::Inject {
+                        action_id: action.id.clone(),
+                        input: action.input.clone(),
+                    },
+                    substitute_choices: BTreeMap::new(),
+                });
+            }
+        }
         for (index, envelope) in world.queue.iter().enumerate() {
             if envelope.at > world.time {
                 continue;
@@ -1986,7 +2548,7 @@ impl Engine {
                 .collect::<Vec<_>>();
             for substitute_choices in substitute_assignments(&substitutes) {
                 choices.push(StepChoice {
-                    envelope_index: index,
+                    envelope_index: Some(index),
                     action: StepAction::Deliver,
                     substitute_choices,
                 });
@@ -2005,7 +2567,7 @@ impl Engine {
                     > 0
                 {
                     choices.push(StepChoice {
-                        envelope_index: index,
+                        envelope_index: Some(index),
                         action: StepAction::Fault(fault.kind),
                         substitute_choices: BTreeMap::new(),
                     });
@@ -2013,10 +2575,8 @@ impl Engine {
             }
         }
         choices.sort_by(|left, right| {
-            let left_envelope = &world.queue[left.envelope_index];
-            let right_envelope = &world.queue[right.envelope_index];
-            envelope_order(left_envelope, right_envelope)
-                .then(action_label(&left.action).cmp(action_label(&right.action)))
+            choice_order_key(left, world)
+                .cmp(&choice_order_key(right, world))
                 .then(left.substitute_choices.cmp(&right.substitute_choices))
         });
         choices
@@ -2029,9 +2589,77 @@ impl Engine {
         explore_substitutes: bool,
         coverage: &mut Coverage,
     ) -> Result<Option<ProbeFailure>> {
-        let mut envelope = world.queue.remove(choice.envelope_index);
-        match choice.action {
+        if let StepAction::Inject { action_id, input } = &choice.action {
+            let remaining = world.action_remaining.get(action_id).copied().unwrap_or(0);
+            if remaining == 0 {
+                bail!("workload action `{action_id}` budget is exhausted");
+            }
+            let target = world
+                .workload_actions
+                .iter()
+                .find(|action| action.id == *action_id)
+                .map(|action| action.target.clone())
+                .ok_or_else(|| anyhow!("unknown workload action `{action_id}`"))?;
+            validate_normalized_input(input)?;
+            let invocation = world
+                .action_invocations
+                .entry(action_id.clone())
+                .and_modify(|value| *value += 1)
+                .or_insert(1);
+            let envelope_id = format!("{action_id}#{invocation}");
+            let envelope = Envelope {
+                id: envelope_id.clone(),
+                idempotency_key: envelope_id.clone(),
+                route: format!("workload/{action_id}"),
+                target,
+                at: world.time,
+                input: input.clone(),
+                source: None,
+                correlation_id: envelope_id.clone(),
+                causation_id: None,
+                attempt: 1,
+            };
+            world
+                .action_remaining
+                .insert(action_id.clone(), remaining - 1);
+            world.queue.push(envelope.clone());
+            sort_queue(&mut world.queue);
+            world.step += 1;
+            world.decisions.push(Decision {
+                envelope: action_id.clone(),
+                action: "inject".to_string(),
+                choice: Some(serde_json::to_string(input)?),
+            });
+            world.timeline.push(TimelineEntry {
+                step: world.step,
+                time: world.time,
+                action: "inject".to_string(),
+                envelope: envelope.id,
+                idempotency_key: envelope.idempotency_key,
+                route: envelope.route,
+                source: None,
+                target: envelope.target,
+                input: envelope.input,
+                correlation_id: envelope.correlation_id,
+                causation_id: None,
+                attempt: 1,
+                state_before: None,
+                state_after: None,
+                transition_case: None,
+                source_file: None,
+                source_function: None,
+                outputs: Vec::new(),
+            });
+            return Ok(None);
+        }
+        let envelope_index = choice
+            .envelope_index
+            .ok_or_else(|| anyhow!("delivery choice has no envelope"))?;
+        let mut envelope = world.queue.remove(envelope_index);
+        match &choice.action {
+            StepAction::Inject { .. } => unreachable!("injection returned before delivery"),
             StepAction::Fault(kind) => {
+                let kind = *kind;
                 let key = fault_key(&envelope.route, kind);
                 let remaining = world.fault_remaining.get(&key).copied().unwrap_or(0);
                 if remaining == 0 {
@@ -2383,22 +3011,31 @@ impl Engine {
     }
 
     fn evaluate_checks(&self, world: &mut World, quiescent: bool) -> Result<Option<ProbeFailure>> {
+        Ok(self
+            .evaluate_new_check_failures(world, quiescent)?
+            .into_iter()
+            .next())
+    }
+
+    fn evaluate_new_check_failures(
+        &self,
+        world: &mut World,
+        quiescent: bool,
+    ) -> Result<Vec<ProbeFailure>> {
+        let mut failures = Vec::new();
         for check in &self.assembly.checks {
+            if world.violated_checks.contains(&check.id) {
+                continue;
+            }
             let satisfied = self.assertion_satisfied(&check.assert, world)?;
             match check.when {
                 CheckWhen::Always if !satisfied => {
-                    return Ok(Some(check_failure(
-                        check,
-                        world,
-                        "always assertion is false",
-                    )));
+                    world.violated_checks.insert(check.id.clone());
+                    failures.push(check_failure(check, world, "always assertion is false"));
                 }
                 CheckWhen::Quiescent if quiescent && !satisfied => {
-                    return Ok(Some(check_failure(
-                        check,
-                        world,
-                        "quiescent assertion is false",
-                    )));
+                    world.violated_checks.insert(check.id.clone());
+                    failures.push(check_failure(check, world, "quiescent assertion is false"));
                 }
                 CheckWhen::Within => {
                     if satisfied {
@@ -2411,17 +3048,18 @@ impl Engine {
                     let step_expired = check.within_steps.is_some_and(|limit| world.step >= limit);
                     let time_expired = check.within_time.is_some_and(|limit| world.time >= limit);
                     if step_expired || time_expired || quiescent {
-                        return Ok(Some(check_failure(
+                        world.violated_checks.insert(check.id.clone());
+                        failures.push(check_failure(
                             check,
                             world,
                             "bounded eventual assertion was not reached",
-                        )));
+                        ));
                     }
                 }
                 _ => {}
             }
         }
-        Ok(None)
+        Ok(failures)
     }
 
     fn assertion_satisfied(&self, assertion: &CheckAssertion, world: &World) -> Result<bool> {
@@ -2449,14 +3087,7 @@ impl Engine {
     }
 
     fn execute_oracle(&self, command: &str, runner: &str, world: &World) -> Result<bool> {
-        let temp_root = std::env::temp_dir().join(format!(
-            "rms-probe-oracle-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let temp_root = probe_temp_root("rms-probe-oracle");
         fs::create_dir_all(&temp_root)?;
         let snapshot_path = temp_root.join("snapshot.json");
         let trace_path = temp_root.join("trace.json");
@@ -2513,14 +3144,7 @@ impl Engine {
             })?;
         let command = get_json_str(&instance.manifest, &["commands", &mapper.command])
             .ok_or_else(|| anyhow!("probe mapper command `{}` is not declared", mapper.command))?;
-        let temp_root = std::env::temp_dir().join(format!(
-            "rms-probe-mapper-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let temp_root = probe_temp_root("rms-probe-mapper");
         fs::create_dir_all(&temp_root)?;
         let request_path = temp_root.join("request.json");
         let output_path = temp_root.join("output.json");
@@ -2627,10 +3251,12 @@ impl Engine {
     fn prefetch_transitions(&mut self, world: &World, choices: &[StepChoice]) -> Result<()> {
         let mut grouped: BTreeMap<String, (String, Vec<(String, Value, Value)>)> = BTreeMap::new();
         for choice in choices {
-            if !matches!(choice.action, StepAction::Deliver) {
+            if !matches!(&choice.action, StepAction::Deliver) {
                 continue;
             }
-            let envelope = &world.queue[choice.envelope_index];
+            let envelope = &world.queue[choice
+                .envelope_index
+                .ok_or_else(|| anyhow!("delivery choice has no envelope"))?];
             let instance = self
                 .instances
                 .get(&envelope.target)
@@ -2794,14 +3420,7 @@ fn execute_binding_request(
     timeout_seconds: u64,
     description: bool,
 ) -> Result<Value> {
-    let temp_root = std::env::temp_dir().join(format!(
-        "rms-assembly-probe-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
+    let temp_root = probe_temp_root("rms-assembly-probe");
     fs::create_dir_all(&temp_root)
         .with_context(|| format!("failed to create `{}`", temp_root.display()))?;
     let request_path = temp_root.join("request.json");
@@ -3130,6 +3749,26 @@ fn check_failure(check: &CheckSpec, world: &World, detail: &str) -> ProbeFailure
     }
 }
 
+fn check_failure_detail(check: &CheckSpec) -> &'static str {
+    match check.when {
+        CheckWhen::Always => "always assertion is false",
+        CheckWhen::Quiescent => "quiescent assertion is false",
+        CheckWhen::Within => "bounded eventual assertion was not reached",
+    }
+}
+
+fn select_replay_failure(
+    failures: Vec<ProbeFailure>,
+    expected: Option<&ProbeFailure>,
+) -> Option<ProbeFailure> {
+    match expected {
+        Some(expected) => failures.into_iter().find(|candidate| {
+            candidate.check == expected.check && candidate.message == expected.message
+        }),
+        None => failures.into_iter().next(),
+    }
+}
+
 fn empty_coverage() -> Coverage {
     Coverage {
         states: 0,
@@ -3149,11 +3788,12 @@ fn advance_time(world: &mut World) {
     }
 }
 
-fn first_enabled_index(world: &World) -> Option<usize> {
-    world
-        .queue
-        .iter()
-        .position(|envelope| envelope.at <= world.time)
+fn world_is_complete(world: &World) -> bool {
+    world.queue.is_empty()
+        && world
+            .action_remaining
+            .values()
+            .all(|remaining| *remaining == 0)
 }
 
 fn sort_queue(queue: &mut [Envelope]) {
@@ -3169,8 +3809,33 @@ fn envelope_order(left: &Envelope, right: &Envelope) -> std::cmp::Ordering {
         .then(left.attempt.cmp(&right.attempt))
 }
 
+fn choice_order_key(choice: &StepChoice, world: &World) -> (u8, u64, String, String, String) {
+    if let Some(index) = choice.envelope_index {
+        let envelope = &world.queue[index];
+        return (
+            0,
+            envelope.at,
+            envelope.route.clone(),
+            envelope.id.clone(),
+            action_label(&choice.action).to_string(),
+        );
+    }
+    let action_id = match &choice.action {
+        StepAction::Inject { action_id, .. } => action_id.clone(),
+        _ => String::new(),
+    };
+    (
+        1,
+        world.time,
+        String::new(),
+        action_id,
+        "inject".to_string(),
+    )
+}
+
 fn action_label(action: &StepAction) -> &'static str {
     match action {
+        StepAction::Inject { .. } => "inject",
         StepAction::Deliver => "deliver",
         StepAction::Fault(kind) => fault_label(*kind),
     }
@@ -3260,6 +3925,121 @@ fn parse_substitute_choices(choice: Option<&str>) -> Result<BTreeMap<String, usi
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
+fn push_guided_world(
+    frontier: &mut BinaryHeap<GuidedEntry>,
+    world: World,
+    seed: u64,
+    serial: &mut u64,
+    seen_checks: &BTreeSet<String>,
+    seen_cases: &BTreeSet<String>,
+    seen_states: &BTreeSet<String>,
+    seen_routes: &BTreeSet<String>,
+    seen_faults: &BTreeSet<String>,
+) -> Result<()> {
+    let cases = world_transition_cases(&world);
+    let routes = world_routes(&world);
+    let faults = world_faults(&world);
+    let state = semantic_state_digest(&world)?;
+    let tie_break = sha256_bytes(format!("{seed}:{}", world_hash(&world)?).as_bytes());
+    let score = GuidedScore {
+        new_check_outcomes: world.violated_checks.difference(seen_checks).count(),
+        new_transition_cases: cases.difference(seen_cases).count(),
+        new_state: usize::from(!seen_states.contains(&state)),
+        new_routes: routes.difference(seen_routes).count(),
+        new_faults: faults.difference(seen_faults).count(),
+        depth: Reverse(world.step),
+        tie_break,
+    };
+    frontier.push(GuidedEntry {
+        score,
+        serial: Reverse(*serial),
+        world,
+    });
+    *serial = serial.saturating_add(1);
+    Ok(())
+}
+
+fn observe_guided_world(
+    world: &World,
+    seen_checks: &mut BTreeSet<String>,
+    seen_cases: &mut BTreeSet<String>,
+    seen_states: &mut BTreeSet<String>,
+    seen_routes: &mut BTreeSet<String>,
+    seen_faults: &mut BTreeSet<String>,
+) -> Result<()> {
+    seen_checks.extend(world.violated_checks.iter().cloned());
+    seen_cases.extend(world_transition_cases(world));
+    seen_states.insert(semantic_state_digest(world)?);
+    seen_routes.extend(world_routes(world));
+    seen_faults.extend(world_faults(world));
+    Ok(())
+}
+
+fn record_guided_finding(
+    engine: &Engine,
+    world: &World,
+    failure: ProbeFailure,
+    coverage: &Coverage,
+    findings: &mut BTreeMap<String, (Counterexample, usize)>,
+) {
+    let key = format!("{}\n{}", failure.check, failure.message);
+    let trace = engine.trace_from_world(
+        world,
+        "fail",
+        "guided-exploration",
+        false,
+        Some(failure.clone()),
+        coverage.clone(),
+    );
+    let candidate = engine.counterexample(world, failure, &trace);
+    match findings.get_mut(&key) {
+        Some((best, occurrences)) => {
+            *occurrences = occurrences.saturating_add(1);
+            if candidate.decisions.len() < best.decisions.len() {
+                *best = candidate;
+            }
+        }
+        None => {
+            findings.insert(key, (candidate, 1));
+        }
+    }
+}
+
+fn world_transition_cases(world: &World) -> BTreeSet<String> {
+    world
+        .timeline
+        .iter()
+        .filter_map(|entry| entry.transition_case.clone())
+        .collect()
+}
+
+fn world_routes(world: &World) -> BTreeSet<String> {
+    world
+        .timeline
+        .iter()
+        .filter(|entry| !entry.route.is_empty())
+        .map(|entry| entry.route.clone())
+        .collect()
+}
+
+fn world_faults(world: &World) -> BTreeSet<String> {
+    world
+        .timeline
+        .iter()
+        .filter(|entry| !matches!(entry.action.as_str(), "deliver" | "inject"))
+        .map(|entry| format!("{}:{}", entry.route, entry.action))
+        .collect()
+}
+
+fn semantic_state_digest(world: &World) -> Result<String> {
+    Ok(sha256_bytes(&serde_json::to_vec(&json!({
+        "states": world.states,
+        "protocol_states": world.protocol_states,
+        "message_counts": world.message_counts
+    }))?))
+}
+
 fn world_hash(world: &World) -> Result<String> {
     Ok(sha256_bytes(&serde_json::to_vec(&json!({
         "states": world.states,
@@ -3269,7 +4049,10 @@ fn world_hash(world: &World) -> Result<String> {
         "message_counts": world.message_counts,
         "fault_remaining": world.fault_remaining,
         "satisfied_within": world.satisfied_within,
-        "protocol_states": world.protocol_states
+        "violated_checks": world.violated_checks,
+        "protocol_states": world.protocol_states,
+        "action_remaining": world.action_remaining,
+        "action_invocations": world.action_invocations
     }))?))
 }
 
@@ -3446,6 +4229,10 @@ fn write_artifact(path: &Path, value: &Value) -> Result<()> {
     fs::write(path, bytes).with_context(|| format!("failed to write `{}`", path.display()))
 }
 
+fn shell_escape(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn print_value(value: &Value, json_output: bool) -> Result<()> {
     if json_output {
         println!("{}", serde_json::to_string_pretty(value)?);
@@ -3475,8 +4262,13 @@ fn print_trace(trace: &SystemTrace) {
             );
         } else {
             println!(
-                "  {} @{} {} {} -> {}",
-                entry.step, entry.time, entry.action, entry.envelope, entry.target
+                "  {} @{} {} ({}) {} -> {}",
+                entry.step,
+                entry.time,
+                entry.action,
+                semantic_fault_label(entry),
+                entry.envelope,
+                entry.target
             );
         }
     }
@@ -3485,6 +4277,18 @@ fn print_trace(trace: &SystemTrace) {
             "first_failure: {} at step {}: {}",
             failure.check, failure.step, failure.message
         );
+    }
+}
+
+fn semantic_fault_label(entry: &TimelineEntry) -> &'static str {
+    match (entry.action.as_str(), entry.source.is_some()) {
+        ("drop" | "timeout", false) => "request-lost-before-apply",
+        ("drop" | "timeout", true) => "result-lost-after-apply",
+        ("delay", false) => "request-delayed-before-apply",
+        ("delay", true) => "result-delayed-across-retry",
+        ("duplicate", _) => "duplicate-delivery",
+        ("inject", _) => "public-workload-injection",
+        _ => "scheduled-action",
     }
 }
 
@@ -3526,6 +4330,173 @@ mod tests {
             .unwrap()
             .insert("topology".to_string(), json!("guessed"));
         assert!(validate_schema(&invalid, schema, "probe assembly").is_err());
+    }
+
+    #[test]
+    fn v2_workload_injects_each_public_probe_example_and_replays_exact_inputs() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let implementation = repository.join("examples/rust/implementation.yaml");
+        let value = json!({
+            "spec": ASSEMBLY_SPEC_V2,
+            "instances": [{"id": "widget", "implementation": implementation}],
+            "stimuli": [],
+            "checks": [],
+            "exploration": {"max_steps": 4, "max_schedules": 20, "max_states": 100},
+            "workload": {"source": "public-input-examples", "budget_per_action": 1}
+        });
+        validate_assembly_schema(&value).expect("v2 assembly schema");
+        let assembly: ProbeAssembly = serde_json::from_value(value.clone()).unwrap();
+        let mut engine = Engine::new(
+            assembly,
+            value,
+            repository.to_path_buf(),
+            None,
+            None,
+            None,
+            30,
+        )
+        .unwrap();
+        let (trace, _) = engine.deterministic().unwrap();
+        assert_eq!(trace.result, "pass");
+        assert_eq!(
+            trace
+                .timeline
+                .iter()
+                .filter(|entry| entry.action == "inject")
+                .count(),
+            2
+        );
+        assert!(trace.timeline.iter().any(|entry| {
+            entry.action == "inject"
+                && input_name(&entry.input) == "Describe"
+                && entry.input["data"]["name"] == "example"
+        }));
+
+        let decisions = trace
+            .timeline
+            .iter()
+            .map(|entry| Decision {
+                envelope: if entry.action == "inject" {
+                    entry
+                        .envelope
+                        .rsplit_once('#')
+                        .map(|(action, _)| action)
+                        .unwrap_or(&entry.envelope)
+                        .to_string()
+                } else {
+                    entry.envelope.clone()
+                },
+                action: entry.action.clone(),
+                choice: (entry.action == "inject")
+                    .then(|| serde_json::to_string(&entry.input).unwrap()),
+            })
+            .collect::<Vec<_>>();
+        let mut replay_engine = Engine::new(
+            serde_json::from_value(engine.assembly_value.clone()).unwrap(),
+            engine.assembly_value.clone(),
+            repository.to_path_buf(),
+            None,
+            None,
+            None,
+            30,
+        )
+        .unwrap();
+        let (replayed, _) = replay_engine.run_forced(&decisions, None).unwrap();
+        assert_eq!(
+            serde_json::to_value(replayed.timeline).unwrap(),
+            serde_json::to_value(trace.timeline).unwrap()
+        );
+    }
+
+    #[test]
+    fn guided_exploration_is_seeded_and_keeps_distinct_replayable_findings() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let path = repository.join("examples/probes/concurrent-order-failure.yaml");
+        let (mut value, base_dir) = load_input(&path).unwrap();
+        value["checks"].as_array_mut().unwrap().extend([
+            json!({
+                "id": "source-never-enters-impossible-state",
+                "when": "always",
+                "assert": {
+                    "kind": "state",
+                    "instance": "source",
+                    "equals": {"name": "Impossible", "data": {}}
+                }
+            }),
+            json!({
+                "id": "worker-never-enters-impossible-state",
+                "when": "always",
+                "assert": {
+                    "kind": "state",
+                    "instance": "worker",
+                    "equals": {"name": "Impossible", "data": {}}
+                }
+            }),
+        ]);
+        let run = |value: Value, base_dir: PathBuf| {
+            let assembly: ProbeAssembly = serde_json::from_value(value.clone()).unwrap();
+            let mut engine =
+                Engine::new(assembly, value, base_dir, Some(12), Some(50), Some(500), 30).unwrap();
+            engine.explore_guided(17, 8).unwrap()
+        };
+        let first = run(value.clone(), base_dir.clone());
+        let second = run(value, base_dir.clone());
+        let signature = |result: &GuidedExploration| {
+            result
+                .findings
+                .iter()
+                .map(|(counterexample, _)| {
+                    (
+                        counterexample.failure.check.clone(),
+                        serde_json::to_value(&counterexample.decisions).unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(signature(&first), signature(&second));
+        assert!(
+            first.findings.len() >= 2,
+            "expected multiple distinct findings, got {:?}",
+            signature(&first)
+        );
+
+        let mut portable = first.findings[0].0.clone();
+        let portable_root = Path::new("/portable/source");
+        rebase_counterexample_paths(&mut portable, repository, portable_root);
+        assert!(portable.assembly["instances"][0]["implementation"]
+            .as_str()
+            .is_some_and(|path| path.starts_with("/portable/source/")));
+        assert!(portable.trace.instances[0]
+            .implementation
+            .starts_with("/portable/source/"));
+
+        for (counterexample, _) in &first.findings {
+            let assembly: ProbeAssembly =
+                serde_json::from_value(counterexample.assembly.clone()).unwrap();
+            let mut replay = Engine::new(
+                assembly,
+                counterexample.assembly.clone(),
+                base_dir.clone(),
+                Some(12),
+                Some(50),
+                Some(500),
+                30,
+            )
+            .unwrap();
+            let (trace, _) = replay
+                .run_forced(&counterexample.decisions, Some(&counterexample.failure))
+                .unwrap();
+            assert_eq!(
+                trace.failure.as_ref().map(|failure| failure.check.as_str()),
+                Some(counterexample.failure.check.as_str())
+            );
+        }
     }
 
     #[test]

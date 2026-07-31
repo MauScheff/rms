@@ -4,8 +4,9 @@ Promise:
 
 - `rms hunt` discovers risk-derived nightly realizations and canonical probe explorations.
 - It runs from an exact clean revision in an isolated checkout, checkpoints resumably, and records tools, seed, budget, commands, coverage, findings, and proof scope.
-- Behavioral findings are retained only after replay.
-- Finite exhaustion and bounded empirical evidence remain visibly distinct.
+- Behavioral findings are stable, deduplicated, and retained only after targeted replay; guided lanes continue to a fixed distinct-finding cap.
+- Explicit finite exhaustion and bounded empirical or guided evidence remain visibly distinct.
+- The finding-first v0.2 report retains the shortest replay and remains readable beside historical v0.1 reports.
 
 Evidence:
 

@@ -37,6 +37,12 @@ use crate::workflow::{ActionPhase, Authorization};
 
 const VALIDATOR_NAME: &str = "rms";
 const VALIDATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
+const RMS_LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (revision ",
+    env!("RMS_BUILD_REVISION"),
+    ")"
+);
 const DEFAULT_RUN_ROOT: &str = ".rms/runs";
 const DEFAULT_INTENT_CACHE_ROOT: &str = ".rms/cache/intent";
 const INTENT_SCHEMA_SPEC: &str = "rms/intent-model/v0.1";
@@ -149,7 +155,7 @@ fn verification_reference_categories() -> impl Iterator<Item = &'static str> {
 
 #[derive(Parser)]
 #[command(name = "rms")]
-#[command(version)]
+#[command(version, long_version = RMS_LONG_VERSION)]
 #[command(about = "Reliable Modular Systems reference CLI")]
 #[command(disable_help_subcommand = true)]
 struct Cli {
@@ -820,7 +826,7 @@ enum Commands {
         #[arg(long, requires = "file", conflicts_with = "describe")]
         explore: bool,
 
-        /// Replay a saved rms/probe-counterexample/v0.1 artifact.
+        /// Replay a saved counterexample. Exit 0 means resolved, 1 reproduced, and 2 invalid.
         #[arg(
             long,
             value_name = "PATH",
@@ -888,26 +894,30 @@ enum Commands {
         root: PathBuf,
 
         /// Restrict the hunt to one module and its declared provider closure.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "assembly")]
         module: Option<PathBuf>,
 
-        /// Total wall-clock budget using s, m, h, or d.
-        #[arg(long, default_value = "8h", value_parser = hunt::parse_budget)]
-        budget: String,
+        /// Hunt one probe assembly directly through guided semantic-novelty exploration.
+        #[arg(long, conflicts_with = "module")]
+        assembly: Option<PathBuf>,
+
+        /// Total wall-clock budget using s, m, h, or d. New runs default to 8h; resumed runs restore the recorded budget.
+        #[arg(long, value_parser = hunt::parse_budget)]
+        budget: Option<String>,
 
         /// Reproducible base seed; generated and recorded when omitted.
         #[arg(long)]
         seed: Option<u64>,
 
-        /// Maximum concurrent lanes.
-        #[arg(long, default_value_t = 4)]
-        jobs: usize,
+        /// Maximum concurrent lanes. New runs default to 4; resumed runs restore the recorded worker count.
+        #[arg(long)]
+        jobs: Option<usize>,
 
         /// Resume a checkpointed run by id or use `latest`.
         #[arg(long)]
         resume: Option<String>,
 
-        /// Also write the final rms/hunt-report/v0.1 to this path.
+        /// Also write the final rms/hunt-report/v0.2 to this path.
         #[arg(long)]
         out: Option<PathBuf>,
 
@@ -3878,7 +3888,7 @@ enum PropertyCommands {
         /// Path to module.yaml or implementation.yaml.
         target: PathBuf,
 
-        /// Canonical rms/probe-assembly/v0.1 input.
+        /// Canonical rms/probe-assembly/v0.1 or v0.2 input.
         #[arg(long)]
         assembly: PathBuf,
 
@@ -3908,7 +3918,7 @@ enum PropertyCommands {
     Analyze {
         /// Path to module.yaml or implementation.yaml.
         target: PathBuf,
-        /// Canonical rms/probe-assembly/v0.1 input.
+        /// Canonical rms/probe-assembly/v0.1 or v0.2 input.
         #[arg(long)]
         assembly: PathBuf,
         /// Select property ids; omit to analyze all executable properties.
@@ -9344,6 +9354,7 @@ fn main() -> Result<()> {
         Commands::Hunt {
             root,
             module,
+            assembly,
             budget,
             seed,
             jobs,
@@ -9352,7 +9363,7 @@ fn main() -> Result<()> {
             dry_run,
             json,
         } => hunt::run(hunt::HuntRequest::from_cli(
-            root, module, budget, seed, jobs, resume, out, dry_run, json,
+            root, module, assembly, budget, seed, jobs, resume, out, dry_run, json,
         )),
         Commands::Machine { command } => match command {
             MachineCommands::Plan {
@@ -13638,7 +13649,7 @@ fn run_probe(request: ProbeDispatchRequest) -> Result<()> {
             .filter(|path| *path != Path::new("-"))
             .and_then(|path| probe::file_spec(path).ok().flatten())
             .as_deref()
-            == Some(probe::ASSEMBLY_SPEC);
+            .is_some_and(|spec| probe::is_assembly_spec(Some(spec)));
     if assembly_mode {
         if request.implementation.is_some()
             || !request.inputs.is_empty()
@@ -13670,13 +13681,13 @@ fn run_probe(request: ProbeDispatchRequest) -> Result<()> {
         return Ok(());
     }
     if request.describe && request.file.is_some() {
-        bail!("`--describe --file` requires an rms/probe-assembly/v0.1 file");
+        bail!("`--describe --file` requires an rms/probe-assembly/v0.1 or v0.2 file");
     }
     if request.max_steps.is_some()
         || request.max_schedules.is_some()
         || request.max_states.is_some()
     {
-        bail!("probe exploration bounds require an rms/probe-assembly/v0.1 file");
+        bail!("probe exploration bounds require an rms/probe-assembly/v0.1 or v0.2 file");
     }
     run_single_machine_probe(ProbeCliRequest {
         implementation: request.implementation,
@@ -22156,6 +22167,9 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
         "rms/probe-assembly/v0.1" => Some(include_str!(
             "../../../../schemas/probe-assembly.schema.json"
         )),
+        "rms/probe-assembly/v0.2" => Some(include_str!(
+            "../../../../schemas/probe-assembly-v0.2.schema.json"
+        )),
         "rms/probe-system-trace/v0.1" => Some(include_str!(
             "../../../../schemas/probe-system-trace.schema.json"
         )),
@@ -22172,6 +22186,9 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
             "../../../../schemas/hunt-lane-result.schema.json"
         )),
         "rms/hunt-report/v0.1" => Some(include_str!("../../../../schemas/hunt-report.schema.json")),
+        "rms/hunt-report/v0.2" => Some(include_str!(
+            "../../../../schemas/hunt-report-v0.2.schema.json"
+        )),
         "rms/conformance/v0.1" => Some(include_str!("../../../../schemas/conformance.schema.json")),
         _ => None,
     }

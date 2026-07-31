@@ -674,6 +674,28 @@ function initializeApplication(model) {
       return text(JSON.stringify(hunt)).includes(text(state.query));
     });
     const latest = hunts.at(-1);
+    const findingKey = (finding) => finding.id || `${finding.module || "unknown"}/${finding.property || "unscoped"}/${finding.kind}/${finding.check || finding.summary}`;
+    const previousCounts = new Map();
+    hunts.slice(0, -1).forEach((hunt) => (hunt.findings ?? []).forEach((finding) => {
+      const key = findingKey(finding);
+      previousCounts.set(key, (previousCounts.get(key) ?? 0) + 1);
+    }));
+    const latestKeys = new Set((latest?.findings ?? []).map(findingKey));
+    const noLongerObserved = [...previousCounts.keys()].filter((key) => !latestKeys.has(key));
+    const findingRows = (latest?.findings ?? []).map((finding) => {
+      const key = findingKey(finding);
+      const history = previousCounts.get(key) ?? 0;
+      const status = history ? "recurring" : "latest";
+      return `<article class="row">
+        <span class="row-kind">${escapeHtml(status)}</span>
+        <span class="row-main">
+          <strong>${escapeHtml(finding.summary)}</strong>
+          <p>${escapeHtml(finding.id || key)}${finding.check ? ` · check ${escapeHtml(finding.check)}` : ""}${finding.first_bad_transition ? ` · first bad transition ${escapeHtml(finding.first_bad_transition)}` : ""}</p>
+          ${finding.replay ? `<code>${escapeHtml(finding.replay)}</code>` : ""}
+        </span>
+        <span class="row-side">${escapeHtml(finding.kind)}<br>${escapeHtml(finding.occurrences ?? 1)} occurrence(s)</span>
+      </article>`;
+    });
     return `
       ${viewHeader("Proof-first bug hunts", "Exhausted finite lanes are proofs only for their declared models; fuzzing, sanitizers, generated cases, and mutation testing remain bounded evidence.")}
       <div class="summary">
@@ -681,14 +703,14 @@ function initializeApplication(model) {
         <span><strong>${latest?.lanes?.length ?? 0}</strong> latest lanes</span>
         <span><strong>${latest?.findings?.length ?? 0}</strong> latest findings</span>
       </div>
+      ${section("Latest findings", findingRows.length, `<div class="list">${findingRows.join("") || `<div class="empty">No findings in the latest hunt.</div>`}</div>`)}
+      ${noLongerObserved.length ? `<p class="empty"><strong>${noLongerObserved.length}</strong> previously observed finding(s) were not seen in the latest hunt. This is bounded evidence, not proof of resolution.</p>` : ""}
       <div class="list">${hunts.map((hunt) => {
         const completeStatuses = new Set(["pass", "finding", "invalid", "unsupported"]);
         const completed = hunt.lanes.filter((lane) => completeStatuses.has(lane.status)).length;
         const elapsedSeconds = Math.max(0, ((hunt.finished_at_unix_ms ?? Date.now()) - hunt.started_at_unix_ms) / 1000);
         const remainingSeconds = Math.max(0, Number(hunt.configuration?.budget_seconds ?? 0) - elapsedSeconds);
-        const metricLines = hunt.lanes
-          .filter((lane) => lane.metrics && Object.keys(lane.metrics).length)
-          .map((lane) => `${lane.id}: ${JSON.stringify(lane.metrics)}`);
+        const laneLines = hunt.lanes.map((lane) => `${lane.status} · ${lane.strategy} · ${lane.id}${lane.metrics && Object.keys(lane.metrics).length ? ` · ${JSON.stringify(lane.metrics)}` : ""}`);
         return `
         <article class="row">
           <span class="row-kind">${escapeHtml(hunt.result)}</span>
@@ -696,12 +718,11 @@ function initializeApplication(model) {
             <strong>${escapeHtml(hunt.run_id)}</strong>
             <p>${escapeHtml(hunt.path)} · ${hunt.finished ? "finished" : "checkpointed"} · seed ${escapeHtml(hunt.configuration?.seed)} · ${completed}/${hunt.lanes.length} lanes · ${Math.ceil(remainingSeconds)}s remaining</p>
             <pre>${escapeHtml(hunt.proof_scope?.claim ?? "")}</pre>
-            ${metricLines.length ? `<pre>${escapeHtml(metricLines.join("\n"))}</pre>` : ""}
-            ${(hunt.findings ?? []).map((finding) => `<p><strong>${escapeHtml(finding.kind)}</strong>: ${escapeHtml(finding.summary)}${finding.replay ? `<br><code>${escapeHtml(finding.replay)}</code>` : ""}</p>`).join("")}
+            <details><summary>Lane evidence (${hunt.lanes.length})</summary><pre>${escapeHtml(laneLines.join("\n"))}</pre></details>
           </span>
           <span class="row-side">${hunt.lanes.length} lanes<br>${hunt.findings.length} findings</span>
         </article>
-      `;}).join("") || `<div class="empty">No rms/hunt-report/v0.1 artifacts are recorded.</div>`}</div>
+      `;}).join("") || `<div class="empty">No RMS hunt reports are recorded.</div>`}</div>
     `;
   }
 

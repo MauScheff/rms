@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:probe-assembly:v0.2",
+  "title": "RMS Probe Assembly v0.2",
+  "type": "object",
+  "required": ["spec", "instances", "stimuli"],
+  "properties": {
+    "spec": { "const": "rms/probe-assembly/v0.2" },
+    "instances": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "implementation"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "implementation": { "type": "string", "minLength": 1 },
+          "start": { "oneOf": [{ "const": "initial" }, { "$ref": "#/$defs/variant" }], "default": "initial" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "stimuli": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["target", "input"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "target": { "$ref": "#/$defs/id" },
+          "at": { "$ref": "#/$defs/timeQuantity" },
+          "input": { "$ref": "#/$defs/input" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "routing": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["binding", "provider"],
+        "properties": {
+          "consumer": { "$ref": "#/$defs/id" },
+          "binding": { "$ref": "#/$defs/id" },
+          "provider": { "$ref": "#/$defs/id" }
+        },
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "substitutes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "source", "output", "outcomes"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "source": { "$ref": "#/$defs/id" },
+          "output": { "$ref": "#/$defs/namedKind" },
+          "outcomes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["target", "input"],
+              "properties": {
+                "id": { "$ref": "#/$defs/id" },
+                "target": { "$ref": "#/$defs/id" },
+                "after": { "$ref": "#/$defs/timeQuantity" },
+                "input": { "$ref": "#/$defs/input" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "when", "assert"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "when": { "enum": ["always", "quiescent", "within"] },
+          "within_steps": { "type": "integer", "minimum": 1 },
+          "within_time": { "$ref": "#/$defs/timeQuantity" },
+          "assert": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["kind", "instance", "equals"],
+                "properties": {
+                  "kind": { "const": "state" },
+                  "instance": { "$ref": "#/$defs/id" },
+                  "equals": { "$ref": "#/$defs/variant" }
+                },
+                "additionalProperties": false
+              },
+              { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "queue-empty" } }, "additionalProperties": false },
+              {
+                "type": "object",
+                "required": ["kind", "name"],
+                "properties": {
+                  "kind": { "const": "message-count" },
+                  "name": { "type": "string", "minLength": 1 },
+                  "equals": { "type": "integer", "minimum": 0 },
+                  "min": { "type": "integer", "minimum": 0 },
+                  "max": { "type": "integer", "minimum": 0 }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": ["kind", "command", "runner"],
+                "properties": {
+                  "kind": { "const": "oracle" },
+                  "command": { "type": "string", "minLength": 1 },
+                  "runner": { "type": "string", "pattern": "^[^#]+#[^#]+$" }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "when": { "const": "within" } }, "required": ["when"] },
+            "then": { "anyOf": [{ "required": ["within_steps"] }, { "required": ["within_time"] }] }
+          }
+        ],
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "exploration": {
+      "type": "object",
+      "properties": {
+        "max_steps": { "type": "integer", "minimum": 1, "default": 30 },
+        "max_schedules": { "type": "integer", "minimum": 1, "default": 100 },
+        "max_states": { "type": "integer", "minimum": 1, "default": 10000 }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "faults": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["route", "kind", "budget"],
+        "properties": {
+          "route": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["delay", "duplicate", "drop", "timeout"] },
+          "budget": { "type": "integer", "minimum": 1 },
+          "delay": { "$ref": "#/$defs/timeQuantity" }
+        },
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "workload": {
+      "type": "object",
+      "required": ["source", "budget_per_action"],
+      "properties": {
+        "source": { "const": "public-input-examples" },
+        "budget_per_action": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$" },
+    "variant": {
+      "type": "object",
+      "required": ["name"],
+      "properties": { "name": { "type": "string", "minLength": 1 }, "data": true },
+      "additionalProperties": false
+    },
+    "input": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": { "enum": ["command", "observed-event", "effect-result"] },
+        "name": { "type": "string", "minLength": 1 },
+        "data": true
+      },
+      "additionalProperties": false
+    },
+    "namedKind": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": { "enum": ["event", "command", "effect", "reply", "rejection"] },
+        "name": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "timeQuantity": {
+      "type": "object",
+      "required": ["value", "unit"],
+      "properties": {
+        "value": { "type": "integer", "minimum": 0 },
+        "unit": { "enum": ["ns", "us", "ms", "s", "min", "h"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}

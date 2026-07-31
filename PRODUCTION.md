@@ -194,4 +194,4 @@ rms hunt --root . --dry-run
 rms hunt --root . --budget 8h --out artifacts/nightly-hunt.yaml
 ```
 
-The scheduler or CI owns recurrence; RMS remains a foreground, checkpointed process and resumes with `--resume latest`. Treat `bugs-found` as replayable product failure, `proof-gaps-found` as inadequate oracle or coverage strength, and `clean-under-recorded-bounds` as bounded evidence only. Promote minimized findings to smoke regressions before the next candidate.
+The scheduler or CI owns recurrence; RMS remains a foreground, checkpointed process and resumes with `--resume latest`. Dry-run human output states what will vary, what will be checked, and the campaign limits before execution. Treat `bugs-found` as replayable product failure, `proof-gaps-found` as inadequate oracle or coverage strength, and `clean-under-recorded-bounds` as bounded evidence only. Read v0.2 findings by stable ID: recurring means the same semantic failure was seen again, while “not observed” is not proof of resolution. Promote minimized findings to smoke regressions before the next candidate.

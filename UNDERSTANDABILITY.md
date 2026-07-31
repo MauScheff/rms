@@ -159,6 +159,7 @@ RMS, the repository should have:
 - contiguous public behavior paths with no implicit edges;
 - deterministic golden traces for routing and proof selection;
 - replayable exploration for schedules, generated inputs, and faults;
+- a guided-search state extension containing remaining public-workload budgets and already-observed check failures; both are finite, explicit, hashed into visited-state identity, and replayed from recorded normalized inputs;
 - wire-compatibility fixtures for every supported public schema;
 - an independent native oracle capable of comparing old and replacement
   behavior;

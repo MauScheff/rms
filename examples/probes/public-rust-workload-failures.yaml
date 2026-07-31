@@ -1,0 +1,25 @@
+spec: rms/probe-assembly/v0.2
+instances:
+- id: widget
+  implementation: ../rust/implementation.yaml
+stimuli: []
+workload:
+  source: public-input-examples
+  budget_per_action: 1
+checks:
+- id: every-workload-describes-three-widgets
+  when: quiescent
+  assert:
+    kind: message-count
+    name: WidgetDescribed
+    equals: 3
+- id: every-workload-rejects-three-widgets
+  when: quiescent
+  assert:
+    kind: message-count
+    name: WidgetRejected
+    equals: 3
+exploration:
+  max_steps: 4
+  max_schedules: 20
+  max_states: 100

@@ -10,15 +10,17 @@ use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
-const REPORT_SPEC: &str = "rms/hunt-report/v0.1";
+const REPORT_SPEC: &str = "rms/hunt-report/v0.2";
 const LANE_RESULT_SPEC: &str = "rms/hunt-lane-result/v0.1";
+const MAX_GUIDED_FINDINGS: usize = 8;
 
 pub(super) struct HuntRequest {
     root: PathBuf,
     module: Option<PathBuf>,
-    budget: String,
+    assembly: Option<PathBuf>,
+    budget: Option<String>,
     seed: Option<u64>,
-    jobs: usize,
+    jobs: Option<usize>,
     resume: Option<String>,
     out: Option<PathBuf>,
     dry_run: bool,
@@ -30,9 +32,10 @@ impl HuntRequest {
     pub(super) fn from_cli(
         root: PathBuf,
         module: Option<PathBuf>,
-        budget: String,
+        assembly: Option<PathBuf>,
+        budget: Option<String>,
         seed: Option<u64>,
-        jobs: usize,
+        jobs: Option<usize>,
         resume: Option<String>,
         out: Option<PathBuf>,
         dry_run: bool,
@@ -41,6 +44,7 @@ impl HuntRequest {
         Self {
             root,
             module,
+            assembly,
             budget,
             seed,
             jobs,
@@ -65,6 +69,10 @@ struct HuntConfiguration {
     seed: u64,
     jobs: usize,
     module: Option<String>,
+    #[serde(default)]
+    assembly: Option<String>,
+    #[serde(default)]
+    output: Option<String>,
     tools: BTreeMap<String, String>,
 }
 
@@ -89,11 +97,51 @@ struct HuntLaneReport {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct HuntFinding {
+    #[serde(default)]
+    id: String,
     lane: String,
+    #[serde(default)]
+    module: String,
+    #[serde(default)]
+    property: Option<String>,
     kind: String,
     summary: String,
+    #[serde(default)]
+    check: Option<String>,
+    #[serde(default)]
+    first_bad_transition: Option<String>,
+    #[serde(default = "one_occurrence")]
+    occurrences: usize,
     artifact: Option<String>,
     replay: Option<String>,
+}
+
+fn one_occurrence() -> usize {
+    1
+}
+
+impl HuntFinding {
+    fn raw(
+        lane: String,
+        kind: String,
+        summary: String,
+        artifact: Option<String>,
+        replay: Option<String>,
+    ) -> Self {
+        Self {
+            id: String::new(),
+            lane,
+            module: String::new(),
+            property: None,
+            kind,
+            summary,
+            check: None,
+            first_bad_transition: None,
+            occurrences: 1,
+            artifact,
+            replay,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -131,6 +179,14 @@ enum LaneExecution {
         runner: String,
         generator: Option<String>,
     },
+    GuidedProbe {
+        root: PathBuf,
+        source_root: PathBuf,
+        assembly: PathBuf,
+        max_steps: Option<usize>,
+        max_schedules: Option<usize>,
+        max_states: Option<usize>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -158,33 +214,131 @@ pub(super) fn parse_budget(value: &str) -> std::result::Result<String, String> {
 }
 
 pub(super) fn run(request: HuntRequest) -> Result<()> {
-    if request.jobs == 0 {
-        bail!("hunt jobs must be at least 1");
-    }
-    let jobs = request.jobs.min(
-        std::thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(1),
-    );
     let root = request.root.canonicalize().with_context(|| {
         format!(
             "hunt root `{}` could not be resolved",
             request.root.display()
         )
     })?;
-    let budget_seconds = parse_duration_seconds(&request.budget)?;
-    let revision = git_output(&root, &["rev-parse", "HEAD"])?;
-    ensure_clean_commit(&root)?;
-    let declaration_digest = declaration_digest(&root, request.module.as_deref())?;
     let hunts_root = root.join(".rms/hunts");
     fs::create_dir_all(&hunts_root)?;
-    let (run_id, seed, mut prior) = resolve_run(
-        &hunts_root,
-        request.resume.as_deref(),
-        request.seed,
-        &revision,
-        &declaration_digest,
+    let resumed = load_resume_report(&hunts_root, request.resume.as_deref())?;
+    let prior_report = resumed.as_ref().map(|(_, report)| report);
+
+    let requested_module = request
+        .module
+        .as_deref()
+        .map(|path| resolve_hunt_file(&root, path, "module"))
+        .transpose()?;
+    let relative_module = match (requested_module, prior_report) {
+        (Some(module), Some(previous)) => {
+            let recorded = previous.configuration.module.as_deref().map(Path::new);
+            if recorded != Some(module.as_path()) {
+                bail!("hunt resume rejected module configuration drift");
+            }
+            Some(module)
+        }
+        (Some(module), None) => Some(module),
+        (None, Some(previous)) => previous.configuration.module.as_deref().map(PathBuf::from),
+        (None, None) => None,
+    };
+    let requested_assembly = request
+        .assembly
+        .as_deref()
+        .map(|path| resolve_hunt_file(&root, path, "assembly"))
+        .transpose()?;
+    let relative_assembly = match (requested_assembly, prior_report) {
+        (Some(assembly), Some(previous)) => {
+            let recorded = previous.configuration.assembly.as_deref().map(Path::new);
+            if recorded != Some(assembly.as_path()) {
+                bail!("hunt resume rejected assembly configuration drift");
+            }
+            Some(assembly)
+        }
+        (Some(assembly), None) => Some(assembly),
+        (None, Some(previous)) => previous
+            .configuration
+            .assembly
+            .as_deref()
+            .map(PathBuf::from),
+        (None, None) => None,
+    };
+    if relative_module.is_some() && relative_assembly.is_some() {
+        bail!("hunt configuration cannot select both a module and an assembly");
+    }
+
+    let requested_budget = request
+        .budget
+        .as_deref()
+        .map(parse_duration_seconds)
+        .transpose()?;
+    let budget_seconds = match (requested_budget, prior_report) {
+        (Some(budget), Some(previous)) if budget != previous.configuration.budget_seconds => {
+            bail!("hunt resume rejected budget configuration drift")
+        }
+        (Some(budget), _) => budget,
+        (None, Some(previous)) => previous.configuration.budget_seconds,
+        (None, None) => parse_duration_seconds("8h")?,
+    };
+
+    if request.jobs == Some(0) {
+        bail!("hunt jobs must be at least 1");
+    }
+    let configured_jobs = match (request.jobs, prior_report) {
+        (Some(jobs), Some(previous)) if jobs != previous.configuration.jobs => {
+            bail!("hunt resume rejected jobs configuration drift")
+        }
+        (Some(jobs), _) => jobs,
+        (None, Some(previous)) => previous.configuration.jobs,
+        (None, None) => 4,
+    };
+    let jobs = configured_jobs.min(
+        std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1),
+    );
+
+    let requested_output = request
+        .out
+        .as_deref()
+        .map(|path| absolute_output_path(&root, path));
+    let output = match (requested_output, prior_report) {
+        (Some(path), Some(previous))
+            if previous.configuration.output.as_deref()
+                != Some(path.to_string_lossy().as_ref()) =>
+        {
+            bail!("hunt resume rejected output configuration drift")
+        }
+        (Some(path), _) => Some(path),
+        (None, Some(previous)) => previous.configuration.output.as_deref().map(PathBuf::from),
+        (None, None) => None,
+    };
+
+    let revision = git_output(&root, &["rev-parse", "HEAD"])?;
+    ensure_clean_commit(&root)?;
+    let declaration_digest = declaration_digest(
+        &root,
+        relative_module.as_deref(),
+        relative_assembly.as_deref(),
     )?;
+    let (run_id, seed, mut prior) = if let Some((run_id, report)) = resumed {
+        validate_resume(&report, request.seed, &revision, &declaration_digest)?;
+        (run_id, report.configuration.seed, Some(report))
+    } else {
+        let seed = request.seed.unwrap_or_else(generate_seed);
+        (new_run_id(&revision), seed, None)
+    };
+    if let Some(final_report) = prior.as_ref().filter(|report| {
+        report.finished_at_unix_ms.is_some()
+            && report.lanes.iter().all(|lane| {
+                matches!(
+                    lane.status.as_str(),
+                    "pass" | "finding" | "invalid" | "unsupported"
+                )
+            })
+    }) {
+        return print_report(final_report, request.json);
+    }
     let run_root = hunts_root.join(&run_id);
     fs::create_dir_all(&run_root)?;
     let started_at_unix_ms = prior
@@ -193,17 +347,22 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
         .unwrap_or_else(now_ms);
     let worktree = run_root.join("checkout");
     prepare_isolated_checkout(&root, &worktree, &revision)?;
-    let relative_module = request
-        .module
-        .as_ref()
-        .map(|path| relative_to_root(&root, path))
-        .transpose()?;
-    let mut lanes = discover_lanes(
-        &worktree,
-        relative_module.as_deref(),
-        budget_seconds,
-        &run_root,
-    )?;
+    let mut lanes = if let Some(assembly) = relative_assembly.as_deref() {
+        vec![discover_direct_assembly_lane(
+            &worktree,
+            &root,
+            assembly,
+            budget_seconds,
+        )?]
+    } else {
+        discover_lanes(
+            &worktree,
+            &root,
+            relative_module.as_deref(),
+            budget_seconds,
+            &run_root,
+        )?
+    };
     let tools = tool_identities(&mut lanes);
     if let Some(previous) = &prior {
         ensure_resume_tool_identities(previous, &tools)?;
@@ -255,10 +414,14 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
         configuration: HuntConfiguration {
             budget_seconds,
             seed,
-            jobs,
+            jobs: configured_jobs,
             module: relative_module
                 .as_ref()
                 .map(|path| path.display().to_string()),
+            assembly: relative_assembly
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            output: output.as_ref().map(|path| path.display().to_string()),
             tools,
         },
         lanes: lanes.iter().map(|lane| lane.report.clone()).collect(),
@@ -272,6 +435,7 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
     };
     write_report(&run_root.join("checkpoint.yaml"), &report)?;
     if request.dry_run {
+        normalize_report_findings(&mut report);
         report.result = if lanes.is_empty() {
             "unsupported".to_string()
         } else {
@@ -279,7 +443,7 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
         };
         report.proof_scope = proof_scope(&report.lanes);
         report.finished_at_unix_ms = Some(now_ms());
-        finish_report(&root, &worktree, &run_root, request.out.as_deref(), &report)?;
+        finish_report(&root, &worktree, &run_root, output.as_deref(), &report)?;
         return print_report(&report, request.json);
     }
 
@@ -314,6 +478,14 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
             .min(pending.len());
         let batch = &pending[cursor..batch_end];
         let remaining = budget_seconds.saturating_sub(elapsed).max(1);
+        if !request.json {
+            let lane_names = batch
+                .iter()
+                .map(|index| lanes[*index].report.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            eprintln!("hunt: running {lane_names} (up to {remaining}s remaining)");
+        }
         for index in batch {
             lanes[*index].report.status = "running".to_string();
             lanes[*index].report.budget_seconds =
@@ -365,10 +537,11 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
         cursor = batch_end;
     }
     report.lanes = lanes.into_iter().map(|lane| lane.report).collect();
+    normalize_report_findings(&mut report);
     report.result = hunt_result(&report);
     report.proof_scope = proof_scope(&report.lanes);
     report.finished_at_unix_ms = Some(now_ms());
-    finish_report(&root, &worktree, &run_root, request.out.as_deref(), &report)?;
+    finish_report(&root, &worktree, &run_root, output.as_deref(), &report)?;
     print_report(&report, request.json)?;
     if matches!(report.result.as_str(), "invalid" | "unsupported") {
         bail!("RMS hunt {}", report.result);
@@ -376,8 +549,65 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
     Ok(())
 }
 
+fn discover_direct_assembly_lane(
+    checkout: &Path,
+    source_root: &Path,
+    assembly: &Path,
+    budget_seconds: u64,
+) -> Result<HuntLane> {
+    let path = checkout.join(assembly);
+    let value = load_yaml_or_json(&path)
+        .with_context(|| format!("hunt assembly `{}` could not be loaded", assembly.display()))?;
+    if !matches!(
+        get_str(&value, &["spec"]),
+        Some("rms/probe-assembly/v0.1" | "rms/probe-assembly/v0.2")
+    ) {
+        bail!(
+            "hunt assembly `{}` is not an rms/probe-assembly/v0.1 or v0.2 declaration",
+            assembly.display()
+        );
+    }
+    let max_steps = get_path(&value, &["exploration", "max_steps"])
+        .and_then(YamlValue::as_u64)
+        .map(|value| value as usize);
+    let max_schedules = get_path(&value, &["exploration", "max_schedules"])
+        .and_then(YamlValue::as_u64)
+        .map(|value| value as usize);
+    let max_states = get_path(&value, &["exploration", "max_states"])
+        .and_then(YamlValue::as_u64)
+        .map(|value| value as usize);
+    let name = assembly
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("probe-assembly");
+    Ok(HuntLane {
+        report: lane_report(
+            format!("assembly:{}:guided", sanitize_segment(name)),
+            &format!("assembly:{name}"),
+            None,
+            "probe-exploration",
+            "guided-semantic-novelty-v1",
+            budget_seconds,
+            format!(
+                "guided probe exploration {} (seeded, at most {MAX_GUIDED_FINDINGS} distinct findings)",
+                assembly.display()
+            ),
+            None,
+        ),
+        execution: LaneExecution::GuidedProbe {
+            root: checkout.to_path_buf(),
+            source_root: source_root.to_path_buf(),
+            assembly: path,
+            max_steps,
+            max_schedules,
+            max_states,
+        },
+    })
+}
+
 fn discover_lanes(
     checkout: &Path,
+    source_root: &Path,
     selected_module: Option<&Path>,
     budget_seconds: u64,
     run_root: &Path,
@@ -552,7 +782,8 @@ fn discover_lanes(
             }
         }
         let mut historical_paths = BTreeMap::<PathBuf, String>::new();
-        let mut relationship_assemblies = BTreeMap::<PathBuf, YamlValue>::new();
+        let mut relationship_assemblies =
+            BTreeMap::<PathBuf, (YamlValue, std::collections::BTreeSet<String>)>::new();
         for property in &properties {
             let property_id = get_str(property, &["id"]).unwrap_or("unnamed").to_string();
             if let Some(counterexamples) = get_str(property, &["counterexamples", "path"]) {
@@ -636,10 +867,17 @@ fn discover_lanes(
                 let Some(assembly) = get_str(exploration, &["assembly"]) else {
                     continue;
                 };
-                relationship_assemblies.insert(
-                    implementation.parent().unwrap_or(checkout).join(assembly),
-                    exploration.clone(),
-                );
+                relationship_assemblies
+                    .entry(implementation.parent().unwrap_or(checkout).join(assembly))
+                    .and_modify(|(_, properties)| {
+                        properties.insert(property_id.clone());
+                    })
+                    .or_insert_with(|| {
+                        (
+                            exploration.clone(),
+                            std::collections::BTreeSet::from([property_id.clone()]),
+                        )
+                    });
                 let goal = get_str(exploration, &["goal"]).unwrap_or("violate");
                 let mut arguments = vec![
                     "property".to_string(),
@@ -756,9 +994,45 @@ fn discover_lanes(
                 },
             });
         }
-        for (analysis_index, (assembly, exploration)) in
+        for (analysis_index, (assembly, (exploration, properties))) in
             relationship_assemblies.into_iter().enumerate()
         {
+            let guided_property = (properties.len() == 1)
+                .then(|| properties.iter().next().cloned())
+                .flatten();
+            let max_steps = get_path(&exploration, &["bounds", "max_steps"])
+                .and_then(YamlValue::as_u64)
+                .map(|value| value as usize);
+            let max_schedules = get_path(&exploration, &["bounds", "max_schedules"])
+                .and_then(YamlValue::as_u64)
+                .map(|value| value as usize);
+            let max_states = get_path(&exploration, &["bounds", "max_states"])
+                .and_then(YamlValue::as_u64)
+                .map(|value| value as usize);
+            let guided_id = format!("{module}:guided-{}", analysis_index + 1);
+            lanes.push(HuntLane {
+                report: lane_report(
+                    guided_id,
+                    &module,
+                    guided_property,
+                    "probe-exploration",
+                    "guided-semantic-novelty-v1",
+                    budget_seconds,
+                    format!(
+                        "guided probe exploration {} (seeded, at most {MAX_GUIDED_FINDINGS} distinct findings)",
+                        assembly.display()
+                    ),
+                    None,
+                ),
+                execution: LaneExecution::GuidedProbe {
+                    root: checkout.to_path_buf(),
+                    source_root: source_root.to_path_buf(),
+                    assembly: assembly.clone(),
+                    max_steps,
+                    max_schedules,
+                    max_states,
+                },
+            });
             let mut arguments = vec![
                 "property".to_string(),
                 "analyze".to_string(),
@@ -981,6 +1255,32 @@ fn execute_lane(
             ],
             report.budget_seconds,
         )?,
+        LaneExecution::GuidedProbe {
+            root,
+            source_root,
+            assembly,
+            max_steps,
+            max_schedules,
+            max_states,
+        } => {
+            let artifact_dir = run_root
+                .join("counterexamples")
+                .join(sanitize_segment(&report.id));
+            super::probe::run_guided_hunt(
+                assembly,
+                seed,
+                MAX_GUIDED_FINDINGS,
+                *max_steps,
+                *max_schedules,
+                *max_states,
+                report.budget_seconds,
+                root,
+                source_root,
+                &artifact_dir,
+                &lane_output,
+            )?;
+            execute_proof_command(root, "true", &[], 1)?
+        }
     };
     report.elapsed_ms = started.elapsed().as_millis() as u64;
     if output.timed_out {
@@ -1001,17 +1301,17 @@ fn execute_lane(
         .to_string();
         report.diagnostic = Some(trim_output(&output.stderr, &output.stdout));
         if report.status == "finding" {
-            findings.push(HuntFinding {
-                lane: report.id.clone(),
-                kind: "behavioral-counterexample".to_string(),
-                summary: if report.kind == "historical-replay" {
+            findings.push(HuntFinding::raw(
+                report.id.clone(),
+                "behavioral-counterexample".to_string(),
+                if report.kind == "historical-replay" {
                     "a historical counterexample still reproduces".to_string()
                 } else {
                     "the smoke baseline found a reproducible behavioral failure".to_string()
                 },
-                artifact: None,
-                replay: Some(report.command.clone()),
-            });
+                None,
+                Some(report.command.clone()),
+            ));
         }
     } else {
         report.status = "pass".to_string();
@@ -1029,13 +1329,13 @@ fn execute_lane(
             report.status = "finding".to_string();
             report.diagnostic =
                 Some("a historical property counterexample still reproduces".to_string());
-            findings.push(HuntFinding {
-                lane: report.id.clone(),
-                kind: "behavioral-counterexample".to_string(),
-                summary: "a historical property counterexample still reproduces".to_string(),
-                artifact: None,
-                replay: Some(report.command.clone()),
-            });
+            findings.push(HuntFinding::raw(
+                report.id.clone(),
+                "behavioral-counterexample".to_string(),
+                "a historical property counterexample still reproduces".to_string(),
+                None,
+                Some(report.command.clone()),
+            ));
         }
     }
     if lane_output.is_file() {
@@ -1066,15 +1366,15 @@ fn execute_lane(
             .into_iter()
             .flatten()
         {
-            let candidate = HuntFinding {
-                lane: report.id.clone(),
-                kind: get_str(finding, &["kind"]).unwrap_or("invalid").to_string(),
-                summary: get_str(finding, &["summary"])
+            let candidate = HuntFinding::raw(
+                report.id.clone(),
+                get_str(finding, &["kind"]).unwrap_or("invalid").to_string(),
+                get_str(finding, &["summary"])
                     .unwrap_or("hunt lane reported a finding")
                     .to_string(),
-                artifact: get_str(finding, &["artifact"]).map(ToString::to_string),
-                replay: get_str(finding, &["replay"]).map(ToString::to_string),
-            };
+                get_str(finding, &["artifact"]).map(ToString::to_string),
+                get_str(finding, &["replay"]).map(ToString::to_string),
+            );
             if behavioral_finding(&candidate.kind) {
                 let Some(replay) = candidate.replay.as_deref() else {
                     report.status = "invalid".to_string();
@@ -1138,22 +1438,22 @@ fn execute_lane(
                             )?;
                             if replay.status.success() && !replay.timed_out {
                                 report.status = "finding".to_string();
-                                findings.push(HuntFinding {
-                                    lane: report.id.clone(),
-                                    kind: "behavioral-counterexample".to_string(),
-                                    summary: if report.kind == "trace-evaluation" {
+                                findings.push(HuntFinding::raw(
+                                    report.id.clone(),
+                                    "behavioral-counterexample".to_string(),
+                                    if report.kind == "trace-evaluation" {
                                         "real-trace evaluation found a replayable property violation"
                                             .to_string()
                                     } else {
                                         "probe exploration found a replayable property violation"
                                             .to_string()
                                     },
-                                    artifact: Some(path.clone()),
-                                    replay: Some(format!(
+                                    Some(path.clone()),
+                                    Some(format!(
                                         "rms property replay {}",
                                         shell_quote(path)
                                     )),
-                                });
+                                ));
                             } else {
                                 report.status = "invalid".to_string();
                                 report.diagnostic = Some(format!(
@@ -1198,7 +1498,162 @@ fn execute_lane(
     report
         .metrics
         .insert("executed".to_string(), JsonValue::Bool(true));
+    enrich_lane_findings(&report, lane_root(lane), &mut findings);
     Ok((report, findings))
+}
+
+fn enrich_lane_findings(report: &HuntLaneReport, root: &Path, findings: &mut [HuntFinding]) {
+    for finding in findings {
+        if finding.module.is_empty() {
+            finding.module = report.module.clone();
+        }
+        if finding.property.is_none() {
+            finding.property = report.property.clone();
+        }
+        if let Some(artifact) = finding.artifact.as_deref() {
+            let path = if Path::new(artifact).is_absolute() {
+                PathBuf::from(artifact)
+            } else {
+                root.join(artifact)
+            };
+            if let Ok(value) = load_yaml_or_json(&path) {
+                finding.check = finding
+                    .check
+                    .take()
+                    .or_else(|| get_str(&value, &["failure", "check"]).map(ToString::to_string))
+                    .or_else(|| {
+                        get_str(&value, &["counterexample", "failure", "check"])
+                            .map(ToString::to_string)
+                    });
+                finding.first_bad_transition = finding
+                    .first_bad_transition
+                    .take()
+                    .or_else(|| first_bad_transition(&value));
+            }
+        }
+        if finding.id.is_empty() {
+            finding.id = stable_finding_id(finding);
+        }
+        finding.occurrences = finding.occurrences.max(1);
+    }
+}
+
+fn first_bad_transition(value: &YamlValue) -> Option<String> {
+    for path in [
+        &["trace", "timeline"][..],
+        &["evidence_trace", "timeline"][..],
+        &["timeline"][..],
+    ] {
+        if let Some(timeline) = get_path(value, path).and_then(YamlValue::as_sequence) {
+            if let Some(case) = timeline
+                .iter()
+                .rev()
+                .find_map(|entry| get_str(entry, &["transition_case"]))
+            {
+                return Some(case.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn stable_finding_id(finding: &HuntFinding) -> String {
+    let property = finding.property.as_deref().unwrap_or("unscoped");
+    let identity = serde_json::json!({
+        "module": finding.module,
+        "property": property,
+        "kind": finding.kind,
+        "check": finding.check,
+        "first_bad_transition_fallback": if finding.check.is_none() {
+            finding.first_bad_transition.as_deref()
+        } else {
+            None
+        },
+        "lane_fallback": (finding.check.is_none() && finding.first_bad_transition.is_none())
+            .then_some(finding.lane.as_str()),
+    });
+    let digest = sha256_bytes(&serde_json::to_vec(&identity).unwrap_or_default());
+    format!(
+        "{}/{}/{}",
+        sanitize_segment(if finding.module.is_empty() {
+            "unknown"
+        } else {
+            &finding.module
+        }),
+        sanitize_segment(property),
+        &digest[..12]
+    )
+}
+
+fn normalize_report_findings(report: &mut HuntReport) {
+    let lanes = report
+        .lanes
+        .iter()
+        .map(|lane| (lane.id.as_str(), lane))
+        .collect::<BTreeMap<_, _>>();
+    for finding in &mut report.findings {
+        if let Some(lane) = lanes.get(finding.lane.as_str()) {
+            if finding.module.is_empty() {
+                finding.module = lane.module.clone();
+            }
+            if finding.property.is_none() {
+                finding.property = lane.property.clone();
+            }
+        }
+        if finding.id.is_empty() {
+            finding.id = stable_finding_id(finding);
+        }
+        finding.occurrences = finding.occurrences.max(1);
+    }
+
+    let mut grouped = BTreeMap::<String, HuntFinding>::new();
+    for finding in std::mem::take(&mut report.findings) {
+        let cost = finding_replay_cost(&finding);
+        match grouped.entry(finding.id.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(finding);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let existing = entry.get_mut();
+                let occurrences = existing.occurrences.saturating_add(finding.occurrences);
+                if cost < finding_replay_cost(existing) {
+                    let mut replacement = finding;
+                    replacement.occurrences = occurrences;
+                    *existing = replacement;
+                } else {
+                    existing.occurrences = occurrences;
+                }
+            }
+        }
+    }
+    report.findings = grouped.into_values().collect();
+    report.findings.sort_by(|left, right| {
+        left.module
+            .cmp(&right.module)
+            .then(left.property.cmp(&right.property))
+            .then(left.kind.cmp(&right.kind))
+            .then(left.first_bad_transition.cmp(&right.first_bad_transition))
+            .then(left.id.cmp(&right.id))
+    });
+}
+
+fn finding_replay_cost(finding: &HuntFinding) -> usize {
+    let Some(path) = finding.artifact.as_deref() else {
+        return usize::MAX;
+    };
+    load_yaml_or_json(Path::new(path))
+        .ok()
+        .and_then(|value| {
+            get_path(&value, &["decisions"])
+                .and_then(YamlValue::as_sequence)
+                .map(Vec::len)
+                .or_else(|| {
+                    get_path(&value, &["trace", "timeline"])
+                        .and_then(YamlValue::as_sequence)
+                        .map(Vec::len)
+                })
+        })
+        .unwrap_or(usize::MAX)
 }
 
 fn behavioral_finding(kind: &str) -> bool {
@@ -1241,7 +1696,9 @@ fn replay_property_analysis(
 
 fn lane_root(lane: &HuntLane) -> &Path {
     match &lane.execution {
-        LaneExecution::Rms { root, .. } | LaneExecution::Project { root, .. } => root,
+        LaneExecution::Rms { root, .. }
+        | LaneExecution::Project { root, .. }
+        | LaneExecution::GuidedProbe { root, .. } => root,
     }
 }
 
@@ -1279,6 +1736,7 @@ fn finish_report(
     out: Option<&Path>,
     report: &HuntReport,
 ) -> Result<()> {
+    write_report(&run_root.join("checkpoint.yaml"), report)?;
     write_report(&run_root.join("report.yaml"), report)?;
     if let Some(out) = out {
         let output = if out.is_absolute() {
@@ -1336,6 +1794,10 @@ fn proof_scope(lanes: &[HuntLaneReport]) -> HuntProofScope {
             unsupported_lanes.push(lane.id.clone());
         } else if lane.status == "pass"
             && matches!(lane.metrics.get("exhausted"), Some(JsonValue::Bool(true)))
+            && matches!(
+                lane.strategy.as_str(),
+                "deterministic-exhaustive" | "finite-model-analysis" | "probe-search"
+            )
         {
             exhausted_lanes.push(lane.id.clone());
         } else if matches!(lane.metrics.get("executed"), Some(JsonValue::Bool(true))) {
@@ -1375,38 +1837,76 @@ fn print_report(report: &HuntReport, json_output: bool) -> Result<()> {
         println!("RMS hunt: {}", report.result);
         println!("run: {}", report.run_id);
         println!("source: {}", report.source.revision);
-        println!(
-            "lanes: {} ({} finding(s))",
-            report.lanes.len(),
-            report.findings.len()
-        );
-        for lane in &report.lanes {
+        if report.lanes.iter().all(|lane| lane.status == "planned") {
+            let strategies = report
+                .lanes
+                .iter()
+                .map(|lane| lane.strategy.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let properties = report
+                .lanes
+                .iter()
+                .filter_map(|lane| lane.property.as_deref())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("will vary: {strategies}");
             println!(
-                "  - {} [{}] {} ({} ms)",
-                lane.id, lane.strategy, lane.status, lane.elapsed_ms
+                "will check: {}",
+                if properties.is_empty() {
+                    "declared baselines, assembly checks, and relationships"
+                } else {
+                    &properties
+                }
             );
-        }
-        for finding in &report.findings {
             println!(
-                "  finding [{}] {}: {}",
-                finding.kind, finding.lane, finding.summary
+                "limits: {}s total, seed {}, {} worker(s); guided exploration remains bounded evidence",
+                report.configuration.budget_seconds,
+                report.configuration.seed,
+                report.configuration.jobs
             );
-            if let Some(replay) = &finding.replay {
-                println!("    replay: {replay}");
+            let guided_lanes = report
+                .lanes
+                .iter()
+                .filter(|lane| lane.strategy == "guided-semantic-novelty-v1")
+                .count();
+            println!("guided lanes: {guided_lanes}");
+            if guided_lanes == 0 {
+                println!(
+                    "guided setup: declare properties[].explorations[].assembly on the selected implementation"
+                );
             }
         }
+        println!("findings: {} unique", report.findings.len());
+        for (index, finding) in report.findings.iter().enumerate() {
+            println!("  {}. {} [{}]", index + 1, finding.summary, finding.id);
+            if let Some(property) = &finding.property {
+                println!("     property: {property}");
+            }
+            if let Some(case) = &finding.first_bad_transition {
+                println!("     first bad transition: {case}");
+            }
+            if finding.occurrences > 1 {
+                println!("     occurrences: {}", finding.occurrences);
+            }
+            if let Some(replay) = &finding.replay {
+                println!("     replay: {replay}");
+            }
+        }
+        println!("lanes: {}", report.lanes.len());
         println!("claim: {}", report.proof_scope.claim);
     }
     Ok(())
 }
 
-fn resolve_run(
+fn load_resume_report(
     hunts_root: &Path,
     resume: Option<&str>,
-    requested_seed: Option<u64>,
-    revision: &str,
-    declaration_digest: &str,
-) -> Result<(String, u64, Option<HuntReport>)> {
+) -> Result<Option<(String, HuntReport)>> {
     if let Some(resume) = resume {
         let run_id = if resume == "latest" {
             let mut directories = fs::read_dir(hunts_root)?
@@ -1423,32 +1923,37 @@ fn resolve_run(
         };
         let checkpoint = hunts_root.join(&run_id).join("checkpoint.yaml");
         let report: HuntReport = serde_yaml::from_str(&fs::read_to_string(&checkpoint)?)?;
-        if report.source.revision != revision
-            || report.source.declaration_digest != declaration_digest
-        {
-            bail!("hunt resume rejected source or declaration drift");
-        }
-        if requested_seed.is_some_and(|seed| seed != report.configuration.seed) {
-            bail!("hunt resume rejected seed drift");
-        }
-        return Ok((run_id, report.configuration.seed, Some(report)));
+        return Ok(Some((run_id, report)));
     }
-    let seed = requested_seed.unwrap_or_else(|| {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64
-            ^ std::process::id() as u64
-    });
-    let run_id = format!(
-        "{}-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-        &revision[..revision.len().min(12)]
-    );
-    Ok((run_id, seed, None))
+    Ok(None)
+}
+
+fn validate_resume(
+    report: &HuntReport,
+    requested_seed: Option<u64>,
+    revision: &str,
+    declaration_digest: &str,
+) -> Result<()> {
+    if report.source.revision != revision || report.source.declaration_digest != declaration_digest
+    {
+        bail!("hunt resume rejected source or declaration drift");
+    }
+    if requested_seed.is_some_and(|seed| seed != report.configuration.seed) {
+        bail!("hunt resume rejected seed drift");
+    }
+    Ok(())
+}
+
+fn generate_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+        ^ std::process::id() as u64
+}
+
+fn new_run_id(revision: &str) -> String {
+    format!("{}-{}", now_ms(), &revision[..revision.len().min(12)])
 }
 
 fn ensure_resume_tool_identities(
@@ -1475,7 +1980,11 @@ fn ensure_clean_commit(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn declaration_digest(root: &Path, selected_module: Option<&Path>) -> Result<String> {
+fn declaration_digest(
+    root: &Path,
+    selected_module: Option<&Path>,
+    selected_assembly: Option<&Path>,
+) -> Result<String> {
     let mut files = WalkDir::new(root)
         .max_depth(12)
         .follow_links(false)
@@ -1497,15 +2006,29 @@ fn declaration_digest(root: &Path, selected_module: Option<&Path>) -> Result<Str
         })
         .collect::<Vec<_>>();
     if let Some(module) = selected_module {
-        let selected = if module.is_absolute() {
-            module.to_path_buf()
-        } else {
-            root.join(module)
-        };
-        let selected_root = selected.parent().unwrap_or(root);
-        files.retain(|path| path.starts_with(selected_root));
+        let closure = selected_module_closure(root, module)?;
+        files.retain(|path| {
+            load_yaml_or_json(path)
+                .ok()
+                .and_then(|value| {
+                    get_str(&value, &["module", "name"])
+                        .or_else(|| get_str(&value, &["module"]))
+                        .map(ToString::to_string)
+                })
+                .is_some_and(|name| closure.contains(&name))
+        });
+        if files.is_empty() {
+            bail!(
+                "selected hunt module `{}` resolved to an empty declaration closure",
+                module.display()
+            );
+        }
+    }
+    if let Some(assembly) = selected_assembly {
+        files.push(root.join(assembly));
     }
     files.sort();
+    files.dedup();
     let mut bytes = Vec::new();
     for path in files {
         bytes.extend_from_slice(
@@ -1548,16 +2071,47 @@ fn remove_isolated_checkout(root: &Path, worktree: &Path) {
     }
 }
 
-fn relative_to_root(root: &Path, path: &Path) -> Result<PathBuf> {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
+fn resolve_hunt_file(root: &Path, path: &Path, kind: &str) -> Result<PathBuf> {
+    let mut candidates = Vec::new();
+    if path.is_absolute() {
+        candidates.push(path.to_path_buf());
     } else {
-        root.join(path)
-    };
+        candidates.push(root.join(path));
+        if let Ok(repository) = git_output(root, &["rev-parse", "--show-toplevel"]) {
+            let repository_candidate = PathBuf::from(repository).join(path);
+            if !candidates.contains(&repository_candidate) {
+                candidates.push(repository_candidate);
+            }
+        }
+        if let Ok(current) = std::env::current_dir() {
+            let current_candidate = current.join(path);
+            if !candidates.contains(&current_candidate) {
+                candidates.push(current_candidate);
+            }
+        }
+    }
+    let absolute = candidates
+        .iter()
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            anyhow!(
+                "hunt {kind} `{}` was not found relative to the hunt root, repository root, or current directory",
+                path.display()
+            )
+        })?
+        .canonicalize()?;
     absolute
         .strip_prefix(root)
         .map(Path::to_path_buf)
-        .map_err(|_| anyhow!("module must be inside the hunt root"))
+        .map_err(|_| anyhow!("hunt {kind} must be inside the hunt root"))
+}
+
+fn absolute_output_path(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
 }
 
 fn git_output(root: &Path, arguments: &[&str]) -> Result<String> {
@@ -1630,10 +2184,15 @@ fn write_report(path: &Path, report: &HuntReport) -> Result<()> {
     }
     validate_schema(
         &serde_yaml::to_value(report)?,
-        include_str!("../../../../schemas/hunt-report.schema.json"),
+        include_str!("../../../../schemas/hunt-report-v0.2.schema.json"),
         "hunt report",
     )?;
-    fs::write(path, serde_yaml::to_string(report)?)?;
+    let contents = if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+        format!("{}\n", serde_json::to_string_pretty(report)?)
+    } else {
+        serde_yaml::to_string(report)?
+    };
+    fs::write(path, contents)?;
     Ok(())
 }
 
@@ -1712,6 +2271,46 @@ mod tests {
     }
 
     #[test]
+    fn selected_module_paths_are_root_or_current_directory_relative_and_digest_real_files() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root")
+            .canonicalize()
+            .unwrap();
+        let root = repository.join("examples/tic-tac-toe");
+        let root_relative = Path::new("modules/tic-tac-toe-cli/module.yaml");
+        let repository_relative =
+            Path::new("examples/tic-tac-toe/modules/tic-tac-toe-cli/module.yaml");
+        let first = resolve_hunt_file(&root, root_relative, "module").unwrap();
+        let second = resolve_hunt_file(&root, repository_relative, "module").unwrap();
+        assert_eq!(first, root_relative);
+        assert_eq!(second, root_relative);
+        assert_ne!(
+            declaration_digest(&root, Some(&first), None).unwrap(),
+            sha256_bytes(&[])
+        );
+    }
+
+    #[test]
+    fn direct_probe_assembly_plans_one_guided_lane_and_hashes_the_assembly() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root")
+            .canonicalize()
+            .unwrap();
+        let assembly = Path::new("examples/probes/public-rust-workload-failures.yaml");
+        let lane = discover_direct_assembly_lane(&repository, &repository, assembly, 30).unwrap();
+        assert_eq!(lane.report.strategy, "guided-semantic-novelty-v1");
+        assert_eq!(lane.report.status, "planned");
+        assert_ne!(
+            declaration_digest(&repository, None, Some(assembly)).unwrap(),
+            sha256_bytes(&[])
+        );
+    }
+
+    #[test]
     fn hunt_outcomes_distinguish_bugs_gaps_and_bounds() {
         let mut report = HuntReport {
             spec: REPORT_SPEC.to_string(),
@@ -1727,6 +2326,8 @@ mod tests {
                 seed: 1,
                 jobs: 1,
                 module: None,
+                assembly: None,
+                output: None,
                 tools: BTreeMap::new(),
             },
             lanes: vec![lane_report(
@@ -1746,13 +2347,13 @@ mod tests {
         };
         report.lanes[0].status = "pass".to_string();
         assert_eq!(hunt_result(&report), "clean-under-recorded-bounds");
-        report.findings.push(HuntFinding {
-            lane: "lane".to_string(),
-            kind: "surviving-mutant".to_string(),
-            summary: "oracle missed mutation".to_string(),
-            artifact: None,
-            replay: None,
-        });
+        report.findings.push(HuntFinding::raw(
+            "lane".to_string(),
+            "surviving-mutant".to_string(),
+            "oracle missed mutation".to_string(),
+            None,
+            None,
+        ));
         assert_eq!(hunt_result(&report), "proof-gaps-found");
         report.findings[0].kind = "crash".to_string();
         assert_eq!(hunt_result(&report), "bugs-found");
@@ -1794,6 +2395,103 @@ mod tests {
         assert_eq!(phase_parallelism(1, 4), 4);
         assert_eq!(phase_parallelism(2, 4), 1);
         assert_eq!(phase_parallelism(6, 4), 1);
+
+        let mut guided = lane_report(
+            "guided".to_string(),
+            "module",
+            None,
+            "probe-exploration",
+            "guided-semantic-novelty-v1",
+            10,
+            "internal".to_string(),
+            None,
+        );
+        guided.status = "pass".to_string();
+        guided
+            .metrics
+            .insert("executed".to_string(), JsonValue::Bool(true));
+        guided
+            .metrics
+            .insert("exhausted".to_string(), JsonValue::Bool(true));
+        let scope = proof_scope(&[guided]);
+        assert!(scope.exhausted_lanes.is_empty());
+        assert_eq!(scope.bounded_lanes, vec!["guided"]);
+    }
+
+    #[test]
+    fn v2_findings_have_stable_ids_and_deduplicate_to_the_shortest_replay() {
+        let root = std::env::temp_dir().join(format!(
+            "rms-hunt-finding-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let long = root.join("long.yaml");
+        let short = root.join("short.yaml");
+        fs::write(&long, "decisions: [{}, {}, {}]\n").unwrap();
+        fs::write(&short, "decisions: [{}]\n").unwrap();
+        let lane = lane_report(
+            "lane-a".to_string(),
+            "orders",
+            Some("never-lose-order".to_string()),
+            "probe-exploration",
+            "guided-semantic-novelty-v1",
+            1,
+            "internal".to_string(),
+            None,
+        );
+        let mut second_lane = lane.clone();
+        second_lane.id = "lane-b".to_string();
+        let mut first = HuntFinding::raw(
+            "lane-a".to_string(),
+            "behavioral-counterexample".to_string(),
+            "failed".to_string(),
+            Some(long.display().to_string()),
+            Some("replay long".to_string()),
+        );
+        first.check = Some("order-completes".to_string());
+        let mut second = first.clone();
+        second.lane = "lane-b".to_string();
+        second.artifact = Some(short.display().to_string());
+        second.replay = Some("replay short".to_string());
+        let mut report = HuntReport {
+            spec: REPORT_SPEC.to_string(),
+            run_id: "stable".to_string(),
+            result: "bugs-found".to_string(),
+            source: HuntSource {
+                revision: "git:test".to_string(),
+                declaration_digest: "sha256:test".to_string(),
+                root: ".".to_string(),
+            },
+            configuration: HuntConfiguration {
+                budget_seconds: 1,
+                seed: 1,
+                jobs: 1,
+                module: None,
+                assembly: None,
+                output: None,
+                tools: BTreeMap::new(),
+            },
+            lanes: vec![lane, second_lane],
+            findings: vec![first, second],
+            proof_scope: empty_scope(),
+            started_at_unix_ms: 0,
+            finished_at_unix_ms: Some(1),
+        };
+        normalize_report_findings(&mut report);
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].occurrences, 2);
+        assert_eq!(report.findings[0].replay.as_deref(), Some("replay short"));
+        assert!(report.findings[0]
+            .id
+            .starts_with("orders/never-lose-order/"));
+        validate_schema(
+            &serde_yaml::to_value(&report).unwrap(),
+            include_str!("../../../../schemas/hunt-report-v0.2.schema.json"),
+            "hunt report v0.2",
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1888,6 +2586,8 @@ finished_at_unix_ms: null
                 seed: 7,
                 jobs: 1,
                 module: None,
+                assembly: None,
+                output: None,
                 tools: tools.clone(),
             },
             lanes: Vec::new(),
@@ -1898,21 +2598,20 @@ finished_at_unix_ms: null
         };
         write_report(&run.join("checkpoint.yaml"), &report).unwrap();
 
-        assert!(resolve_run(&hunts, Some("run-1"), Some(7), "revision", "declarations").is_ok());
+        let (_, loaded) = load_resume_report(&hunts, Some("run-1"))
+            .unwrap()
+            .expect("resume report");
+        assert!(validate_resume(&loaded, Some(7), "revision", "declarations").is_ok());
+        assert!(validate_resume(&loaded, None, "changed", "declarations")
+            .unwrap_err()
+            .to_string()
+            .contains("source or declaration drift"));
+        assert!(validate_resume(&loaded, None, "revision", "changed")
+            .unwrap_err()
+            .to_string()
+            .contains("source or declaration drift"));
         assert!(
-            resolve_run(&hunts, Some("run-1"), None, "changed", "declarations")
-                .unwrap_err()
-                .to_string()
-                .contains("source or declaration drift")
-        );
-        assert!(
-            resolve_run(&hunts, Some("run-1"), None, "revision", "changed")
-                .unwrap_err()
-                .to_string()
-                .contains("source or declaration drift")
-        );
-        assert!(
-            resolve_run(&hunts, Some("run-1"), Some(8), "revision", "declarations")
+            validate_resume(&loaded, Some(8), "revision", "declarations")
                 .unwrap_err()
                 .to_string()
                 .contains("seed drift")

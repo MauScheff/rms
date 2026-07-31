@@ -906,7 +906,7 @@ architecture:
     - id: hunt-outcomes-preserve-proof-scope
       proves: proof-first-hunts-are-bounded-and-replayable
       kind: property
-      input_space: Passing, finding, inconclusive, invalid, unsupported, exhausted, fuzz, coverage, and mutation lane results.
+      input_space: Passing, finding, inconclusive, invalid, unsupported, exhausted, guided, fuzz, coverage, mutation, duplicate, and multi-failure lane results.
       preconditions:
       - Every behavioral finding supplies a replay recipe.
       operation: Classify lane results, findings, and recorded exhaustion into the closed hunt outcome and proof-scope vocabularies.
@@ -914,7 +914,9 @@ architecture:
       - behavioral failures become bugs only after replay
       - surviving mutants and inadequate coverage become proof gaps
       - open-ended success remains clean only under recorded bounds
-      - finite proof scope names only lanes that record exhaustion
+      - finite proof scope names only explicitly exhaustive lanes that record exhaustion
+      - guided exploration never enters finite proof scope
+      - semantic duplicates share a stable ID and retain the shortest replay with an occurrence count
       evidence:
         path: verification/properties/hunt_orchestration.md
       counterexamples:
@@ -924,6 +926,14 @@ architecture:
         strategy: deterministic-corpus
         command: properties
         runner: src/hunt.rs#hunt_outcomes_distinguish_bugs_gaps_and_bounds
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: properties
+        runner: src/hunt.rs#v2_findings_have_stable_ids_and_deduplicate_to_the_shortest_replay
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: properties
+        runner: src/probe/mod.rs#guided_exploration_is_seeded_and_keeps_distinct_replayable_findings
   messages:
     command_envelope:
     - command_id
@@ -2243,8 +2253,10 @@ semantic_functions:
     - probe runners exchange temporary request and output files through the declared protocol
     - probe traces are validated against canonical transition cases before expectations are reported
     - assembly routing is derived only from canonical protocol bindings and dependency probe bridges
+    - v0.2 workloads derive only exact schema-valid public command examples and record normalized inputs for replay
     - bounded breadth-first exploration is deterministic and pass means the reachable bounded space was exhausted
     - failures are minimized without changing the exact failing check and retain replayable schedule and fault decisions
+    - human replay leads with the finding and exit meaning while JSON retains the complete trace
   evidence:
     contracts:
     - verification/contracts/probe_machine.md
@@ -2590,9 +2602,12 @@ semantic_functions:
     - the source checkout is clean and committed
     ensures:
     - project lanes execute only in the isolated checkout
-    - checkpoints bind source declarations tool identities and seed
-    - behavioral findings are retained only after replay
-    - the report distinguishes finite exhaustion from bounded empirical evidence
+    - module and assembly paths normalize against the hunt root repository root or current directory before hashing the real selected declaration closure
+    - checkpoints bind source declarations tool identities seed and the exact module or assembly budget worker and output configuration
+    - resume restores omitted configuration rejects explicit drift returns finalized reports unchanged and finalizes both checkpoint and extension-aware output
+    - behavioral findings are retained only after targeted replay and semantic duplicates retain the shortest replay
+    - guided exploration continues after failures but never contributes finite proof scope
+    - the v0.2 report distinguishes finite exhaustion from bounded empirical evidence while v0.1 remains readable
   evidence:
     contracts:
     - verification/contracts/hunt_rms_system.md
@@ -2983,7 +2998,7 @@ semantic_functions:
     - verification/laws/canonical_mutations_require_route_receipts.md
 x-rms:
   semantic_revision:
-    digest: sha256:c1432cb515ff97cd70d468fa5e8032f22e0735543e7d5be9e00f0625348b564b
-    change_record: verification/changes/add-proof-first-resumable-bug-hunts.yaml
+    digest: sha256:1d5a1c7736c6b89cb97c3ae3e827170cbd2240c72887e915e09a44a67b61f530
+    change_record: verification/changes/harden-guided-hunt-adoption-paths-resume-and-replay.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:694f6a6826d2870157636273ee4a0e7d0fe542e47a1adc8b9c70dc3dd7b5b0ee
+    change_record_digest: sha256:fb7e152df56f41a47c3e27ba7ff15cd5a41fba43ab2f88d15c8cc267f2395354

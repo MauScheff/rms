@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added finding-first guided hunts over declared probe assemblies: seeded semantic-novelty scheduling, continued search after failures, up to eight distinct targeted-replay counterexamples, stable deduplicated `rms/hunt-report/v0.2` findings, and bounded-evidence-only proof semantics.
+- Added optional `rms/probe-assembly/v0.2` public-example workloads with per-action budgets and exact recorded input replay; v0.1 assemblies and hunt reports remain readable.
+- Added direct `rms hunt --assembly` dogfood, root/repository-relative target resolution, declaration-closure digests, configuration-faithful and finalized-report-immutable resume, finalized checkpoints, extension-aware report output, build-revision version provenance, progress lines, clarified frontier metrics, and finding-first human replay summaries.
 - Added deterministic bounded multi-module probing with canonical protocol/dependency routing, virtual-time scheduling, explicit transport faults and substitutes, batched v0.2 adapters with v0.1 fallback, minimized replayable counterexamples, canonical regression execution, and plain Lawbook causal timelines.
 - Added maintainer understandability laws, state-space review, comprehension evidence, and staged self-hosting guidance; made public workflow actions and ownership resolution construction-safe internally while preserving `rms.surface/v2`.
 - Added first-class inspectable Python implementation bindings with `pyproject.toml` packaging, role-separated source, `unittest` proof runners, probes, traces, properties, native tree-sitter inspection, dependency allowlists, capability composition, examples, CI, and release-gate coverage.

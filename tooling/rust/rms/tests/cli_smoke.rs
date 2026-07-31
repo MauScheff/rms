@@ -17,10 +17,9 @@ fn cli_version_flag_uses_package_version() {
         "rms --version failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        String::from_utf8(output.stdout).expect("UTF-8 version output"),
-        format!("rms {}\n", env!("CARGO_PKG_VERSION"))
-    );
+    let version = String::from_utf8(output.stdout).expect("UTF-8 version output");
+    assert!(version.starts_with(&format!("rms {} (revision ", env!("CARGO_PKG_VERSION"))));
+    assert!(version.ends_with(")\n"));
 }
 
 fn repository_root() -> PathBuf {
@@ -82,7 +81,7 @@ fn probe_counterexample_exit_codes_distinguish_reproduced_and_invalid() {
 
     let failure = run_probe(&[
         "--file",
-        "examples/probes/series-faults.yaml",
+        "examples/probes/repeated-rust-failure.yaml",
         "--explore",
         "--out",
         &counterexample_arg,
@@ -98,6 +97,14 @@ fn probe_counterexample_exit_codes_distinguish_reproduced_and_invalid() {
     assert_eq!(replay.status.code(), Some(1));
     let replay: Value = serde_json::from_slice(&replay.stdout).expect("replay report JSON");
     assert_eq!(replay["result"], "reproduced");
+
+    let human_replay = run_probe(&["--replay", &counterexample_arg]);
+    assert_eq!(human_replay.status.code(), Some(1));
+    let human_replay = String::from_utf8(human_replay.stdout).expect("human replay UTF-8");
+    assert!(human_replay.starts_with("RMS probe replay: reproduced\ncheck: "));
+    assert!(human_replay.contains("first bad transition: "));
+    assert!(human_replay.contains("exit: 1 (the recorded failure reproduced)"));
+    assert!(human_replay.contains("full trace: "));
 
     let invalid = run_probe(&["--replay", "examples/probes/series.yaml", "--json"]);
     assert_eq!(invalid.status.code(), Some(2));
@@ -250,7 +257,18 @@ printf '%s\n' \
     let first = Command::new(env!("CARGO_BIN_EXE_rms"))
         .current_dir(&root)
         .args([
-            "hunt", "--root", ".", "--budget", "10s", "--seed", "17", "--jobs", "2", "--json",
+            "hunt",
+            "--root",
+            ".",
+            "--budget",
+            "10s",
+            "--seed",
+            "17",
+            "--jobs",
+            "2",
+            "--out",
+            ".rms/export.json",
+            "--json",
         ])
         .output()
         .expect("run hunt");
@@ -260,17 +278,25 @@ printf '%s\n' \
         String::from_utf8_lossy(&first.stderr)
     );
     let report: Value = serde_json::from_slice(&first.stdout).expect("hunt report JSON");
-    assert_eq!(report["spec"], "rms/hunt-report/v0.1");
+    assert_eq!(report["spec"], "rms/hunt-report/v0.2");
     assert_eq!(report["result"], "clean-under-recorded-bounds");
     assert_eq!(report["configuration"]["seed"], 17);
+    assert_eq!(report["configuration"]["budget_seconds"], 10);
+    assert_eq!(report["configuration"]["jobs"], 2);
+    assert!(report["configuration"]["output"]
+        .as_str()
+        .is_some_and(|path| path.ends_with("/.rms/export.json")));
     assert_eq!(report["lanes"][0]["status"], "pass");
     assert_eq!(report["lanes"][0]["metrics"]["mutants"], 1);
+    let exported: Value = serde_json::from_slice(
+        &fs::read(root.join(".rms/export.json")).expect("read exported JSON report"),
+    )
+    .expect("exported report is JSON");
+    assert_eq!(exported["run_id"], report["run_id"]);
 
     let resumed = Command::new(env!("CARGO_BIN_EXE_rms"))
         .current_dir(&root)
-        .args([
-            "hunt", "--root", ".", "--budget", "10s", "--resume", "latest", "--json",
-        ])
+        .args(["hunt", "--root", ".", "--resume", "latest", "--json"])
         .output()
         .expect("resume hunt");
     assert!(
@@ -282,6 +308,31 @@ printf '%s\n' \
         serde_json::from_slice(&resumed.stdout).expect("resumed hunt report JSON");
     assert_eq!(resumed_report["run_id"], report["run_id"]);
     assert_eq!(resumed_report["result"], "clean-under-recorded-bounds");
+    assert_eq!(resumed_report["configuration"], report["configuration"]);
+    assert_eq!(
+        resumed_report["finished_at_unix_ms"], report["finished_at_unix_ms"],
+        "resuming a finalized run must not rewrite its provenance timestamp"
+    );
+    let checkpoint: Value = serde_yaml::from_slice(
+        &fs::read(
+            root.join(".rms/hunts")
+                .join(report["run_id"].as_str().expect("run id"))
+                .join("checkpoint.yaml"),
+        )
+        .expect("read finalized checkpoint"),
+    )
+    .expect("finalized checkpoint YAML");
+    assert_eq!(checkpoint["result"], "clean-under-recorded-bounds");
+    assert!(checkpoint["finished_at_unix_ms"].is_number());
+    let drifted = Command::new(env!("CARGO_BIN_EXE_rms"))
+        .current_dir(&root)
+        .args([
+            "hunt", "--root", ".", "--resume", "latest", "--budget", "11s",
+        ])
+        .output()
+        .expect("reject changed resume configuration");
+    assert!(!drifted.status.success());
+    assert!(String::from_utf8_lossy(&drifted.stderr).contains("budget configuration drift"));
     assert!(!root.join("checkout").exists());
     assert!(
         Command::new("git")

@@ -1,0 +1,115 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/add-guided-finding-first-hunts-and-public-example-workloads.yaml
+intent:
+  summary: Make guided hunts directly runnable, path-safe, configuration-faithful on resume, and finding-first on replay.
+laws: null
+contracts:
+  add: []
+  set:
+  - name: hunt-rms-system
+    kind: command
+    direction: provided
+    version: '1'
+    meaning: Run a checkpointed, reproducible campaign of risk-derived strong verification lanes without confusing bounded evidence with a global proof.
+    accepts:
+    - A clean committed RMS project, an optional selected module closure or direct probe assembly, a positive wall-clock budget, and available declared tools.
+    - Nightly runners honor the recorded seed and budget and write rms/hunt-lane-result/v0.1 to RMS_HUNT_OUTPUT.
+    ensures:
+    - Execution occurs in an isolated checkout at the recorded source revision and leaves the caller's tracked source unchanged.
+    - Historical failures, smoke proof, real traces, bounded proof lanes, seeded semantic-novelty probe exploration, probe relationships, generated cases, fuzzers, and mutation lanes run in deterministic phase order within the total budget.
+    - Checkpoints bind the real selected declaration closure, source, tool identities, seed, module or assembly, budget, workers, and output; compatible runs restore that exact configuration without repeating completed lanes, explicit changes are rejected, and finalized reports return without rewriting provenance.
+    - Every behavioral finding has a successful targeted replay, and the finalized checkpoint plus rms/hunt-report/v0.2 record stable semantic finding IDs, occurrence counts, the shortest retained replay, exact commands, bounds, metrics, artifacts, output format, and proof scope while v0.1 reports remain readable.
+    - Only explicitly exhaustive finite strategies are classified as proof; guided exploration, fuzzing, and time-bounded work remain bounded evidence even when their frontier is exhausted.
+    rejects:
+    - Dirty source, invalid declarations, unavailable tools, incompatible resume state, malformed lane results, non-replayable findings, or orchestration failure.
+    protocol: null
+  - name: probe-machine
+    kind: command
+    direction: provided
+    version: '2'
+    meaning: Execute one or more bounded module instances through their declared pure transition-record paths, explore canonical message schedules and declared faults, and report a deterministic replayable timeline.
+    accepts:
+    - The target is one inspectable Rust, Swift, JavaScript, or Python implementation, or an rms/probe-assembly/v0.1 or v0.2 containing such instances.
+    - Each command, observed event, or effect result names a declared input and supplies schema-valid payload data.
+    - Multi-module routes are resolved from canonical protocol bindings, dependency probe bridges, explicit instance selections, and explicit substitutes; the assembly cannot invent semantic transformations or private inputs.
+    ensures:
+    - Every step calls the exact transition-record function and the next step receives the preceding state_after.
+    - Single-machine results are validated trace bundles; assembly results are rms/probe-system-trace/v0.1 timelines with source, causation, correlation, idempotency, routing, fault, check, bound, and coverage data.
+    - Probing never invokes a machine driver or real effect executor; ordinary deterministic execution is stable and breadth-first exploration returns pass only after exhausting the declared bounded state space.
+    - No project artifact is written unless the caller supplies --out.
+    - Every discovered failure is reduced to a deterministic rms/probe-counterexample/v0.1 whose exact schedule and fault decisions replay as reproduced, resolved, or invalid; human replay leads with the failed check, first bad transition when available, source drift, exit meaning, and a copyable full-trace command.
+    - Probe artifacts are ephemeral unless canonical verification explicitly references them, at which point assemblies must exhaust successfully and counterexamples must replay as resolved.
+    - A v0.2 public-input-examples workload injects only exact schema-valid public command examples within the per-action budget and records each normalized input for deterministic replay.
+    rejects:
+    - Ambiguous or incompatible wiring, invalid protocol data, unsafe bindings, runner failure, timeout, nonconforming output, a failed law, a reproduced or invalid canonical counterexample, or inconclusive bounded exploration.
+    protocol: null
+  remove: []
+properties: null
+semantic_functions:
+  add: []
+  set:
+  - id: probe-machine-command
+    symbol: run_probe
+    kind: adapter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/probe-machine.v2.yaml
+      invariants:
+      - diagnostics-are-evidence-not-authority
+      - machine-probes-are-pure-and-ephemeral
+      - trace-records-conform-to-canonical-transitions
+    assumptions:
+      ensures:
+      - probe runners exchange temporary request and output files through the declared protocol
+      - probe traces are validated against canonical transition cases before expectations are reported
+      - assembly routing is derived only from canonical protocol bindings and dependency probe bridges
+      - v0.2 workloads derive only exact schema-valid public command examples and record normalized inputs for replay
+      - bounded breadth-first exploration is deterministic and pass means the reachable bounded space was exhausted
+      - failures are minimized without changing the exact failing check and retain replayable schedule and fault decisions
+      - human replay leads with the finding and exit meaning while JSON retains the complete trace
+    evidence:
+      contracts:
+      - verification/contracts/probe_machine.md
+  - id: hunt-rms-system-command
+    symbol: src/hunt.rs#run
+    kind: interpreter
+    purity: effectful
+    discharges:
+      contracts:
+      - contracts/hunt-rms-system.v1.yaml
+      invariants:
+      - proof-first-hunts-are-bounded-and-replayable
+    assumptions:
+      requires:
+      - the source checkout is clean and committed
+      ensures:
+      - project lanes execute only in the isolated checkout
+      - module and assembly paths normalize against the hunt root repository root or current directory before hashing the real selected declaration closure
+      - checkpoints bind source declarations tool identities seed and the exact module or assembly budget worker and output configuration
+      - resume restores omitted configuration rejects explicit drift returns finalized reports unchanged and finalizes both checkpoint and extension-aware output
+      - behavioral findings are retained only after targeted replay and semantic duplicates retain the shortest replay
+      - guided exploration continues after failures but never contributes finite proof scope
+      - the v0.2 report distinguishes finite exhaustion from bounded empirical evidence while v0.1 remains readable
+    evidence:
+      contracts:
+      - verification/contracts/hunt_rms_system.md
+      laws:
+      - verification/laws/proof_first_hunts_are_bounded_and_replayable.md
+      properties:
+      - verification/properties/hunt_orchestration.md
+  remove: []
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

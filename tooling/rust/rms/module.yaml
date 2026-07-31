@@ -269,7 +269,7 @@ invariants:
   enforced_by: check-runnable-surface-command
   verified_by: verification/contracts/check_runnable_surface.md
 - id: proof-first-hunts-are-bounded-and-replayable
-  statement: Strong verification lanes are derived from declared risk, unattended execution is isolated and resumable, behavioral findings replay, and bounded empirical evidence is never promoted to a global proof.
+  statement: Strong verification lanes are derived from declared risk, unattended execution is isolated and resumable, guided exploration retains distinct stable targeted-replay findings, and bounded empirical evidence is never promoted to a global proof.
   authority: effect-executor
   enforced_by: hunt-rms-system-command
   verified_by: verification/laws/proof_first_hunts_are_bounded_and_replayable.md
@@ -887,12 +887,12 @@ x-rms:
     scope: rms-self-development
     semantic_revision_authority: repository maintainer seal
     evidence: verification/laws/rms_self_application_boundary.md
-  last_semantic_intent: Add risk-derived strong verification obligations and a checkpointed, resumable RMS bug hunt whose findings are minimized, replayable, and honest about proof scope.
+  last_semantic_intent: Make guided hunts directly runnable, path-safe, configuration-faithful on resume, and finding-first on replay.
   semantic_revision:
-    digest: sha256:c1432cb515ff97cd70d468fa5e8032f22e0735543e7d5be9e00f0625348b564b
-    change_record: verification/changes/add-proof-first-resumable-bug-hunts.yaml
+    digest: sha256:1d5a1c7736c6b89cb97c3ae3e827170cbd2240c72887e915e09a44a67b61f530
+    change_record: verification/changes/harden-guided-hunt-adoption-paths-resume-and-replay.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:694f6a6826d2870157636273ee4a0e7d0fe542e47a1adc8b9c70dc3dd7b5b0ee
+    change_record_digest: sha256:fb7e152df56f41a47c3e27ba7ff15cd5a41fba43ab2f88d15c8cc267f2395354
 properties:
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-authorized-revision
@@ -1738,7 +1738,7 @@ properties:
 - id: hunt-outcomes-preserve-proof-scope
   proves: proof-first-hunts-are-bounded-and-replayable
   kind: property
-  input_space: Passing, finding, inconclusive, invalid, unsupported, exhausted, fuzz, coverage, and mutation lane results.
+  input_space: Passing, finding, inconclusive, invalid, unsupported, exhausted, guided, fuzz, coverage, mutation, duplicate, and multi-failure lane results.
   preconditions:
   - Every behavioral finding supplies a replay recipe.
   operation: Classify lane results, findings, and recorded exhaustion into the closed hunt outcome and proof-scope vocabularies.
@@ -1746,7 +1746,9 @@ properties:
   - behavioral failures become bugs only after replay
   - surviving mutants and inadequate coverage become proof gaps
   - open-ended success remains clean only under recorded bounds
-  - finite proof scope names only lanes that record exhaustion
+  - finite proof scope names only explicitly exhaustive lanes that record exhaustion
+  - guided exploration never enters finite proof scope
+  - semantic duplicates share a stable ID and retain the shortest replay with an occurrence count
   evidence:
     path: verification/properties/hunt_orchestration.md
   counterexamples:
@@ -1756,6 +1758,14 @@ properties:
     strategy: deterministic-corpus
     command: properties
     runner: src/hunt.rs#hunt_outcomes_distinguish_bugs_gaps_and_bounds
+  - profile: smoke
+    strategy: deterministic-corpus
+    command: properties
+    runner: src/hunt.rs#v2_findings_have_stable_ids_and_deduplicate_to_the_shortest_replay
+  - profile: smoke
+    strategy: deterministic-corpus
+    command: properties
+    runner: src/probe/mod.rs#guided_exploration_is_seeded_and_keeps_distinct_replayable_findings
 fuzz_targets:
 - id: rms-cli-malformed-artifacts-produce-diagnostics
   proves: canonical-artifacts-remain-authoritative

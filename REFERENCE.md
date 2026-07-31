@@ -93,9 +93,21 @@ It resolves the nearest `implementation.yaml`, or the only supported implementat
 
 Inline probes may assert `--expect-final-state` and `--expect-final-case`. Scenario files may assert per-step cases and outputs plus whole-run state and case paths, with recursive object-subset matching and exact ordered array/scalar matching. Normal runs write nothing; `--out` explicitly preserves the validated trace.
 
-An `rms/probe-assembly/v0.1` file composes any bounded set of instances through canonical dependency bridges and protocol bindings. Its scheduler is deterministic and virtual: exploration branches only across causally valid same-time deliveries, declared substitute outcomes, and explicitly enabled delay, duplicate, drop, or timeout faults. Checks run after microsteps and at quiescence or bounded deadlines. Passing exploration means the bounded reachable space was exhausted; reaching any bound is `inconclusive`, never `pass`.
+An `rms/probe-assembly/v0.1` or `v0.2` file composes any bounded set of instances through canonical dependency bridges and protocol bindings. Its scheduler is deterministic and virtual: exploration branches only across causally valid same-time deliveries, declared substitute outcomes, and explicitly enabled delay, duplicate, drop, or timeout faults. Checks run after microsteps and at quiescence or bounded deadlines. Passing exhaustive exploration means the bounded reachable space was exhausted; reaching any bound is `inconclusive`, never `pass`.
 
-A failure writes one minimized `rms/probe-counterexample/v0.1` only when `--out` is supplied. Replay exits `0` when resolved, `1` when reproduced, and `2` when invalid or no longer executable. Assemblies remain ephemeral diagnostics until canonical verification references them; referenced assemblies must exhaust successfully, and referenced counterexamples must replay as resolved.
+v0.2 optionally derives a small workload from public machine-input examples:
+
+```yaml
+workload:
+  source: public-input-examples
+  budget_per_action: 3
+```
+
+Only public command bindings with exact, schema-valid probe examples are eligible. Workload injections coexist with stimuli, schedules, substitutes, and faults; the normalized input is stored in every decision so replay never regenerates or guesses it.
+
+The committed `examples/probes/public-rust-workload-failures.yaml` provides a small intentionally failing guided-hunt path for learning and dogfood. Run it with `rms hunt --root . --assembly examples/probes/public-rust-workload-failures.yaml --budget 30s`. It is demonstration evidence, not a production claim.
+
+A failure writes one minimized `rms/probe-counterexample/v0.1` only when `--out` is supplied. Human replay output leads with the result, failed check, first bad transition, source drift, exit meaning, and a copyable `--json` command for the full trace. Replay exits `0` when resolved, `1` when the failure reproduced, and `2` when invalid or no longer executable. Assemblies remain ephemeral diagnostics until canonical verification references them; referenced assemblies must exhaust successfully, and referenced counterexamples must replay as resolved.
 
 ### Typed actions
 
@@ -352,12 +364,13 @@ Risk determines the strong lane: generated or exhaustive checks for pure and num
 ```text
 rms hunt --root . --dry-run
 rms hunt --root . --budget 8h [--seed NUMBER] [--jobs NUMBER]
+rms hunt --root . --assembly examples/probes/public-rust-workload-failures.yaml --budget 30s
 rms hunt --root . --resume latest
 ```
 
-The hunt requires a clean commit and runs project tools in an isolated checkout. It checkpoints under ignored `.rms/hunts/<run-id>/`, passes `RMS_HUNT_RUN_ID`, `RMS_HUNT_SEED`, `RMS_HUNT_BUDGET_SECONDS`, and `RMS_HUNT_OUTPUT` to nightly runners, and validates their `rms/hunt-lane-result/v0.1` output. Retain a canonical `rms/hunt-report/v0.1` only with `--out`.
+The hunt requires a clean commit and runs project tools in an isolated checkout. `--module` and `--assembly` accept paths relative to `--root`, the Git repository root, or the caller's current directory. `--assembly` selects one assembly directly and runs only its guided semantic-novelty lane. The hunt checkpoints under ignored `.rms/hunts/<run-id>/`, passes `RMS_HUNT_RUN_ID`, `RMS_HUNT_SEED`, `RMS_HUNT_BUDGET_SECONDS`, and `RMS_HUNT_OUTPUT` to nightly runners, and validates their `rms/hunt-lane-result/v0.1` output. Resume restores the recorded module or assembly, budget, worker count, seed, and output path; explicitly changing one is rejected as configuration drift, and resuming an already finalized report is read-only so its finish timestamp remains immutable. For each declared probe assembly it runs a seeded semantic-novelty policy that favors new check outcomes, transition cases, states, routes, and faults, continues after failures, and retains up to eight distinct replayable counterexamples. `search_frontier_exhausted` describes the guided scheduler only; `proof_model_exhausted` remains false because guided evidence never becomes finite proof. Retain a canonical `rms/hunt-report/v0.2` only with `--out`; `.json` outputs contain JSON, other paths contain YAML, and readers continue to accept v0.1. `rms --version` includes the build revision so same-package binaries remain distinguishable.
 
-Outcomes are `bugs-found`, `proof-gaps-found`, `clean-under-recorded-bounds`, `inconclusive`, `invalid`, or `unsupported`. Surviving mutants and weak coverage are proof gaps. Only recorded exhaustion can support a finite proof; completed fuzz budgets remain bounded evidence.
+Outcomes are `bugs-found`, `proof-gaps-found`, `clean-under-recorded-bounds`, `inconclusive`, `invalid`, or `unsupported`. Surviving mutants and weak coverage are proof gaps. v0.2 findings have stable semantic IDs, occurrence counts, their property/check and first bad transition when available, and the shortest retained replay. Only explicitly exhaustive strategies can support a finite proof; guided and completed fuzz budgets remain bounded evidence.
 
 The project completion order is:
 

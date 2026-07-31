@@ -179,7 +179,9 @@ rms probe --replay verification/probes/checkout-failure.yaml
 
 Probe adapters accept commands, observed events, and effect results, chain returned state, and validate the resulting trace against the canonical machine. v0.2 adapters can evaluate independent frontier cases in one process while v0.1 remains a one-transition fallback.
 
-A probe assembly is an ephemeral development laboratory for a bounded slice of instances. RMS resolves only canonical protocol mappings and dependency probe bridges, schedules virtual deliveries deterministically, branches over declared outcomes and transport faults, checks laws after each microstep, and emits a minimal replayable counterexample. It is not an application runtime or a general model checker. Assemblies do not satisfy evidence obligations unless canonical verification explicitly references and reruns them.
+A probe assembly is an ephemeral development laboratory for a bounded slice of instances. RMS resolves only canonical protocol mappings and dependency probe bridges, schedules virtual deliveries deterministically, branches over declared outcomes and transport faults, checks laws after each microstep, and emits a minimal replayable counterexample. `rms/probe-assembly/v0.2` may add `workload: {source: public-input-examples, budget_per_action: N}`; RMS then injects each exact, validated public command example up to that budget, with every injection recorded for exact replay. It is not an application runtime or a general model checker. Assemblies do not satisfy evidence obligations unless canonical verification explicitly references and reruns them.
+
+`rms hunt` automatically adds a seeded semantic-novelty lane for declared probe assemblies. It favors new check outcomes, transition cases, states, routes, and faults; continues after a failure; and retains up to eight distinct replayable findings. Guided exhaustion is always reported as bounded evidence, never finite proof.
 
 ## 4. Language-Binding Interface
 
