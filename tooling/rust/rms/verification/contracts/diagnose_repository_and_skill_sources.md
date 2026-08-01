@@ -19,6 +19,7 @@ Command/tool:
 ```bash
 cargo test --manifest-path tooling/rust/rms/Cargo.toml --locked diagnose_reports_repository_profile_and_detected_skill_summary -- --nocapture
 cargo test --manifest-path tooling/rust/rms/Cargo.toml --locked skill_sources_distinguish_equivalent_divergent_stale_and_configured_origins -- --nocapture
+cargo test --manifest-path tooling/rust/rms/Cargo.toml --locked codex_readiness_checks_the_effective_model_without_silently_selecting_one -- --nocapture
 ```
 
 Acceptance oracle:
@@ -28,6 +29,7 @@ Acceptance oracle:
 - Identical digests are informational; divergent managed copies are `review-required` and prescribe the applicable project-sync or plugin-sync remedy.
 - Plugin configured state is derived from observable marketplace/configuration data, not cache presence alone. Cache versions have stable current/stale classification.
 - An absent home or optional source location yields an explicit absent/unavailable observation rather than a fabricated active source.
+- Configured Codex readiness names the effective model and its source, rejects a model absent from the installed binary's bundled catalog, and recommends an upgrade or an explicit project model pin without silently selecting either path.
 - No output field claims runtime activation or resolves host precedence.
 
 Verification status: this file declares the deterministic proof protocol and does not assert an observed pass. Source provenance and executed results are resolved from the authorized candidate commit by `rms audit --root . --strict`.

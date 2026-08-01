@@ -340,7 +340,7 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
         return print_report(final_report, request.json);
     }
     let run_root = hunts_root.join(&run_id);
-    fs::create_dir_all(&run_root)?;
+    prepare_run_storage(&run_root)?;
     let started_at_unix_ms = prior
         .as_ref()
         .map(|report| report.started_at_unix_ms)
@@ -547,6 +547,15 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
         bail!("RMS hunt {}", report.result);
     }
     Ok(())
+}
+
+fn prepare_run_storage(run_root: &Path) -> Result<()> {
+    fs::create_dir_all(run_root.join("analyses")).with_context(|| {
+        format!(
+            "failed to prepare hunt run storage `{}`",
+            run_root.display()
+        )
+    })
 }
 
 fn discover_direct_assembly_lane(
@@ -2559,6 +2568,19 @@ finished_at_unix_ms: null
         .unwrap();
         assert!(!output.status.success());
         assert!(replay_succeeded(&output));
+    }
+
+    #[test]
+    fn hunt_run_storage_prepares_analysis_output_parent() {
+        let root = std::env::temp_dir().join(format!(
+            "rms-hunt-storage-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        prepare_run_storage(&root).unwrap();
+        assert!(root.join("analyses").is_dir());
+        fs::write(root.join("analyses/property.yaml"), "result: pass\n").unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

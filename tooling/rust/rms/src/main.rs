@@ -3300,7 +3300,11 @@ struct MachineChange {
     spec: String,
     #[serde(default)]
     module: Option<String>,
+    #[serde(default)]
+    commands: Option<MachineCommandBindingsChange>,
     machine: MachineChangeMachine,
+    #[serde(default)]
+    probe: Option<MachineProbeChange>,
     #[serde(default)]
     transitions: Option<MachineTransitionsChange>,
     #[serde(default)]
@@ -3311,6 +3315,8 @@ struct MachineChange {
 #[serde(deny_unknown_fields)]
 struct MachineChangeMachine {
     mode: String,
+    #[serde(default)]
+    initial_state: Option<String>,
     #[serde(default)]
     justification: Option<String>,
     #[serde(default)]
@@ -3341,6 +3347,33 @@ struct MachineChangeMachine {
     effect_protocols: MachineEffectProtocolsChange,
     #[serde(default)]
     resource_protocols: MachineResourceProtocolsChange,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MachineCommandBindingsChange {
+    #[serde(default)]
+    probe: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MachineProbeChange {
+    protocol: String,
+    command: String,
+    runner: String,
+    #[serde(default)]
+    initial_state_function: Option<String>,
+    #[serde(default)]
+    mappers: Vec<MachineProbeMapperChange>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MachineProbeMapperChange {
+    id: String,
+    command: String,
+    runner: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -10159,6 +10192,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
         .count();
 
     let config = diagnose_config(root);
+    let codex_readiness = codex_provider_readiness(&config);
     let run_records = diagnose_run_records(root, &config.run_directory);
     let detected_skill_sources = detect_skill_sources(root, home_dir().ok().as_deref());
 
@@ -10219,10 +10253,7 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
             command_readiness("cargo", &["--version"]),
             command_readiness("swift", &["--version"]),
         ],
-        ai_providers: vec![
-            codex_structured_output_readiness(),
-            command_readiness("claude", &["--version"]),
-        ],
+        ai_providers: vec![codex_readiness, command_readiness("claude", &["--version"])],
         run_records,
         guidance,
     })
@@ -15780,6 +15811,7 @@ fn proof_command_selects_runner(command: &str, runner: &str, environment: &str) 
         || command.contains(&format!("${{{environment}}}"))
         || command.contains(&format!("${{{environment}"))
         || command.contains(&format!("process.env.{environment}"))
+        || command.contains(&format!("tests/rms_proof_runner.py {environment}"))
 }
 
 fn executable_property_targets(target: &Path) -> Result<Vec<PropertyTargetReport>> {
@@ -17570,12 +17602,43 @@ fn swift_binding_symbol_exists(source: &str, symbol: &str) -> bool {
     if swift_function_signature(source, symbol).is_some() {
         return true;
     }
+    if let Some((owner, member)) = symbol.rsplit_once('.') {
+        for declaration in ["struct", "enum", "class", "actor", "protocol"] {
+            if swift_declaration_body(source, declaration, owner)
+                .is_some_and(|body| swift_static_member_exists(body, member))
+            {
+                return true;
+            }
+        }
+    }
     source.lines().any(|line| {
         let line = line.trim_start();
         ["struct", "enum", "class", "protocol", "actor"]
             .iter()
             .any(|kind| parse_swift_declaration_name(line, kind).as_deref() == Some(symbol))
             || parse_swift_public_typealias(line).is_some_and(|(name, _)| name == symbol)
+    })
+}
+
+fn swift_static_member_exists(body: &str, member: &str) -> bool {
+    body.lines().any(|line| {
+        let declaration = line.trim_start();
+        let is_type_member = declaration
+            .split_whitespace()
+            .take_while(|token| !matches!(*token, "let" | "var" | "func"))
+            .any(|token| matches!(token, "static" | "class"));
+        if !is_type_member {
+            return false;
+        }
+        let declaration = strip_swift_modifiers(declaration);
+        let declaration = declaration.strip_prefix("class ").unwrap_or(declaration);
+        let name = declaration
+            .strip_prefix("let ")
+            .or_else(|| declaration.strip_prefix("var "))
+            .and_then(swift_identifier)
+            .map(str::to_string)
+            .or_else(|| parse_swift_function_name(declaration));
+        name.as_deref() == Some(member)
     })
 }
 
@@ -23293,10 +23356,12 @@ fn current_machine_change_for_validation(manifest: &LoadedManifest) -> Option<Ma
     Some(MachineChange {
         spec: "rms/machine-change/v0.1".to_string(),
         module: Some(manifest.path.display().to_string()),
+        commands: None,
         machine: MachineChangeMachine {
             mode: mode.to_string(),
             ..MachineChangeMachine::default()
         },
+        probe: None,
         transitions: None,
         roles: None,
     })
@@ -34198,9 +34263,21 @@ fn build_project_check_report(root: &Path) -> Result<CheckReport> {
 
 fn build_environment_check_report(root: &Path) -> Result<CheckReport> {
     let diagnosis = build_diagnose_report(root)?;
+    Ok(environment_check_report_from_diagnosis(root, diagnosis))
+}
+
+fn environment_check_report_from_diagnosis(root: &Path, diagnosis: DiagnoseReport) -> CheckReport {
+    let configured_codex = diagnosis.config.default_provider.as_deref() == Some("codex");
+    let codex_readiness = diagnosis
+        .ai_providers
+        .iter()
+        .find(|provider| provider.command == "codex");
+    let codex_blocked =
+        configured_codex && codex_readiness.is_some_and(|provider| provider.status != "available");
     let result = if diagnosis.validation.status == "fail"
         || diagnosis.config.status == "invalid"
         || diagnosis.run_records.status == "not-directory"
+        || codex_blocked
     {
         CheckResult::Fail
     } else if diagnosis.validation.status == "review-required"
@@ -34245,13 +34322,21 @@ fn build_environment_check_report(root: &Path) -> Result<CheckReport> {
     ) {
         warnings.push("The detected Codex plugin cache includes stale RMS skills.".to_string());
     }
+    if codex_blocked {
+        let provider = codex_readiness.expect("blocked Codex readiness is present");
+        warnings.push(format!(
+            "Configured Codex provider is {}: {}",
+            provider.status,
+            provider.detail.as_deref().unwrap_or("no detail available")
+        ));
+    }
     let reasons = vec![format!(
         "{}: {} ({})",
         component.id, component.result, component.summary
     )];
     let next_action = check_follow_up(root, CheckMode::Environment, result);
     let details = json!({ "diagnosis": diagnosis });
-    Ok(CheckReport {
+    CheckReport {
         mode: CheckMode::Environment,
         result,
         summary: check_summary(CheckMode::Environment, result),
@@ -34259,13 +34344,14 @@ fn build_environment_check_report(root: &Path) -> Result<CheckReport> {
         warnings,
         next_action,
         done_when: vec![
-            "Repository, configuration, and detected skill-source diagnosis all pass.".to_string(),
+            "Repository, configuration, configured provider/model, and detected skill-source diagnosis all pass."
+                .to_string(),
         ],
         components: vec![component],
         coverage: Default::default(),
         proof: Default::default(),
         details,
-    })
+    }
 }
 
 fn build_changes_check_report(root: &Path) -> Result<CheckReport> {
@@ -34631,6 +34717,8 @@ fn build_next_report_with_intent(
         )
     };
     let mut context = build_next_context(&root, &profile.report, owner.selected_module())?;
+    let legacy_machine_migration =
+        legacy_machine_migration_ready(&root, explicit_module, &validation.diagnostics, &owner);
     let skill_sources = detect_skill_sources(&root, home_dir().ok().as_deref());
     let mut warnings = if classification.lane == TaskLane::RepositoryOperation {
         Vec::new()
@@ -34653,20 +34741,30 @@ fn build_next_report_with_intent(
             skill_sources.review_required
         ));
     }
+    if legacy_machine_migration {
+        warnings.push(
+            "The explicitly selected implementation has only recognized pre-rc.8 machine probe/initial-state omissions; this ready route authorizes machine-apply only. Apply and validate that canonical migration, then rerun `rms next` for the product change."
+                .to_string(),
+        );
+    }
     warnings.sort();
     warnings.dedup();
 
-    let mut blockers = validation
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == Severity::Error)
-        .map(|diagnostic| {
-            format!(
-                "{} [{}]: {}",
-                diagnostic.path, diagnostic.check, diagnostic.message
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut blockers = if legacy_machine_migration {
+        Vec::new()
+    } else {
+        validation
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .map(|diagnostic| {
+                format!(
+                    "{} [{}]: {}",
+                    diagnostic.path, diagnostic.check, diagnostic.message
+                )
+            })
+            .collect::<Vec<_>>()
+    };
     if owner.status() == OwnerStatus::Invalid {
         blockers.push(owner.reason.clone());
     }
@@ -34682,7 +34780,9 @@ fn build_next_report_with_intent(
         .diagnostics
         .iter()
         .any(|item| item.check == "intent.material-unknown");
-    let result = if model_required {
+    let result = if legacy_machine_migration {
+        NextResult::Ready
+    } else if model_required {
         NextResult::IntentRequired
     } else if !blockers.is_empty() {
         NextResult::Blocked
@@ -34714,6 +34814,7 @@ fn build_next_report_with_intent(
         &classification,
         &owner,
         &context,
+        legacy_machine_migration,
     )?;
     let prepares_candidate = classification.lane.prepares_candidate()
         || matches!(
@@ -34768,7 +34869,9 @@ fn build_next_report_with_intent(
         serde_json::to_string_pretty(&extraction_diagnostics)?,
     )?;
     let mut allowed_actions = Vec::new();
-    if result == NextResult::Ready {
+    if legacy_machine_migration {
+        allowed_actions.push("machine-apply");
+    } else if result == NextResult::Ready {
         match classification.lane {
             TaskLane::Semantic => {
                 allowed_actions.extend(["spec-apply", "machine-apply"]);
@@ -34840,6 +34943,64 @@ fn normalize_provider_change_scope_for_explicit_module(model: &mut IntentModel) 
         true
     } else {
         false
+    }
+}
+
+fn legacy_machine_migration_ready(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    diagnostics: &[Diagnostic],
+    owner: &OwnerResolution,
+) -> bool {
+    let Some(explicit_module) = explicit_module else {
+        return false;
+    };
+    let requested = if explicit_module.is_absolute() {
+        explicit_module.to_path_buf()
+    } else {
+        root.join(explicit_module)
+    };
+    let Ok(requested) = fs::canonicalize(requested) else {
+        return false;
+    };
+    let Some(selected) = owner.selected_module() else {
+        return false;
+    };
+    if fs::canonicalize(&selected.path).ok().as_deref() != Some(requested.as_path()) {
+        return false;
+    }
+    let Some(base) = requested.parent() else {
+        return false;
+    };
+    let implementation = base.join("implementation.yaml");
+    let Ok(implementation) = fs::canonicalize(implementation) else {
+        return false;
+    };
+    let errors = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .collect::<Vec<_>>();
+    !errors.is_empty()
+        && errors.iter().all(|diagnostic| {
+            Path::new(&diagnostic.path) == implementation
+                && recognized_legacy_machine_migration_diagnostic(diagnostic)
+        })
+}
+
+fn recognized_legacy_machine_migration_diagnostic(diagnostic: &Diagnostic) -> bool {
+    match diagnostic.check.as_str() {
+        "schema.validate" => matches!(
+            diagnostic.message.as_str(),
+            "\"initial_state\" is a required property at `/architecture/machine`"
+                | "\"probe\" is a required property at `/architecture`"
+                | "\"probe\" is a required property at `/commands`"
+                | "\"probe_adapter\" is a required property at `/architecture/roles`"
+        ),
+        "structure.probe-binding-missing" => diagnostic.message
+            == "inspectable Rust, Swift, JavaScript, and Python machines must declare `architecture.probe`",
+        "structure.probe-initial-state-missing" => diagnostic.message
+            == "inspectable Rust, Swift, JavaScript, and Python machines must declare `architecture.machine.initial_state`",
+        _ => false,
     }
 }
 
@@ -35711,6 +35872,7 @@ fn build_next_steps(
     classification: &TaskClassification,
     owner: &OwnerResolution,
     context: &NextContext,
+    legacy_machine_migration: bool,
 ) -> Result<Vec<NextStepGroup>> {
     let cwd = Some(root.display().to_string());
     if matches!(
@@ -35878,7 +36040,31 @@ fn build_next_steps(
             .implementation
             .clone()
             .unwrap_or_else(|| selected.path.clone());
-        match classification.lane {
+        if legacy_machine_migration {
+            declare.push(executable_next_step(
+                "Plan the focused legacy machine-binding migration",
+                "rms",
+                vec![
+                    "machine".to_string(),
+                    "plan".to_string(),
+                    semantic_target.clone(),
+                    "--root".to_string(),
+                    root.display().to_string(),
+                    "--task".to_string(),
+                    task.to_string(),
+                ],
+                cwd.clone(),
+            ));
+            declare.push(manual_next_step(
+                "Apply the reviewed machine-change with `rms machine apply ... --dry-run --route-receipt <RUN_ID>`, apply it with the same receipt, and pass normal machine and structure validation. This receipt authorizes no other mutation.",
+                None,
+            ));
+            implement.push(manual_next_step(
+                "After the canonical migration validates, rerun `rms next` for the original product change and use the newly issued route; this migration receipt grants no source-edit authority.",
+                None,
+            ));
+        } else {
+            match classification.lane {
             TaskLane::ReadOnly => declare.push(manual_next_step(
                 "This is a read-only lane; do not apply semantic or source changes.",
                 None,
@@ -35934,11 +36120,14 @@ fn build_next_steps(
                 ],
                 cwd.clone(),
             )),
+            }
         }
-        if !matches!(
-            classification.lane,
-            TaskLane::ReadOnly | TaskLane::RepositoryOperation | TaskLane::Design
-        ) {
+        if !legacy_machine_migration
+            && !matches!(
+                classification.lane,
+                TaskLane::ReadOnly | TaskLane::RepositoryOperation | TaskLane::Design
+            )
+        {
             implement.push(executable_next_step(
                 "Render bounded implementation guidance for the selected owner",
                 "rms",
@@ -43397,6 +43586,7 @@ fn render_machine_plan_prompt(
         "module: {}",
         yaml_quote(&implementation.path.display().to_string())
     )?;
+    writeln!(out, "commands: null")?;
     writeln!(out, "machine:")?;
     writeln!(
         out,
@@ -43415,6 +43605,16 @@ fn render_machine_plan_prompt(
             .transition_signature
             .as_deref()
             .unwrap_or("state-and-input")
+    )?;
+    writeln!(
+        out,
+        "  initial_state: {}",
+        get_str(
+            &implementation.value,
+            &["architecture", "machine", "initial_state"],
+        )
+        .map(yaml_quote)
+        .unwrap_or_else(|| "null".to_string())
     )?;
     writeln!(
         out,
@@ -43515,6 +43715,7 @@ fn render_machine_plan_prompt(
     writeln!(out, "    set: null")?;
     writeln!(out, "    add: []")?;
     writeln!(out, "    remove: []")?;
+    writeln!(out, "probe: null")?;
     writeln!(out, "transitions:")?;
     writeln!(out, "  set: null")?;
     writeln!(out, "  add: []")?;
@@ -43528,6 +43729,7 @@ fn render_machine_plan_prompt(
     writeln!(out, "For each variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "Transition items use `from`, `on`, `to`, stable `case`, optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every semantic branch has its own case, including multiple destinations or outputs for the same state and input.")?;
     writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effect-protocol removal items use `effect`. Resource-protocol items declare `resource`, `ownership`, closed `states`, `initial_state`, `terminal_states`, and acquire/use/release/transfer transitions; removal items use `resource`. Role removal items use `kind` and optional `path`.")?;
+    writeln!(out, "Legacy inspectable bindings missing rc.8 probe declarations are repaired in this same machine change: set `commands: {{ probe: <binding-native command> }}`, set `machine.initial_state` to one declared state, set `probe` with `protocol`, `command: probe`, `runner: path#symbol`, and `initial_state_function: path#symbol` for state-and-input machines, and add the exact runner path as `roles.add[].kind: probe_adapter`. Omit `commands` and `probe` only when those declarations already exist and are not changing.")?;
     writeln!(out, "Role items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`. A role with `kind: effect_executor` must include the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. Shared IO mechanics used by multiple executors use `kind: effect_support`; they cannot own state progression, transitions, drivers, or public/runnable behavior. Effectful stateful machines declare one `machine_driver` role, set `machine.driver_function` to its exact callable, and set `machine.transition_record_function` to the exact pure record constructor used by that driver. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; atomicity applies to that exact protocol. Machine apply binds each executor as an effectful `effect-executor` semantic function. Aggregate protocols use `atomicity: aggregate` plus `aggregate_justification` and evidence.")?;
     writeln!(out, "Run `rms machine apply ... --dry-run` first and do not edit source while `final_machine` still contains scaffold-generic variants instead of the intended product cases.")?;
     writeln!(out)?;
@@ -43685,6 +43887,8 @@ fn validate_machine_change(manifest: &LoadedManifest, change: &MachineChange) ->
         ));
     }
 
+    validate_machine_probe_migration(manifest, change, &mut diagnostics);
+
     validate_machine_variant_additions(manifest, change, &mut diagnostics);
     validate_machine_transition_references(manifest, change, &mut diagnostics);
     validate_machine_signature_and_types(manifest, change, &mut diagnostics);
@@ -43693,6 +43897,101 @@ fn validate_machine_change(manifest: &LoadedManifest, change: &MachineChange) ->
     validate_machine_role_additions(manifest, change, &mut diagnostics);
     validate_machine_mode_obligations(manifest, change, &mut diagnostics);
     diagnostics
+}
+
+fn validate_machine_probe_migration(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let states = final_machine_variants(manifest, "states", &change.machine.states, true);
+    if let Some(initial_state) = change.machine.initial_state.as_deref() {
+        if !is_stable_identifier(initial_state) || !states.contains(initial_state) {
+            diagnostics.push(error(
+                "machine-change.initial-state",
+                &manifest.path,
+                format!(
+                    "machine.initial_state `{initial_state}` must name one final declared state"
+                ),
+            ));
+        }
+    }
+    if let Some(command) = change
+        .commands
+        .as_ref()
+        .and_then(|commands| commands.probe.as_deref())
+    {
+        if command.trim().is_empty() {
+            diagnostics.push(error(
+                "machine-change.probe-command",
+                &manifest.path,
+                "commands.probe must be nonblank",
+            ));
+        }
+    }
+    let Some(probe) = change.probe.as_ref() else {
+        return;
+    };
+    if !matches!(
+        probe.protocol.as_str(),
+        "rms/machine-probe/v0.1" | "rms/machine-probe/v0.2"
+    ) {
+        diagnostics.push(error(
+            "machine-change.probe-protocol",
+            &manifest.path,
+            format!("unsupported machine probe protocol `{}`", probe.protocol),
+        ));
+    }
+    if probe.command != "probe" {
+        diagnostics.push(error(
+            "machine-change.probe-command",
+            &manifest.path,
+            "architecture.probe.command must reference commands.probe",
+        ));
+    }
+    if !safe_machine_symbol_reference(&probe.runner) {
+        diagnostics.push(error(
+            "machine-change.probe-runner",
+            &manifest.path,
+            "architecture.probe.runner must be a safe relative path#symbol reference",
+        ));
+    }
+    if change.machine.transition_signature.as_deref().or_else(|| {
+        get_str(
+            &manifest.value,
+            &["architecture", "machine", "transition_signature"],
+        )
+    }) == Some("state-and-input")
+        && probe
+            .initial_state_function
+            .as_deref()
+            .is_none_or(|symbol| !safe_machine_symbol_reference(symbol))
+    {
+        diagnostics.push(error(
+            "machine-change.probe-initial-state-function",
+            &manifest.path,
+            "state-and-input probes must declare a safe relative initial_state_function path#symbol",
+        ));
+    }
+    for mapper in &probe.mappers {
+        if !is_stable_semantic_id(&mapper.id)
+            || mapper.command.trim().is_empty()
+            || !safe_machine_symbol_reference(&mapper.runner)
+        {
+            diagnostics.push(error(
+                "machine-change.probe-mapper",
+                &manifest.path,
+                format!("probe mapper `{}` is not a closed declaration", mapper.id),
+            ));
+        }
+    }
+}
+
+fn safe_machine_symbol_reference(value: &str) -> bool {
+    let Some((path, symbol)) = value.split_once('#') else {
+        return false;
+    };
+    !symbol.trim().is_empty() && !symbol.contains('#') && is_safe_relative_artifact_path(path)
 }
 
 fn validate_machine_variant_additions(
@@ -43951,13 +44250,19 @@ fn validate_machine_transition_references(
     if is_stateful_machine_mode(&change.machine.mode) {
         let ordered_states =
             final_machine_variant_values(manifest, "states", &change.machine.states, true);
-        if let Some(initial) = get_str(
-            &manifest.value,
-            &["architecture", "machine", "initial_state"],
-        )
-        .filter(|initial| states.contains(*initial))
-        .map(ToString::to_string)
-        .or_else(|| ordered_states.first().cloned())
+        if let Some(initial) = change
+            .machine
+            .initial_state
+            .as_deref()
+            .or_else(|| {
+                get_str(
+                    &manifest.value,
+                    &["architecture", "machine", "initial_state"],
+                )
+            })
+            .filter(|initial| states.contains(*initial))
+            .map(ToString::to_string)
+            .or_else(|| ordered_states.first().cloned())
         {
             let mut reachable = BTreeSet::from([initial.clone()]);
             loop {
@@ -44685,13 +44990,19 @@ fn validate_machine_resource_protocols(
     let machine_states =
         final_machine_variant_values(manifest, "states", &change.machine.states, true);
     let machine_transitions = final_machine_transitions_without_diagnostics(manifest, change);
-    let initial_machine_state = get_str(
-        &manifest.value,
-        &["architecture", "machine", "initial_state"],
-    )
-    .filter(|state| machine_states.iter().any(|candidate| candidate == *state))
-    .map(str::to_string)
-    .or_else(|| machine_states.first().cloned());
+    let initial_machine_state = change
+        .machine
+        .initial_state
+        .as_deref()
+        .or_else(|| {
+            get_str(
+                &manifest.value,
+                &["architecture", "machine", "initial_state"],
+            )
+        })
+        .filter(|state| machine_states.iter().any(|candidate| candidate == *state))
+        .map(str::to_string)
+        .or_else(|| machine_states.first().cloned());
     let terminal_machine_states = machine_states
         .iter()
         .filter(|state| {
@@ -45280,6 +45591,25 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
         &["architecture", "machine", "mode"],
         &change.machine.mode,
     );
+    if let Some(initial_state) = change.machine.initial_state.as_deref() {
+        set_yaml_string_path(
+            value,
+            &["architecture", "machine", "initial_state"],
+            initial_state,
+        );
+    }
+    if let Some(probe_command) = change
+        .commands
+        .as_ref()
+        .and_then(|commands| commands.probe.as_deref())
+    {
+        set_yaml_string_path(value, &["commands", "probe"], probe_command);
+    }
+    if let Some(probe) = change.probe.as_ref() {
+        if let Ok(probe) = serde_yaml::to_value(probe) {
+            set_yaml_value_path(value, &["architecture", "probe"], probe);
+        }
+    }
     set_yaml_string_if_missing_path(value, &["architecture", "machine", "name"], &names.machine);
     remove_yaml_path(value, &["architecture", "machine", "state"]);
     let transition_signature = change
@@ -49170,6 +49500,20 @@ fn apply_binding_dependency_manifest(
             "allowed_external_modules",
             sanitize_swift_target_name,
         ),
+        Some("python") => {
+            realize_binding_dependency_metadata(
+                &mut implementation.value,
+                previous,
+                final_dependencies,
+                "allowed_local_packages",
+                sanitize_python_import_package,
+            );
+            realize_python_local_dependency_commands(
+                &mut implementation.value,
+                previous,
+                final_dependencies,
+            );
+        }
         Some("js" | "executable") => set_yaml_string_sequence_path(
             &mut implementation.value,
             &["dependencies", "local_modules"],
@@ -50476,7 +50820,7 @@ fn binding_reference_parts(reference: &str) -> Option<(&str, &str)> {
     (!path.trim().is_empty()
         && is_safe_relative_artifact_path(path.trim())
         && !symbol.trim().is_empty()
-        && is_stable_identifier(symbol.trim()))
+        && symbol.trim().split('.').all(is_stable_identifier))
     .then_some((path.trim(), symbol.trim()))
 }
 
@@ -51717,8 +52061,10 @@ fn semantic_machine_change_to_machine_change(
         module: implementation
             .map(|implementation| implementation.path.display().to_string())
             .or_else(|| change.module.clone()),
+        commands: None,
         machine: MachineChangeMachine {
             mode,
+            initial_state: None,
             justification: machine.justification.clone(),
             transition_signature: machine.transition_signature.clone(),
             driver_function: machine.driver_function.clone(),
@@ -51735,6 +52081,7 @@ fn semantic_machine_change_to_machine_change(
             effect_protocols: machine.effect_protocols.clone(),
             resource_protocols: machine.resource_protocols.clone(),
         },
+        probe: None,
         transitions: machine.transitions.clone(),
         roles: change.roles.clone(),
     })
@@ -53577,6 +53924,36 @@ fn semantic_invariant_has_evidence(
         return true;
     }
     semantic_module_has_evidence_for(module, id)
+        || semantic_function_has_evidence_for_invariant(module, invariant, id)
+}
+
+fn semantic_function_has_evidence_for_invariant(
+    module: &LoadedManifest,
+    invariant: &YamlValue,
+    id: &str,
+) -> bool {
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    let Ok(implementation) = load_manifest(&base.join("implementation.yaml")) else {
+        return false;
+    };
+    let enforced_by = get_str(invariant, &["enforced_by"]);
+    semantic_function_items(&implementation).is_some_and(|functions| {
+        functions.iter().any(|function| {
+            let discharges_invariant = get_string_array(function, &["discharges", "invariants"])
+                .iter()
+                .any(|invariant| invariant == id);
+            let is_declared_enforcer = enforced_by.is_some_and(|enforcer| {
+                get_str(function, &["id"]) == Some(enforcer)
+                    || get_str(function, &["symbol"]) == Some(enforcer)
+            });
+            (discharges_invariant || is_declared_enforcer)
+                && verification_reference_categories().any(|category| {
+                    get_string_array(function, &["evidence", category])
+                        .iter()
+                        .any(|reference| concrete_evidence_path_exists(&base.join(reference)))
+                })
+        })
+    })
 }
 
 fn get_declared_evidence_references(value: &YamlValue) -> Vec<String> {
@@ -59363,6 +59740,11 @@ impl BindingAdapter for PythonBindingAdapter {
             "allowed_local_packages",
             |name| sanitize_python_import_package(name),
         );
+        realize_python_local_dependency_commands(
+            &mut implementation.value,
+            previous,
+            final_dependencies,
+        );
         Ok(())
     }
 }
@@ -59532,6 +59914,43 @@ fn realize_binding_dependency_metadata(
         &["dependencies", allowlist_key],
         &dedup_preserve_order(allowlist),
     );
+}
+
+fn realize_python_local_dependency_commands(
+    value: &mut YamlValue,
+    previous: &[String],
+    final_dependencies: &[String],
+) {
+    let previous_prefix = python_local_dependency_command_prefix(previous);
+    let final_prefix = python_local_dependency_command_prefix(final_dependencies);
+    let Some(commands) = get_path_mut(value, &["commands"]).and_then(YamlValue::as_mapping_mut)
+    else {
+        return;
+    };
+    for command in commands.values_mut() {
+        let Some(source) = command.as_str() else {
+            continue;
+        };
+        let base = previous_prefix
+            .as_deref()
+            .and_then(|prefix| source.strip_prefix(prefix))
+            .unwrap_or(source);
+        *command = YamlValue::String(match &final_prefix {
+            Some(prefix) => format!("{prefix}{base}"),
+            None => base.to_string(),
+        });
+    }
+}
+
+fn python_local_dependency_command_prefix(dependencies: &[String]) -> Option<String> {
+    (!dependencies.is_empty()).then(|| {
+        let paths = dependencies
+            .iter()
+            .map(|dependency| format!("../{dependency}/src"))
+            .collect::<Vec<_>>()
+            .join(":");
+        format!("PYTHONPATH=\"{paths}${{PYTHONPATH:+:$PYTHONPATH}}\" ")
+    })
 }
 
 fn realize_rust_path_dependencies(
@@ -66042,7 +66461,8 @@ fn write_file_if_missing(path: &Path, contents: &str) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("failed to write `{}`", path.display()))
 }
 
-const INIT_GITIGNORE: &str = ".DS_Store\ntarget/\ndist/\n.rms/runs/\n.rms/cache/\n.rms/dogfood/\n";
+const INIT_GITIGNORE: &str =
+    ".DS_Store\ntarget/\ndist/\n.rms/runs/\n.rms/cache/\n.rms/hunts/\n.rms/dogfood/\n";
 const RMS_MANAGED_AGENTS_START: &str = "<!-- RMS managed guidance: begin -->";
 const RMS_MANAGED_AGENTS_END: &str = "<!-- RMS managed guidance: end -->";
 const INIT_ADOPTED_AGENTS_BLOCK: &str = include_str!("../assets/guidance/agents-adopted-block.md");
@@ -66054,6 +66474,7 @@ target/
 dist/
 .rms/runs/
 .rms/cache/
+.rms/hunts/
 .rms/dogfood/
 # RMS managed ignores: end
 "#;
@@ -66453,8 +66874,49 @@ fn command_readiness(command: &str, args: &[&str]) -> CommandReadiness {
     }
 }
 
-fn codex_structured_output_readiness() -> CommandReadiness {
-    match Command::new("codex").args(["exec", "--help"]).output() {
+fn codex_provider_readiness(config: &ConfigReadiness) -> CommandReadiness {
+    let user_model = codex_user_config_model();
+    codex_provider_readiness_with_program(config, Path::new("codex"), user_model.as_deref())
+}
+
+fn codex_user_config_model() -> Option<String> {
+    let codex_root = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home_dir().ok().map(|home| home.join(".codex")))?;
+    let source = fs::read_to_string(codex_root.join("config.toml")).ok()?;
+    let config: toml::Value = toml::from_str(&source).ok()?;
+    config.get("model")?.as_str().map(str::to_string)
+}
+
+fn codex_provider_readiness_with_program(
+    config: &ConfigReadiness,
+    program: &Path,
+    user_model: Option<&str>,
+) -> CommandReadiness {
+    let (effective_model, model_source) = match config.codex_model.as_deref() {
+        Some(model) => (Some(model), "RMS project config"),
+        None => match user_model {
+            Some(model) => (Some(model), "Codex user config"),
+            None => (None, "Codex provider default"),
+        },
+    };
+    let version = Command::new(program)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|output| {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            text.lines()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| line.trim().to_string())
+        })
+        .unwrap_or_else(|| "unknown Codex version".to_string());
+
+    match Command::new(program).args(["exec", "--help"]).output() {
         Ok(output) if output.status.success() => {
             let help = format!(
                 "{}{}",
@@ -66462,35 +66924,117 @@ fn codex_structured_output_readiness() -> CommandReadiness {
                 String::from_utf8_lossy(&output.stderr)
             );
             if help.contains("--output-schema") {
-                CommandReadiness {
-                    command: "codex".to_string(),
-                    status: "available".to_string(),
-                    detail: Some("structured output supported (--output-schema)".to_string()),
-                }
+                // Continue below and verify the effective model against the catalog bundled with
+                // this exact CLI. This is offline, non-mutating, and catches a newer configured
+                // model paired with an older Codex binary before provider execution.
             } else {
-                CommandReadiness {
+                return CommandReadiness {
                     command: "codex".to_string(),
                     status: "upgrade-required".to_string(),
                     detail: Some(
                         "rms next/design --ai requires a Codex version with --output-schema"
                             .to_string(),
                     ),
-                }
+                };
             }
         }
-        Ok(output) => CommandReadiness {
+        Ok(output) => {
+            return CommandReadiness {
+                command: "codex".to_string(),
+                status: "found-not-ready".to_string(),
+                detail: Some(format!(
+                    "`codex exec --help` exited {}",
+                    exit_status_label(output.status)
+                )),
+            };
+        }
+        Err(_) => {
+            return CommandReadiness {
+                command: "codex".to_string(),
+                status: "not-configured".to_string(),
+                detail: None,
+            };
+        }
+    }
+
+    let Some(model) = effective_model else {
+        return CommandReadiness {
             command: "codex".to_string(),
-            status: "found-not-ready".to_string(),
+            status: "available".to_string(),
             detail: Some(format!(
-                "`codex exec --help` exited {}",
-                exit_status_label(output.status)
+                "{version}; structured output supported; effective model uses {model_source}"
             )),
-        },
-        Err(_) => CommandReadiness {
+        };
+    };
+
+    let catalog = match Command::new(program)
+        .args(["debug", "models", "--bundled"])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        Ok(_) => {
+            return CommandReadiness {
+                command: "codex".to_string(),
+                status: "upgrade-required".to_string(),
+                detail: Some(format!(
+                    "{version} cannot verify effective model `{model}` from {model_source}; run `codex update`, then `rms check --environment`, or explicitly pin `ai.codex.model` to a model supported by this Codex installation"
+                )),
+            };
+        }
+        Err(_) => {
+            return CommandReadiness {
+                command: "codex".to_string(),
+                status: "not-configured".to_string(),
+                detail: None,
+            };
+        }
+    };
+    let catalog: JsonValue = match serde_json::from_slice(&catalog.stdout) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            return CommandReadiness {
+                command: "codex".to_string(),
+                status: "found-not-ready".to_string(),
+                detail: Some(format!("Codex bundled model catalog is invalid: {error}")),
+            };
+        }
+    };
+    let model_entry = catalog
+        .get("models")
+        .and_then(JsonValue::as_array)
+        .and_then(|models| {
+            models
+                .iter()
+                .find(|entry| entry.get("slug").and_then(JsonValue::as_str) == Some(model))
+        });
+    let Some(model_entry) = model_entry else {
+        return CommandReadiness {
             command: "codex".to_string(),
-            status: "not-configured".to_string(),
-            detail: None,
-        },
+            status: "provider-incompatible".to_string(),
+            detail: Some(format!(
+                "{version} does not include effective model `{model}` from {model_source}; run `codex update`, then `rms check --environment`, or explicitly pin `ai.codex.model` to a model supported by this Codex installation"
+            )),
+        };
+    };
+    if model_entry
+        .get("upgrade")
+        .is_some_and(|value| !value.is_null())
+    {
+        return CommandReadiness {
+            command: "codex".to_string(),
+            status: "upgrade-required".to_string(),
+            detail: Some(format!(
+                "{version} marks effective model `{model}` from {model_source} as requiring an upgrade; run `codex update`, then `rms check --environment`"
+            )),
+        };
+    }
+
+    CommandReadiness {
+        command: "codex".to_string(),
+        status: "available".to_string(),
+        detail: Some(format!(
+            "{version}; effective model `{model}` from {model_source} is present in the bundled catalog; structured output supported"
+        )),
     }
 }
 
@@ -67603,6 +68147,16 @@ public struct ClientAccountAccessEffectExecutor: Sendable {
 }
 public actor SessionExecutor {}
 public protocol EffectPort {}
+public enum SecureMediaSessionWorkflowState {
+    public static let initial: SecureMediaSessionWorkflowState = .idle
+    public static var fallback: SecureMediaSessionWorkflowState { .idle }
+    public static func makeInitial() -> SecureMediaSessionWorkflowState { .idle }
+    case idle
+}
+public enum OtherState {
+    public static let initial: OtherState = .idle
+    case idle
+}
 "#;
 
         assert!(swift_binding_symbol_exists(
@@ -67611,6 +68165,35 @@ public protocol EffectPort {}
         ));
         assert!(swift_binding_symbol_exists(source, "SessionExecutor"));
         assert!(swift_binding_symbol_exists(source, "EffectPort"));
+        assert!(swift_binding_symbol_exists(
+            source,
+            "SecureMediaSessionWorkflowState.initial"
+        ));
+        assert_eq!(
+            binding_reference_parts(
+                "Sources/SecureMediaSession/Representation.swift#SecureMediaSessionWorkflowState.initial"
+            ),
+            Some((
+                "Sources/SecureMediaSession/Representation.swift",
+                "SecureMediaSessionWorkflowState.initial"
+            ))
+        );
+        assert!(binding_reference_parts(
+            "Sources/SecureMediaSession/Representation.swift#SecureMediaSessionWorkflowState..initial"
+        )
+        .is_none());
+        assert!(swift_binding_symbol_exists(
+            source,
+            "SecureMediaSessionWorkflowState.fallback"
+        ));
+        assert!(swift_binding_symbol_exists(
+            source,
+            "SecureMediaSessionWorkflowState.makeInitial"
+        ));
+        assert!(!swift_binding_symbol_exists(
+            source,
+            "SecureMediaSessionWorkflowState.missing"
+        ));
         assert!(!swift_binding_symbol_exists(source, "MissingPort"));
     }
 
@@ -68385,6 +68968,7 @@ import struct ExternalKit.Widget
         assert!(agents.contains("rms check --committed --root ."));
         assert!(gitignore.contains(".rms/runs/"));
         assert!(gitignore.contains(".rms/cache/"));
+        assert!(gitignore.contains(".rms/hunts/"));
         assert!(gitignore.contains(".rms/dogfood/"));
         assert!(config_text.contains("# write_scope: module"));
         assert!(config_text.contains("# timeout_seconds: 900"));
@@ -68542,6 +69126,7 @@ import struct ExternalKit.Widget
                 .count(),
             1
         );
+        assert!(String::from_utf8_lossy(&adopted_gitignore).contains(".rms/hunts/"));
         assert!(root.join("system.yaml").is_file());
         assert!(root.join("context-map.yaml").is_file());
         assert!(root.join(".rms/config.yaml").is_file());
@@ -68958,6 +69543,10 @@ import struct ExternalKit.Widget
                 "embedded skill drift: {relative_path}"
             );
         }
+        let add_module = fs::read_to_string(canonical_root.join("add-module/SKILL.md")).unwrap();
+        assert!(add_module.contains("In a brand-new directory, run `rms init"));
+        assert!(add_module.contains("After initialization and its authorized bootstrap commit"));
+        assert!(add_module.contains(BOOTSTRAP_PENDING_AUTHORIZED_COMMIT));
     }
 
     #[test]
@@ -73024,7 +73613,6 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
             render_capability_contract("select-lines", "domain decision command"),
         )
         .unwrap();
-
         run_spec_apply(
             &root.join("module.yaml"),
             None,
@@ -73107,7 +73695,6 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
             render_capability_contract("plan-batches", "domain decision command"),
         )
         .unwrap();
-
         run_spec_apply(
             &root.join("module.yaml"),
             None,
@@ -74550,6 +75137,20 @@ architecture:
     fn property_command_accepts_generated_javascript_environment_selection() {
         assert!(proof_command_selects_runner(
             "node --input-type=module -e 'const [path, name] = process.env.RMS_PROPERTY_RUNNER.split(\"#\");'",
+            "run_property",
+            "RMS_PROPERTY_RUNNER",
+        ));
+    }
+
+    #[test]
+    fn property_command_accepts_generated_python_environment_selection() {
+        assert!(proof_command_selects_runner(
+            "python tests/rms_proof_runner.py RMS_PROPERTY_RUNNER",
+            "run_property",
+            "RMS_PROPERTY_RUNNER",
+        ));
+        assert!(!proof_command_selects_runner(
+            "python tests/other_runner.py RMS_PROPERTY_RUNNER",
             "run_property",
             "RMS_PROPERTY_RUNNER",
         ));
@@ -79244,6 +79845,65 @@ verification:
     }
 
     #[test]
+    fn invariant_accepts_concrete_evidence_from_its_enforcing_semantic_function() {
+        let root = unique_test_dir("semantic-function-invariant-evidence");
+        fs::create_dir_all(root.join("verification/laws")).unwrap();
+        fs::write(
+            root.join("verification/laws/driver_effect_cycle.md"),
+            "Observed: generated driver histories passed.\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: evidence-fixture, version: 0.1.0, kind: library, purpose: Evidence fixture. }
+invariants:
+  - id: driver-owns-effect-cycle
+    statement: The driver owns progression.
+    authority: composition
+    enforced_by: machine-driver
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: module.yaml
+binding: python
+semantic_functions:
+  - id: machine-driver
+    symbol: src/driver.py#run_machine
+    kind: interpreter
+    purity: effectful
+    discharges:
+      invariants: [driver-owns-effect-cycle]
+    evidence:
+      laws: [verification/laws/driver_effect_cycle.md]
+"#,
+        )
+        .unwrap();
+
+        let module = load_manifest(&root.join("module.yaml")).unwrap();
+        let invariant = get_path(&module.value, &["invariants"])
+            .and_then(YamlValue::as_sequence)
+            .and_then(|invariants| invariants.first())
+            .unwrap();
+        assert!(semantic_invariant_has_evidence(
+            &module,
+            invariant,
+            "driver-owns-effect-cycle"
+        ));
+
+        fs::remove_file(root.join("verification/laws/driver_effect_cycle.md")).unwrap();
+        assert!(!semantic_invariant_has_evidence(
+            &module,
+            invariant,
+            "driver-owns-effect-cycle"
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn add_capability_realizes_same_binding_local_dependency() {
         let root = unique_test_dir("add-capability-tree-rust-local-dependency");
         run_init(
@@ -79605,6 +80265,103 @@ binding_dependencies:
         assert!(implementation.contains("line-selection-domain"));
         assert!(cargo.contains("line-selection-domain"));
         assert!(cargo.contains("path = \"../line-selection-domain\""));
+    }
+
+    #[test]
+    fn spec_apply_realizes_python_binding_dependencies() {
+        let root = unique_test_dir("spec-python-binding-dependency");
+        let provider = root.join("line-selection-domain");
+        let consumer = root.join("pick-lines-boundary");
+        run_add_module(
+            add_module_request(
+                &provider,
+                "line-selection-domain",
+                "Provide reusable line selection.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("python"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        run_add_module(
+            add_module_request(
+                &consumer,
+                "pick-lines-boundary",
+                "Expose line selection through a local boundary.",
+                "adapter",
+                &["boundary".to_string()],
+                Some(ScaffoldShape::BoundaryAdapter),
+                Some("python"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        write_test_file(
+            &consumer.join("tests/test_local_dependency.py"),
+            "import unittest\n\nimport line_selection_domain\n\n\nclass LocalDependencyTests(unittest.TestCase):\n    def test_public_package_is_importable(self):\n        self.assertIsNotNone(line_selection_domain)\n",
+        );
+        let original = load_manifest(&consumer.join("implementation.yaml")).unwrap();
+        let original_verify = get_str(&original.value, &["commands", "verify"])
+            .unwrap()
+            .to_string();
+
+        run_spec_apply(
+            &consumer.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+intent:
+  summary: Bind the Python boundary implementation to the local line selection module.
+binding_dependencies:
+  add: [line-selection-domain]
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let applied = load_manifest(&consumer.join("implementation.yaml")).unwrap();
+        let verify = get_str(&applied.value, &["commands", "verify"]).unwrap();
+        assert!(verify.starts_with(
+            "PYTHONPATH=\"../line-selection-domain/src${PYTHONPATH:+:$PYTHONPATH}\" "
+        ));
+        assert!(Command::new("sh")
+            .args(["-lc", verify])
+            .current_dir(&consumer)
+            .status()
+            .unwrap()
+            .success());
+
+        run_spec_apply(
+            &consumer.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+intent:
+  summary: Remove the Python boundary's local line selection dependency.
+binding_dependencies:
+  set: []
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let implementation = fs::read_to_string(consumer.join("implementation.yaml")).unwrap();
+        let removed = load_manifest(&consumer.join("implementation.yaml")).unwrap();
+        assert_eq!(
+            get_str(&removed.value, &["commands", "verify"]),
+            Some(original_verify.as_str())
+        );
+        assert!(implementation.contains("local_modules:"));
+        assert!(implementation.contains("allowed_local_packages:"));
+        assert!(!implementation.contains("line-selection-domain"));
+        assert!(!implementation.contains("line_selection_domain"));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -81512,6 +82269,236 @@ semantic_functions: []
             }
         }
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn legacy_machine_migration_fixture(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = unique_test_dir(label);
+        run_add_module(
+            add_module_request(
+                &root,
+                "legacy-machine",
+                "Exercise a legacy machine binding migration.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("swift"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let module = root.join("module.yaml");
+        let implementation_path = root.join("implementation.yaml");
+        let mut implementation = load_manifest(&implementation_path).unwrap();
+        remove_yaml_path(&mut implementation.value, &["commands", "probe"]);
+        remove_yaml_path(&mut implementation.value, &["architecture", "probe"]);
+        remove_yaml_path(
+            &mut implementation.value,
+            &["architecture", "machine", "initial_state"],
+        );
+        remove_yaml_path(
+            &mut implementation.value,
+            &["architecture", "roles", "probe_adapter"],
+        );
+        write_yaml_manifest(&implementation).unwrap();
+        (root, module, implementation_path)
+    }
+
+    #[test]
+    fn next_authorizes_only_machine_apply_for_explicit_legacy_binding_migration() {
+        let (root, module, implementation) =
+            legacy_machine_migration_fixture("next-legacy-machine-migration");
+        initialize_test_git_repository(&root);
+
+        let report =
+            build_next_report(&root, Some(&module), "fix existing implementation code").unwrap();
+        assert_eq!(report.result, NextResult::Ready);
+        assert_eq!(report.owner.status(), OwnerStatus::Selected);
+        assert!(report.validation.errors > 0);
+        assert!(report
+            .validation
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .all(recognized_legacy_machine_migration_diagnostic));
+        assert!(report.blockers.is_empty());
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("machine-apply only")));
+        assert!(report
+            .steps
+            .iter()
+            .flat_map(|group| &group.steps)
+            .any(|step| step
+                .description
+                .contains("legacy machine-binding migration")));
+
+        let receipt = Path::new(&report.receipt_path);
+        assert!(
+            validate_route_receipt(&root, receipt, "machine-apply", &implementation, None,).is_ok()
+        );
+        assert!(
+            validate_route_receipt(&root, receipt, "spec-apply", &implementation, None).is_err()
+        );
+        assert!(validate_route_receipt(&root, receipt, "add-binding", &module, None).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_binding_migration_routes_plans_applies_and_validates_end_to_end() {
+        let (root, module, implementation) =
+            legacy_machine_migration_fixture("legacy-machine-migration-end-to-end");
+        let representation_path = root.join("Sources/LegacyMachine/Representation.swift");
+        let representation = fs::read_to_string(&representation_path).unwrap();
+        let representation = representation.replacen(
+            "public enum LegacyMachineState: Equatable {",
+            "public enum LegacyMachineState: Equatable {\n    public static let initial: LegacyMachineState = .ready",
+            1,
+        );
+        assert!(representation.contains("public static let initial"));
+        fs::write(&representation_path, representation).unwrap();
+        initialize_test_git_repository(&root);
+        let report =
+            build_next_report(&root, Some(&module), "repair the legacy machine binding").unwrap();
+        assert_eq!(report.result, NextResult::Ready);
+        assert!(validate_route_receipt(
+            &root,
+            Path::new(&report.receipt_path),
+            "machine-apply",
+            &implementation,
+            None,
+        )
+        .is_ok());
+
+        let legacy = load_manifest(&implementation).unwrap();
+        let prompt = render_machine_plan_prompt(
+            &legacy,
+            &root,
+            "Declare the existing Ready initial state and required pure Swift probe adapter.",
+        )
+        .unwrap();
+        assert!(prompt.contains("commands: null"));
+        assert!(prompt.contains("initial_state: null"));
+        assert!(prompt.contains("probe: null"));
+        assert!(prompt.contains("roles.add[].kind: probe_adapter"));
+
+        let change_yaml = r#"spec: rms/machine-change/v0.1
+module: implementation.yaml
+commands:
+  probe: 'swift test --package-path . --filter "${RMS_PROBE_RUNNER##*#}"'
+machine:
+  mode: stateless-decision-machine
+  initial_state: Ready
+  transition_signature: input-only
+probe:
+  protocol: rms/machine-probe/v0.2
+  command: probe
+  runner: Tests/LegacyMachineTests/MachineProbeTests.swift#testProbeMachine
+  initial_state_function: Sources/LegacyMachine/Representation.swift#LegacyMachineState.initial
+roles:
+  add:
+    - kind: probe_adapter
+      path: Tests/LegacyMachineTests/MachineProbeTests.swift
+  remove: []
+"#;
+        let parsed = parse_machine_change(None, Some(change_yaml), None).unwrap();
+        assert_eq!(parsed.machine.initial_state.as_deref(), Some("Ready"));
+        assert_eq!(
+            parsed.probe.as_ref().map(|probe| probe.command.as_str()),
+            Some("probe")
+        );
+
+        let before = fs::read_to_string(&implementation).unwrap();
+        run_machine_apply(&implementation, None, Some(change_yaml), None, true).unwrap();
+        assert_eq!(fs::read_to_string(&implementation).unwrap(), before);
+        run_machine_apply(&implementation, None, Some(change_yaml), None, false).unwrap();
+
+        let applied = load_manifest(&implementation).unwrap();
+        assert!(binding_symbol_reference_exists(
+            implementation.parent().unwrap(),
+            &applied,
+            "Sources/LegacyMachine/Representation.swift#LegacyMachineState.initial"
+        ));
+        assert_eq!(
+            get_str(
+                &applied.value,
+                &["architecture", "machine", "initial_state"]
+            ),
+            Some("Ready")
+        );
+        assert_eq!(
+            get_str(&applied.value, &["architecture", "probe", "command"]),
+            Some("probe")
+        );
+        assert_eq!(
+            get_str(&applied.value, &["commands", "probe"]),
+            Some("swift test --package-path . --filter \"${RMS_PROBE_RUNNER##*#}\"")
+        );
+        assert!(structure_role_paths(&applied, "probe_adapter")
+            .iter()
+            .any(|path| path == "Tests/LegacyMachineTests/MachineProbeTests.swift"));
+        let diagnostics = collect_validation_diagnostics(
+            &root,
+            vec![module],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![implementation],
+            Vec::new(),
+        )
+        .unwrap();
+        assert_no_error_diagnostics(&diagnostics);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn next_rejects_legacy_migration_mixed_with_unrelated_implementation_error() {
+        let (root, module, implementation_path) =
+            legacy_machine_migration_fixture("next-mixed-legacy-machine-migration");
+        let mut implementation = load_manifest(&implementation_path).unwrap();
+        remove_yaml_path(
+            &mut implementation.value,
+            &["architecture", "machine", "transition_function"],
+        );
+        write_yaml_manifest(&implementation).unwrap();
+        initialize_test_git_repository(&root);
+
+        let report =
+            build_next_report(&root, Some(&module), "fix existing implementation code").unwrap();
+        assert_eq!(report.result, NextResult::Blocked);
+        assert!(report.owner.selected_module().is_none());
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
+        assert!(receipt.payload.allowed_action_families.is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn next_rejects_legacy_migration_mixed_with_semantic_manifest_error() {
+        let (root, module_path, _) =
+            legacy_machine_migration_fixture("next-semantic-error-legacy-machine-migration");
+        let mut module = load_manifest(&module_path).unwrap();
+        remove_yaml_path(&mut module.value, &["module", "purpose"]);
+        write_yaml_manifest(&module).unwrap();
+        initialize_test_git_repository(&root);
+
+        let report = build_next_report(
+            &root,
+            Some(&module_path),
+            "fix existing implementation code",
+        )
+        .unwrap();
+        assert_eq!(report.result, NextResult::Blocked);
+        assert!(report.owner.selected_module().is_none());
+        assert!(report
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("purpose")));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -84358,6 +85345,106 @@ pub fn transition_widget(_state: WidgetState, _input: WidgetInput) -> WidgetTran
         assert!(!gate_preflight_ignores(&semantic));
     }
 
+    #[cfg(unix)]
+    fn write_fake_codex_readiness(root: &Path, catalog: Option<&str>) -> PathBuf {
+        let program = root.join("fake-codex-readiness.sh");
+        let catalog_command = catalog
+            .map(|value| format!("printf '%s\\n' '{}'", value))
+            .unwrap_or_else(|| "exit 2".to_string());
+        write_test_file(
+            &program,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+case "${{1:-}}" in
+  --version) printf '%s\n' 'codex-cli 0.143.0' ;;
+  exec) printf '%s\n' '--output-schema' ;;
+  debug) {catalog_command} ;;
+  *) exit 2 ;;
+esac
+"#
+            ),
+        );
+        make_executable(&program).unwrap();
+        program
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_readiness_checks_the_effective_model_without_silently_selecting_one() {
+        let root = unique_test_dir("codex-model-readiness");
+        fs::create_dir_all(&root).unwrap();
+        let config = ConfigReadiness {
+            path: ".rms/config.yaml".to_string(),
+            status: "present".to_string(),
+            default_provider: Some("codex".to_string()),
+            codex_model: None,
+            codex_sandbox: Some("read-only".to_string()),
+            codex_write_scope: None,
+            codex_timeout_seconds: None,
+            run_directory: ".rms/runs".to_string(),
+            message: None,
+        };
+
+        let compatible = write_fake_codex_readiness(
+            &root,
+            Some(r#"{"models":[{"slug":"gpt-5.6-sol","upgrade":null}]}"#),
+        );
+        let ready =
+            codex_provider_readiness_with_program(&config, &compatible, Some("gpt-5.6-sol"));
+        assert_eq!(ready.status, "available");
+        assert!(ready.detail.unwrap().contains("from Codex user config"));
+
+        let missing = write_fake_codex_readiness(&root, Some(r#"{"models":[]}"#));
+        let incompatible =
+            codex_provider_readiness_with_program(&config, &missing, Some("gpt-5.6-sol"));
+        assert_eq!(incompatible.status, "provider-incompatible");
+        let detail = incompatible.detail.unwrap();
+        assert!(detail.contains("gpt-5.6-sol"));
+        assert!(detail.contains("codex update"));
+        assert!(detail.contains("ai.codex.model"));
+
+        let old = write_fake_codex_readiness(&root, None);
+        let upgrade = codex_provider_readiness_with_program(&config, &old, Some("gpt-5.6-sol"));
+        assert_eq!(upgrade.status, "upgrade-required");
+        assert!(upgrade.detail.unwrap().contains("codex update"));
+
+        let project_catalog = write_fake_codex_readiness(
+            &root,
+            Some(r#"{"models":[{"slug":"project-model","upgrade":null}]}"#),
+        );
+        let project_config = ConfigReadiness {
+            codex_model: Some("project-model".to_string()),
+            ..config
+        };
+        let project = codex_provider_readiness_with_program(
+            &project_config,
+            &project_catalog,
+            Some("ignored-user-model"),
+        );
+        assert_eq!(project.status, "available");
+        assert!(project.detail.unwrap().contains("from RMS project config"));
+
+        let mut diagnosis = build_diagnose_report(&root).unwrap();
+        diagnosis.config.default_provider = Some("codex".to_string());
+        let provider = diagnosis
+            .ai_providers
+            .iter_mut()
+            .find(|provider| provider.command == "codex")
+            .unwrap();
+        provider.status = "provider-incompatible".to_string();
+        provider.detail =
+            Some("effective model `gpt-5.6-sol` is unavailable; run `codex update`".to_string());
+        let environment = environment_check_report_from_diagnosis(&root, diagnosis);
+        assert_eq!(environment.result, CheckResult::Fail);
+        assert!(environment
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("gpt-5.6-sol") && warning.contains("codex update")));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn diagnose_report_includes_config_and_serializes_to_json() {
         let root = prompt_fixture("diagnose-config");
@@ -86409,6 +87496,7 @@ open_questions: []
                 &undetermined_task_classification(),
                 &owner,
                 &context,
+                false,
             )
             .unwrap();
             assert!(steps.iter().flat_map(|group| &group.steps).all(|step| {

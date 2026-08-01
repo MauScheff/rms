@@ -249,7 +249,7 @@ Constructed reports, including insufficient evidence, exit `0`. Impossible const
 | Invocation | Mode | Delegated work |
 | --- | --- | --- |
 | `rms check --root .` | `project` | Validation plus composition |
-| `rms check --environment --root .` | `environment` | Repository, tool, guidance, configuration, and detected skill diagnosis |
+| `rms check --environment --root .` | `environment` | Repository, tool, guidance, configuration, effective provider/model, and detected skill diagnosis |
 | `rms check --changes --root .` | `changes` | Git-impact-selected RMS gate before the candidate commit |
 | `rms check --committed --root .` | `committed` | Strict audit against the clean committed candidate |
 

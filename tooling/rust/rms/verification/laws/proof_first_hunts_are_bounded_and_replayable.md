@@ -9,5 +9,6 @@ Risk determines which strong lane must exist; it does not turn every lane into t
 - Behavioral failures are findings only after a minimized counterexample reaches its exact target failure on replay; discovery continues to a fixed cap of distinct semantic findings.
 - A resumed run must retain source revision, declaration digest, tool identities, and seed.
 - The caller's tracked checkout is never the workspace of an unattended lane.
+- RMS prepares its complete private run storage, including the parent for generated property analyses, before any lane executes.
 
-Evidence is the `hunt-rms-system` contract suite, risk-posture property test, report-schema and stable-finding tests, guided multi-finding replay test, isolated CLI smoke, and the retained `rms/hunt-report/v0.2`; v0.1 remains readable.
+Evidence is the `hunt-rms-system` contract suite, risk-posture property test, report-schema and stable-finding tests, `hunt_run_storage_prepares_analysis_output_parent`, guided multi-finding replay test, isolated CLI smoke, and the retained `rms/hunt-report/v0.2`; v0.1 remains readable.

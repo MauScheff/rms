@@ -9,16 +9,19 @@ Scenario:
 - `rms add-capability-tree` with Rust domain and boundary children records `dependencies.local_modules`, adds one Rust allowlist entry, and writes the sibling Cargo path dependency.
 - `rms spec apply` accepts language-neutral `binding_dependencies.set/add/remove` and routes realization through the selected binding adapter.
 - Rust package spelling `mini-xargs-domain` and import spelling `mini_xargs_domain` normalize to the same crate identity.
+- Python semantic apply records both the local RMS module id and its normalized import-package allowlist entry, and realizes the sibling `src` roots in each declared command environment.
 
 Command/tool:
 
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml add_capability_realizes_same_binding_local_dependency`
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml spec_apply_realizes_language_neutral_binding_dependencies`
+- `cargo test --manifest-path tooling/rust/rms/Cargo.toml spec_apply_realizes_python_binding_dependencies`
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml rust_dependency_names_normalize_package_and_import_spellings`
 
 Expected result:
 
 - Generated same-binding capability children compose without hand-editing implementation allowlists or native Rust dependency metadata.
+- Python binding dependencies applied through semantic change produce RMS-owned local-module/import-package metadata and an executable sibling import without hand editing; removal restores the prior commands.
 - The semantic change record contains RMS module ids rather than language-specific package spellings.
 
 Source revision: resolved from the candidate Git commit by strict audit.

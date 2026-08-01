@@ -13,6 +13,10 @@ Scenario:
 - `rms machine apply` accepts `set`, `remove`, and `add` for variants,
   transitions, and roles, computes a final machine state, rejects stale
   references, and reports the final intended state in dry-run output.
+- A focused machine change can canonically add the required probe command,
+  initial state, probe binding, and probe-adapter role to an explicitly routed
+  legacy implementation; dry-run writes nothing and normal validation passes
+  after apply.
 - `rms spec apply` records semantic-change files, treats superseded change
   records as historical during strict audit, and reuses the same machine
   validation path for embedded machine changes.
@@ -27,6 +31,7 @@ Command/tool:
 
 - `cargo fmt --all --check`
 - `cargo test --workspace --locked`
+- `cargo test --manifest-path tooling/rust/rms/Cargo.toml legacy_binding_migration_routes_plans_applies_and_validates_end_to_end`
 - `target/debug/rms validate --root .`
 - `target/debug/rms compose --root .`
 - `target/debug/rms gate --root .`
