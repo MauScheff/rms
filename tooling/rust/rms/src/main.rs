@@ -19016,10 +19016,11 @@ fn inspect_trace_canonical_conformance(
         let Some(case) = case else {
             continue;
         };
-        let Some(transition) = transitions
+        let candidates = transitions
             .iter()
-            .find(|transition| transition.case.as_deref() == Some(case))
-        else {
+            .filter(|transition| transition.case.as_deref() == Some(case))
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
             push_trace_diagnostic(
                 diagnostics,
                 Severity::Error,
@@ -19029,66 +19030,84 @@ fn inspect_trace_canonical_conformance(
                 format!("trace source branch `{case}` is not a declared canonical transition case"),
             );
             continue;
-        };
+        }
 
-        let mut mismatches = Vec::new();
-        let input = transition_input_variant(&transition.on);
-        if record
-            .state_before
-            .as_deref()
-            .is_none_or(|state| !trace_state_mentions(state, &transition.from))
+        let candidate_mismatches = candidates
+            .iter()
+            .map(|transition| (*transition, trace_transition_mismatches(record, transition)))
+            .collect::<Vec<_>>();
+        if candidate_mismatches
+            .iter()
+            .any(|(_, mismatches)| mismatches.is_empty())
         {
-            mismatches.push(format!("state_before `{}`", transition.from));
+            continue;
         }
-        if record
-            .state_after
-            .as_deref()
-            .is_none_or(|state| !trace_state_mentions(state, &transition.to))
-        {
-            mismatches.push(format!("state_after `{}`", transition.to));
-        }
-        if record
-            .input
-            .as_deref()
-            .is_none_or(|observed| !semantic_text_mentions_id(observed, &input))
-        {
-            mismatches.push(format!("input `{input}`"));
-        }
-        if !trace_semantic_outputs_match(&record.event_outputs, &transition.events) {
-            mismatches.push(format!("events {:?}", transition.events));
-        }
-        if !trace_semantic_outputs_match(&record.command_outputs, &transition.commands) {
-            mismatches.push(format!("commands {:?}", transition.commands));
-        }
-        if !trace_semantic_outputs_match(&record.effect_outputs, &transition.effects) {
-            mismatches.push(format!("effects {:?}", transition.effects));
-        }
-        if !trace_optional_output_matches(record.reply.as_deref(), transition.reply.as_deref()) {
-            mismatches.push(format!("reply {:?}", transition.reply));
-        }
-        if !trace_optional_output_matches(
-            record.rejection.as_deref(),
-            transition.rejection.as_deref(),
-        ) {
-            mismatches.push(format!("rejection {:?}", transition.rejection));
-        }
-        if !mismatches.is_empty() {
-            push_trace_diagnostic(
-                diagnostics,
-                Severity::Error,
-                "trace.canonical-transition-mismatch",
-                bundle,
-                Some(record.index),
-                format!(
-                    "trace case `{case}` does not realize canonical {} --{}--> {}: {}",
-                    transition.from,
-                    input,
-                    transition.to,
-                    mismatches.join(", ")
-                ),
-            );
-        }
+        let (transition, mismatches) = candidate_mismatches
+            .into_iter()
+            .min_by_key(|(_, mismatches)| mismatches.len())
+            .expect("non-empty canonical transition candidates");
+
+        push_trace_diagnostic(
+            diagnostics,
+            Severity::Error,
+            "trace.canonical-transition-mismatch",
+            bundle,
+            Some(record.index),
+            format!(
+                "trace case `{case}` does not realize canonical {} --{}--> {}: {}",
+                transition.from,
+                transition_input_variant(&transition.on),
+                transition.to,
+                mismatches.join(", ")
+            ),
+        );
     }
+}
+
+fn trace_transition_mismatches(
+    record: &TraceRecordSummary,
+    transition: &MachineTransitionChange,
+) -> Vec<String> {
+    let mut mismatches = Vec::new();
+    let input = transition_input_variant(&transition.on);
+    if record
+        .state_before
+        .as_deref()
+        .is_none_or(|state| !trace_state_mentions(state, &transition.from))
+    {
+        mismatches.push(format!("state_before `{}`", transition.from));
+    }
+    if record
+        .state_after
+        .as_deref()
+        .is_none_or(|state| !trace_state_mentions(state, &transition.to))
+    {
+        mismatches.push(format!("state_after `{}`", transition.to));
+    }
+    if record
+        .input
+        .as_deref()
+        .is_none_or(|observed| !semantic_text_mentions_id(observed, &input))
+    {
+        mismatches.push(format!("input `{input}`"));
+    }
+    if !trace_semantic_outputs_match(&record.event_outputs, &transition.events) {
+        mismatches.push(format!("events {:?}", transition.events));
+    }
+    if !trace_semantic_outputs_match(&record.command_outputs, &transition.commands) {
+        mismatches.push(format!("commands {:?}", transition.commands));
+    }
+    if !trace_semantic_outputs_match(&record.effect_outputs, &transition.effects) {
+        mismatches.push(format!("effects {:?}", transition.effects));
+    }
+    if !trace_optional_output_matches(record.reply.as_deref(), transition.reply.as_deref()) {
+        mismatches.push(format!("reply {:?}", transition.reply));
+    }
+    if !trace_optional_output_matches(record.rejection.as_deref(), transition.rejection.as_deref())
+    {
+        mismatches.push(format!("rejection {:?}", transition.rejection));
+    }
+    mismatches
 }
 
 fn trace_semantic_outputs_match(observed: &[String], expected: &[String]) -> bool {
@@ -87262,6 +87281,95 @@ records:
             diagnostic.check == "trace.canonical-transition-mismatch"
                 && diagnostic.message.contains("Accept")
         }));
+    }
+
+    #[test]
+    fn trace_bundle_matches_reused_case_names_by_the_complete_transition() {
+        let root = unique_test_dir("trace-reused-case-name");
+        fs::create_dir_all(root.join("verification/traces")).unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: trace-reused-case-name
+binding: rust
+source: { root: ., public_entrypoint: src/lib.rs }
+commands: { build: "true", verify: "true" }
+architecture:
+  shape: domain-engine
+  machine:
+    name: ReusedCaseMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    initial_state: Ready
+    states: [Ready, Scheduled]
+    commands: []
+    observed_events: [AppleRenderStale, RenderCompleted]
+    events: [StaleRenderIgnored]
+    effects: []
+    effect_results: []
+    replies: [Stale]
+    rejections: []
+    effect_protocols: []
+    transition_record_function: transition_record
+    transitions:
+      - from: Ready
+        on: AppleRenderStale
+        to: Ready
+        case: IgnoreStaleGeneration
+        events: [StaleRenderIgnored]
+        reply: Stale
+      - from: Scheduled
+        on: RenderCompleted
+        to: Scheduled
+        case: IgnoreStaleGeneration
+        events: [StaleRenderIgnored]
+        reply: Stale
+  roles:
+    transition: [src/lib.rs]
+    transition_record: [src/lib.rs]
+    replay_bundle: [verification/traces/trace.yaml]
+"#,
+        )
+        .unwrap();
+        let bundle = root.join("verification/traces/trace.yaml");
+        fs::write(
+            &bundle,
+            r#"spec: rms/trace-bundle/v0.1
+machine: ReusedCaseMachine
+records:
+  - scenario_start: true
+    state_before: Ready
+    input: AppleRenderStale
+    output:
+      next_state: Ready
+      events: [StaleRenderIgnored]
+      commands: []
+      effects: []
+      reply: Stale
+      rejection: null
+    state_after: Ready
+    source: { file: src/lib.rs, function: transition_record, branch: IgnoreStaleGeneration }
+  - scenario_start: true
+    state_before: Scheduled
+    input: RenderCompleted
+    output:
+      next_state: Scheduled
+      events: [StaleRenderIgnored]
+      commands: []
+      effects: []
+      reply: Stale
+      rejection: null
+    state_after: Scheduled
+    source: { file: src/lib.rs, function: transition_record, branch: IgnoreStaleGeneration }
+"#,
+        )
+        .unwrap();
+
+        let report = build_trace_report(&bundle).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, "pass", "{:#?}", report.diagnostics);
+        assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     }
 
     #[test]
