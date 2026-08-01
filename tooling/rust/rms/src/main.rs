@@ -2369,6 +2369,8 @@ struct SemanticChange {
     #[serde(default)]
     intent: Option<SemanticIntentChange>,
     #[serde(default)]
+    declaration: Option<SemanticModuleDeclarationChange>,
+    #[serde(default)]
     laws: Option<SemanticLawsChange>,
     #[serde(default)]
     contracts: Option<SemanticContractsChange>,
@@ -2386,6 +2388,8 @@ struct SemanticChange {
     machine: Option<SemanticMachineChange>,
     #[serde(default)]
     roles: Option<MachineRolesChange>,
+    #[serde(default)]
+    allowed_missing_constructors: Option<MachineVariantListChange>,
     #[serde(default)]
     evidence: Option<SemanticEvidenceChange>,
     #[serde(default)]
@@ -2406,6 +2410,47 @@ struct SemanticChange {
     public_behavior_bindings: Option<PublicBehaviorBindingsChange>,
     #[serde(default)]
     dependency_behavior_bindings: Option<DependencyBehaviorBindingsChange>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticModuleDeclarationChange {
+    #[serde(default)]
+    purpose: Option<String>,
+    #[serde(default)]
+    owns: Option<SemanticModuleOwnershipChange>,
+    #[serde(default)]
+    effects: Option<Vec<SemanticModuleEffectChange>>,
+    #[serde(default)]
+    boundary: Option<YamlValue>,
+    #[serde(default)]
+    remove_boundary: bool,
+    #[serde(default)]
+    remove_scaffold: bool,
+    #[serde(default)]
+    no_untrusted_boundary_justification: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticModuleOwnershipChange {
+    #[serde(default)]
+    concepts: Vec<String>,
+    #[serde(default)]
+    data: Vec<String>,
+    #[serde(default)]
+    decisions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticModuleEffectChange {
+    name: String,
+    kind: String,
+    #[serde(default)]
+    capability: Option<String>,
+    #[serde(default)]
+    semantics: Option<YamlValue>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -3254,6 +3299,8 @@ struct SemanticPropertyCounterexamplesRef {
 struct SemanticEvidenceChange {
     #[serde(default)]
     add: Vec<SemanticEvidenceItemChange>,
+    #[serde(default)]
+    remove: Vec<SemanticEvidenceRemoveChange>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3262,6 +3309,15 @@ struct SemanticEvidenceItemChange {
     kind: String,
     proves: String,
     path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticEvidenceRemoveChange {
+    kind: String,
+    path: String,
+    #[serde(default)]
+    delete_file: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -17647,6 +17703,7 @@ fn validate_property_target_report(
                 implementation,
                 &realization.runner,
                 realization.generator.as_deref(),
+                get_path(&target.definition, &["operation"]),
             ) {
                 push_unique_warning(
                     diagnostics,
@@ -17970,8 +18027,14 @@ fn binding_function_references_symbol(
             match binding {
                 Some("js") | Some("javascript") => js_function_source(&source, function_symbol)
                     .is_some_and(|function| source_identifier_occurs(&function, target_symbol)),
-                Some("swift") => swift_function_source(&source, function_symbol)
-                    .is_some_and(|function| source_identifier_occurs(&function, target_symbol)),
+                Some("swift") => {
+                    swift_function_source(&source, function_symbol).is_some_and(|function| {
+                        source_identifier_occurs(&function, target_symbol)
+                            || target_symbol.rsplit_once('.').is_some_and(|(_, member)| {
+                                function.contains(&format!(".{member}("))
+                            })
+                    })
+                }
                 Some("python") => python_function_source(&source, function_symbol)
                     .is_some_and(|function| source_identifier_occurs(function, target_symbol)),
                 Some("executable") => true,
@@ -18166,6 +18229,7 @@ fn property_runner_calls_operation(
     implementation: &LoadedManifest,
     runner: &str,
     generator: Option<&str>,
+    operation: Option<&YamlValue>,
 ) -> bool {
     if get_str(&implementation.value, &["binding"]) == Some("executable") {
         return true;
@@ -18181,6 +18245,23 @@ fn property_runner_calls_operation(
         &["architecture", "machine", "transition_record_function"][..],
     ] {
         if let Some(symbol) = get_str(&implementation.value, path) {
+            symbols.insert(symbol.to_string());
+        }
+    }
+    if let Some(operation) = operation {
+        if let Some(symbol) = get_str(operation, &["symbol"]) {
+            symbols.insert(symbol.to_string());
+        } else if let Some(function_id) = get_str(operation, &["semantic_function"]) {
+            if let Some(symbol) = get_path(&implementation.value, &["semantic_functions"])
+                .and_then(YamlValue::as_sequence)
+                .into_iter()
+                .flatten()
+                .find(|function| get_str(function, &["id"]) == Some(function_id))
+                .and_then(|function| get_str(function, &["symbol"]))
+            {
+                symbols.insert(symbol.to_string());
+            }
+        } else if let Some(symbol) = operation.as_str() {
             symbols.insert(symbol.to_string());
         }
     }
@@ -23956,7 +24037,10 @@ fn validate_inner_structure(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
         );
     }
 
-    if parser_expected_for_shape(shape) && structure_role_paths(manifest, "parser").is_empty() {
+    if parser_expected_for_shape(shape)
+        && !implementation_has_no_untrusted_boundary_justification(manifest)
+        && structure_role_paths(manifest, "parser").is_empty()
+    {
         push_unique_warning(
             diagnostics,
             "structure.boundary-parser-missing",
@@ -23975,6 +24059,17 @@ fn validate_inner_structure(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
     }
     inspect_numeric_safety_sources(manifest, diagnostics, shape);
     inspect_cross_module_private_import_sources(manifest, diagnostics);
+}
+
+fn implementation_has_no_untrusted_boundary_justification(manifest: &LoadedManifest) -> bool {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    load_manifest(&base.join("module.yaml")).is_ok_and(|module| {
+        get_str(
+            &module.value,
+            &["x-rms", "no_untrusted_boundary_justification"],
+        )
+        .is_some_and(|justification| !justification.trim().is_empty())
+    })
 }
 
 fn validate_machine_gate_structure(
@@ -26549,6 +26644,10 @@ fn inspect_effect_result_handling(manifest: &LoadedManifest, diagnostics: &mut V
     );
     let effects = get_string_array(&manifest.value, &["architecture", "machine", "effects"]);
     let commands = get_string_array(&manifest.value, &["architecture", "machine", "commands"]);
+    let observed_events = get_string_array(
+        &manifest.value,
+        &["architecture", "machine", "observed_events"],
+    );
     let handled = existing_transition_inputs(manifest);
     let unclassified_outcome_inputs = handled
         .iter()
@@ -26556,6 +26655,7 @@ fn inspect_effect_result_handling(manifest: &LoadedManifest, diagnostics: &mut V
             effect_result_like_transition_input(input)
                 && !effect_results.contains(input)
                 && !commands.contains(input)
+                && !observed_events.contains(input)
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -26759,6 +26859,22 @@ fn implementation_has_reconciliation_evidence(manifest: &LoadedManifest) -> bool
     let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
     if concrete_evidence_path_exists(&base.join("verification").join("reconciliation")) {
         return true;
+    }
+    if let Ok(module) = load_manifest(&base.join("module.yaml")) {
+        for reference in module_verification_references(&module.value) {
+            let path = base.join(reference);
+            if path.is_file()
+                && fs::read_to_string(&path).is_ok_and(|source| {
+                    let normalized = normalize_semantic_identifier(&source);
+                    semantic_name_contains_any(
+                        &normalized,
+                        &["reconciliation", "reconcile", "recovery", "recover"],
+                    )
+                })
+            {
+                return true;
+            }
+        }
     }
     for role in [
         "trace_evidence",
@@ -41570,6 +41686,109 @@ fn append_semantic_change_module_reflection_checks(
     strict: bool,
     checks: &mut Vec<AuditCheck>,
 ) {
+    if let Some(declaration) = &change.declaration {
+        if declaration
+            .purpose
+            .as_deref()
+            .is_some_and(|purpose| get_str(module, &["module", "purpose"]) != Some(purpose))
+        {
+            push_applied_change_reflection_failure(
+                checks,
+                strict,
+                "semantic.applied-change-not-reflected",
+                change_path,
+                "semantic-change replaces the module purpose, but `module.yaml` does not contain the declared purpose",
+            );
+        }
+        if let Some(owns) = &declaration.owns {
+            for (field, expected) in [
+                ("concepts", &owns.concepts),
+                ("data", &owns.data),
+                ("decisions", &owns.decisions),
+            ] {
+                if get_string_array(module, &["owns", field]) != *expected {
+                    push_applied_change_reflection_failure(
+                        checks,
+                        strict,
+                        "semantic.applied-change-not-reflected",
+                        change_path,
+                        format!(
+                            "semantic-change replaces owned {field}, but `module.yaml` does not contain the exact declared list"
+                        ),
+                    );
+                }
+            }
+        }
+        if let Some(expected) = &declaration.effects {
+            let actual = get_path(module, &["effects"])
+                .and_then(YamlValue::as_sequence)
+                .cloned()
+                .unwrap_or_default();
+            let expected = expected
+                .iter()
+                .map(semantic_module_effect_yaml)
+                .collect::<Vec<_>>();
+            if actual != expected {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    change_path,
+                    "semantic-change replaces module effects, but `module.yaml` does not contain the exact declared effects",
+                );
+            }
+        }
+        if declaration
+            .boundary
+            .as_ref()
+            .is_some_and(|boundary| get_path(module, &["boundary"]) != Some(boundary))
+        {
+            push_applied_change_reflection_failure(
+                checks,
+                strict,
+                "semantic.applied-change-not-reflected",
+                change_path,
+                "semantic-change replaces the boundary declaration, but `module.yaml` does not contain the exact declared boundary",
+            );
+        }
+        for (remove, path, label) in [
+            (declaration.remove_boundary, &["boundary"][..], "boundary"),
+            (
+                declaration.remove_scaffold,
+                &["x-scaffold"][..],
+                "x-scaffold",
+            ),
+        ] {
+            if remove && get_path(module, path).is_some() {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    change_path,
+                    format!(
+                        "semantic-change removes `{label}`, but `module.yaml` still contains it"
+                    ),
+                );
+            }
+        }
+        if declaration
+            .no_untrusted_boundary_justification
+            .as_deref()
+            .is_some_and(|justification| {
+                get_str(module, &["x-rms", "no_untrusted_boundary_justification"])
+                    != Some(justification)
+            })
+        {
+            push_applied_change_reflection_failure(
+                checks,
+                strict,
+                "semantic.applied-change-not-reflected",
+                change_path,
+                "semantic-change declares a typed internal-boundary justification, but `module.yaml` does not contain it",
+            );
+        }
+    }
+
     if let Some(laws) = &change.laws {
         let invariant_ids = get_path(module, &["invariants"])
             .and_then(YamlValue::as_sequence)
@@ -41755,6 +41974,22 @@ fn append_semantic_change_module_reflection_checks(
                 );
             }
         }
+        for item in &evidence.remove {
+            if verification_reference_covers_path(&verification_refs, &item.path)
+                || (item.delete_file && module_base.join(&item.path).exists())
+            {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    change_path,
+                    format!(
+                        "semantic-change removes evidence `{}`, but the active module still references it or retains the requested obsolete file",
+                        item.path
+                    ),
+                );
+            }
+        }
     }
 }
 
@@ -41773,6 +42008,65 @@ fn append_semantic_change_implementation_reflection_checks(
     strict: bool,
     checks: &mut Vec<AuditCheck>,
 ) {
+    if let Some(policy) = &change.allowed_missing_constructors {
+        let declared = get_string_array(
+            implementation,
+            &["architecture", "allowed_missing_constructors"],
+        )
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let expected_present = policy
+            .replace
+            .as_ref()
+            .map(|names| names.iter().cloned().collect::<BTreeSet<_>>())
+            .unwrap_or_else(|| policy.add.iter().cloned().collect());
+        for name in expected_present.iter().chain(&policy.add) {
+            if !declared.contains(name) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    implementation_path,
+                    format!(
+                        "semantic-change `{}` allows machine-produced result `{name}` to omit a constructor, but `implementation.yaml` does not declare it",
+                        change_path.display()
+                    ),
+                );
+            }
+        }
+        for name in &policy.remove {
+            if declared.contains(name) {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    implementation_path,
+                    format!(
+                        "semantic-change `{}` removes the constructor exception for `{name}`, but `implementation.yaml` still declares it",
+                        change_path.display()
+                    ),
+                );
+            }
+        }
+        if let Some(replacement) = &policy.replace {
+            let mut exact = replacement.iter().cloned().collect::<BTreeSet<_>>();
+            exact.retain(|name| !policy.remove.contains(name));
+            exact.extend(policy.add.iter().cloned());
+            if declared != exact {
+                push_applied_change_reflection_failure(
+                    checks,
+                    strict,
+                    "semantic.applied-change-not-reflected",
+                    implementation_path,
+                    format!(
+                        "semantic-change `{}` replaces constructor exceptions, but `implementation.yaml` does not contain the exact final set",
+                        change_path.display()
+                    ),
+                );
+            }
+        }
+    }
+
     if let Some(functions) = &change.semantic_functions {
         let declared = get_path(implementation, &["semantic_functions"])
             .and_then(YamlValue::as_sequence)
@@ -41950,6 +42244,12 @@ fn append_semantic_change_implementation_reflection_checks(
         )
         .into_iter()
         .collect::<BTreeSet<_>>();
+        let declared_observed_events = get_string_array(
+            implementation,
+            &["architecture", "machine", "observed_events"],
+        )
+        .into_iter()
+        .collect::<BTreeSet<_>>();
         let (expected_transitions, removed_transitions) =
             semantic_machine_transition_expectations(transitions);
         for transition in expected_transitions {
@@ -41977,6 +42277,7 @@ fn append_semantic_change_implementation_reflection_checks(
             if effect_result_like_transition_input(&input)
                 && !declared_commands.contains(&input)
                 && !declared_effect_results.contains(&input)
+                && !declared_observed_events.contains(&input)
             {
                 push_applied_change_reflection_failure(
                     checks,
@@ -41984,7 +42285,7 @@ fn append_semantic_change_implementation_reflection_checks(
                     "structure.transition-input-not-classified",
                     implementation_path,
                     format!(
-                        "semantic-change `{}` declares outcome-like transition input `{input}`, but it is neither a command nor an effect result in `implementation.yaml`",
+                        "semantic-change `{}` declares outcome-like transition input `{input}`, but it is neither a command, observed event, nor effect result in `implementation.yaml`",
                         change_path.display()
                     ),
                 );
@@ -46351,6 +46652,9 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
 
     if let Some(roles) = &change.roles {
         let final_roles = final_machine_role_map(&manifest_snapshot, change);
+        if !roles.replace.is_empty() {
+            remove_yaml_path(value, &["architecture", "roles"]);
+        }
         for (role, paths) in final_roles {
             set_yaml_string_sequence_path(
                 value,
@@ -47915,6 +48219,14 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "supersedes: []")?;
     writeln!(out, "intent:")?;
     writeln!(out, "  summary: {}", yaml_quote(task))?;
+    writeln!(out, "declaration:")?;
+    writeln!(out, "  purpose: null")?;
+    writeln!(out, "  owns: null")?;
+    writeln!(out, "  effects: null")?;
+    writeln!(out, "  boundary: null")?;
+    writeln!(out, "  remove_boundary: false")?;
+    writeln!(out, "  remove_scaffold: false")?;
+    writeln!(out, "  no_untrusted_boundary_justification: null")?;
     writeln!(out, "laws:")?;
     writeln!(out, "  add: []")?;
     writeln!(out, "  set: []")?;
@@ -48034,6 +48346,10 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "  set: []")?;
         writeln!(out, "  add: []")?;
         writeln!(out, "  remove: []")?;
+        writeln!(out, "allowed_missing_constructors:")?;
+        writeln!(out, "  set: null")?;
+        writeln!(out, "  add: []")?;
+        writeln!(out, "  remove: []")?;
         writeln!(out, "surfaces:")?;
         writeln!(out, "  set: null")?;
         writeln!(out, "  add: []")?;
@@ -48050,14 +48366,16 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "dependency_behavior_bindings: null")?;
         writeln!(out, "machine: null")?;
         writeln!(out, "roles: null")?;
+        writeln!(out, "allowed_missing_constructors: null")?;
         writeln!(out, "surfaces: null")?;
         writeln!(out, "binding_dependencies: null")?;
     }
     writeln!(out, "evidence:")?;
     writeln!(out, "  add: []")?;
+    writeln!(out, "  remove: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. On a composite target, `composition_exports.set[]` and `.add[]` use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`; `.remove[]` uses exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations` with `assembly`, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, `composition_exports.set[]` and `.add[]` use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`; `.remove[]` uses exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations` with `assembly`, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
     writeln!(out)?;
     writeln!(out, "A bounded response measured in nominal transitions uses this exact executable shape inside `properties.add[]` or `properties.set[]`:")?;
     writeln!(out, "```yaml")?;
@@ -48095,7 +48413,8 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Closed trace metrics are `elapsed` with `value: {{quantity: time}}`, `transition-count` with `value: {{quantity: transition}}`, `attempt-count` with `value: {{quantity: attempt}}`, and `message-count` with `value: {{quantity: message}}`. Quantity dimensions are scalar strings under `value.quantity`; units belong on predicate comparison values and temporal bounds, not in the observation type.")?;
     writeln!(out, "`properties.remove[]` contains existing property ids. Binding-native realizations name a `path#symbol` runner and an exact generator. Protocol observations reference a public protocol automaton. `semantic_functions.add[]` and `semantic_functions.set[]` use the rendered function shape; `semantic_functions.remove[]` contains existing function ids.")?;
     writeln!(out, "`hunt_exceptions.set` replaces the complete list, `add` replaces an existing item with the same obligation, and `remove` contains obligation names. Obligations are exactly `generated-input`, `boundary-fuzz`, `finite-state-exploration`, `schedule-fault-exploration`, `unsafe-code-analysis`, `oracle-mutation`, and `temporal-violation-search`; every exception needs a focused reason and is valid only when that lane is genuinely inapplicable.")?;
-    writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module.")?;
+    writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module. `evidence.remove[]` uses exact scalar `kind`, exact relative `path`, and `delete_file: true|false`; deletion is allowed only after the final declaration no longer references that path.")?;
+    writeln!(out, "`allowed_missing_constructors` uses set/remove/add semantics for public result/read-model structs intentionally produced only by a declared machine, query, or projector; do not use it to excuse an actually missing validated constructor.")?;
     writeln!(out, "`rms spec apply` automatically adds every currently active semantic revision to `supersedes` and hash-seals the exact new record. Use explicit `supersedes` only for additional branches that are not locally discoverable. Applied records are append-only: never edit or delete them.")?;
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
     writeln!(out, "Use `semantic_functions.add`, `set`, and `remove` whenever a law's authority owner, public semantic callable, parser, projector, adapter, transformation, or executor binding changes. Do not edit `implementation.yaml.semantic_functions` directly. Function kinds are `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, `interpreter`, `transformation`, or `effect-executor`; purity is `pure`, `effectful`, or `boundary`. Privileged, unsafe, or foreign functions list their declared authority ids.")?;
@@ -48134,7 +48453,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         "Evidence names the promise, scenario, command/tool, expected result, source revision, and related law/contract/machine item; it never claims a current filesystem snapshot or missing Git revision.",
         "`rms spec apply` records and hash-seals the exact semantic-change object under `verification/changes/`, automatically closes every active revision, and rejects missing history; command logs with placeholders are not evidence.",
         "Pure transitions reject illegal states instead of throwing or doing IO.",
-        "Boundary adapters parse raw input into command envelopes or typed rejections before delegation.",
+        "Boundary adapters either parse raw input into command envelopes or typed rejections before delegation, or declare why their complete input surface is already validated upstream.",
         "Boundary parsers and runnable surfaces have fuzz-style semantic targets or a concrete no-fuzz justification.",
         "Open-ended fuzz targets use generated-property or coverage-fuzzer realization; fixed corpora are labeled deterministic-corpus and finite complete spaces use `strategy: deterministic-exhaustive` with `exhaustive: true`. Every realization names an exact relative path#symbol runner; generated-property and deterministic-exhaustive realizations also name an exact generator. The runner calls the generator when declared, executes the semantic operation, and applies an oracle.",
         "Unknown, duplicate, stale, partial, conflicting, delayed, or corrected external outcomes have reconciliation or recovery evidence when they affect correctness.",
@@ -49418,6 +49737,10 @@ fn validate_semantic_change(
     }
     validate_semantic_supersedes(context, change, &mut diagnostics);
 
+    let has_declaration = change
+        .declaration
+        .as_ref()
+        .is_some_and(semantic_module_declaration_change_has_operations);
     let has_laws = change.laws.as_ref().is_some_and(|laws| {
         !laws.add.is_empty() || !laws.replace.is_empty() || !laws.remove.is_empty()
     });
@@ -49447,7 +49770,11 @@ fn validate_semantic_change(
     let has_evidence = change
         .evidence
         .as_ref()
-        .is_some_and(|evidence| !evidence.add.is_empty());
+        .is_some_and(|evidence| !evidence.add.is_empty() || !evidence.remove.is_empty());
+    let has_allowed_missing_constructors = change
+        .allowed_missing_constructors
+        .as_ref()
+        .is_some_and(machine_variant_list_change_has_operations);
     let has_surfaces = change
         .surfaces
         .as_ref()
@@ -49486,7 +49813,8 @@ fn validate_semantic_change(
         .is_some_and(dependency_behavior_bindings_change_has_operations);
     let has_machine =
         semantic_machine_change_requests_change(change, context.implementation.as_ref());
-    if !has_laws
+    if !has_declaration
+        && !has_laws
         && !has_contracts
         && !has_composition_exports
         && !has_properties
@@ -49494,6 +49822,7 @@ fn validate_semantic_change(
         && !has_trace_producers
         && !has_semantic_functions
         && !has_machine
+        && !has_allowed_missing_constructors
         && !has_evidence
         && !has_surfaces
         && !has_binding_dependencies
@@ -49508,7 +49837,7 @@ fn validate_semantic_change(
         diagnostics.push(error(
             "semantic-change.empty",
             &context.target,
-            "semantic change must revise laws, contracts, properties, hunt exceptions, trace producers, semantic functions, machine structure, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, behavior bindings, or evidence obligations",
+            "semantic change must revise the module declaration, laws, contracts, properties, hunt exceptions, trace producers, semantic functions, machine structure, implementation constructor policy, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, behavior bindings, or evidence obligations",
         ));
     }
 
@@ -49517,13 +49846,15 @@ fn validate_semantic_change(
         .as_ref()
         .map(|evidence| evidence.add.as_slice())
         .unwrap_or(&[]);
+    validate_semantic_module_declaration(context, change, &mut diagnostics);
     validate_semantic_laws(context, change, evidence_items, &mut diagnostics);
     validate_semantic_contracts(context, change, evidence_items, &mut diagnostics);
     validate_semantic_composition_exports(context, change, &mut diagnostics);
     validate_semantic_properties(context, change, evidence_items, &mut diagnostics);
     validate_trace_producers(context, change, &mut diagnostics);
     validate_semantic_functions(context, change, &mut diagnostics);
-    validate_semantic_evidence(context, evidence_items, &mut diagnostics);
+    validate_semantic_evidence(context, change, evidence_items, &mut diagnostics);
+    validate_allowed_missing_constructors(context, change, &mut diagnostics);
     validate_semantic_surfaces(context, change, &mut diagnostics);
     validate_binding_dependencies(context, change, &mut diagnostics);
     validate_semantic_artifacts(context, change, &mut diagnostics);
@@ -49534,6 +49865,151 @@ fn validate_semantic_change(
     validate_public_behavior_bindings(context, change, &mut diagnostics);
     validate_dependency_behavior_bindings(context, change, &mut diagnostics);
     diagnostics
+}
+
+fn semantic_module_declaration_change_has_operations(
+    change: &SemanticModuleDeclarationChange,
+) -> bool {
+    change.purpose.is_some()
+        || change.owns.is_some()
+        || change.effects.is_some()
+        || change.boundary.is_some()
+        || change.remove_boundary
+        || change.remove_scaffold
+        || change.no_untrusted_boundary_justification.is_some()
+}
+
+fn machine_variant_list_change_has_operations(change: &MachineVariantListChange) -> bool {
+    change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty()
+}
+
+fn validate_semantic_module_declaration(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(declaration) = change.declaration.as_ref() else {
+        return;
+    };
+    if context.module.is_none() {
+        diagnostics.push(error(
+            "semantic.declaration-without-module",
+            &context.target,
+            "module declaration changes require module.yaml",
+        ));
+        return;
+    }
+    if declaration
+        .purpose
+        .as_ref()
+        .is_some_and(|purpose| purpose.trim().is_empty())
+    {
+        diagnostics.push(error(
+            "semantic.declaration-purpose",
+            &context.target,
+            "module declaration purpose must be non-empty",
+        ));
+    }
+    if let Some(owns) = declaration.owns.as_ref() {
+        for item in owns
+            .concepts
+            .iter()
+            .chain(&owns.data)
+            .chain(&owns.decisions)
+        {
+            if item.trim().is_empty() {
+                diagnostics.push(error(
+                    "semantic.declaration-ownership",
+                    &context.target,
+                    "module ownership entries must be non-empty",
+                ));
+            }
+        }
+    }
+    if let Some(effects) = declaration.effects.as_ref() {
+        let mut names = BTreeSet::new();
+        for effect in effects {
+            if !is_stable_semantic_id(&effect.name) || !is_stable_semantic_id(&effect.kind) {
+                diagnostics.push(error(
+                    "semantic.declaration-effect",
+                    &context.target,
+                    format!(
+                        "module effect `{}` must have stable semantic name and kind",
+                        effect.name
+                    ),
+                ));
+            }
+            if !names.insert(effect.name.as_str()) {
+                diagnostics.push(error(
+                    "semantic.declaration-effect-duplicate",
+                    &context.target,
+                    format!("module effect `{}` is duplicated", effect.name),
+                ));
+            }
+        }
+    }
+    if declaration.boundary.is_some() && declaration.remove_boundary {
+        diagnostics.push(error(
+            "semantic.declaration-boundary-conflict",
+            &context.target,
+            "declaration.boundary and remove_boundary: true are mutually exclusive",
+        ));
+    }
+    if declaration
+        .boundary
+        .as_ref()
+        .is_some_and(|boundary| !boundary.is_mapping())
+    {
+        diagnostics.push(error(
+            "semantic.declaration-boundary-shape",
+            &context.target,
+            "declaration.boundary must be a structured mapping",
+        ));
+    }
+    if declaration
+        .no_untrusted_boundary_justification
+        .as_ref()
+        .is_some_and(|justification| justification.trim().len() < 20)
+    {
+        diagnostics.push(error(
+            "semantic.declaration-boundary-justification",
+            &context.target,
+            "no-untrusted-boundary justification must explain the typed upstream trust boundary",
+        ));
+    }
+}
+
+fn validate_allowed_missing_constructors(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(policy) = change.allowed_missing_constructors.as_ref() else {
+        return;
+    };
+    if context.implementation.is_none() {
+        diagnostics.push(error(
+            "semantic.constructor-policy-without-implementation",
+            &context.target,
+            "allowed_missing_constructors requires an implementation binding",
+        ));
+        return;
+    }
+    for name in policy
+        .replace
+        .iter()
+        .flatten()
+        .chain(&policy.add)
+        .chain(&policy.remove)
+    {
+        if !is_stable_identifier(name) {
+            diagnostics.push(error(
+                "semantic.constructor-policy-name",
+                &context.target,
+                format!("constructor-policy type `{name}` is not a stable identifier"),
+            ));
+        }
+    }
 }
 
 fn semantic_composition_exports_change_has_operations(
@@ -51157,7 +51633,7 @@ fn validate_semantic_properties(
     let Some(properties) = &change.properties else {
         return;
     };
-    let existing = context
+    let mut existing = context
         .module
         .as_ref()
         .map(|module| {
@@ -51166,6 +51642,20 @@ fn validate_semantic_properties(
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
+    if let Some(implementation) = &context.implementation {
+        for section in ["properties", "fuzz_targets"] {
+            existing.extend(
+                get_path(
+                    &implementation.value,
+                    &["architecture", "reliability", section],
+                )
+                .and_then(YamlValue::as_sequence)
+                .into_iter()
+                .flatten()
+                .filter_map(|item| get_str(item, &["id"]).map(ToString::to_string)),
+            );
+        }
+    }
     let mut seen = BTreeSet::new();
     for property in properties.add.iter().chain(&properties.replace) {
         if !is_stable_semantic_id(&property.id) {
@@ -51594,6 +52084,7 @@ fn binding_reference_parts(reference: &str) -> Option<(&str, &str)> {
 
 fn validate_semantic_evidence(
     context: &SpecTargetContext,
+    change: &SemanticChange,
     evidence_items: &[SemanticEvidenceItemChange],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -51632,6 +52123,49 @@ fn validate_semantic_evidence(
                 &context.target,
                 format!(
                     "semantic change adds duplicate evidence path `{}`",
+                    evidence.path
+                ),
+            ));
+        }
+    }
+    let Some(removals) = change.evidence.as_ref().map(|evidence| &evidence.remove) else {
+        return;
+    };
+    let module = context.module.as_ref();
+    for evidence in removals {
+        if !is_stable_semantic_id(&evidence.kind) {
+            diagnostics.push(error(
+                "semantic.evidence-remove-kind",
+                &context.target,
+                format!(
+                    "evidence kind `{}` is not a stable semantic id",
+                    evidence.kind
+                ),
+            ));
+        }
+        if !is_safe_relative_artifact_path(&evidence.path) {
+            diagnostics.push(error(
+                "semantic.evidence-remove-path",
+                &context.target,
+                format!(
+                    "evidence removal path `{}` must be relative and stay inside the module",
+                    evidence.path
+                ),
+            ));
+            continue;
+        }
+        let category = semantic_evidence_category(&evidence.kind);
+        let is_declared = module.is_some_and(|module| {
+            get_string_array(&module.value, &["verification", category])
+                .iter()
+                .any(|path| path == &evidence.path)
+        });
+        if !is_declared {
+            diagnostics.push(error(
+                "semantic.evidence-remove-missing",
+                &context.target,
+                format!(
+                    "evidence `{}` is not declared under verification.{category}",
                     evidence.path
                 ),
             ));
@@ -52861,6 +53395,10 @@ fn semantic_change_modifies_implementation(
     machine_change: Option<&MachineChange>,
 ) -> bool {
     machine_change.is_some()
+        || change
+            .allowed_missing_constructors
+            .as_ref()
+            .is_some_and(machine_variant_list_change_has_operations)
         || (context.implementation.is_some()
             && change.properties.as_ref().is_some_and(|properties| {
                 !properties.add.is_empty()
@@ -52913,6 +53451,13 @@ fn spec_apply_candidate_context(
     if let Some(implementation) = candidate.implementation.as_mut() {
         if let Some(machine_change) = machine_change {
             apply_machine_change_to_manifest(&mut implementation.value, machine_change);
+        }
+        if let Some(policy) = change
+            .allowed_missing_constructors
+            .as_ref()
+            .filter(|policy| machine_variant_list_change_has_operations(policy))
+        {
+            apply_allowed_missing_constructor_changes(&mut implementation.value, policy);
         }
         if let Some(properties) = change.properties.as_ref() {
             apply_semantic_property_changes_to_implementation(
@@ -53021,6 +53566,26 @@ fn spec_apply_candidate_context(
     Ok(candidate)
 }
 
+fn apply_allowed_missing_constructor_changes(
+    value: &mut YamlValue,
+    policy: &MachineVariantListChange,
+) {
+    let mut names = policy.replace.clone().unwrap_or_else(|| {
+        get_string_array(value, &["architecture", "allowed_missing_constructors"])
+    });
+    names.retain(|name| !policy.remove.contains(name));
+    for name in &policy.add {
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    set_yaml_string_sequence_path(
+        value,
+        &["architecture", "allowed_missing_constructors"],
+        &names,
+    );
+}
+
 fn planned_spec_apply_writes(
     context: &SpecTargetContext,
     change: &SemanticChange,
@@ -53070,6 +53635,19 @@ fn planned_spec_apply_writes(
                         .to_string(),
                 );
             }
+            for item in &evidence.remove {
+                if item.delete_file {
+                    writes.push(
+                        module
+                            .path
+                            .parent()
+                            .unwrap_or_else(|| Path::new("."))
+                            .join(&item.path)
+                            .display()
+                            .to_string(),
+                    );
+                }
+            }
         }
         if let Some(properties) = &change.properties {
             for property in properties.add.iter().chain(&properties.replace) {
@@ -53092,6 +53670,15 @@ fn planned_spec_apply_writes(
             || !properties.replace.is_empty()
             || !properties.remove.is_empty()
     }) {
+        if let Some(implementation) = &context.implementation {
+            writes.push(implementation.path.display().to_string());
+        }
+    }
+    if change
+        .allowed_missing_constructors
+        .as_ref()
+        .is_some_and(machine_variant_list_change_has_operations)
+    {
         if let Some(implementation) = &context.implementation {
             writes.push(implementation.path.display().to_string());
         }
@@ -53643,6 +54230,13 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
     {
         set_yaml_string_path(value, &["x-rms", "last_semantic_intent"], summary);
     }
+    if let Some(declaration) = change
+        .declaration
+        .as_ref()
+        .filter(|declaration| semantic_module_declaration_change_has_operations(declaration))
+    {
+        apply_semantic_module_declaration_change(value, declaration);
+    }
     if let Some(laws) = &change.laws {
         apply_semantic_law_changes_to_module(value, laws);
     }
@@ -53698,6 +54292,14 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
         );
     }
     if let Some(evidence) = &change.evidence {
+        for item in &evidence.remove {
+            let category = semantic_evidence_category(&item.kind);
+            if let Some(items) = get_path_mut(value, &["verification", category])
+                .and_then(YamlValue::as_sequence_mut)
+            {
+                items.retain(|existing| existing.as_str() != Some(item.path.as_str()));
+            }
+        }
         for item in &evidence.add {
             append_unique_yaml_string_path(
                 value,
@@ -53706,6 +54308,74 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
             );
         }
     }
+    for section in [
+        "laws",
+        "contracts",
+        "scenarios",
+        "boundaries",
+        "traces",
+        "fuzz",
+        "properties",
+    ] {
+        let items = get_string_array(value, &["verification", section]);
+        if !items.is_empty() {
+            set_yaml_string_sequence_path(
+                value,
+                &["verification", section],
+                &dedup_preserve_order(items),
+            );
+        }
+    }
+}
+
+fn apply_semantic_module_declaration_change(
+    value: &mut YamlValue,
+    change: &SemanticModuleDeclarationChange,
+) {
+    if let Some(purpose) = change.purpose.as_ref() {
+        set_yaml_string_path(value, &["module", "purpose"], purpose);
+    }
+    if let Some(owns) = change.owns.as_ref() {
+        set_yaml_string_sequence_path(value, &["owns", "concepts"], &owns.concepts);
+        set_yaml_string_sequence_path(value, &["owns", "data"], &owns.data);
+        set_yaml_string_sequence_path(value, &["owns", "decisions"], &owns.decisions);
+    }
+    if let Some(effects) = change.effects.as_ref() {
+        let items = effects.iter().map(semantic_module_effect_yaml).collect();
+        set_yaml_sequence_path(value, &["effects"], items);
+    }
+    if let Some(boundary) = change.boundary.as_ref() {
+        set_yaml_value_path(value, &["boundary"], boundary.clone());
+    }
+    if change.remove_boundary {
+        remove_yaml_path(value, &["boundary"]);
+    }
+    if change.remove_scaffold {
+        remove_yaml_path(value, &["x-scaffold"]);
+    }
+    if let Some(justification) = change.no_untrusted_boundary_justification.as_ref() {
+        set_yaml_string_path(
+            value,
+            &["x-rms", "no_untrusted_boundary_justification"],
+            justification,
+        );
+    }
+}
+
+fn semantic_module_effect_yaml(effect: &SemanticModuleEffectChange) -> YamlValue {
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(yaml_key("name"), YamlValue::String(effect.name.clone()));
+    mapping.insert(yaml_key("kind"), YamlValue::String(effect.kind.clone()));
+    if let Some(capability) = effect.capability.as_ref() {
+        mapping.insert(
+            yaml_key("capability"),
+            YamlValue::String(capability.clone()),
+        );
+    }
+    if let Some(semantics) = effect.semantics.as_ref() {
+        mapping.insert(yaml_key("semantics"), semantics.clone());
+    }
+    YamlValue::Mapping(mapping)
 }
 
 fn semantic_composition_export_yaml(export: &SemanticCompositionExport) -> YamlValue {
@@ -54230,6 +54900,17 @@ fn write_semantic_contracts_and_evidence(
             if !path.exists() {
                 fs::write(&path, render_semantic_evidence(item))
                     .with_context(|| format!("failed to write `{}`", path.display()))?;
+            }
+        }
+        let retained_evidence = module_verification_references(&module.value);
+        for item in &evidence.remove {
+            if !item.delete_file || retained_evidence.contains(&item.path) {
+                continue;
+            }
+            let path = base.join(&item.path);
+            if path.is_file() {
+                fs::remove_file(&path)
+                    .with_context(|| format!("failed to remove `{}`", path.display()))?;
             }
         }
     }
@@ -69963,6 +70644,10 @@ machine:
     #[test]
     fn diagnostic_categories_are_conformance_schema_compatible() {
         assert_eq!(diagnostic_category("schema.validate"), "manifest");
+        assert_eq!(
+            diagnostic_category("semantic.public-binding-observation-source-missing"),
+            "semantic"
+        );
         assert_eq!(diagnostic_category("references.contract"), "contracts");
         assert_eq!(
             diagnostic_category("profile.distributed.reconciliation"),
@@ -69971,6 +70656,149 @@ machine:
         assert_eq!(diagnostic_category("structure.machine-missing"), "manifest");
         assert_eq!(diagnostic_category("evidence.placeholder"), "laws");
         assert_eq!(diagnostic_category("security.secret-key"), "security");
+    }
+
+    #[test]
+    fn semantic_declaration_replaces_scaffold_and_removes_obsolete_evidence() {
+        let mut module: YamlValue = serde_yaml::from_str(
+            r#"spec: rms/module/v0.1
+module: {name: typed-boundary, version: 0.1.0, kind: adapter, purpose: Adapt untrusted input.}
+profiles: [boundary]
+owns:
+  concepts: [raw input]
+  data: []
+  decisions: [parse input]
+provides: {commands: [], queries: [], events: [], capabilities: []}
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: [{name: local-boundary-io, kind: local-ui}]
+boundary: {trust_boundary: generated, validation: [Reject malformed input.]}
+compatibility: {policy: backward-compatible-within-major}
+verification:
+  laws: []
+  contracts: [verification/contracts/parser.md]
+  scenarios: []
+  boundaries: [verification/boundaries/malformed.md]
+  fuzz: [verification/fuzz/malformed.md]
+x-scaffold: {shape: boundary-adapter}
+"#,
+        )
+        .unwrap();
+        let change: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+declaration:
+  purpose: Execute typed render effects without parsing raw input.
+  owns:
+    concepts: [typed render request]
+    data: []
+    decisions: [render effect submission]
+  effects: []
+  boundary:
+    trust_boundary: private-typed-render-effect
+    inputs: [validated render request]
+    outputs: [typed render result]
+  remove_scaffold: true
+  no_untrusted_boundary_justification: Every request is validated by the upstream domain module.
+evidence:
+  remove:
+    - {kind: contract, path: verification/contracts/parser.md, delete_file: true}
+    - {kind: boundary, path: verification/boundaries/malformed.md, delete_file: true}
+    - {kind: fuzz, path: verification/fuzz/malformed.md, delete_file: true}
+"#,
+        )
+        .unwrap();
+
+        apply_semantic_change_to_module(&mut module, &change);
+
+        assert_eq!(
+            get_str(&module, &["module", "purpose"]),
+            Some("Execute typed render effects without parsing raw input.")
+        );
+        assert_eq!(
+            get_string_array(&module, &["owns", "concepts"]),
+            vec!["typed render request"]
+        );
+        assert!(get_string_array(&module, &["effects"]).is_empty());
+        assert_eq!(
+            get_str(&module, &["boundary", "trust_boundary"]),
+            Some("private-typed-render-effect")
+        );
+        assert!(get_path(&module, &["x-scaffold"]).is_none());
+        assert_eq!(
+            get_str(&module, &["x-rms", "no_untrusted_boundary_justification"]),
+            Some("Every request is validated by the upstream domain module.")
+        );
+        assert!(get_string_array(&module, &["verification", "contracts"]).is_empty());
+        assert!(get_string_array(&module, &["verification", "boundaries"]).is_empty());
+        assert!(get_string_array(&module, &["verification", "fuzz"]).is_empty());
+    }
+
+    #[test]
+    fn semantic_constructor_policy_uses_set_remove_add_semantics() {
+        let mut implementation: YamlValue = serde_yaml::from_str(
+            "architecture:\n  allowed_missing_constructors: [OldResult, RetainedResult]\n",
+        )
+        .unwrap();
+        let policy: MachineVariantListChange = serde_yaml::from_str(
+            "set: null\nremove: [OldResult]\nadd: [MachineProducedResult, RetainedResult]\n",
+        )
+        .unwrap();
+
+        apply_allowed_missing_constructor_changes(&mut implementation, &policy);
+
+        assert_eq!(
+            get_string_array(
+                &implementation,
+                &["architecture", "allowed_missing_constructors"]
+            ),
+            vec!["RetainedResult", "MachineProducedResult"]
+        );
+    }
+
+    #[test]
+    fn machine_role_set_removes_omitted_existing_role_kinds() {
+        let mut implementation: YamlValue = serde_yaml::from_str(
+            r#"spec: rms/implementation/v0.1
+module: role-replacement
+binding: rust
+architecture:
+  shape: domain-engine
+  machine:
+    name: RoleReplacementMachine
+    mode: stateful-transition-machine
+    states: [Ready]
+    commands: []
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: []
+    replies: []
+    rejections: []
+    transitions: []
+  roles:
+    transition: [src/transition.rs]
+    parser: [src/parser.rs]
+"#,
+        )
+        .unwrap();
+        let change: MachineChange = serde_yaml::from_str(
+            r#"spec: rms/machine-change/v0.1
+machine:
+  mode: stateful-transition-machine
+roles:
+  set:
+    - {kind: transition, path: src/transition.rs}
+"#,
+        )
+        .unwrap();
+
+        apply_machine_change_to_manifest(&mut implementation, &change);
+
+        assert_eq!(
+            get_string_array(&implementation, &["architecture", "roles", "transition"]),
+            vec!["src/transition.rs".to_string()]
+        );
+        assert!(get_path(&implementation, &["architecture", "roles", "parser"]).is_none());
     }
 
     #[test]
@@ -72933,6 +73761,76 @@ architecture:
     }
 
     #[test]
+    fn structure_report_accepts_unknown_effect_result_with_referenced_reconciliation_evidence() {
+        let root = unique_test_dir("structure-unknown-effect-result-reconciled");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("verification/properties")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn transition() {}\n").unwrap();
+        fs::write(
+            root.join("verification/properties/reconciliation.md"),
+            "# Reconciliation evidence\n\nA stale result is reconciled through the transition.\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: {name: checkout-domain, version: 0.1.0, kind: library, purpose: test}
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides: {commands: [], queries: [], events: [], capabilities: []}
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: []
+compatibility: {policy: backward-compatible-within-major}
+verification:
+  laws: []
+  contracts: []
+  scenarios: []
+  boundaries: []
+  properties: [verification/properties/reconciliation.md]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: checkout-domain
+binding: rust
+source: {root: ., public_entrypoint: src/lib.rs}
+commands: {build: cargo check, verify: cargo test}
+architecture:
+  shape: workflow
+  machine:
+    name: CheckoutMachine
+    mode: workflow-effect-machine
+    states: [WaitingForPayment]
+    commands: [CheckoutCommand]
+    events: [CheckoutEvent]
+    effects: [CheckoutEffect]
+    effect_results: [PaymentUnknown]
+    replies: [CheckoutReply]
+    rejections: [CheckoutRejection]
+    transition_function: transition
+  roles:
+    representation: [src/lib.rs]
+    transition: [src/lib.rs]
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            report.diagnostics.iter().all(|diagnostic| {
+                diagnostic.check != "structure.unknown-effect-result-without-reconciliation"
+            }),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
     fn structure_report_flags_outcome_transition_inputs_not_declared_as_effect_results() {
         let root = unique_test_dir("structure-outcome-inputs");
         fs::create_dir_all(root.join("src")).unwrap();
@@ -72990,6 +73888,62 @@ architecture:
     }
 
     #[test]
+    fn structure_report_accepts_outcome_named_observed_event_transition_input() {
+        let root = unique_test_dir("structure-observed-completion-input");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn transition() {}\n").unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: render-boundary
+binding: rust
+source:
+  root: .
+  public_entrypoint: src/lib.rs
+commands:
+  build: cargo check
+  verify: cargo test
+architecture:
+  shape: workflow
+  machine:
+    name: RenderMachine
+    mode: workflow-effect-machine
+    states: [Scheduled, Ready]
+    commands: [Cancel]
+    observed_events: [RenderCompleted]
+    events: [CompletionRecorded]
+    effects: [SubmitRender]
+    effect_results: [RenderScheduled]
+    replies: [Completed]
+    rejections: [IllegalTransition]
+    transition_function: transition
+    transitions:
+      - from: Scheduled
+        on: RenderCompleted
+        to: Ready
+        case: RecordMatchingCompletion
+        event: CompletionRecorded
+        reply: Completed
+  roles:
+    representation: [src/lib.rs]
+    transition: [src/lib.rs]
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            report.diagnostics.iter().all(|diagnostic| {
+                diagnostic.check != "structure.transition-input-not-classified"
+            }),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
     fn structure_report_accepts_parser_role_aliases() {
         let root = unique_test_dir("structure-parser-alias");
         fs::create_dir_all(root.join("src")).unwrap();
@@ -73016,6 +73970,74 @@ architecture:
     boundary_parser:
       - src/parser.mjs
     adapter:
+      - src/adapter.mjs
+"#,
+        )
+        .unwrap();
+
+        let report = build_structure_report(&root.join("implementation.yaml")).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != "structure.boundary-parser-missing"),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn typed_internal_boundary_does_not_require_a_parser_role() {
+        let root = unique_test_dir("structure-typed-internal-boundary");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/adapter.mjs"),
+            "export function handle() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: typed-internal-boundary
+  version: 0.1.0
+  kind: adapter
+  purpose: Submit already validated render requests to a private platform effect.
+profiles: [boundary]
+owns:
+  concepts: [TypedRenderSubmission]
+  data: []
+  decisions: [StaleResultReconciliation]
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: []
+requires:
+  capabilities: []
+effects: []
+x-rms:
+  no_untrusted_boundary_justification: Every request is a validated upstream domain value.
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: typed-internal-boundary
+binding: js
+source:
+  root: .
+  public_entrypoint: src/adapter.mjs
+commands:
+  build: node --check src/adapter.mjs
+  verify: node --check src/adapter.mjs
+architecture:
+  shape: boundary-adapter
+  roles:
+    effect_executor:
       - src/adapter.mjs
 "#,
         )
@@ -76118,6 +77140,89 @@ semantic_functions:
             &manifest,
             "tests/property.mjs#runProperty",
             None,
+            None,
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(calls_operation);
+    }
+
+    #[test]
+    fn swift_property_runner_resolves_property_specific_constructor_operation() {
+        let root = unique_test_dir("swift-property-constructor-operation");
+        fs::create_dir_all(root.join("Sources")).unwrap();
+        fs::create_dir_all(root.join("Tests")).unwrap();
+        fs::write(
+            root.join("Sources/Readiness.swift"),
+            "public struct Readiness { public init(ready: Bool) {} }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Tests/ReadinessTests.swift"),
+            "func readinessProperty() { let value = Readiness(ready: true); assert(String(describing: value).isEmpty == false) }\n",
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: root.join("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"spec: rms/implementation/v0.1
+module: swift-property
+binding: swift
+semantic_functions: []
+"#,
+            )
+            .unwrap(),
+        };
+        let operation: YamlValue = serde_yaml::from_str(
+            "symbol: Sources/Readiness.swift#Readiness\nbehavior: construct readiness\n",
+        )
+        .unwrap();
+
+        let calls_operation = property_runner_calls_operation(
+            &root,
+            &manifest,
+            "Tests/ReadinessTests.swift#readinessProperty",
+            None,
+            Some(&operation),
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(calls_operation);
+    }
+
+    #[test]
+    fn swift_property_runner_resolves_type_qualified_instance_member_operation() {
+        let root = unique_test_dir("swift-property-instance-member-operation");
+        fs::create_dir_all(root.join("Sources")).unwrap();
+        fs::create_dir_all(root.join("Tests")).unwrap();
+        fs::write(
+            root.join("Sources/Executor.swift"),
+            "public final class Executor { public func submit() -> Bool { true } }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Tests/ExecutorTests.swift"),
+            "func submissionProperty() { let executor = Executor(); assert(executor.submit()) }\n",
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: root.join("implementation.yaml"),
+            value: serde_yaml::from_str(
+                "spec: rms/implementation/v0.1\nmodule: swift-property\nbinding: swift\nsemantic_functions: []\n",
+            )
+            .unwrap(),
+        };
+        let operation: YamlValue = serde_yaml::from_str(
+            "symbol: Sources/Executor.swift#Executor.submit\nbehavior: submit work\n",
+        )
+        .unwrap();
+
+        let calls_operation = property_runner_calls_operation(
+            &root,
+            &manifest,
+            "Tests/ExecutorTests.swift#submissionProperty",
+            None,
+            Some(&operation),
         );
 
         fs::remove_dir_all(&root).unwrap();

@@ -115,6 +115,7 @@
           "category": {
             "enum": [
               "manifest",
+              "semantic",
               "ownership",
               "dependencies",
               "effects",
