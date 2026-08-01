@@ -56272,6 +56272,7 @@ struct PackageManifest {
     spec: &'static str,
     module: String,
     version: String,
+    root_manifest: String,
     source: PackageSource,
     validator: PackageValidator,
     files: Vec<PackageFile>,
@@ -56354,34 +56355,22 @@ fn package_module(
         .unwrap_or_else(|| default_package_output(module_name, module_version));
 
     prepare_package_output(&output, force)?;
-
-    let mut sources = BTreeSet::new();
-    sources.insert(module.path.clone());
-    for reference in package_referenced_paths(&module.value) {
-        sources.insert(module_base.join(reference));
-    }
+    let module_index = load_module_index(&rms_root_for(&module.path))?;
+    let root_manifest = module
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("module.yaml")
+        .to_string();
+    package_module_payload(
+        &module,
+        &output,
+        &root_manifest,
+        &module_index,
+        &mut BTreeSet::new(),
+    )?;
 
     let implementation = sibling_implementation_manifest(module_base, module_name)?;
-    if let Some(implementation) = &implementation {
-        validate_loaded_manifest(implementation, &mut diagnostics);
-        if diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity == Severity::Error)
-        {
-            bail!(
-                "implementation has validation errors; run `rms validate --implementation {}`",
-                implementation.path.display()
-            );
-        }
-        sources.insert(implementation.path.clone());
-        for reference in package_implementation_referenced_paths(&implementation.value) {
-            sources.insert(module_base.join(reference));
-        }
-    }
-
-    for source in &sources {
-        copy_package_source(module_base, source, &output)?;
-    }
 
     let conformance = build_conformance_report(
         &module.path,
@@ -56402,6 +56391,7 @@ fn package_module(
         spec: "rms/package/v0.1",
         module: module_name.to_string(),
         version: module_version.to_string(),
+        root_manifest,
         source: PackageSource {
             revision: source_revision(module_base).unwrap_or_else(|| "unknown".to_string()),
         },
@@ -56420,6 +56410,129 @@ fn package_module(
     .with_context(|| format!("failed to write `{}`", package_manifest_path.display()))?;
 
     Ok(PackageBuildResult { output })
+}
+
+fn package_module_payload(
+    module: &LoadedManifest,
+    output_base: &Path,
+    manifest_name: &str,
+    module_index: &BTreeMap<String, ModuleIndexEntry>,
+    active_modules: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    let canonical_module_path = module.path.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize contained module `{}`",
+            module.path.display()
+        )
+    })?;
+    if !active_modules.insert(canonical_module_path.clone()) {
+        bail!(
+            "composite package contains a module cycle at `{}`",
+            module.path.display()
+        );
+    }
+
+    let result = (|| {
+        let module_base = module.path.parent().unwrap_or_else(|| Path::new("."));
+        let module_name = get_str(&module.value, &["module", "name"]).unwrap_or("module");
+        let children = composition_children_for(module_name, &module.value);
+        let child_reference_paths = children
+            .iter()
+            .filter_map(|child| child.path.clone())
+            .collect::<BTreeSet<_>>();
+
+        fs::create_dir_all(output_base).with_context(|| {
+            format!(
+                "failed to create package payload directory `{}`",
+                output_base.display()
+            )
+        })?;
+
+        let mut sources = BTreeSet::new();
+        for reference in package_referenced_paths(&module.value) {
+            if !child_reference_paths.contains(&reference) {
+                sources.insert(module_base.join(reference));
+            }
+        }
+
+        if let Some(implementation) = sibling_implementation_manifest(module_base, module_name)? {
+            let mut diagnostics = Vec::new();
+            validate_loaded_manifest(&implementation, &mut diagnostics);
+            if diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Severity::Error)
+            {
+                bail!(
+                    "implementation has validation errors; run `rms validate --implementation {}`",
+                    implementation.path.display()
+                );
+            }
+            sources.insert(implementation.path.clone());
+            for reference in package_implementation_referenced_paths(&implementation.value) {
+                sources.insert(module_base.join(reference));
+            }
+        }
+
+        for source in &sources {
+            copy_package_source(module_base, source, output_base)?;
+        }
+
+        let mut packaged_value = module.value.clone();
+        if let Some(entries) = get_path_mut(&mut packaged_value, &["composition", "contains"])
+            .and_then(YamlValue::as_sequence_mut)
+        {
+            for entry in entries {
+                let child_name = get_str(entry, &["name"])
+                    .ok_or_else(|| anyhow!("contained module is missing its name"))?
+                    .to_string();
+                let source_path = get_str(entry, &["path"])
+                    .map(|path| module_base.join(path))
+                    .or_else(|| {
+                        module_index
+                            .get(&child_name)
+                            .map(|child| child.path.clone())
+                    })
+                    .ok_or_else(|| {
+                        anyhow!("contained module `{child_name}` has no resolvable module manifest")
+                    })?;
+                let child = load_manifest(&source_path)?;
+                let declared_child_name = get_str(&child.value, &["module", "name"])
+                    .ok_or_else(|| anyhow!("contained module manifest has no module name"))?;
+                if declared_child_name != child_name {
+                    bail!(
+                        "contained module `{child_name}` resolves to manifest for `{declared_child_name}`"
+                    );
+                }
+
+                let child_directory =
+                    PathBuf::from("composition").join(sanitize_package_component(&child_name));
+                let packaged_child_manifest = child_directory.join("module.yaml");
+                ensure_yaml_mapping(entry).insert(
+                    yaml_key("path"),
+                    YamlValue::String(package_path_string(&packaged_child_manifest)),
+                );
+                package_module_payload(
+                    &child,
+                    &output_base.join(&child_directory),
+                    "module.yaml",
+                    module_index,
+                    active_modules,
+                )?;
+            }
+        }
+
+        let destination = output_base.join(manifest_name);
+        fs::write(&destination, serde_yaml::to_string(&packaged_value)?).with_context(|| {
+            format!(
+                "failed to write packaged module manifest `{}`",
+                destination.display()
+            )
+        })?;
+        Ok(())
+    })();
+
+    active_modules.remove(&canonical_module_path);
+    result
 }
 
 fn default_package_output(module_name: &str, module_version: &str) -> PathBuf {
@@ -57201,6 +57314,13 @@ fn verify_package_manifests(
         }
     }
 
+    let root_manifest = package_json_string(package_manifest, "root_manifest")
+        .and_then(package_relative_path)
+        .map(|path| package.join(path));
+    let selected_root = root_manifest
+        .filter(|path| path.is_file())
+        .or_else(|| (module_manifests.len() == 1).then(|| module_manifests[0].clone()));
+
     if module_manifests.is_empty() {
         findings.push(verify_package_finding(
             VerifyPackageStatus::Fail,
@@ -57208,19 +57328,28 @@ fn verify_package_manifests(
             Some(package),
             "package must contain one RMS module manifest",
         ));
-    } else if module_manifests.len() > 1 {
+    } else if selected_root.is_none() {
         findings.push(verify_package_finding(
             VerifyPackageStatus::Fail,
-            "package.module-manifest.count",
+            "package.module-manifest.root",
             Some(package),
             format!(
-                "package must contain exactly one RMS module manifest, found {}",
+                "package contains {} RMS module manifests but PACKAGE.json does not identify a valid root_manifest",
                 module_manifests.len()
             ),
         ));
     } else {
-        let module_manifest = load_manifest(&module_manifests[0])?;
+        let module_manifest = load_manifest(selected_root.as_ref().unwrap())?;
         verify_package_module_identity(&module_manifest, package_manifest, findings);
+        findings.push(verify_package_finding(
+            VerifyPackageStatus::Pass,
+            "package.module-manifest.closure",
+            Some(&module_manifest.path),
+            format!(
+                "package contains its root module and {} contained module manifest(s)",
+                module_manifests.len().saturating_sub(1)
+            ),
+        ));
     }
 
     if conformance_found {
@@ -85202,6 +85331,31 @@ roles:
         assert!(package_manifest.contains("\"module\": \"package-fixture\""));
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn package_includes_and_rewrites_composite_child_closure() {
+        let root = unique_test_dir("package-composite-closure");
+        write_composite_verify_fixture(&root);
+        let output = root.join("out.rms");
+
+        package_module(&root.join("parent.module.yaml"), Some(&output), false).unwrap();
+
+        let packaged_parent = fs::read_to_string(output.join("parent.module.yaml")).unwrap();
+        assert!(packaged_parent.contains("path: composition/child/module.yaml"));
+        assert!(output.join("composition/child/module.yaml").exists());
+        assert!(output
+            .join("composition/child/implementation.yaml")
+            .exists());
+        assert!(output.join("composition/child/scripts/smoke.sh").exists());
+        let report = verify_package(&output).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, VerifyPackageResult::Pass, "{report:#?}");
+        assert!(report.findings.iter().any(|finding| {
+            finding.check == "package.module-manifest.closure"
+                && finding.status == VerifyPackageStatus::Pass
+        }));
     }
 
     #[test]
