@@ -319,6 +319,28 @@ Do not hand-edit canonical manifests, contracts, semantic functions, behavior bi
 
 If the CLI cannot express a required semantic change, report the RMS gap rather than bypassing the declaration gate.
 
+A focused probe-capable machine change uses the same `rms/machine-change/v0.1` object for the command binding, initial state, probe protocol, and adapter role:
+
+```yaml
+spec: rms/machine-change/v0.1
+commands:
+  probe: swift test --filter MachineProbeTests/testProbeMachine
+machine:
+  mode: stateful-transition-machine
+  initial_state: Idle
+probe:
+  protocol: rms/machine-probe/v0.2
+  command: probe
+  runner: Tests/SecureMediaSessionTests/MachineProbeTests.swift#testProbeMachine
+  initial_state_function: Sources/SecureMediaSession/Representation.swift#SecureMediaSessionWorkflowState.initial
+roles:
+  add:
+    - kind: probe_adapter
+      path: Tests/SecureMediaSessionTests/MachineProbeTests.swift
+```
+
+Omit unchanged optional sections. Run `rms machine apply <implementation.yaml> --change-yaml '<change>' --dry-run --route-receipt <receipt>` before the real apply; use `rms spec apply` instead when laws, contracts, effects, properties, or evidence obligations change.
+
 ## Proof and Completion
 
 Focused proof is selected from the promises affected by the change:
@@ -410,6 +432,8 @@ Equivalent copies are informational. Divergent, incomplete, unreadable, or confi
 Detection does not prove runtime activation in the current task. Runtime activation is `unknown`, and precedence is `host-defined`, because the CLI cannot inspect the host's injected skill catalog.
 
 All five primary commands and help are provider-free. Provider-backed planning or explanation is explicit, specialist, and advisory until a canonical apply succeeds.
+
+Before provider-backed `--ai` work, `rms check --environment --root .` verifies structured-output support and the effective Codex model against the installed CLI's bundled model catalog. `ai.codex.model` in project configuration takes precedence over the Codex user model; otherwise the provider default remains provider-owned. If readiness reports an unavailable or upgrade-gated model, update Codex and rerun the environment check, or explicitly pin `ai.codex.model` to a model supported by that installation. RMS never silently substitutes a model. If provider execution still fails, rerun the exact task after repairing the provider; do not infer an owner or synthesize typed intent as an automatic fallback.
 
 RMS does not grant source-edit, provider, Git, release, deployment, or production authority.
 

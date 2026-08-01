@@ -748,6 +748,8 @@ Production trace bundles declare `architecture.trace.producers[]` with a profile
 
 Inspectable Rust, Swift, JavaScript, and Python implementations also declare `commands.probe`, `architecture.probe`, and `architecture.roles.probe_adapter`. The adapter receives temporary request/output paths through `RMS_PROBE_REQUEST` and `RMS_PROBE_OUTPUT`, is selected by `RMS_PROBE_RUNNER`, calls the exact transition-record function, and chains returned `state_after`. It must not call the driver or any effect executor. Fixture and opaque executable bindings are exempt.
 
+Binding references use an exact relative `path#symbol`. Swift symbols may name a declared type-qualified static `let`, `var`, or function member, such as `Sources/SecureMediaSession/Representation.swift#SecureMediaSessionWorkflowState.initial`; a redundant free-function alias is not required.
+
 ### Applied Semantic Revision
 
 `rms spec apply`, `rms machine apply`, and `rms surface apply` record the exact accepted change and write an `x-rms.semantic_revision` seal into the owning module and implementation manifests. The seal covers canonical module semantics, local referenced contracts, and implementation semantics while excluding the seal metadata itself.
@@ -781,6 +783,8 @@ Recommended fields:
 Prefer typed representations over repeated preconditions. A constructor or parser should discharge raw-value assumptions once, so later decision and transition functions can accept validated values.
 
 Add, replace, or remove these bindings through `rms spec apply` with `semantic_functions.add/set/remove`. RMS validates the final authority graph, prints it during dry-run, records the exact operation, and rejects removal of the last owner of an active non-composition invariant. Direct edits are semantic revision drift.
+
+Concrete evidence attached to the exact semantic function that discharges or enforces an invariant satisfies that invariant's evidence closure. The evidence must still exist and prove the declared behavior; a symbol binding or semantic-shape assertion alone is not concrete proof.
 
 ## 6. `conformance-report.json`
 
