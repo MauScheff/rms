@@ -669,7 +669,7 @@ fn discover_lanes(
             .collect::<Vec<_>>();
         let temporal_properties = properties
             .iter()
-            .filter(|property| get_path(property, &["temporal"]).is_some())
+            .filter(|property| property_has_executable_expression(property))
             .filter_map(|property| get_str(property, &["id"]))
             .collect::<Vec<_>>();
         let trace_producers = get_path(&value, &["architecture", "trace", "producers"])
@@ -792,9 +792,10 @@ fn discover_lanes(
         }
         let mut historical_paths = BTreeMap::<PathBuf, String>::new();
         let mut relationship_assemblies =
-            BTreeMap::<PathBuf, (YamlValue, std::collections::BTreeSet<String>)>::new();
+            BTreeMap::<PathBuf, (YamlValue, std::collections::BTreeSet<String>, bool)>::new();
         for property in &properties {
             let property_id = get_str(property, &["id"]).unwrap_or("unnamed").to_string();
+            let has_executable_expression = property_has_executable_expression(property);
             if let Some(counterexamples) = get_str(property, &["counterexamples", "path"]) {
                 let directory = implementation
                     .parent()
@@ -878,15 +879,20 @@ fn discover_lanes(
                 };
                 relationship_assemblies
                     .entry(implementation.parent().unwrap_or(checkout).join(assembly))
-                    .and_modify(|(_, properties)| {
+                    .and_modify(|(_, properties, has_executable)| {
                         properties.insert(property_id.clone());
+                        *has_executable |= has_executable_expression;
                     })
                     .or_insert_with(|| {
                         (
                             exploration.clone(),
                             std::collections::BTreeSet::from([property_id.clone()]),
+                            has_executable_expression,
                         )
                     });
+                if !has_executable_expression {
+                    continue;
+                }
                 let goal = get_str(exploration, &["goal"]).unwrap_or("violate");
                 let mut arguments = vec![
                     "property".to_string(),
@@ -1003,7 +1009,7 @@ fn discover_lanes(
                 },
             });
         }
-        for (analysis_index, (assembly, (exploration, properties))) in
+        for (analysis_index, (assembly, (exploration, properties, has_executable_expression))) in
             relationship_assemblies.into_iter().enumerate()
         {
             let guided_property = (properties.len() == 1)
@@ -1042,6 +1048,9 @@ fn discover_lanes(
                     max_states,
                 },
             });
+            if !has_executable_expression {
+                continue;
+            }
             let mut arguments = vec![
                 "property".to_string(),
                 "analyze".to_string(),
@@ -1098,6 +1107,12 @@ fn discover_lanes(
             .then_with(|| left.report.id.cmp(&right.report.id))
     });
     Ok(lanes)
+}
+
+fn property_has_executable_expression(property: &YamlValue) -> bool {
+    ["temporal", "step"]
+        .iter()
+        .any(|field| get_path(property, &[*field]).is_some_and(|value| !value.is_null()))
 }
 
 fn selected_module_closure(
@@ -2317,6 +2332,53 @@ mod tests {
             declaration_digest(&repository, None, Some(assembly)).unwrap(),
             sha256_bytes(&[])
         );
+    }
+
+    #[test]
+    fn semantic_explorations_plan_guided_lanes_without_invalid_solver_lanes() {
+        let root = std::env::temp_dir().join(format!(
+            "rms-hunt-semantic-exploration-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let module = root.join("modules/example");
+        fs::create_dir_all(module.join("verification/assemblies")).unwrap();
+        fs::write(
+            module.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: example
+architecture:
+  reliability:
+    properties:
+    - id: semantic-only
+      temporal: null
+      explorations:
+      - assembly: verification/assemblies/semantic.yaml
+        goal: violate
+        bounds: { max_steps: 4, max_schedules: 8, max_states: 8 }
+"#,
+        )
+        .unwrap();
+        let lanes = discover_lanes(&root, &root, None, 30, &root.join("run")).unwrap();
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].report.strategy, "guided-semantic-novelty-v1");
+        assert!(!lanes.iter().any(|lane| {
+            matches!(
+                lane.report.strategy.as_str(),
+                "probe-search" | "finite-model-analysis"
+            )
+        }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn executable_property_detection_rejects_null_placeholders() {
+        let semantic: YamlValue = serde_yaml::from_str("temporal: null\nstep: null\n").unwrap();
+        let temporal: YamlValue = serde_yaml::from_str("temporal: {scope: machine}\n").unwrap();
+        let behavioral: YamlValue = serde_yaml::from_str("step: {requires: []}\n").unwrap();
+        assert!(!property_has_executable_expression(&semantic));
+        assert!(property_has_executable_expression(&temporal));
+        assert!(property_has_executable_expression(&behavioral));
     }
 
     #[test]
