@@ -2373,6 +2373,8 @@ struct SemanticChange {
     #[serde(default)]
     contracts: Option<SemanticContractsChange>,
     #[serde(default)]
+    composition_exports: Option<SemanticCompositionExportsChange>,
+    #[serde(default)]
     properties: Option<SemanticPropertiesChange>,
     #[serde(default)]
     hunt_exceptions: Option<SemanticHuntExceptionsChange>,
@@ -2404,6 +2406,34 @@ struct SemanticChange {
     public_behavior_bindings: Option<PublicBehaviorBindingsChange>,
     #[serde(default)]
     dependency_behavior_bindings: Option<DependencyBehaviorBindingsChange>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticCompositionExportsChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<SemanticCompositionExport>>,
+    #[serde(default)]
+    add: Vec<SemanticCompositionExport>,
+    #[serde(default)]
+    remove: Vec<SemanticCompositionExportKey>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticCompositionExport {
+    group: String,
+    name: String,
+    from: String,
+    #[serde(default)]
+    contract: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticCompositionExportKey {
+    group: String,
+    name: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -47893,6 +47923,16 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "  set: []")?;
     writeln!(out, "  remove: []")?;
+    if context
+        .module
+        .as_ref()
+        .is_some_and(|module| get_str(&module.value, &["module", "kind"]) == Some("composite"))
+    {
+        writeln!(out, "composition_exports:")?;
+        writeln!(out, "  set: null")?;
+        writeln!(out, "  add: []")?;
+        writeln!(out, "  remove: []")?;
+    }
     writeln!(out, "artifacts:")?;
     writeln!(out, "  add: []")?;
     writeln!(out, "  set: []")?;
@@ -48017,7 +48057,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations` with `assembly`, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. On a composite target, `composition_exports.set[]` and `.add[]` use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`; `.remove[]` uses exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations` with `assembly`, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
     writeln!(out)?;
     writeln!(out, "A bounded response measured in nominal transitions uses this exact executable shape inside `properties.add[]` or `properties.set[]`:")?;
     writeln!(out, "```yaml")?;
@@ -49384,6 +49424,10 @@ fn validate_semantic_change(
     let has_contracts = change.contracts.as_ref().is_some_and(|contracts| {
         !contracts.add.is_empty() || !contracts.replace.is_empty() || !contracts.remove.is_empty()
     });
+    let has_composition_exports = change
+        .composition_exports
+        .as_ref()
+        .is_some_and(semantic_composition_exports_change_has_operations);
     let has_properties = change.properties.as_ref().is_some_and(|properties| {
         !properties.add.is_empty()
             || !properties.replace.is_empty()
@@ -49444,6 +49488,7 @@ fn validate_semantic_change(
         semantic_machine_change_requests_change(change, context.implementation.as_ref());
     if !has_laws
         && !has_contracts
+        && !has_composition_exports
         && !has_properties
         && !has_hunt_exceptions
         && !has_trace_producers
@@ -49474,6 +49519,7 @@ fn validate_semantic_change(
         .unwrap_or(&[]);
     validate_semantic_laws(context, change, evidence_items, &mut diagnostics);
     validate_semantic_contracts(context, change, evidence_items, &mut diagnostics);
+    validate_semantic_composition_exports(context, change, &mut diagnostics);
     validate_semantic_properties(context, change, evidence_items, &mut diagnostics);
     validate_trace_producers(context, change, &mut diagnostics);
     validate_semantic_functions(context, change, &mut diagnostics);
@@ -49488,6 +49534,109 @@ fn validate_semantic_change(
     validate_public_behavior_bindings(context, change, &mut diagnostics);
     validate_dependency_behavior_bindings(context, change, &mut diagnostics);
     diagnostics
+}
+
+fn semantic_composition_exports_change_has_operations(
+    change: &SemanticCompositionExportsChange,
+) -> bool {
+    change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty()
+}
+
+fn validate_semantic_composition_exports(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(exports) = change.composition_exports.as_ref() else {
+        return;
+    };
+    let Some(module) = context.module.as_ref() else {
+        diagnostics.push(error(
+            "semantic.composition-export-module-missing",
+            &context.target,
+            "composition exports require a module manifest",
+        ));
+        return;
+    };
+    if get_str(&module.value, &["module", "kind"]) != Some("composite") {
+        diagnostics.push(error(
+            "semantic.composition-export-non-composite",
+            &context.target,
+            "composition exports may be changed only on a composite module",
+        ));
+    }
+    let children = get_path(&module.value, &["composition", "contains"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| get_str(item, &["name"]))
+        .collect::<BTreeSet<_>>();
+    let validate_export = |export: &SemanticCompositionExport,
+                           diagnostics: &mut Vec<Diagnostic>| {
+        if !matches!(
+            export.group.as_str(),
+            "commands" | "queries" | "events" | "capabilities"
+        ) {
+            diagnostics.push(error(
+                "semantic.composition-export-group",
+                &context.target,
+                format!("unsupported composition export group `{}`", export.group),
+            ));
+        }
+        if !is_stable_semantic_id(&export.name) {
+            diagnostics.push(error(
+                "semantic.composition-export-name",
+                &context.target,
+                format!(
+                    "composition export name `{}` is not a stable semantic id",
+                    export.name
+                ),
+            ));
+        }
+        if !children.contains(export.from.as_str()) {
+            diagnostics.push(error(
+                "semantic.composition-export-child",
+                &context.target,
+                format!(
+                    "composition export `{}` names undeclared child `{}`",
+                    export.name, export.from
+                ),
+            ));
+        }
+        if export
+            .contract
+            .as_deref()
+            .is_some_and(|path| !is_safe_relative_artifact_path(path))
+        {
+            diagnostics.push(error(
+                "semantic.composition-export-contract",
+                &context.target,
+                format!(
+                    "composition export `{}` has an unsafe contract path",
+                    export.name
+                ),
+            ));
+        }
+    };
+    for export in exports.replace.iter().flatten().chain(exports.add.iter()) {
+        validate_export(export, diagnostics);
+    }
+    for removed in &exports.remove {
+        if !matches!(
+            removed.group.as_str(),
+            "commands" | "queries" | "events" | "capabilities"
+        ) || !is_stable_semantic_id(&removed.name)
+        {
+            diagnostics.push(error(
+                "semantic.composition-export-remove",
+                &context.target,
+                format!(
+                    "invalid composition export removal `{}:{}`",
+                    removed.group, removed.name
+                ),
+            ));
+        }
+    }
 }
 
 fn trace_producers_change_has_operations(change: &TraceProducersChange) -> bool {
@@ -53500,6 +53649,9 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
     if let Some(contracts) = &change.contracts {
         apply_semantic_contract_changes_to_module(value, contracts);
     }
+    if let Some(exports) = &change.composition_exports {
+        apply_semantic_composition_export_changes_to_module(value, exports);
+    }
     if let Some(properties) = &change.properties {
         apply_semantic_property_changes_to_module(value, properties);
     }
@@ -53552,6 +53704,45 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
                 &["verification", semantic_evidence_category(&item.kind)],
                 &item.path,
             );
+        }
+    }
+}
+
+fn semantic_composition_export_yaml(export: &SemanticCompositionExport) -> YamlValue {
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(yaml_key("group"), YamlValue::String(export.group.clone()));
+    mapping.insert(yaml_key("name"), YamlValue::String(export.name.clone()));
+    mapping.insert(yaml_key("from"), YamlValue::String(export.from.clone()));
+    if let Some(contract) = &export.contract {
+        mapping.insert(yaml_key("contract"), YamlValue::String(contract.clone()));
+    }
+    YamlValue::Mapping(mapping)
+}
+
+fn apply_semantic_composition_export_changes_to_module(
+    value: &mut YamlValue,
+    change: &SemanticCompositionExportsChange,
+) {
+    let exports = ensure_yaml_sequence_path(value, &["composition", "exports"]);
+    if let Some(replacement) = &change.replace {
+        *exports = replacement
+            .iter()
+            .map(semantic_composition_export_yaml)
+            .collect();
+    }
+    exports.retain(|item| {
+        !change.remove.iter().any(|removed| {
+            get_str(item, &["group"]) == Some(removed.group.as_str())
+                && get_str(item, &["name"]) == Some(removed.name.as_str())
+        })
+    });
+    for export in &change.add {
+        let already_present = exports.iter().any(|item| {
+            get_str(item, &["group"]) == Some(export.group.as_str())
+                && get_str(item, &["name"]) == Some(export.name.as_str())
+        });
+        if !already_present {
+            exports.push(semantic_composition_export_yaml(export));
         }
     }
 }
@@ -74726,6 +74917,71 @@ evidence:
         assert_eq!(module.matches("id: writes-are-explicit").count(), 1);
         assert!(module.contains("authority: effect-executor"));
         assert!(module.contains("enforced_by: write_if_changed"));
+    }
+
+    #[test]
+    fn spec_apply_replaces_composite_exports_atomically() {
+        let root = unique_test_dir("spec-apply-composition-exports");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: media, version: 0.1.0, kind: composite, purpose: Compose media. }
+profiles: [core]
+owns: { concepts: [composition], data: [], decisions: [exports] }
+provides: { commands: [], queries: [], events: [], capabilities: [] }
+requires: { modules: [], capabilities: [] }
+composition:
+  contains:
+    - { name: media-domain, visibility: internal, path: ../media-domain/module.yaml }
+    - { name: media-boundary, visibility: internal, path: ../media-boundary/module.yaml }
+  exports:
+    - { group: commands, name: legacy-media, from: media-boundary }
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+composition_exports:
+  set:
+    - group: capabilities
+      name: media-playout
+      from: media-domain
+      contract: contracts/media-playout.v1.yaml
+    - group: capabilities
+      name: media-render
+      from: media-boundary
+  add: []
+  remove: []
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let module = load_manifest(&root.join("module.yaml")).unwrap();
+        let exports = get_path(&module.value, &["composition", "exports"])
+            .and_then(YamlValue::as_sequence)
+            .unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(exports.len(), 2);
+        assert!(exports.iter().all(|item| {
+            get_str(item, &["group"]) == Some("capabilities")
+                && get_str(item, &["name"]) != Some("legacy-media")
+        }));
+        assert_eq!(
+            get_str(&exports[0], &["contract"]),
+            Some("contracts/media-playout.v1.yaml")
+        );
     }
 
     #[test]
