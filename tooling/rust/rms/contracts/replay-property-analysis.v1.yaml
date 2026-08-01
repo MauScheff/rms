@@ -1,18 +1,41 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: replay-property-analysis
 version: 1
 kind: command
-meaning: Re-evaluate a recorded witness, counterexample, or relational refutation using its property definition, trace, source digests, and decisions.
-preconditions:
-- id: accepts-1
-  statement: A readable rms/property-analysis/v0.1 artifact with replay evidence.
-postconditions:
-- id: ensures-1
-  statement: Recorded digests and embedded evidence are checked before the property is re-evaluated.
-- id: ensures-2
-  statement: Replay reports the current verdict without changing canonical semantics.
-failure_categories:
-- id: rejects-1
-  statement: Malformed analysis, missing evidence, digest drift, invalid embedded properties, or non-reproducible decisions.
+meaning: Re-evaluate a recorded witness, counterexample, or relational refutation
+  using its property definition, trace, source digests, and decisions.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A readable rms/property-analysis/v0.1 artifact with replay evidence.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Recorded digests and embedded evidence are checked before the property
+        is re-evaluated.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Replay reports the current verdict without changing canonical semantics.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Malformed analysis, missing evidence, digest drift, invalid embedded
+        properties, or non-reproducible decisions.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

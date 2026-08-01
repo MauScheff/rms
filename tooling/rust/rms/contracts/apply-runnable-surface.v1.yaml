@@ -1,28 +1,68 @@
-spec: rms/contract/v0.1
-name: "apply-runnable-surface"
+spec: rms/contract/v0.2
+name: apply-runnable-surface
 version: 1
 kind: command
-meaning: "Validate and apply a runnable surface with boundary delegation, usage documentation, and an executable smoke command key."
-preconditions:
-  - id: "accepts-1"
-    statement: "an implementation binding and a language-neutral runnable surface declaration"
-  - id: "accepts-2"
-    statement: "a safe module-relative entrypoint, usage document, evidence path, and declared smoke command key"
-postconditions:
-  - id: "ensures-1"
-    statement: "architecture surfaces and runnable roles are updated canonically"
-  - id: "ensures-2"
-    statement: "a missing default smoke command is derived from the binding verify command"
-  - id: "ensures-3"
-    statement: "a concrete usage document and surface evidence are created or preserved"
-  - id: "ensures-4"
-    statement: "dry-run reports the final declaration and planned writes without mutation"
-failure_categories:
-  - id: "rejects-1"
-    statement: "unsupported surface kinds or hosts"
-  - id: "rejects-2"
-    statement: "unsafe artifact paths"
-  - id: "rejects-3"
-    statement: "missing boundary delegation, effect policy, or smoke command"
+meaning: Validate and apply a runnable surface with boundary delegation, usage documentation,
+  and an executable smoke command key.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: an implementation binding and a language-neutral runnable surface
+        declaration
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: a safe module-relative entrypoint, usage document, evidence path,
+        and declared smoke command key
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: architecture surfaces and runnable roles are updated canonically
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: a missing default smoke command is derived from the binding verify
+        command
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: a concrete usage document and surface evidence are created or preserved
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: dry-run reports the final declaration and planned writes without
+        mutation
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: unsupported surface kinds or hosts
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: unsafe artifact paths
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-3
+      statement: missing boundary delegation, effect policy, or smoke command
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

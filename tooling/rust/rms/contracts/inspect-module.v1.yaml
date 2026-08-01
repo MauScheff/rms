@@ -1,13 +1,29 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: inspect-module
 version: 1
 kind: query
-meaning: Print a concise module brief covering ownership, contracts, profiles, invariants, effects, compatibility, and verification evidence.
-preconditions:
-  - id: target-module-readable
-    statement: The target module manifest is readable and parseable.
-postconditions:
-  - id: brief-derived-from-manifest
-    statement: The module brief is derived from the target manifest.
+meaning: Print a concise module brief covering ownership, contracts, profiles, invariants,
+  effects, compatibility, and verification evidence.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: target-module-readable
+      statement: The target module manifest is readable and parseable.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: brief-derived-from-manifest
+      statement: The module brief is derived from the target manifest.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures: []
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

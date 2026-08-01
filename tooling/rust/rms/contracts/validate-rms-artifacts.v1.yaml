@@ -1,18 +1,43 @@
-spec: rms/contract/v0.1
-name: "validate-rms-artifacts"
+spec: rms/contract/v0.2
+name: validate-rms-artifacts
 version: 1
 kind: command
-meaning: "Validate RMS manifests, contracts, implementations, protocols, resources, artifacts, authorities, properties, and evidence against canonical schemas and semantic reference rules."
-preconditions:
-  - id: "accepts-1"
-    statement: "A root or file containing supported RMS canonical artifacts."
-postconditions:
-  - id: "ensures-1"
-    statement: "Every canonical reference resolves with stable identifiers and valid ownership."
-  - id: "ensures-2"
-    statement: "Protocol, resource, artifact, authority, and temporal declarations are structurally and referentially coherent."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Schema violations, unknown references, duplicate identifiers, invalid ownership, or incoherent semantic automata."
+meaning: Validate RMS manifests, contracts, implementations, protocols, resources,
+  artifacts, authorities, properties, and evidence against canonical schemas and semantic
+  reference rules.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A root or file containing supported RMS canonical artifacts.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Every canonical reference resolves with stable identifiers and valid
+        ownership.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Protocol, resource, artifact, authority, and temporal declarations
+        are structurally and referentially coherent.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Schema violations, unknown references, duplicate identifiers, invalid
+        ownership, or incoherent semantic automata.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

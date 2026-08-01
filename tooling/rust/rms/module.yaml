@@ -39,6 +39,11 @@ owns:
   - RMS proof-first hunt
   - RMS hunt lane result
   - RMS hunt report
+  - RMS behavioral contract
+  - RMS behavioral contract clause
+  - RMS invocation record
+  - RMS property analysis
+  - RMS compatibility analysis
   data:
   - embedded RMS schemas
   - embedded RMS prompt templates
@@ -59,6 +64,8 @@ owns:
   - generated runnable surface evidence
   - checkpointed local hunt campaigns
   - generated hunt lane results and reports
+  - generated behavioral-contract analyses and replayable counterexamples
+  - generated solver-neutral SMT-LIB obligations and conservative solver evidence
   - optional workbench configuration
   decisions:
   - manifest-validation-result
@@ -78,6 +85,10 @@ owns:
   - workbench-config-resolution
   - workbench-config-initialization
   - release-readiness-result
+  - behavioral-contract-validation-result
+  - behavioral-contract-evaluation-verdict
+  - behavioral-compatibility-refinement-result
+  - behavioral-monitoring-coverage-result
   - production-readiness-audit-result
   - module-atlas-shape
   - implementation-inner-structure-result
@@ -308,6 +319,12 @@ invariants:
   kind: invariant
   authority: parser
   enforced_by: semantic-property-check-command
+- id: rms-behavioral-contracts-are-closed-and-executable
+  statement: RMS behavioral contracts use stable clauses with exactly one closed core expression or exact external property, are judged by the RMS reference evaluator over canonical invocation or transition records across every binding, conservatively validate frames, blame, compatibility, and solver evidence, treat missing or unresolved evidence as a gap rather than success, and keep production monitoring out of process and fail-open.
+  kind: safety
+  authority: parser
+  enforced_by: semantic-property-check-command
+  verified_by: verification/properties/behavioral_contracts.md
 - id: semantic-variants-are-distinct-from-binding-types
   statement: Machine semantic lists contain domain alternatives while implementation type mappings contain binding-native container names.
   kind: invariant
@@ -877,6 +894,7 @@ verification:
   - verification/properties/intent_extraction_terminal_runs.md
   - verification/properties/non_ready_route_owner_closure.md
   - verification/properties/hunt_orchestration.md
+  - verification/properties/behavioral_contracts.md
   fuzz:
   - verification/fuzz/malformed_artifacts.md
   hunt_exceptions:
@@ -887,13 +905,37 @@ x-rms:
     scope: rms-self-development
     semantic_revision_authority: repository maintainer seal
     evidence: verification/laws/rms_self_application_boundary.md
-  last_semantic_intent: Make guided hunts directly runnable, path-safe, configuration-faithful on resume, and finding-first on replay.
+  last_semantic_intent: Introduce language-neutral RMS behavioral contracts v0.2 through the existing property, compatibility, composition, probe, hunt, and monitoring machinery without host-language predicates or wrappers.
   semantic_revision:
-    digest: sha256:1d5a1c7736c6b89cb97c3ae3e827170cbd2240c72887e915e09a44a67b61f530
-    change_record: verification/changes/harden-guided-hunt-adoption-paths-resume-and-replay.yaml
+    digest: sha256:ded629356bd6c7fa205cecc50f545cd1df5051447f638a4419b58ad395ab6dd9
+    change_record: verification/changes/introduce-rms-behavioral-contracts-v0-2.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:fb7e152df56f41a47c3e27ba7ff15cd5a41fba43ab2f88d15c8cc267f2395354
+    change_record_digest: sha256:585c04cf4ef0ccd9bfba427f6e1bc3a650311544fada12592988cf4621a4b779
 properties:
+- id: rms-behavioral-contract-conformance-corpus
+  proves: rms-behavioral-contracts-are-closed-and-executable
+  kind: property
+  input_space: all tracked RMS public contracts, clause realizations, record protocols, evaluator expressions, compatibility obligations, and binding labels
+  preconditions:
+  - the repository contract corpus and reference evaluator are available
+  operation: validate every tracked contract and exercise the shared behavioral evaluator, refinement engine, monitoring policy, and solver boundary
+  oracle:
+  - every tracked contract uses rms/contract/v0.2
+  - every clause has a closed core expression or exact executable external realization
+  - no generated migration draft remains in release scope
+  - Rust, Swift, JavaScript, Python, and executable bindings receive identical verdicts from the RMS evaluator
+  - satisfiable solver models are re-evaluated by RMS, while missing, unknown, timed-out, or unsupported solver work remains unresolved
+  - production monitoring is out of process and fail-open, and missing observations are coverage gaps rather than passing evidence
+  - bindings emit canonical records directly; RMS does not generate host-language predicates or wrappers
+  evidence:
+    path: verification/properties/behavioral_contracts.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: deterministic-corpus
+    command: properties
+    runner: src/behavioral_contract.rs#all_tracked_contracts_use_v02_and_are_closed
 - id: canonical-semantic-revision-drift-is-rejected
   proves: canonical-semantics-match-authorized-revision
   kind: property

@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:contract:v0.2",
+  "title": "RMS Behavioral Contract v0.2",
+  "type": "object",
+  "required": ["spec", "name", "version", "kind", "meaning", "semantics"],
+  "properties": {
+    "spec": { "const": "rms/contract/v0.2" },
+    "name": { "$ref": "#/$defs/id" },
+    "version": {
+      "oneOf": [
+        { "type": "integer", "minimum": 1 },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+    "kind": { "enum": ["command", "query", "event", "capability", "api"] },
+    "meaning": { "type": "string", "minLength": 1 },
+    "semantics": {
+      "type": "object",
+      "properties": {
+        "behavior": { "$ref": "#/$defs/behavior" },
+        "event": { "$ref": "#/$defs/event" },
+        "api": { "$ref": "#/$defs/api" },
+        "protocol": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "schema": { "type": "object" },
+    "examples": { "type": "array" },
+    "compatibility": { "type": "object" }
+  },
+  "patternProperties": { "^x-": {} },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "enum": ["command", "query", "capability"] } }, "required": ["kind"] },
+      "then": { "properties": { "semantics": { "required": ["behavior"] } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "event" } }, "required": ["kind"] },
+      "then": { "properties": { "semantics": { "required": ["event"] } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "api" } }, "required": ["kind"] },
+      "then": { "properties": { "semantics": { "required": ["api"] } } }
+    }
+  ],
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]*$" },
+    "behavior": {
+      "type": "object",
+      "required": ["observations", "requires", "guarantees", "failures", "cases", "invariants", "case_policy"],
+      "properties": {
+        "observations": { "type": "array", "items": { "$ref": "#/$defs/observation" } },
+        "requires": { "type": "array", "items": { "$ref": "#/$defs/clause" } },
+        "guarantees": { "type": "array", "items": { "$ref": "#/$defs/clause" } },
+        "failures": { "type": "array", "items": { "$ref": "#/$defs/clause" } },
+        "cases": { "type": "array", "items": { "$ref": "#/$defs/case" } },
+        "invariants": { "type": "array", "items": { "$ref": "#/$defs/clause" } },
+        "case_policy": {
+          "type": "object",
+          "required": ["coverage", "overlap"],
+          "properties": {
+            "coverage": { "const": "exhaustive" },
+            "overlap": { "enum": ["forbidden", "allowed"] }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": ["observations", "guarantees"],
+      "properties": {
+        "observations": { "type": "array", "items": { "$ref": "#/$defs/observation" } },
+        "guarantees": { "type": "array", "items": { "$ref": "#/$defs/clause" } }
+      },
+      "additionalProperties": false
+    },
+    "api": {
+      "type": "object",
+      "required": ["operations"],
+      "properties": {
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "name", "contract"],
+            "properties": {
+              "kind": { "enum": ["command", "query", "event", "capability"] },
+              "name": { "$ref": "#/$defs/id" },
+              "contract": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "observation": {
+      "type": "object",
+      "required": ["id", "source", "value"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "source": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["input", "output", "transition", "state", "protocol-message", "protocol-state", "trace-metric"] },
+            "input_kind": { "type": "string" },
+            "output_kind": { "type": "string" },
+            "name": { "type": "string" },
+            "case": { "type": "string" },
+            "phase": { "enum": ["before", "after"] },
+            "pointer": { "type": "string", "pattern": "^/" },
+            "instance": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "value": {
+          "oneOf": [
+            { "enum": ["occurrence", "boolean", "integer", "string"] },
+            {
+              "type": "object",
+              "required": ["variant"],
+              "properties": {
+                "variant": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": { "$ref": "#/$defs/id" }
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["quantity"],
+              "properties": { "quantity": { "enum": ["time", "information", "ratio", "transition", "message", "attempt", "item"] } },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "clause": {
+      "type": "object",
+      "required": ["id", "statement", "evaluation"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "statement": { "type": "string", "minLength": 1 },
+        "evaluation": { "$ref": "#/$defs/evaluation" }
+      },
+      "additionalProperties": false
+    },
+    "evaluation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "expression"],
+          "properties": { "kind": { "const": "core" }, "expression": { "$ref": "#/$defs/predicate" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "property"],
+          "properties": { "kind": { "const": "external" }, "property": { "$ref": "#/$defs/id" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "properties": { "kind": { "const": "unresolved" } },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "case": {
+      "type": "object",
+      "required": ["id", "statement", "when", "outcome", "ensures", "permits"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "statement": { "type": "string", "minLength": 1 },
+        "when": { "$ref": "#/$defs/predicate" },
+        "outcome": {
+          "type": "object",
+          "required": ["kind", "expression"],
+          "properties": {
+            "kind": { "enum": ["accepted", "rejected"] },
+            "category": { "$ref": "#/$defs/id" },
+            "expression": { "$ref": "#/$defs/predicate" }
+          },
+          "additionalProperties": false
+        },
+        "ensures": { "type": "array", "items": { "$ref": "#/$defs/clause" } },
+        "permits": {
+          "type": "object",
+          "required": ["state_changes", "events", "effects"],
+          "properties": {
+            "state_changes": { "type": "array", "items": { "type": "string", "pattern": "^/" }, "uniqueItems": true },
+            "events": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+            "effects": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "predicate": {
+      "oneOf": [
+        { "type": "object", "required": ["constant"], "properties": { "constant": { "type": "boolean" } }, "additionalProperties": false },
+        { "type": "object", "required": ["occurred"], "properties": { "occurred": { "$ref": "#/$defs/id" } }, "additionalProperties": false },
+        { "type": "object", "required": ["equals"], "properties": { "equals": { "$ref": "#/$defs/relation" } }, "additionalProperties": false },
+        { "type": "object", "required": ["compare"], "properties": { "compare": { "$ref": "#/$defs/comparison" } }, "additionalProperties": false },
+        { "type": "object", "required": ["not"], "properties": { "not": { "$ref": "#/$defs/predicate" } }, "additionalProperties": false },
+        { "type": "object", "required": ["all"], "properties": { "all": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/predicate" } } }, "additionalProperties": false },
+        { "type": "object", "required": ["any"], "properties": { "any": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/predicate" } } }, "additionalProperties": false }
+      ]
+    },
+    "relation": {
+      "type": "object",
+      "required": ["left", "right"],
+      "properties": { "left": { "$ref": "#/$defs/term" }, "right": { "$ref": "#/$defs/term" } },
+      "additionalProperties": false
+    },
+    "comparison": {
+      "type": "object",
+      "required": ["left", "operator", "right"],
+      "properties": {
+        "left": { "$ref": "#/$defs/term" },
+        "operator": { "enum": ["lt", "lte", "eq", "gte", "gt"] },
+        "right": { "$ref": "#/$defs/term" }
+      },
+      "additionalProperties": false
+    },
+    "term": {
+      "oneOf": [
+        { "type": "object", "required": ["observation"], "properties": { "observation": { "$ref": "#/$defs/id" } }, "additionalProperties": false },
+        { "type": "object", "required": ["literal"], "properties": { "literal": {} }, "additionalProperties": false },
+        { "type": "object", "required": ["add"], "properties": { "add": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/term" } } }, "additionalProperties": false },
+        { "type": "object", "required": ["subtract"], "properties": { "subtract": { "$ref": "#/$defs/relation" } }, "additionalProperties": false }
+      ]
+    }
+  }
+}

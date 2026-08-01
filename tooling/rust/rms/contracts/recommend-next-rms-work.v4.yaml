@@ -1,24 +1,70 @@
-spec: rms/contract/v0.1
-name: "recommend-next-rms-work"
+spec: rms/contract/v0.2
+name: recommend-next-rms-work
 version: 4
 kind: command
-meaning: "Validate typed or explicitly provider-extracted intent, route it deterministically, persist a complete terminal run, issue a content-addressed route receipt, and prevent non-ready routing from being treated as owner selection or mutation authority."
-preconditions:
-  - id: "accepts-1"
-    statement: "A nonblank prospective task, readable repository root, optional explicit owner, and exactly one typed intent source or explicit read-only provider extraction."
-  - id: "accepts-2"
-    statement: "An optional intent-cache refresh request and compact or detailed projection selection."
-postconditions:
-  - id: "ensures-1"
-    statement: "Every invocation records request, intent schema, prompt, provider attempt evidence when applicable, normalized intent or diagnostics, terminal route result, and a route receipt whose allowed actions are nonempty only for ready work."
-  - id: "ensures-2"
-    statement: "Operational provider failures are classified without schema repair, exit one, preserve complete failure artifacts, select no owner, and prescribe provider remediation or intentional caller-supplied typed intent."
-  - id: "ensures-3"
-    statement: "Clarification, missing model, missing owner, ambiguous owner, design-required, bootstrap-required, and blocked routes exit two and never expose a selected owner or owner-scoped implementation instruction."
-  - id: "ensures-4"
-    statement: "Ready and no-rms-change results exit zero, while the rms.surface/v2 report additively exposes run_id, receipt_id, receipt_path, and explicit ownership status without granting source-edit or Git authority."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Blank tasks, unreadable roots, malformed or source-mismatched models, unsupported provider structure, provider process failure, unresolved material facts, contradictory intent, ambiguous ownership, and receipt persistence failure."
+meaning: Validate typed or explicitly provider-extracted intent, route it deterministically,
+  persist a complete terminal run, issue a content-addressed route receipt, and prevent
+  non-ready routing from being treated as owner selection or mutation authority.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A nonblank prospective task, readable repository root, optional explicit
+        owner, and exactly one typed intent source or explicit read-only provider
+        extraction.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: An optional intent-cache refresh request and compact or detailed
+        projection selection.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Every invocation records request, intent schema, prompt, provider
+        attempt evidence when applicable, normalized intent or diagnostics, terminal
+        route result, and a route receipt whose allowed actions are nonempty only
+        for ready work.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Operational provider failures are classified without schema repair,
+        exit one, preserve complete failure artifacts, select no owner, and prescribe
+        provider remediation or intentional caller-supplied typed intent.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Clarification, missing model, missing owner, ambiguous owner, design-required,
+        bootstrap-required, and blocked routes exit two and never expose a selected
+        owner or owner-scoped implementation instruction.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: Ready and no-rms-change results exit zero, while the rms.surface/v2
+        report additively exposes run_id, receipt_id, receipt_path, and explicit ownership
+        status without granting source-edit or Git authority.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Blank tasks, unreadable roots, malformed or source-mismatched models,
+        unsupported provider structure, provider process failure, unresolved material
+        facts, contradictory intent, ambiguous ownership, and receipt persistence
+        failure.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

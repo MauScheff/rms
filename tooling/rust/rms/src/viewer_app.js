@@ -664,7 +664,7 @@ function initializeApplication(model) {
           <span class="row-main"><strong>${escapeHtml(analysis.operation)}</strong><p>${escapeHtml(analysis.path)}</p></span>
           <span class="row-side">${analysis.evaluations.length} verdicts<br>${analysis.relationships.length} relationships</span>
         </article>
-      `).join("") || `<div class="empty">No rms/property-analysis/v0.1 artifacts are recorded.</div>`}</div>`)}
+      `).join("") || `<div class="empty">No RMS property-analysis artifacts are recorded.</div>`}</div>`)}
     `;
   }
 

@@ -1,6 +1,22 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: checkout-requires-review
 version: 1
 kind: event
-meaning: Published fact that checkout needs manual review before a terminal customer outcome.
-
+meaning: Published fact that checkout needs manual review before a terminal customer
+  outcome.
+semantics:
+  event:
+    observations:
+    - id: event-emitted
+      source:
+        kind: input
+        input_kind: event
+        name: checkout-requires-review
+      value: occurrence
+    guarantees:
+    - id: typed-event-payload
+      statement: The event is emitted as its declared closed event variant.
+      evaluation:
+        kind: core
+        expression:
+          occurred: event-emitted

@@ -29,41 +29,25 @@ final class RmsSwiftExampleTests: XCTestCase {
         )
     }
 
-    private func traceCaseName(_ value: Any) -> String {
-        let description = String(describing: value)
-        let name = description.split(separator: "(", maxSplits: 1).first.map(String.init) ?? description
-        return name.prefix(1).uppercased() + name.dropFirst()
-    }
-
     func testProduceTransitionTrace() throws {
         guard let output = ProcessInfo.processInfo.environment["RMS_TRACE_OUTPUT"] else {
             return
         }
-        let records = [
-            transitionRecord(.describe(SwiftWidget("example")!)),
-            transitionRecord(.rejectEmptyName("")),
-        ]
-        let values: [[String: Any]] = records.map { record in
-            [
-                "scenario_start": true,
-                "state_before": traceCaseName(record.stateBefore),
-                "state_after": traceCaseName(record.stateAfter),
-                "input": traceCaseName(record.input),
-                "output": [
-                    "next_state": traceCaseName(record.output.nextState),
-                    "events": record.output.events.map { traceCaseName($0) },
-                    "commands": record.output.commands.map { traceCaseName($0) },
-                    "effects": [],
-                    "reply": record.output.reply.map { traceCaseName($0) } ?? NSNull(),
-                    "rejection": record.output.rejection.map { traceCaseName($0) } ?? NSNull(),
-                ],
-                "source": [
-                    "file": record.source.file,
-                    "function": record.source.function,
-                    "branch": record.source.branch,
-                ],
-            ]
-        }
+        let widget = SwiftWidget("example")!
+        let values: [[String: Any]] = [[
+            "spec": "rms/invocation-record/v0.1",
+            "contract": "describe-swift-widget",
+            "binding": "describe-swift-widget-public",
+            "contract_digest": "sha256:f0eb093a9b3bd7e1d763f0c47bb5ca6a15698de7519394850123415fd074b328",
+            "scenario_start": true,
+            "input": ["kind": "Describe", "widget": ["name": widget.name]],
+            "output": ["kind": "Description", "value": describeWidget(widget)],
+            "source": [
+                "file": #fileID,
+                "function": "testProduceTransitionTrace",
+                "branch": "accepted-query",
+            ],
+        ]]
         let document: [String: Any] = [
             "spec": "rms/trace-bundle/v0.1",
             "machine": "SwiftExampleMachine",
@@ -75,6 +59,6 @@ final class RmsSwiftExampleTests: XCTestCase {
         )
 
         try data.write(to: URL(fileURLWithPath: output))
-        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(values.count, 1)
     }
 }

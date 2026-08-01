@@ -1,36 +1,94 @@
-spec: rms/contract/v0.1
-name: "release-check"
+spec: rms/contract/v0.2
+name: release-check
 version: 1
 kind: command
-meaning: "Run deterministic release-readiness checks for the RMS CLI, examples, module bundle, generated guidance assets, managed skill distributions, documentation ordering, and optional Codex plugin adapter."
-preconditions:
-  - id: "accepts-1"
-    statement: "a readable RMS repository root"
-  - id: "accepts-2"
-    statement: "the repository's native build and verification tools"
-postconditions:
-  - id: "ensures-1"
-    statement: "release checks cover metadata, formatting, focused and full tests, RMS validation, semantic and structure checks, properties, traces, composition, verification, package smoke, clean-room dogfood, examples, and installed release-binary smoke"
-  - id: "ensures-2"
-    statement: "canonical guidance assets, embedded skills, plugin skills, root guidance, and managed Codex and Claude copies must be synchronized"
-  - id: "ensures-3"
-    statement: "unrelated extra local skills remain allowed"
-  - id: "ensures-4"
-    statement: "onboarding documentation orders init, authorized bootstrap commit, design, and recommended scaffold"
-  - id: "ensures-5"
-    statement: "production documentation orders focused proof, gate, authorized candidate commit, and strict audit"
-  - id: "ensures-6"
-    statement: "release checks do not invoke optional AI providers"
-  - id: "ensures-7"
-    statement: "pass is reported only when every enabled release obligation succeeds"
-failure_categories:
-  - id: "rejects-1"
-    statement: "a native build, RMS verification, property, trace, package, or release-binary smoke command fails"
-  - id: "rejects-2"
-    statement: "managed guidance, skill distributions, or onboarding documentation drift"
-  - id: "rejects-3"
-    statement: "release metadata disagrees across canonical package and integration manifests"
-  - id: "rejects-4"
-    statement: "an enabled release-readiness obligation cannot be executed"
+meaning: Run deterministic release-readiness checks for the RMS CLI, examples, module
+  bundle, generated guidance assets, managed skill distributions, documentation ordering,
+  and optional Codex plugin adapter.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: a readable RMS repository root
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: the repository's native build and verification tools
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: release checks cover metadata, formatting, focused and full tests,
+        RMS validation, semantic and structure checks, properties, traces, composition,
+        verification, package smoke, clean-room dogfood, examples, and installed release-binary
+        smoke
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: canonical guidance assets, embedded skills, plugin skills, root guidance,
+        and managed Codex and Claude copies must be synchronized
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: unrelated extra local skills remain allowed
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: onboarding documentation orders init, authorized bootstrap commit,
+        design, and recommended scaffold
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-5
+      statement: production documentation orders focused proof, gate, authorized candidate
+        commit, and strict audit
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-6
+      statement: release checks do not invoke optional AI providers
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-7
+      statement: pass is reported only when every enabled release obligation succeeds
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: a native build, RMS verification, property, trace, package, or release-binary
+        smoke command fails
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: managed guidance, skill distributions, or onboarding documentation
+        drift
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-3
+      statement: release metadata disagrees across canonical package and integration
+        manifests
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-4
+      statement: an enabled release-readiness obligation cannot be executed
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

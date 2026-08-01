@@ -1,22 +1,60 @@
-spec: rms/contract/v0.1
-name: "configure-agent-integration"
+spec: rms/contract/v0.2
+name: configure-agent-integration
 version: 3
 kind: command
-meaning: "Diagnose, create, synchronize, or package managed agent guidance that enters natural-language RMS work through explicit recorded AI routing, carries ready receipts into canonical mutations, and treats every non-ready route as terminal rather than inferring an owner."
-preconditions:
-  - id: "accepts-1"
-    statement: "A supported agent target and readable project root or explicit optional plugin marketplace path."
-postconditions:
-  - id: "ensures-1"
-    statement: "Managed guidance starts natural-language work with rms next using explicit --ai and preserves caller-supplied typed intent for offline, CI, or intentionally pre-structured workflows."
-  - id: "ensures-2"
-    statement: "Managed guidance prohibits automatic typed-intent fallback after provider failure and prohibits selecting or implying an owner from candidates, context packets, neighboring modules, or implementation language when RMS reports non-ready ownership."
-  - id: "ensures-3"
-    statement: "Mutation examples pass a ready route receipt returned by next or design and retain existing commit-authority constraints."
-  - id: "ensures-4"
-    statement: "Project-owned guidance remains preserved outside managed regions and generated distributions remain digest-equivalent."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Unsupported targets, stale managed templates that cannot be synchronized safely, unwritable destinations, and plugin packaging or installation failures."
+meaning: Diagnose, create, synchronize, or package managed agent guidance that enters
+  natural-language RMS work through explicit recorded AI routing, carries ready receipts
+  into canonical mutations, and treats every non-ready route as terminal rather than
+  inferring an owner.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A supported agent target and readable project root or explicit optional
+        plugin marketplace path.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Managed guidance starts natural-language work with rms next using
+        explicit --ai and preserves caller-supplied typed intent for offline, CI,
+        or intentionally pre-structured workflows.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Managed guidance prohibits automatic typed-intent fallback after
+        provider failure and prohibits selecting or implying an owner from candidates,
+        context packets, neighboring modules, or implementation language when RMS
+        reports non-ready ownership.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Mutation examples pass a ready route receipt returned by next or
+        design and retain existing commit-authority constraints.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: Project-owned guidance remains preserved outside managed regions
+        and generated distributions remain digest-equivalent.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Unsupported targets, stale managed templates that cannot be synchronized
+        safely, unwritable destinations, and plugin packaging or installation failures.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

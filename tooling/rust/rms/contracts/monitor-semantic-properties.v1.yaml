@@ -1,18 +1,43 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: monitor-semantic-properties
 version: 1
 kind: command
-meaning: Incrementally evaluate executable properties over an offline trace or newline-delimited normalized observation stream.
-preconditions:
-- id: accepts-1
-  statement: An executable property and a readable trace, observation file, or standard-input stream.
-postconditions:
-- id: ensures-1
-  statement: Prefix evaluation uses the same pure evaluator and verdict semantics as offline trace evaluation.
-- id: ensures-2
-  statement: Monitor output is derived observe-only evidence and never architectural or enforcement authority.
-failure_categories:
-- id: rejects-1
-  statement: Malformed envelopes, non-monotonic observation input, invalid property declarations, or unreadable streams.
+meaning: Incrementally evaluate executable properties over an offline trace or newline-delimited
+  normalized observation stream.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: An executable property and a readable trace, observation file, or
+        standard-input stream.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Prefix evaluation uses the same pure evaluator and verdict semantics
+        as offline trace evaluation.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Monitor output is derived observe-only evidence and never architectural
+        or enforcement authority.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Malformed envelopes, non-monotonic observation input, invalid property
+        declarations, or unreadable streams.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

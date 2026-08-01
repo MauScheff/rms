@@ -1,22 +1,54 @@
-spec: rms/contract/v0.1
-name: "run-trace-producers"
+spec: rms/contract/v0.2
+name: run-trace-producers
 version: 1
 kind: command
-meaning: "Regenerate declared trace bundles from implementation-owned producers, validate their transition records, and compare or record the canonical result."
-preconditions:
-  - id: "accepts-1"
-    statement: "A readable implementation binding with declared smoke trace producers, commands, runners, and bundle paths."
-  - id: "accepts-2"
-    statement: "Optional dry-run, record, JSON, and bounded timeout controls."
-postconditions:
-  - id: "ensures-1"
-    statement: "Each producer executes independently with an isolated output path and exact runner identity."
-  - id: "ensures-2"
-    statement: "Generated traces pass canonical trace validation before comparison or recording."
-  - id: "ensures-3"
-    statement: "Recording is the only supported path for replacing active transition bundles."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Missing commands or runners, invalid generated output, timeouts, transition-record bypass, or drift from committed evidence."
+meaning: Regenerate declared trace bundles from implementation-owned producers, validate
+  their transition records, and compare or record the canonical result.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A readable implementation binding with declared smoke trace producers,
+        commands, runners, and bundle paths.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: Optional dry-run, record, JSON, and bounded timeout controls.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Each producer executes independently with an isolated output path
+        and exact runner identity.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Generated traces pass canonical trace validation before comparison
+        or recording.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Recording is the only supported path for replacing active transition
+        bundles.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Missing commands or runners, invalid generated output, timeouts,
+        transition-record bypass, or drift from committed evidence.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

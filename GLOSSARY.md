@@ -20,6 +20,10 @@ A semantic boundary within which one domain language and model are authoritative
 
 The RMS profile for untrusted, public, or versioned input and output. It adds validation, trust, resource-limit, and compatibility requirements.
 
+## Behavioral contract
+
+An `rms/contract/v0.2` executable relation over typed observations of input, output, before/after state, transitions, events, effects, and rejection outcomes. Each clause is realized by the portable RMS core evaluator or one exact external property.
+
 
 ## Canonical artifact set
 
@@ -45,7 +49,7 @@ Evidence that a system or module satisfies a specified RMS version and its decla
 
 ## Contract
 
-A public promise covering shape, meaning, and—when relevant—failure, ordering, consistency, idempotency, authorization, and versioning behavior.
+A public promise covering meaning and—when relevant—failure, ordering, consistency, idempotency, authorization, frames, and versioning behavior. Public RMS behavior is expressed as a behavioral contract.
 
 
 ## Conformance report

@@ -8,6 +8,8 @@ RMS is useful when work crosses a meaningful boundary: a public API, a stateful 
 
 The trade is deliberate: when meaning changes, meaning is declared before source code changes. In return, reviewers can see the intended behavior before reading its implementation, agents can fill named roles without inventing a new architecture, and deterministic checks can prove the declared claims. RMS works with existing languages and toolchains and adds no application runtime.
 
+RMS behavioral contracts make those promises executable without language-specific wrappers. `rms/contract/v0.2` clauses observe input, output, before/after state, events, effects, and rejection outcomes; native Rust, Swift, JavaScript, Python, or executable tests emit the same invocation or transition record protocol; one RMS evaluator assigns caller, provider, or binding/evidence blame. Core clauses also support finite exploration and optional cvc5-backed SMT analysis. Production monitoring stays out of process and fail-open.
+
 ## From Intent to Evidence
 
 ```text

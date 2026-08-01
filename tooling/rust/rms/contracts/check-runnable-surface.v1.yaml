@@ -1,26 +1,62 @@
-spec: rms/contract/v0.1
-name: "check-runnable-surface"
+spec: rms/contract/v0.2
+name: check-runnable-surface
 version: 1
 kind: command
-meaning: "Prove that a runnable surface routes through declared RMS boundaries and executes the declared machine path with usable launch documentation evidence and smoke commands."
-preconditions:
-  - id: "accepts-1"
-    statement: "an implementation binding with declared runnable surfaces"
-  - id: "accepts-2"
-    statement: "inspectable surface delegate and machine transition or driver symbols where supported"
-postconditions:
-  - id: "ensures-1"
-    statement: "entrypoints and launch assets route through the declared boundary"
-  - id: "ensures-2"
-    statement: "machine-shaped runnable modules reach their canonical transition or driver on the live call path"
-  - id: "ensures-3"
-    statement: "usage documents exist and smoke command keys resolve"
-failure_categories:
-  - id: "rejects-1"
-    statement: "private domain access or duplicated decisions"
-  - id: "rejects-2"
-    statement: "a decorative machine not reached by the runnable path"
-  - id: "rejects-3"
-    statement: "missing wiring evidence usage documentation or smoke commands"
+meaning: Prove that a runnable surface routes through declared RMS boundaries and
+  executes the declared machine path with usable launch documentation evidence and
+  smoke commands.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: an implementation binding with declared runnable surfaces
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: inspectable surface delegate and machine transition or driver symbols
+        where supported
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: entrypoints and launch assets route through the declared boundary
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: machine-shaped runnable modules reach their canonical transition
+        or driver on the live call path
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: usage documents exist and smoke command keys resolve
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: private domain access or duplicated decisions
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: a decorative machine not reached by the runnable path
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-3
+      statement: missing wiring evidence usage documentation or smoke commands
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

@@ -1,18 +1,41 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: diff-machine-structure
 version: 1
 kind: command
-meaning: Show the current git diff for an implementation binding so machine-gate changes can be reviewed against canonical artifacts.
-preconditions:
-  - id: implementation-path-supplied
-    statement: A target implementation binding path is supplied.
-postconditions:
-  - id: diff-reported
-    statement: The command reports the current git diff for the target implementation binding when git diff is available.
-  - id: machine-readable-output
-    statement: "`--json` reports implementation path, source revision, changed flag, and diff text."
-failure_categories:
-  - id: diff-unavailable
-    statement: Git diff is unavailable or the path is outside an accessible worktree.
+meaning: Show the current git diff for an implementation binding so machine-gate changes
+  can be reviewed against canonical artifacts.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: implementation-path-supplied
+      statement: A target implementation binding path is supplied.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: diff-reported
+      statement: The command reports the current git diff for the target implementation
+        binding when git diff is available.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: machine-readable-output
+      statement: "`--json` reports implementation path, source revision, changed flag,
+        and diff text."
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: diff-unavailable
+      statement: Git diff is unavailable or the path is outside an accessible worktree.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

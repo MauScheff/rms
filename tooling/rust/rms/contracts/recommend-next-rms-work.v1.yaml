@@ -1,40 +1,106 @@
-spec: rms/contract/v0.1
-name: "recommend-next-rms-work"
+spec: rms/contract/v0.2
+name: recommend-next-rms-work
 version: 1
 kind: command
-meaning: "Construct a deterministic, read-only prescription for the next RMS work implied by a nonblank task intent and observable repository evidence."
-preconditions:
-  - id: "accepts-1"
-    statement: "a nonblank prospective task intent"
-  - id: "accepts-2"
-    statement: "a readable root path"
-  - id: "accepts-3"
-    statement: "an optional explicit readable module manifest"
-postconditions:
-  - id: "ensures-1"
-    statement: "every constructed report classifies its result as ready, bootstrap-required, design-required, needs-owner, or blocked"
-  - id: "ensures-2"
-    statement: "repository shape is classified as system-root, module-root, system-container, multi-system-workspace, module-workspace, or uninitialized"
-  - id: "ensures-3"
-    statement: "explicit module selection wins, otherwise ownership resolves through a direct root module, a sole top-level module, or a unique positive task match without guessing through ties"
-  - id: "ensures-4"
-    statement: "composite ownership routing reuses canonical route evidence recursively with cycle protection"
-  - id: "ensures-5"
-    statement: "task classification is prospective and independent of unrelated working-tree changes"
-  - id: "ensures-6"
-    statement: "text and JSON reports share validation health, owner evidence, task lane and confidence, canonical context, declared role paths, warnings, blockers, skill sources, completion order, and commit-authority status"
-  - id: "ensures-7"
-    statement: "executable steps carry a program, argument array, and separately escaped display string while candidate commits remain manual authorization steps"
-  - id: "ensures-8"
-    statement: "constructed reports exit successfully for bootstrap, design, owner ambiguity, and blocked canonical states"
-  - id: "ensures-9"
-    statement: "report construction does not mutate files, invoke providers, execute recommended verification, or grant source-edit or Git authority"
-failure_categories:
-  - id: "rejects-1"
-    statement: "task intent is blank"
-  - id: "rejects-2"
-    statement: "the requested root or explicit module cannot be read"
-  - id: "rejects-3"
-    statement: "repository evidence is insufficient to construct a truthful report"
+meaning: Construct a deterministic, read-only prescription for the next RMS work implied
+  by a nonblank task intent and observable repository evidence.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: a nonblank prospective task intent
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: a readable root path
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-3
+      statement: an optional explicit readable module manifest
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: every constructed report classifies its result as ready, bootstrap-required,
+        design-required, needs-owner, or blocked
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: repository shape is classified as system-root, module-root, system-container,
+        multi-system-workspace, module-workspace, or uninitialized
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: explicit module selection wins, otherwise ownership resolves through
+        a direct root module, a sole top-level module, or a unique positive task match
+        without guessing through ties
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: composite ownership routing reuses canonical route evidence recursively
+        with cycle protection
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-5
+      statement: task classification is prospective and independent of unrelated working-tree
+        changes
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-6
+      statement: text and JSON reports share validation health, owner evidence, task
+        lane and confidence, canonical context, declared role paths, warnings, blockers,
+        skill sources, completion order, and commit-authority status
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-7
+      statement: executable steps carry a program, argument array, and separately
+        escaped display string while candidate commits remain manual authorization
+        steps
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-8
+      statement: constructed reports exit successfully for bootstrap, design, owner
+        ambiguity, and blocked canonical states
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-9
+      statement: report construction does not mutate files, invoke providers, execute
+        recommended verification, or grant source-edit or Git authority
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: task intent is blank
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: the requested root or explicit module cannot be read
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-3
+      statement: repository evidence is insufficient to construct a truthful report
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

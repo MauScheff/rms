@@ -1,24 +1,63 @@
-spec: rms/contract/v0.1
-name: "design-rms-system"
+spec: rms/contract/v0.2
+name: design-rms-system
 version: 1
 kind: command
-meaning: "Validate an agent- or provider-extracted rms/intent-model/v0.1 and deterministically recommend language-neutral module topology without deriving architecture from raw task text."
-preconditions:
-  - id: "accepts-1"
-    statement: "Product intent, a readable RMS project root, and an inline or file-backed typed intent model or explicit read-only provider extraction."
-  - id: "accepts-2"
-    statement: "Complete fact dispositions with exact source quotes or inference rationales, responsibilities, semantic subjects, and optional binding preferences."
-postconditions:
-  - id: "ensures-1"
-    statement: "Missing, contradictory, or materially unknown intent stops before topology selection and returns the exact clarification or model requirement."
-  - id: "ensures-2"
-    statement: "Valid facts deterministically select the smallest honest standalone or recursive semantic shape and emit one exact scaffold action."
-  - id: "ensures-3"
-    statement: "Recommendations remain language-neutral and become authoritative only through RMS apply commands."
-  - id: "ensures-4"
-    statement: "Provider execution is read-only and recorded, and provider output containing architecture or topology fields is rejected."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Blank tasks, unreadable project context, malformed or source-mismatched models, material unknowns, contradictions, and architecture-bearing provider output."
+meaning: Validate an agent- or provider-extracted rms/intent-model/v0.1 and deterministically
+  recommend language-neutral module topology without deriving architecture from raw
+  task text.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: Product intent, a readable RMS project root, and an inline or file-backed
+        typed intent model or explicit read-only provider extraction.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: Complete fact dispositions with exact source quotes or inference
+        rationales, responsibilities, semantic subjects, and optional binding preferences.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Missing, contradictory, or materially unknown intent stops before
+        topology selection and returns the exact clarification or model requirement.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Valid facts deterministically select the smallest honest standalone
+        or recursive semantic shape and emit one exact scaffold action.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Recommendations remain language-neutral and become authoritative
+        only through RMS apply commands.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: Provider execution is read-only and recorded, and provider output
+        containing architecture or topology fields is rejected.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Blank tasks, unreadable project context, malformed or source-mismatched
+        models, material unknowns, contradictions, and architecture-bearing provider
+        output.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

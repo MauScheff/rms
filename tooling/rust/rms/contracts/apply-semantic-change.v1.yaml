@@ -1,26 +1,72 @@
-spec: rms/contract/v0.1
-name: "apply-semantic-change"
+spec: rms/contract/v0.2
+name: apply-semantic-change
 version: 1
 kind: command
-meaning: "Validate and atomically apply language-neutral contract, machine, protocol, resource, artifact, authority, property, and evidence revisions while sealing the final canonical state."
-preconditions:
-  - id: "accepts-1"
-    statement: "One complete rms/semantic-change/v0.1 object targeting a readable module or implementation."
-  - id: "accepts-2"
-    statement: "Set, add, and remove operations whose contract kinds and directions, protocol participants, resource operations, artifacts, authorities, machine cases, properties, behavior bindings, and evidence references resolve in the final candidate."
-postconditions:
-  - id: "ensures-1"
-    statement: "Contract changes explicitly retain command, query, event, or capability kind; provided contracts update the matching provides collection and required capabilities update requires.capabilities without changing topology."
-  - id: "ensures-2"
-    statement: "Implemented provided and required capabilities close through matching public or dependency behavior bindings in the same final candidate."
-  - id: "ensures-3"
-    statement: "Canonical module and implementation semantics are updated together with an immutable applied change record and revision seal."
-  - id: "ensures-4"
-    statement: "Dry-run reports the complete final semantic model and planned writes without mutation."
-  - id: "ensures-5"
-    statement: "Bindings realize canonical semantics but cannot invent protocol, resource, artifact, authority, contract, or capability meaning."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Missing or unsupported contract kinds, required non-capability publication, incomplete behavior bindings, unknown semantic references, duplicate identifiers, invalid removals, unclosed lifecycles, and incompatible final candidates."
+meaning: Validate and atomically apply language-neutral contract, machine, protocol,
+  resource, artifact, authority, property, and evidence revisions while sealing the
+  final canonical state.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: One complete rms/semantic-change/v0.1 object targeting a readable
+        module or implementation.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: Set, add, and remove operations whose contract kinds and directions,
+        protocol participants, resource operations, artifacts, authorities, machine
+        cases, properties, behavior bindings, and evidence references resolve in the
+        final candidate.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Contract changes explicitly retain command, query, event, or capability
+        kind; provided contracts update the matching provides collection and required
+        capabilities update requires.capabilities without changing topology.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Implemented provided and required capabilities close through matching
+        public or dependency behavior bindings in the same final candidate.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Canonical module and implementation semantics are updated together
+        with an immutable applied change record and revision seal.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: Dry-run reports the complete final semantic model and planned writes
+        without mutation.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-5
+      statement: Bindings realize canonical semantics but cannot invent protocol,
+        resource, artifact, authority, contract, or capability meaning.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Missing or unsupported contract kinds, required non-capability publication,
+        incomplete behavior bindings, unknown semantic references, duplicate identifiers,
+        invalid removals, unclosed lifecycles, and incompatible final candidates.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

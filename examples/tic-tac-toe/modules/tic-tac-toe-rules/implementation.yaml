@@ -35,6 +35,16 @@ architecture:
       - terminal games reject further moves
       command: verify
       evidence: verification/laws/transition_trace.md
+    - id: apply-move-refines-cli-requirement
+      proves: marks-never-overwrite
+      kind: property
+      input_space: every rules-reachable game state paired with each of the nine validated board cells
+      oracle:
+      - every invocation returns exactly one accepted reply or declared rejection
+      - accepted and rejected transitions stay inside the consumer state, event, and effect frame
+      - all accepted successor states remain in the exhaustively explored finite closure
+      command: verify
+      evidence: verification/properties/apply_move_refinement.md
   allowed_public_field_structs:
   - TicTacToeTransition
   - TicTacToeTransitionRecord
@@ -214,6 +224,9 @@ architecture:
     - Rejected
     - CellOccupied
     - GameAlreadyTerminal
+    observation_source:
+      kind: transition-record
+      command: trace
 semantic_functions:
 - id: cell-constructor
   symbol: Cell::new

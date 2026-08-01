@@ -1,18 +1,43 @@
-spec: rms/contract/v0.1
-name: "replay-property-counterexample"
+spec: rms/contract/v0.2
+name: replay-property-counterexample
 version: 1
 kind: command
-meaning: "Replay one recorded semantic property counterexample through its declared binding command or trace and report whether the failure reproduces."
-preconditions:
-  - id: "accepts-1"
-    statement: "a readable rms/property-counterexample/v0.1 artifact naming a replay command or trace reference"
-postconditions:
-  - id: "ensures-1"
-    statement: "the declared counterexample input and provenance are passed to the recorded replay path"
-  - id: "ensures-2"
-    statement: "the result reports reproduced or not reproduced without changing canonical semantics"
-failure_categories:
-  - id: "rejects-1"
-    statement: "malformed counterexample metadata, missing replay command or trace, unreadable artifacts, and failed replay execution"
+meaning: Replay one recorded semantic property counterexample through its declared
+  binding command or trace and report whether the failure reproduces.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: a readable rms/property-counterexample/v0.1 artifact naming a replay
+        command or trace reference
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: the declared counterexample input and provenance are passed to the
+        recorded replay path
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: the result reports reproduced or not reproduced without changing
+        canonical semantics
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: malformed counterexample metadata, missing replay command or trace,
+        unreadable artifacts, and failed replay execution
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

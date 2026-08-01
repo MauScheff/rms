@@ -1,26 +1,64 @@
-spec: rms/contract/v0.1
-name: "describe-rms-command-surface"
+spec: rms/contract/v0.2
+name: describe-rms-command-surface
 version: 1
 kind: command
-meaning: "Describe the deterministic RMS command doorway as five primary commands with an explicitly requested grouped catalog of directly callable specialist commands."
-preconditions:
-  - id: "accepts-1"
-    statement: "the default help request or an explicit all-command help request"
-  - id: "accepts-2"
-    statement: "the compiled RMS command metadata"
-postconditions:
-  - id: "ensures-1"
-    statement: "default help exposes init, next, explain, check, and view as the five primary commands plus the help meta-command"
-  - id: "ensures-2"
-    statement: "specialist commands remain directly callable but are absent from default help"
-  - id: "ensures-3"
-    statement: "explicit all-command help lists every specialist command once in stable functional groups"
-  - id: "ensures-4"
-    statement: "help text is derived from the same command definitions used for parsing and exits successfully without reading or mutating project files or invoking providers"
-failure_categories:
-  - id: "rejects-1"
-    statement: "an unsupported help selector or malformed help request"
-  - id: "rejects-2"
-    statement: "command metadata cannot describe a registered route consistently"
+meaning: Describe the deterministic RMS command doorway as five primary commands with
+  an explicitly requested grouped catalog of directly callable specialist commands.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: the default help request or an explicit all-command help request
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: the compiled RMS command metadata
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: default help exposes init, next, explain, check, and view as the
+        five primary commands plus the help meta-command
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: specialist commands remain directly callable but are absent from
+        default help
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: explicit all-command help lists every specialist command once in
+        stable functional groups
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: help text is derived from the same command definitions used for parsing
+        and exits successfully without reading or mutating project files or invoking
+        providers
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: an unsupported help selector or malformed help request
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: command metadata cannot describe a registered route consistently
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

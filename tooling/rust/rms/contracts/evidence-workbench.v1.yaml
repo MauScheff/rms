@@ -1,30 +1,79 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: evidence-workbench
 version: 1
 kind: command
-meaning: Render an advisory RMS evidence prompt for proving a changed module promise with the smallest strong evidence.
-preconditions:
-  - id: task-supplied
-    statement: The evidence need is supplied as task text.
-  - id: target-module-readable
-    statement: The target module manifest is readable and parseable.
-postconditions:
-  - id: evidence-category-is-identified
-    statement: The prompt asks the reviewer or agent to classify the evidence as law, contract, scenario, boundary, runtime, reconciliation, or migration evidence.
-  - id: positive-and-negative-cases-are-named
-    statement: The prompt asks for positive evidence and negative cases for impossible variants, invalid constructors, malformed boundary input, illegal transitions, transition records, replay bundles, golden timelines, and first-bad-transition diagnostics when applicable.
-  - id: routed-owner-evidence-guidance
-    statement: When the target may be a composite parent or recursive module tree, evidence guidance is derived from the routed owner shape and names the smallest relevant law, contract, scenario, or boundary proof lanes.
-  - id: artifact-references-are-named
-    statement: The prompt asks which manifest or implementation binding references should point to the evidence.
-  - id: scaffold-evidence-completion-is-named
-    statement: The prompt asks the reviewer or agent to replace scaffold placeholder, bootstrap, unpinned, and semantic-shape-only evidence before declaring implemented modules complete.
-  - id: evidence-guidance-is-advisory
-    statement: The command renders or executes guidance and does not itself edit source files.
-failure_categories:
-  - id: missing-task
-    statement: No evidence task was supplied.
-  - id: provider-unavailable
-    statement: The requested provider command cannot be started or exits unsuccessfully.
+meaning: Render an advisory RMS evidence prompt for proving a changed module promise
+  with the smallest strong evidence.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: task-supplied
+      statement: The evidence need is supplied as task text.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: target-module-readable
+      statement: The target module manifest is readable and parseable.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: evidence-category-is-identified
+      statement: The prompt asks the reviewer or agent to classify the evidence as
+        law, contract, scenario, boundary, runtime, reconciliation, or migration evidence.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: positive-and-negative-cases-are-named
+      statement: The prompt asks for positive evidence and negative cases for impossible
+        variants, invalid constructors, malformed boundary input, illegal transitions,
+        transition records, replay bundles, golden timelines, and first-bad-transition
+        diagnostics when applicable.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: routed-owner-evidence-guidance
+      statement: When the target may be a composite parent or recursive module tree,
+        evidence guidance is derived from the routed owner shape and names the smallest
+        relevant law, contract, scenario, or boundary proof lanes.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: artifact-references-are-named
+      statement: The prompt asks which manifest or implementation binding references
+        should point to the evidence.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: scaffold-evidence-completion-is-named
+      statement: The prompt asks the reviewer or agent to replace scaffold placeholder,
+        bootstrap, unpinned, and semantic-shape-only evidence before declaring implemented
+        modules complete.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: evidence-guidance-is-advisory
+      statement: The command renders or executes guidance and does not itself edit
+        source files.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: missing-task
+      statement: No evidence task was supplied.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: provider-unavailable
+      statement: The requested provider command cannot be started or exits unsuccessfully.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

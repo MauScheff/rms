@@ -1,16 +1,38 @@
-spec: rms/contract/v0.1
-name: "manage-rms-adoption"
+spec: rms/contract/v0.2
+name: manage-rms-adoption
 version: 1
 kind: command
-meaning: "Inspect or change whether RMS production proof covers discovered RMS module closures progressively or the complete repository."
-preconditions:
-  - id: "accepts-1"
-    statement: "A readable RMS workspace and either a status request or an explicit progressive or complete coverage update."
-postconditions:
-  - id: "ensures-1"
-    statement: "Coverage status and proof scope are reported explicitly, dry-run does not mutate configuration, and complete coverage is accepted only when production paths are RMS-owned."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Unknown coverage modes, unreadable configuration, unresolved module closures, and complete coverage with unowned production paths."
+meaning: Inspect or change whether RMS production proof covers discovered RMS module
+  closures progressively or the complete repository.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A readable RMS workspace and either a status request or an explicit
+        progressive or complete coverage update.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Coverage status and proof scope are reported explicitly, dry-run
+        does not mutate configuration, and complete coverage is accepted only when
+        production paths are RMS-owned.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Unknown coverage modes, unreadable configuration, unresolved module
+        closures, and complete coverage with unowned production paths.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

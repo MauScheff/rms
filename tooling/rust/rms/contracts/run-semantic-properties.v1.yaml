@@ -1,22 +1,57 @@
-spec: rms/contract/v0.1
-name: "run-semantic-properties"
+spec: rms/contract/v0.2
+name: run-semantic-properties
 version: 1
 kind: command
-meaning: "Execute each semantic property realization independently through its exact runner, generator, operation, and oracle."
-preconditions:
-  - id: "accepts-1"
-    statement: "An implementation binding with one or more realizations for the requested smoke, CI, or nightly profile."
-  - id: "accepts-2"
-    statement: "Exact runner metadata and generator metadata for generated or exhaustive strategies."
-postconditions:
-  - id: "ensures-1"
-    statement: "Shared shell commands still execute once per property and receive the requested property and runner identities."
-  - id: "ensures-2"
-    statement: "Reports identify each property, strategy, runner, result, output, and counterexample independently."
-  - id: "ensures-3"
-    statement: "Every replayable counterexample already present in a property's declared counterexample directory is executed as a regression in the same run."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Missing runners or generators, fixed corpora mislabeled as generated coverage, commands that cannot select the requested runner, timeout, failed oracle, unexecuted realizations, malformed counterexamples, or failed counterexample replays."
+meaning: Execute each semantic property realization independently through its exact
+  runner, generator, operation, and oracle.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: An implementation binding with one or more realizations for the requested
+        smoke, CI, or nightly profile.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: Exact runner metadata and generator metadata for generated or exhaustive
+        strategies.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Shared shell commands still execute once per property and receive
+        the requested property and runner identities.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Reports identify each property, strategy, runner, result, output,
+        and counterexample independently.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Every replayable counterexample already present in a property's declared
+        counterexample directory is executed as a regression in the same run.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Missing runners or generators, fixed corpora mislabeled as generated
+        coverage, commands that cannot select the requested runner, timeout, failed
+        oracle, unexecuted realizations, malformed counterexamples, or failed counterexample
+        replays.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

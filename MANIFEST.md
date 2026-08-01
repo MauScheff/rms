@@ -277,29 +277,58 @@ Each public item should have a stable name and a contract location. Public items
 
 ### `contracts/*.yaml`
 
-A contract names the shape and meaning of one public command, query, event, capability, API, or data exchange. Preconditions and postconditions belong here when consumers must know them.
+A behavioral contract names the meaning and executable relation of one public command, query, event, capability, or API. RMS evaluates the same typed observations and clauses for every binding language.
 
 ```yaml
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: authorize-payment
 version: 1
 kind: command
 meaning: Request authorization for a payment amount.
-
-preconditions:
-  - id: positive-payment-amount
-    statement: The requested payment amount is greater than zero.
-
-postconditions:
-  - id: authorization-outcome-recorded
-    statement: The result is authorized, declined, or requires review.
-
-failure_categories:
-  - id: unusable-payment-method
-    statement: The payment method cannot be used for this buyer or amount.
+semantics:
+  behavior:
+    observations:
+      - id: amount
+        source: { kind: input, pointer: /amount }
+        value: integer
+      - id: outcome
+        source: { kind: output, pointer: /kind }
+        value: { variant: [authorized, declined] }
+    requires:
+      - id: positive-payment-amount
+        statement: The requested payment amount is greater than zero.
+        evaluation:
+          kind: core
+          expression:
+            compare:
+              left: { observation: amount }
+              operator: gt
+              right: { literal: 0 }
+    guarantees: []
+    failures: []
+    cases:
+      - id: authorized
+        statement: An accepted authorization is explicit.
+        when: { equals: { left: { observation: outcome }, right: { literal: authorized } } }
+        outcome:
+          kind: accepted
+          expression: { equals: { left: { observation: outcome }, right: { literal: authorized } } }
+        ensures: []
+        permits: { state_changes: [], events: [], effects: [] }
+      - id: declined
+        statement: A decline is a declared rejection outcome.
+        when: { equals: { left: { observation: outcome }, right: { literal: declined } } }
+        outcome:
+          kind: rejected
+          category: declined
+          expression: { equals: { left: { observation: outcome }, right: { literal: declined } } }
+        ensures: []
+        permits: { state_changes: [], events: [], effects: [] }
+    invariants: []
+    case_policy: { coverage: exhaustive, overlap: forbidden }
 ```
 
-Use domain language in contract assumptions. Implementation-specific expressions belong in `implementation.yaml` semantic function declarations or native code annotations.
+Every clause has a stable ID, a human statement, and exactly one realization: portable `core`, an exact executable `external` property ID, or `unresolved`. The last is allowed only in generated migration drafts and fails strict checks. Queries always have an empty state/event/effect frame. Stateful bindings emit transition records; stateless bindings emit `rms/invocation-record/v0.1`. RMS does not generate host-language predicates or wrappers.
 
 ### `requires`
 

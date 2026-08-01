@@ -1,40 +1,114 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: render-workbench-prompt
 version: 1
 kind: command
-meaning: Render a versioned RMS workbench prompt from a target module, selected workflow template, optional task, optional diff, and optional workbench config defaults, with optional run-record persistence or provider execution.
-preconditions:
-  - id: target-module-readable
-    statement: The target module manifest is readable and parseable.
-postconditions:
-  - id: prompt-is-advisory
-    statement: Without a provider, the command prints an advisory prompt and does not edit source files or call an AI provider.
-  - id: prompt-derived-from-context
-    statement: The prompt includes bounded module context derived from canonical artifacts.
-  - id: structure-guidance-is-semantic
-    statement: Workbench prompts that discuss implementation structure ask for semantic roles, traceable-machine obligations, and evidence before incidental file layout.
-  - id: structure-changes-route-through-machine-gate
-    statement: Workbench prompts tell agents to output an RMS semantic-change or focused machine-change object when states, commands, events, effects, transition functions, runnable surfaces, public entrypoints, semantic roles, or evidence roles must change, and to edit only declared role bodies when current structure is sufficient.
-  - id: intent-workflow-is-supported
-    statement: The supported workflow templates include intent capture for understanding and accepting semantic context before implementation.
-  - id: provider-run-is-recorded
-    statement: When provider execution is requested, the command writes a run record containing request metadata, sandbox, write scope, provider timeout, execution root, prompt, validation checks, provider logs, and response.
-  - id: config-defaults-are-operational
-    statement: 'Workbench config may supply provider, model, sandbox, write-scope, provider-timeout, and run-record defaults, but provider execution still requires explicit `--provider` or configured `--ai` selection.'
-  - id: module-write-scope-constrains-provider
-    statement: When Codex provider execution uses workspace-write with module write scope, the provider is run from the target module directory and the prompt states that edits must remain under that owning module unless the run is expanded.
-  - id: provider-execution-is-bounded
-    statement: Provider execution waits only for the selected provider timeout, terminates a timed-out provider process, and preserves run-record logs and any provider response already written.
-failure_categories:
-  - id: missing-task
-    statement: The selected workflow requires a task but none was supplied.
-  - id: provider-unavailable
-    statement: The requested provider command cannot be started or exits unsuccessfully.
-  - id: provider-timeout
-    statement: The requested provider process exceeded the configured timeout and was terminated.
-  - id: invalid-config
-    statement: The configured provider, sandbox, write-scope, provider-timeout, or run-record settings are unsupported.
-  - id: missing-configured-provider
-    statement: '`--ai` was requested but no non-none default provider is configured.'
+meaning: Render a versioned RMS workbench prompt from a target module, selected workflow
+  template, optional task, optional diff, and optional workbench config defaults,
+  with optional run-record persistence or provider execution.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: target-module-readable
+      statement: The target module manifest is readable and parseable.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: prompt-is-advisory
+      statement: Without a provider, the command prints an advisory prompt and does
+        not edit source files or call an AI provider.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: prompt-derived-from-context
+      statement: The prompt includes bounded module context derived from canonical
+        artifacts.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: structure-guidance-is-semantic
+      statement: Workbench prompts that discuss implementation structure ask for semantic
+        roles, traceable-machine obligations, and evidence before incidental file
+        layout.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: structure-changes-route-through-machine-gate
+      statement: Workbench prompts tell agents to output an RMS semantic-change or
+        focused machine-change object when states, commands, events, effects, transition
+        functions, runnable surfaces, public entrypoints, semantic roles, or evidence
+        roles must change, and to edit only declared role bodies when current structure
+        is sufficient.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: intent-workflow-is-supported
+      statement: The supported workflow templates include intent capture for understanding
+        and accepting semantic context before implementation.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: provider-run-is-recorded
+      statement: When provider execution is requested, the command writes a run record
+        containing request metadata, sandbox, write scope, provider timeout, execution
+        root, prompt, validation checks, provider logs, and response.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: config-defaults-are-operational
+      statement: Workbench config may supply provider, model, sandbox, write-scope,
+        provider-timeout, and run-record defaults, but provider execution still requires
+        explicit `--provider` or configured `--ai` selection.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: module-write-scope-constrains-provider
+      statement: When Codex provider execution uses workspace-write with module write
+        scope, the provider is run from the target module directory and the prompt
+        states that edits must remain under that owning module unless the run is expanded.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: provider-execution-is-bounded
+      statement: Provider execution waits only for the selected provider timeout,
+        terminates a timed-out provider process, and preserves run-record logs and
+        any provider response already written.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: missing-task
+      statement: The selected workflow requires a task but none was supplied.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: provider-unavailable
+      statement: The requested provider command cannot be started or exits unsuccessfully.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: provider-timeout
+      statement: The requested provider process exceeded the configured timeout and
+        was terminated.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: invalid-config
+      statement: The configured provider, sandbox, write-scope, provider-timeout,
+        or run-record settings are unsupported.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: missing-configured-provider
+      statement: "`--ai` was requested but no non-none default provider is configured."
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

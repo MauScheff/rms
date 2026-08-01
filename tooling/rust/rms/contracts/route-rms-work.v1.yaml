@@ -1,24 +1,57 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: route-rms-work
 version: 1
 kind: command
-meaning: Recommend the RMS module that should own a task when the requested target may be a composite parent or recursive module tree.
-preconditions:
-  - id: readable-target
-    statement: The target module manifest is readable by the process.
-  - id: readable-root
-    statement: The requested root is readable when module discovery is needed.
-postconditions:
-  - id: route-derived-from-canonical-artifacts
-    statement: The report derives candidates from module manifests, composition children, parent exports, semantic shapes, public surfaces, and task language.
-  - id: recommendation-is-advisory
-    statement: The report recommends an owning module or declares ambiguity without changing canonical semantics.
-  - id: next-context-command-rendered
-    statement: The report includes follow-up commands for inspecting the recommended module context before implementation.
-failure_categories:
-  - id: unreadable-target
-    statement: The target module manifest cannot be read or parsed.
-  - id: unreadable-root
-    statement: The requested root cannot be scanned for discovered module manifests.
+meaning: Recommend the RMS module that should own a task when the requested target
+  may be a composite parent or recursive module tree.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: readable-target
+      statement: The target module manifest is readable by the process.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: readable-root
+      statement: The requested root is readable when module discovery is needed.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: route-derived-from-canonical-artifacts
+      statement: The report derives candidates from module manifests, composition
+        children, parent exports, semantic shapes, public surfaces, and task language.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: recommendation-is-advisory
+      statement: The report recommends an owning module or declares ambiguity without
+        changing canonical semantics.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: next-context-command-rendered
+      statement: The report includes follow-up commands for inspecting the recommended
+        module context before implementation.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: unreadable-target
+      statement: The target module manifest cannot be read or parsed.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: unreadable-root
+      statement: The requested root cannot be scanned for discovered module manifests.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

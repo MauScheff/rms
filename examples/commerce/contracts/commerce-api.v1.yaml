@@ -1,6 +1,23 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: commerce-api
 version: 1
 kind: api
 meaning: Public commerce interface for checkout and fulfillment.
-
+semantics:
+  api:
+    operations:
+    - kind: command
+      name: start-checkout
+      contract: start-checkout.v1.yaml
+    - kind: query
+      name: get-checkout-status
+      contract: get-checkout-status.v1.yaml
+    - kind: event
+      name: checkout-completed
+      contract: checkout-completed.v1.yaml
+    - kind: event
+      name: checkout-requires-review
+      contract: checkout-requires-review.v1.yaml
+    - kind: event
+      name: order-ready-for-fulfillment
+      contract: order-ready-for-fulfillment.v1.yaml

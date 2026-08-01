@@ -187,7 +187,22 @@ Effect handlers SHOULD execute one declared request and return one declared obse
 
 ### 4.8 Contracts
 
-A public contract MUST define shape and domain meaning.
+A public contract MUST use `rms/contract/v0.2` and define domain meaning as an executable, language-neutral relation over typed input, output, before/after state, transitions, protocol observations, trace metrics, events, effects, and rejection outcomes as applicable.
+
+Command, query, and capability contracts MUST declare typed observations, caller requirements, guarantees, invariants, exhaustive behavior cases, accepted or rejected outcomes, and permitted state/event/effect frames. Event contracts MUST declare typed payload observations and guarantees. API contracts MUST close over exact command, query, event, or capability contract references. Existing protocol semantics MAY coexist with behavioral semantics.
+
+Each behavioral clause MUST have a stable identifier, a human statement, and exactly one realization: a portable RMS core expression or one exact executable external property identifier. `unresolved` MAY appear only in a generated migration draft and MUST fail strict conformance. RMS core expressions MUST remain closed, exactly typed, and free of host callbacks, arbitrary code, floating-point semantics, textual parsing, and unbounded quantification.
+
+Case coverage MUST be exhaustive and overlap MUST be forbidden unless intentional nondeterminism explicitly permits it. A query MUST have an empty state, event, and effect frame.
+
+Evaluation MUST apply the relation:
+
+```text
+invariants(before) ∧ requirements(input, before)
+⇒ permitted case/outcome ∧ guarantees ∧ invariants(after)
+```
+
+A requirement violation assigns caller blame. A postcondition, frame, or invariant violation assigns provider blame. A malformed or incomplete record assigns binding/evidence blame. A declared rejected outcome is normal contract behavior.
 
 When relevant to consumers, a contract MUST also define:
 
@@ -202,7 +217,9 @@ When relevant to consumers, a contract MUST also define:
 - versioning and compatibility policy;
 - service constraints when consumers depend on latency, throughput, availability, payload, resource, or cost bounds.
 
-Preconditions and postconditions SHOULD be stable, named, and stated in domain language when they affect consumers. Implementation-local assumptions SHOULD be discharged by types, validated constructors, boundary schemas, state models, or semantic function specifications rather than hidden in comments.
+Stateless calls MUST be observable as `rms/invocation-record/v0.1`; stateful behavior MUST use transition records. Binding-specific tests MAY invoke native code and emit these records, but MUST NOT replace the RMS evaluator with generated host-language predicates or wrappers.
+
+Compatibility MUST preserve the old valid input domain, constrain new behavior for old-valid inputs to the old permitted relation, and keep new events, effects, rejection outcomes, and state changes within the old frame. Concrete refinement counterexamples are breaking; proven input-domain expansion is additive; unsupported or external obligations require operational review unless exact digest-bound external refinement evidence discharges them.
 
 ### 4.9 Communication
 
@@ -378,6 +395,8 @@ Implemented modules MUST declare strong verification lanes derived from their se
 
 A module MAY declare a closed `verification.hunt_exceptions` item only when the named obligation is genuinely inapplicable, and MUST give a focused reason. Fast candidate checks validate that posture but do not require a fresh expensive campaign. `rms hunt` executes declared nightly lanes in an isolated committed checkout and records bounded evidence. Only exhausted finite exploration MAY support a universal finite conclusion; fuzzing, sanitizers, generated cases, bounded search, and mutation testing MUST NOT be described as global proof. Every retained behavioral failure MUST be replayable.
 
+Behavioral-contract analysis MUST check satisfiability, vacuity, case coverage and disjointness, contradictory guarantees, and frame consistency when the core theory supports them. Solver exchange MUST be deterministic SMT-LIB v2. cvc5 is the reference external solver and MUST remain optional rather than linked or bundled. Solver evidence MUST record identity, version, input digest, timeout, result, model, unsat core, and RMS model revalidation. Missing solvers, timeout, `unknown`, or unsupported theories are unresolved, never successful. Every satisfiable model used as a counterexample MUST be re-evaluated by the RMS reference evaluator.
+
 ### 5.5 Monitor profile
 
 The Monitor profile applies when a module observes runtime inputs over time to compute derived facts, check envelopes or invariants, and emit findings, events, or declared supervisory commands.
@@ -391,6 +410,8 @@ The module MUST additionally declare:
 - monitor authority: observe-only, advisory, enforcing, or fail-safe;
 - idempotency, cooldown, or retrigger policy when triggers can repeat;
 - fail-open, fail-closed, or degraded-mode behavior.
+
+`rms property monitor` is an out-of-process, fail-open observer. Production violations and coverage gaps MAY be logged or exported but MUST NOT control the application result. Missing observations are coverage gaps, never passing evidence. Test and CI evaluation lanes MUST fail on violations independently of production monitoring.
 
 A monitor MUST NOT mutate controlled module state directly. Supervisory behavior MUST cross public contracts as commands, events, alarms, findings, or capabilities owned by the receiving boundary.
 

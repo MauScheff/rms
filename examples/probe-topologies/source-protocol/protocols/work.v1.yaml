@@ -1,28 +1,138 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: work
 version: 1
 kind: command
 meaning: A source requests one unit of work and a worker reports its completion.
-preconditions:
-  - id: source-ready
-    statement: The source has a work request ready for a worker.
-postconditions:
-  - id: completion-observed
-    statement: Every completed conversation records the worker completion at the source.
-failure_categories:
-  - id: illegal-order
-    statement: A protocol message is sent outside its declared conversation state.
+semantics:
+  behavior:
+    observations:
+    - id: work-requested
+      source:
+        kind: protocol-message
+        name: WorkRequested
+      value: occurrence
+    - id: work-finished
+      source:
+        kind: protocol-message
+        name: WorkFinished
+      value: occurrence
+    - id: protocol-ready
+      source:
+        kind: protocol-state
+        name: Ready
+      value: occurrence
+    - id: protocol-finished
+      source:
+        kind: protocol-state
+        name: Finished
+      value: occurrence
+    - id: illegal-order
+      source:
+        kind: output
+        output_kind: rejection
+        name: illegal-order
+      value: occurrence
+    requires:
+    - id: source-ready
+      statement: The source has a work request ready for a worker.
+      evaluation:
+        kind: core
+        expression:
+          any:
+          - not:
+              occurred: work-requested
+          - occurred: protocol-ready
+    guarantees:
+    - id: completion-observed
+      statement: Every completed conversation records the worker completion at the
+        source.
+      evaluation:
+        kind: core
+        expression:
+          any:
+          - not:
+              occurred: work-finished
+          - occurred: protocol-finished
+    failures:
+    - id: illegal-order
+      statement: A protocol message is sent outside its declared conversation state.
+      evaluation:
+        kind: core
+        expression:
+          occurred: illegal-order
+    cases:
+    - id: work-request-case
+      statement: A ready source sends WorkRequested.
+      when:
+        occurred: work-requested
+      outcome:
+        kind: accepted
+        expression:
+          occurred: work-requested
+      ensures: []
+      permits:
+        state_changes:
+        - "/"
+        events: []
+        effects: []
+    - id: work-finished-case
+      statement: The worker completion reaches the source.
+      when:
+        occurred: work-finished
+      outcome:
+        kind: accepted
+        expression:
+          occurred: work-finished
+      ensures: []
+      permits:
+        state_changes:
+        - "/"
+        events: []
+        effects: []
+    - id: illegal-order-case
+      statement: An illegal protocol order is explicitly rejected.
+      when:
+        occurred: illegal-order
+      outcome:
+        kind: rejected
+        category: illegal-order
+        expression:
+          occurred: illegal-order
+      ensures: []
+      permits:
+        state_changes: []
+        events: []
+        effects: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
+  protocol:
+    participants:
+    - source
+    - worker
+    messages:
+    - id: WorkRequested
+      kind: command
+      from: source
+      to: worker
+    - id: WorkFinished
+      kind: reply
+      from: worker
+      to: source
+    states:
+    - Ready
+    - Working
+    - Finished
+    initial_state: Ready
+    terminal_states:
+    - Finished
+    transitions:
+    - from: Ready
+      on: WorkRequested
+      to: Working
+    - from: Working
+      on: WorkFinished
+      to: Finished
 compatibility:
   policy: backward-compatible-within-major
-semantics:
-  protocol:
-    participants: [source, worker]
-    messages:
-      - {id: WorkRequested, kind: command, from: source, to: worker}
-      - {id: WorkFinished, kind: reply, from: worker, to: source}
-    states: [Ready, Working, Finished]
-    initial_state: Ready
-    terminal_states: [Finished]
-    transitions:
-      - {from: Ready, on: WorkRequested, to: Working}
-      - {from: Working, on: WorkFinished, to: Finished}

@@ -1,16 +1,39 @@
-spec: rms/contract/v0.1
-name: "apply-runnable-surface"
+spec: rms/contract/v0.2
+name: apply-runnable-surface
 version: 2
 kind: command
-meaning: "Validate and apply one runnable boundary declaration only after a current route receipt authorizes the selected implementation and surface action."
-preconditions:
-  - id: "accepts-1"
-    statement: "A complete runnable-surface declaration, readable implementation binding, and ready matching route receipt."
-postconditions:
-  - id: "ensures-1"
-    statement: "Receipt validation precedes dry-run or candidate computation and the resulting surface remains bound to declared roles, effects, usage, smoke proof, and accepted receipt."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Missing or invalid receipts, unknown roles or commands, undeclared effects, unsafe paths, missing usage or smoke evidence, and incompatible surface candidates."
+meaning: Validate and apply one runnable boundary declaration only after a current
+  route receipt authorizes the selected implementation and surface action.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A complete runnable-surface declaration, readable implementation
+        binding, and ready matching route receipt.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Receipt validation precedes dry-run or candidate computation and
+        the resulting surface remains bound to declared roles, effects, usage, smoke
+        proof, and accepted receipt.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Missing or invalid receipts, unknown roles or commands, undeclared
+        effects, unsafe paths, missing usage or smoke evidence, and incompatible surface
+        candidates.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

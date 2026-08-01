@@ -1,40 +1,115 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: implement-module-workbench
 version: 1
 kind: command
 meaning: Render an advisory RMS implementation prompt for a requested module change.
-preconditions:
-  - id: task-supplied
-    statement: The requested implementation change is supplied as task text.
-  - id: target-module-readable
-    statement: The target module manifest is readable and parseable.
-postconditions:
-  - id: implement-prompt-classifies-change
-    statement: The prompt asks the reviewer or agent to restate the outcome, classify the change, identify affected RMS surfaces, and decide whether the owning boundary must expand or split before preserving it.
-  - id: public-meaning-updates-first
-    statement: The prompt requires public contracts or manifests to be updated before implementation when public meaning changes.
-  - id: accepted-intent-precedes-code
-    statement: The prompt requires accepted intent and rationale to exist or be captured before coding when a semantic change affects public meaning, ownership, source of truth, lifecycle, compatibility, effects, recovery, or proof obligations.
-  - id: semantic-trace-evolves-together
-    statement: The prompt asks for linked intent, decision, contract, law, and evidence records to evolve together when accepted semantics change.
-  - id: semantic-roles-before-files
-    statement: The prompt asks for representation, commands, message envelopes, transition outputs, transition records, ports, adapters, runnable surfaces, journals, replay bundles, first-bad-transition evidence, and evidence before incidental file layout.
-  - id: semantic-structure-precedes-code
-    statement: The prompt asks for semantic structure before implementation code, including ADTs or closed variants, validated values, commands, states, events, accepted and rejected result types, message envelopes, transition output, transition records, replay support, transition boundaries, parser boundaries, and evidence roles.
-  - id: edge-cases-resolved-first
-    statement: The prompt asks for impossible variants, invalid constructors, malformed boundary input, illegal transitions, terminal-state behavior, stale or conflicting state, duplicate or out-of-order external facts, and expected effect failures before implementation steps.
-  - id: implement-prompt-includes-route-evidence
-    statement: When the target is a composite parent or recursive module tree, the prompt identifies the recommended child owner or declares routing ambiguity before implementation guidance.
-  - id: composite-parent-not-implementation-dump
-    statement: When routing is clear, the prompt warns not to add private implementation behavior to the composite parent unless the task changes parent composition, exports, parent contracts, or parent evidence.
-  - id: implementation-is-advisory
-    statement: The command renders or executes guidance and does not itself edit source files.
-  - id: implement-provider-execution-is-optional
-    statement: Provider-backed implementation guidance is opt-in and must preserve the rendered prompt and provider response as a run record.
-failure_categories:
-  - id: missing-task
-    statement: No implementation task was supplied.
-  - id: provider-unavailable
-    statement: The requested provider command cannot be started or exits unsuccessfully.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: task-supplied
+      statement: The requested implementation change is supplied as task text.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: target-module-readable
+      statement: The target module manifest is readable and parseable.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: implement-prompt-classifies-change
+      statement: The prompt asks the reviewer or agent to restate the outcome, classify
+        the change, identify affected RMS surfaces, and decide whether the owning
+        boundary must expand or split before preserving it.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: public-meaning-updates-first
+      statement: The prompt requires public contracts or manifests to be updated before
+        implementation when public meaning changes.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepted-intent-precedes-code
+      statement: The prompt requires accepted intent and rationale to exist or be
+        captured before coding when a semantic change affects public meaning, ownership,
+        source of truth, lifecycle, compatibility, effects, recovery, or proof obligations.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: semantic-trace-evolves-together
+      statement: The prompt asks for linked intent, decision, contract, law, and evidence
+        records to evolve together when accepted semantics change.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: semantic-roles-before-files
+      statement: The prompt asks for representation, commands, message envelopes,
+        transition outputs, transition records, ports, adapters, runnable surfaces,
+        journals, replay bundles, first-bad-transition evidence, and evidence before
+        incidental file layout.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: semantic-structure-precedes-code
+      statement: The prompt asks for semantic structure before implementation code,
+        including ADTs or closed variants, validated values, commands, states, events,
+        accepted and rejected result types, message envelopes, transition output,
+        transition records, replay support, transition boundaries, parser boundaries,
+        and evidence roles.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: edge-cases-resolved-first
+      statement: The prompt asks for impossible variants, invalid constructors, malformed
+        boundary input, illegal transitions, terminal-state behavior, stale or conflicting
+        state, duplicate or out-of-order external facts, and expected effect failures
+        before implementation steps.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: implement-prompt-includes-route-evidence
+      statement: When the target is a composite parent or recursive module tree, the
+        prompt identifies the recommended child owner or declares routing ambiguity
+        before implementation guidance.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: composite-parent-not-implementation-dump
+      statement: When routing is clear, the prompt warns not to add private implementation
+        behavior to the composite parent unless the task changes parent composition,
+        exports, parent contracts, or parent evidence.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: implementation-is-advisory
+      statement: The command renders or executes guidance and does not itself edit
+        source files.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: implement-provider-execution-is-optional
+      statement: Provider-backed implementation guidance is opt-in and must preserve
+        the rendered prompt and provider response as a run record.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: missing-task
+      statement: No implementation task was supplied.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: provider-unavailable
+      statement: The requested provider command cannot be started or exits unsuccessfully.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

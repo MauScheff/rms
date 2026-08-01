@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:invocation-record:v0.1",
+  "title": "RMS Invocation Record v0.1",
+  "type": "object",
+  "required": ["spec", "contract", "binding", "contract_digest", "input", "output"],
+  "properties": {
+    "spec": { "const": "rms/invocation-record/v0.1" },
+    "contract": { "type": "string", "minLength": 1 },
+    "binding": { "type": "string", "minLength": 1 },
+    "contract_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "correlation_id": { "type": "string" },
+    "causation_id": { "type": "string" },
+    "scenario_start": { "type": "boolean" },
+    "input": {},
+    "output": {},
+    "state_before": {},
+    "state_after": {},
+    "outputs": { "type": "array" },
+    "source": { "type": "object" }
+  },
+  "additionalProperties": false
+}

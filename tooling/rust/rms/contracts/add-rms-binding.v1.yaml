@@ -1,28 +1,67 @@
-spec: rms/contract/v0.1
-name: "add-rms-binding"
+spec: rms/contract/v0.2
+name: add-rms-binding
 version: 1
 kind: command
-meaning: "Attach one supported implementation binding to an existing semantic-only RMS module through the canonical binding adapter without changing module semantics."
-preconditions:
-  - id: "accepts-1"
-    statement: "a readable RMS module manifest whose directory has no implementation.yaml"
-  - id: "accepts-2"
-    statement: "one supported binding identifier: rust, swift, js, python, or executable"
-postconditions:
-  - id: "ensures-1"
-    statement: "the selected binding adapter creates implementation.yaml and its declared source, verification, and build artifacts"
-  - id: "ensures-2"
-    statement: "the existing module manifest, contracts, laws, public capabilities, and dependency semantics remain authoritative and unchanged"
-  - id: "ensures-3"
-    statement: "the result can be revised through rms spec apply and checked through rms machine check, rms structure, and rms verify"
-failure_categories:
-  - id: "rejects-1"
-    statement: "the module target is unreadable or unsupported"
-  - id: "rejects-2"
-    statement: "implementation.yaml already exists for the module"
-  - id: "rejects-3"
-    statement: "the requested binding is unsupported"
-  - id: "rejects-4"
-    statement: "a generated binding artifact would overwrite an existing file"
+meaning: Attach one supported implementation binding to an existing semantic-only
+  RMS module through the canonical binding adapter without changing module semantics.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: a readable RMS module manifest whose directory has no implementation.yaml
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: 'one supported binding identifier: rust, swift, js, python, or executable'
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: the selected binding adapter creates implementation.yaml and its
+        declared source, verification, and build artifacts
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: the existing module manifest, contracts, laws, public capabilities,
+        and dependency semantics remain authoritative and unchanged
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: the result can be revised through rms spec apply and checked through
+        rms machine check, rms structure, and rms verify
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: the module target is unreadable or unsupported
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: implementation.yaml already exists for the module
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-3
+      statement: the requested binding is unsupported
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-4
+      statement: a generated binding artifact would overwrite an existing file
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

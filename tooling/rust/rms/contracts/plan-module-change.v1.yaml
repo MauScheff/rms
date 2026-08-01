@@ -1,21 +1,55 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: plan-module-change
 version: 1
 kind: command
-meaning: Render an advisory RMS implementation plan prompt for a requested module change.
-preconditions:
-  - id: task-supplied
-    statement: The requested change is supplied as task text.
-  - id: target-module-readable
-    statement: The target module manifest is readable and parseable.
-postconditions:
-  - id: plan-prompt-classifies-change
-    statement: The prompt asks the reviewer or agent to classify the change, identify affected RMS surfaces, decide whether scope expansion or a new module boundary is needed, and propose focused verification.
-  - id: plan-prompt-names-semantic-shape
-    statement: The prompt asks for semantic shape, representation obligations, traceable-machine obligations, and evidence roles before file-level implementation details.
-  - id: plan-prompt-includes-route-evidence
-    statement: When the target is a composite parent or recursive module tree, the prompt includes route evidence and candidate owning modules before planning implementation steps.
-  - id: plan-provider-execution-is-optional
-    statement: Provider-backed planning is opt-in and must preserve the rendered prompt and provider response as a run record.
+meaning: Render an advisory RMS implementation plan prompt for a requested module
+  change.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: task-supplied
+      statement: The requested change is supplied as task text.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: target-module-readable
+      statement: The target module manifest is readable and parseable.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: plan-prompt-classifies-change
+      statement: The prompt asks the reviewer or agent to classify the change, identify
+        affected RMS surfaces, decide whether scope expansion or a new module boundary
+        is needed, and propose focused verification.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: plan-prompt-names-semantic-shape
+      statement: The prompt asks for semantic shape, representation obligations, traceable-machine
+        obligations, and evidence roles before file-level implementation details.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: plan-prompt-includes-route-evidence
+      statement: When the target is a composite parent or recursive module tree, the
+        prompt includes route evidence and candidate owning modules before planning
+        implementation steps.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: plan-provider-execution-is-optional
+      statement: Provider-backed planning is opt-in and must preserve the rendered
+        prompt and provider response as a run record.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures: []
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

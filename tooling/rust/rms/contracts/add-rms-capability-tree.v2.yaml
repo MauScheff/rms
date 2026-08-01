@@ -1,18 +1,45 @@
-spec: rms/contract/v0.1
-name: "add-rms-capability-tree"
+spec: rms/contract/v0.2
+name: add-rms-capability-tree
 version: 2
 kind: command
-meaning: "Scaffold the exact recursive capability topology selected by design only after validating its current topology receipt."
-preconditions:
-  - id: "accepts-1"
-    statement: "Valid parent and child scaffold inputs and a ready design receipt matching every topology argument and target."
-postconditions:
-  - id: "ensures-1"
-    statement: "Receipt validation precedes dry-run or writes and authorizes only the exact recommended composite, domain child, boundary child, bindings, and surface."
-  - id: "ensures-2"
-    statement: "Generated dependencies, evidence lanes, and public delegation remain deterministic and adapter-realized."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Missing, stale, tampered, non-ready, wrong-root, wrong-target, wrong-action, argument-mismatched, or unsupported-topology receipts and any scaffold collision or invalid binding."
+meaning: Scaffold the exact recursive capability topology selected by design only
+  after validating its current topology receipt.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: Valid parent and child scaffold inputs and a ready design receipt
+        matching every topology argument and target.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Receipt validation precedes dry-run or writes and authorizes only
+        the exact recommended composite, domain child, boundary child, bindings, and
+        surface.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Generated dependencies, evidence lanes, and public delegation remain
+        deterministic and adapter-realized.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Missing, stale, tampered, non-ready, wrong-root, wrong-target, wrong-action,
+        argument-mismatched, or unsupported-topology receipts and any scaffold collision
+        or invalid binding.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

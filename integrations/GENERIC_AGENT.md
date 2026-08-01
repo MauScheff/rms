@@ -52,4 +52,4 @@ Skill-source detection does not prove runtime activation. The agent host's injec
 
 Provider execution, filesystem writes, credentials, Git operations, and external publication remain explicit host-authorized capabilities. Do not make model-specific prompting part of the semantic specification.
 
-For executable temporal work, declare typed observations and assumptions before choosing a closed expression. Use `rms property check`, then evaluate a real trace or search an explicit finite probe assembly. A non-exhausted result is inconclusive. Record and replay `rms/property-analysis/v0.1` rather than summarizing a witness or counterexample by hand.
+For executable behavioral-contract or temporal work, declare typed observations and assumptions before choosing a closed expression. Use `rms property check`, then evaluate real invocation or transition records, search an explicit finite probe assembly, or analyze supported core obligations. A non-exhausted or unresolved result is inconclusive. Record and replay `rms/property-analysis/v0.2` rather than summarizing a witness or counterexample by hand.

@@ -1,5 +1,91 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: durable-store
+version: 1
 kind: capability
 meaning: Durable persistence capability for payment ledger state.
-
+semantics:
+  behavior:
+    observations:
+    - id: request-kind
+      source:
+        kind: input
+        pointer: "/kind"
+      value: string
+    - id: outcome-kind
+      source:
+        kind: output
+        pointer: "/kind"
+      value:
+        variant:
+        - accepted
+        - rejected-request
+    requires: []
+    guarantees: []
+    failures:
+    - id: rejected-request
+      statement: The request is rejected with a stable category.
+      evaluation:
+        kind: core
+        expression:
+          equals:
+            left:
+              observation: outcome-kind
+            right:
+              literal: rejected-request
+    cases:
+    - id: accepted-case
+      statement: The operation returns an accepted outcome.
+      when:
+        equals:
+          left:
+            observation: outcome-kind
+          right:
+            literal: accepted
+      outcome:
+        kind: accepted
+        expression:
+          equals:
+            left:
+              observation: outcome-kind
+            right:
+              literal: accepted
+      ensures: []
+      permits: &1
+        state_changes:
+        - "/"
+        events:
+        - checkout-completed
+        - checkout-requires-review
+        - payment-outcome
+        - payment-requested
+        - order-ready-for-fulfillment
+        effects:
+        - durable-scheduler
+        - durable-store
+        - payment-provider
+        - release-inventory
+        - reserve-inventory
+        - submit-order
+    - id: rejected-case-rejected-request
+      statement: The operation rejects with rejected-request.
+      when:
+        equals:
+          left:
+            observation: outcome-kind
+          right:
+            literal: rejected-request
+      outcome:
+        kind: rejected
+        category: rejected-request
+        expression:
+          equals:
+            left:
+              observation: outcome-kind
+            right:
+              literal: rejected-request
+      ensures: []
+      permits: *1
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden

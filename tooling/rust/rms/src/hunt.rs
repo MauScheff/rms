@@ -959,7 +959,7 @@ fn discover_lanes(
                 .display()
                 .to_string();
             let (arguments, strategy) = match get_str(&counterexample, &["spec"]) {
-                Some("rms/property-analysis/v0.1") => (
+                Some("rms/property-analysis/v0.1" | "rms/property-analysis/v0.2") => (
                     vec![
                         "property".to_string(),
                         "replay".to_string(),

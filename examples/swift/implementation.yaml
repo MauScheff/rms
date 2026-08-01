@@ -165,13 +165,11 @@ architecture:
     semantic_function: describe-swift-widget-query
     machine_inputs:
     - Describe
-    - RejectEmptyName
     machine_outputs:
-    - WidgetDescribed
-    - WidgetRejected
     - Description
-    - EmptyWidgetName
-    - ExpectedEmptyName
+    observation_source:
+      kind: invocation-record
+      command: trace
 x-rms:
   semantic_revision:
     digest: sha256:86435b350f54fb65da6c19f1c447af6f29df9cfe5a3047d225c5c4a6bf5f800d

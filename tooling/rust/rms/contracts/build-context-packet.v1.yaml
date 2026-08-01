@@ -1,15 +1,37 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: build-context-packet
 version: 1
 kind: command
-meaning: Build a bounded task packet for humans or agents from the target module and canonical RMS references.
-preconditions:
-  - id: target-module-readable
-    statement: The target module manifest is readable and parseable.
-postconditions:
-  - id: packet-is-bounded
-    statement: The packet names canonical files, public references, and working rules without reading unrelated implementation by default.
-  - id: packet-includes-route-evidence
-    statement: When task text is supplied for a composite parent or recursive module tree, the packet includes a route recommendation or ambiguity notice before implementation work.
+meaning: Build a bounded task packet for humans or agents from the target module and
+  canonical RMS references.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: target-module-readable
+      statement: The target module manifest is readable and parseable.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: packet-is-bounded
+      statement: The packet names canonical files, public references, and working
+        rules without reading unrelated implementation by default.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: packet-includes-route-evidence
+      statement: When task text is supplied for a composite parent or recursive module
+        tree, the packet includes a route recommendation or ambiguity notice before
+        implementation work.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures: []
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major
