@@ -4,7 +4,8 @@ These JSON Schemas validate the structural shape of RMS 0.1 manifests:
 
 - `system.schema.json`
 - `module.schema.json`
-- `contract.schema.json`
+- `contract-v0.2.schema.json`
+- `contract.schema.json` (migration reader only)
 - `context-map.schema.json`
 - `implementation.schema.json`
 - `machine-probe.schema.json`
@@ -13,7 +14,10 @@ These JSON Schemas validate the structural shape of RMS 0.1 manifests:
 - `probe-assembly-v0.2.schema.json`
 - `probe-system-trace.schema.json`
 - `property-analysis.schema.json`
+- `property-analysis-v0.2.schema.json`
 - `property-observation.schema.json`
+- `invocation-record.schema.json`
+- `compatibility-analysis.schema.json`
 - `hunt-lane-result.schema.json`
 - `hunt-report.schema.json`
 - `hunt-report-v0.2.schema.json`

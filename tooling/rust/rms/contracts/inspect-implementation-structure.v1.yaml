@@ -1,30 +1,76 @@
-spec: rms/contract/v0.1
-name: "inspect-implementation-structure"
+spec: rms/contract/v0.2
+name: inspect-implementation-structure
 version: 1
 kind: command
-meaning: "Print and validate canonical inner structure, typed outcomes, effect ownership, and live machine realization for an RMS implementation binding."
-preconditions:
-  - id: "accepts-1"
-    statement: "a readable RMS implementation binding with inspectable or explicitly opaque source"
-  - id: "accepts-2"
-    statement: "canonical machine message role trace surface effect-protocol and semantic-function declarations"
-postconditions:
-  - id: "ensures-1"
-    statement: "binding container types remain distinct from semantic variants and named transition cases"
-  - id: "ensures-2"
-    statement: "declared rejection variants have an explicit transition-output rejection channel"
-  - id: "ensures-3"
-    statement: "inspectable boundary IO is owned by declared effects typed results protocols and executors"
-  - id: "ensures-4"
-    statement: "stateful machines expose exact state-and-input transition and transition-record callables"
-failure_categories:
-  - id: "rejects-1"
-    statement: "missing declared symbols roles transition fields or live semantic ownership"
-  - id: "rejects-2"
-    statement: "hidden boundary IO or undeclared effect protocols"
-  - id: "rejects-3"
-    statement: "rejection variants erased into branch strings or unrelated replies"
-  - id: "rejects-4"
-    statement: "malformed machine driver effect protocol trace or surface structure"
+meaning: Print and validate canonical inner structure, typed outcomes, effect ownership,
+  and live machine realization for an RMS implementation binding.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: a readable RMS implementation binding with inspectable or explicitly
+        opaque source
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: canonical machine message role trace surface effect-protocol and
+        semantic-function declarations
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: binding container types remain distinct from semantic variants and
+        named transition cases
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: declared rejection variants have an explicit transition-output rejection
+        channel
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: inspectable boundary IO is owned by declared effects typed results
+        protocols and executors
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: stateful machines expose exact state-and-input transition and transition-record
+        callables
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: missing declared symbols roles transition fields or live semantic
+        ownership
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: hidden boundary IO or undeclared effect protocols
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-3
+      statement: rejection variants erased into branch strings or unrelated replies
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-4
+      statement: malformed machine driver effect protocol trace or surface structure
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

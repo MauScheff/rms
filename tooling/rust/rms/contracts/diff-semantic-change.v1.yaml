@@ -1,16 +1,34 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: diff-semantic-change
 version: 1
 kind: command
 meaning: Show the current git diff for a semantic RMS target.
-preconditions:
-  - id: git-available
-    statement: Git is available for the target repository.
-postconditions:
-  - id: diff-reported
-    statement: The command reports whether the target has a current git diff and prints or serializes it.
-failure_categories:
-  - id: diff-unavailable
-    statement: Git cannot produce a diff for the target.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: git-available
+      statement: Git is available for the target repository.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: diff-reported
+      statement: The command reports whether the target has a current git diff and
+        prints or serializes it.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: diff-unavailable
+      statement: Git cannot produce a diff for the target.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

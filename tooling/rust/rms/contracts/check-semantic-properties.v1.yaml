@@ -1,28 +1,68 @@
-spec: rms/contract/v0.1
-name: "check-semantic-properties"
+spec: rms/contract/v0.2
+name: check-semantic-properties
 version: 1
 kind: command
-meaning: "Check language-neutral property declarations and prove that every executable realization can truthfully evaluate its claim."
-preconditions:
-  - id: "accepts-1"
-    statement: "module or implementation semantics with input spaces, operations, oracles, evidence, and realization metadata"
-  - id: "accepts-2"
-    statement: "deterministic corpus, exhaustive, generated, coverage-guided, model-checking, static-analysis, sanitizer, and benchmark strategies"
-postconditions:
-  - id: "ensures-1"
-    statement: "every executable realization names an exact runner"
-  - id: "ensures-2"
-    statement: "generated and exhaustive realizations name an exact generator"
-  - id: "ensures-3"
-    statement: "inspectable runners call their generator when required, exercise the declared operation, and apply a binding-native oracle"
-  - id: "ensures-4"
-    statement: "fixed corpora, exhaustive spaces, generators, fuzzers, model checkers, analyzers, sanitizers, and benchmarks remain distinct"
-failure_categories:
-  - id: "rejects-1"
-    statement: "missing or unresolved generator or runner"
-  - id: "rejects-2"
-    statement: "runner that bypasses its generator, semantic operation, or oracle"
-  - id: "rejects-3"
-    statement: "realization strategy incapable of evaluating the declared claim"
+meaning: Check language-neutral property declarations and prove that every executable
+  realization can truthfully evaluate its claim.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: module or implementation semantics with input spaces, operations,
+        oracles, evidence, and realization metadata
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: deterministic corpus, exhaustive, generated, coverage-guided, model-checking,
+        static-analysis, sanitizer, and benchmark strategies
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: every executable realization names an exact runner
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: generated and exhaustive realizations name an exact generator
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: inspectable runners call their generator when required, exercise
+        the declared operation, and apply a binding-native oracle
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: fixed corpora, exhaustive spaces, generators, fuzzers, model checkers,
+        analyzers, sanitizers, and benchmarks remain distinct
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: missing or unresolved generator or runner
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: runner that bypasses its generator, semantic operation, or oracle
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-3
+      statement: realization strategy incapable of evaluating the declared claim
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

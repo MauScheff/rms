@@ -1,26 +1,77 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: hunt-rms-system
 version: 1
 kind: command
-meaning: Run a checkpointed, reproducible campaign of risk-derived strong verification lanes without confusing bounded evidence with a global proof.
-preconditions:
-- id: accepts-1
-  statement: A clean committed RMS project, an optional selected module closure or direct probe assembly, a positive wall-clock budget, and available declared tools.
-- id: accepts-2
-  statement: Nightly runners honor the recorded seed and budget and write rms/hunt-lane-result/v0.1 to RMS_HUNT_OUTPUT.
-postconditions:
-- id: ensures-1
-  statement: Execution occurs in an isolated checkout at the recorded source revision and leaves the caller's tracked source unchanged.
-- id: ensures-2
-  statement: Historical failures, smoke proof, real traces, bounded proof lanes, seeded semantic-novelty probe exploration, probe relationships, generated cases, fuzzers, and mutation lanes run in deterministic phase order within the total budget.
-- id: ensures-3
-  statement: Checkpoints bind the real selected declaration closure, source, tool identities, seed, module or assembly, budget, workers, and output; compatible runs restore that exact configuration without repeating completed lanes, explicit changes are rejected, and finalized reports return without rewriting provenance.
-- id: ensures-4
-  statement: Every behavioral finding has a successful targeted replay, and the finalized checkpoint plus rms/hunt-report/v0.2 record stable semantic finding IDs, occurrence counts, the shortest retained replay, exact commands, bounds, metrics, artifacts, output format, and proof scope while v0.1 reports remain readable.
-- id: ensures-5
-  statement: Only explicitly exhaustive finite strategies are classified as proof; guided exploration, fuzzing, and time-bounded work remain bounded evidence even when their frontier is exhausted.
-failure_categories:
-- id: rejects-1
-  statement: Dirty source, invalid declarations, unavailable tools, incompatible resume state, malformed lane results, non-replayable findings, or orchestration failure.
+meaning: Run a checkpointed, reproducible campaign of risk-derived strong verification
+  lanes without confusing bounded evidence with a global proof.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A clean committed RMS project, an optional selected module closure
+        or direct probe assembly, a positive wall-clock budget, and available declared
+        tools.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: Nightly runners honor the recorded seed and budget and write rms/hunt-lane-result/v0.1
+        to RMS_HUNT_OUTPUT.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Execution occurs in an isolated checkout at the recorded source revision
+        and leaves the caller's tracked source unchanged.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Historical failures, smoke proof, real traces, bounded proof lanes,
+        seeded semantic-novelty probe exploration, probe relationships, generated
+        cases, fuzzers, and mutation lanes run in deterministic phase order within
+        the total budget.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Checkpoints bind the real selected declaration closure, source, tool
+        identities, seed, module or assembly, budget, workers, and output; compatible
+        runs restore that exact configuration without repeating completed lanes, explicit
+        changes are rejected, and finalized reports return without rewriting provenance.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: Every behavioral finding has a successful targeted replay, and the
+        finalized checkpoint plus rms/hunt-report/v0.2 record stable semantic finding
+        IDs, occurrence counts, the shortest retained replay, exact commands, bounds,
+        metrics, artifacts, output format, and proof scope while v0.1 reports remain
+        readable.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-5
+      statement: Only explicitly exhaustive finite strategies are classified as proof;
+        guided exploration, fuzzing, and time-bounded work remain bounded evidence
+        even when their frontier is exhausted.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Dirty source, invalid declarations, unavailable tools, incompatible
+        resume state, malformed lane results, non-replayable findings, or orchestration
+        failure.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

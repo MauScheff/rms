@@ -1,0 +1,24 @@
+{
+  "spec": "rms/property-analysis/v0.2",
+  "operation": "refine",
+  "result": "satisfied",
+  "target": "contract:apply-move#apply-move-refines-cli-requirement",
+  "subject": {
+    "property": "apply-move-refines-cli-requirement",
+    "old_digest": "f2888583ff10f1174a9c0e4476bc853e0dc5721508c736dcc57146fa18baa90b",
+    "new_digest": "20cca9b72ea1b3327f31d2a8620b544d03412decfe08018b8afd30df95700efa"
+  },
+  "evaluator": {
+    "kind": "native-exhaustive-finite",
+    "runner": "src/transition.rs#apply_move_refines_cli_requirement"
+  },
+  "coverage": {
+    "domain": "all rules-reachable states crossed with all nine validated cells",
+    "result": "exhausted"
+  },
+  "proof_scope": {
+    "kind": "exhausted-finite-model",
+    "bounded": false
+  },
+  "analysis": "The provided rules transition is contained by the CLI required capability domain, outcomes, and permitted frame."
+}

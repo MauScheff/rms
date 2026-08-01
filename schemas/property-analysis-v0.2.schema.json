@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:property-analysis:v0.2",
+  "title": "RMS Property Analysis v0.2",
+  "type": "object",
+  "required": ["spec", "operation", "result"],
+  "properties": {
+    "spec": { "const": "rms/property-analysis/v0.2" },
+    "operation": { "enum": ["evaluate", "search", "analyze", "monitor", "refine", "solve"] },
+    "result": { "enum": ["satisfied", "violated", "inconclusive", "invalid", "complete", "satisfied-witness", "violated-counterexample", "exhaustively-satisfied", "exhaustively-unsatisfiable", "solver-discharged", "unresolved", "replayed", "recorded-exhaustive-result"] },
+    "goal": { "enum": ["satisfy", "violate"] },
+    "target": { "type": "string" },
+    "subject": { "type": "object" },
+    "source": { "type": "object" },
+    "evaluator": { "type": "object" },
+    "property_definitions": { "type": "array" },
+    "property_digest": { "type": "string" },
+    "evaluations": { "type": "array" },
+    "obligations": { "type": "array" },
+    "relationships": { "type": "array" },
+    "coverage": { "type": "object" },
+    "proof_scope": { "type": "object" },
+    "evidence_trace": {},
+    "evidence_observations": {},
+    "counterexample": {},
+    "replay": { "type": "object" },
+    "analysis": { "type": "string" }
+  },
+  "additionalProperties": false
+}

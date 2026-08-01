@@ -1,18 +1,42 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: check-semantic-change
 version: 1
 kind: command
-meaning: Check a module or implementation for semantic-first completeness and machine structure conformance.
-preconditions:
-  - id: target-readable
-    statement: The target module.yaml or implementation.yaml is readable and parseable.
-postconditions:
-  - id: semantic-findings-reported
-    statement: The command reports missing law evidence, contract evidence, empty evidence lanes, and implementation structure diagnostics.
-  - id: strict-promotes-blockers
-    statement: --strict promotes production semantic and structure blockers to failures.
-failure_categories:
-  - id: semantic-incomplete
-    statement: Required laws, contracts, machine structure, or evidence are missing or drifted.
+meaning: Check a module or implementation for semantic-first completeness and machine
+  structure conformance.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: target-readable
+      statement: The target module.yaml or implementation.yaml is readable and parseable.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: semantic-findings-reported
+      statement: The command reports missing law evidence, contract evidence, empty
+        evidence lanes, and implementation structure diagnostics.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: strict-promotes-blockers
+      statement: "--strict promotes production semantic and structure blockers to
+        failures."
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: semantic-incomplete
+      statement: Required laws, contracts, machine structure, or evidence are missing
+        or drifted.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

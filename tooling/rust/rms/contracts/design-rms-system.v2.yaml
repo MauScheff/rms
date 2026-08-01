@@ -1,22 +1,56 @@
-spec: rms/contract/v0.1
-name: "design-rms-system"
+spec: rms/contract/v0.2
+name: design-rms-system
 version: 2
 kind: command
-meaning: "Validate typed or explicitly provider-extracted system intent, choose the smallest deterministic topology, persist the decision, and issue a receipt authorizing only the exact recommended scaffold."
-preconditions:
-  - id: "accepts-1"
-    statement: "A system design task, readable RMS root, and exactly one typed intent source or explicit provider extraction."
-  - id: "accepts-2"
-    statement: "Optional provider, recording, cache-refresh, and projection settings."
-postconditions:
-  - id: "ensures-1"
-    statement: "Valid intent yields one deterministic architecture decision and a content-addressed receipt limited to its exact scaffold command and arguments."
-  - id: "ensures-2"
-    statement: "Provider extraction follows the same structured, repaired, cached, and audited pipeline as next."
-  - id: "ensures-3"
-    statement: "Non-ready design outcomes cannot authorize module or capability-tree creation."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Malformed or materially unknown intent, topology-bearing provider output, provider failure, unsupported structured output, persistence failure, and design inputs that do not close deterministically."
+meaning: Validate typed or explicitly provider-extracted system intent, choose the
+  smallest deterministic topology, persist the decision, and issue a receipt authorizing
+  only the exact recommended scaffold.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A system design task, readable RMS root, and exactly one typed intent
+        source or explicit provider extraction.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: Optional provider, recording, cache-refresh, and projection settings.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Valid intent yields one deterministic architecture decision and a
+        content-addressed receipt limited to its exact scaffold command and arguments.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Provider extraction follows the same structured, repaired, cached,
+        and audited pipeline as next.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Non-ready design outcomes cannot authorize module or capability-tree
+        creation.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Malformed or materially unknown intent, topology-bearing provider
+        output, provider failure, unsupported structured output, persistence failure,
+        and design inputs that do not close deterministically.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

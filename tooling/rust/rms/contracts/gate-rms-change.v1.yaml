@@ -1,26 +1,68 @@
-spec: rms/contract/v0.1
-name: "gate-rms-change"
+spec: rms/contract/v0.2
+name: gate-rms-change
 version: 1
 kind: command
-meaning: "Run deterministic pre-commit RMS verification and strict structural preflight for the current or requested change."
-preconditions:
-  - id: "accepts-1"
-    statement: "a readable RMS project root and optional Git diff"
-  - id: "accepts-2"
-    statement: "an uncommitted working change when the root already has a resolvable source revision"
-postconditions:
-  - id: "ensures-1"
-    statement: "validation, required composition checks, and declared implementation verification run for the affected project"
-  - id: "ensures-2"
-    statement: "strict structural, semantic revision, invariant authority, trace, property, effect protocol, and runnable-surface blockers are promoted to gate failures before commit"
-  - id: "ensures-3"
-    statement: "pre-commit structural preflight ignores only source-revision cleanliness and dirty or untracked worktree checks that final strict audit owns"
-  - id: "ensures-4"
-    statement: "gate reports pass only when the root has a source revision and no executable or structural blocker remains"
-  - id: "ensures-5"
-    statement: "a successful gate remains pre-commit evidence; production proof still requires a clean committed candidate and strict audit"
-failure_categories:
-  - id: "rejects-1"
-    statement: "unreadable artifacts, executable verification failures, strict structural blockers, missing RMS-applied semantic revisions, and roots without a source revision"
+meaning: Run deterministic pre-commit RMS verification and strict structural preflight
+  for the current or requested change.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: a readable RMS project root and optional Git diff
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: an uncommitted working change when the root already has a resolvable
+        source revision
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: validation, required composition checks, and declared implementation
+        verification run for the affected project
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: strict structural, semantic revision, invariant authority, trace,
+        property, effect protocol, and runnable-surface blockers are promoted to gate
+        failures before commit
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: pre-commit structural preflight ignores only source-revision cleanliness
+        and dirty or untracked worktree checks that final strict audit owns
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: gate reports pass only when the root has a source revision and no
+        executable or structural blocker remains
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-5
+      statement: a successful gate remains pre-commit evidence; production proof still
+        requires a clean committed candidate and strict audit
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: unreadable artifacts, executable verification failures, strict structural
+        blockers, missing RMS-applied semantic revisions, and roots without a source
+        revision
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

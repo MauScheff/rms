@@ -1,26 +1,68 @@
-spec: rms/contract/v0.1
-name: "check-machine-structure"
+spec: rms/contract/v0.2
+name: check-machine-structure
 version: 1
 kind: command
-meaning: "Check whether an implementation faithfully realizes its canonical machine, protocols, resource lifecycles, authority boundaries, exact transition path, message envelopes, and total behavior."
-preconditions:
-  - id: "accepts-1"
-    statement: "A readable RMS implementation with inspectable source or explicitly opaque executable evidence."
-  - id: "accepts-2"
-    statement: "Declared machine cases, protocol bindings, resource protocols, authorities, roles, effects, traces, and runnable surfaces."
-postconditions:
-  - id: "ensures-1"
-    statement: "Resource operations are checked against acquisition, ownership, use, transfer, release, failure, and terminal-disposition semantics."
-  - id: "ensures-2"
-    statement: "Privileged operations are constrained to declared authority roles and safe facades."
-  - id: "ensures-3"
-    statement: "Machine types, semantic cases, inputs, effects, records, and live driver paths remain binding-realized."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Resource use before acquisition, use after release, double release, terminal leaks, or unconsumed transfer."
-  - id: "rejects-2"
-    statement: "Undeclared authority, privileged operations outside authority roles, missing safe facades, or missing evidence."
-  - id: "rejects-3"
-    statement: "Collapsed variants, incomplete protocols, result paths bypassing transitions, or executor-owned orchestration."
+meaning: Check whether an implementation faithfully realizes its canonical machine,
+  protocols, resource lifecycles, authority boundaries, exact transition path, message
+  envelopes, and total behavior.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A readable RMS implementation with inspectable source or explicitly
+        opaque executable evidence.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: Declared machine cases, protocol bindings, resource protocols, authorities,
+        roles, effects, traces, and runnable surfaces.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Resource operations are checked against acquisition, ownership, use,
+        transfer, release, failure, and terminal-disposition semantics.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Privileged operations are constrained to declared authority roles
+        and safe facades.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Machine types, semantic cases, inputs, effects, records, and live
+        driver paths remain binding-realized.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Resource use before acquisition, use after release, double release,
+        terminal leaks, or unconsumed transfer.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: Undeclared authority, privileged operations outside authority roles,
+        missing safe facades, or missing evidence.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-3
+      statement: Collapsed variants, incomplete protocols, result paths bypassing
+        transitions, or executor-owned orchestration.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

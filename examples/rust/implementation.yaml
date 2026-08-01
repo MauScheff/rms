@@ -168,13 +168,11 @@ architecture:
     semantic_function: describe-widget-query
     machine_inputs:
     - Describe
-    - RejectEmptyName
     machine_outputs:
-    - WidgetDescribed
-    - WidgetRejected
     - Description
-    - EmptyWidgetName
-    - ExpectedEmptyName
+    observation_source:
+      kind: invocation-record
+      command: trace
 semantic_functions:
 - id: widget-constructor
   symbol: Widget::new

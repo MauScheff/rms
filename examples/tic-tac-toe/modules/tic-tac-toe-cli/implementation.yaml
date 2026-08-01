@@ -290,6 +290,9 @@ architecture:
     - OutOfBoard
     - RulesBridgeFailure
     - IllegalTransition
+    observation_source:
+      kind: transition-record
+      command: trace
   dependency_behavior_bindings:
   - id: apply-move-provider
     capability: apply-move

@@ -1,5 +1,21 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: describe-swift-widget
 version: 1
 kind: query
 meaning: Return the stable display name for a validated Swift widget.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: behavioral-relation
+      statement: Return the stable display name for a validated Swift widget.
+      evaluation:
+        kind: external
+        property: accepted-swift-widget-name-is-non-empty
+    guarantees: []
+    failures: []
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden

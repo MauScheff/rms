@@ -1,16 +1,116 @@
-spec: rms/contract/v0.1
-name: "apply-move"
+spec: rms/contract/v0.2
+name: apply-move
 version: 1
 kind: command
-meaning: "Delegate a validated board-cell move to the Tic-Tac-Toe rules provider through its public contract."
-preconditions:
-  - id: "accepts-1"
-    statement: "a validated board-cell move command"
-postconditions:
-  - id: "ensures-1"
-    statement: "the provider returns an explicit accepted move or domain rejection"
-failure_categories:
-  - id: "rejects-1"
-    statement: "provider contract incompatibility"
+meaning: Delegate a validated board-cell move to the Tic-Tac-Toe rules provider through
+  its public contract.
+semantics:
+  behavior:
+    observations:
+    - id: request-kind
+      source:
+        kind: input
+        pointer: "/kind"
+      value: string
+    - id: outcome-kind
+      source:
+        kind: output
+        pointer: "/kind"
+      value:
+        variant:
+        - accepted
+        - rejects-1
+    requires:
+    - id: accepts-1
+      statement: a validated board-cell move command
+      evaluation:
+        kind: core
+        expression:
+          equals:
+            left:
+              observation: request-kind
+            right:
+              observation: request-kind
+    guarantees:
+    - id: ensures-1
+      statement: the provider returns an explicit accepted move or domain rejection
+      evaluation:
+        kind: core
+        expression:
+          any:
+          - equals:
+              left:
+                observation: outcome-kind
+              right:
+                literal: accepted
+          - equals:
+              left:
+                observation: outcome-kind
+              right:
+                literal: rejects-1
+    failures:
+    - id: rejects-1
+      statement: provider contract incompatibility
+      evaluation:
+        kind: core
+        expression:
+          equals:
+            left:
+              observation: outcome-kind
+            right:
+              literal: rejects-1
+    cases:
+    - id: accepted-case
+      statement: The operation returns an accepted outcome.
+      when:
+        equals:
+          left:
+            observation: outcome-kind
+          right:
+            literal: accepted
+      outcome:
+        kind: accepted
+        expression:
+          equals:
+            left:
+              observation: outcome-kind
+            right:
+              literal: accepted
+      ensures: []
+      permits: &1
+        state_changes:
+        - "/"
+        events:
+        - MarkPlaced
+        - MoveRejected
+        - MoveParsed
+        - RulesInvocationRequested
+        - RulesInvocationCompleted
+        - RunRejected
+        effects:
+        - InvokeRulesBridge
+    - id: rejected-case-rejects-1
+      statement: The operation rejects with rejects-1.
+      when:
+        equals:
+          left:
+            observation: outcome-kind
+          right:
+            literal: rejects-1
+      outcome:
+        kind: rejected
+        category: rejects-1
+        expression:
+          equals:
+            left:
+              observation: outcome-kind
+            right:
+              literal: rejects-1
+      ensures: []
+      permits: *1
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

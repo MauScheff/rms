@@ -399,24 +399,26 @@ fn discover_property_analyses(root: &Path) -> Vec<SystemViewPropertyAnalysis> {
         .filter_map(|entry| {
             let source = fs::read_to_string(entry.path()).ok()?;
             let value: YamlValue = serde_yaml::from_str(&source).ok()?;
-            (get_str(&value, &["spec"]) == Some("rms/property-analysis/v0.1")).then(|| {
-                SystemViewPropertyAnalysis {
-                    path: relative_path(root, entry.path()),
-                    operation: get_str(&value, &["operation"])
-                        .unwrap_or("analysis")
-                        .to_string(),
-                    result: get_str(&value, &["result"])
-                        .unwrap_or("invalid")
-                        .to_string(),
-                    evaluations: get_path(&value, &["evaluations"])
-                        .and_then(YamlValue::as_sequence)
-                        .cloned()
-                        .unwrap_or_default(),
-                    relationships: get_path(&value, &["relationships"])
-                        .and_then(YamlValue::as_sequence)
-                        .cloned()
-                        .unwrap_or_default(),
-                }
+            matches!(
+                get_str(&value, &["spec"]),
+                Some("rms/property-analysis/v0.1" | "rms/property-analysis/v0.2")
+            )
+            .then(|| SystemViewPropertyAnalysis {
+                path: relative_path(root, entry.path()),
+                operation: get_str(&value, &["operation"])
+                    .unwrap_or("analysis")
+                    .to_string(),
+                result: get_str(&value, &["result"])
+                    .unwrap_or("invalid")
+                    .to_string(),
+                evaluations: get_path(&value, &["evaluations"])
+                    .and_then(YamlValue::as_sequence)
+                    .cloned()
+                    .unwrap_or_default(),
+                relationships: get_path(&value, &["relationships"])
+                    .and_then(YamlValue::as_sequence)
+                    .cloned()
+                    .unwrap_or_default(),
             })
         })
         .collect::<Vec<_>>();

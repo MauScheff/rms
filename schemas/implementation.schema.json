@@ -517,6 +517,15 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
           "uniqueItems": true
+        },
+        "observation_source": {
+          "type": "object",
+          "required": ["kind", "command"],
+          "properties": {
+            "kind": { "enum": ["transition-record", "invocation-record"] },
+            "command": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

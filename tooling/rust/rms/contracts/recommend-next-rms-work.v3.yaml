@@ -1,24 +1,66 @@
-spec: rms/contract/v0.1
-name: "recommend-next-rms-work"
+spec: rms/contract/v0.2
+name: recommend-next-rms-work
 version: 3
 kind: command
-meaning: "Validate typed or explicitly provider-extracted intent, route it deterministically, persist an auditable run, issue a content-addressed route receipt, and return an exit status that distinguishes ready work from semantic non-readiness."
-preconditions:
-  - id: "accepts-1"
-    statement: "A nonblank prospective task, readable repository root, optional explicit owner, and exactly one typed intent source or explicit read-only provider extraction."
-  - id: "accepts-2"
-    statement: "An optional intent-cache refresh request and compact or detailed projection selection."
-postconditions:
-  - id: "ensures-1"
-    statement: "Every invocation records request, normalized intent or diagnostics, route result, and a route receipt whose allowed actions are nonempty only for ready work."
-  - id: "ensures-2"
-    statement: "Provider extraction is schema-constrained, bounded to one repair, root-local cached, and never used unless explicitly requested."
-  - id: "ensures-3"
-    statement: "Ready and no-rms-change results exit zero; clarification, missing model, missing owner, design-required, bootstrap-required, and blocked results exit two."
-  - id: "ensures-4"
-    statement: "The rms.surface/v2 report additively exposes run_id, receipt_id, and receipt_path without granting source-edit or Git authority."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Blank tasks, unreadable roots, malformed or source-mismatched models, unsupported provider structure, unresolved material facts, contradictory intent, ambiguous ownership, and receipt persistence failure."
+meaning: Validate typed or explicitly provider-extracted intent, route it deterministically,
+  persist an auditable run, issue a content-addressed route receipt, and return an
+  exit status that distinguishes ready work from semantic non-readiness.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A nonblank prospective task, readable repository root, optional explicit
+        owner, and exactly one typed intent source or explicit read-only provider
+        extraction.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: An optional intent-cache refresh request and compact or detailed
+        projection selection.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Every invocation records request, normalized intent or diagnostics,
+        route result, and a route receipt whose allowed actions are nonempty only
+        for ready work.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Provider extraction is schema-constrained, bounded to one repair,
+        root-local cached, and never used unless explicitly requested.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Ready and no-rms-change results exit zero; clarification, missing
+        model, missing owner, design-required, bootstrap-required, and blocked results
+        exit two.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: The rms.surface/v2 report additively exposes run_id, receipt_id,
+        and receipt_path without granting source-edit or Git authority.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Blank tasks, unreadable roots, malformed or source-mismatched models,
+        unsupported provider structure, unresolved material facts, contradictory intent,
+        ambiguous ownership, and receipt persistence failure.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

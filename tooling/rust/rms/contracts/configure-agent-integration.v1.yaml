@@ -1,38 +1,98 @@
-spec: rms/contract/v0.1
-name: "configure-agent-integration"
+spec: rms/contract/v0.2
+name: configure-agent-integration
 version: 1
 kind: command
-meaning: "Diagnose, initialize, synchronize, and optionally package managed RMS guidance and skills across supported agent targets while preserving project-owned content and reporting observable rather than purported runtime state."
-preconditions:
-  - id: "accepts-1"
-    statement: "a readable root for diagnosis"
-  - id: "accepts-2"
-    statement: "a writable root for initialization or synchronization"
-  - id: "accepts-3"
-    statement: "a supported agent target or managed distribution target"
-postconditions:
-  - id: "ensures-1"
-    statement: "generated guidance is loaded from canonical crate assets and full guidance remains within its declared line and byte budgets"
-  - id: "ensures-2"
-    statement: "diagnosis distinguishes exact-current, managed-current, drifted, malformed, unmanaged, and missing guidance"
-  - id: "ensures-3"
-    statement: "skill origins report scope, path, configured state, digest, embedded equivalence, unknown runtime activation, and host-defined precedence"
-  - id: "ensures-4"
-    statement: "equivalent duplicates are informational while divergent copies require review and deterministic project-sync or plugin-sync remediation"
-  - id: "ensures-5"
-    statement: "synchronization refreshes only RMS-managed content and preserves unrelated local skills and project-owned document content"
-  - id: "ensures-6"
-    statement: "Git commits are described as required evidence only when task and host policy grant commit authority"
-  - id: "ensures-7"
-    statement: "optional plugin packaging remains an adapter and never becomes semantic authority"
-failure_categories:
-  - id: "rejects-1"
-    statement: "a managed document section is malformed or duplicated"
-  - id: "rejects-2"
-    statement: "a required target is unwritable or unsupported"
-  - id: "rejects-3"
-    statement: "a divergent managed skill cannot be synchronized safely"
-  - id: "rejects-4"
-    statement: "optional plugin installation is unavailable or explicitly requested installation fails"
+meaning: Diagnose, initialize, synchronize, and optionally package managed RMS guidance
+  and skills across supported agent targets while preserving project-owned content
+  and reporting observable rather than purported runtime state.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: a readable root for diagnosis
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: a writable root for initialization or synchronization
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-3
+      statement: a supported agent target or managed distribution target
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: generated guidance is loaded from canonical crate assets and full
+        guidance remains within its declared line and byte budgets
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: diagnosis distinguishes exact-current, managed-current, drifted,
+        malformed, unmanaged, and missing guidance
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: skill origins report scope, path, configured state, digest, embedded
+        equivalence, unknown runtime activation, and host-defined precedence
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: equivalent duplicates are informational while divergent copies require
+        review and deterministic project-sync or plugin-sync remediation
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-5
+      statement: synchronization refreshes only RMS-managed content and preserves
+        unrelated local skills and project-owned document content
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-6
+      statement: Git commits are described as required evidence only when task and
+        host policy grant commit authority
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-7
+      statement: optional plugin packaging remains an adapter and never becomes semantic
+        authority
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: a managed document section is malformed or duplicated
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: a required target is unwritable or unsupported
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-3
+      statement: a divergent managed skill cannot be synchronized safely
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-4
+      statement: optional plugin installation is unavailable or explicitly requested
+        installation fails
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

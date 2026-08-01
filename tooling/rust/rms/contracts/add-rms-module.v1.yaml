@@ -1,42 +1,125 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: add-rms-module
 version: 1
 kind: command
-meaning: Scaffold a new RMS module directory with canonical module artifacts, semantic shape guidance, evidence directories, optional advisory scaffold planning, and an optional implementation binding.
-preconditions:
-  - id: target-writable
-    statement: The requested target directory can be created or written.
-  - id: generated-files-absent
-    statement: Files that `rms add-module` would generate do not already exist.
-  - id: scaffold-input-valid
-    statement: The requested module name, purpose, kind, profiles, optional semantic shape, optional binding, and optional provider settings are valid for scaffold generation.
-postconditions:
-  - id: module-manifest-created
-    statement: The generated `module.yaml` records the requested name, purpose, kind, normalized profiles, optional semantic scaffold shape, required profile sections including monitor obligations when requested, compatibility policy, and verification directories without inventing ownership, public surface, invariants, effects, or dependencies.
-  - id: module-guidance-created
-    statement: The generated module `README.md` routes future work through `module.yaml`, public contracts, implementation bindings, semantic representation roles, transition guidance, and verification evidence.
-  - id: contract-guidance-created
-    statement: The generated `contracts/README.md` distinguishes public RMS contracts from private implementation details and names the required contract evidence loop.
-  - id: evidence-directories-created
-    statement: The generated `verification/laws`, `verification/contracts`, `verification/scenarios`, `verification/boundaries`, `verification/traces`, and `verification/runtime` directories each contain guidance and semantic-shape placeholders for recording proof tied to declared module promises.
-  - id: optional-binding-created
-    statement: When a supported binding is requested, the generated implementation binding skeleton validates under RMS checks, supplies its declared verification command, and uses language-idiomatic representation, message envelope, transition output, transition record, trace, replay, and numeric-safety placeholders where the binding can express them.
-  - id: trace-bundle-created
-    statement: Traceable semantic shapes generate a local JSON/YAML trace bundle under `verification/traces` and bind it from `implementation.yaml` when an inspectable binding is requested.
-  - id: optional-scaffold-plan-recorded
-    statement: When advisory scaffold planning is requested, the rendered scaffold plan and optional provider response are recorded as evidence without becoming canonical architecture by themselves.
-failure_categories:
-  - id: generated-file-exists
-    statement: A generated file already exists and would be overwritten.
-  - id: unsupported-binding
-    statement: The requested implementation binding is not supported by the scaffold command.
-  - id: unsupported-shape
-    statement: The requested semantic scaffold shape is not supported by the scaffold command.
-  - id: provider-unavailable
-    statement: The requested provider command cannot be started or exits unsuccessfully.
-  - id: unwritable-target
-    statement: The target directory or one of its generated child paths cannot be created or written.
-  - id: invalid-input
-    statement: Required module name, purpose, kind, profile, or binding input is invalid for scaffold generation.
+meaning: Scaffold a new RMS module directory with canonical module artifacts, semantic
+  shape guidance, evidence directories, optional advisory scaffold planning, and an
+  optional implementation binding.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: target-writable
+      statement: The requested target directory can be created or written.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: generated-files-absent
+      statement: Files that `rms add-module` would generate do not already exist.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: scaffold-input-valid
+      statement: The requested module name, purpose, kind, profiles, optional semantic
+        shape, optional binding, and optional provider settings are valid for scaffold
+        generation.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: module-manifest-created
+      statement: The generated `module.yaml` records the requested name, purpose,
+        kind, normalized profiles, optional semantic scaffold shape, required profile
+        sections including monitor obligations when requested, compatibility policy,
+        and verification directories without inventing ownership, public surface,
+        invariants, effects, or dependencies.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: module-guidance-created
+      statement: The generated module `README.md` routes future work through `module.yaml`,
+        public contracts, implementation bindings, semantic representation roles,
+        transition guidance, and verification evidence.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: contract-guidance-created
+      statement: The generated `contracts/README.md` distinguishes public RMS contracts
+        from private implementation details and names the required contract evidence
+        loop.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: evidence-directories-created
+      statement: The generated `verification/laws`, `verification/contracts`, `verification/scenarios`,
+        `verification/boundaries`, `verification/traces`, and `verification/runtime`
+        directories each contain guidance and semantic-shape placeholders for recording
+        proof tied to declared module promises.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: optional-binding-created
+      statement: When a supported binding is requested, the generated implementation
+        binding skeleton validates under RMS checks, supplies its declared verification
+        command, and uses language-idiomatic representation, message envelope, transition
+        output, transition record, trace, replay, and numeric-safety placeholders
+        where the binding can express them.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: trace-bundle-created
+      statement: Traceable semantic shapes generate a local JSON/YAML trace bundle
+        under `verification/traces` and bind it from `implementation.yaml` when an
+        inspectable binding is requested.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: optional-scaffold-plan-recorded
+      statement: When advisory scaffold planning is requested, the rendered scaffold
+        plan and optional provider response are recorded as evidence without becoming
+        canonical architecture by themselves.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: generated-file-exists
+      statement: A generated file already exists and would be overwritten.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: unsupported-binding
+      statement: The requested implementation binding is not supported by the scaffold
+        command.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: unsupported-shape
+      statement: The requested semantic scaffold shape is not supported by the scaffold
+        command.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: provider-unavailable
+      statement: The requested provider command cannot be started or exits unsuccessfully.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: unwritable-target
+      statement: The target directory or one of its generated child paths cannot be
+        created or written.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: invalid-input
+      statement: Required module name, purpose, kind, profile, or binding input is
+        invalid for scaffold generation.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

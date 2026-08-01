@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:compatibility-analysis:v0.1",
+  "title": "RMS Compatibility Analysis v0.1",
+  "type": "object",
+  "required": ["spec", "result", "old", "new", "findings", "obligations"],
+  "properties": {
+    "spec": { "const": "rms/compatibility-analysis/v0.1" },
+    "result": { "enum": ["compatible", "compatible-additive", "operational-review-required", "breaking"] },
+    "old": { "type": "string" },
+    "new": { "type": "string" },
+    "old_digest": { "type": "string" },
+    "new_digest": { "type": "string" },
+    "findings": { "type": "array" },
+    "obligations": { "type": "array" },
+    "solver": { "type": "object" }
+  },
+  "additionalProperties": false
+}

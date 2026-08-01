@@ -1,22 +1,56 @@
-spec: rms/contract/v0.1
-name: "inspect-trace-bundle"
+spec: rms/contract/v0.2
+name: inspect-trace-bundle
 version: 1
 kind: command
-meaning: "Check, show, diagnose, and stitch local RMS transition records across machines, protocols, and resources without requiring an RMS runtime."
-preconditions:
-  - id: "accepts-1"
-    statement: "One local trace bundle or a set of bundles whose envelopes identify source, target, correlation, causation, sequence, and protocol message."
-  - id: "accepts-2"
-    statement: "Discoverable owning implementations and protocol contracts when semantic conformance is requested."
-postconditions:
-  - id: "ensures-1"
-    statement: "The recorded-timeline view reconstructs state, input, outputs, resource disposition, and source provenance without executing the machine."
-  - id: "ensures-2"
-    statement: "Stitched timelines preserve causation and validate each cross-module handoff against participant and protocol semantics."
-  - id: "ensures-3"
-    statement: "Diagnosis reports the first structurally, semantically, causally, or resource-invalid transition."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Invalid syntax, state discontinuity, canonical output mismatch, broken causation, illegal participant direction, protocol-order violation, or resource-lifecycle contradiction."
+meaning: Check, show, diagnose, and stitch local RMS transition records across machines,
+  protocols, and resources without requiring an RMS runtime.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: One local trace bundle or a set of bundles whose envelopes identify
+        source, target, correlation, causation, sequence, and protocol message.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: Discoverable owning implementations and protocol contracts when semantic
+        conformance is requested.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: The recorded-timeline view reconstructs state, input, outputs, resource
+        disposition, and source provenance without executing the machine.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Stitched timelines preserve causation and validate each cross-module
+        handoff against participant and protocol semantics.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Diagnosis reports the first structurally, semantically, causally,
+        or resource-invalid transition.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Invalid syntax, state discontinuity, canonical output mismatch, broken
+        causation, illegal participant direction, protocol-order violation, or resource-lifecycle
+        contradiction.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

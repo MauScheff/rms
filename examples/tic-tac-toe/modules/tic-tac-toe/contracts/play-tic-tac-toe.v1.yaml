@@ -1,20 +1,158 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: play-tic-tac-toe
 version: 1
 kind: command
-meaning: Accept local Tic-Tac-Toe move input through the composed public game surface and return either a parsed move result, delegated rules result, or boundary rejection.
-preconditions:
-  - id: local-input
-    statement: The caller supplies one local move input string.
-postconditions:
-  - id: boundary-before-rules
-    statement: Malformed coordinates are rejected by the boundary adapter before rules delegation.
-  - id: rules-backed-result
-    statement: Valid coordinates are delegated to the internal rules engine through the CLI adapter.
-failure_categories:
-  - id: malformed-input
-    statement: The move input cannot be parsed as a board coordinate.
-  - id: rules-rejection
-    statement: The rules engine rejects the move according to game state.
+meaning: Accept local Tic-Tac-Toe move input through the composed public game surface
+  and return either a parsed move result, delegated rules result, or boundary rejection.
+semantics:
+  behavior:
+    observations:
+    - id: request-kind
+      source:
+        kind: input
+        pointer: "/kind"
+      value: string
+    - id: outcome-kind
+      source:
+        kind: output
+        pointer: "/kind"
+      value:
+        variant:
+        - accepted
+        - malformed-input
+        - rules-rejection
+    requires:
+    - id: local-input
+      statement: The caller supplies one local move input string.
+      evaluation:
+        kind: core
+        expression:
+          equals:
+            left:
+              observation: request-kind
+            right:
+              observation: request-kind
+    guarantees:
+    - id: boundary-before-rules
+      statement: Malformed coordinates are rejected by the boundary adapter before
+        rules delegation.
+      evaluation:
+        kind: core
+        expression: &1
+          any:
+          - equals:
+              left:
+                observation: outcome-kind
+              right:
+                literal: accepted
+          - equals:
+              left:
+                observation: outcome-kind
+              right:
+                literal: malformed-input
+          - equals:
+              left:
+                observation: outcome-kind
+              right:
+                literal: rules-rejection
+    - id: rules-backed-result
+      statement: Valid coordinates are delegated to the internal rules engine through
+        the CLI adapter.
+      evaluation:
+        kind: core
+        expression: *1
+    failures:
+    - id: malformed-input
+      statement: The move input cannot be parsed as a board coordinate.
+      evaluation:
+        kind: core
+        expression:
+          equals:
+            left:
+              observation: outcome-kind
+            right:
+              literal: malformed-input
+    - id: rules-rejection
+      statement: The rules engine rejects the move according to game state.
+      evaluation:
+        kind: core
+        expression:
+          equals:
+            left:
+              observation: outcome-kind
+            right:
+              literal: rules-rejection
+    cases:
+    - id: accepted-case
+      statement: The operation returns an accepted outcome.
+      when:
+        equals:
+          left:
+            observation: outcome-kind
+          right:
+            literal: accepted
+      outcome:
+        kind: accepted
+        expression:
+          equals:
+            left:
+              observation: outcome-kind
+            right:
+              literal: accepted
+      ensures: []
+      permits: &2
+        state_changes:
+        - "/"
+        events:
+        - MarkPlaced
+        - MoveRejected
+        - MoveParsed
+        - RulesInvocationRequested
+        - RulesInvocationCompleted
+        - RunRejected
+        effects:
+        - InvokeRulesBridge
+    - id: rejected-case-malformed-input
+      statement: The operation rejects with malformed-input.
+      when:
+        equals:
+          left:
+            observation: outcome-kind
+          right:
+            literal: malformed-input
+      outcome:
+        kind: rejected
+        category: malformed-input
+        expression:
+          equals:
+            left:
+              observation: outcome-kind
+            right:
+              literal: malformed-input
+      ensures: []
+      permits: *2
+    - id: rejected-case-rules-rejection
+      statement: The operation rejects with rules-rejection.
+      when:
+        equals:
+          left:
+            observation: outcome-kind
+          right:
+            literal: rules-rejection
+      outcome:
+        kind: rejected
+        category: rules-rejection
+        expression:
+          equals:
+            left:
+              observation: outcome-kind
+            right:
+              literal: rules-rejection
+      ensures: []
+      permits: *2
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

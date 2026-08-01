@@ -1,32 +1,93 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: probe-machine
 version: 2
 kind: command
-meaning: Execute one or more bounded module instances through their declared pure transition-record paths, explore canonical message schedules and declared faults, and report a deterministic replayable timeline.
-preconditions:
-- id: accepts-1
-  statement: The target is one inspectable Rust, Swift, JavaScript, or Python implementation, or an rms/probe-assembly/v0.1 or v0.2 containing such instances.
-- id: accepts-2
-  statement: Each command, observed event, or effect result names a declared input and supplies schema-valid payload data.
-- id: accepts-3
-  statement: Multi-module routes are resolved from canonical protocol bindings, dependency probe bridges, explicit instance selections, and explicit substitutes; the assembly cannot invent semantic transformations or private inputs.
-postconditions:
-- id: ensures-1
-  statement: Every step calls the exact transition-record function and the next step receives the preceding state_after.
-- id: ensures-2
-  statement: Single-machine results are validated trace bundles; assembly results are rms/probe-system-trace/v0.1 timelines with source, causation, correlation, idempotency, routing, fault, check, bound, and coverage data.
-- id: ensures-3
-  statement: Probing never invokes a machine driver or real effect executor; ordinary deterministic execution is stable and breadth-first exploration returns pass only after exhausting the declared bounded state space.
-- id: ensures-4
-  statement: No project artifact is written unless the caller supplies --out.
-- id: ensures-5
-  statement: Every discovered failure is reduced to a deterministic rms/probe-counterexample/v0.1 whose exact schedule and fault decisions replay as reproduced, resolved, or invalid; human replay leads with the failed check, first bad transition when available, source drift, exit meaning, and a copyable full-trace command.
-- id: ensures-6
-  statement: Probe artifacts are ephemeral unless canonical verification explicitly references them, at which point assemblies must exhaust successfully and counterexamples must replay as resolved.
-- id: ensures-7
-  statement: A v0.2 public-input-examples workload injects only exact schema-valid public command examples within the per-action budget and records each normalized input for deterministic replay.
-failure_categories:
-- id: rejects-1
-  statement: Ambiguous or incompatible wiring, invalid protocol data, unsafe bindings, runner failure, timeout, nonconforming output, a failed law, a reproduced or invalid canonical counterexample, or inconclusive bounded exploration.
+meaning: Execute one or more bounded module instances through their declared pure
+  transition-record paths, explore canonical message schedules and declared faults,
+  and report a deterministic replayable timeline.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: The target is one inspectable Rust, Swift, JavaScript, or Python
+        implementation, or an rms/probe-assembly/v0.1 or v0.2 containing such instances.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: Each command, observed event, or effect result names a declared input
+        and supplies schema-valid payload data.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-3
+      statement: Multi-module routes are resolved from canonical protocol bindings,
+        dependency probe bridges, explicit instance selections, and explicit substitutes;
+        the assembly cannot invent semantic transformations or private inputs.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Every step calls the exact transition-record function and the next
+        step receives the preceding state_after.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Single-machine results are validated trace bundles; assembly results
+        are rms/probe-system-trace/v0.1 timelines with source, causation, correlation,
+        idempotency, routing, fault, check, bound, and coverage data.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Probing never invokes a machine driver or real effect executor; ordinary
+        deterministic execution is stable and breadth-first exploration returns pass
+        only after exhausting the declared bounded state space.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: No project artifact is written unless the caller supplies --out.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-5
+      statement: Every discovered failure is reduced to a deterministic rms/probe-counterexample/v0.1
+        whose exact schedule and fault decisions replay as reproduced, resolved, or
+        invalid; human replay leads with the failed check, first bad transition when
+        available, source drift, exit meaning, and a copyable full-trace command.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-6
+      statement: Probe artifacts are ephemeral unless canonical verification explicitly
+        references them, at which point assemblies must exhaust successfully and counterexamples
+        must replay as resolved.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-7
+      statement: A v0.2 public-input-examples workload injects only exact schema-valid
+        public command examples within the per-action budget and records each normalized
+        input for deterministic replay.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Ambiguous or incompatible wiring, invalid protocol data, unsafe bindings,
+        runner failure, timeout, nonconforming output, a failed law, a reproduced
+        or invalid canonical counterexample, or inconclusive bounded exploration.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: breaking-before-1.0

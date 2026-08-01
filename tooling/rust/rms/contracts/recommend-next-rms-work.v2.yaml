@@ -1,32 +1,94 @@
-spec: rms/contract/v0.1
-name: "recommend-next-rms-work"
+spec: rms/contract/v0.2
+name: recommend-next-rms-work
 version: 2
 kind: command
-meaning: "Construct a deterministic, prospective, read-only prescription from repository evidence and a validated rms/intent-model/v0.1 instead of raw task keyword scoring."
-preconditions:
-  - id: "accepts-1"
-    statement: "A nonblank prospective task intent, readable repository root, and typed intent model or explicit read-only provider extraction."
-  - id: "accepts-2"
-    statement: "An optional explicit readable module manifest and optional machine-readable or detailed projection selections."
-postconditions:
-  - id: "ensures-1"
-    statement: "Every report classifies its result as ready, bootstrap-required, design-required, needs-owner, blocked, no-rms-change, intent-model-required, or clarification-required."
-  - id: "ensures-2"
-    statement: "Task lane and architecture-sensitive actions derive only from structured operation, facts, and responsibilities; ownership routing uses structured subjects and preserves explicit, direct, sole, unique-positive, and recursive composite selection without guessing through ties."
-  - id: "ensures-3"
-    statement: "Repository shape and unrelated working-tree changes do not alter prospective intent classification."
-  - id: "ensures-4"
-    statement: "Read-only and repository-operation intent produces no semantic mutation prescription, and missing or materially unknown intent produces no architecture advice."
-  - id: "ensures-5"
-    statement: "Every machine-readable report uses the rms.surface/v2 envelope with command, result, summary, reasons, warnings, next_action, done_when, details_available, lane, confidence, owner state, and ordered typed steps."
-  - id: "ensures-6"
-    statement: "Command steps carry phase, program, argument array, safely escaped display, and no authorization; manual commit steps preserve host-required authorization and contain no executable Git program."
-  - id: "ensures-7"
-    statement: "Detailed output nests validation, owner ranking, context, roles, skill origins, blockers, and completion evidence under the same versioned envelope."
-  - id: "ensures-8"
-    statement: "Report construction is read-only, never grants source-edit or Git authority, and invokes a provider only when read-only extraction is explicitly requested."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Blank tasks, unreadable roots or modules, malformed or source-mismatched models, unresolved material facts, contradictions, and unsupported provider output."
+meaning: Construct a deterministic, prospective, read-only prescription from repository
+  evidence and a validated rms/intent-model/v0.1 instead of raw task keyword scoring.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A nonblank prospective task intent, readable repository root, and
+        typed intent model or explicit read-only provider extraction.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: An optional explicit readable module manifest and optional machine-readable
+        or detailed projection selections.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Every report classifies its result as ready, bootstrap-required,
+        design-required, needs-owner, blocked, no-rms-change, intent-model-required,
+        or clarification-required.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Task lane and architecture-sensitive actions derive only from structured
+        operation, facts, and responsibilities; ownership routing uses structured
+        subjects and preserves explicit, direct, sole, unique-positive, and recursive
+        composite selection without guessing through ties.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Repository shape and unrelated working-tree changes do not alter
+        prospective intent classification.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: Read-only and repository-operation intent produces no semantic mutation
+        prescription, and missing or materially unknown intent produces no architecture
+        advice.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-5
+      statement: Every machine-readable report uses the rms.surface/v2 envelope with
+        command, result, summary, reasons, warnings, next_action, done_when, details_available,
+        lane, confidence, owner state, and ordered typed steps.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-6
+      statement: Command steps carry phase, program, argument array, safely escaped
+        display, and no authorization; manual commit steps preserve host-required
+        authorization and contain no executable Git program.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-7
+      statement: Detailed output nests validation, owner ranking, context, roles,
+        skill origins, blockers, and completion evidence under the same versioned
+        envelope.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-8
+      statement: Report construction is read-only, never grants source-edit or Git
+        authority, and invokes a provider only when read-only extraction is explicitly
+        requested.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Blank tasks, unreadable roots or modules, malformed or source-mismatched
+        models, unresolved material facts, contradictions, and unsupported provider
+        output.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

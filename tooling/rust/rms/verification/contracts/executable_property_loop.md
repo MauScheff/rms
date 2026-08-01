@@ -32,7 +32,7 @@ arrives after the declared bound is a violation with both trigger and response
 indices retained, even when no intermediate observation crosses the deadline.
 
 Property checking and binding-native regression runs recognize
-`rms/property-analysis/v0.1` artifacts as replayable evidence through their
+`rms/property-analysis/v0.2` artifacts as replayable evidence through their
 embedded property definitions and evidence trace. The same artifact accepted
 by `rms property replay` is not misclassified by the older counterexample
 scanner.

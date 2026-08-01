@@ -11,6 +11,7 @@ commands:
   fuzz: cargo test --manifest-path Cargo.toml schema_validation_reports_shape_errors
   properties: cargo test --manifest-path Cargo.toml "${RMS_PROPERTY_RUNNER##*#}"
   trace: cargo test --manifest-path Cargo.toml "${RMS_TRACE_RUNNER##*#}"
+  query-record: cargo test --manifest-path Cargo.toml produce_inspect_module_invocation_record
   probe: cargo test --manifest-path Cargo.toml "${RMS_PROBE_RUNNER##*#}" -- --nocapture
 toolchain:
   cargo_manifest: Cargo.toml
@@ -62,6 +63,26 @@ architecture:
         generator: src/main.rs#generate_malformed_artifact_cases
         runner: src/main.rs#schema_validation_reports_shape_errors
     properties:
+    - id: rms-behavioral-contract-conformance-corpus
+      proves: rms-behavioral-contracts-are-closed-and-executable
+      kind: property
+      input_space: all tracked RMS public contracts, clause realizations, record protocols, evaluator expressions, and compatibility obligations
+      preconditions:
+      - the repository contract corpus and reference evaluator are available
+      operation: validate every tracked contract and exercise the shared behavioral evaluator and refinement corpus
+      oracle:
+      - every tracked contract uses rms/contract/v0.2
+      - every clause has a core or exact executable external realization
+      - no generated migration draft remains in release scope
+      evidence:
+        path: verification/properties/behavioral_contracts.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: properties
+        runner: src/behavioral_contract.rs#all_tracked_contracts_use_v02_and_are_closed
     - id: canonical-semantic-revision-drift-is-rejected
       proves: canonical-semantics-match-authorized-revision
       kind: property
@@ -1205,6 +1226,9 @@ architecture:
     machine_inputs:
     - ValidateRmsArtifacts
     machine_outputs: []
+    observation_source:
+      kind: invocation-record
+      command: query-record
   - id: explain-module-public
     public_kind: command
     public_name: explain-module
@@ -1213,6 +1237,9 @@ architecture:
     machine_inputs:
     - ExplainModule
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: diagnose-rms-environment-public
     public_kind: command
     public_name: diagnose-rms-environment
@@ -1221,6 +1248,9 @@ architecture:
     machine_inputs:
     - DiagnoseRmsEnvironment
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: render-workbench-prompt-public
     public_kind: command
     public_name: render-workbench-prompt
@@ -1229,6 +1259,9 @@ architecture:
     machine_inputs:
     - RenderWorkbenchPrompt
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: plan-module-change-public
     public_kind: command
     public_name: plan-module-change
@@ -1237,6 +1270,9 @@ architecture:
     machine_inputs:
     - PlanModuleChange
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: design-rms-system-public
     public_kind: command
     public_name: design-rms-system
@@ -1245,6 +1281,9 @@ architecture:
     machine_inputs:
     - DesignRmsSystem
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: compose-rms-system-public
     public_kind: command
     public_name: compose-rms-system
@@ -1253,6 +1292,9 @@ architecture:
     machine_inputs:
     - ComposeRmsSystem
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: route-rms-work-public
     public_kind: command
     public_name: route-rms-work
@@ -1261,6 +1303,9 @@ architecture:
     machine_inputs:
     - RouteRmsWork
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: review-module-diff-public
     public_kind: command
     public_name: review-module-diff
@@ -1269,6 +1314,9 @@ architecture:
     machine_inputs:
     - ReviewModuleDiff
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: analyze-git-impact-public
     public_kind: command
     public_name: analyze-git-impact
@@ -1277,6 +1325,9 @@ architecture:
     machine_inputs:
     - AnalyzeGitImpact
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: gate-rms-change-public
     public_kind: command
     public_name: gate-rms-change
@@ -1285,6 +1336,9 @@ architecture:
     machine_inputs:
     - GateRmsChange
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: audit-rms-project-public
     public_kind: command
     public_name: audit-rms-project
@@ -1293,6 +1347,9 @@ architecture:
     machine_inputs:
     - AuditRmsProject
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: refactor-module-workbench-public
     public_kind: command
     public_name: refactor-module-workbench
@@ -1301,6 +1358,9 @@ architecture:
     machine_inputs:
     - RefactorModuleWorkbench
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: implement-module-workbench-public
     public_kind: command
     public_name: implement-module-workbench
@@ -1309,6 +1369,9 @@ architecture:
     machine_inputs:
     - ImplementModuleWorkbench
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: capture-intent-workbench-public
     public_kind: command
     public_name: capture-intent-workbench
@@ -1317,6 +1380,9 @@ architecture:
     machine_inputs:
     - CaptureIntentWorkbench
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: evolve-contract-workbench-public
     public_kind: command
     public_name: evolve-contract-workbench
@@ -1325,6 +1391,9 @@ architecture:
     machine_inputs:
     - EvolveContractWorkbench
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: evidence-workbench-public
     public_kind: command
     public_name: evidence-workbench
@@ -1333,6 +1402,9 @@ architecture:
     machine_inputs:
     - EvidenceWorkbench
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: list-workbench-runs-public
     public_kind: command
     public_name: list-workbench-runs
@@ -1341,6 +1413,9 @@ architecture:
     machine_inputs:
     - ListWorkbenchRuns
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: inspect-workbench-run-public
     public_kind: command
     public_name: inspect-workbench-run
@@ -1349,6 +1424,9 @@ architecture:
     machine_inputs:
     - InspectWorkbenchRun
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: inspect-latest-workbench-run-public
     public_kind: command
     public_name: inspect-latest-workbench-run
@@ -1357,6 +1435,9 @@ architecture:
     machine_inputs:
     - InspectLatestWorkbenchRun
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: init-workbench-config-public
     public_kind: command
     public_name: init-workbench-config
@@ -1365,6 +1446,9 @@ architecture:
     machine_inputs:
     - InitWorkbenchConfig
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: configure-agent-integration-public
     public_kind: command
     public_name: configure-agent-integration
@@ -1373,6 +1457,9 @@ architecture:
     machine_inputs:
     - ConfigureAgentIntegration
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: init-rms-system-public
     public_kind: command
     public_name: init-rms-system
@@ -1381,6 +1468,9 @@ architecture:
     machine_inputs:
     - InitRmsSystem
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: add-rms-module-public
     public_kind: command
     public_name: add-rms-module
@@ -1389,6 +1479,9 @@ architecture:
     machine_inputs:
     - AddRmsModule
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: build-context-packet-public
     public_kind: command
     public_name: build-context-packet
@@ -1397,6 +1490,9 @@ architecture:
     machine_inputs:
     - BuildContextPacket
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: build-module-atlas-public
     public_kind: command
     public_name: build-module-atlas
@@ -1405,6 +1501,9 @@ architecture:
     machine_inputs:
     - BuildModuleAtlas
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: inspect-implementation-structure-public
     public_kind: command
     public_name: inspect-implementation-structure
@@ -1413,6 +1512,9 @@ architecture:
     machine_inputs:
     - InspectImplementationStructure
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: inspect-trace-bundle-public
     public_kind: command
     public_name: inspect-trace-bundle
@@ -1421,6 +1523,9 @@ architecture:
     machine_inputs:
     - InspectTraceBundle
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: probe-machine-public
     public_kind: command
     public_name: probe-machine
@@ -1429,6 +1534,9 @@ architecture:
     machine_inputs:
     - ProbeMachine
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: plan-machine-change-public
     public_kind: command
     public_name: plan-machine-change
@@ -1437,6 +1545,9 @@ architecture:
     machine_inputs:
     - PlanMachineChange
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: apply-machine-change-public
     public_kind: command
     public_name: apply-machine-change
@@ -1445,6 +1556,9 @@ architecture:
     machine_inputs:
     - ApplyMachineChange
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: plan-semantic-change-public
     public_kind: command
     public_name: plan-semantic-change
@@ -1453,6 +1567,9 @@ architecture:
     machine_inputs:
     - PlanSemanticChange
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: apply-semantic-change-public
     public_kind: command
     public_name: apply-semantic-change
@@ -1461,6 +1578,9 @@ architecture:
     machine_inputs:
     - ApplySemanticChange
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: check-semantic-change-public
     public_kind: command
     public_name: check-semantic-change
@@ -1469,6 +1589,9 @@ architecture:
     machine_inputs:
     - CheckSemanticChange
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: diff-semantic-change-public
     public_kind: command
     public_name: diff-semantic-change
@@ -1477,6 +1600,9 @@ architecture:
     machine_inputs:
     - DiffSemanticChange
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: check-machine-structure-public
     public_kind: command
     public_name: check-machine-structure
@@ -1485,6 +1611,9 @@ architecture:
     machine_inputs:
     - CheckMachineStructure
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: diff-machine-structure-public
     public_kind: command
     public_name: diff-machine-structure
@@ -1493,6 +1622,9 @@ architecture:
     machine_inputs:
     - DiffMachineStructure
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: apply-runnable-surface-public
     public_kind: command
     public_name: apply-runnable-surface
@@ -1501,6 +1633,9 @@ architecture:
     machine_inputs:
     - ApplyRunnableSurface
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: check-runnable-surface-public
     public_kind: command
     public_name: check-runnable-surface
@@ -1509,6 +1644,9 @@ architecture:
     machine_inputs:
     - CheckRunnableSurface
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: package-module-public
     public_kind: command
     public_name: package-module
@@ -1517,6 +1655,9 @@ architecture:
     machine_inputs:
     - PackageModule
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: verify-implementation-public
     public_kind: command
     public_name: verify-implementation
@@ -1525,6 +1666,9 @@ architecture:
     machine_inputs:
     - VerifyImplementation
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: check-semantic-properties-public
     public_kind: command
     public_name: check-semantic-properties
@@ -1533,6 +1677,9 @@ architecture:
     machine_inputs:
     - CheckSemanticProperties
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: run-semantic-properties-public
     public_kind: command
     public_name: run-semantic-properties
@@ -1541,6 +1688,9 @@ architecture:
     machine_inputs:
     - RunSemanticProperties
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: evaluate-semantic-properties-public
     public_kind: command
     public_name: evaluate-semantic-properties
@@ -1549,6 +1699,9 @@ architecture:
     machine_inputs:
     - EvaluateSemanticProperties
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: search-semantic-properties-public
     public_kind: command
     public_name: search-semantic-properties
@@ -1557,6 +1710,9 @@ architecture:
     machine_inputs:
     - SearchSemanticProperties
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: analyze-semantic-properties-public
     public_kind: command
     public_name: analyze-semantic-properties
@@ -1565,6 +1721,9 @@ architecture:
     machine_inputs:
     - AnalyzeSemanticProperties
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: monitor-semantic-properties-public
     public_kind: command
     public_name: monitor-semantic-properties
@@ -1573,6 +1732,9 @@ architecture:
     machine_inputs:
     - MonitorSemanticProperties
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: replay-property-analysis-public
     public_kind: command
     public_name: replay-property-analysis
@@ -1581,6 +1743,9 @@ architecture:
     machine_inputs:
     - ReplayPropertyAnalysis
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: replay-property-counterexample-public
     public_kind: command
     public_name: replay-property-counterexample
@@ -1589,6 +1754,9 @@ architecture:
     machine_inputs:
     - ReplayPropertyCounterexample
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: hunt-rms-system-public
     public_kind: command
     public_name: hunt-rms-system
@@ -1597,6 +1765,9 @@ architecture:
     machine_inputs:
     - HuntRmsSystem
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: add-rms-binding-public
     public_kind: command
     public_name: add-rms-binding
@@ -1605,6 +1776,9 @@ architecture:
     machine_inputs:
     - AddRmsBinding
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: run-trace-producers-public
     public_kind: command
     public_name: run-trace-producers
@@ -1613,6 +1787,9 @@ architecture:
     machine_inputs:
     - RunTraceProducers
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: view-rms-system-public
     public_kind: command
     public_name: view-rms-system
@@ -1621,6 +1798,9 @@ architecture:
     machine_inputs:
     - ViewRmsSystem
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: inspect-module-public
     public_kind: query
     public_name: inspect-module
@@ -1629,6 +1809,9 @@ architecture:
     machine_inputs:
     - InspectModule
     machine_outputs: []
+    observation_source:
+      kind: invocation-record
+      command: query-record
   - id: release-check-public
     public_kind: command
     public_name: release-check
@@ -1637,6 +1820,9 @@ architecture:
     machine_inputs:
     - CheckReleaseReadiness
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: recommend-next-rms-work-public
     public_kind: command
     public_name: recommend-next-rms-work
@@ -1645,6 +1831,9 @@ architecture:
     machine_inputs:
     - RecommendNextRmsWork
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: check-rms-project-public
     public_kind: command
     public_name: check-rms-project
@@ -1653,6 +1842,9 @@ architecture:
     machine_inputs:
     - CheckRmsProject
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: describe-rms-command-surface-public
     public_kind: command
     public_name: describe-rms-command-surface
@@ -1661,6 +1853,9 @@ architecture:
     machine_inputs:
     - DescribeRmsCommandSurface
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: add-rms-capability-tree-public
     public_kind: command
     public_name: add-rms-capability-tree
@@ -1669,6 +1864,9 @@ architecture:
     machine_inputs:
     - AddRmsCapabilityTree
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: manage-rms-adoption-public
     public_kind: command
     public_name: manage-rms-adoption
@@ -1677,6 +1875,9 @@ architecture:
     machine_inputs:
     - ManageRmsAdoption
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   - id: prepare-rms-release-public
     public_kind: command
     public_name: prepare-rms-release
@@ -1685,6 +1886,9 @@ architecture:
     machine_inputs:
     - PrepareRmsRelease
     machine_outputs: []
+    observation_source:
+      kind: transition-record
+      command: trace
   dependency_behavior_bindings:
   - id: filesystem-provider
     capability: filesystem
@@ -2998,7 +3202,7 @@ semantic_functions:
     - verification/laws/canonical_mutations_require_route_receipts.md
 x-rms:
   semantic_revision:
-    digest: sha256:1d5a1c7736c6b89cb97c3ae3e827170cbd2240c72887e915e09a44a67b61f530
-    change_record: verification/changes/harden-guided-hunt-adoption-paths-resume-and-replay.yaml
+    digest: sha256:ded629356bd6c7fa205cecc50f545cd1df5051447f638a4419b58ad395ab6dd9
+    change_record: verification/changes/introduce-rms-behavioral-contracts-v0-2.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:fb7e152df56f41a47c3e27ba7ff15cd5a41fba43ab2f88d15c8cc267f2395354
+    change_record_digest: sha256:585c04cf4ef0ccd9bfba427f6e1bc3a650311544fada12592988cf4621a4b779

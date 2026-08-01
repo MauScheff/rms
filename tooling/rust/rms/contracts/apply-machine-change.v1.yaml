@@ -1,32 +1,84 @@
-spec: rms/contract/v0.1
-name: "apply-machine-change"
+spec: rms/contract/v0.2
+name: apply-machine-change
 version: 1
 kind: command
-meaning: "Validate and apply a language-neutral machine change to canonical implementation structure, including exact transition-record and message-envelope bindings, then record and seal the resulting semantic revision."
-preconditions:
-  - id: "accepts-1"
-    statement: "one complete rms/machine-change/v0.1 object supplied as inline JSON, inline YAML, or a change file"
-  - id: "accepts-2"
-    statement: "set, add, and remove operations over machine variants, transition-record ownership, effect protocols, transitions, and declared roles"
-  - id: "accepts-3"
-    statement: "a candidate whose generated binding types and exact driver functions can be derived from the final canonical model"
-postconditions:
-  - id: "ensures-1"
-    statement: "the complete post-change candidate is validated before any write"
-  - id: "ensures-2"
-    statement: "successful apply records semantic variants separately from binding container and envelope types"
-  - id: "ensures-3"
-    statement: "effectful stateful machines declare exact driver and transition-record functions and preserve trace roles without manufacturing replay evidence"
-  - id: "ensures-4"
-    statement: "dry-run reports the complete final machine and planned writes without mutation"
-failure_categories:
-  - id: "rejects-1"
-    statement: "unsupported change specifications, invalid stable identifiers, or invalid final variants"
-  - id: "rejects-2"
-    statement: "unknown or multiply classified inputs, stale removals, duplicate cases, or invalid state and output references"
-  - id: "rejects-3"
-    statement: "effects without typed result protocols or exact executors"
-  - id: "rejects-4"
-    statement: "effectful stateful machines without an exact transition-record construction path"
+meaning: Validate and apply a language-neutral machine change to canonical implementation
+  structure, including exact transition-record and message-envelope bindings, then
+  record and seal the resulting semantic revision.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: one complete rms/machine-change/v0.1 object supplied as inline JSON,
+        inline YAML, or a change file
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: set, add, and remove operations over machine variants, transition-record
+        ownership, effect protocols, transitions, and declared roles
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-3
+      statement: a candidate whose generated binding types and exact driver functions
+        can be derived from the final canonical model
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: the complete post-change candidate is validated before any write
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: successful apply records semantic variants separately from binding
+        container and envelope types
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: effectful stateful machines declare exact driver and transition-record
+        functions and preserve trace roles without manufacturing replay evidence
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: dry-run reports the complete final machine and planned writes without
+        mutation
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: unsupported change specifications, invalid stable identifiers, or
+        invalid final variants
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: unknown or multiply classified inputs, stale removals, duplicate
+        cases, or invalid state and output references
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-3
+      statement: effects without typed result protocols or exact executors
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-4
+      statement: effectful stateful machines without an exact transition-record construction
+        path
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

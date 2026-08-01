@@ -1,14 +1,40 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: payment-outcome
 version: 1
 kind: event
 meaning: Published fact for an accepted payment operation outcome.
 semantics:
-  guarantees:
-    - The event represents a payment outcome accepted by the payments module.
-    - Consumers may treat payment-id and payment-operation-id as causal identifiers for reconciliation.
-    - Unknown provider outcomes remain subject to the payments reconciliation path.
-  non_guarantees:
-    - Does not instruct fulfillment to ship an order.
-    - Does not prove inventory is reserved.
-    - Does not authorize consumers to mutate payment-ledger state directly.
+  event:
+    observations:
+    - id: event-emitted
+      source:
+        kind: input
+        input_kind: event
+        name: payment-outcome
+      value: occurrence
+    guarantees:
+    - id: legacy-guarantee-1
+      statement: The event represents a payment outcome accepted by the payments module.
+      evaluation:
+        kind: core
+        expression:
+          occurred: event-emitted
+    - id: legacy-guarantee-2
+      statement: Consumers may treat payment-id and payment-operation-id as causal
+        identifiers for reconciliation.
+      evaluation:
+        kind: core
+        expression:
+          occurred: event-emitted
+    - id: legacy-guarantee-3
+      statement: Unknown provider outcomes remain subject to the payments reconciliation
+        path.
+      evaluation:
+        kind: core
+        expression:
+          occurred: event-emitted
+x-rms:
+  legacy_non_guarantees:
+  - Does not instruct fulfillment to ship an order.
+  - Does not prove inventory is reserved.
+  - Does not authorize consumers to mutate payment-ledger state directly.

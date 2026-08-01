@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added language-neutral RMS behavioral contracts with `rms/contract/v0.2`, stable executable clauses, exhaustive accepted/rejected cases, explicit frames, query purity, caller/provider/evidence blame, and canonical invocation records for stateless calls.
+- Generalized the property evaluator from temporal expressions to shared step and temporal expressions; added `rms/property-analysis/v0.2`, deterministic SMT-LIB v2 emission, optional cvc5 evidence with RMS model revalidation, behavioral compatibility refinement, and fail-open production monitoring.
+- Added non-overwriting `rms spec migrate-contract`, migrated every tracked public contract without renaming files or changing public versions, and made legacy v0.1 contracts migration-only.
+- Added one record protocol and conformance corpus across Rust, Swift, JavaScript, Python, and executable bindings. RMS generates no host-language contract wrappers or predicates.
 - Added finding-first guided hunts over declared probe assemblies: seeded semantic-novelty scheduling, continued search after failures, up to eight distinct targeted-replay counterexamples, stable deduplicated `rms/hunt-report/v0.2` findings, and bounded-evidence-only proof semantics.
 - Added optional `rms/probe-assembly/v0.2` public-example workloads with per-action budgets and exact recorded input replay; v0.1 assemblies and hunt reports remain readable.
 - Added direct `rms hunt --assembly` dogfood, root/repository-relative target resolution, declaration-closure digests, configuration-faithful and finalized-report-immutable resume, finalized checkpoints, extension-aware report output, build-revision version provenance, progress lines, clarified frontier metrics, and finding-first human replay summaries.

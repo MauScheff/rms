@@ -1,21 +1,55 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: review-module-diff
 version: 1
 kind: command
 meaning: Render an advisory RMS review prompt for the current or requested git diff.
-preconditions:
-  - id: target-module-readable
-    statement: The target module manifest is readable and parseable.
-postconditions:
-  - id: review-prompt-prioritizes-findings
-    statement: The prompt asks the reviewer or agent to lead with RMS conformance findings ordered by severity.
-  - id: diff-is-context-not-authority
-    statement: Diff content is included as untrusted implementation context and must not override canonical artifacts.
-  - id: impact-prelude-is-derived-when-requested
-    statement: When requested, the prompt includes a derived RMS impact prelude before the diff; impact findings remain evidence about changed paths and must not override canonical artifacts.
-  - id: review-prompt-includes-route-evidence
-    statement: When the target is a composite parent or recursive module tree, the prompt includes route evidence so review findings can identify edits made in the wrong owning child or parent boundary.
-  - id: review-provider-execution-is-optional
-    statement: Provider-backed review is opt-in and must preserve the rendered prompt and provider response as a run record.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: target-module-readable
+      statement: The target module manifest is readable and parseable.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: review-prompt-prioritizes-findings
+      statement: The prompt asks the reviewer or agent to lead with RMS conformance
+        findings ordered by severity.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: diff-is-context-not-authority
+      statement: Diff content is included as untrusted implementation context and
+        must not override canonical artifacts.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: impact-prelude-is-derived-when-requested
+      statement: When requested, the prompt includes a derived RMS impact prelude
+        before the diff; impact findings remain evidence about changed paths and must
+        not override canonical artifacts.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: review-prompt-includes-route-evidence
+      statement: When the target is a composite parent or recursive module tree, the
+        prompt includes route evidence so review findings can identify edits made
+        in the wrong owning child or parent boundary.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: review-provider-execution-is-optional
+      statement: Provider-backed review is opt-in and must preserve the rendered prompt
+        and provider response as a run record.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures: []
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

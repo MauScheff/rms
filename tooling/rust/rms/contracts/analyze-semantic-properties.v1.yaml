@@ -1,20 +1,46 @@
-spec: rms/contract/v0.1
+spec: rms/contract/v0.2
 name: analyze-semantic-properties
 version: 1
 kind: command
-meaning: Relate executable properties by finite-model satisfiability, validity, vacuity, implication, equivalence, redundancy, and conflict analysis.
-preconditions:
-- id: accepts-1
-  statement: One or more executable properties and a finite probe assembly.
-postconditions:
-- id: ensures-1
-  statement: Every relation is holds, refuted, inconclusive, invalid, or unsupported.
-- id: ensures-2
-  statement: Refutations contain a replayable trace and exhaustive claims require exhausted exploration.
-- id: ensures-3
-  statement: Open or unsupported domains are not promoted to implicit SMT proofs.
-failure_categories:
-- id: rejects-1
-  statement: Invalid declarations, incompatible property scopes, invalid assemblies, or failed probe execution.
+meaning: Relate executable properties by finite-model satisfiability, validity, vacuity,
+  implication, equivalence, redundancy, and conflict analysis.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: One or more executable properties and a finite probe assembly.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Every relation is holds, refuted, inconclusive, invalid, or unsupported.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Refutations contain a replayable trace and exhaustive claims require
+        exhausted exploration.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Open or unsupported domains are not promoted to implicit SMT proofs.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Invalid declarations, incompatible property scopes, invalid assemblies,
+        or failed probe execution.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

@@ -4367,7 +4367,7 @@ mod tests {
                 .iter()
                 .filter(|entry| entry.action == "inject")
                 .count(),
-            2
+            1
         );
         assert!(trace.timeline.iter().any(|entry| {
             entry.action == "inject"

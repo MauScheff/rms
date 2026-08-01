@@ -129,6 +129,8 @@ A **module** owns one coherent capability. It states what it owns, what it promi
 
 Inside a module, behavior is expressed as a **machine**. The name is less exotic than it sounds: a machine is simply an explicit account of how inputs produce outcomes.
 
+At the public edge, an RMS **behavioral contract** states the same idea as an executable relation. It can name what callers must provide, every accepted or rejected case, what providers guarantee, what state may change, and which events or effects may occur. Native tests in any supported language emit invocation or transition records; one RMS evaluator judges them. There are no generated host-language wrappers to drift from the contract.
+
 ```text
 current state + input → next state + outputs
 ```

@@ -1,0 +1,61 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/harden-guided-hunt-adoption-paths-resume-and-replay.yaml
+intent:
+  summary: Introduce language-neutral RMS behavioral contracts v0.2 through the existing property, compatibility, composition, probe, hunt, and monitoring machinery without host-language predicates or wrappers.
+laws:
+  add:
+  - id: rms-behavioral-contracts-are-closed-and-executable
+    statement: RMS behavioral contracts use stable clauses with exactly one closed core expression or exact external property, are judged by the RMS reference evaluator over canonical invocation or transition records across every binding, conservatively validate frames, blame, compatibility, and solver evidence, treat missing or unresolved evidence as a gap rather than success, and keep production monitoring out of process and fail-open.
+    kind: safety
+    authority: parser
+    enforced_by: semantic-property-check-command
+  set: []
+  remove: []
+contracts: null
+properties:
+  add:
+  - id: rms-behavioral-contract-conformance-corpus
+    proves: rms-behavioral-contracts-are-closed-and-executable
+    kind: property
+    subject: null
+    input_space: all tracked RMS public contracts, clause realizations, record protocols, evaluator expressions, compatibility obligations, and binding labels
+    preconditions:
+    - the repository contract corpus and reference evaluator are available
+    operation: validate every tracked contract and exercise the shared behavioral evaluator, refinement engine, monitoring policy, and solver boundary
+    oracle:
+    - every tracked contract uses rms/contract/v0.2
+    - every clause has a closed core expression or exact executable external realization
+    - no generated migration draft remains in release scope
+    - Rust, Swift, JavaScript, Python, and executable bindings receive identical verdicts from the RMS evaluator
+    - satisfiable solver models are re-evaluated by RMS, while missing, unknown, timed-out, or unsupported solver work remains unresolved
+    - production monitoring is out of process and fail-open, and missing observations are coverage gaps rather than passing evidence
+    - bindings emit canonical records directly; RMS does not generate host-language predicates or wrappers
+    evidence:
+      kind: property
+      path: verification/properties/behavioral_contracts.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: properties
+      runner: src/behavioral_contract.rs#all_tracked_contracts_use_v02_and_are_closed
+  set: []
+  remove: []
+hunt_exceptions: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

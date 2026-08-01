@@ -1,26 +1,59 @@
-spec: rms/contract/v0.1
-name: "verify-implementation"
+spec: rms/contract/v0.2
+name: verify-implementation
 version: 1
 kind: command
-meaning: "Verify an implementation binding or composite rollup, including native tests, trace bundles, and declared runnable smoke commands."
-preconditions:
-  - id: "accepts-1"
-    statement: "an implementation binding with commands.verify"
-  - id: "accepts-2"
-    statement: "a composite module with verifiable children"
-postconditions:
-  - id: "ensures-1"
-    statement: "native verification succeeds"
-  - id: "ensures-2"
-    statement: "declared trace bundles replay successfully"
-  - id: "ensures-3"
-    statement: "every distinct runnable smoke command executes successfully"
-  - id: "ensures-4"
-    statement: "composite verification rolls up children and composition evidence"
-failure_categories:
-  - id: "rejects-1"
-    statement: "invalid binding structure"
-  - id: "rejects-2"
-    statement: "failed native verification, trace replay, or runnable smoke execution"
+meaning: Verify an implementation binding or composite rollup, including native tests,
+  trace bundles, and declared runnable smoke commands.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: an implementation binding with commands.verify
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: a composite module with verifiable children
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: native verification succeeds
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: declared trace bundles replay successfully
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: every distinct runnable smoke command executes successfully
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: composite verification rolls up children and composition evidence
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: invalid binding structure
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: failed native verification, trace replay, or runnable smoke execution
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

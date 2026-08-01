@@ -1,28 +1,68 @@
-spec: rms/contract/v0.1
-name: "package-module"
+spec: rms/contract/v0.2
+name: package-module
 version: 1
 kind: command
-meaning: "Assemble and verify a portable RMS module package and record concrete reusable-package proof when the module declares reusable intent."
-preconditions:
-  - id: "accepts-1"
-    statement: "a valid RMS module manifest with readable referenced artifacts"
-  - id: "accepts-2"
-    statement: "an absent output directory or an existing output explicitly allowed for replacement"
-postconditions:
-  - id: "ensures-1"
-    statement: "package metadata identifies payload files sizes checksums validator identity and source revision"
-  - id: "ensures-2"
-    statement: "the assembled package passes deterministic package verification before success is reported"
-  - id: "ensures-3"
-    statement: "reusable package evidence records the successful result and the final rebuilt artifact includes that proof"
-failure_categories:
-  - id: "rejects-1"
-    statement: "invalid or missing source artifacts"
-  - id: "rejects-2"
-    statement: "unsafe output overwrite without force"
-  - id: "rejects-3"
-    statement: "package verification failure"
-  - id: "rejects-4"
-    statement: "reusable evidence recording or final rebuild failure"
+meaning: Assemble and verify a portable RMS module package and record concrete reusable-package
+  proof when the module declares reusable intent.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: a valid RMS module manifest with readable referenced artifacts
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: an absent output directory or an existing output explicitly allowed
+        for replacement
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: package metadata identifies payload files sizes checksums validator
+        identity and source revision
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: the assembled package passes deterministic package verification before
+        success is reported
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: reusable package evidence records the successful result and the final
+        rebuilt artifact includes that proof
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: invalid or missing source artifacts
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-2
+      statement: unsafe output overwrite without force
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-3
+      statement: package verification failure
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: rejects-4
+      statement: reusable evidence recording or final rebuild failure
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

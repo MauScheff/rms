@@ -1,20 +1,50 @@
-spec: rms/contract/v0.1
-name: "audit-rms-project"
+spec: rms/contract/v0.2
+name: audit-rms-project
 version: 1
 kind: command
-meaning: "Audit a committed RMS project for production blockers and regenerate every deterministic smoke proof from the committed implementation."
-preconditions:
-  - id: "accepts-1"
-    statement: "A canonical RMS project root with an optional strict production policy, proof timeout, or proof dry-run."
-postconditions:
-  - id: "ensures-1"
-    statement: "Strict mode regenerates trace, property, and reusable-package proofs and compares them with committed canonical evidence."
-  - id: "ensures-2"
-    statement: "Proof dry-run lists executable commands but cannot produce a production pass."
-  - id: "ensures-3"
-    statement: "Production-file mutation caused by a proof command is detected and rejected."
-failure_categories:
-  - id: "rejects-1"
-    statement: "Invalid roots, stale or hand-authored proof, proof timeout, source mutation, stale package output, semantic drift, placeholder evidence, or uncommitted production claims."
+meaning: Audit a committed RMS project for production blockers and regenerate every
+  deterministic smoke proof from the committed implementation.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: A canonical RMS project root with an optional strict production policy,
+        proof timeout, or proof dry-run.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Strict mode regenerates trace, property, and reusable-package proofs
+        and compares them with committed canonical evidence.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Proof dry-run lists executable commands but cannot produce a production
+        pass.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Production-file mutation caused by a proof command is detected and
+        rejected.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    failures:
+    - id: rejects-1
+      statement: Invalid roots, stale or hand-authored proof, proof timeout, source
+        mutation, stale package output, semantic drift, placeholder evidence, or uncommitted
+        production claims.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
 compatibility:
   policy: backward-compatible-within-major

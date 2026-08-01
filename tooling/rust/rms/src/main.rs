@@ -24,6 +24,7 @@ use toml::Value as TomlValue;
 use tree_sitter::{Node as TreeSitterNode, Parser as TreeSitterParser};
 use walkdir::WalkDir;
 
+mod behavioral_contract;
 mod effect_executor;
 mod hunt;
 mod probe;
@@ -1806,6 +1807,8 @@ struct PropertyTargetReport {
     assumptions: Vec<YamlValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temporal: Option<YamlValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step: Option<YamlValue>,
     #[serde(skip)]
     definition: YamlValue,
     status: String,
@@ -1905,7 +1908,7 @@ enum PropertyProfile {
     Nightly,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum PropertySearchGoal {
     Satisfy,
     Violate,
@@ -2560,6 +2563,15 @@ struct PublicBehaviorBinding {
     machine_inputs: Vec<String>,
     #[serde(default)]
     machine_outputs: Vec<String>,
+    #[serde(default)]
+    observation_source: Option<BehaviorObservationSource>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BehaviorObservationSource {
+    kind: String,
+    command: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -2701,21 +2713,42 @@ fn authority_binding_yaml(item: &AuthorityBinding) -> YamlValue {
 }
 
 fn public_behavior_binding_yaml(item: &PublicBehaviorBinding) -> YamlValue {
-    yaml_mapping_value([
-        ("id", YamlValue::String(item.id.clone())),
-        ("public_kind", YamlValue::String(item.public_kind.clone())),
-        ("public_name", YamlValue::String(item.public_name.clone())),
-        ("contract", YamlValue::String(item.contract.clone())),
-        (
-            "semantic_function",
-            YamlValue::String(item.semantic_function.clone()),
-        ),
-        ("machine_inputs", yaml_string_sequence(&item.machine_inputs)),
-        (
-            "machine_outputs",
-            yaml_string_sequence(&item.machine_outputs),
-        ),
-    ])
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(yaml_key("id"), YamlValue::String(item.id.clone()));
+    mapping.insert(
+        yaml_key("public_kind"),
+        YamlValue::String(item.public_kind.clone()),
+    );
+    mapping.insert(
+        yaml_key("public_name"),
+        YamlValue::String(item.public_name.clone()),
+    );
+    mapping.insert(
+        yaml_key("contract"),
+        YamlValue::String(item.contract.clone()),
+    );
+    mapping.insert(
+        yaml_key("semantic_function"),
+        YamlValue::String(item.semantic_function.clone()),
+    );
+    mapping.insert(
+        yaml_key("machine_inputs"),
+        yaml_string_sequence(&item.machine_inputs),
+    );
+    mapping.insert(
+        yaml_key("machine_outputs"),
+        yaml_string_sequence(&item.machine_outputs),
+    );
+    if let Some(source) = &item.observation_source {
+        mapping.insert(
+            yaml_key("observation_source"),
+            yaml_mapping_value([
+                ("kind", YamlValue::String(source.kind.clone())),
+                ("command", YamlValue::String(source.command.clone())),
+            ]),
+        );
+    }
+    YamlValue::Mapping(mapping)
 }
 
 fn dependency_behavior_binding_yaml(item: &DependencyBehaviorBinding) -> YamlValue {
@@ -2945,6 +2978,8 @@ struct SemanticContractChange {
     ensures: Vec<String>,
     #[serde(default)]
     rejects: Vec<String>,
+    #[serde(default)]
+    semantics: Option<YamlValue>,
     #[serde(default)]
     protocol: Option<SemanticProtocol>,
 }
@@ -3907,7 +3942,7 @@ enum PropertyCommands {
         #[arg(long = "property")]
         properties: Vec<String>,
 
-        /// Write rms/property-analysis/v0.1 evidence.
+        /// Write rms/property-analysis/v0.2 evidence.
         #[arg(long)]
         out: Option<PathBuf>,
 
@@ -3951,9 +3986,9 @@ enum PropertyCommands {
     Analyze {
         /// Path to module.yaml or implementation.yaml.
         target: PathBuf,
-        /// Canonical rms/probe-assembly/v0.1 or v0.2 input.
+        /// Canonical probe assembly; omit for SMT analysis of a contract v0.2 target.
         #[arg(long)]
-        assembly: PathBuf,
+        assembly: Option<PathBuf>,
         /// Select property ids; omit to analyze all executable properties.
         #[arg(long = "property")]
         properties: Vec<String>,
@@ -3992,7 +4027,7 @@ enum PropertyCommands {
 
     /// Replay a recorded RMS property analysis or legacy fuzz counterexample.
     Replay {
-        /// Path to rms/property-analysis/v0.1 or a legacy property counterexample.
+        /// Path to rms/property-analysis/v0.1, v0.2, or a legacy property counterexample.
         analysis: PathBuf,
 
         /// Emit machine-readable JSON.
@@ -4243,6 +4278,16 @@ enum SpecCommands {
         /// Write the rendered prompt or provider response to a file.
         #[arg(long)]
         output: Option<PathBuf>,
+    },
+
+    /// Convert an rms/contract/v0.1 contract into an incomplete v0.2 draft.
+    MigrateContract {
+        /// Legacy contract to read. The input is never modified.
+        input: PathBuf,
+
+        /// Write the draft to a new path instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 
     /// Apply a validated RMS semantic-change object to canonical artifacts.
@@ -8787,6 +8832,18 @@ fn run_help(all: bool) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    let worker = std::thread::Builder::new()
+        .name("rms-cli".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(run_main)
+        .context("failed to start RMS CLI worker")?;
+    match worker.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn run_main() -> Result<()> {
     let cli = parse_cli();
 
     match cli.command {
@@ -9356,17 +9413,36 @@ fn main() -> Result<()> {
                 out,
                 json,
                 timeout_seconds,
-            } => run_property_analyze(
-                &target,
-                &assembly,
-                &properties,
-                max_steps,
-                max_schedules,
-                max_states,
-                out.as_deref(),
-                json,
-                timeout_seconds,
-            ),
+            } => {
+                if assembly.is_none()
+                    && load_manifest(&target)
+                        .ok()
+                        .and_then(|manifest| {
+                            get_str(&manifest.value, &["spec"]).map(str::to_string)
+                        })
+                        .as_deref()
+                        == Some(behavioral_contract::CONTRACT_SPEC)
+                {
+                    run_behavioral_contract_analysis(&target, out.as_deref(), json, timeout_seconds)
+                } else {
+                    let assembly = assembly.as_deref().ok_or_else(|| {
+                        anyhow!(
+                            "`rms property analyze` requires --assembly for non-contract targets"
+                        )
+                    })?;
+                    run_property_analyze(
+                        &target,
+                        assembly,
+                        &properties,
+                        max_steps,
+                        max_schedules,
+                        max_states,
+                        out.as_deref(),
+                        json,
+                        timeout_seconds,
+                    )
+                }
+            }
             PropertyCommands::Monitor {
                 target,
                 input,
@@ -9546,6 +9622,9 @@ fn main() -> Result<()> {
                     },
                 )?;
                 run_spec_plan(&target, &root, &task, output.as_deref(), &options)
+            }
+            SpecCommands::MigrateContract { input, out } => {
+                run_spec_migrate_contract(&input, out.as_deref())
             }
             SpecCommands::Apply {
                 target,
@@ -14831,7 +14910,22 @@ fn execute_trace_producers(
         });
         let serializes_transition_records =
             trace_producer_serializes_transition_records(root, &manifest, &producer.runner);
-        if inspectable_producer && (!calls_transition_record || !serializes_transition_records) {
+        let emits_invocations = trace_command_uses_invocation_records(&manifest, &producer.command);
+        let serializes_invocations =
+            trace_producer_serializes_invocation_records(root, &manifest, &producer.runner);
+        if inspectable_producer && emits_invocations && !serializes_invocations {
+            diagnostics.push(error(
+                "trace.producer-bypasses-invocation-record",
+                implementation,
+                format!(
+                    "trace producer `{}` runner `{}` must serialize canonical invocation records",
+                    producer.id, producer.runner
+                ),
+            ));
+        } else if inspectable_producer
+            && !emits_invocations
+            && (!calls_transition_record || !serializes_transition_records)
+        {
             diagnostics.push(error(
                 "trace.producer-bypasses-transition-record",
                 implementation,
@@ -15815,6 +15909,30 @@ fn proof_command_selects_runner(command: &str, runner: &str, environment: &str) 
 }
 
 fn executable_property_targets(target: &Path) -> Result<Vec<PropertyTargetReport>> {
+    let direct = load_manifest(target)?;
+    if get_str(&direct.value, &["spec"]) == Some(behavioral_contract::CONTRACT_SPEC) {
+        let normalized = serde_json::to_value(&direct.value)?;
+        let mut definitions = behavioral_contract::property_definitions(&normalized)
+            .map_err(|issues| anyhow!(issues.join("; ")))?;
+        let source_digest = format!("sha256:{}", sha256_file(target)?);
+        for definition in &mut definitions {
+            if definition.get("step").is_some() {
+                definition["step"]["source_digest"] = json!(source_digest);
+            }
+        }
+        return definitions
+            .into_iter()
+            .enumerate()
+            .map(|(index, definition)| {
+                let definition = serde_yaml::to_value(definition)?;
+                Ok(property_target_from_yaml(
+                    &definition,
+                    "behavioral-contract",
+                    index,
+                ))
+            })
+            .collect();
+    }
     let context = load_spec_target(target)?;
     let mut targets = Vec::new();
     if let Some(module) = &context.module {
@@ -15829,7 +15947,7 @@ fn executable_property_targets(target: &Path) -> Result<Vec<PropertyTargetReport
     }
     Ok(dedupe_property_targets(targets)
         .into_iter()
-        .filter(|target| target.temporal.is_some())
+        .filter(|target| target.temporal.is_some() || target.step.is_some())
         .collect())
 }
 
@@ -15840,7 +15958,7 @@ fn compile_selected_properties(
     let targets = executable_property_targets(target)?;
     if targets.is_empty() {
         bail!(
-            "`{}` declares no executable temporal properties",
+            "`{}` declares no executable temporal or behavioral-contract properties",
             target.display()
         );
     }
@@ -16000,6 +16118,7 @@ fn run_property_evaluate(
         "operation": "evaluate",
         "result": result,
         "target": target.display().to_string(),
+        "evaluator": {"kind": "rms-reference", "version": VALIDATOR_VERSION},
         "source": {
             "path": trace.display().to_string(),
             "digest": property_file_digest(trace)?
@@ -16012,6 +16131,7 @@ fn run_property_evaluate(
             "complete": trace_value.get("exhausted").and_then(JsonValue::as_bool)
                 .unwrap_or_else(|| trace_value.get("complete").and_then(JsonValue::as_bool).unwrap_or(true))
         },
+        "proof_scope": {"kind": "observed-trace", "claim": "Verdicts cover only the supplied records."},
         "evidence_trace": trace_value,
         "replay": {
             "operation": "evaluate",
@@ -16126,6 +16246,7 @@ fn run_property_search(
         "result": result,
         "goal": goal.label(),
         "target": target.display().to_string(),
+        "evaluator": {"kind": "rms-reference", "version": VALIDATOR_VERSION},
         "source": {
             "path": assembly.display().to_string(),
             "digest": property_file_digest(assembly)?,
@@ -16139,7 +16260,12 @@ fn run_property_search(
             "probe": exploration.coverage(),
             "bounds": exploration.bounds()
         },
+        "proof_scope": {
+            "kind": if exploration.exhausted() {"exhausted-finite-model"} else {"bounded-exploration"},
+            "claim": "Only exhausted finite exploration supports a universal finite conclusion."
+        },
         "evidence_trace": evidence_trace,
+        "counterexample": if goal == PropertySearchGoal::Violate {evidence_trace.clone()} else {None::<JsonValue>},
         "replay": {
             "operation": "search",
             "target": target.display().to_string(),
@@ -16283,6 +16409,7 @@ fn run_property_analyze(
         "operation": "analyze",
         "result": result,
         "target": target.display().to_string(),
+        "evaluator": {"kind": "rms-reference", "version": VALIDATOR_VERSION},
         "source": {
             "path": assembly.display().to_string(),
             "digest": property_file_digest(assembly)?,
@@ -16295,11 +16422,108 @@ fn run_property_analyze(
             "probe": exploration.coverage(),
             "bounds": exploration.bounds()
         },
+        "proof_scope": {
+            "kind": if exploration.exhausted() {"exhausted-finite-model"} else {"bounded-exploration"},
+            "claim": "Finite relationships are universal only over an exhausted declared model."
+        },
         "replay": {
             "operation": "analyze",
             "target": target.display().to_string(),
             "assembly": assembly.display().to_string()
         }
+    });
+    write_property_analysis(out, &analysis)?;
+    print_property_analysis(&analysis, json_output)
+}
+
+fn run_behavioral_contract_analysis(
+    target: &Path,
+    out: Option<&Path>,
+    json_output: bool,
+    timeout_seconds: u64,
+) -> Result<()> {
+    let contract = load_json_yaml_value(target)?;
+    let external_properties = behavioral_contract::external_property_ids(&contract);
+    let obligations = if external_properties.is_empty() {
+        behavioral_contract::smt_obligations(&contract)?
+    } else {
+        Vec::new()
+    };
+    let timeout_ms = timeout_seconds.saturating_mul(1_000);
+    let mut reports = external_properties
+        .into_iter()
+        .map(|property| {
+            json!({
+                "id": format!("external:{property}"),
+                "expected": "external-property",
+                "status": "unresolved",
+                "property": property
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut counterexamples = Vec::new();
+    let mut has_refutation = false;
+    let mut has_unresolved = !reports.is_empty();
+    for obligation in obligations {
+        let evidence = behavioral_contract::solve_cvc5(&obligation, timeout_ms);
+        let expected = match obligation.expectation {
+            behavioral_contract::ExpectedSolverResult::Sat => "sat",
+            behavioral_contract::ExpectedSolverResult::Unsat => "unsat",
+            behavioral_contract::ExpectedSolverResult::Informational => "sat-or-unsat",
+        };
+        let status = if evidence.result == "unresolved" {
+            has_unresolved = true;
+            "unresolved"
+        } else if obligation.expectation == behavioral_contract::ExpectedSolverResult::Informational
+        {
+            "discharged"
+        } else if evidence.result == expected {
+            "discharged"
+        } else {
+            has_refutation = true;
+            if let Some(model) = &evidence.model {
+                counterexamples.push(json!({
+                    "obligation": obligation.id,
+                    "model": model,
+                    "model_revalidated": evidence.model_revalidated
+                }));
+            }
+            "refuted"
+        };
+        reports.push(json!({
+            "id": obligation.id,
+            "expected": expected,
+            "status": status,
+            "solver": evidence
+        }));
+    }
+    let result = if has_refutation {
+        "violated"
+    } else if has_unresolved {
+        "unresolved"
+    } else {
+        "solver-discharged"
+    };
+    let analysis = json!({
+        "spec": property::ANALYSIS_SPEC,
+        "operation": "solve",
+        "result": result,
+        "target": target.display().to_string(),
+        "subject": {
+            "kind": "behavioral-contract",
+            "name": contract.get("name").and_then(JsonValue::as_str),
+            "digest": property_file_digest(target)?
+        },
+        "source": {"path": target.display().to_string()},
+        "evaluator": {"kind": "smt-lib-v2", "reference_solver": "cvc5"},
+        "obligations": reports,
+        "coverage": {"kind": "symbolic-contract"},
+        "proof_scope": {
+            "kind": if result == "solver-discharged" {"solver-discharged"} else {"unresolved"},
+            "claim": "Only exactly encoded obligations receive solver scope."
+        },
+        "counterexample": if counterexamples.is_empty() {JsonValue::Null} else {json!(counterexamples)},
+        "replay": {"operation": "solve", "target": target.display().to_string()}
     });
     write_property_analysis(out, &analysis)?;
     print_property_analysis(&analysis, json_output)
@@ -16314,33 +16538,52 @@ fn run_property_monitor(
     json_output: bool,
 ) -> Result<()> {
     let (target_property, compiled) = compile_one_property(target, selected)?;
-    let source = if input == Path::new("-") {
+    let source_result = if input == Path::new("-") {
         let mut source = String::new();
-        std::io::stdin().read_to_string(&mut source)?;
-        source
+        std::io::stdin()
+            .read_to_string(&mut source)
+            .context("failed to read monitor observations from stdin")
+            .map(|_| source)
     } else {
-        fs::read_to_string(input)
-            .with_context(|| format!("failed to read `{}`", input.display()))?
+        fs::read_to_string(input).with_context(|| format!("failed to read `{}`", input.display()))
+    };
+    let (source, source_error) = match source_result {
+        Ok(source) => (source, None),
+        Err(error) => (String::new(), Some(error.to_string())),
     };
     let parsed_document = serde_yaml::from_str::<YamlValue>(&source)
         .ok()
         .and_then(|value| serde_json::to_value(value).ok());
-    let (evaluation, evidence) = if let Some(document) = parsed_document.as_ref().filter(|value| {
-        matches!(
-            value.get("spec").and_then(JsonValue::as_str),
-            Some("rms/probe-system-trace/v0.1") | Some("rms/trace-bundle/v0.1")
-        )
-    }) {
-        (
-            property::evaluate_trace(&compiled, document)?,
-            document.clone(),
-        )
-    } else {
-        let envelopes = parse_observation_stream(&source, parsed_document.as_ref())?;
-        (
-            property::evaluate_observation_envelopes(&compiled, &envelopes, complete)?,
-            serde_json::to_value(&envelopes)?,
-        )
+    let evaluated = (|| -> Result<(property::Evaluation, JsonValue)> {
+        if let Some(error) = source_error {
+            bail!(error);
+        }
+        if let Some(document) = parsed_document.as_ref().filter(|value| {
+            matches!(
+                value.get("spec").and_then(JsonValue::as_str),
+                Some("rms/probe-system-trace/v0.1")
+                    | Some("rms/trace-bundle/v0.1")
+                    | Some(behavioral_contract::INVOCATION_SPEC)
+            )
+        }) {
+            Ok((
+                property::evaluate_trace(&compiled, document)?,
+                document.clone(),
+            ))
+        } else {
+            let envelopes = parse_observation_stream(&source, parsed_document.as_ref())?;
+            Ok((
+                property::evaluate_observation_envelopes(&compiled, &envelopes, complete)?,
+                serde_json::to_value(&envelopes)?,
+            ))
+        }
+    })();
+    let (evaluation, evidence) = match evaluated {
+        Ok(result) => result,
+        Err(error) => (
+            property::invalid_monitor_evaluation(&target_property.id, error.to_string()),
+            json!({"malformed_or_unavailable": true, "source": source}),
+        ),
     };
     let result = evaluation.verdict().label();
     let analysis = json!({
@@ -16348,13 +16591,20 @@ fn run_property_monitor(
         "operation": "monitor",
         "result": result,
         "target": target.display().to_string(),
+        "evaluator": {"kind": "rms-reference", "version": VALIDATOR_VERSION},
         "source": {
             "path": input.display().to_string(),
             "digest": sha256_bytes(source.as_bytes())
         },
         "property_definitions": [serde_json::to_value(&target_property.definition)?],
         "evaluations": [evaluation],
-        "coverage": {"kind": "monitor-prefix", "complete": complete},
+        "coverage": {
+            "kind": "monitor-prefix",
+            "complete": complete,
+            "mode": "production-fail-open",
+            "missing_observations_are_gaps": true
+        },
+        "proof_scope": {"kind": "observed-prefix", "claim": "Production monitoring is fail-open and never proves unobserved behavior."},
         "evidence_observations": evidence,
         "replay": {
             "operation": "monitor",
@@ -16363,7 +16613,9 @@ fn run_property_monitor(
             "property": target_property.id
         }
     });
-    write_property_analysis(out, &analysis)?;
+    if let Err(error) = write_property_analysis(out, &analysis) {
+        eprintln!("RMS behavioral-contract monitor sink unavailable; application behavior remains unaffected: {error:#}");
+    }
     print_property_analysis(&analysis, json_output)
 }
 
@@ -16395,7 +16647,10 @@ fn parse_observation_stream(
 
 fn run_property_replay(counterexample: &Path, json_output: bool) -> Result<()> {
     let value = load_yaml_value(counterexample)?;
-    if get_str(&value, &["spec"]) == Some(property::ANALYSIS_SPEC) {
+    if matches!(
+        get_str(&value, &["spec"]),
+        Some(property::ANALYSIS_SPEC | property::LEGACY_ANALYSIS_SPEC)
+    ) {
         let Some(evaluations) = evaluate_recorded_property_analysis(&value)? else {
             if json_output {
                 println!(
@@ -16985,7 +17240,24 @@ fn validate_trace_producer_declarations(
         });
         let serializes_transition_records =
             trace_producer_serializes_transition_records(base, implementation, &producer.runner);
-        if inspectable && (!calls_transition_record || !serializes_transition_records) {
+        let emits_invocations =
+            trace_command_uses_invocation_records(implementation, &producer.command);
+        let serializes_invocations =
+            trace_producer_serializes_invocation_records(base, implementation, &producer.runner);
+        if inspectable && emits_invocations && !serializes_invocations {
+            push_unique_warning(
+                diagnostics,
+                "trace.producer-bypasses-invocation-record",
+                &implementation.path,
+                format!(
+                    "trace producer `{}` runner `{}` must serialize canonical invocation records",
+                    producer.id, producer.runner
+                ),
+            );
+        } else if inspectable
+            && !emits_invocations
+            && (!calls_transition_record || !serializes_transition_records)
+        {
             push_unique_warning(
                 diagnostics,
                 "trace.producer-bypasses-transition-record",
@@ -17732,6 +18004,37 @@ fn trace_producer_serializes_transition_records(
     }
 }
 
+fn trace_command_uses_invocation_records(implementation: &LoadedManifest, command: &str) -> bool {
+    typed_yaml_sequence::<PublicBehaviorBinding>(
+        &implementation.value,
+        &["architecture", "public_behavior_bindings"],
+    )
+    .into_iter()
+    .filter_map(|binding| binding.observation_source)
+    .any(|source| source.command == command && source.kind == "invocation-record")
+}
+
+fn trace_producer_serializes_invocation_records(
+    base: &Path,
+    implementation: &LoadedManifest,
+    runner_reference: &str,
+) -> bool {
+    if get_str(&implementation.value, &["binding"]) == Some("executable") {
+        return true;
+    }
+    let Some((path, runner_symbol)) = binding_reference_parts(runner_reference) else {
+        return false;
+    };
+    let Ok(source) = fs::read_to_string(base.join(path)) else {
+        return false;
+    };
+    source_identifier_occurs(&source, runner_symbol)
+        && source.contains("rms/invocation-record/v0.1")
+        && source.contains("contract_digest")
+        && source.contains("input")
+        && source.contains("output")
+}
+
 fn rust_function_references_symbol(
     items: &[Item],
     function_symbol: &str,
@@ -18219,6 +18522,7 @@ fn property_target_from_yaml(
         .cloned()
         .unwrap_or_default();
     let temporal = get_path(item, &["temporal"]).cloned();
+    let step = get_path(item, &["step"]).cloned();
     let status =
         if proves.is_some() && input_space.is_some() && !oracle.is_empty() && evidence.is_some() {
             "declared"
@@ -18239,6 +18543,7 @@ fn property_target_from_yaml(
         observations,
         assumptions,
         temporal,
+        step,
         definition: item.clone(),
         status,
     }
@@ -18249,7 +18554,10 @@ fn property_counterexample_summary(
     value: &YamlValue,
 ) -> PropertyCounterexampleSummary {
     let spec = get_str(value, &["spec"]);
-    let analysis = spec == Some(property::ANALYSIS_SPEC);
+    let analysis = matches!(
+        spec,
+        Some(property::ANALYSIS_SPEC | property::LEGACY_ANALYSIS_SPEC)
+    );
     let json_value = analysis.then(|| serde_json::to_value(value).ok()).flatten();
     let replay_command = get_str(value, &["replay_command"]).map(ToString::to_string);
     let trace = get_str(value, &["trace"]).map(ToString::to_string);
@@ -22110,6 +22418,7 @@ fn is_supported_yaml_manifest(path: &Path) -> bool {
             "spec: rms/system/v0.1"
                 | "spec: rms/module/v0.1"
                 | "spec: rms/contract/v0.1"
+                | "spec: rms/contract/v0.2"
                 | "spec: rms/context-map/v0.1"
                 | "spec: rms/implementation/v0.1"
         )
@@ -22126,7 +22435,15 @@ fn validate_loaded_manifest(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
             validate_module(manifest, diagnostics);
             validate_module_shape_consistency(manifest, diagnostics);
         }
-        Some("rms/contract/v0.1") => validate_contract(manifest, diagnostics),
+        Some("rms/contract/v0.1") => diagnostics.push(error(
+            "contract.migration-required",
+            &manifest.path,
+            format!(
+                "legacy contract requires `rms spec migrate-contract {} --out <candidate>`",
+                manifest.path.display()
+            ),
+        )),
+        Some("rms/contract/v0.2") => validate_behavioral_contract(manifest, diagnostics, false),
         Some("rms/context-map/v0.1") => validate_context_map(manifest, diagnostics),
         Some("rms/implementation/v0.1") => validate_implementation(manifest, diagnostics),
         Some("rms/conformance/v0.1") => {}
@@ -22217,6 +22534,9 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
         "rms/system/v0.1" => Some(include_str!("../../../../schemas/system.schema.json")),
         "rms/module/v0.1" => Some(include_str!("../../../../schemas/module.schema.json")),
         "rms/contract/v0.1" => Some(include_str!("../../../../schemas/contract.schema.json")),
+        "rms/contract/v0.2" => Some(include_str!(
+            "../../../../schemas/contract-v0.2.schema.json"
+        )),
         "rms/context-map/v0.1" => Some(include_str!("../../../../schemas/context-map.schema.json")),
         "rms/implementation/v0.1" => Some(include_str!(
             "../../../../schemas/implementation.schema.json"
@@ -22242,8 +22562,17 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
         "rms/property-analysis/v0.1" => Some(include_str!(
             "../../../../schemas/property-analysis.schema.json"
         )),
+        "rms/property-analysis/v0.2" => Some(include_str!(
+            "../../../../schemas/property-analysis-v0.2.schema.json"
+        )),
         "rms/property-observation/v0.1" => Some(include_str!(
             "../../../../schemas/property-observation.schema.json"
+        )),
+        "rms/invocation-record/v0.1" => Some(include_str!(
+            "../../../../schemas/invocation-record.schema.json"
+        )),
+        "rms/compatibility-analysis/v0.1" => Some(include_str!(
+            "../../../../schemas/compatibility-analysis.schema.json"
         )),
         "rms/hunt-lane-result/v0.1" => Some(include_str!(
             "../../../../schemas/hunt-lane-result.schema.json"
@@ -22431,15 +22760,30 @@ fn check_composition_local_shape(manifest: &LoadedManifest, diagnostics: &mut Ve
     }
 }
 
-fn validate_contract(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+fn validate_behavioral_contract(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    strict: bool,
+) {
     require_str(manifest, diagnostics, "contract.name", &["name"]);
     require_str(manifest, diagnostics, "contract.kind", &["kind"]);
     require_str(manifest, diagnostics, "contract.meaning", &["meaning"]);
-
-    for field in ["preconditions", "postconditions"] {
-        validate_contract_assumptions(manifest, diagnostics, field);
+    match serde_json::to_value(&manifest.value) {
+        Ok(value) => {
+            for issue in behavioral_contract::validate(&value, strict) {
+                diagnostics.push(if issue.blocking {
+                    error(issue.check, &manifest.path, issue.message)
+                } else {
+                    warning(issue.check, &manifest.path, issue.message)
+                });
+            }
+        }
+        Err(parse_error) => diagnostics.push(error(
+            "contract.behavior-invalid",
+            &manifest.path,
+            format!("behavioral contract could not be normalized: {parse_error}"),
+        )),
     }
-    validate_contract_named_statements(manifest, diagnostics, "failure_categories");
     check_contract_semantic_specificity(manifest, diagnostics);
     validate_contract_protocol(manifest, diagnostics);
 }
@@ -22637,63 +22981,6 @@ fn check_contract_semantic_specificity(
             &manifest.path,
             "public contract still contains scaffold-generic semantics; replace it through `rms spec apply` with `contracts.set` before a production claim",
         );
-    }
-}
-
-fn validate_contract_assumptions(
-    manifest: &LoadedManifest,
-    diagnostics: &mut Vec<Diagnostic>,
-    field: &str,
-) {
-    let Some(items) = get_path(&manifest.value, &[field]).and_then(YamlValue::as_sequence) else {
-        return;
-    };
-
-    let mut ids = BTreeSet::new();
-    for item in items {
-        let Some(id) = get_str(item, &["id"]) else {
-            continue;
-        };
-        if !ids.insert(id.to_string()) {
-            diagnostics.push(error(
-                format!("contract.{field}.duplicate-id"),
-                &manifest.path,
-                format!("duplicate `{field}` id `{id}`"),
-            ));
-        }
-        if let Some(path) = get_str(item, &["verified_by"]) {
-            check_relative_ref(
-                manifest,
-                diagnostics,
-                format!("references.contract.{field}.verified-by"),
-                path,
-                "referenced contract assumption evidence does not exist",
-            );
-        }
-    }
-}
-
-fn validate_contract_named_statements(
-    manifest: &LoadedManifest,
-    diagnostics: &mut Vec<Diagnostic>,
-    field: &str,
-) {
-    let Some(items) = get_path(&manifest.value, &[field]).and_then(YamlValue::as_sequence) else {
-        return;
-    };
-
-    let mut ids = BTreeSet::new();
-    for item in items {
-        let Some(id) = get_str(item, &["id"]) else {
-            continue;
-        };
-        if !ids.insert(id.to_string()) {
-            diagnostics.push(error(
-                format!("contract.{field}.duplicate-id"),
-                &manifest.path,
-                format!("duplicate `{field}` id `{id}`"),
-            ));
-        }
     }
 }
 
@@ -23122,6 +23409,75 @@ fn validate_implementation_universal_bindings(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     validate_existing_resource_protocols(implementation, diagnostics);
+    let mutating_outputs = ["events", "effects"]
+        .into_iter()
+        .flat_map(|field| {
+            get_string_array(&implementation.value, &["architecture", "machine", field])
+        })
+        .collect::<BTreeSet<_>>();
+    for binding in typed_yaml_sequence::<PublicBehaviorBinding>(
+        &implementation.value,
+        &["architecture", "public_behavior_bindings"],
+    ) {
+        if binding.public_kind == "query" {
+            if binding
+                .observation_source
+                .as_ref()
+                .is_none_or(|source| source.kind != "invocation-record")
+            {
+                diagnostics.push(error(
+                    "semantic.public-query-observation-source",
+                    &implementation.path,
+                    format!(
+                        "public query binding `{}` must emit stateless invocation records",
+                        binding.id
+                    ),
+                ));
+            }
+            let impure = binding
+                .machine_outputs
+                .iter()
+                .filter(|output| mutating_outputs.contains(*output))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !impure.is_empty() {
+                diagnostics.push(error(
+                    "semantic.public-query-frame",
+                    &implementation.path,
+                    format!(
+                        "public query binding `{}` exposes event/effect outputs [{}]",
+                        binding.id,
+                        impure.join(", ")
+                    ),
+                ));
+            }
+        }
+        match binding.observation_source {
+            Some(source)
+                if matches!(
+                    source.kind.as_str(),
+                    "transition-record" | "invocation-record"
+                ) && get_str(&implementation.value, &["commands", &source.command]).is_some() =>
+            {
+            }
+            Some(source) => diagnostics.push(error(
+                "semantic.public-binding-observation-source-invalid",
+                &implementation.path,
+                format!(
+                    "public behavior binding `{}` observation source `{}` must select transition-record or invocation-record and an existing commands key `{}`",
+                    binding.id, source.kind, source.command
+                ),
+            )),
+            None => diagnostics.push(warning(
+                "semantic.public-binding-observation-source-missing",
+                &implementation.path,
+                format!(
+                    "public behavior binding `{}` has no canonical transition-record or invocation-record observation source",
+                    binding.id
+                ),
+            )),
+        }
+    }
     let base = implementation
         .path
         .parent()
@@ -33314,6 +33670,44 @@ fn build_check_report_scoped(
         CheckMode::Changes => build_changes_check_report_scoped(&root, module),
         CheckMode::Committed => build_committed_check_report_scoped(&root, module),
     }?;
+    if mode != CheckMode::Environment {
+        let contract_findings = strict_behavioral_contract_findings(&root)?;
+        if !contract_findings.is_empty() {
+            report.result = CheckResult::Fail;
+            report.summary = format!(
+                "RMS {} checks fail: behavioral contracts are incomplete.",
+                mode.label()
+            );
+            for (path, check, message) in &contract_findings {
+                report.reasons.push(format!(
+                    "{check}: {}: {message}",
+                    display_relative(&root, path)
+                ));
+            }
+            report.components.push(surface_projection::CheckComponent {
+                id: "behavioral-contracts".to_string(),
+                subject: root.display().to_string(),
+                scope: "rms/contract/v0.2".to_string(),
+                result: "fail".to_string(),
+                summary: format!(
+                    "{} incomplete behavioral contract finding(s)",
+                    contract_findings.len()
+                ),
+            });
+            report.details["behavioral_contract_findings"] = serde_json::to_value(
+                contract_findings
+                    .iter()
+                    .map(|(path, check, message)| {
+                        json!({
+                            "path": display_relative(&root, path),
+                            "check": check,
+                            "message": message
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )?;
+        }
+    }
     if module.is_none()
         && mode != CheckMode::Environment
         && workspace_coverage(&root) == WorkspaceCoverage::Complete
@@ -33356,6 +33750,164 @@ fn build_check_report_scoped(
         );
     }
     Ok(report)
+}
+
+fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, String, String)>> {
+    let modules = discover_module_manifests(root)?;
+    let mut owners: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+    for module in &modules {
+        let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+        let mut properties = property_targets_from_module(module, "property")
+            .into_iter()
+            .filter(|property| !property.realizations.is_empty())
+            .map(|property| property.id)
+            .collect::<BTreeSet<_>>();
+        let implementation_path = base.join("implementation.yaml");
+        if let Ok(implementation) = load_manifest(&implementation_path) {
+            for (path, kind) in [
+                (
+                    &["architecture", "reliability", "properties"][..],
+                    "property",
+                ),
+                (&["architecture", "reliability", "fuzz_targets"][..], "fuzz"),
+            ] {
+                properties.extend(
+                    property_targets_from_implementation(&implementation, path, kind)
+                        .into_iter()
+                        .filter(|property| {
+                            !property.realizations.is_empty() || property.command.is_some()
+                        })
+                        .map(|property| property.id),
+                );
+            }
+        }
+        for reference in module_contract_reference_paths(&module.value) {
+            let path = base.join(reference);
+            let identity = fs::canonicalize(&path).unwrap_or(path);
+            owners
+                .entry(identity)
+                .or_default()
+                .extend(properties.clone());
+        }
+        let contract_directory = base.join("contracts");
+        if contract_directory.is_dir() {
+            for entry in WalkDir::new(&contract_directory)
+                .max_depth(1)
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_file())
+                .filter(|entry| {
+                    matches!(
+                        entry
+                            .path()
+                            .extension()
+                            .and_then(|extension| extension.to_str()),
+                        Some("yaml" | "yml")
+                    )
+                })
+            {
+                let path = entry.path().to_path_buf();
+                let identity = fs::canonicalize(&path).unwrap_or(path);
+                owners
+                    .entry(identity)
+                    .or_default()
+                    .extend(properties.clone());
+            }
+        }
+    }
+
+    let mut findings = Vec::new();
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(discovery_entry_is_in_scope)
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let path = entry.path();
+        if !matches!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("yaml" | "yml")
+        ) {
+            continue;
+        }
+        let Ok(manifest) = load_manifest(path) else {
+            continue;
+        };
+        match get_str(&manifest.value, &["spec"]) {
+            Some(behavioral_contract::LEGACY_CONTRACT_SPEC) => findings.push((
+                path.to_path_buf(),
+                "contract.migration-required".to_string(),
+                "legacy contract must be migrated to rms/contract/v0.2".to_string(),
+            )),
+            Some(behavioral_contract::CONTRACT_SPEC) => {
+                let value = serde_json::to_value(&manifest.value)?;
+                findings.extend(
+                    behavioral_contract::validate(&value, true)
+                        .into_iter()
+                        .filter(|issue| issue.blocking)
+                        .map(|issue| (path.to_path_buf(), issue.check, issue.message)),
+                );
+                let required = behavioral_contract::external_property_ids(&value);
+                if !required.is_empty() {
+                    let identity = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                    let available = owners.get(&identity).cloned().unwrap_or_default();
+                    for property in required.difference(&available) {
+                        findings.push((
+                            path.to_path_buf(),
+                            "contract.external-property-unresolved".to_string(),
+                            format!(
+                                "external property `{property}` is not an executable property of a module or binding that owns this contract"
+                            ),
+                        ));
+                    }
+                }
+                if value.get("kind").and_then(JsonValue::as_str) == Some("api") {
+                    for operation in value
+                        .pointer("/semantics/api/operations")
+                        .and_then(JsonValue::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        let Some(reference) = operation.get("contract").and_then(JsonValue::as_str)
+                        else {
+                            continue;
+                        };
+                        let referenced_path = path
+                            .parent()
+                            .unwrap_or_else(|| Path::new("."))
+                            .join(reference);
+                        match load_manifest(&referenced_path) {
+                            Ok(referenced)
+                                if get_str(&referenced.value, &["spec"])
+                                    == Some(behavioral_contract::CONTRACT_SPEC)
+                                    && get_str(&referenced.value, &["name"])
+                                        == operation.get("name").and_then(JsonValue::as_str)
+                                    && get_str(&referenced.value, &["kind"])
+                                        == operation.get("kind").and_then(JsonValue::as_str) =>
+                            {}
+                            Ok(_) => findings.push((
+                                path.to_path_buf(),
+                                "contract.api-reference-mismatch".to_string(),
+                                format!(
+                                    "API operation reference `{reference}` must resolve to a v0.2 contract with matching name and kind"
+                                ),
+                            )),
+                            Err(error) => findings.push((
+                                path.to_path_buf(),
+                                "contract.api-reference-missing".to_string(),
+                                format!(
+                                    "API operation reference `{reference}` could not be loaded: {error}"
+                                ),
+                            )),
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(findings)
 }
 
 fn project_check_coverage(
@@ -34323,12 +34875,13 @@ fn environment_check_report_from_diagnosis(root: &Path, diagnosis: DiagnoseRepor
         warnings.push("The detected Codex plugin cache includes stale RMS skills.".to_string());
     }
     if codex_blocked {
-        let provider = codex_readiness.expect("blocked Codex readiness is present");
-        warnings.push(format!(
-            "Configured Codex provider is {}: {}",
-            provider.status,
-            provider.detail.as_deref().unwrap_or("no detail available")
-        ));
+        if let Some(provider) = codex_readiness {
+            warnings.push(format!(
+                "Configured Codex provider is {}: {}",
+                provider.status,
+                provider.detail.as_deref().unwrap_or("no detail available")
+            ));
+        }
     }
     let reasons = vec![format!(
         "{}: {} ({})",
@@ -47313,6 +47866,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Laws, contracts, machine transitions, runnable surfaces, effects, and evidence obligations come before implementation code. Provider output is advisory until `rms spec apply` updates canonical artifacts and records the exact applied change under `verification/changes/`.")?;
     writeln!(out, "Composite parents may delegate an exported law proof through `verification.delegations`; name the contained provider, provider law, provider property, public export, and concrete evidence instead of duplicating the child property in the parent.")?;
     writeln!(out, "When a promise says always, never, bounded, ordered, normalized, parsed, generated, or impossible, declare semantic properties with input spaces and oracles before relying on binding tests.")?;
+    writeln!(out, "Public behavior uses `rms/contract/v0.2`: give every requirement, guarantee, failure, invariant, and case a stable id, then choose exactly one core expression or exact external property realization. Queries have an empty state/event/effect frame.")?;
     writeln!(out, "Reusable modules must declare capabilities/contracts, one public facade, and package/reuse evidence before consumers import them; native package files only describe how to import the RMS facade.")?;
     writeln!(out, "Ask clarifying questions only when needed. Otherwise infer the smallest coherent semantic model from the task, name edge cases and must-never-happen conditions, and encode them in the semantic-change object.")?;
     writeln!(out, "For external truth, include reconciliation or recovery evidence when outcomes can be unknown, duplicate, stale, partial, conflicting, delayed, or later corrected.")?;
@@ -47511,7 +48065,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically.")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
-    writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and non-empty string lists `accepts`, `ensures`, and `rejects`. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`: only capability contracts may be required. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
+    writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and structured v0.2 `semantics`. Command, query, and capability semantics contain typed observations; stable-id requires, guarantees, failures, cases, and invariants; exhaustive case policy; and explicit permitted state/event/effect frames. Event semantics contain typed payload observations and guarantees. API contracts aggregate exact contract references. Each clause uses exactly one `evaluation.kind: core|external`; `unresolved` is migration-draft-only and fails strict checks. Legacy `accepts`, `ensures`, and `rejects` inputs produce unresolved drafts and are not completion-ready. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`: only capability contracts may be required. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
     if context.implementation.is_none() {
         writeln!(out, "This target has no implementation binding, so `semantic_functions`, `machine`, `roles`, and `surfaces` are null. Keep them null for contract/law/property-only work. Before requesting implementation bindings, machine roles, or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|python|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
     }
@@ -47522,7 +48076,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "## Semantic Gate Checklist")?;
     for item in [
         "Each new behavior has a law, public contract, machine transition, effect, rejection, or evidence obligation before code changes.",
-        "Every public contract replaces scaffold meaning with product-specific accepted inputs, guaranteed outcomes, and explicit rejection categories through contracts.set.",
+        "Every public contract replaces scaffold meaning with product-specific executable behavioral clauses, exhaustive accepted/rejected cases, explicit frames, and no unresolved realization through contracts.set.",
         "Law entries declare `authority` and `enforced_by`; transition-authority laws are discharged by the pure canonical transition, not an effect executor.",
         "Every non-composition law has a CLI-applied semantic-function binding with matching kind, purity, discharged invariant, binding symbol, and concrete evidence.",
         "Semantic lists contain case names, never binding container names; bindings generate idiomatic enums, sealed cases, or tagged constructors from those cases.",
@@ -47548,6 +48102,43 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "- {item}")?;
     }
     Ok(out)
+}
+
+fn run_spec_migrate_contract(input: &Path, out: Option<&Path>) -> Result<()> {
+    let legacy = load_yaml_value(input)?;
+    let migrated = behavioral_contract::migrate_v01(&legacy)?;
+    let rendered = serde_yaml::to_string(&migrated)?;
+    let Some(out) = out else {
+        print!("{rendered}");
+        return Ok(());
+    };
+    let input_identity = fs::canonicalize(input).unwrap_or_else(|_| input.to_path_buf());
+    let output_identity = fs::canonicalize(out).unwrap_or_else(|_| out.to_path_buf());
+    if input_identity == output_identity || out == input {
+        bail!(
+            "contract migration never overwrites its input `{}`",
+            input.display()
+        );
+    }
+    if out.exists() {
+        bail!(
+            "contract migration output `{}` already exists; choose a new path",
+            out.display()
+        );
+    }
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create migration output directory `{}`",
+                parent.display()
+            )
+        })?;
+    }
+    fs::write(out, rendered)
+        .with_context(|| format!("failed to write migrated contract `{}`", out.display()))?;
+    println!("migrated contract draft: {}", out.display());
+    println!("status: unresolved clauses require core expressions or external properties");
+    Ok(())
 }
 
 fn run_spec_apply(
@@ -49995,20 +50586,48 @@ fn validate_semantic_contracts(
                 ),
             ));
         }
-        for (field, items) in [
-            ("accepts", &contract.accepts),
-            ("ensures", &contract.ensures),
-            ("rejects", &contract.rejects),
-        ] {
-            if items.is_empty() || items.iter().any(|item| item.trim().is_empty()) {
-                diagnostics.push(error(
-                    format!("semantic.contract-{field}-missing"),
-                    &context.target,
-                    format!(
-                        "contract `{}` must declare at least one product-specific `{field}` statement",
-                        contract.name
-                    ),
-                ));
+        if contract.semantics.is_none() {
+            for (field, items) in [
+                ("accepts", &contract.accepts),
+                ("ensures", &contract.ensures),
+                ("rejects", &contract.rejects),
+            ] {
+                if items.is_empty() || items.iter().any(|item| item.trim().is_empty()) {
+                    diagnostics.push(error(
+                        format!("semantic.contract-{field}-missing"),
+                        &context.target,
+                        format!(
+                            "contract `{}` must declare at least one product-specific `{field}` statement or provide structured v0.2 `semantics`",
+                            contract.name
+                        ),
+                    ));
+                }
+            }
+        }
+        if let Some(semantics) = &contract.semantics {
+            let mut candidate = serde_json::Map::new();
+            candidate.insert(
+                "spec".to_string(),
+                json!(behavioral_contract::CONTRACT_SPEC),
+            );
+            candidate.insert("name".to_string(), json!(contract.name));
+            candidate.insert(
+                "version".to_string(),
+                json!(contract.version.as_deref().unwrap_or("1")),
+            );
+            candidate.insert("kind".to_string(), json!(kind.label()));
+            candidate.insert(
+                "meaning".to_string(),
+                json!(contract.meaning.as_deref().unwrap_or_default()),
+            );
+            candidate.insert(
+                "semantics".to_string(),
+                serde_json::to_value(semantics).unwrap_or(JsonValue::Null),
+            );
+            for issue in behavioral_contract::validate(&JsonValue::Object(candidate), true) {
+                if issue.blocking {
+                    diagnostics.push(error(issue.check, &context.target, issue.message));
+                }
             }
         }
         if !evidence_items.iter().any(|evidence| {
@@ -53465,61 +54084,119 @@ fn module_contract_reference_paths(module: &YamlValue) -> BTreeSet<String> {
 fn render_semantic_contract(contract: &SemanticContractChange) -> String {
     let version = contract.version.as_deref().unwrap_or("v1");
     let version = version.strip_prefix('v').unwrap_or(version);
-    let mut out = String::new();
-    let _ = writeln!(out, "spec: rms/contract/v0.1");
-    let _ = writeln!(out, "name: {}", yaml_quote(&contract.name));
-    let _ = writeln!(out, "version: {version}");
-    let _ = writeln!(
-        out,
-        "kind: {}",
-        contract
-            .kind
-            .map(SemanticContractKind::label)
-            .unwrap_or("invalid")
-    );
-    let _ = writeln!(
-        out,
-        "meaning: {}",
-        yaml_quote(contract.meaning.as_deref().unwrap_or_default())
-    );
-    let _ = writeln!(out, "preconditions:");
-    for (index, item) in contract.accepts.iter().enumerate() {
-        let _ = writeln!(
-            out,
-            "  - id: {}",
-            yaml_quote(&format!("accepts-{}", index + 1))
-        );
-        let _ = writeln!(out, "    statement: {}", yaml_quote(item));
-    }
-    let _ = writeln!(out, "postconditions:");
-    for (index, item) in contract.ensures.iter().enumerate() {
-        let _ = writeln!(
-            out,
-            "  - id: {}",
-            yaml_quote(&format!("ensures-{}", index + 1))
-        );
-        let _ = writeln!(out, "    statement: {}", yaml_quote(item));
-    }
-    let _ = writeln!(out, "failure_categories:");
-    for (index, item) in contract.rejects.iter().enumerate() {
-        let _ = writeln!(
-            out,
-            "  - id: {}",
-            yaml_quote(&format!("rejects-{}", index + 1))
-        );
-        let _ = writeln!(out, "    statement: {}", yaml_quote(item));
-    }
-    let _ = writeln!(out, "compatibility:");
-    let _ = writeln!(out, "  policy: backward-compatible-within-major");
+    let kind = contract
+        .kind
+        .map(SemanticContractKind::label)
+        .unwrap_or("invalid");
+    let migration_draft = contract.semantics.is_none();
+    let mut semantics = contract
+        .semantics
+        .clone()
+        .and_then(|value| value.as_mapping().cloned())
+        .unwrap_or_else(|| legacy_contract_semantics(contract, kind));
     if let Some(protocol) = &contract.protocol {
-        let _ = writeln!(out, "semantics:");
-        let _ = writeln!(out, "  protocol:");
-        let rendered = serde_yaml::to_string(protocol).unwrap_or_default();
-        for line in rendered.lines() {
-            let _ = writeln!(out, "    {line}");
+        semantics.insert(
+            yaml_key("protocol"),
+            serde_yaml::to_value(protocol).unwrap_or(YamlValue::Null),
+        );
+    }
+    let mut rendered = yaml_mapping_value([
+        (
+            "spec",
+            YamlValue::String(behavioral_contract::CONTRACT_SPEC.to_string()),
+        ),
+        ("name", YamlValue::String(contract.name.clone())),
+        ("version", YamlValue::String(version.to_string())),
+        ("kind", YamlValue::String(kind.to_string())),
+        (
+            "meaning",
+            YamlValue::String(contract.meaning.clone().unwrap_or_default()),
+        ),
+        ("semantics", YamlValue::Mapping(semantics)),
+        (
+            "compatibility",
+            yaml_mapping_value([(
+                "policy",
+                YamlValue::String("backward-compatible-within-major".to_string()),
+            )]),
+        ),
+    ]);
+    if migration_draft {
+        if let Some(mapping) = rendered.as_mapping_mut() {
+            mapping.insert(
+                yaml_key("x-rms"),
+                yaml_mapping_value([("migration_draft", YamlValue::Bool(true))]),
+            );
         }
     }
-    out
+    serde_yaml::to_string(&rendered).unwrap_or_default()
+}
+
+fn legacy_contract_semantics(contract: &SemanticContractChange, kind: &str) -> serde_yaml::Mapping {
+    let clauses = |prefix: &str, items: &[String]| {
+        YamlValue::Sequence(
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, statement)| {
+                    yaml_mapping_value([
+                        ("id", YamlValue::String(format!("{prefix}-{}", index + 1))),
+                        ("statement", YamlValue::String(statement.clone())),
+                        (
+                            "evaluation",
+                            yaml_mapping_value([(
+                                "kind",
+                                YamlValue::String("unresolved".to_string()),
+                            )]),
+                        ),
+                    ])
+                })
+                .collect(),
+        )
+    };
+    let mut semantics = serde_yaml::Mapping::new();
+    match kind {
+        "command" | "query" | "capability" => {
+            semantics.insert(
+                yaml_key("behavior"),
+                yaml_mapping_value([
+                    ("observations", YamlValue::Sequence(Vec::new())),
+                    ("requires", clauses("accepts", &contract.accepts)),
+                    ("guarantees", clauses("ensures", &contract.ensures)),
+                    ("failures", clauses("rejects", &contract.rejects)),
+                    ("cases", YamlValue::Sequence(Vec::new())),
+                    ("invariants", YamlValue::Sequence(Vec::new())),
+                    (
+                        "case_policy",
+                        yaml_mapping_value([
+                            ("coverage", YamlValue::String("exhaustive".to_string())),
+                            ("overlap", YamlValue::String("forbidden".to_string())),
+                        ]),
+                    ),
+                ]),
+            );
+        }
+        "event" => {
+            let mut statements = contract.accepts.clone();
+            statements.extend(contract.ensures.clone());
+            statements.extend(contract.rejects.clone());
+            semantics.insert(
+                yaml_key("event"),
+                yaml_mapping_value([
+                    ("observations", YamlValue::Sequence(Vec::new())),
+                    ("guarantees", clauses("guarantee", &statements)),
+                ]),
+            );
+        }
+        "api" => {
+            semantics.insert(
+                yaml_key("api"),
+                yaml_mapping_value([("operations", YamlValue::Sequence(Vec::new()))]),
+            );
+        }
+        _ => {}
+    }
+    semantics
 }
 
 fn render_semantic_evidence(item: &SemanticEvidenceItemChange) -> String {
@@ -55896,7 +56573,20 @@ fn print_verify_package_report(report: &VerifyPackageReport) {
 fn run_check_compat(old: &Path, new: &Path, json_output: bool) -> Result<()> {
     let old_manifest = load_manifest(old)?;
     let new_manifest = load_manifest(new)?;
-    let report = check_module_compat(&old_manifest, &new_manifest)?;
+    let old_spec = get_str(&old_manifest.value, &["spec"]);
+    let new_spec = get_str(&new_manifest.value, &["spec"]);
+    let report = match (old_spec, new_spec) {
+        (
+            Some(behavioral_contract::CONTRACT_SPEC),
+            Some(behavioral_contract::CONTRACT_SPEC),
+        ) => check_behavioral_contract_compat(&old_manifest, &new_manifest)?,
+        (Some("rms/module/v0.1"), Some("rms/module/v0.1")) => {
+            check_module_compat(&old_manifest, &new_manifest)?
+        }
+        _ => bail!(
+            "compatibility inputs must both be module manifests or both be rms/contract/v0.2 contracts"
+        ),
+    };
 
     if json_output {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -56344,11 +57034,29 @@ fn compose_required_capabilities(
 
     for (required_name, required_contract) in required_capabilities {
         if let Some(providers) = provided_requirements.get(&required_name) {
-            let compatible = providers
+            let assessed = providers
                 .iter()
-                .filter(|provider| {
-                    required_contract.is_none() || provider.contract == required_contract
+                .map(|provider| {
+                    (
+                        provider,
+                        compose_capability_refinement(
+                            module,
+                            required_contract.as_deref(),
+                            provider,
+                            modules,
+                        ),
+                    )
                 })
+                .collect::<Vec<_>>();
+            let compatible = assessed
+                .iter()
+                .filter(|(_, result)| {
+                    matches!(
+                        result,
+                        Ok(CompatResult::Compatible | CompatResult::CompatibleAdditive)
+                    )
+                })
+                .map(|(provider, _)| *provider)
                 .collect::<Vec<_>>();
             let required_module_names =
                 named_contract_map(get_path(&module.value, &["requires", "modules"]));
@@ -56381,6 +57089,33 @@ fn compose_required_capabilities(
                     ),
                 ));
             } else {
+                if let Some((provider, reason)) = assessed.iter().find_map(|(provider, result)| {
+                    matches!(result, Ok(CompatResult::OperationalReviewRequired))
+                        .then(|| {
+                            (
+                                *provider,
+                                "behavioral refinement needs exact external or solver evidence",
+                            )
+                        })
+                        .or_else(|| {
+                            result
+                                .as_ref()
+                                .err()
+                                .map(|error| (*provider, error.as_str()))
+                        })
+                }) {
+                    findings.push(compose_finding(
+                        ComposeStatus::ReviewRequired,
+                        "requires.capabilities.behavioral-refinement",
+                        Some(module.name.clone()),
+                        Some(provider.module.clone()),
+                        Some(required_name.clone()),
+                        format!(
+                            "required capability `{required_name}` has a provider, but {reason}"
+                        ),
+                    ));
+                    continue;
+                }
                 findings.push(compose_finding(
                     ComposeStatus::Incompatible,
                     "composition.capability-contract-mismatch",
@@ -56446,6 +57181,52 @@ fn compose_required_capabilities(
             ));
         }
     }
+}
+
+fn compose_capability_refinement(
+    consumer: &ModuleIndexEntry,
+    required_contract: Option<&str>,
+    provider: &ProvidedRequirement,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+) -> std::result::Result<CompatResult, String> {
+    let Some(required_contract) = required_contract else {
+        return Ok(CompatResult::Compatible);
+    };
+    let Some(provided_contract) = provider.contract.as_deref() else {
+        return Ok(CompatResult::Breaking);
+    };
+    let same_reference = required_contract == provided_contract;
+    let provider_module = modules
+        .get(&provider.module)
+        .ok_or_else(|| format!("provider module `{}` was not found", provider.module))?;
+    let required_path = consumer
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(required_contract);
+    let provided_path = provider_module
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(provided_contract);
+    let required = match load_manifest(&required_path) {
+        Ok(contract) => contract,
+        Err(_) if same_reference => return Ok(CompatResult::Compatible),
+        Err(_) => return Ok(CompatResult::Breaking),
+    };
+    let provided = match load_manifest(&provided_path) {
+        Ok(contract) => contract,
+        Err(_) if same_reference => return Ok(CompatResult::Compatible),
+        Err(_) => return Ok(CompatResult::Breaking),
+    };
+    if get_str(&required.value, &["spec"]) != Some(behavioral_contract::CONTRACT_SPEC)
+        || get_str(&provided.value, &["spec"]) != Some(behavioral_contract::CONTRACT_SPEC)
+    {
+        return Err("both capability contracts must use rms/contract/v0.2".to_string());
+    }
+    check_behavioral_contract_compat(&required, &provided)
+        .map(|report| report.result)
+        .map_err(|error| error.to_string())
 }
 
 fn implementation_declares_external_dependency(
@@ -57515,10 +58296,16 @@ fn print_compose_report(report: &ComposeReport) {
 
 #[derive(Clone, Debug, Serialize)]
 struct CompatReport {
+    spec: String,
     result: CompatResult,
     old: String,
     new: String,
+    old_digest: String,
+    new_digest: String,
     findings: Vec<CompatFinding>,
+    obligations: Vec<JsonValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    solver: Option<JsonValue>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
@@ -57544,6 +58331,252 @@ struct PublicSurfaceEntry {
     contract: Option<String>,
 }
 
+fn check_behavioral_contract_compat(
+    old: &LoadedManifest,
+    new: &LoadedManifest,
+) -> Result<CompatReport> {
+    let old_value = serde_json::to_value(&old.value)?;
+    let new_value = serde_json::to_value(&new.value)?;
+    if old_value == new_value
+        || (old_value.get("name") == new_value.get("name")
+            && old_value.get("kind") == new_value.get("kind")
+            && old_value.get("semantics") == new_value.get("semantics"))
+    {
+        return Ok(CompatReport {
+            spec: behavioral_contract::COMPATIBILITY_SPEC.to_string(),
+            result: CompatResult::Compatible,
+            old: old.path.display().to_string(),
+            new: new.path.display().to_string(),
+            old_digest: sha256_file(&old.path)?,
+            new_digest: sha256_file(&new.path)?,
+            findings: Vec::new(),
+            obligations: Vec::new(),
+            solver: None,
+        });
+    }
+    let mut findings = Vec::new();
+    let mut obligations = Vec::new();
+    let mut solver_summary = None;
+    for field in ["name", "kind"] {
+        if old_value.get(field) != new_value.get(field) {
+            findings.push(compat_finding(
+                CompatResult::Breaking,
+                format!("contract.{field}"),
+                format!(
+                    "contract {field} changed from `{}` to `{}`",
+                    old_value
+                        .get(field)
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or("<missing>"),
+                    new_value
+                        .get(field)
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or("<missing>")
+                ),
+            ));
+        }
+    }
+    for expansion in behavioral_contract::frame_expansion(&old_value, &new_value) {
+        findings.push(compat_finding(
+            CompatResult::Breaking,
+            "contract.frame-expanded",
+            format!("candidate permits new public behavior `{expansion}`"),
+        ));
+    }
+    for change in behavioral_contract::changed_outcome_kinds(&old_value, &new_value) {
+        findings.push(compat_finding(
+            CompatResult::Breaking,
+            "contract.outcome-kind",
+            format!("candidate changes accepted/rejected behavior `{change}`"),
+        ));
+    }
+    if behavioral_contract::has_external_behavior(&old_value)
+        || behavioral_contract::has_external_behavior(&new_value)
+    {
+        match external_refinement_evidence(old, new) {
+            Ok(Some(evidence)) => obligations.push(evidence),
+            Ok(None) => findings.push(compat_finding(
+                CompatResult::OperationalReviewRequired,
+                "contract.external-refinement",
+                "behavioral refinement contains external clauses and requires exact digest-bound external compatibility evidence",
+            )),
+            Err(error) => findings.push(compat_finding(
+                CompatResult::OperationalReviewRequired,
+                "contract.external-refinement-evidence",
+                error.to_string(),
+            )),
+        }
+    } else {
+        match behavioral_contract::refinement_obligations(&old_value, &new_value) {
+            Ok(refinement) => {
+                for obligation in refinement {
+                    let expected = match obligation.expectation {
+                        behavioral_contract::ExpectedSolverResult::Sat => "sat",
+                        behavioral_contract::ExpectedSolverResult::Unsat => "unsat",
+                        behavioral_contract::ExpectedSolverResult::Informational => "sat-or-unsat",
+                    };
+                    let evidence = behavioral_contract::solve_cvc5(
+                        &obligation,
+                        DEFAULT_PROOF_TIMEOUT_SECONDS.saturating_mul(1_000),
+                    );
+                    let status = if evidence.result == "unresolved" {
+                        findings.push(compat_finding(
+                            CompatResult::OperationalReviewRequired,
+                            format!("contract.refinement.{}", obligation.id),
+                            "cvc5 was unavailable, timed out, or returned unknown",
+                        ));
+                        "unresolved"
+                    } else if obligation.expectation
+                        == behavioral_contract::ExpectedSolverResult::Informational
+                    {
+                        if evidence.result == "sat" {
+                            findings.push(compat_finding(
+                                CompatResult::CompatibleAdditive,
+                                "contract.input-domain-expanded",
+                                "candidate accepts inputs outside the previous valid domain",
+                            ));
+                            "witnessed"
+                        } else {
+                            "discharged"
+                        }
+                    } else if evidence.result == expected {
+                        "discharged"
+                    } else {
+                        findings.push(compat_finding(
+                            CompatResult::Breaking,
+                            format!("contract.refinement.{}", obligation.id),
+                            format!(
+                                "behavioral refinement was refuted: expected {expected}, observed {}",
+                                evidence.result
+                            ),
+                        ));
+                        "refuted"
+                    };
+                    if solver_summary.is_none() {
+                        solver_summary = Some(json!({
+                            "adapter": evidence.adapter,
+                            "executable": evidence.executable,
+                            "version": evidence.version
+                        }));
+                    }
+                    obligations.push(json!({
+                        "id": obligation.id,
+                        "expected": expected,
+                        "status": status,
+                        "evidence": evidence
+                    }));
+                }
+            }
+            Err(error) => findings.push(compat_finding(
+                CompatResult::OperationalReviewRequired,
+                "contract.refinement-unsupported",
+                error.to_string(),
+            )),
+        }
+    }
+    let old_cases = contract_case_ids(&old_value);
+    let new_cases = contract_case_ids(&new_value);
+    for added in new_cases.difference(&old_cases) {
+        findings.push(compat_finding(
+            CompatResult::CompatibleAdditive,
+            "contract.case-added",
+            format!("candidate adds behavior case `{added}` subject to refinement proof"),
+        ));
+    }
+    let result = findings
+        .iter()
+        .map(|finding| finding.severity)
+        .max()
+        .unwrap_or(CompatResult::Compatible);
+    Ok(CompatReport {
+        spec: behavioral_contract::COMPATIBILITY_SPEC.to_string(),
+        result,
+        old: old.path.display().to_string(),
+        new: new.path.display().to_string(),
+        old_digest: sha256_file(&old.path)?,
+        new_digest: sha256_file(&new.path)?,
+        findings,
+        obligations,
+        solver: solver_summary,
+    })
+}
+
+fn external_refinement_evidence(
+    old: &LoadedManifest,
+    new: &LoadedManifest,
+) -> Result<Option<JsonValue>> {
+    let Some(property) = get_str(
+        &new.value,
+        &["compatibility", "external_refinement", "property"],
+    ) else {
+        return Ok(None);
+    };
+    let evidence_path = get_str(
+        &new.value,
+        &["compatibility", "external_refinement", "evidence"],
+    )
+    .ok_or_else(|| {
+        anyhow!("external compatibility property `{property}` requires digest-bound `evidence`")
+    })?;
+    let path = new
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(evidence_path);
+    let evidence = load_json_yaml_value(&path).with_context(|| {
+        format!(
+            "failed to load external refinement evidence `{}`",
+            path.display()
+        )
+    })?;
+    let old_digest = sha256_file(&old.path)?;
+    let new_digest = sha256_file(&new.path)?;
+    if evidence.get("spec").and_then(JsonValue::as_str) != Some(property::ANALYSIS_SPEC)
+        || evidence.get("operation").and_then(JsonValue::as_str) != Some("refine")
+        || !matches!(
+            evidence.get("result").and_then(JsonValue::as_str),
+            Some("satisfied" | "solver-discharged")
+        )
+        || evidence
+            .pointer("/subject/property")
+            .and_then(JsonValue::as_str)
+            != Some(property)
+        || evidence
+            .pointer("/subject/old_digest")
+            .and_then(JsonValue::as_str)
+            != Some(old_digest.as_str())
+        || evidence
+            .pointer("/subject/new_digest")
+            .and_then(JsonValue::as_str)
+            != Some(new_digest.as_str())
+    {
+        bail!(
+            "external refinement evidence `{}` must be a satisfied v0.2 refine analysis for property `{property}` and the exact old/new source digests",
+            path.display()
+        );
+    }
+    Ok(Some(json!({
+        "id": format!("external:{property}"),
+        "expected": "satisfied",
+        "status": "discharged",
+        "evidence": path.display().to_string()
+    })))
+}
+
+fn contract_case_ids(value: &JsonValue) -> BTreeSet<String> {
+    value
+        .pointer("/semantics/behavior/cases")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|case| {
+            case.get("id")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 fn check_module_compat(old: &LoadedManifest, new: &LoadedManifest) -> Result<CompatReport> {
     if get_str(&old.value, &["spec"]) != Some("rms/module/v0.1") {
         bail!("old manifest is not an RMS module manifest");
@@ -57555,10 +58588,13 @@ fn check_module_compat(old: &LoadedManifest, new: &LoadedManifest) -> Result<Com
     let old_label = module_label(old);
     let new_label = module_label(new);
     let mut findings = Vec::new();
+    let mut obligations = Vec::new();
+    let mut solver = None;
 
     compare_module_identity(old, new, &mut findings);
     compare_module_version(old, new, &mut findings);
     compare_public_surface(old, new, &mut findings);
+    compare_public_contract_behavior(old, new, &mut findings, &mut obligations, &mut solver);
     compare_string_set(
         old,
         new,
@@ -57579,11 +58615,78 @@ fn check_module_compat(old: &LoadedManifest, new: &LoadedManifest) -> Result<Com
         .unwrap_or(CompatResult::Compatible);
 
     Ok(CompatReport {
+        spec: behavioral_contract::COMPATIBILITY_SPEC.to_string(),
         result,
         old: old_label,
         new: new_label,
+        old_digest: sha256_file(&old.path).unwrap_or_default(),
+        new_digest: sha256_file(&new.path).unwrap_or_default(),
         findings,
+        obligations,
+        solver,
     })
+}
+
+fn compare_public_contract_behavior(
+    old: &LoadedManifest,
+    new: &LoadedManifest,
+    findings: &mut Vec<CompatFinding>,
+    obligations: &mut Vec<JsonValue>,
+    solver: &mut Option<JsonValue>,
+) {
+    let old_surface = public_surface_map(&old.value);
+    let new_surface = public_surface_map(&new.value);
+    let old_base = old.path.parent().unwrap_or_else(|| Path::new("."));
+    let new_base = new.path.parent().unwrap_or_else(|| Path::new("."));
+    for (key, old_entry) in old_surface {
+        let Some(new_entry) = new_surface.get(&key) else {
+            continue;
+        };
+        let (Some(old_contract), Some(new_contract)) =
+            (old_entry.contract.as_deref(), new_entry.contract.as_deref())
+        else {
+            continue;
+        };
+        let (Ok(old_contract), Ok(new_contract)) = (
+            load_manifest(&old_base.join(old_contract)),
+            load_manifest(&new_base.join(new_contract)),
+        ) else {
+            continue;
+        };
+        if get_str(&old_contract.value, &["spec"]) != Some(behavioral_contract::CONTRACT_SPEC)
+            || get_str(&new_contract.value, &["spec"]) != Some(behavioral_contract::CONTRACT_SPEC)
+        {
+            findings.push(compat_finding(
+                CompatResult::OperationalReviewRequired,
+                "provides.contract-legacy",
+                format!("public surface `{key}` is not described by contract v0.2 on both sides"),
+            ));
+            continue;
+        }
+        match check_behavioral_contract_compat(&old_contract, &new_contract) {
+            Ok(report) => {
+                findings.extend(report.findings.into_iter().map(|finding| CompatFinding {
+                    severity: finding.severity,
+                    check: format!("provides.{key}.{}", finding.check),
+                    message: finding.message,
+                }));
+                obligations.extend(report.obligations.into_iter().map(|mut obligation| {
+                    if let Some(object) = obligation.as_object_mut() {
+                        object.insert("surface".to_string(), json!(key));
+                    }
+                    obligation
+                }));
+                if solver.is_none() {
+                    *solver = report.solver;
+                }
+            }
+            Err(error) => findings.push(compat_finding(
+                CompatResult::OperationalReviewRequired,
+                "provides.contract-refinement",
+                format!("public surface `{key}` refinement could not be analyzed: {error}"),
+            )),
+        }
+    }
 }
 
 fn compare_module_identity(
@@ -57924,14 +59027,27 @@ fn print_compat_report(report: &CompatReport) {
     println!("New: {}", report.new);
     if report.findings.is_empty() {
         println!("No compatibility findings.");
-        return;
+    } else {
+        for finding in &report.findings {
+            println!(
+                "- {} [{}]: {}",
+                compat_result_label(finding.severity),
+                finding.check,
+                finding.message
+            );
+        }
     }
-    for finding in &report.findings {
+    for obligation in &report.obligations {
         println!(
-            "- {} [{}]: {}",
-            compat_result_label(finding.severity),
-            finding.check,
-            finding.message
+            "- {} [{}]",
+            obligation
+                .get("status")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("unresolved"),
+            obligation
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("behavioral-refinement")
         );
     }
 }
@@ -59120,6 +60236,10 @@ fn configure_scaffold_public_behavior_binding(
                 semantic_function: semantic_function.to_string(),
                 machine_inputs: vec!["Accept".to_string()],
                 machine_outputs: Vec::new(),
+                observation_source: Some(BehaviorObservationSource {
+                    kind: "transition-record".to_string(),
+                    command: "trace".to_string(),
+                }),
             },
         )
         .collect::<Vec<_>>();
@@ -60873,7 +61993,7 @@ fn render_capability_contract(name: &str, meaning: &str) -> String {
 
 fn render_typed_capability_contract(name: &str, meaning: &str, kind: &str) -> String {
     format!(
-        "spec: rms/contract/v0.1\nname: {}\nversion: 1\nkind: {}\nmeaning: {}\npreconditions:\n  - id: valid-request\n    statement: The caller supplies input accepted by this command boundary.\npostconditions:\n  - id: explicit-outcome\n    statement: The command returns an accepted result or an explicit rejection.\nfailure_categories:\n  - id: rejected-request\n    statement: The request is rejected by boundary validation or domain rules.\ncompatibility:\n  policy: backward-compatible-within-major\nx-rms:\n  scaffold: true\n",
+        "spec: rms/contract/v0.2\nname: {}\nversion: 1\nkind: {}\nmeaning: {}\nsemantics:\n  behavior:\n    observations: []\n    requires:\n      - id: valid-request\n        statement: The caller supplies input accepted by this boundary.\n        evaluation:\n          kind: unresolved\n    guarantees:\n      - id: explicit-outcome\n        statement: The operation returns an accepted result or an explicit rejection.\n        evaluation:\n          kind: unresolved\n    failures:\n      - id: rejected-request\n        statement: Boundary validation or domain rules may reject the request.\n        evaluation:\n          kind: unresolved\n    cases: []\n    invariants: []\n    case_policy:\n      coverage: exhaustive\n      overlap: forbidden\ncompatibility:\n  policy: backward-compatible-within-major\nx-rms:\n  scaffold: true\n  migration_draft: true\n",
         yaml_quote(name),
         yaml_quote(kind),
         yaml_quote(meaning),
@@ -68022,6 +69142,35 @@ mod tests {
         });
         fs::write(output, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
         assert_eq!(records.len(), 4);
+    }
+
+    #[test]
+    fn produce_inspect_module_invocation_record() {
+        let Ok(output) = std::env::var("RMS_TRACE_OUTPUT") else {
+            return;
+        };
+        let module_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("module.yaml");
+        let module = load_manifest(&module_path).unwrap();
+        let record = json!({
+            "spec": behavioral_contract::INVOCATION_SPEC,
+            "contract": "inspect-module",
+            "binding": "inspect-module-public",
+            "contract_digest": "sha256:08aa7daadc1ae0881aa043b8aaec99a0f2a89e80ad87b0dc8327376f9a3cc8ce",
+            "scenario_start": true,
+            "input": {"kind": "InspectModule", "path": module_path},
+            "output": {
+                "kind": "ModuleBrief",
+                "module": get_str(&module.value, &["module", "name"]),
+                "profiles": get_string_array(&module.value, &["profiles"]),
+                "effects": get_string_array(&module.value, &["effects"])
+            },
+            "source": {
+                "file": file!(),
+                "function": "produce_inspect_module_invocation_record",
+                "branch": "readable-module"
+            }
+        });
+        fs::write(output, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
     }
 
     #[test]
@@ -79121,6 +80270,82 @@ public func transitionWidget(_ command: WidgetCommand) -> WidgetTransition {
     }
 
     #[test]
+    fn exact_external_refinement_evidence_discharges_operational_review() {
+        let root = unique_test_dir("external-refinement-evidence");
+        fs::create_dir_all(&root).unwrap();
+        let old_path = root.join("old.yaml");
+        let new_path = root.join("new.yaml");
+        let contract = |statement: &str, compatibility: &str| {
+            format!(
+                r#"spec: rms/contract/v0.2
+name: lookup
+version: 1
+kind: query
+meaning: Look up a value.
+semantics:
+  behavior:
+    observations: []
+    requires:
+      - id: readable
+        statement: {statement}
+        evaluation: {{kind: external, property: lookup-contract}}
+    guarantees: []
+    failures: []
+    cases: []
+    invariants: []
+    case_policy: {{coverage: exhaustive, overlap: forbidden}}
+compatibility:
+{compatibility}
+"#
+            )
+        };
+        fs::write(
+            &old_path,
+            contract(
+                "The source is readable.",
+                "  policy: backward-compatible-within-major",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &new_path,
+            contract(
+                "The selected source is readable.",
+                "  policy: backward-compatible-within-major\n  external_refinement:\n    property: lookup-refinement\n    evidence: refinement.json",
+            ),
+        )
+        .unwrap();
+        let evidence = json!({
+            "spec": property::ANALYSIS_SPEC,
+            "operation": "refine",
+            "result": "satisfied",
+            "subject": {
+                "property": "lookup-refinement",
+                "old_digest": sha256_file(&old_path).unwrap(),
+                "new_digest": sha256_file(&new_path).unwrap()
+            }
+        });
+        fs::write(
+            root.join("refinement.json"),
+            serde_json::to_vec_pretty(&evidence).unwrap(),
+        )
+        .unwrap();
+
+        let report = check_behavioral_contract_compat(
+            &load_manifest(&old_path).unwrap(),
+            &load_manifest(&new_path).unwrap(),
+        )
+        .unwrap();
+
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(report.result, CompatResult::Compatible);
+        assert!(report
+            .obligations
+            .iter()
+            .any(|obligation| obligation["status"] == "discharged"));
+    }
+
+    #[test]
     fn compat_reports_additive_public_surface() {
         let old = loaded_module_manifest(
             "old.yaml",
@@ -82834,7 +84059,7 @@ roles:
         fs::create_dir_all(root.join("verification/traces")).unwrap();
         fs::write(
             root.join("contracts/do-work.yaml"),
-            "spec: rms/contract/v0.1\nname: do-work\nkind: command\nmeaning: Do work.\n",
+            render_capability_contract("do-work", "Do work."),
         )
         .unwrap();
         fs::write(root.join("verification/laws/law"), "law evidence\n").unwrap();
@@ -83152,7 +84377,8 @@ verification:
             "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`"
         ));
         assert!(semantic.contains("`enforced_by` names the declared semantic-function id"));
-        assert!(semantic.contains("non-empty string lists `accepts`, `ensures`, and `rejects`"));
+        assert!(semantic.contains("structured v0.2 `semantics`"));
+        assert!(semantic.contains("Each clause uses exactly one `evaluation.kind: core|external`"));
         assert!(semantic.contains("optional `direction: provided|required`"));
         assert!(semantic.contains("only capability contracts may be required"));
         assert!(semantic.contains("public_behavior_bindings"));
@@ -86649,6 +87875,7 @@ temporal:
                 .unwrap(),
             assumptions: Vec::new(),
             temporal: get_path(&definition, &["temporal"]).cloned(),
+            step: None,
             definition,
             status: "declared".to_string(),
         };
@@ -86702,6 +87929,7 @@ temporal:
                 .unwrap(),
             assumptions: Vec::new(),
             temporal: get_path(&definition, &["temporal"]).cloned(),
+            step: None,
             definition: definition.clone(),
             status: "declared".to_string(),
         };
