@@ -10047,7 +10047,7 @@ fn build_repository_profile(root: &Path) -> Result<BuiltRepositoryProfile> {
             == Some("contracts")
             && path.extension().and_then(|extension| extension.to_str()) == Some("yaml")
         {
-            Some("rms/contract/v0.1")
+            Some("rms/contract/v0.2")
         } else {
             None
         };
@@ -82845,6 +82845,39 @@ semantic_functions: []
             .iter()
             .filter(|item| matches!(item.name.as_str(), "system.yaml" | "context-map.yaml"))
             .all(|item| item.status == "not-applicable"));
+    }
+
+    #[test]
+    fn next_repository_profile_requires_current_behavioral_contracts() {
+        let root = unique_test_dir("next-current-contract-spec");
+        let contracts = root.join("contracts");
+        fs::create_dir_all(&contracts).unwrap();
+        fs::write(
+            contracts.join("do-work.yaml"),
+            "spec: rms/contract/v0.2\nname: do-work\nversion: 1\nkind: command\nmeaning: Do work.\n",
+        )
+        .unwrap();
+
+        let current = build_repository_profile(&root).unwrap();
+        assert!(!current
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "repository.canonical-spec"));
+
+        fs::write(
+            contracts.join("do-work.yaml"),
+            "spec: rms/contract/v0.1\nname: do-work\nversion: 1\nkind: command\nmeaning: Do work.\n",
+        )
+        .unwrap();
+        let legacy = build_repository_profile(&root).unwrap();
+        assert!(legacy.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "repository.canonical-spec"
+                && diagnostic
+                    .message
+                    .contains("expects spec `rms/contract/v0.2`")
+        }));
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
