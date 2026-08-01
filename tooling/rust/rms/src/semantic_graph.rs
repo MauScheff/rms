@@ -769,7 +769,7 @@ fn project_module_topology(
         ) else {
             continue;
         };
-        let public_kind = group.strip_suffix('s').unwrap_or(group);
+        let public_kind = public_behavior_kind(group);
         let public_id = graph_id(&module.module_name, &format!("public-{public_kind}"), name);
         let resolves_public =
             public_behaviors.contains_key(&(public_kind.to_string(), name.to_string()));
@@ -796,6 +796,16 @@ fn project_module_topology(
                 source.clone(),
             );
         }
+    }
+}
+
+fn public_behavior_kind(group: &str) -> &str {
+    match group {
+        "commands" => "command",
+        "queries" => "query",
+        "events" => "event",
+        "capabilities" => "capability",
+        other => other,
     }
 }
 
@@ -2542,6 +2552,65 @@ semantic_functions: []
         let graph = build_semantic_system_graph(&root).unwrap();
         assert!(graph.edges.iter().any(|edge| edge.kind == "bound-through"));
         assert!(graph.edges.iter().any(|edge| edge.kind == "maps-to"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn composite_capability_export_resolves_its_public_declaration() {
+        let root = fixture_root("composite-capability-export");
+        write_fixture(
+            &root.join("parent/module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: parent, version: 0.1.0, kind: composite, purpose: Export child behavior }
+profiles: [core]
+owns: { concepts: [], data: [], decisions: [] }
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities:
+    - { name: playout-liveness, contract: contracts/playout-liveness.v1.yaml }
+requires: { modules: [], capabilities: [] }
+composition:
+  contains:
+    - { name: child, visibility: internal, path: ../child/module.yaml }
+  exports:
+    - { group: capabilities, name: playout-liveness, from: child }
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        );
+        write_fixture(
+            &root.join("child/module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: child, version: 0.1.0, kind: library, purpose: Own child behavior }
+profiles: [core]
+owns: { concepts: [], data: [], decisions: [] }
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities:
+    - { name: playout-liveness, contract: contracts/playout-liveness.v1.yaml }
+requires: { modules: [], capabilities: [] }
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        );
+
+        let diagnostics = semantic_system_graph_diagnostics(&root).unwrap();
+        assert!(!diagnostics
+            .iter()
+            .any(|item| item.check == "semantic.module-link-unresolved"));
+        let graph = build_semantic_system_graph(&root).unwrap();
+        assert!(graph
+            .edges
+            .iter()
+            .any(|edge| edge.kind == "exports" && edge.label == "exports capability"));
         let _ = fs::remove_dir_all(root);
     }
 
