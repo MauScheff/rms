@@ -11,8 +11,9 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub(super) const ASSEMBLY_SPEC: &str = "rms/probe-assembly/v0.1";
 pub(super) const ASSEMBLY_SPEC_V2: &str = "rms/probe-assembly/v0.2";
@@ -668,6 +669,8 @@ struct Engine {
     base_dir: PathBuf,
     bounds: Bounds,
     timeout_seconds: u64,
+    deadline: Option<Instant>,
+    cancellation: Option<Arc<AtomicBool>>,
     cache: BTreeMap<String, Value>,
 }
 
@@ -888,6 +891,8 @@ pub(super) fn run_guided_hunt(
     source_root: &Path,
     output_dir: &Path,
     lane_output: &Path,
+    deadline: Instant,
+    cancellation: Arc<AtomicBool>,
 ) -> Result<()> {
     let (assembly_value, base_dir) = load_input(file)?;
     validate_assembly_schema(&assembly_value)?;
@@ -902,6 +907,8 @@ pub(super) fn run_guided_hunt(
         max_states,
         timeout_seconds,
     )?;
+    engine.deadline = Some(deadline);
+    engine.cancellation = Some(cancellation);
     let guided = engine.explore_guided(seed, max_findings)?;
     let executable = std::env::current_exe()?;
     fs::create_dir_all(output_dir)?;
@@ -1188,12 +1195,42 @@ impl Engine {
             base_dir,
             bounds,
             timeout_seconds,
+            deadline: None,
+            cancellation: None,
             cache: BTreeMap::new(),
         };
         engine.routes = engine.resolve_dependency_routes()?;
         engine.protocol_routes = engine.resolve_protocol_routes()?;
         engine.validate_assembly()?;
         Ok(engine)
+    }
+
+    fn deadline_exhausted(&self) -> bool {
+        self.cancellation
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(AtomicOrdering::Acquire))
+            || self
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
+    fn ensure_deadline(&self) -> Result<()> {
+        if self.deadline_exhausted() {
+            bail!("probe exploration deadline exhausted");
+        }
+        Ok(())
+    }
+
+    fn remaining_timeout_seconds(&self) -> Result<u64> {
+        self.ensure_deadline()?;
+        let Some(deadline) = self.deadline else {
+            return Ok(self.timeout_seconds);
+        };
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| anyhow!("probe exploration deadline exhausted"))?;
+        let millis = remaining.as_millis().max(1);
+        Ok((((millis + 999) / 1_000).min(u64::MAX as u128) as u64).min(self.timeout_seconds))
     }
 
     fn description(&self) -> Value {
@@ -2166,6 +2203,7 @@ impl Engine {
     }
 
     fn explore_guided(&mut self, seed: u64, max_findings: usize) -> Result<GuidedExploration> {
+        self.ensure_deadline()?;
         let initial = self.initial_world()?;
         let mut frontier = BinaryHeap::new();
         let mut serial = 0u64;
@@ -2191,7 +2229,12 @@ impl Engine {
             &seen_faults,
         )?;
 
-        while let Some(entry) = frontier.pop() {
+        'search: while let Some(entry) = frontier.pop() {
+            if self.deadline_exhausted() {
+                exhausted = false;
+                stopped_by = "deadline-exhausted".to_string();
+                break;
+            }
             if coverage.states >= self.bounds.max_states
                 || coverage.schedules >= self.bounds.max_schedules
             {
@@ -2242,6 +2285,11 @@ impl Engine {
             let choices = self.choices(&world);
             self.prefetch_transitions(&world, &choices)?;
             for choice in choices {
+                if self.deadline_exhausted() {
+                    exhausted = false;
+                    stopped_by = "deadline-exhausted".to_string();
+                    break 'search;
+                }
                 let mut next = world.clone();
                 let previously_violated = next.violated_checks.clone();
                 let mut branch_coverage = empty_coverage();
@@ -2294,7 +2342,21 @@ impl Engine {
 
         let mut minimized = Vec::new();
         for (_, (counterexample, occurrences)) in findings {
-            minimized.push((self.minimize_counterexample(counterexample)?, occurrences));
+            if self.deadline_exhausted() {
+                exhausted = false;
+                stopped_by = "deadline-exhausted".to_string();
+                minimized.push((counterexample, occurrences));
+                continue;
+            }
+            match self.minimize_counterexample(counterexample.clone()) {
+                Ok(candidate) => minimized.push((candidate, occurrences)),
+                Err(_) if self.deadline_exhausted() => {
+                    exhausted = false;
+                    stopped_by = "deadline-exhausted".to_string();
+                    minimized.push((counterexample, occurrences));
+                }
+                Err(error) => return Err(error),
+            }
         }
         minimized.sort_by(|left, right| {
             left.0
@@ -2422,6 +2484,7 @@ impl Engine {
     }
 
     fn minimize_counterexample(&self, original: Counterexample) -> Result<Counterexample> {
+        self.ensure_deadline()?;
         let expected_failure = original.failure.clone();
         let mut best = original;
         let mut assembly: ProbeAssembly =
@@ -2429,6 +2492,7 @@ impl Engine {
 
         let mut index = 0;
         while assembly.stimuli.len() > 1 && index < assembly.stimuli.len() {
+            self.ensure_deadline()?;
             let mut candidate = assembly.clone();
             candidate.stimuli.remove(index);
             if let Some(counterexample) =
@@ -2443,6 +2507,7 @@ impl Engine {
 
         let mut fault_index = 0;
         while fault_index < assembly.faults.len() {
+            self.ensure_deadline()?;
             let mut candidate = assembly.clone();
             candidate.faults.remove(fault_index);
             if let Some(counterexample) =
@@ -2456,10 +2521,12 @@ impl Engine {
         }
 
         for fault_index in 0..assembly.faults.len() {
+            self.ensure_deadline()?;
             let Some(delay) = assembly.faults[fault_index].delay else {
                 continue;
             };
             for smaller in shrink_u64(delay) {
+                self.ensure_deadline()?;
                 let mut candidate = assembly.clone();
                 candidate.faults[fault_index].delay = Some(smaller.max(1));
                 if let Some(counterexample) =
@@ -2472,12 +2539,14 @@ impl Engine {
         }
 
         for stimulus_index in 0..assembly.stimuli.len() {
+            self.ensure_deadline()?;
             let data = assembly.stimuli[stimulus_index]
                 .input
                 .get("data")
                 .cloned()
                 .unwrap_or(Value::Null);
             for smaller in shrink_json(&data) {
+                self.ensure_deadline()?;
                 let mut candidate = assembly.clone();
                 if let Some(input) = candidate.stimuli[stimulus_index].input.as_object_mut() {
                     input.insert("data".to_string(), smaller);
@@ -2498,6 +2567,7 @@ impl Engine {
         candidate: ProbeAssembly,
         expected_failure: &ProbeFailure,
     ) -> Result<Option<Counterexample>> {
+        self.ensure_deadline()?;
         let value = serde_json::to_value(&candidate)?;
         let mut engine = match Engine::new(
             candidate,
@@ -2506,11 +2576,13 @@ impl Engine {
             Some(self.bounds.max_steps),
             Some(self.bounds.max_schedules),
             Some(self.bounds.max_states),
-            self.timeout_seconds,
+            self.remaining_timeout_seconds()?,
         ) {
             Ok(engine) => engine,
             Err(_) => return Ok(None),
         };
+        engine.deadline = self.deadline;
+        engine.cancellation = self.cancellation.clone();
         match engine.explore_internal() {
             Ok((_, Some(counterexample)))
                 if counterexample.failure.check == expected_failure.check
@@ -3104,6 +3176,7 @@ impl Engine {
         fs::write(&trace_path, serde_json::to_vec_pretty(&world.timeline)?)?;
         let snapshot_display = snapshot_path.display().to_string();
         let trace_display = trace_path.display().to_string();
+        let timeout_seconds = self.remaining_timeout_seconds()?;
         let output = execute_proof_command(
             &self.base_dir,
             command,
@@ -3112,14 +3185,14 @@ impl Engine {
                 ("RMS_PROBE_TRACE", trace_display.as_str()),
                 ("RMS_PROBE_ORACLE", runner),
             ],
-            self.timeout_seconds,
+            timeout_seconds,
         );
         let _ = fs::remove_dir_all(&temp_root);
         let output = output?;
         if output.timed_out {
             bail!(
                 "probe oracle `{runner}` exceeded {} second(s)",
-                self.timeout_seconds
+                timeout_seconds
             );
         }
         Ok(output.status.success())
@@ -3158,6 +3231,7 @@ impl Engine {
         )?;
         let request_display = request_path.display().to_string();
         let output_display = output_path.display().to_string();
+        let timeout_seconds = self.remaining_timeout_seconds()?;
         let process = execute_proof_command(
             instance
                 .implementation_path
@@ -3169,7 +3243,7 @@ impl Engine {
                 ("RMS_PROBE_MAPPER_OUTPUT", output_display.as_str()),
                 ("RMS_PROBE_MAPPER", mapper.runner.as_str()),
             ],
-            self.timeout_seconds,
+            timeout_seconds,
         );
         let result = match process {
             Ok(process) if process.timed_out => {
@@ -3213,7 +3287,7 @@ impl Engine {
     fn describe_instance(&self, instance: &RuntimeInstance) -> Result<Value> {
         let protocol = probe_protocol(&instance.manifest);
         let request = json!({"spec": protocol, "operation": "describe"});
-        execute_binding_request(instance, &request, self.timeout_seconds, true)
+        execute_binding_request(instance, &request, self.remaining_timeout_seconds()?, true)
     }
 
     fn evaluate_transition(
@@ -3237,7 +3311,8 @@ impl Engine {
             "start": state,
             "steps": [{"input": input}]
         });
-        let bundle = execute_binding_request(instance, &request, self.timeout_seconds, false)?;
+        let bundle =
+            execute_binding_request(instance, &request, self.remaining_timeout_seconds()?, false)?;
         let record = bundle
             .get("records")
             .and_then(Value::as_array)
@@ -3295,7 +3370,12 @@ impl Engine {
                     "input": input
                 })).collect::<Vec<_>>()
             });
-            let output = execute_binding_request(&instance, &request, self.timeout_seconds, false)?;
+            let output = execute_binding_request(
+                &instance,
+                &request,
+                self.remaining_timeout_seconds()?,
+                false,
+            )?;
             let results = output
                 .get("results")
                 .and_then(Value::as_array)

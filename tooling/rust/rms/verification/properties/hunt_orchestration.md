@@ -8,6 +8,10 @@ Property: `hunt-outcomes-preserve-proof-scope`
 
 The hunt core classifies replayable behavioral findings as bugs, surviving mutants as proof gaps, passing open-ended lanes as bounded clean evidence, and only explicitly exhaustive strategies with recorded exhaustion as finite proof scope. Guided lanes never become proof. Stable semantic IDs deduplicate recurring failures, sum occurrences, and retain the shortest replay. Seeded guided exploration continues after a check failure and targeted replay reaches each distinct retained failure. Lanes that never start contribute no bounded evidence. Independent smoke baselines use configured parallelism, while trace regeneration and mutation remain serialized.
 
+Property: `hunt-budget-is-a-global-deadline`
+
+The scheduler derives one absolute execution deadline and passes the remaining duration through concurrent lanes, guided exploration, probe evaluation, oracles, mappers, minimization, and replay. Deadline checks stop in-memory search loops, subprocess timeouts terminate their process groups, and the scheduler checkpoints both cumulative elapsed time and each completed lane while other workers continue. Resume preserves interrupted artifacts under an explicit archive, normalizes `running` lanes to an explicit rerun, and subtracts prior elapsed execution from the remaining global budget.
+
 Commands:
 
 ```bash
@@ -16,6 +20,8 @@ cargo test -p rms hunt_outcomes_distinguish_bugs_gaps_and_bounds
 cargo test -p rms hunt_scope_excludes_unstarted_lanes_and_baselines_use_parallelism
 cargo test -p rms v2_findings_have_stable_ids_and_deduplicate_to_the_shortest_replay
 cargo test -p rms guided_exploration_is_seeded_and_keeps_distinct_replayable_findings
+cargo test -p rms guided_hunt_deadline_bounds_slow_probe_and_kills_its_process_group
+cargo test -p rms interrupted_resume_preserves_partial_artifacts_and_explicitly_reruns_lane
 ```
 
 Source revision: resolved from the committed candidate by strict audit.

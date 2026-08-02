@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 const REPORT_SPEC: &str = "rms/hunt-report/v0.2";
@@ -162,6 +164,8 @@ struct HuntReport {
     lanes: Vec<HuntLaneReport>,
     findings: Vec<HuntFinding>,
     proof_scope: HuntProofScope,
+    #[serde(default)]
+    elapsed_ms: u64,
     started_at_unix_ms: u64,
     finished_at_unix_ms: Option<u64>,
 }
@@ -341,6 +345,7 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
     }
     let run_root = hunts_root.join(&run_id);
     prepare_run_storage(&run_root)?;
+    let prior_elapsed_ms = prior.as_ref().map(resume_elapsed_ms).unwrap_or_default();
     let started_at_unix_ms = prior
         .as_ref()
         .map(|report| report.started_at_unix_ms)
@@ -367,6 +372,19 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
     if let Some(previous) = &prior {
         ensure_resume_tool_identities(previous, &tools)?;
     }
+    if let Some(previous) = prior.as_mut() {
+        normalize_interrupted_resume(previous, &run_root)?;
+    }
+    let previous_lanes = prior
+        .as_ref()
+        .map(|report| {
+            report
+                .lanes
+                .iter()
+                .map(|lane| (lane.id.clone(), lane.clone()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
     let completed = prior
         .as_ref()
         .map(|report| {
@@ -386,6 +404,9 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
     for lane in &mut lanes {
         if let Some(previous) = completed.get(&lane.report.id) {
             lane.report = previous.clone();
+        } else if let Some(previous) = previous_lanes.get(&lane.report.id) {
+            lane.report.elapsed_ms = previous.elapsed_ms;
+            lane.report.diagnostic = previous.diagnostic.clone();
         }
     }
     let lane_count = lanes
@@ -430,6 +451,7 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
             .map(|report| report.findings)
             .unwrap_or_default(),
         proof_scope: empty_scope(),
+        elapsed_ms: prior_elapsed_ms,
         started_at_unix_ms,
         finished_at_unix_ms: None,
     };
@@ -448,6 +470,14 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
     }
 
     let hunt_started = Instant::now();
+    let base_elapsed_ms = report.elapsed_ms;
+    let budget_ms = budget_seconds.saturating_mul(1_000);
+    let hunt_deadline = hunt_started
+        .checked_add(Duration::from_millis(
+            budget_ms.saturating_sub(base_elapsed_ms),
+        ))
+        .unwrap_or(hunt_started);
+    let cancellation = Arc::new(AtomicBool::new(false));
     let pending = lanes
         .iter()
         .enumerate()
@@ -458,14 +488,16 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
         .collect::<Vec<_>>();
     let mut cursor = 0;
     while cursor < pending.len() {
-        let elapsed = hunt_started.elapsed().as_secs();
-        if elapsed >= budget_seconds {
+        report.elapsed_ms =
+            base_elapsed_ms.saturating_add(hunt_started.elapsed().as_millis() as u64);
+        let Some(remaining) = remaining_timeout_seconds(hunt_deadline) else {
+            cancellation.store(true, AtomicOrdering::Release);
             for index in &pending[cursor..] {
                 lanes[*index].report.status = "inconclusive".to_string();
                 lanes[*index].report.diagnostic = Some("total hunt budget exhausted".to_string());
             }
             break;
-        }
+        };
         let phase = lane_phase(&lanes[pending[cursor]]);
         let phase_end = pending[cursor..]
             .iter()
@@ -477,7 +509,6 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
             .min(phase_end)
             .min(pending.len());
         let batch = &pending[cursor..batch_end];
-        let remaining = budget_seconds.saturating_sub(elapsed).max(1);
         if !request.json {
             let lane_names = batch
                 .iter()
@@ -494,48 +525,79 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
         report.lanes = lanes.iter().map(|lane| lane.report.clone()).collect();
         write_report(&run_root.join("checkpoint.yaml"), &report)?;
 
-        let results = std::thread::scope(|scope| {
-            batch
-                .iter()
-                .map(|index| {
-                    let lane = &lanes[*index];
-                    let run_id = &run_id;
-                    let run_root = &run_root;
-                    (
-                        *index,
-                        scope.spawn(move || {
-                            execute_lane(lane, run_id, seed.wrapping_add(*index as u64), run_root)
-                        }),
-                    )
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|(index, handle)| {
-                    (
-                        index,
-                        handle
-                            .join()
-                            .unwrap_or_else(|_| Err(anyhow!("hunt lane panicked"))),
-                    )
-                })
-                .collect::<Vec<_>>()
-        });
-        for (index, lane_result) in results {
-            match lane_result {
-                Ok((lane_report, findings)) => {
-                    lanes[index].report = lane_report;
-                    report.findings.extend(findings);
+        std::thread::scope(|scope| -> Result<()> {
+            let (sender, receiver) = mpsc::channel();
+            for index in batch.iter().copied() {
+                let lane = lanes[index].clone();
+                let sender = sender.clone();
+                let run_id = run_id.clone();
+                let run_root = run_root.clone();
+                let cancellation = Arc::clone(&cancellation);
+                scope.spawn(move || {
+                    let result = execute_lane(
+                        &lane,
+                        &run_id,
+                        seed.wrapping_add(index as u64),
+                        &run_root,
+                        hunt_deadline,
+                        cancellation,
+                    );
+                    let _ = sender.send((index, result));
+                });
+            }
+            drop(sender);
+
+            let mut received = 0usize;
+            let mut last_checkpoint = Instant::now();
+            while received < batch.len() {
+                if Instant::now() >= hunt_deadline {
+                    cancellation.store(true, AtomicOrdering::Release);
                 }
-                Err(error) => {
-                    lanes[index].report.status = "invalid".to_string();
-                    lanes[index].report.diagnostic = Some(error.to_string());
+                match receiver.recv_timeout(Duration::from_millis(100)) {
+                    Ok((index, lane_result)) => {
+                        received += 1;
+                        match lane_result {
+                            Ok((lane_report, findings)) => {
+                                lanes[index].report = lane_report;
+                                report.findings.extend(findings);
+                            }
+                            Err(error) => {
+                                let deadline_exhausted = Instant::now() >= hunt_deadline
+                                    || cancellation.load(AtomicOrdering::Acquire);
+                                lanes[index].report.status = if deadline_exhausted {
+                                    "inconclusive"
+                                } else {
+                                    "invalid"
+                                }
+                                .to_string();
+                                lanes[index].report.diagnostic = Some(error.to_string());
+                            }
+                        }
+                        report.elapsed_ms = base_elapsed_ms
+                            .saturating_add(hunt_started.elapsed().as_millis() as u64);
+                        report.lanes = lanes.iter().map(|lane| lane.report.clone()).collect();
+                        write_report(&run_root.join("checkpoint.yaml"), &report)?;
+                        last_checkpoint = Instant::now();
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if last_checkpoint.elapsed() >= Duration::from_secs(1) {
+                            report.elapsed_ms = base_elapsed_ms
+                                .saturating_add(hunt_started.elapsed().as_millis() as u64);
+                            report.lanes = lanes.iter().map(|lane| lane.report.clone()).collect();
+                            write_report(&run_root.join("checkpoint.yaml"), &report)?;
+                            last_checkpoint = Instant::now();
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        bail!("hunt lane result channel disconnected")
+                    }
                 }
             }
-        }
-        report.lanes = lanes.iter().map(|lane| lane.report.clone()).collect();
-        write_report(&run_root.join("checkpoint.yaml"), &report)?;
+            Ok(())
+        })?;
         cursor = batch_end;
     }
+    report.elapsed_ms = base_elapsed_ms.saturating_add(hunt_started.elapsed().as_millis() as u64);
     report.lanes = lanes.into_iter().map(|lane| lane.report).collect();
     normalize_report_findings(&mut report);
     report.result = hunt_result(&report);
@@ -556,6 +618,69 @@ fn prepare_run_storage(run_root: &Path) -> Result<()> {
             run_root.display()
         )
     })
+}
+
+fn resume_elapsed_ms(report: &HuntReport) -> u64 {
+    if report.elapsed_ms > 0 {
+        report.elapsed_ms
+    } else {
+        report
+            .lanes
+            .iter()
+            .map(|lane| lane.elapsed_ms)
+            .max()
+            .unwrap_or_default()
+    }
+}
+
+fn normalize_interrupted_resume(report: &mut HuntReport, run_root: &Path) -> Result<()> {
+    let interrupted = report
+        .lanes
+        .iter()
+        .filter(|lane| lane.status == "running")
+        .map(|lane| lane.id.clone())
+        .collect::<Vec<_>>();
+    if interrupted.is_empty() {
+        return Ok(());
+    }
+
+    let archive_root = run_root.join("interrupted").join(now_ms().to_string());
+    for lane_id in &interrupted {
+        let segment = sanitize_segment(lane_id);
+        let lane_output = run_root.join("lanes").join(format!("{segment}.yaml"));
+        let counterexamples = run_root.join("counterexamples").join(&segment);
+        for source in [&lane_output, &counterexamples] {
+            if !source.exists() {
+                continue;
+            }
+            fs::create_dir_all(&archive_root)?;
+            let name = source
+                .file_name()
+                .ok_or_else(|| anyhow!("interrupted hunt artifact has no file name"))?;
+            let destination = archive_root.join(name);
+            fs::rename(source, &destination).with_context(|| {
+                format!(
+                    "failed to preserve interrupted hunt artifact `{}` as `{}`",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+        }
+    }
+    report
+        .findings
+        .retain(|finding| !interrupted.iter().any(|lane| lane == &finding.lane));
+    for lane in &mut report.lanes {
+        if interrupted.iter().any(|id| id == &lane.id) {
+            lane.status = "planned".to_string();
+            lane.diagnostic = Some(format!(
+                "previous execution was interrupted; preserved partial artifacts under {} and scheduled an explicit rerun",
+                archive_root.display()
+            ));
+        }
+    }
+    report.finished_at_unix_ms = None;
+    Ok(())
 }
 
 fn discover_direct_assembly_lane(
@@ -1233,9 +1358,22 @@ fn execute_lane(
     run_id: &str,
     seed: u64,
     run_root: &Path,
+    hunt_deadline: Instant,
+    cancellation: Arc<AtomicBool>,
 ) -> Result<(HuntLaneReport, Vec<HuntFinding>)> {
     let mut report = lane.report.clone();
     let started = Instant::now();
+    let lane_deadline = started
+        .checked_add(Duration::from_secs(report.budget_seconds))
+        .map(|deadline| deadline.min(hunt_deadline))
+        .unwrap_or(hunt_deadline);
+    if cancellation.load(AtomicOrdering::Acquire)
+        || remaining_timeout_seconds(lane_deadline).is_none()
+    {
+        report.status = "inconclusive".to_string();
+        report.diagnostic = Some("hunt deadline exhausted before lane execution".to_string());
+        return Ok((report, Vec::new()));
+    }
     let lane_output = run_root
         .join("lanes")
         .join(format!("{}.yaml", sanitize_segment(&report.id)));
@@ -1257,7 +1395,13 @@ fn execute_lane(
                     .collect::<Vec<_>>()
                     .join(" ")
             );
-            execute_proof_command(root, &command, &[], report.budget_seconds)?
+            execute_proof_command(
+                root,
+                &command,
+                &[],
+                remaining_timeout_seconds(lane_deadline)
+                    .ok_or_else(|| anyhow!("hunt lane deadline exhausted"))?,
+            )?
         }
         LaneExecution::Project {
             root,
@@ -1277,7 +1421,8 @@ fn execute_lane(
                 ("RMS_HUNT_BUDGET_SECONDS", &budget_string),
                 ("RMS_HUNT_OUTPUT", &output_display),
             ],
-            report.budget_seconds,
+            remaining_timeout_seconds(lane_deadline)
+                .ok_or_else(|| anyhow!("hunt lane deadline exhausted"))?,
         )?,
         LaneExecution::GuidedProbe {
             root,
@@ -1290,7 +1435,7 @@ fn execute_lane(
             let artifact_dir = run_root
                 .join("counterexamples")
                 .join(sanitize_segment(&report.id));
-            super::probe::run_guided_hunt(
+            let guided = super::probe::run_guided_hunt(
                 assembly,
                 seed,
                 MAX_GUIDED_FINDINGS,
@@ -1302,8 +1447,33 @@ fn execute_lane(
                 source_root,
                 &artifact_dir,
                 &lane_output,
-            )?;
-            execute_proof_command(root, "true", &[], 1)?
+                lane_deadline,
+                Arc::clone(&cancellation),
+            );
+            if let Err(error) = guided {
+                report.elapsed_ms = started.elapsed().as_millis() as u64;
+                if cancellation.load(AtomicOrdering::Acquire)
+                    || remaining_timeout_seconds(lane_deadline).is_none()
+                {
+                    report.status = "inconclusive".to_string();
+                    report.diagnostic = Some(format!("hunt lane deadline exhausted: {error}"));
+                    report
+                        .metrics
+                        .insert("executed".to_string(), JsonValue::Bool(true));
+                    return Ok((report, Vec::new()));
+                }
+                return Err(error);
+            }
+            let Some(timeout) = remaining_timeout_seconds(lane_deadline) else {
+                report.elapsed_ms = started.elapsed().as_millis() as u64;
+                report.status = "inconclusive".to_string();
+                report.diagnostic = Some(
+                    "hunt lane deadline exhausted after guided exploration; lane output preserved"
+                        .to_string(),
+                );
+                return Ok((report, Vec::new()));
+            };
+            execute_proof_command(root, "true", &[], timeout)?
         }
     };
     report.elapsed_ms = started.elapsed().as_millis() as u64;
@@ -1406,11 +1576,19 @@ fn execute_lane(
                         Some("behavioral finding omitted a replay command".to_string());
                     continue;
                 };
+                let Some(replay_timeout) = remaining_timeout_seconds(lane_deadline) else {
+                    report.status = "inconclusive".to_string();
+                    report.diagnostic = Some(
+                        "lane deadline exhausted before behavioral finding replay; artifact preserved"
+                            .to_string(),
+                    );
+                    continue;
+                };
                 let replay_output = execute_proof_command(
                     lane_root(lane),
                     replay,
                     &[("RMS_HUNT_RUN_ID", run_id), ("RMS_HUNT_SEED", &seed_string)],
-                    report.budget_seconds.min(120),
+                    replay_timeout.min(120),
                 )?;
                 if replay_output.timed_out || !replay_succeeded(&replay_output) {
                     report.status = "invalid".to_string();
@@ -1455,10 +1633,23 @@ fn execute_lane(
                         if result == "violated-counterexample"
                             || (report.kind == "trace-evaluation" && result == "violated")
                         {
+                            let Some(replay_timeout) = remaining_timeout_seconds(lane_deadline)
+                            else {
+                                report.status = "inconclusive".to_string();
+                                report.diagnostic = Some(
+                                    "lane deadline exhausted before property replay; analysis preserved"
+                                        .to_string(),
+                                );
+                                report
+                                    .metrics
+                                    .insert("executed".to_string(), JsonValue::Bool(true));
+                                enrich_lane_findings(&report, lane_root(lane), &mut findings);
+                                return Ok((report, findings));
+                            };
                             let replay = replay_property_analysis(
                                 lane_root(lane),
                                 Path::new(path),
-                                report.budget_seconds.min(120),
+                                replay_timeout.min(120),
                             )?;
                             if replay.status.success() && !replay.timed_out {
                                 report.status = "finding".to_string();
@@ -2282,6 +2473,15 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn remaining_timeout_seconds(deadline: Instant) -> Option<u64> {
+    let remaining = deadline.checked_duration_since(Instant::now())?;
+    if remaining.is_zero() {
+        return None;
+    }
+    let millis = remaining.as_millis().max(1);
+    Some(((millis + 999) / 1_000).min(u64::MAX as u128) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2413,6 +2613,7 @@ architecture:
             )],
             findings: Vec::new(),
             proof_scope: empty_scope(),
+            elapsed_ms: 0,
             started_at_unix_ms: 0,
             finished_at_unix_ms: None,
         };
@@ -2546,6 +2747,7 @@ architecture:
             lanes: vec![lane, second_lane],
             findings: vec![first, second],
             proof_scope: empty_scope(),
+            elapsed_ms: 0,
             started_at_unix_ms: 0,
             finished_at_unix_ms: Some(1),
         };
@@ -2677,6 +2879,7 @@ finished_at_unix_ms: null
             lanes: Vec::new(),
             findings: Vec::new(),
             proof_scope: empty_scope(),
+            elapsed_ms: 0,
             started_at_unix_ms: 0,
             finished_at_unix_ms: None,
         };
@@ -2706,5 +2909,204 @@ finished_at_unix_ms: null
             .to_string()
             .contains("tool identity drift"));
         fs::remove_dir_all(hunts).unwrap();
+    }
+
+    #[test]
+    fn interrupted_resume_preserves_partial_artifacts_and_explicitly_reruns_lane() {
+        let run_root = std::env::temp_dir().join(format!(
+            "rms-hunt-interrupted-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let lane = lane_report(
+            "module:guided-1".to_string(),
+            "module",
+            Some("property".to_string()),
+            "probe-exploration",
+            "guided-semantic-novelty-v1",
+            2,
+            "internal".to_string(),
+            None,
+        );
+        let mut running = lane;
+        running.status = "running".to_string();
+        let segment = sanitize_segment(&running.id);
+        fs::create_dir_all(run_root.join("lanes")).unwrap();
+        fs::create_dir_all(run_root.join("counterexamples").join(&segment)).unwrap();
+        fs::write(
+            run_root.join("lanes").join(format!("{segment}.yaml")),
+            "spec: rms/hunt-lane-result/v0.1\nstatus: finding\n",
+        )
+        .unwrap();
+        fs::write(
+            run_root
+                .join("counterexamples")
+                .join(&segment)
+                .join("partial.yaml"),
+            "partial: true\n",
+        )
+        .unwrap();
+        let mut report = HuntReport {
+            spec: REPORT_SPEC.to_string(),
+            run_id: "interrupted".to_string(),
+            result: "inconclusive".to_string(),
+            source: HuntSource {
+                revision: "revision".to_string(),
+                declaration_digest: "declarations".to_string(),
+                root: ".".to_string(),
+            },
+            configuration: HuntConfiguration {
+                budget_seconds: 2,
+                seed: 7,
+                jobs: 1,
+                module: None,
+                assembly: None,
+                output: None,
+                tools: BTreeMap::new(),
+            },
+            lanes: vec![running],
+            findings: vec![HuntFinding::raw(
+                "module:guided-1".to_string(),
+                "behavioral-counterexample".to_string(),
+                "partial".to_string(),
+                None,
+                None,
+            )],
+            proof_scope: empty_scope(),
+            elapsed_ms: 1_250,
+            started_at_unix_ms: 0,
+            finished_at_unix_ms: None,
+        };
+
+        normalize_interrupted_resume(&mut report, &run_root).unwrap();
+
+        assert_eq!(resume_elapsed_ms(&report), 1_250);
+        assert_eq!(report.lanes[0].status, "planned");
+        assert!(report.lanes[0]
+            .diagnostic
+            .as_deref()
+            .is_some_and(|value| value.contains("explicit rerun")));
+        assert!(report.findings.is_empty());
+        assert!(!run_root
+            .join("lanes")
+            .join(format!("{segment}.yaml"))
+            .exists());
+        assert!(!run_root.join("counterexamples").join(&segment).exists());
+        let preserved = WalkDir::new(run_root.join("interrupted"))
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(preserved.contains(&format!("{segment}.yaml")));
+        assert!(preserved.contains(&"partial.yaml".to_string()));
+        fs::remove_dir_all(run_root).unwrap();
+    }
+
+    #[test]
+    fn guided_hunt_deadline_bounds_slow_probe_and_kills_its_process_group() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let source = repository.join("examples/probe-topologies/source");
+        let root = std::env::temp_dir().join(format!(
+            "rms-hunt-deadline-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::copy(
+            source.join("machine_probe.fixture"),
+            root.join("machine_probe.fixture"),
+        )
+        .unwrap();
+        let marker = root.join("orphan-marker");
+        let wrapper = format!(
+            r#"if grep -q '"operation": "describe"' "$RMS_PROBE_REQUEST"; then
+  exec python machine_probe.fixture
+fi
+(sleep 3; printf survived > {}) &
+sleep 10
+"#,
+            shell_quote(&marker.display().to_string())
+        );
+        fs::write(root.join("probe-wrapper.sh"), wrapper).unwrap();
+        let manifest = fs::read_to_string(source.join("implementation.fixture"))
+            .unwrap()
+            .replace("python machine_probe.fixture", "sh probe-wrapper.sh");
+        fs::write(root.join("implementation.yaml"), manifest).unwrap();
+        let assembly = root.join("assembly.yaml");
+        fs::write(
+            &assembly,
+            serde_yaml::to_string(&serde_json::json!({
+                "spec": "rms/probe-assembly/v0.2",
+                "instances": [{"id":"source","implementation":"implementation.yaml"}],
+                "stimuli": [{
+                    "id":"start",
+                    "target":"source",
+                    "input":{"kind":"command","name":"Start","data":{}}
+                }],
+                "substitutes": [{
+                    "id":"work-substitute",
+                    "source":"source",
+                    "output":{"kind":"effect","name":"Work"},
+                    "outcomes":[{
+                        "target":"source",
+                        "input":{"kind":"effect-result","name":"Done","data":{}}
+                    }]
+                }],
+                "checks": [{
+                    "id":"ready",
+                    "when":"quiescent",
+                    "assert":{"kind":"state","instance":"source","equals":{"name":"Ready","data":{}}}
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let run_root = root.join("run");
+        prepare_run_storage(&run_root).unwrap();
+        let lane = HuntLane {
+            report: lane_report(
+                "deadline:guided".to_string(),
+                "deadline",
+                Some("bounded".to_string()),
+                "probe-exploration",
+                "guided-semantic-novelty-v1",
+                2,
+                "internal".to_string(),
+                None,
+            ),
+            execution: LaneExecution::GuidedProbe {
+                root: root.clone(),
+                source_root: root.clone(),
+                assembly,
+                max_steps: None,
+                max_schedules: None,
+                max_states: None,
+            },
+        };
+        let started = Instant::now();
+        let (report, findings) = execute_lane(
+            &lane,
+            "deadline-run",
+            17,
+            &run_root,
+            Instant::now() + Duration::from_secs(2),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(report.status, "inconclusive");
+        assert!(findings.is_empty());
+        assert!(elapsed < Duration::from_secs(4), "elapsed: {elapsed:?}");
+        std::thread::sleep(Duration::from_millis(1_500));
+        assert!(
+            !marker.exists(),
+            "timed-out probe left a descendant process alive"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }
