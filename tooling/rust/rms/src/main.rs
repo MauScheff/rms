@@ -21619,9 +21619,10 @@ fn execute_machine_probe_request(
     )?;
     if output.timed_out {
         bail!(
-            "probe runner `{}` exceeded {} second(s) during {label}",
+            "probe runner `{}` exceeded {} second(s) during {label}{}",
             binding.runner,
-            timeout_seconds
+            timeout_seconds,
+            proof_process_output_excerpt(&output)
         );
     }
     if !output.status.success() {
@@ -21629,21 +21630,24 @@ fn execute_machine_probe_request(
             "probe runner `{}` failed during {label} with status {}{}",
             binding.runner,
             exit_status_label(output.status),
-            if output.stderr.trim().is_empty() {
-                String::new()
-            } else {
-                format!(": {}", output.stderr.trim())
-            }
+            proof_process_output_excerpt(&output)
         );
     }
     if !output_path.is_file() {
         bail!(
-            "probe runner `{}` did not write `{}` during {label}",
+            "probe runner `{}` did not write `{}` during {label}{}",
             binding.runner,
-            output_path.display()
+            output_path.display(),
+            proof_process_output_excerpt(&output)
         );
     }
-    load_yaml_value(&output_path)
+    load_yaml_value(&output_path).with_context(|| {
+        format!(
+            "probe runner `{}` wrote invalid output during {label}{}",
+            binding.runner,
+            proof_process_output_excerpt(&output)
+        )
+    })
 }
 
 fn ensure_implementation_manifest_valid_for_verify(manifest: &LoadedManifest) -> Result<()> {
@@ -21851,6 +21855,46 @@ fn command_output_excerpt(output: &std::process::Output) -> String {
     } else {
         format!(" ({})", details.join("; "))
     }
+}
+
+fn proof_process_output_excerpt(output: &ProofProcessOutput) -> String {
+    let mut details = Vec::new();
+    if !output.stdout.trim().is_empty() {
+        details.push(format!(
+            "stdout: {}",
+            bounded_stream_excerpt(&output.stdout)
+        ));
+    }
+    if !output.stderr.trim().is_empty() {
+        details.push(format!(
+            "stderr: {}",
+            bounded_stream_excerpt(&output.stderr)
+        ));
+    }
+    if details.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", details.join("; "))
+    }
+}
+
+fn bounded_stream_excerpt(stream: &str) -> String {
+    const LIMIT: usize = 4_000;
+    const HALF: usize = LIMIT / 2;
+    let trimmed = stream.trim();
+    if trimmed.chars().count() <= LIMIT {
+        return trimmed.to_string();
+    }
+    let head = trimmed.chars().take(HALF).collect::<String>();
+    let tail = trimmed
+        .chars()
+        .rev()
+        .take(HALF)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!("{head}\n... output truncated ...\n{tail}")
 }
 
 fn print_gate_report(report: &GateReport) {
@@ -47306,7 +47350,7 @@ fn write_machine_apply_placeholders(
 ) -> Result<()> {
     let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
     if let Some(roles) = &change.roles {
-        for role in &roles.add {
+        for role in roles.replace.iter().chain(&roles.add) {
             let relative = role
                 .path
                 .clone()
@@ -47340,12 +47384,12 @@ fn render_machine_role_placeholder(
     let effect = role
         .effect
         .as_deref()
-        .map(|effect| format!("\nEffect: `{effect}`"))
+        .map(|effect| format!(" | Effect: `{effect}`"))
         .unwrap_or_default();
     let binding_hint = role
         .binding_hint
         .as_deref()
-        .map(|hint| format!("\nBinding hint: `{hint}`"))
+        .map(|hint| format!(" | Binding hint: `{hint}`"))
         .unwrap_or_default();
     if relative.ends_with(".mjs") {
         return format!(
@@ -47354,8 +47398,15 @@ fn render_machine_role_placeholder(
             mode = change.machine.mode,
         );
     }
+    let comment = match Path::new(relative)
+        .extension()
+        .and_then(|value| value.to_str())
+    {
+        Some("swift" | "rs" | "js" | "ts" | "tsx" | "jsx" | "c" | "h" | "cc" | "cpp") => "//",
+        _ => "#",
+    };
     format!(
-        "# RMS declared role: {kind}\n# Module: {module}{effect}{binding_hint}\n# Machine mode: {mode}\n# Fill this role body without changing semantics outside RMS spec apply or focused machine structure outside RMS machine apply.\n",
+        "{comment} RMS declared role: {kind}\n{comment} Module: {module}{effect}{binding_hint}\n{comment} Machine mode: {mode}\n{comment} Fill this role body without changing semantics outside RMS spec apply or focused machine structure outside RMS machine apply.\n",
         kind = role.kind,
         mode = change.machine.mode,
     )
@@ -49056,7 +49107,7 @@ fn run_spec_apply(
         validate_against_embedded_schema(implementation, &mut diagnostics);
     }
 
-    let writes = planned_spec_apply_writes(&context, &change, machine_change.as_ref());
+    let planned_writes = planned_spec_apply_writes(&context, &change, machine_change.as_ref());
     let final_machine = context
         .implementation
         .as_ref()
@@ -49215,10 +49266,20 @@ fn run_spec_apply(
     let has_errors = diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == Severity::Error);
+    let write_snapshot = if !has_errors && !dry_run {
+        Some(snapshot_write_paths(&planned_writes)?)
+    } else {
+        None
+    };
 
     if !has_errors && !dry_run {
         apply_semantic_change(&mut context, &candidate, &change, machine_change.as_ref())?;
     }
+    let writes = match write_snapshot {
+        Some(snapshot) => observed_write_paths(&planned_writes, &snapshot)?,
+        None if dry_run => planned_writes,
+        None => Vec::new(),
+    };
 
     let report = SpecApplyReport {
         result: if has_errors { "fail" } else { "pass" }.to_string(),
@@ -54284,6 +54345,49 @@ fn planned_spec_apply_writes(
     writes.sort();
     writes.dedup();
     writes
+}
+
+fn snapshot_write_paths(writes: &[String]) -> Result<BTreeMap<String, Option<Vec<u8>>>> {
+    writes
+        .iter()
+        .map(|write| {
+            let path = Path::new(write);
+            let contents = if path.is_file() {
+                Some(
+                    fs::read(path)
+                        .with_context(|| format!("failed to snapshot `{}`", path.display()))?,
+                )
+            } else {
+                None
+            };
+            Ok((write.clone(), contents))
+        })
+        .collect()
+}
+
+fn observed_write_paths(
+    writes: &[String],
+    before: &BTreeMap<String, Option<Vec<u8>>>,
+) -> Result<Vec<String>> {
+    writes
+        .iter()
+        .filter_map(|write| {
+            let path = Path::new(write);
+            let after = if path.is_file() {
+                match fs::read(path) {
+                    Ok(contents) => Some(contents),
+                    Err(error) => {
+                        return Some(Err(error).with_context(|| {
+                            format!("failed to inspect applied write `{}`", path.display())
+                        }))
+                    }
+                }
+            } else {
+                None
+            };
+            (before.get(write) != Some(&after)).then(|| Ok(write.clone()))
+        })
+        .collect()
 }
 
 fn apply_semantic_change(
@@ -64326,7 +64430,7 @@ fn render_property_commands_yaml(shape: ScaffoldShape, binding: &str) -> String 
         "rust" => {
             "cargo test --manifest-path Cargo.toml \"${RMS_PROBE_RUNNER##*#}\" -- --nocapture"
         }
-        "swift" => "swift test --package-path . --filter \"${RMS_PROBE_RUNNER##*#}\"",
+        "swift" => "if [ \"$(uname -s)\" = Darwin ] && [ \"$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)\" = 1 ]; then arch -arm64 swift test --package-path . --filter \"${RMS_PROBE_RUNNER##*#}\"; else swift test --package-path . --filter \"${RMS_PROBE_RUNNER##*#}\"; fi",
         "js" => "node tests/machine-probe.mjs",
         "python" => "python tests/machine_probe.py",
         _ => "",
@@ -71449,6 +71553,78 @@ roles:
             vec!["src/transition.rs".to_string()]
         );
         assert!(get_path(&implementation, &["architecture", "roles", "parser"]).is_none());
+    }
+
+    #[test]
+    fn machine_role_set_scaffolds_every_new_declared_role_path() {
+        let root = unique_test_dir("machine-role-set-placeholders");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = LoadedManifest {
+            path: root.join("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"spec: rms/implementation/v0.1
+module: role-replacement
+binding: swift
+toolchain: {target: RoleReplacement}
+"#,
+            )
+            .unwrap(),
+        };
+        let change: MachineChange = serde_yaml::from_str(
+            r#"spec: rms/machine-change/v0.1
+machine:
+  mode: stateful-transition-machine
+roles:
+  set:
+    - {kind: machine_driver, path: Sources/RoleReplacement/MachineDriver.swift}
+    - {kind: effect_executor, effect: Send, path: Sources/RoleReplacement/SendEffectExecutor.swift}
+"#,
+        )
+        .unwrap();
+
+        write_machine_apply_placeholders(&manifest, &change).unwrap();
+
+        for relative in [
+            "Sources/RoleReplacement/MachineDriver.swift",
+            "Sources/RoleReplacement/SendEffectExecutor.swift",
+        ] {
+            let placeholder = fs::read_to_string(root.join(relative)).unwrap();
+            assert!(
+                placeholder.starts_with("// RMS declared role"),
+                "{relative}"
+            );
+            assert!(
+                placeholder.lines().all(|line| line.starts_with("//")),
+                "{relative}"
+            );
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn observed_writes_exclude_planned_paths_left_absent() {
+        let root = unique_test_dir("observed-writes");
+        fs::create_dir_all(&root).unwrap();
+        let changed = root.join("changed.yaml");
+        let created = root.join("created.swift");
+        let absent = root.join("declared-but-absent.swift");
+        fs::write(&changed, "before\n").unwrap();
+        let writes = [&changed, &created, &absent]
+            .into_iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>();
+        let before = snapshot_write_paths(&writes).unwrap();
+
+        fs::write(&changed, "after\n").unwrap();
+        fs::write(&created, "created\n").unwrap();
+        let observed = observed_write_paths(&writes, &before).unwrap();
+
+        assert_eq!(
+            observed,
+            vec![changed.display().to_string(), created.display().to_string()]
+        );
+        assert!(!observed.contains(&absent.display().to_string()));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -87483,6 +87659,76 @@ evidence:
         let outcome = wait_child_with_timeout(&mut child, Duration::from_millis(25)).unwrap();
 
         assert!(matches!(outcome, ProviderProcessOutcome::TimedOut { .. }));
+    }
+
+    #[test]
+    fn probe_failure_reports_both_stdout_and_stderr() {
+        let root = unique_test_dir("probe-failure-streams");
+        fs::create_dir_all(&root).unwrap();
+        let binding = ProbeBinding {
+            implementation: LoadedManifest {
+                path: root.join("implementation.yaml"),
+                value: YamlValue::Null,
+            },
+            protocol: "rms/machine-probe/v0.2".to_string(),
+            command: "printf 'incompatible architecture from test bundle\\n'; printf 'build complete\\n' >&2; exit 1".to_string(),
+            runner: "Tests/MachineProbeTests.swift#testProbeMachine".to_string(),
+            machine: "ProbeFailureMachine".to_string(),
+        };
+        let request = serde_yaml::to_value(json!({
+            "spec": "rms/machine-probe/v0.2",
+            "operation": "describe"
+        }))
+        .unwrap();
+
+        let failure =
+            execute_machine_probe_request(&binding, &request, &root, "describe", 5).unwrap_err();
+        let failure = format!("{failure:#}");
+
+        assert!(
+            failure.contains("stdout: incompatible architecture"),
+            "{failure}"
+        );
+        assert!(failure.contains("stderr: build complete"), "{failure}");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn probe_timeout_reports_captured_output() {
+        let root = unique_test_dir("probe-timeout-streams");
+        fs::create_dir_all(&root).unwrap();
+        let binding = ProbeBinding {
+            implementation: LoadedManifest {
+                path: root.join("implementation.yaml"),
+                value: YamlValue::Null,
+            },
+            protocol: "rms/machine-probe/v0.2".to_string(),
+            command: "printf 'probe started\\n'; sleep 2".to_string(),
+            runner: "Tests/MachineProbeTests.swift#testProbeMachine".to_string(),
+            machine: "ProbeTimeoutMachine".to_string(),
+        };
+        let request = serde_yaml::to_value(json!({
+            "spec": "rms/machine-probe/v0.2",
+            "operation": "describe"
+        }))
+        .unwrap();
+
+        let failure =
+            execute_machine_probe_request(&binding, &request, &root, "describe", 1).unwrap_err();
+        let failure = format!("{failure:#}");
+
+        assert!(failure.contains("exceeded 1 second"), "{failure}");
+        assert!(failure.contains("stdout: probe started"), "{failure}");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn generated_swift_probe_command_uses_native_arm64_on_apple_silicon() {
+        let commands = render_property_commands_yaml(ScaffoldShape::DomainEngine, "swift");
+
+        assert!(commands.contains("sysctl -n hw.optional.arm64"));
+        assert!(commands.contains("arch -arm64 swift test"));
+        assert!(commands.contains("${RMS_PROBE_RUNNER##*#}"));
     }
 
     #[test]
