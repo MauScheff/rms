@@ -47,7 +47,24 @@ const RMS_LONG_VERSION: &str = concat!(
 const DEFAULT_RUN_ROOT: &str = ".rms/runs";
 const DEFAULT_INTENT_CACHE_ROOT: &str = ".rms/cache/intent";
 const INTENT_SCHEMA_SPEC: &str = "rms/intent-model/v0.1";
-const INTENT_EXTRACTION_PROMPT_VERSION: &str = "rms-intent-extraction/v2";
+const INTENT_EXTRACTION_PROMPT_VERSION: &str = "rms-intent-extraction/v3";
+const CONSTRAINED_PROVIDER_FEATURES: &[&str] = &[
+    "apps",
+    "browser_use",
+    "code_mode_host",
+    "computer_use",
+    "goals",
+    "hooks",
+    "image_generation",
+    "in_app_browser",
+    "multi_agent",
+    "multi_agent_v2",
+    "plugins",
+    "shell_tool",
+    "skill_search",
+    "unified_exec",
+    "workspace_dependencies",
+];
 const INTENT_NORMALIZATION_VERSION: &str = "rms-intent-normalization/v2";
 const ROUTE_RECEIPT_SPEC: &str = "rms/route-receipt/v0.1";
 const DEFAULT_PROVIDER_TIMEOUT_SECONDS: u64 = 900;
@@ -12455,7 +12472,7 @@ fn extract_provider_intent_with_program(
             fs::write(run_dir.join("prompt-repair.md"), &prompt_for_attempt)?;
         }
         let response_name = format!("attempt-{attempt}-response.md");
-        let metadata = match execute_codex_provider_attempt(
+        let metadata = match execute_codex_provider_attempt_with_interaction(
             provider_program,
             root,
             &manifest,
@@ -12466,6 +12483,7 @@ fn extract_provider_intent_with_program(
             &response_name,
             &format!("attempt-{attempt}-provider"),
             false,
+            ProviderInteraction::ConstrainedTransformation,
         ) {
             Ok(metadata) => metadata,
             Err(failure) => {
@@ -12585,6 +12603,14 @@ fn extract_structured_provider_response(response: &str) -> String {
             .trim_start_matches([' ', '\t', '\r', '\n']);
         if let Some(end) = after.find("```") {
             return after[..end].trim().to_string();
+        }
+    }
+    if trimmed.starts_with("spec:") || trimmed.starts_with("---") {
+        return trimmed.to_string();
+    }
+    if trimmed.starts_with('{') {
+        if let Some(end) = trimmed.rfind('}') {
+            return trimmed[..=end].to_string();
         }
     }
     if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
@@ -12880,7 +12906,7 @@ fn canonical_provider_surface_kind(value: &str) -> Option<String> {
 
 fn render_intent_extraction_prompt(task: &str) -> String {
     format!(
-        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Each fact contains only disposition, basis, source_quote, and rationale. Subjects are stable kebab-case identifiers. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Surface kinds may contain only browser|cli|mobile-ui|desktop-ui|http|batch|executable; never list product features, integrations, APIs, documentation, onboarding, sign-in, or sign-out as surface kinds. Binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
+        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. This is a bounded transformation: use only the task and schema in this prompt, do not inspect files or call tools, and return the object immediately. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Each fact contains only disposition, basis, source_quote, and rationale. Subjects are stable kebab-case identifiers. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Keep facts and responsibilities consistent: domain_decisions is required exactly when at least one responsibility is a decision; a workflow responsibility forbids lifecycle=absent; a storage or integration responsibility forbids effects=absent; and surface-change forbids runnable_surface=absent. A boundary or implementation adapter is not by itself evidence of an external effect or runnable surface. Surface kinds may contain only browser|cli|mobile-ui|desktop-ui|http|batch|executable; never list product features, integrations, APIs, documentation, onboarding, sign-in, or sign-out as surface kinds. Binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
         serde_json::to_string_pretty(&intent_model_template()).unwrap_or_default()
     )
 }
@@ -13053,16 +13079,40 @@ fn validate_intent_model(task: &str, root: &Path, model: &IntentModel) -> Vec<Di
             ResponsibilityKind::Storage | ResponsibilityKind::Integration
         )
     });
-    if (has_decision != (model.facts.domain_decisions.disposition == IntentDisposition::Required))
-        || (has_workflow && model.facts.lifecycle.disposition == IntentDisposition::Absent)
-        || (has_effect_owner && model.facts.effects.disposition == IntentDisposition::Absent)
-        || (model.operation == IntentOperation::SurfaceChange
-            && model.facts.runnable_surface.disposition == IntentDisposition::Absent)
+    let domain_decisions_required =
+        model.facts.domain_decisions.disposition == IntentDisposition::Required;
+    if has_decision != domain_decisions_required {
+        diagnostics.push(error(
+            "intent.contradiction",
+            root,
+            if domain_decisions_required {
+                "domain_decisions is required but no responsibility has kind decision; add the owned decision responsibility or correct the fact disposition"
+            } else {
+                "a responsibility has kind decision but domain_decisions is not required; mark the fact required or correct the responsibility kind"
+            },
+        ));
+    }
+    if has_workflow && model.facts.lifecycle.disposition == IntentDisposition::Absent {
+        diagnostics.push(error(
+            "intent.contradiction",
+            root,
+            "a workflow responsibility contradicts lifecycle=absent; correct the fact disposition or responsibility kind",
+        ));
+    }
+    if has_effect_owner && model.facts.effects.disposition == IntentDisposition::Absent {
+        diagnostics.push(error(
+            "intent.contradiction",
+            root,
+            "a storage or integration responsibility contradicts effects=absent; correct the fact disposition or responsibility kind",
+        ));
+    }
+    if model.operation == IntentOperation::SurfaceChange
+        && model.facts.runnable_surface.disposition == IntentDisposition::Absent
     {
         diagnostics.push(error(
             "intent.contradiction",
             root,
-            "responsibilities or operation contradict the declared fact dispositions",
+            "surface-change contradicts runnable_surface=absent; correct the operation or fact disposition",
         ));
     }
     diagnostics
@@ -13462,10 +13512,69 @@ fn execute_codex_provider(
     Ok(())
 }
 
+fn execute_constrained_codex_provider_attempt(
+    provider_program: &Path,
+    root: &Path,
+    manifest: &LoadedManifest,
+    prompt: &str,
+    run_dir: &Path,
+    options: &PromptRunOptions,
+    response_name: &str,
+    log_prefix: &str,
+) -> Result<ProviderAttemptMetadata> {
+    execute_codex_provider_attempt_with_interaction(
+        provider_program,
+        root,
+        manifest,
+        prompt,
+        run_dir,
+        options,
+        None,
+        response_name,
+        log_prefix,
+        false,
+        ProviderInteraction::ConstrainedTransformation,
+    )
+}
+
 #[derive(Debug)]
 struct ProviderAttemptMetadata {
     elapsed_ms: u128,
     response_path: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProviderInteraction {
+    Agentic,
+    ConstrainedTransformation,
+}
+
+struct ConstrainedProviderWorkspace {
+    path: PathBuf,
+}
+
+impl ConstrainedProviderWorkspace {
+    fn create() -> Result<Self> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let path =
+            std::env::temp_dir().join(format!("rms-provider-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).with_context(|| {
+            format!(
+                "failed to create constrained provider workspace `{}`",
+                path.display()
+            )
+        })?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for ConstrainedProviderWorkspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 fn execute_codex_provider_attempt(
@@ -13480,13 +13589,49 @@ fn execute_codex_provider_attempt(
     log_prefix: &str,
     allow_stdout_fallback: bool,
 ) -> Result<ProviderAttemptMetadata> {
+    execute_codex_provider_attempt_with_interaction(
+        provider_program,
+        root,
+        manifest,
+        prompt,
+        run_dir,
+        options,
+        output_schema,
+        response_name,
+        log_prefix,
+        allow_stdout_fallback,
+        ProviderInteraction::Agentic,
+    )
+}
+
+fn execute_codex_provider_attempt_with_interaction(
+    provider_program: &Path,
+    root: &Path,
+    manifest: &LoadedManifest,
+    prompt: &str,
+    run_dir: &Path,
+    options: &PromptRunOptions,
+    output_schema: Option<&Path>,
+    response_name: &str,
+    log_prefix: &str,
+    allow_stdout_fallback: bool,
+    interaction: ProviderInteraction,
+) -> Result<ProviderAttemptMetadata> {
     let response_path = run_dir.join(response_name);
     let provider_response_path = fs::canonicalize(run_dir)
         .with_context(|| format!("failed to resolve run directory `{}`", run_dir.display()))?
         .join(response_name);
     let stdout_path = run_dir.join(format!("{log_prefix}.stdout.log"));
     let stderr_path = run_dir.join(format!("{log_prefix}.stderr.log"));
-    let execution_root = provider_execution_root(root, manifest, options);
+    let constrained_workspace = (interaction == ProviderInteraction::ConstrainedTransformation)
+        .then(ConstrainedProviderWorkspace::create)
+        .transpose()?;
+    let agentic_execution_root = provider_execution_root(root, manifest, options);
+    let execution_root = constrained_workspace
+        .as_ref()
+        .map(|workspace| workspace.path.as_path())
+        .unwrap_or(agentic_execution_root.as_path())
+        .to_path_buf();
     let timeout = Duration::from_secs(options.provider_timeout_seconds);
     let started = Instant::now();
 
@@ -13505,10 +13650,24 @@ fn execute_codex_provider_attempt(
         .arg("--output-last-message")
         .arg(&provider_response_path);
 
+    if interaction == ProviderInteraction::ConstrainedTransformation {
+        command
+            .arg("--ephemeral")
+            .arg("--ignore-user-config")
+            .arg("--ignore-rules")
+            .arg("--skip-git-repo-check");
+        for feature in CONSTRAINED_PROVIDER_FEATURES {
+            command.arg("--disable").arg(feature);
+        }
+    }
+
     if let Some(model) = &options.model {
         command.arg("--model").arg(model);
     }
     command.arg("-");
+
+    #[cfg(unix)]
+    command.process_group(0);
 
     let mut child = command
         .stdin(Stdio::piped())
@@ -13739,6 +13898,21 @@ fn render_provider_execution_scope(
             out.push_str("- Repository-root writes are permitted. Still preserve RMS module ownership and update canonical artifacts before implementation when public meaning changes.\n");
         }
     }
+    out
+}
+
+fn render_constrained_provider_execution_scope(options: &PromptRunOptions) -> String {
+    let mut out = String::new();
+    out.push_str("\n## Provider Execution Scope\n");
+    let _ = writeln!(out, "- Provider: {}", options.provider.label());
+    let _ = writeln!(out, "- Sandbox: {}", options.sandbox.as_str());
+    let _ = writeln!(
+        out,
+        "- Timeout: {} second(s)",
+        options.provider_timeout_seconds
+    );
+    out.push_str("- Interaction: constrained transformation\n");
+    out.push_str("- The source repository and provider tools are unavailable; the bounded canonical context in this prompt is the complete input.\n");
     out
 }
 
@@ -48119,7 +48293,7 @@ fn run_spec_plan(
         .ok_or_else(|| anyhow!("semantic target has no loadable RMS manifest"))?;
     let rendered = render_spec_plan_prompt(&context, root, task)?;
     let rendered = if options.provider != Provider::None {
-        rendered + &render_provider_execution_scope(authority, root, options)
+        rendered + &render_constrained_provider_execution_scope(options)
     } else {
         rendered
     };
@@ -48155,7 +48329,7 @@ fn run_spec_plan(
         Provider::Codex => {
             let run_dir =
                 run_dir.ok_or_else(|| anyhow!("provider execution requires run record"))?;
-            execute_codex_provider(root, authority, &rendered, &run_dir, options)?;
+            execute_spec_plan_provider(root, &context, authority, &rendered, &run_dir, options)?;
             let response = run_dir.join("response.md");
             if let Some(output) = output {
                 fs::copy(&response, output).with_context(|| {
@@ -48173,6 +48347,170 @@ fn run_spec_plan(
     }
 
     Ok(())
+}
+
+fn execute_spec_plan_provider(
+    root: &Path,
+    context: &SpecTargetContext,
+    authority: &LoadedManifest,
+    prompt: &str,
+    run_dir: &Path,
+    options: &PromptRunOptions,
+) -> Result<()> {
+    execute_spec_plan_provider_with_program(
+        Path::new("codex"),
+        root,
+        context,
+        authority,
+        prompt,
+        run_dir,
+        options,
+    )
+}
+
+fn execute_spec_plan_provider_with_program(
+    provider_program: &Path,
+    root: &Path,
+    context: &SpecTargetContext,
+    authority: &LoadedManifest,
+    prompt: &str,
+    run_dir: &Path,
+    options: &PromptRunOptions,
+) -> Result<()> {
+    let started = Instant::now();
+    let mut prompt_for_attempt = prompt.to_string();
+    let mut last_response = String::new();
+
+    for attempt in 1..=2 {
+        if attempt > 1 {
+            fs::write(run_dir.join("prompt-repair.md"), &prompt_for_attempt)?;
+        }
+        let response_name = format!("attempt-{attempt}-response.md");
+        let log_prefix = format!("attempt-{attempt}-provider");
+        let attempt_result = execute_constrained_codex_provider_attempt(
+            provider_program,
+            root,
+            authority,
+            &prompt_for_attempt,
+            run_dir,
+            options,
+            &response_name,
+            &log_prefix,
+        );
+        for stream in ["stdout", "stderr"] {
+            let attempt_log = run_dir.join(format!("{log_prefix}.{stream}.log"));
+            if attempt_log.is_file() {
+                fs::copy(&attempt_log, run_dir.join(format!("provider.{stream}.log")))?;
+            }
+        }
+        let metadata = attempt_result?;
+        let response = fs::read_to_string(&metadata.response_path)?;
+        last_response = response.clone();
+        let diagnostics = validate_spec_plan_provider_response(context, &response);
+        fs::write(
+            run_dir.join("semantic-plan-diagnostics.json"),
+            serde_json::to_string_pretty(&diagnostics)?,
+        )?;
+        if !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error)
+        {
+            fs::write(run_dir.join("response.md"), &response)?;
+            fs::write(
+                run_dir.join("provider.json"),
+                serde_json::to_string_pretty(&json!({
+                    "provider": options.provider.label(),
+                    "model": options.model,
+                    "interaction": "constrained-transformation",
+                    "attempts": attempt,
+                    "elapsed_ms": started.elapsed().as_millis(),
+                    "result": "valid",
+                    "tokens": null,
+                }))?,
+            )?;
+            return Ok(());
+        }
+        if attempt == 1 {
+            prompt_for_attempt = render_spec_plan_repair_prompt(prompt, &response, &diagnostics);
+        }
+    }
+
+    fs::write(run_dir.join("response.md"), &last_response)?;
+    fs::write(
+        run_dir.join("provider.json"),
+        serde_json::to_string_pretty(&json!({
+            "provider": options.provider.label(),
+            "model": options.model,
+            "interaction": "constrained-transformation",
+            "attempts": 2,
+            "elapsed_ms": started.elapsed().as_millis(),
+            "result": "invalid-after-repair",
+            "tokens": null,
+        }))?,
+    )?;
+    bail!(
+        "provider semantic plan remained invalid after one repair; see `{}`",
+        run_dir.display()
+    )
+}
+
+fn validate_spec_plan_provider_response(
+    context: &SpecTargetContext,
+    response: &str,
+) -> Vec<Diagnostic> {
+    let extracted = extract_structured_provider_response(response);
+    let lower = extracted.to_ascii_lowercase();
+    if !lower.contains("rms/semantic-change/v0.1")
+        && lower.contains("current semantics are sufficient")
+    {
+        return Vec::new();
+    }
+    let change = match serde_yaml::from_str::<SemanticChange>(&extracted) {
+        Ok(change) => change,
+        Err(error) => {
+            return vec![error_diagnostic(
+                "semantic-plan.response-invalid",
+                &context.target,
+                format!("provider response is not an rms/semantic-change/v0.1 object: {error}"),
+            )];
+        }
+    };
+    let change = prepare_semantic_change_for_apply(context, change);
+    let mut diagnostics = validate_semantic_change(context, &change);
+    let machine_change =
+        semantic_machine_change_to_machine_change(&change, context.implementation.as_ref());
+    if let (Some(implementation), Some(machine_change)) =
+        (context.implementation.as_ref(), machine_change.as_ref())
+    {
+        diagnostics.extend(validate_machine_change(implementation, machine_change));
+    }
+    match spec_apply_candidate_context(context, &change, machine_change.as_ref()) {
+        Ok(candidate) => {
+            if let Some(module) = &candidate.module {
+                validate_against_embedded_schema(module, &mut diagnostics);
+            }
+            if let Some(implementation) = &candidate.implementation {
+                validate_against_embedded_schema(implementation, &mut diagnostics);
+            }
+        }
+        Err(error) => diagnostics.push(error_diagnostic(
+            "semantic-plan.candidate-invalid",
+            &context.target,
+            format!("provider response cannot produce a semantic candidate: {error:#}"),
+        )),
+    }
+    diagnostics
+}
+
+fn render_spec_plan_repair_prompt(
+    prompt: &str,
+    invalid_response: &str,
+    diagnostics: &[Diagnostic],
+) -> String {
+    format!(
+        "{prompt}\n\n## Required Repair\nThe previous response was not an apply-ready rms/semantic-change/v0.1 object. Repair it once using only this prompt, the invalid response, and the exact RMS diagnostics below. Preserve the requested meaning, use only the rendered closed shapes, and return only the corrected YAML or JSON object. Do not inspect files or call tools.\n\nInvalid response:\n```yaml\n{invalid_response}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        serde_json::to_string_pretty(diagnostics).unwrap_or_default()
+    )
 }
 
 fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str) -> Result<String> {
@@ -48214,6 +48552,30 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     }
     writeln!(out, "Task: {task}")?;
     writeln!(out)?;
+    writeln!(out, "## Bounded Transformation")?;
+    writeln!(out, "Use only the task, schema, diagnostics, and bounded canonical context in this prompt. Do not inspect files, call tools, load skills or plugins, or seek broader repository context. Return the requested final response immediately after reasoning from this input.")?;
+    writeln!(out)?;
+    writeln!(out, "## Bounded Canonical Context")?;
+    writeln!(out, "These target manifests are the complete canonical planning context. Referenced source, evidence, sibling modules, and prior run artifacts are intentionally outside this provider interaction.")?;
+    if let Some(module) = &context.module {
+        writeln!(out)?;
+        writeln!(out, "### Module Manifest: {}", module.path.display())?;
+        writeln!(out, "```yaml")?;
+        write!(out, "{}", serde_yaml::to_string(&module.value)?)?;
+        writeln!(out, "```")?;
+    }
+    if let Some(implementation) = &context.implementation {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "### Implementation Manifest: {}",
+            implementation.path.display()
+        )?;
+        writeln!(out, "```yaml")?;
+        write!(out, "{}", serde_yaml::to_string(&implementation.value)?)?;
+        writeln!(out, "```")?;
+    }
+    writeln!(out)?;
     writeln!(out, "## Operating Rule")?;
     writeln!(out, "RMS owns semantics and architecture. Agents fill declared role bodies. If meaning changes, return an `rms/semantic-change/v0.1` object; do not encode behavior only in source files.")?;
     writeln!(out, "Laws, contracts, machine transitions, runnable surfaces, effects, and evidence obligations come before implementation code. Provider output is advisory until `rms spec apply` updates canonical artifacts and records the exact applied change under `verification/changes/`.")?;
@@ -48223,7 +48585,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Reusable modules must declare capabilities/contracts, one public facade, and package/reuse evidence before consumers import them; native package files only describe how to import the RMS facade.")?;
     writeln!(out, "Ask clarifying questions only when needed. Otherwise infer the smallest coherent semantic model from the task, name edge cases and must-never-happen conditions, and encode them in the semantic-change object.")?;
     writeln!(out, "For external truth, include reconciliation or recovery evidence when outcomes can be unknown, duplicate, stale, partial, conflicting, delayed, or later corrected.")?;
-    writeln!(out, "Use the current target project, this prompt, and RMS diagnostics as the complete planning context. Do not inspect sibling projects, prior dogfood runs, the RMS source repository, or generated examples outside the target project to infer this schema.")?;
+    writeln!(out, "Use the bounded canonical context in this prompt and RMS diagnostics as the complete planning context. Do not infer undeclared facts from sibling modules, prior runs, source files, or generated examples.")?;
     writeln!(out)?;
     writeln!(out, "## Required Output")?;
     writeln!(out, "Return only YAML or JSON matching this language-neutral schema when meaning changes. If no semantic change is needed, say that current semantics are sufficient and name the declared role files to edit.")?;
@@ -48394,6 +48756,80 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  remove: []")?;
     writeln!(out, "```")?;
     writeln!(out)?;
+    writeln!(out, "The following common list-item shapes are exact; do not add narrative metadata or singular aliases:")?;
+    writeln!(out, "```yaml")?;
+    writeln!(out, "laws:")?;
+    writeln!(out, "  add:")?;
+    writeln!(out, "    - id: stable-law-id")?;
+    writeln!(out, "      statement: Product-specific promise.")?;
+    writeln!(out, "      kind: safety")?;
+    writeln!(out, "      authority: transition")?;
+    writeln!(out, "      enforced_by: semantic-function-id")?;
+    writeln!(out, "properties:")?;
+    writeln!(out, "  add:")?;
+    writeln!(out, "    - id: stable-property-id")?;
+    writeln!(out, "      proves: stable-law-id")?;
+    writeln!(out, "      kind: semantic")?;
+    writeln!(out, "      subject: null")?;
+    writeln!(
+        out,
+        "      input_space: {{strategy: generated, generator: generator-id}}"
+    )?;
+    writeln!(out, "      preconditions: []")?;
+    writeln!(
+        out,
+        "      operation: {{kind: semantic-function, name: semantic-function-id}}"
+    )?;
+    writeln!(out, "      oracle: [Product-specific executable oracle.]")?;
+    writeln!(
+        out,
+        "      evidence: {{kind: property, path: verification/properties/stable_property}}"
+    )?;
+    writeln!(
+        out,
+        "      counterexamples: {{path: verification/counterexamples/stable_property}}"
+    )?;
+    writeln!(out, "      realizations:")?;
+    writeln!(out, "        - profile: smoke")?;
+    writeln!(out, "          strategy: generated-property")?;
+    writeln!(out, "          command: verify")?;
+    writeln!(out, "          generator: path/to/test#generate")?;
+    writeln!(out, "          runner: path/to/test#run")?;
+    writeln!(out, "          exhaustive: false")?;
+    writeln!(out, "      explorations: []")?;
+    writeln!(out, "      observations: []")?;
+    writeln!(out, "      assumptions: []")?;
+    writeln!(out, "      temporal: null")?;
+    writeln!(out, "semantic_functions:")?;
+    writeln!(out, "  add:")?;
+    writeln!(out, "    - id: semantic-function-id")?;
+    writeln!(out, "      symbol: path/to/source#callable")?;
+    writeln!(out, "      kind: transition")?;
+    writeln!(out, "      purity: pure")?;
+    writeln!(
+        out,
+        "      discharges: {{contracts: [], invariants: [stable-law-id], assumptions: []}}"
+    )?;
+    writeln!(
+        out,
+        "      assumptions: {{requires: [], maintains: [], ensures: []}}"
+    )?;
+    writeln!(
+        out,
+        "      evidence: {{properties: [verification/properties/stable_property]}}"
+    )?;
+    writeln!(out, "      authorities: []")?;
+    writeln!(out, "evidence:")?;
+    writeln!(out, "  add:")?;
+    writeln!(out, "    - kind: law")?;
+    writeln!(out, "      proves: stable-law-id")?;
+    writeln!(out, "      path: verification/laws/stable_law")?;
+    writeln!(out, "  remove:")?;
+    writeln!(out, "    - kind: law")?;
+    writeln!(out, "      path: verification/laws/obsolete_law")?;
+    writeln!(out, "      delete_file: true")?;
+    writeln!(out, "```")?;
+    writeln!(out)?;
     writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, `composition_exports.set[]` and `.add[]` use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`; `.remove[]` uses exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations` with `assembly`, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
     writeln!(out)?;
     writeln!(out, "A bounded response measured in nominal transitions uses this exact executable shape inside `properties.add[]` or `properties.set[]`:")?;
@@ -48438,7 +48874,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
     writeln!(out, "Use `semantic_functions.add`, `set`, and `remove` whenever a law's authority owner, public semantic callable, parser, projector, adapter, transformation, or executor binding changes. Do not edit `implementation.yaml.semantic_functions` directly. Function kinds are `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, `interpreter`, `transformation`, or `effect-executor`; purity is `pure`, `effectful`, or `boundary`. Privileged, unsafe, or foreign functions list their declared authority ids.")?;
     writeln!(out, "For every machine variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
-    writeln!(out, "Machine transition items use `from`, `on`, `to`, stable `case`, optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names.")?;
+    writeln!(out, "Machine transition items use `from`, `on`, `to`, stable ASCII identifier `case` values such as `valid_example_accepted` (not kebab-case), optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names.")?;
     writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use scalar `resource`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings map a declared authority to role names, one exact safe-facade `path#symbol`, and evidence. Role removal items use `kind` and optional `path`. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically.")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
@@ -85983,12 +86419,18 @@ verification:
         assert!(semantic.contains("exact scalar `executor_symbol`"));
         assert!(semantic.contains("`kind: effect_executor` requires the exact declared `effect`"));
         assert!(semantic.contains("exact callable symbol that reaches the declared machine driver"));
+        assert!(semantic.contains("## Bounded Transformation"));
+        assert!(semantic.contains("## Bounded Canonical Context"));
+        assert!(semantic.contains("### Module Manifest:"));
+        assert!(semantic.contains("### Implementation Manifest:"));
+        assert!(semantic.contains("name: prompt-example"));
+        assert!(semantic.contains("Do not inspect files, call tools, load skills or plugins"));
         assert!(semantic.matches("set: null").count() >= 10);
         assert!(semantic.contains(
             "Transition removal items use `from`, `on`, optional `to`, and optional `case`"
         ));
         assert!(semantic.contains("Prefer `set` when replacing generated scaffold semantics"));
-        assert!(semantic.contains("Do not inspect sibling projects, prior dogfood runs"));
+        assert!(semantic.contains("Do not infer undeclared facts from sibling modules"));
         assert!(machine.matches("set: null").count() >= 10);
         assert!(machine.contains(
             "Transition removal items use `from`, `on`, optional `to`, and optional `case`"
@@ -86002,6 +86444,94 @@ verification:
             machine.contains("`kind: effect_executor` must include the exact declared `effect`")
         );
         assert!(machine.contains("must not loop around a one-step driver"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn semantic_plan_provider_repairs_and_publishes_only_apply_shaped_output() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = prompt_fixture("semantic-plan-provider-repair");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let authority = context.module.as_ref().unwrap();
+        let prompt = render_spec_plan_prompt(&context, &root, "add stable identity").unwrap();
+        let run_dir = root.join("provider-run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let program = root.join("fake-semantic-plan-codex.sh");
+        let counter = root.join("semantic-plan-provider-count.txt");
+        let valid = serde_json::to_string(&json!({
+            "spec": "rms/semantic-change/v0.1",
+            "module": root.join("module.yaml").display().to_string(),
+            "intent": {"summary": "add stable identity"},
+            "declaration": {
+                "purpose": "Exercise workbench prompt rendering with stable identity"
+            }
+        }))
+        .unwrap();
+        let script = format!(
+            r#"#!/bin/sh
+set -eu
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-last-message) output="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+counter_file='{}'
+count=0
+if [ -f "$counter_file" ]; then count=$(sed -n '1p' "$counter_file"); fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$counter_file"
+if [ "$count" -eq 1 ]; then
+  response='{{"invalid":true}}'
+else
+  response='{}'
+fi
+printf '%s\n' "$response" > "$output"
+"#,
+            counter.display(),
+            valid,
+        );
+        write_test_file(&program, &script);
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let mut options = no_provider_options();
+        options.provider = Provider::Codex;
+        options.provider_timeout_seconds = 5;
+
+        execute_spec_plan_provider_with_program(
+            &program, &root, &context, authority, &prompt, &run_dir, &options,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&counter).unwrap().trim(), "2");
+        for artifact in [
+            "attempt-1-response.md",
+            "attempt-2-response.md",
+            "prompt-repair.md",
+            "provider.stderr.log",
+            "provider.stdout.log",
+            "semantic-plan-diagnostics.json",
+            "provider.json",
+            "response.md",
+        ] {
+            assert!(run_dir.join(artifact).is_file(), "{artifact}");
+        }
+        assert!(fs::read_to_string(run_dir.join("prompt-repair.md"))
+            .unwrap()
+            .contains("semantic-plan.response-invalid"));
+        assert!(fs::read_to_string(run_dir.join("provider.json"))
+            .unwrap()
+            .contains("\"result\": \"valid\""));
+        assert!(validate_spec_plan_provider_response(
+            &context,
+            &fs::read_to_string(run_dir.join("response.md")).unwrap(),
+        )
+        .iter()
+        .all(|diagnostic| diagnostic.severity != Severity::Error));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -90131,6 +90661,76 @@ open_questions: []
     }
 
     #[test]
+    fn structured_provider_response_preserves_yaml_with_inline_mappings() {
+        let response = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+properties:
+  add:
+    - id: stable-operation-property
+      proves: stable-operation
+      kind: semantic
+      input_space: {strategy: generated, generator: test#generate}
+      operation: {kind: semantic-function, name: validate-operation}
+      oracle: [operation identity remains stable]
+      evidence: {kind: property, path: verification/properties/stable_operation}
+      counterexamples: {path: verification/counterexamples/stable_operation}
+      realizations: []
+  set: []
+  remove: []"#;
+
+        let extracted = extract_structured_provider_response(response);
+
+        assert!(extracted.starts_with("spec: rms/semantic-change/v0.1"));
+        assert!(serde_yaml::from_str::<SemanticChange>(&extracted).is_ok());
+    }
+
+    #[test]
+    fn provider_intent_contradiction_identifies_the_exact_inconsistent_fact() {
+        let root = unique_test_dir("provider-intent-contradiction");
+        fs::create_dir_all(&root).unwrap();
+        let response = r#"{
+  "spec":"rms/intent-model/v0.1",
+  "operation":"implementation-change",
+  "change_scope":"existing-module",
+  "subjects":["packet-submission-progress"],
+  "facts":{
+    "domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"separating per-packet submission progress from one-shot first-playback render evidence","rationale":null},
+    "lifecycle":{"disposition":"required","basis":"explicit","source_quote":"one-shot first-playback render evidence","rationale":null},
+    "effects":{"disposition":"unknown","basis":"inferred","source_quote":null,"rationale":"effect ownership is not stated"},
+    "runnable_surface":{"disposition":"unknown","basis":"inferred","source_quote":null,"rationale":"surface ownership is not stated"},
+    "reuse":{"disposition":"required","basis":"explicit","source_quote":"preserve the existing public contract","rationale":null}
+  },
+  "responsibilities":[
+    {"id":"packet-submission-progress","kind":"workflow","summary":"Separate packet progress from playback evidence."},
+    {"id":"first-playback-evidence","kind":"monitor","summary":"Observe first playback once."}
+  ],
+  "surface_kinds":[],
+  "binding_preferences":[],
+  "open_questions":["Clarify effect and surface ownership."]
+}"#;
+
+        let diagnostics = provider_intent_candidate(
+            "separating per-packet submission progress from one-shot first-playback render evidence while preserving the existing public contract",
+            &root,
+            response,
+        )
+        .unwrap_err();
+        let contradiction = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.check == "intent.contradiction")
+            .expect("exact contradiction diagnostic");
+
+        assert!(contradiction
+            .message
+            .contains("domain_decisions is required but no responsibility has kind decision"));
+        let repair = render_intent_repair_prompt("repair task", response, &diagnostics);
+        assert!(repair.contains("domain_decisions is required exactly when"));
+        assert!(repair
+            .contains("add the owned decision responsibility or correct the fact disposition"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn intent_extraction_cache_is_deterministic() {
         assert_eq!(generate_intent_cache_cases().len(), 16);
         let mut options = no_provider_options();
@@ -90391,21 +90991,31 @@ open_questions: []
     }
 
     #[cfg(unix)]
-    fn write_fake_codex(root: &Path, mode: &str) -> (PathBuf, PathBuf) {
+    fn write_fake_codex(root: &Path, mode: &str) -> (PathBuf, PathBuf, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let program = root.join("fake-codex.sh");
         let counter = root.join("provider-count.txt");
+        let invocation = root.join("provider-invocation.txt");
         let valid = r#"{"spec":"rms/intent-model/v0.1","operation":"implementation-change","change_scope":"existing-module","subjects":["cache-task"],"facts":{"domain_decisions":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"lifecycle":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"effects":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"runnable_surface":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"reuse":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"}},"responsibilities":[],"surface_kinds":[],"binding_preferences":[],"open_questions":[]}"#;
         let script = format!(
             r#"#!/bin/sh
 set -eu
 output=""
+execution_root=""
+invocation_file='{}'
+{{
+  printf 'args='
+  printf ' <%s>' "$@"
+  printf '\n'
+}} > "$invocation_file"
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --cd) execution_root="$2"; shift 2 ;;
     --output-last-message) output="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
+printf 'execution_root=%s\n' "$execution_root" >> "$invocation_file"
 counter_file='{}'
 count=0
 if [ -f "$counter_file" ]; then count=$(sed -n '1p' "$counter_file"); fi
@@ -90420,6 +91030,7 @@ case '{}' in
 esac
 printf '%s\n' "$response" > "$output"
 "#,
+            invocation.display(),
             counter.display(),
             mode,
             valid,
@@ -90430,7 +91041,7 @@ printf '%s\n' "$response" > "$output"
         let mut permissions = fs::metadata(&program).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&program, permissions).unwrap();
-        (program, counter)
+        (program, counter, invocation)
     }
 
     #[cfg(unix)]
@@ -90438,7 +91049,7 @@ printf '%s\n' "$response" > "$output"
     fn provider_pipeline_repairs_caches_refreshes_and_deduplicates() {
         let root = unique_test_dir("provider-pipeline");
         fs::create_dir_all(&root).unwrap();
-        let (program, counter) = write_fake_codex(&root, "success");
+        let (program, counter, invocation) = write_fake_codex(&root, "success");
         let mut options = no_provider_options();
         options.provider = Provider::Codex;
         options.run_root = PathBuf::from(".rms/runs");
@@ -90454,6 +91065,28 @@ printf '%s\n' "$response" > "$output"
         )
         .unwrap();
         assert_eq!(fs::read_to_string(&counter).unwrap().trim(), "1");
+        let recorded_invocation = fs::read_to_string(&invocation).unwrap();
+        let execution_root = recorded_invocation
+            .lines()
+            .find_map(|line| line.strip_prefix("execution_root="))
+            .map(PathBuf::from)
+            .expect("provider execution root");
+        assert_ne!(execution_root, root);
+        assert!(
+            !execution_root.exists(),
+            "temporary provider workspace leaked"
+        );
+        for argument in [
+            "<--ephemeral>",
+            "<--ignore-user-config>",
+            "<--ignore-rules>",
+            "<--skip-git-repo-check>",
+            "<shell_tool>",
+            "<unified_exec>",
+            "<plugins>",
+        ] {
+            assert!(recorded_invocation.contains(argument), "{argument}");
+        }
         for artifact in [
             "request.yaml",
             "prompt.md",
@@ -90485,7 +91118,7 @@ printf '%s\n' "$response" > "$output"
 
         let repair_root = unique_test_dir("provider-repair");
         fs::create_dir_all(&repair_root).unwrap();
-        let (repair_program, repair_counter) = write_fake_codex(&repair_root, "repair");
+        let (repair_program, repair_counter, _) = write_fake_codex(&repair_root, "repair");
         let repair = extract_provider_intent_with_program(
             &repair_root,
             "design",
@@ -90500,7 +91133,7 @@ printf '%s\n' "$response" > "$output"
 
         let invalid_root = unique_test_dir("provider-invalid");
         fs::create_dir_all(&invalid_root).unwrap();
-        let (invalid_program, _) = write_fake_codex(&invalid_root, "invalid");
+        let (invalid_program, _, _) = write_fake_codex(&invalid_root, "invalid");
         assert!(extract_provider_intent_with_program(
             &invalid_root,
             "next",
@@ -90519,7 +91152,7 @@ printf '%s\n' "$response" > "$output"
 
         let incompatible_root = unique_test_dir("provider-incompatible");
         fs::create_dir_all(&incompatible_root).unwrap();
-        let (incompatible_program, _) = write_fake_codex(&incompatible_root, "incompatible");
+        let (incompatible_program, _, _) = write_fake_codex(&incompatible_root, "incompatible");
         let error = extract_provider_intent_with_program(
             &incompatible_root,
             "next",
@@ -90571,7 +91204,7 @@ printf '%s\n' "$response" > "$output"
 
         let concurrent_root = unique_test_dir("provider-concurrent");
         fs::create_dir_all(&concurrent_root).unwrap();
-        let (slow_program, slow_counter) = write_fake_codex(&concurrent_root, "slow");
+        let (slow_program, slow_counter, _) = write_fake_codex(&concurrent_root, "slow");
         let first_root = concurrent_root.clone();
         let second_root = concurrent_root.clone();
         let first_program = slow_program.clone();
