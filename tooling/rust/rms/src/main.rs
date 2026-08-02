@@ -13,6 +13,7 @@ use std::io::{Read as IoRead, Write as IoWrite};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use syn::visit::{self, Visit};
@@ -70,6 +71,7 @@ const ROUTE_RECEIPT_SPEC: &str = "rms/route-receipt/v0.1";
 const DEFAULT_PROVIDER_TIMEOUT_SECONDS: u64 = 900;
 const DEFAULT_DOGFOOD_PHASE_TIMEOUT_SECONDS: u64 = 3600;
 const DEFAULT_PROOF_TIMEOUT_SECONDS: u64 = 300;
+static PROMPT_RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const WORKBENCH_CONFIG_PATH: &str = ".rms/config.yaml";
 const CODEX_PLUGIN_PATH: &str = "integrations/codex/rms";
 const COMMIT_AUTHORITY_POLICY: &str = "Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness.";
@@ -13445,10 +13447,22 @@ fn write_prompt_run_record(
     prompt: &str,
     options: &PromptRunOptions,
 ) -> Result<PathBuf> {
-    let run_id = run_id(kind, manifest);
-    let run_dir = root.join(&options.run_root).join(&run_id);
-    fs::create_dir_all(&run_dir)
-        .with_context(|| format!("failed to create run record `{}`", run_dir.display()))?;
+    let run_root = root.join(&options.run_root);
+    fs::create_dir_all(&run_root)
+        .with_context(|| format!("failed to create run root `{}`", run_root.display()))?;
+    let (run_id, run_dir) = loop {
+        let run_id = run_id(kind, manifest);
+        let run_dir = run_root.join(&run_id);
+        match fs::create_dir(&run_dir) {
+            Ok(()) => break (run_id, run_dir),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to reserve run record `{}`", run_dir.display())
+                })
+            }
+        }
+    };
 
     fs::write(run_dir.join("prompt.md"), prompt)
         .with_context(|| format!("failed to write `{}`", run_dir.join("prompt.md").display()))?;
@@ -13743,6 +13757,16 @@ fn execute_codex_provider_attempt_with_interaction(
     if !response_path.exists() {
         bail!(
             "structured provider completed without `{}`; unconstrained output is not accepted",
+            response_path.display()
+        );
+    }
+    if fs::metadata(&response_path)
+        .with_context(|| format!("failed to inspect `{}`", response_path.display()))?
+        .len()
+        == 0
+    {
+        bail!(
+            "structured provider completed with an empty response in `{}`",
             response_path.display()
         );
     }
@@ -20188,12 +20212,15 @@ fn load_optional_yaml(path: &Path) -> Result<Option<YamlValue>> {
 fn run_id(kind: PromptKind, manifest: &LoadedManifest) -> String {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
+        .map(|duration| duration.as_nanos())
         .unwrap_or(0);
+    let sequence = PROMPT_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let module = get_str(&manifest.value, &["module", "name"]).unwrap_or("module");
     format!(
-        "{}-{}-{}",
+        "{}-{}-{}-{}-{}",
         timestamp,
+        std::process::id(),
+        sequence,
         kind.label(),
         sanitize_run_segment(module)
     )
@@ -48403,7 +48430,46 @@ fn execute_spec_plan_provider_with_program(
                 fs::copy(&attempt_log, run_dir.join(format!("provider.{stream}.log")))?;
             }
         }
-        let metadata = attempt_result?;
+        let metadata = match attempt_result {
+            Ok(metadata) => metadata,
+            Err(provider_error) => {
+                let response_path = run_dir.join(&response_name);
+                let result = match fs::metadata(&response_path) {
+                    Ok(metadata) if metadata.len() == 0 => "empty-response",
+                    Ok(_) => "provider-error",
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => "no-response",
+                    Err(_) => "provider-error",
+                };
+                let message = format!("{provider_error:#}");
+                let diagnostics = vec![error(
+                    "semantic-plan.provider-failed",
+                    &authority.path,
+                    format!("provider attempt {attempt} failed with result `{result}`: {message}"),
+                )];
+                fs::write(
+                    run_dir.join("semantic-plan-diagnostics.json"),
+                    serde_json::to_string_pretty(&diagnostics)?,
+                )?;
+                fs::write(
+                    run_dir.join("provider.json"),
+                    serde_json::to_string_pretty(&json!({
+                        "provider": options.provider.label(),
+                        "model": options.model,
+                        "interaction": "constrained-transformation",
+                        "attempts": attempt,
+                        "elapsed_ms": started.elapsed().as_millis(),
+                        "result": result,
+                        "response_path": response_path,
+                        "error": message,
+                        "tokens": null,
+                    }))?,
+                )?;
+                return Err(provider_error.context(format!(
+                    "provider semantic plan failed; diagnostics preserved in `{}`",
+                    run_dir.display()
+                )));
+            }
+        };
         let response = fs::read_to_string(&metadata.response_path)?;
         last_response = response.clone();
         let diagnostics = validate_spec_plan_provider_response(context, &response);
@@ -86534,6 +86600,68 @@ printf '%s\n' "$response" > "$output"
         fs::remove_dir_all(&root).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn semantic_plan_provider_no_response_is_a_diagnostic_hard_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = prompt_fixture("semantic-plan-provider-no-response");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let authority = context.module.as_ref().unwrap();
+        let prompt = render_spec_plan_prompt(&context, &root, "add stable identity").unwrap();
+        let run_dir = root.join("provider-run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let program = root.join("fake-semantic-plan-codex.sh");
+        write_test_file(
+            &program,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' 'provider returned without a structured response' >&2
+exit 0
+"#,
+        );
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let mut options = no_provider_options();
+        options.provider = Provider::Codex;
+        options.provider_timeout_seconds = 5;
+
+        let failure = execute_spec_plan_provider_with_program(
+            &program, &root, &context, authority, &prompt, &run_dir, &options,
+        )
+        .unwrap_err();
+        let failure = format!("{failure:#}");
+
+        assert!(failure.contains("diagnostics preserved"), "{failure}");
+        assert!(failure.contains("completed without"), "{failure}");
+        assert!(!run_dir.join("response.md").exists());
+        assert!(!run_dir.join("attempt-2-response.md").exists());
+        for artifact in [
+            "attempt-1-provider.stderr.log",
+            "attempt-1-provider.stdout.log",
+            "provider.stderr.log",
+            "provider.stdout.log",
+            "semantic-plan-diagnostics.json",
+            "provider.json",
+        ] {
+            assert!(run_dir.join(artifact).is_file(), "{artifact}");
+        }
+        assert!(fs::read_to_string(run_dir.join("provider.stderr.log"))
+            .unwrap()
+            .contains("provider returned without a structured response"));
+        assert!(fs::read_to_string(run_dir.join("provider.json"))
+            .unwrap()
+            .contains("\"result\": \"no-response\""));
+        assert!(
+            fs::read_to_string(run_dir.join("semantic-plan-diagnostics.json"))
+                .unwrap()
+                .contains("semantic-plan.provider-failed")
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn semantic_only_plan_keeps_implementation_sections_null() {
         let root = unique_test_dir("semantic-only-plan");
@@ -87226,6 +87354,70 @@ evidence:
         assert!(request.contains("provider_timeout_seconds: 900"));
         assert!(request.contains("execution_root:"));
         assert!(checks.contains("\"validation\""));
+    }
+
+    #[test]
+    fn concurrent_prompt_run_records_reserve_isolated_directories() {
+        use std::sync::{Arc, Barrier};
+
+        const RUNS: usize = 8;
+        let root = Arc::new(prompt_fixture("concurrent-run-records"));
+        let options = Arc::new(PromptRunOptions {
+            provider: Provider::Codex,
+            record: true,
+            run_root: PathBuf::from("runs"),
+            model: Some("test-model".to_string()),
+            sandbox: CodexSandbox::ReadOnly,
+            write_scope: ProviderWriteScope::Root,
+            provider_timeout_seconds: 5,
+        });
+        let barrier = Arc::new(Barrier::new(RUNS));
+        let handles = (0..RUNS)
+            .map(|index| {
+                let root = Arc::clone(&root);
+                let options = Arc::clone(&options);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    let manifest = load_manifest(&root.join("module.yaml")).unwrap();
+                    let task = format!("parallel semantic plan {index}");
+                    barrier.wait();
+                    let run_dir = write_prompt_run_record(
+                        &manifest,
+                        &root,
+                        PromptKind::Plan,
+                        Some(&task),
+                        None,
+                        false,
+                        &format!("prompt {index}"),
+                        &options,
+                    )
+                    .unwrap();
+                    (run_dir, task, index)
+                })
+            })
+            .collect::<Vec<_>>();
+        let records = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        let directories = records
+            .iter()
+            .map(|(run_dir, _, _)| run_dir.clone())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(directories.len(), RUNS);
+        for (run_dir, task, index) in &records {
+            let request = fs::read_to_string(run_dir.join("request.yaml")).unwrap();
+            assert!(request.contains(&yaml_quote(task)), "{}", run_dir.display());
+            assert_eq!(
+                fs::read_to_string(run_dir.join("prompt.md")).unwrap(),
+                format!("prompt {index}")
+            );
+            let run_id = run_dir.file_name().unwrap().to_string_lossy();
+            assert!(request.contains(&format!("run_id: {}", yaml_quote(&run_id))));
+        }
+
+        fs::remove_dir_all(root.as_ref()).unwrap();
     }
 
     #[test]
