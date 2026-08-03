@@ -363,7 +363,7 @@ Focused proof is selected from the promises affected by the change:
 
 ### Executable property loop
 
-RMS behavioral contracts and temporal guarantees share one reference evaluator. A v0.2 contract compiles its stable-ID core clauses into the existing property engine; an external clause names one exact executable module property. Canonical selections use IDs such as `contract:start-checkout#accepted-case`.
+RMS behavioral contracts and temporal guarantees share one compiled reference evaluator. A v0.2 contract retains caller-obligation semantics. A v0.3 contract separates external assumptions from boundary-validatable requirements and is total under satisfied assumptions: invalid input must receive a typed, empty-frame rejection. An external clause names one exact executable module property. Canonical selections use IDs such as `contract:start-checkout#accepted-case`.
 
 ```text
 rms property check TARGET
@@ -376,7 +376,7 @@ rms check-compat OLD_CONTRACT NEW_CONTRACT
 rms spec migrate-contract INPUT [--out OUTPUT]
 ```
 
-`evaluate` reports satisfaction only for supplied invocation or transition records. Requirements assign caller blame; postconditions, frames, and invariants assign provider blame; malformed or incomplete evidence assigns binding/evidence blame. Declared rejected outcomes are normal behavior. Missing observations are coverage gaps.
+`evaluate` reports satisfaction only for supplied invocation or transition records. For v0.3, false or missing assumptions are inconclusive without blame; invalid acceptance, missing typed rejection, and mutation during invalid rejection assign provider blame. Postconditions, frames, and invariants also assign provider blame. v0.2 requirements retain caller blame. Malformed or incomplete evidence assigns binding/evidence blame.
 
 With an assembly, `analyze` checks satisfiability, validity, vacuity, implication, equivalence, redundancy, and conflict over the finite model. With a direct core contract, it emits deterministic SMT-LIB v2 and calls optional cvc5 for satisfiability, coverage, disjointness, and consistency obligations. SAT models are re-evaluated by RMS. Missing cvc5, timeout, `unknown`, and unsupported theories remain unresolved. System-wide conclusions require exhausted finite exploration or exactly discharged solver obligations; a reached search bound is always inconclusive.
 
@@ -384,7 +384,7 @@ Metric observations and bounds use exact quantities. RMS v1 supports time, infor
 
 Finite machine-, protocol-, resource-, artifact-, or composition-scope proof realizations use `strategy: deterministic-exhaustive` with `exhaustive: true`, or a model checker. The explicit flag prevents a finite sample from being mistaken for an exhausted space.
 
-New operations write `rms/property-analysis/v0.2`; readers continue accepting v0.1 evidence. Stateless calls use `rms/invocation-record/v0.1`; stateful behavior continues to use transition records. `rms/compatibility-analysis/v0.1` records behavioral refinement. Streaming monitors consume `rms/property-observation/v0.1`, run out of process, and remain fail-open: production logs or exports findings, while test and CI evaluation lanes fail on violations.
+New operations write `rms/property-analysis/v0.2`; readers continue accepting v0.1 evidence. Stateless calls use `rms/invocation-record/v0.1`; stateful behavior continues to use transition records. `rms/compatibility-analysis/v0.1` records same-version refinement and directs callers to migrate before cross-version comparison. Streaming monitors remain fail-open. `full` streams may satisfy or violate; `sampled` and `partial` streams prove observed violations only; `delayed` prefixes stay inconclusive until declared complete; `none` is unsupported. Legacy unspecified observability never turns absence of a violation into success.
 
 ### Proof-first bug hunt
 

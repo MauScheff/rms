@@ -89,14 +89,16 @@ architecture:
     - id: rms-behavioral-contract-conformance-corpus
       proves: rms-behavioral-contracts-are-closed-and-executable
       kind: property
-      input_space: all tracked RMS public contracts, clause realizations, record protocols, evaluator expressions, and compatibility obligations
+      input_space: v0.2 and v0.3 contracts, totality and assumption domains, before and after invariant observations, observability levels, migrations, records, and compatibility obligations
       preconditions:
       - the repository contract corpus and reference evaluator are available
-      operation: validate every tracked contract and exercise the shared behavioral evaluator and refinement corpus
+      operation: validate and compile both contract versions; evaluate total outcomes and observability; generate and revalidate refinement, totality, and invariant-preservation obligations; migrate v0.2 drafts
       oracle:
-      - every tracked contract uses rms/contract/v0.2
-      - every clause has a core or exact executable external realization
-      - no generated migration draft remains in release scope
+      - v0.2 remains readable with unchanged caller-obligation semantics and v0.3 is total under satisfied assumptions
+      - invalid inputs cannot be accepted and typed invalid rejections have empty frames
+      - assumption gaps are inconclusive without blame and monitoring claims follow declared observability
+      - invariant preservation uses paired before and after observations without claiming an initial-state base case
+      - v0.2 migration preserves old meaning and marks incomplete outcomes as drafts
       evidence:
         path: verification/properties/behavioral_contracts.md
       counterexamples:
@@ -105,7 +107,7 @@ architecture:
       - profile: smoke
         strategy: deterministic-corpus
         command: properties
-        runner: src/behavioral_contract.rs#all_tracked_contracts_use_v02_and_are_closed
+        runner: src/behavioral_contract.rs#contract_v03_totality_invariants_migration_and_observability_are_closed
     - id: canonical-semantic-revision-drift-is-rejected
       proves: canonical-semantics-match-authorized-revision
       kind: property

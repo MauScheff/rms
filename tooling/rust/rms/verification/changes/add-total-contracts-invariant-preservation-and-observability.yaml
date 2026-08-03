@@ -1,0 +1,58 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/add-probe-assembly-v0-3-product-state-expressions.yaml
+intent:
+  summary: Add total behavioral contracts v0.3, explicit assumptions, transition invariant-preservation obligations, conservative observability, and lazy v0.2 migration through the shared compiled expression model.
+laws:
+  add: []
+  set:
+  - id: rms-behavioral-contracts-are-closed-and-executable
+    statement: RMS behavioral contracts use one compiled closed evaluator; v0.2 preserves caller obligations while v0.3 separates assumptions, requires total typed outcomes under satisfied assumptions, assigns provider blame to invalid acceptance and non-empty invalid rejection frames, proves only exactly encoded solver obligations including transition invariant preservation, and limits monitoring conclusions by declared observability.
+    kind: safety
+    authority: parser
+    enforced_by: semantic-property-check-command
+  remove: []
+contracts: null
+properties:
+  add: []
+  set:
+  - id: rms-behavioral-contract-conformance-corpus
+    proves: rms-behavioral-contracts-are-closed-and-executable
+    kind: property
+    input_space: v0.2 and v0.3 contracts, totality and assumption domains, before and after invariant observations, observability levels, migrations, records, and compatibility obligations
+    preconditions:
+    - the repository contract corpus, shared evaluator, optional cvc5 adapter, and monitor are available
+    operation: validate and compile both contract versions; evaluate total outcomes and observability; generate and revalidate refinement, totality, and invariant-preservation obligations; migrate v0.2 drafts
+    oracle:
+    - v0.2 remains readable with unchanged caller-obligation semantics and v0.3 is total under satisfied assumptions
+    - invalid inputs cannot be accepted and typed invalid rejections have empty frames
+    - assumption gaps are inconclusive without blame and monitoring claims follow declared observability
+    - invariant preservation uses paired before and after observations without claiming an initial-state base case
+    - v0.2 migration preserves old meaning and marks incomplete outcomes as drafts
+    evidence:
+      kind: property
+      path: verification/properties/behavioral_contracts.md
+    counterexamples:
+      path: verification/fuzz/counterexamples
+    realizations:
+    - profile: smoke
+      strategy: deterministic-corpus
+      command: properties
+      runner: src/behavioral_contract.rs#contract_v03_totality_invariants_migration_and_observability_are_closed
+  remove: []
+hunt_exceptions: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null
