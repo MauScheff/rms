@@ -11686,6 +11686,7 @@ fn project_explain_report(
             report.result,
             report.answer.clone(),
             report.reasons.clone(),
+            (!include_details).then_some(3),
             report.warnings.clone(),
             Some(report.next_action.clone()),
             report.done_when.clone(),
@@ -24931,11 +24932,12 @@ fn validate_canonical_machine_model(
                     format!("transition case `{case}` is not a stable identifier"),
                 );
             }
-            if !declared_transition_cases.insert((
-                transition.from.clone(),
-                input.clone(),
-                case.to_string(),
-            )) {
+            let dispatch_identity = transition_dispatch_identity(
+                signature.unwrap_or(expected_signature),
+                transition,
+                case,
+            );
+            if !declared_transition_cases.insert(dispatch_identity) {
                 push_unique_warning(
                     diagnostics,
                     "structure.transition-case-duplicate",
@@ -33980,6 +33982,7 @@ mod surface_projection {
             result: impl Into<String>,
             summary: impl Into<String>,
             reasons: Vec<String>,
+            reason_limit: Option<usize>,
             warnings: Vec<String>,
             next_action: Option<SurfaceAction>,
             done_when: Vec<String>,
@@ -33990,7 +33993,7 @@ mod surface_projection {
                 command,
                 result: result.into(),
                 summary: summary.into(),
-                reasons: stable_unique(reasons, Some(3)),
+                reasons: stable_unique_with_truncation_notice(reasons, reason_limit),
                 warnings: stable_unique(warnings, None),
                 next_action,
                 done_when: stable_unique(done_when, None),
@@ -34143,6 +34146,25 @@ mod surface_projection {
             }
         }
         output
+    }
+
+    fn stable_unique_with_truncation_notice(
+        values: Vec<String>,
+        limit: Option<usize>,
+    ) -> Vec<String> {
+        let all = stable_unique(values, None);
+        let Some(limit) = limit else {
+            return all;
+        };
+        if all.len() <= limit {
+            return all;
+        }
+        let omitted = all.len() - limit;
+        let mut projected = all.into_iter().take(limit).collect::<Vec<_>>();
+        projected.push(format!(
+            "{omitted} additional reason(s) omitted from compact output; use --details to show all."
+        ));
+        projected
     }
 }
 
@@ -35726,6 +35748,7 @@ fn project_check_report(
             report.result.label(),
             report.summary.clone(),
             report.reasons.clone(),
+            (!include_details).then_some(3),
             report.warnings.clone(),
             report.next_action.clone(),
             report.done_when.clone(),
@@ -37766,6 +37789,7 @@ fn project_next_report(
             report.result.label(),
             summary,
             reasons,
+            Some(3),
             report.warnings.clone(),
             next_action,
             done_when,
@@ -43645,7 +43669,8 @@ fn append_machine_transition_trace_coverage_checks(
                     record
                         .source
                         .as_deref()
-                        .is_some_and(|source| semantic_text_mentions_id(source, case))
+                        .and_then(|source| trace_source_summary_field(source, "branch"))
+                        == Some(case)
                 })
         });
         if let Some(record) = covered {
@@ -45497,7 +45522,25 @@ fn validate_machine_transition_references(
     let rejections =
         final_machine_variants(manifest, "rejections", &change.machine.rejections, false);
     let transition_changes = final_machine_transitions(manifest, change, diagnostics);
+    let transition_signature = change
+        .machine
+        .transition_signature
+        .as_deref()
+        .or_else(|| {
+            get_str(
+                &manifest.value,
+                &["architecture", "machine", "transition_signature"],
+            )
+        })
+        .unwrap_or_else(|| {
+            if is_stateful_machine_mode(&change.machine.mode) {
+                "state-and-input"
+            } else {
+                "input-only"
+            }
+        });
     let mut seen_transitions = BTreeSet::new();
+    let mut seen_dispatch_cases = BTreeSet::new();
     for transition in &transition_changes {
         if let Some(case) = transition.case.as_deref() {
             if !is_stable_identifier(case) {
@@ -45521,6 +45564,24 @@ fn validate_machine_transition_references(
                     transition.from, transition.on
                 ),
             ));
+        }
+        if let Some(case) = transition
+            .case
+            .as_deref()
+            .filter(|case| !case.trim().is_empty())
+        {
+            let dispatch_identity =
+                transition_dispatch_identity(transition_signature, transition, case);
+            if !seen_dispatch_cases.insert(dispatch_identity) {
+                diagnostics.push(error(
+                    "machine-change.transition-case-duplicate",
+                    &manifest.path,
+                    format!(
+                        "transition case `{case}` is duplicated for {} under transition_signature `{transition_signature}`; each canonical branch discriminator must be unique",
+                        transition_signature_description(transition_signature, transition)
+                    ),
+                ));
+            }
         }
         let key = format!(
             "{}|{}|{}|{}",
@@ -46878,6 +46939,31 @@ fn transition_input_variant(input: &str) -> String {
         .map(|(head, _)| head)
         .unwrap_or(input)
         .to_string()
+}
+
+fn transition_dispatch_identity(
+    signature: &str,
+    transition: &MachineTransitionChange,
+    case: &str,
+) -> (String, String, String) {
+    let input = transition_input_variant(&transition.on);
+    if signature == "input-only" {
+        (String::new(), input, case.to_string())
+    } else {
+        (transition.from.clone(), input, case.to_string())
+    }
+}
+
+fn transition_signature_description(
+    signature: &str,
+    transition: &MachineTransitionChange,
+) -> String {
+    let input = transition_input_variant(&transition.on);
+    if signature == "input-only" {
+        format!("input `{input}`")
+    } else {
+        format!("state `{}` and input `{input}`", transition.from)
+    }
 }
 
 fn is_machine_mode(mode: &str) -> bool {
@@ -80502,6 +80588,118 @@ module:
     }
 
     #[test]
+    fn canonical_machine_allows_distinct_cases_for_one_state_and_input() {
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"architecture:
+  machine:
+    name: VoiceMediaMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    types:
+      state: VoiceMediaState
+      input: VoiceMediaInput
+      command: VoiceMediaCommand
+      event: VoiceMediaEvent
+      reply: VoiceMediaReply
+      rejection: VoiceMediaRejection
+      transition: VoiceMediaTransition
+      transition_record: VoiceMediaTransitionRecord
+    states: [TerminalDraining, Failed]
+    commands: [Cancellation]
+    observed_events: []
+    events: [FrameDispositionRecorded, Cancelled]
+    effects: []
+    effect_results: []
+    replies: [Accepted]
+    rejections: []
+    effect_protocols: []
+    transitions:
+      - from: TerminalDraining
+        on: Cancellation
+        to: Failed
+        case: CancelTerminalDrain
+        events: [FrameDispositionRecorded, Cancelled]
+        reply: Accepted
+      - from: TerminalDraining
+        on: Cancellation
+        to: Failed
+        case: CancelTerminalDrainWithoutDisposition
+        events: [Cancelled]
+        reply: Accepted
+"#,
+            )
+            .unwrap(),
+        };
+        let mut diagnostics = Vec::new();
+
+        validate_canonical_machine_model(&manifest, &mut diagnostics, "domain-engine");
+
+        assert!(!diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "structure.transition-case-duplicate"));
+    }
+
+    #[test]
+    fn machine_change_rejects_a_duplicate_case_for_the_same_declared_signature() {
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"architecture:
+  machine:
+    name: VoiceMediaMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    states: [TerminalDraining, Failed]
+    commands: [Cancellation]
+    observed_events: []
+    events: [FrameDispositionRecorded, Cancelled]
+    effects: []
+    effect_results: []
+    replies: [Accepted]
+    rejections: []
+    transitions:
+      - from: TerminalDraining
+        on: Cancellation
+        to: Failed
+        case: CancelTerminalDrain
+        events: [FrameDispositionRecorded, Cancelled]
+        reply: Accepted
+"#,
+            )
+            .unwrap(),
+        };
+        let change: MachineChange = serde_yaml::from_str(
+            r#"spec: rms/machine-change/v0.1
+machine:
+  mode: stateful-transition-machine
+  transition_signature: state-and-input
+transitions:
+  add:
+    - from: TerminalDraining
+      on: Cancellation
+      to: TerminalDraining
+      case: CancelTerminalDrain
+      events: [Cancelled]
+      reply: Accepted
+"#,
+        )
+        .unwrap();
+
+        let diagnostics = validate_machine_change(&manifest, &change);
+
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.check == "machine-change.transition-case-duplicate")
+            .expect("machine apply must reject a duplicate canonical dispatch case");
+        assert_eq!(diagnostic.severity, Severity::Error);
+        assert!(diagnostic.message.contains("CancelTerminalDrain"));
+        assert!(diagnostic.message.contains("state `TerminalDraining`"));
+        assert!(diagnostic.message.contains("input `Cancellation`"));
+    }
+
+    #[test]
     fn structure_rejects_transition_case_drift_and_unreachable_states() {
         let root = unique_test_dir("transition-case-source-conformance");
         run_add_module(
@@ -85929,7 +86127,7 @@ semantic_functions: []
         );
         assert_eq!(failed_gate.result, CheckResult::Fail);
         assert_eq!(failed_gate.components[0].id, "gate");
-        let failed_audit = committed_check_report_from_audit(
+        let mut failed_audit = committed_check_report_from_audit(
             &root,
             AuditReport {
                 result: "fail".to_string(),
@@ -85948,6 +86146,19 @@ semantic_functions: []
         );
         assert_eq!(failed_audit.result, CheckResult::Fail);
         assert_eq!(failed_audit.components[0].id, "audit-strict");
+        failed_audit.reasons = (1..=6)
+            .map(|index| format!("missing representative case {index}"))
+            .collect();
+        let compact_gaps = project_check_report(&failed_audit, false);
+        assert_eq!(compact_gaps.envelope.reasons.len(), 4);
+        assert!(compact_gaps.envelope.reasons[3]
+            .contains("3 additional reason(s) omitted from compact output"));
+        let detailed_gaps = project_check_report(&failed_audit, true);
+        assert_eq!(detailed_gaps.envelope.reasons.len(), 6);
+        assert_eq!(
+            detailed_gaps.envelope.reasons[5],
+            "missing representative case 6"
+        );
 
         for report in [&project, &environment, &changes, &committed] {
             let compact = project_check_report(report, false);
@@ -88968,7 +89179,7 @@ records:
     state_after: Failed
     source:
       function: transition
-      branch: Stop
+      branch: StopWithoutDisposition
 "#,
         )
         .unwrap();
@@ -89026,7 +89237,7 @@ architecture:
       - from: Running
         on: Failed
         to: Failed
-        case: Stop
+        case: StopWithoutDisposition
         events: [Stopped]
         reply: Completed
   roles:
@@ -89048,6 +89259,9 @@ architecture:
                 && check.result == "fail"
                 && check.note.contains("Continue")
         }));
+        assert!(checks
+            .iter()
+            .all(|check| { check.id != "trace.transition-source-branch-mismatch" }));
         assert!(checks.iter().any(|check| {
             check.id == "trace.workflow-event-coverage-thin"
                 && check.result == "fail"

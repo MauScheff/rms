@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Treat the stable transition `case` as the exact canonical branch discriminator within `input-only` and `state-and-input` signatures, reject duplicate dispatch cases during machine apply, avoid prefix-matching one replay branch to another, and make compact check output disclose omitted failure counts while `--details` shows every reason.
+
 - Added language-neutral RMS behavioral contracts with `rms/contract/v0.2`, stable executable clauses, exhaustive accepted/rejected cases, explicit frames, query purity, caller/provider/evidence blame, and canonical invocation records for stateless calls.
 - Generalized the property evaluator from temporal expressions to shared step and temporal expressions; added `rms/property-analysis/v0.2`, deterministic SMT-LIB v2 emission, optional cvc5 evidence with RMS model revalidation, behavioral compatibility refinement, and fail-open production monitoring.
 - Added non-overwriting `rms spec migrate-contract`, migrated every tracked public contract without renaming files or changing public versions, and made legacy v0.1 contracts migration-only.
