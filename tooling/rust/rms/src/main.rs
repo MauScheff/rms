@@ -2393,7 +2393,7 @@ struct SemanticChange {
     laws: Option<SemanticLawsChange>,
     #[serde(default)]
     contracts: Option<SemanticContractsChange>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     composition_exports: Option<SemanticCompositionExportsChange>,
     #[serde(default)]
     properties: Option<SemanticPropertiesChange>,
@@ -49001,10 +49001,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         .as_ref()
         .is_some_and(|module| get_str(&module.value, &["module", "kind"]) == Some("composite"))
     {
-        writeln!(out, "composition_exports:")?;
-        writeln!(out, "  set: null")?;
-        writeln!(out, "  add: []")?;
-        writeln!(out, "  remove: []")?;
+        writeln!(out, "composition_exports: null")?;
     }
     writeln!(out, "artifacts:")?;
     writeln!(out, "  add: []")?;
@@ -49210,7 +49207,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "      delete_file: true")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, `composition_exports.set[]` and `.add[]` use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`; `.remove[]` uses exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations` with `assembly`, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations` with `assembly`, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
     writeln!(out)?;
     writeln!(out, "A bounded response measured in nominal transitions uses this exact executable shape inside `properties.add[]` or `properties.set[]`:")?;
     writeln!(out, "```yaml")?;
@@ -49572,6 +49569,13 @@ fn prepare_semantic_change_for_apply(
     context: &SpecTargetContext,
     mut change: SemanticChange,
 ) -> SemanticChange {
+    if change
+        .composition_exports
+        .as_ref()
+        .is_some_and(|exports| !semantic_composition_exports_change_has_operations(exports))
+    {
+        change.composition_exports = None;
+    }
     normalize_semantic_contract_directions(context, &mut change);
     let base = spec_target_base(context);
     let changes_dir = base.join("verification").join("changes");
@@ -55131,7 +55135,11 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
     if let Some(contracts) = &change.contracts {
         apply_semantic_contract_changes_to_module(value, contracts);
     }
-    if let Some(exports) = &change.composition_exports {
+    if let Some(exports) = change
+        .composition_exports
+        .as_ref()
+        .filter(|exports| semantic_composition_exports_change_has_operations(exports))
+    {
         apply_semantic_composition_export_changes_to_module(value, exports);
     }
     if let Some(properties) = &change.properties {
@@ -77030,9 +77038,7 @@ evidence:
         assert!(module.contains("enforced_by: write_if_changed"));
     }
 
-    #[test]
-    fn spec_apply_replaces_composite_exports_atomically() {
-        let root = unique_test_dir("spec-apply-composition-exports");
+    fn write_composite_export_fixture(root: &Path) {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("module.yaml"),
@@ -77055,6 +77061,86 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
 "#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn spec_apply_null_or_omitted_composite_exports_preserve_and_canonicalize_to_omission() {
+        for (label, composition_change) in [
+            ("omitted", ""),
+            ("null", "composition_exports: null\n"),
+            (
+                "inert-object",
+                "composition_exports:\n  set: null\n  add: []\n  remove: []\n",
+            ),
+        ] {
+            let root = unique_test_dir(&format!("spec-apply-composition-preserve-{label}"));
+            write_composite_export_fixture(&root);
+            let change = format!(
+                "spec: rms/semantic-change/v0.1\nintent:\n  summary: Preserve existing composition exports.\ndeclaration:\n  remove_scaffold: true\n{composition_change}"
+            );
+
+            run_spec_apply(&root.join("module.yaml"), None, Some(&change), None, false).unwrap();
+
+            let module = load_manifest(&root.join("module.yaml")).unwrap();
+            let exports = get_path(&module.value, &["composition", "exports"])
+                .and_then(YamlValue::as_sequence)
+                .unwrap();
+            assert_eq!(exports.len(), 1, "{label}");
+            assert_eq!(get_str(&exports[0], &["name"]), Some("legacy-media"));
+            let record = get_str(
+                &module.value,
+                &["x-rms", "semantic_revision", "change_record"],
+            )
+            .map(|record| fs::read_to_string(root.join(record)).unwrap())
+            .expect("semantic change record");
+            assert!(
+                !record.contains("composition_exports:"),
+                "{label} should canonicalize a no-op collection mutation to omission:\n{record}"
+            );
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn spec_apply_explicit_empty_composite_export_set_deletes_every_export() {
+        let root = unique_test_dir("spec-apply-composition-delete-all");
+        write_composite_export_fixture(&root);
+
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+composition_exports:
+  set: []
+  add: []
+  remove: []
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let module = load_manifest(&root.join("module.yaml")).unwrap();
+        let exports = get_path(&module.value, &["composition", "exports"])
+            .and_then(YamlValue::as_sequence)
+            .unwrap();
+        assert!(exports.is_empty());
+        let record = get_str(
+            &module.value,
+            &["x-rms", "semantic_revision", "change_record"],
+        )
+        .map(|record| fs::read_to_string(root.join(record)).unwrap())
+        .expect("semantic change record");
+        fs::remove_dir_all(&root).unwrap();
+        assert!(record.contains("composition_exports:\n  set: []"));
+    }
+
+    #[test]
+    fn spec_apply_replaces_composite_exports_atomically() {
+        let root = unique_test_dir("spec-apply-composition-exports");
+        write_composite_export_fixture(&root);
 
         run_spec_apply(
             &root.join("module.yaml"),
@@ -87130,6 +87216,24 @@ exit 0
         assert!(rendered.contains("surfaces: null"));
         assert!(rendered.contains("binding_dependencies: null"));
         assert!(rendered.contains("rms add-binding"));
+    }
+
+    #[test]
+    fn composite_plan_defaults_exports_to_preservation_and_explains_total_replacement() {
+        let root = unique_test_dir("composite-plan-export-preservation");
+        write_composite_export_fixture(&root);
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+
+        let rendered =
+            render_spec_plan_prompt(&context, &root, "revise only the public contract").unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(rendered.contains("composition_exports: null"));
+        assert!(!rendered.contains("composition_exports:\n  set: null"));
+        assert!(rendered.contains(
+            "leave `composition_exports` null or omit it to preserve every existing export"
+        ));
+        assert!(rendered.contains("explicit `set: []` intentionally deletes every export"));
     }
 
     #[test]
