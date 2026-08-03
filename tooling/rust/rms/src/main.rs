@@ -51714,19 +51714,21 @@ fn prepare_spec_plan_provider_response(
     response: &str,
 ) -> PreparedSpecPlanProviderResponse {
     let extracted = extract_structured_provider_response(response);
-    let lower = extracted.to_ascii_lowercase();
+    let (quoted_response, mut normalizations) = normalize_spec_plan_freeform_yaml(&extracted);
+    let lower = quoted_response.to_ascii_lowercase();
     if !lower.contains("rms/semantic-change/v0.1")
         && lower.contains("current semantics are sufficient")
     {
-        let diagnostics = validate_spec_plan_no_change_response(context, task, &extracted);
+        let diagnostics = validate_spec_plan_no_change_response(context, task, &quoted_response);
         return PreparedSpecPlanProviderResponse {
-            response: extracted,
+            response: quoted_response,
             diagnostics,
-            normalizations: Vec::new(),
+            normalizations,
         };
     }
-    let (normalized_yaml, mut normalizations) =
-        normalize_spec_plan_property_evidence_kinds(&extracted);
+    let (normalized_yaml, evidence_normalizations) =
+        normalize_spec_plan_property_evidence_kinds(&quoted_response);
+    normalizations.extend(evidence_normalizations);
     let mut change = match serde_yaml::from_str::<SemanticChange>(&normalized_yaml) {
         Ok(change) => change,
         Err(error) => {
@@ -51757,6 +51759,54 @@ fn prepare_spec_plan_provider_response(
         diagnostics,
         normalizations,
     }
+}
+
+fn normalize_spec_plan_freeform_yaml(response: &str) -> (String, Vec<String>) {
+    const FREEFORM_KEYS: &[&str] = &[
+        "summary",
+        "purpose",
+        "meaning",
+        "statement",
+        "rationale",
+        "justification",
+        "no_untrusted_boundary_justification",
+        "lifecycle_justification",
+        "aggregate_justification",
+        "description",
+        "note",
+        "expected",
+        "result",
+    ];
+    let mut normalizations = Vec::new();
+    let mut rendered = Vec::with_capacity(response.lines().count());
+    for line in response.lines() {
+        let leading_len = line.len() - line.trim_start_matches(' ').len();
+        let leading = &line[..leading_len];
+        let content = &line[leading_len..];
+        let (item_prefix, mapping) = content
+            .strip_prefix("- ")
+            .map_or(("", content), |item| ("- ", item));
+        let Some(colon) = mapping.find(':') else {
+            rendered.push(line.to_string());
+            continue;
+        };
+        let key = mapping[..colon].trim();
+        let value = mapping[colon + 1..].trim_start();
+        if !FREEFORM_KEYS.contains(&key)
+            || value.is_empty()
+            || matches!(value, "null" | "~" | "true" | "false")
+            || value.starts_with(['\'', '"', '|', '>', '[', '{'])
+        {
+            rendered.push(line.to_string());
+            continue;
+        }
+        rendered.push(format!(
+            "{leading}{item_prefix}{key}: {}",
+            yaml_quote(value)
+        ));
+        normalizations.push(format!("quoted freeform YAML scalar `{key}` safely"));
+    }
+    (rendered.join("\n"), normalizations)
 }
 
 fn semantic_plan_task_requires_canonical_change(task: &str) -> bool {
@@ -52087,8 +52137,18 @@ fn render_spec_plan_repair_prompt(
             "\n\nContract behavior case repair rule: a `semantics.behavior.cases` item is not a clause and never contains `evaluation`. Every case has exactly `id`, `statement`, `when`, `outcome`, `ensures`, and `permits`. `when` is a closed core predicate. `outcome` has `kind: accepted|rejected` and a closed core `expression`; rejected outcomes also require a stable `category`, while accepted outcomes forbid it. `ensures` is a list of clauses, where each clause has its own `evaluation`. `permits` has exactly `state_changes`, `events`, and `effects` lists. Declare a typed observation for every observation id used by `when` or `outcome.expression`. Do not move an external property evaluation onto a case and do not invent a translation from a clause-shaped case; construct complete accepted and rejected cases from the bounded contract meaning, or remove an incomplete case only when the task explicitly defers it.",
         )
         .unwrap_or_default();
+    let dependency_binding_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            diagnostic.check == "semantic-plan.response-invalid"
+                && diagnostic.message.contains("dependency_behavior_bindings")
+        })
+        .then_some(
+            "\n\nDependency behavior binding repair rule: `dependency_behavior_bindings.add[]` and `.set[]` contain only `{id, capability, contract?, consumer, resolution, provider_module?, provider_contract?, probe_bridge?}`. `capability` is the required capability name, `contract` is the consumer-facing contract path, `consumer` is the exact declared implementation `path#symbol` that resolves the dependency, and `resolution` is exactly `module` or `external`. A module resolution requires both `provider_module` and `provider_contract`; an external resolution omits them. `probe_bridge` is optional and must use the declared `{request, outcomes}` bridge shape. Never emit `dependency_kind`, `dependency_name`, `semantic_function`, `machine_inputs`, `machine_outputs`, or `observation_source` in this section. Do not guess a missing consumer symbol or provider; use the exact bounded implementation context or leave the dependency binding unchanged and report the unresolved fact. Preserve every unaffected binding and keep `set`/`add` ownership semantics exact.",
+        )
+        .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`. Do not leave the item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{temporal_repair}{contract_case_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`. Do not leave the item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{temporal_repair}{contract_case_repair}{dependency_binding_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -52098,7 +52158,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     let mut out = String::new();
     writeln!(out, "# RMS Semantic Change Plan Prompt")?;
     writeln!(out)?;
-    writeln!(out, "Prompt: rms.spec-plan@v4")?;
+    writeln!(out, "Prompt: rms.spec-plan@v5")?;
     writeln!(
         out,
         "Mode: advisory; output is not semantic authority until `rms spec apply` succeeds"
@@ -52545,6 +52605,26 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "When external observations use a different binding enum from emitted events, set `machine.types.observed_event` to that exact type. Omit it only for an intentional shared event enum; older declarations continue to fall back to `machine.types.event`.")?;
     writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use scalar `resource`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings map a declared authority to role names, one exact safe-facade `path#symbol`, and evidence. Role removal items use `kind` and optional `path`. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically.")?;
+    writeln!(out, "`dependency_behavior_bindings.add[]` and `.set[]` use exactly these fields: `id`, `capability`, optional `contract`, `consumer`, `resolution`, optional `provider_module`, optional `provider_contract`, and optional `probe_bridge`. `consumer` is the exact declared implementation `path#symbol`; `resolution` is exactly `module` or `external`. A module resolution requires `provider_module` and `provider_contract`; an external resolution omits them. `probe_bridge` uses the declared `{{request, outcomes}}` shape. Never use legacy fields such as `dependency_kind`, `dependency_name`, `semantic_function`, `machine_inputs`, `machine_outputs`, or `observation_source` in this section. The exact set grammar is:")?;
+    writeln!(out, "```yaml")?;
+    writeln!(out, "dependency_behavior_bindings:")?;
+    writeln!(out, "  set:")?;
+    writeln!(out, "    - id: capability-provider-binding")?;
+    writeln!(out, "      capability: required-capability")?;
+    writeln!(out, "      contract: contracts/required-capability.v1.yaml")?;
+    writeln!(
+        out,
+        "      consumer: Sources/Boundary/PropertySupport.swift#verifyDependency"
+    )?;
+    writeln!(out, "      resolution: module")?;
+    writeln!(out, "      provider_module: provider-module")?;
+    writeln!(
+        out,
+        "      provider_contract: contracts/required-capability.v1.yaml"
+    )?;
+    writeln!(out, "  add: []")?;
+    writeln!(out, "  remove: []")?;
+    writeln!(out, "```")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
     writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and structured v0.2 `semantics`. For command, query, and capability contracts, `contracts.add[].semantics` and `contracts.set[].semantics` must contain an exact `behavior` object; there is no `semantic_profile` field. Event contracts use an exact `event` object and API contracts use an exact `api` object. When setting an existing contract, preserve its wrapper, version, evaluation strategy (`core` versus `external`), and every unaffected clause unless the task explicitly changes them. Requirements, guarantees, failures, invariants, and case `ensures` entries are clauses. Each clause uses exactly one `evaluation.kind: core|external`; an external clause names its exact property. A behavior `cases` item is not a clause and never contains `evaluation`: it requires `id`, `statement`, a closed core `when` predicate, `outcome: {{kind: accepted|rejected, optional category, expression}}`, clause-list `ensures`, and `permits: {{state_changes, events, effects}}`. Rejected outcomes require a stable `category`; accepted outcomes forbid it. Declare typed observations for every observation id used by `when` or `outcome.expression`. `unresolved` is migration-draft-only and fails strict checks. Legacy `accepts`, `ensures`, and `rejects` inputs produce unresolved drafts and are not completion-ready. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`: only capability contracts may be required. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
@@ -93728,7 +93808,7 @@ compatibility: {policy: backward-compatible-within-major}
         assert!(prompt.contains("there is no `semantic_profile` field"));
         assert!(prompt.contains("preserve its wrapper, version, evaluation strategy"));
         assert!(prompt.contains("semantics:\n        behavior:"));
-        assert!(prompt.contains("Prompt: rms.spec-plan@v4"));
+        assert!(prompt.contains("Prompt: rms.spec-plan@v5"));
         assert!(prompt.contains("A behavior `cases` item is not a clause"));
         assert!(prompt.contains("never contains `evaluation`"));
         assert!(prompt.contains("- id: accepted-case"));
@@ -93743,6 +93823,78 @@ compatibility: {policy: backward-compatible-within-major}
         assert!(prompt.contains("do not add a synonymous law"));
         assert!(prompt.contains("observation_source: {kind: transition-record, command: trace}"));
         assert!(prompt.contains("it never contains `name` or `value`"));
+    }
+
+    #[test]
+    fn semantic_plan_quotes_unquoted_freeform_yaml_scalars_before_typed_parse() {
+        let response = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent:
+  summary: Repair this contract: preserve the existing public behavior.
+contracts:
+  set:
+    - name: existing-contract
+      meaning: A contract: with a colon in its meaning.
+      semantics:
+        behavior:
+          requires:
+            - id: requirement
+              statement: Input is valid: and complete.
+"#;
+
+        let (normalized, normalizations) = normalize_spec_plan_freeform_yaml(response);
+        let parsed: SemanticChange = serde_yaml::from_str(&normalized).unwrap();
+
+        assert_eq!(
+            parsed.intent.unwrap().summary.unwrap(),
+            "Repair this contract: preserve the existing public behavior."
+        );
+        assert!(normalized.contains("summary: \"Repair this contract: preserve"));
+        assert!(normalized.contains("statement: \"Input is valid: and complete.\""));
+        assert_eq!(normalizations.len(), 3);
+    }
+
+    #[test]
+    fn semantic_plan_prompt_advertises_exact_dependency_binding_grammar() {
+        let root = rust_typing_fixture(
+            "semantic-plan-dependency-binding-prompt",
+            &["core"],
+            "  dependency_behavior_bindings:\n    - id: existing-provider\n      capability: existing-capability\n      consumer: src/lib.rs#resolve\n      resolution: external\n",
+            "pub fn transition_widget() {}\n",
+        );
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let prompt = render_spec_plan_prompt(&context, &root, "repair dependency binding").unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(prompt.contains("dependency_behavior_bindings.add[]` and `.set[]`"));
+        assert!(
+            prompt.contains("`id`, `capability`, optional `contract`, `consumer`, `resolution`")
+        );
+        assert!(
+            prompt.contains("consumer: Sources/Boundary/PropertySupport.swift#verifyDependency")
+        );
+        assert!(prompt.contains("Never use legacy fields such as `dependency_kind`, `dependency_name`, `semantic_function`"));
+    }
+
+    #[test]
+    fn semantic_plan_repair_prompt_handles_legacy_dependency_binding_schema_error() {
+        let diagnostic = error_diagnostic(
+            "semantic-plan.response-invalid",
+            Path::new("module.yaml"),
+            "provider response is not an rms/semantic-change/v0.1 object: dependency_behavior_bindings.set[0]: unknown field `dependency_kind`, expected one of `id`, `capability`, `contract`, `consumer`, `resolution`, `provider_module`, `provider_contract`, `probe_bridge`",
+        );
+        let repair = render_spec_plan_repair_prompt(
+            "bounded schema context",
+            "spec: rms/semantic-change/v0.1\n",
+            &[diagnostic],
+        );
+
+        assert!(repair.contains("Dependency behavior binding repair rule"));
+        assert!(
+            repair.contains("Never emit `dependency_kind`, `dependency_name`, `semantic_function`")
+        );
+        assert!(repair.contains("Prefer JSON when any freeform string contains"));
+        assert!(repair.contains("Original bounded schema context"));
     }
 
     #[cfg(unix)]
