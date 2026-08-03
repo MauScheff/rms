@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Validate every semantic-plan contract through the full v0.2 schema using its exact rendered artifact; `rms spec apply --dry-run` now rejects any invalid contract in the final referenced module state, and real apply revalidates written contracts before it seals a change. Planner and repair prompts now distinguish executable behavior cases from externally evaluated clauses.
 - Preserve typed capability-tree child names and the recommended `domain-engine|workflow` child shape in the signed design action, generated scaffold, and composite routing; semantic-plan normalization now safely defers orphaned temporal fields, while temporal repair prompts teach the exact closed observation, assumption, expression, scope, and deferral grammar.
 - Make explicit adoption of a missing canonical owner outrank incidental existing-module participant mentions during `rms next`; such work returns ownerless `design-required`, while exact existing-owner maintenance and explicit `--module` routing remain unchanged.
 - Give release and proof verification a content-addressed run identity, active-process lock, bounded phase/runner progress, package-lock versus silent-child diagnostics, successful-proof caching, safe same-input resume, and exact-test reuse from a successful unfiltered Rust suite without weakening runner evidence.

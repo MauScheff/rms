@@ -51584,6 +51584,7 @@ fn validate_prepared_spec_plan_change(
             if let Some(implementation) = &candidate.implementation {
                 validate_against_embedded_schema(implementation, &mut diagnostics);
             }
+            validate_unchanged_candidate_contract_artifacts(&candidate, change, &mut diagnostics);
             validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
         }
         Err(error) => diagnostics.push(error_diagnostic(
@@ -51614,6 +51615,10 @@ fn render_spec_plan_repair_prompt(
     invalid_response: &str,
     diagnostics: &[Diagnostic],
 ) -> String {
+    let contract_case_repair = diagnostics.iter().any(|diagnostic| {
+        diagnostic.check == "schema.validate"
+            && diagnostic.message.contains("/semantics/behavior/cases")
+    });
     let include_schema = diagnostics.iter().any(|diagnostic| {
         diagnostic.check == "semantic-plan.response-invalid"
             || diagnostic.check == "semantic-plan.canonical-change-required"
@@ -51628,7 +51633,7 @@ fn render_spec_plan_repair_prompt(
                 diagnostic.check.as_str(),
                 "property.runner-missing" | "property.generator-missing"
             )
-    });
+    }) || contract_case_repair;
     let bounded_context = if include_schema {
         format!(
             "\n\nOriginal bounded schema context:\n{}",
@@ -51666,8 +51671,13 @@ fn render_spec_plan_repair_prompt(
             "\n\nTemporal property repair has exactly two valid outcomes. Complete it only when the candidate contains enough declared names to build closed semantics: `observations` is non-empty and every item is exactly `{id, source, value}`; every optional assumption is exactly `{id, kind: environment|search-preference, expression}` with a non-empty stable id and one closed expression; and `temporal` is exactly `{scope, expression}`. Scopes are exactly `machine|protocol|resource|artifact|composition|runtime|platform`. Each expression contains exactly one `always|eventually|precedence|exclusion|at_most_once|bounded_response` variant over declared observation ids. A temporal block never contains `kind`, `command`, `runner`, `generator`, `seed`, `state`, or `schedule`; those execution fields belong to `realizations`. An assumption never uses `statement` in place of `expression`. Example: `observations: [{id: delivered, source: {kind: output, output_kind: event, name: Delivered}, value: occurrence}]`, `assumptions: [{id: prefer_known_seed, kind: search-preference, expression: {eventually: {occurred: delivered}}}]`, `temporal: {scope: machine, expression: {at_most_once: {occurred: delivered}}}`. Use only names declared in the bounded candidate context. If that is not possible, defer the incomplete temporal claim exactly as `observations: []`, `assumptions: []`, and `temporal: null`; preserve its ordinary `operation`, `oracle`, and `realizations`. Never emit placeholder ids, empty maps, descriptive prose fields, or a partial temporal object.",
         )
         .unwrap_or_default();
+    let contract_case_repair = contract_case_repair
+        .then_some(
+            "\n\nContract behavior case repair rule: a `semantics.behavior.cases` item is not a clause and never contains `evaluation`. Every case has exactly `id`, `statement`, `when`, `outcome`, `ensures`, and `permits`. `when` is a closed core predicate. `outcome` has `kind: accepted|rejected` and a closed core `expression`; rejected outcomes also require a stable `category`, while accepted outcomes forbid it. `ensures` is a list of clauses, where each clause has its own `evaluation`. `permits` has exactly `state_changes`, `events`, and `effects` lists. Declare a typed observation for every observation id used by `when` or `outcome.expression`. Do not move an external property evaluation onto a case and do not invent a translation from a clause-shaped case; construct complete accepted and rejected cases from the bounded contract meaning, or remove an incomplete case only when the task explicitly defers it.",
+        )
+        .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`. Do not leave the item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{temporal_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`. Do not leave the item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{temporal_repair}{contract_case_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -51677,7 +51687,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     let mut out = String::new();
     writeln!(out, "# RMS Semantic Change Plan Prompt")?;
     writeln!(out)?;
-    writeln!(out, "Prompt: rms.spec-plan@v3")?;
+    writeln!(out, "Prompt: rms.spec-plan@v4")?;
     writeln!(
         out,
         "Mode: advisory; output is not semantic authority until `rms spec apply` succeeds"
@@ -52126,7 +52136,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically.")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
-    writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and structured v0.2 `semantics`. For command, query, and capability contracts, `contracts.add[].semantics` and `contracts.set[].semantics` must contain an exact `behavior` object; there is no `semantic_profile` field. Event contracts use an exact `event` object and API contracts use an exact `api` object. When setting an existing contract, preserve its wrapper, version, evaluation strategy (`core` versus `external`), and every unaffected clause unless the task explicitly changes them. Each clause uses exactly one `evaluation.kind: core|external`; an external clause names its exact property and needs no core expression or semantic profile. `unresolved` is migration-draft-only and fails strict checks. Legacy `accepts`, `ensures`, and `rejects` inputs produce unresolved drafts and are not completion-ready. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`: only capability contracts may be required. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
+    writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and structured v0.2 `semantics`. For command, query, and capability contracts, `contracts.add[].semantics` and `contracts.set[].semantics` must contain an exact `behavior` object; there is no `semantic_profile` field. Event contracts use an exact `event` object and API contracts use an exact `api` object. When setting an existing contract, preserve its wrapper, version, evaluation strategy (`core` versus `external`), and every unaffected clause unless the task explicitly changes them. Requirements, guarantees, failures, invariants, and case `ensures` entries are clauses. Each clause uses exactly one `evaluation.kind: core|external`; an external clause names its exact property. A behavior `cases` item is not a clause and never contains `evaluation`: it requires `id`, `statement`, a closed core `when` predicate, `outcome: {{kind: accepted|rejected, optional category, expression}}`, clause-list `ensures`, and `permits: {{state_changes, events, effects}}`. Rejected outcomes require a stable `category`; accepted outcomes forbid it. Declare typed observations for every observation id used by `when` or `outcome.expression`. `unresolved` is migration-draft-only and fails strict checks. Legacy `accepts`, `ensures`, and `rejects` inputs produce unresolved drafts and are not completion-ready. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`: only capability contracts may be required. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
     writeln!(
         out,
         "The exact external command/query/capability contract shape is:"
@@ -52141,7 +52151,16 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "      meaning: Product-specific meaning.")?;
     writeln!(out, "      semantics:")?;
     writeln!(out, "        behavior:")?;
-    writeln!(out, "          observations: []")?;
+    writeln!(out, "          observations:")?;
+    writeln!(out, "            - id: outcome-kind")?;
+    writeln!(
+        out,
+        "              source: {{kind: output, pointer: /kind}}"
+    )?;
+    writeln!(
+        out,
+        "              value: {{variant: [accepted, rejected-request]}}"
+    )?;
     writeln!(out, "          requires:")?;
     writeln!(out, "            - id: stable-requirement")?;
     writeln!(
@@ -52154,7 +52173,36 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     )?;
     writeln!(out, "          guarantees: []")?;
     writeln!(out, "          failures: []")?;
-    writeln!(out, "          cases: []")?;
+    writeln!(out, "          cases:")?;
+    writeln!(out, "            - id: accepted-case")?;
+    writeln!(
+        out,
+        "              statement: The operation returns an accepted outcome."
+    )?;
+    writeln!(out, "              when: {{equals: {{left: {{observation: outcome-kind}}, right: {{literal: accepted}}}}}}")?;
+    writeln!(out, "              outcome:")?;
+    writeln!(out, "                kind: accepted")?;
+    writeln!(out, "                expression: {{equals: {{left: {{observation: outcome-kind}}, right: {{literal: accepted}}}}}}")?;
+    writeln!(out, "              ensures: []")?;
+    writeln!(
+        out,
+        "              permits: {{state_changes: [], events: [], effects: []}}"
+    )?;
+    writeln!(out, "            - id: rejected-case")?;
+    writeln!(
+        out,
+        "              statement: The operation returns the declared rejection."
+    )?;
+    writeln!(out, "              when: {{equals: {{left: {{observation: outcome-kind}}, right: {{literal: rejected-request}}}}}}")?;
+    writeln!(out, "              outcome:")?;
+    writeln!(out, "                kind: rejected")?;
+    writeln!(out, "                category: rejected-request")?;
+    writeln!(out, "                expression: {{equals: {{left: {{observation: outcome-kind}}, right: {{literal: rejected-request}}}}}}")?;
+    writeln!(out, "              ensures: []")?;
+    writeln!(
+        out,
+        "              permits: {{state_changes: [], events: [], effects: []}}"
+    )?;
     writeln!(out, "          invariants: []")?;
     writeln!(
         out,
@@ -52270,6 +52318,7 @@ fn run_spec_apply(
     if let Some(implementation) = &candidate.implementation {
         validate_against_embedded_schema(implementation, &mut diagnostics);
     }
+    validate_unchanged_candidate_contract_artifacts(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
 
     let planned_writes = planned_spec_apply_writes(&context, &change, machine_change.as_ref());
@@ -54983,32 +55032,7 @@ fn validate_semantic_contracts(
                 }
             }
         }
-        if let Some(semantics) = &contract.semantics {
-            let mut candidate = serde_json::Map::new();
-            candidate.insert(
-                "spec".to_string(),
-                json!(behavioral_contract::CONTRACT_SPEC),
-            );
-            candidate.insert("name".to_string(), json!(contract.name));
-            candidate.insert(
-                "version".to_string(),
-                json!(contract.version.as_deref().unwrap_or("1")),
-            );
-            candidate.insert("kind".to_string(), json!(kind.label()));
-            candidate.insert(
-                "meaning".to_string(),
-                json!(contract.meaning.as_deref().unwrap_or_default()),
-            );
-            candidate.insert(
-                "semantics".to_string(),
-                serde_json::to_value(semantics).unwrap_or(JsonValue::Null),
-            );
-            for issue in behavioral_contract::validate(&JsonValue::Object(candidate), true) {
-                if issue.blocking {
-                    diagnostics.push(error(issue.check, &context.target, issue.message));
-                }
-            }
-        }
+        validate_rendered_semantic_contract(context, contract, diagnostics);
         if !evidence_items.iter().any(|evidence| {
             evidence.proves == contract.name
                 || contract
@@ -55199,6 +55223,118 @@ fn validate_semantic_contracts(
             }
         }
     }
+}
+
+fn semantic_contract_artifact_path(
+    context: &SpecTargetContext,
+    contract: &SemanticContractChange,
+) -> PathBuf {
+    context
+        .module
+        .as_ref()
+        .and_then(|module| module.path.parent())
+        .unwrap_or_else(|| context.target.parent().unwrap_or_else(|| Path::new(".")))
+        .join(semantic_contract_path(contract))
+}
+
+fn validate_rendered_semantic_contract(
+    context: &SpecTargetContext,
+    contract: &SemanticContractChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let path = semantic_contract_artifact_path(context, contract);
+    let rendered = render_semantic_contract(contract);
+    let value = match serde_yaml::from_str(&rendered) {
+        Ok(value) => value,
+        Err(parse_error) => {
+            diagnostics.push(error(
+                "semantic.contract-render-invalid",
+                &path,
+                format!(
+                    "rendered contract `{}` is not valid YAML: {parse_error}",
+                    contract.name
+                ),
+            ));
+            return;
+        }
+    };
+    validate_loaded_manifest(&LoadedManifest { path, value }, diagnostics);
+}
+
+fn changed_semantic_contract_paths(change: &SemanticChange) -> BTreeSet<String> {
+    change
+        .contracts
+        .as_ref()
+        .into_iter()
+        .flat_map(|contracts| contracts.add.iter().chain(&contracts.replace))
+        .map(semantic_contract_path)
+        .collect()
+}
+
+fn validate_unchanged_candidate_contract_artifacts(
+    candidate: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(module) = candidate.module.as_ref() else {
+        return;
+    };
+    let changed_paths = changed_semantic_contract_paths(change);
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    for reference in module_contract_reference_paths(&module.value) {
+        if changed_paths.contains(&reference) {
+            continue;
+        }
+        let path = base.join(&reference);
+        match load_manifest(&path) {
+            Ok(contract) => validate_loaded_manifest(&contract, diagnostics),
+            Err(load_error) => diagnostics.push(error(
+                "semantic.contract-artifact-unreadable",
+                &path,
+                format!(
+                    "the exact post-write module still references an unreadable contract artifact: {load_error:#}"
+                ),
+            )),
+        }
+    }
+}
+
+fn validate_written_module_contract_artifacts(module: &LoadedManifest) -> Result<()> {
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    let mut diagnostics = Vec::new();
+    for reference in module_contract_reference_paths(&module.value) {
+        let path = base.join(reference);
+        match load_manifest(&path) {
+            Ok(contract) => validate_loaded_manifest(&contract, &mut diagnostics),
+            Err(load_error) => diagnostics.push(error(
+                "semantic.contract-artifact-unreadable",
+                &path,
+                format!(
+                    "the written module references an unreadable contract artifact: {load_error:#}"
+                ),
+            )),
+        }
+    }
+    let failures = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .map(|diagnostic| {
+            format!(
+                "{} [{}] {}: {}",
+                severity_label(diagnostic.severity),
+                diagnostic.check,
+                diagnostic.path,
+                diagnostic.message
+            )
+        })
+        .collect::<Vec<_>>();
+    if !failures.is_empty() {
+        bail!(
+            "exact post-write contract validation failed:\n{}",
+            failures.join("\n")
+        );
+    }
+    Ok(())
 }
 
 fn validate_protocol_definition(
@@ -57615,6 +57751,7 @@ fn apply_semantic_change_inner(
         module.value = candidate_module.value.clone();
         write_yaml_manifest(module)?;
         write_semantic_contracts_and_evidence(module, change)?;
+        validate_written_module_contract_artifacts(module)?;
     }
     if let (Some(implementation), Some(candidate_implementation)) = (
         context.implementation.as_mut(),
@@ -81205,6 +81342,95 @@ evidence:
     }
 
     #[test]
+    fn semantic_plan_and_spec_apply_reject_clause_shaped_behavior_cases_without_writes() {
+        let root = unique_test_dir("semantic-contract-case-safety");
+        write_contract_case_safety_fixture(&root);
+        let module_path = root.join("module.yaml");
+        let command_path = root.join("contracts/deliver-epoch.v1.yaml");
+        let capability_path = root.join("contracts/epoch-delivery.v1.yaml");
+        let context = load_spec_target(&module_path).unwrap();
+        let change = saved_clause_shaped_contract_change();
+
+        let diagnostics = validate_spec_plan_provider_response(
+            &context,
+            "complete the existing command and capability behavior cases",
+            change,
+        );
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "schema.validate"
+                && diagnostic.message.contains("/semantics/behavior/cases/0")
+                && diagnostic.message.contains("evaluation")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "schema.validate"
+                && diagnostic.message.contains("/semantics/behavior/cases/0")
+                && diagnostic.message.contains("when")
+        }));
+
+        let before_module = fs::read(&module_path).unwrap();
+        let before_command = fs::read(&command_path).unwrap();
+        let before_capability = fs::read(&capability_path).unwrap();
+        assert!(run_spec_apply(&module_path, None, Some(change), None, true).is_err());
+        assert!(run_spec_apply(&module_path, None, Some(change), None, false).is_err());
+        assert_eq!(fs::read(&module_path).unwrap(), before_module);
+        assert_eq!(fs::read(&command_path).unwrap(), before_command);
+        assert_eq!(fs::read(&capability_path).unwrap(), before_capability);
+        assert!(!root.join("verification/changes").exists());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn spec_apply_rejects_invalid_unchanged_contract_in_exact_final_state() {
+        let root = unique_test_dir("semantic-contract-final-state-safety");
+        write_contract_case_safety_fixture(&root);
+        let module_path = root.join("module.yaml");
+        let command_path = root.join("contracts/deliver-epoch.v1.yaml");
+        let capability_path = root.join("contracts/epoch-delivery.v1.yaml");
+        let invalid_capability = fs::read_to_string(&capability_path)
+            .unwrap()
+            .replace(
+                "    cases: []",
+                "    cases:\n      - id: invalid-existing-case\n        statement: Existing invalid contract artifact.\n        evaluation: {kind: external, property: epoch-delivery-property}",
+            );
+        fs::write(&capability_path, invalid_capability).unwrap();
+        let change = r#"spec: rms/semantic-change/v0.1
+contracts:
+  set:
+    - name: deliver-epoch
+      kind: command
+      version: v1
+      meaning: Deliver the current media epoch.
+      semantics:
+        behavior:
+          observations: []
+          requires: []
+          guarantees: []
+          failures: []
+          cases: []
+          invariants: []
+          case_policy: {coverage: exhaustive, overlap: forbidden}
+evidence:
+  add:
+    - kind: contract
+      proves: deliver-epoch
+      path: verification/contracts/deliver_epoch.md
+"#;
+
+        let before_module = fs::read(&module_path).unwrap();
+        let before_command = fs::read(&command_path).unwrap();
+        let before_capability = fs::read(&capability_path).unwrap();
+        assert!(run_spec_apply(&module_path, None, Some(change), None, true).is_err());
+        assert!(run_spec_apply(&module_path, None, Some(change), None, false).is_err());
+        assert_eq!(fs::read(&module_path).unwrap(), before_module);
+        assert_eq!(fs::read(&command_path).unwrap(), before_command);
+        assert_eq!(fs::read(&capability_path).unwrap(), before_capability);
+        assert!(!root.join("verification/changes").exists());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn spec_apply_contract_set_infers_required_ownership_without_publishing_command() {
         let root = unique_test_dir("spec-apply-required-contract-set");
         fs::create_dir_all(root.join("contracts")).unwrap();
@@ -81240,6 +81466,11 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
         fs::write(
             root.join("contracts/plan-batches.v1.yaml"),
             render_capability_contract("plan-batches", "domain decision command"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("contracts/run-batches.v1.yaml"),
+            render_capability_contract("run-batches", "boundary command"),
         )
         .unwrap();
         run_spec_apply(
@@ -92528,7 +92759,11 @@ compatibility: {policy: backward-compatible-within-major}
         assert!(prompt.contains("there is no `semantic_profile` field"));
         assert!(prompt.contains("preserve its wrapper, version, evaluation strategy"));
         assert!(prompt.contains("semantics:\n        behavior:"));
-        assert!(prompt.contains("Prompt: rms.spec-plan@v3"));
+        assert!(prompt.contains("Prompt: rms.spec-plan@v4"));
+        assert!(prompt.contains("A behavior `cases` item is not a clause"));
+        assert!(prompt.contains("never contains `evaluation`"));
+        assert!(prompt.contains("- id: accepted-case"));
+        assert!(prompt.contains("permits: {state_changes: [], events: [], effects: []}"));
         assert!(prompt.contains("Profiles are exactly `smoke`, `ci`, or `nightly`"));
         assert!(prompt.contains("`core` is a module profile"));
         assert!(prompt.contains("command: composition"));
@@ -93099,6 +93334,30 @@ properties:
         assert!(repair.contains("Original bounded schema context:"));
         assert!(repair.contains(prompt));
         assert!(repair.contains("requires the `semantics.behavior` object"));
+    }
+
+    #[test]
+    fn semantic_plan_contract_case_repair_restores_exact_case_schema() {
+        let diagnostics = vec![error_diagnostic(
+            "schema.validate",
+            Path::new("contracts/deliver-epoch.v1.yaml"),
+            "/semantics/behavior/cases/0: required property `when` is missing and additional property `evaluation` is forbidden",
+        )];
+        let prompt = "bounded schema with exact contract behavior case shape";
+
+        let repair = render_spec_plan_repair_prompt(
+            prompt,
+            saved_clause_shaped_contract_change(),
+            &diagnostics,
+        );
+
+        assert!(repair.contains("Original bounded schema context:"));
+        assert!(repair.contains(prompt));
+        assert!(repair.contains("a `semantics.behavior.cases` item is not a clause"));
+        assert!(repair.contains("never contains `evaluation`"));
+        assert!(repair
+            .contains("exactly `id`, `statement`, `when`, `outcome`, `ensures`, and `permits`"));
+        assert!(repair.contains("rejected outcomes also require a stable `category`"));
     }
 
     #[test]
@@ -98828,6 +99087,98 @@ properties:
             binding: binding.map(ToString::to_string),
             root: root.to_path_buf(),
         }
+    }
+
+    fn write_contract_case_safety_fixture(root: &Path) {
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: epoch-delivery
+  version: 0.1.0
+  kind: library
+  purpose: Deliver a monotonic media epoch.
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides:
+  commands:
+    - name: deliver-epoch
+      contract: contracts/deliver-epoch.v1.yaml
+  queries: []
+  events: []
+  capabilities:
+    - name: epoch-delivery
+      contract: contracts/epoch-delivery.v1.yaml
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: []
+compatibility: {policy: backward-compatible-within-major}
+verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("contracts/deliver-epoch.v1.yaml"),
+            render_capability_contract("deliver-epoch", "Deliver one media epoch."),
+        )
+        .unwrap();
+        fs::write(
+            root.join("contracts/epoch-delivery.v1.yaml"),
+            render_capability_contract("epoch-delivery", "Provide media epoch delivery."),
+        )
+        .unwrap();
+    }
+
+    fn saved_clause_shaped_contract_change() -> &'static str {
+        r#"spec: rms/semantic-change/v0.1
+contracts:
+  set:
+    - name: deliver-epoch
+      kind: command
+      version: v1
+      meaning: Deliver the current media epoch.
+      semantics:
+        behavior:
+          observations: []
+          requires: []
+          guarantees: []
+          failures: []
+          cases:
+            - id: deliver-current-epoch
+              statement: The current media epoch is delivered.
+              evaluation:
+                kind: external
+                property: epoch-delivery-property
+          invariants: []
+          case_policy: {coverage: exhaustive, overlap: forbidden}
+    - name: epoch-delivery
+      kind: capability
+      version: v1
+      meaning: Provide current media epoch delivery.
+      semantics:
+        behavior:
+          observations: []
+          requires: []
+          guarantees: []
+          failures: []
+          cases:
+            - id: provide-current-epoch
+              statement: The current media epoch is provided.
+              evaluation:
+                kind: external
+                property: epoch-delivery-property
+          invariants: []
+          case_policy: {coverage: exhaustive, overlap: forbidden}
+evidence:
+  add:
+    - kind: contract
+      proves: deliver-epoch
+      path: verification/contracts/deliver_epoch.md
+    - kind: contract
+      proves: epoch-delivery
+      path: verification/contracts/epoch_delivery.md
+"#
     }
 
     fn prompt_fixture(label: &str) -> PathBuf {
