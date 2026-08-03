@@ -312,7 +312,7 @@ Implementation code fills roles declared by the canonical model. Another module 
 | Meaning, law, contract, effect, dependency, authority, property, or evidence obligation | Semantic apply, dry-run first |
 | State, classified input/output, or transition structure | Semantic apply or focused machine apply |
 | CLI, UI, HTTP, batch, app, or executable boundary | Surface apply |
-| Module boundary or topology | Typed design, then exactly the recommended `add-module` or `add-capability-tree` action |
+| Module boundary or topology | Typed design, then exactly the recommended `add-module` or `add-capability-tree` action; signed child names and shapes must survive unchanged into the scaffold |
 | Publish or require a capability on an existing module | `spec apply` with contract `kind: capability`, direction, and matching behavior binding |
 | Deferred implementation binding | Add a binding before machine or surface work |
 | Existing declared role body only | Edit the role, then run focused proof |
@@ -442,6 +442,8 @@ Detection does not prove runtime activation in the current task. Runtime activat
 All five primary commands and help are provider-free. Provider-backed planning or explanation is explicit, specialist, and advisory until a canonical apply succeeds.
 
 Before provider-backed `--ai` work, `rms check --environment --root .` verifies structured-output support and the effective Codex model against the installed CLI's bundled model catalog. `ai.codex.model` in project configuration takes precedence over the Codex user model; otherwise the provider default remains provider-owned. If readiness reports an unavailable or upgrade-gated model, update Codex and rerun the environment check, or explicitly pin `ai.codex.model` to a model supported by that installation. RMS never silently substitutes a model. If provider execution still fails, rerun the exact task after repairing the provider; do not infer an owner or synthesize typed intent as an automatic fallback.
+
+Provider-backed semantic plans keep temporal validation strict. A property with observations or assumptions and no temporal expression is normalized to an explicit deferral that preserves its ordinary operation, oracle, and realizations. A repair may instead complete the property only with typed observations, identified `environment|search-preference` assumptions that contain closed expressions, a supported scope, and one closed temporal expression. Execution fields remain under realizations, never inside the temporal block.
 
 RMS does not grant source-edit, provider, Git, release, deployment, or production authority.
 

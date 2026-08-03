@@ -1317,6 +1317,10 @@ enum Commands {
         #[arg(long)]
         domain_child: Option<String>,
 
+        /// Domain child semantic shape. Defaults to domain-engine.
+        #[arg(long, value_enum)]
+        domain_shape: Option<ScaffoldShape>,
+
         /// Boundary child module name. Defaults to <name>-boundary.
         #[arg(long)]
         boundary_child: Option<String>,
@@ -7651,7 +7655,6 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
     let app = work_dir.join("tic-tac-toe");
     let app_arg = app.to_string_lossy().to_string();
     let parent_module = "modules/tic-tac-toe/module.yaml";
-    let rules_module = "modules/tic-tac-toe-domain/module.yaml";
     let verify_parent = app.join(parent_module);
     let verify_parent_arg = verify_parent.to_string_lossy().to_string();
     let intent_model = r#"{"spec":"rms/intent-model/v0.1","operation":"design","change_scope":"new-system","subjects":["tic-tac-toe"],"facts":{"domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"Tic Tac Toe game"},"lifecycle":{"disposition":"required","basis":"inferred","rationale":"Turns and terminal outcomes are ordered."},"effects":{"disposition":"required","basis":"inferred","rationale":"Browser interaction is a boundary effect."},"runnable_surface":{"disposition":"required","basis":"explicit","source_quote":"browser-playable"},"reuse":{"disposition":"absent","basis":"inferred","rationale":"No reuse requirement was stated."}},"responsibilities":[{"id":"tic-tac-toe-decisions","kind":"decision","summary":"Decide legal game transitions."},{"id":"tic-tac-toe-browser","kind":"boundary","summary":"Adapt browser interaction."}],"surface_kinds":["browser"],"binding_preferences":["rust","js"],"open_questions":[]}"#;
@@ -7802,6 +7805,21 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
             .find(|pair| pair[0] == "--boundary-binding")
             .map(|pair| pair[1].clone())
             .ok_or_else(|| anyhow!("clean-room dogfood design omitted boundary binding"))?;
+        let domain_child = scaffold_args
+            .windows(2)
+            .find(|pair| pair[0] == "--domain-child")
+            .map(|pair| pair[1].clone())
+            .ok_or_else(|| anyhow!("clean-room dogfood design omitted domain child"))?;
+        let domain_shape = scaffold_args
+            .windows(2)
+            .find(|pair| pair[0] == "--domain-shape")
+            .map(|pair| pair[1].clone())
+            .ok_or_else(|| anyhow!("clean-room dogfood design omitted domain shape"))?;
+        let boundary_child = scaffold_args
+            .windows(2)
+            .find(|pair| pair[0] == "--boundary-child")
+            .map(|pair| pair[1].clone())
+            .ok_or_else(|| anyhow!("clean-room dogfood design omitted boundary child"))?;
         scaffold_args.extend([
             "--root".to_string(),
             app_arg.clone(),
@@ -7816,6 +7834,9 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
         assert_clean_room_dogfood_artifacts(
             &app,
             "tic-tac-toe",
+            &domain_child,
+            &domain_shape,
+            &boundary_child,
             &domain_binding,
             &boundary_binding,
         )?;
@@ -7846,7 +7867,7 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
         ensure_output_contains(
             "clean-room dogfood route rules",
             &rules_route,
-            "Recommended module: tic-tac-toe-domain",
+            &format!("Recommended module: {domain_child}"),
         )?;
         let boundary_route = run_release_step_capture(
             "clean-room dogfood route boundary",
@@ -7867,15 +7888,16 @@ fn run_release_clean_room_dogfood(root: &Path, binary: &Path) -> Result<()> {
         ensure_output_contains(
             "clean-room dogfood route boundary",
             &boundary_route,
-            "Recommended module: tic-tac-toe-boundary",
+            &format!("Recommended module: {boundary_child}"),
         )?;
+        let rules_module = format!("modules/{domain_child}/module.yaml");
         run_release_step(
             "clean-room dogfood context",
             command_with_path(
                 "rms",
                 &[
                     "context",
-                    rules_module,
+                    rules_module.as_str(),
                     "--root",
                     ".",
                     "--task",
@@ -8424,12 +8446,15 @@ fn ensure_output_contains(label: &str, output: &str, needle: &str) -> Result<()>
 fn assert_clean_room_dogfood_artifacts(
     app: &Path,
     capability_name: &str,
+    domain_child: &str,
+    domain_shape: &str,
+    boundary_child: &str,
     domain_binding: &str,
     boundary_binding: &str,
 ) -> Result<()> {
     let parent = format!("modules/{capability_name}/module.yaml");
-    let domain = format!("modules/{capability_name}-domain");
-    let boundary = format!("modules/{capability_name}-boundary");
+    let domain = format!("modules/{domain_child}");
+    let boundary = format!("modules/{boundary_child}");
     ensure_file_contains(
         &app.join("AGENTS.md"),
         "rms next \"<exact change task>\" --root . --ai",
@@ -8466,8 +8491,8 @@ fn assert_clean_room_dogfood_artifacts(
     )?;
     ensure_file_contains(
         &app.join(&domain).join("module.yaml"),
-        "shape: \"domain-engine\"",
-        "domain engine scaffold",
+        &format!("shape: \"{domain_shape}\""),
+        "typed domain child scaffold",
     )?;
     ensure_file_contains(
         &app.join(&boundary).join("module.yaml"),
@@ -10224,6 +10249,7 @@ fn run_main() -> Result<()> {
             purpose,
             public_command,
             domain_child,
+            domain_shape,
             boundary_child,
             domain_command,
             domain_binding,
@@ -10238,6 +10264,7 @@ fn run_main() -> Result<()> {
                 purpose,
                 public_command,
                 domain_child,
+                domain_shape,
                 boundary_child,
                 domain_command,
                 domain_binding,
@@ -13468,6 +13495,12 @@ fn decide_architecture(task: &str, model: &IntentModel) -> ArchitectureDecision 
             subject.clone(),
             "--purpose".to_string(),
             task.to_string(),
+            "--domain-child".to_string(),
+            format!("{subject}-decisions"),
+            "--domain-shape".to_string(),
+            decision_shape.to_string(),
+            "--boundary-child".to_string(),
+            format!("{subject}-boundary"),
         ],
     };
     if let Some(binding) = &binding {
@@ -40382,6 +40415,20 @@ fn score_route_candidate(task: &str, module: &ModuleIndexEntry, reasons: &mut Ve
                 task,
                 &[
                     "workflow",
+                    "rule",
+                    "rules",
+                    "invariant",
+                    "valid",
+                    "invalid",
+                    "transition",
+                    "state",
+                    "decision",
+                    "law",
+                    "fuzz",
+                    "property",
+                    "adt",
+                    "variant",
+                    "constructor",
                     "deadline",
                     "compensation",
                     "recover",
@@ -40393,7 +40440,7 @@ fn score_route_candidate(task: &str, module: &ModuleIndexEntry, reasons: &mut Ve
             );
             if score > 0 {
                 reasons.push(
-                    "task language points at ordered workflow, deadlines, or recovery".to_string(),
+                    "task language points at workflow-owned decisions, ordered state, deadlines, or recovery".to_string(),
                 );
             }
         }
@@ -51287,6 +51334,7 @@ fn prepare_spec_plan_provider_response(
         context,
         &mut change,
     ));
+    normalizations.extend(normalize_spec_plan_incomplete_temporal_fields(&mut change));
     let change = prepare_semantic_change_for_apply(context, change);
     let response = match serde_yaml::to_string(&change) {
         Ok(response) => response,
@@ -51477,6 +51525,29 @@ fn normalize_spec_plan_property_operations(
     normalizations
 }
 
+fn normalize_spec_plan_incomplete_temporal_fields(change: &mut SemanticChange) -> Vec<String> {
+    let Some(properties) = change.properties.as_mut() else {
+        return Vec::new();
+    };
+    let mut normalizations = Vec::new();
+    for property in properties.add.iter_mut().chain(&mut properties.replace) {
+        if property.temporal.is_some()
+            || property.observations.is_empty() && property.assumptions.is_empty()
+        {
+            continue;
+        }
+        let observation_count = property.observations.len();
+        let assumption_count = property.assumptions.len();
+        property.observations.clear();
+        property.assumptions.clear();
+        normalizations.push(format!(
+            "deferred incomplete temporal semantics for property `{}` by clearing {observation_count} orphaned observation(s) and {assumption_count} orphaned assumption(s); `temporal` remains null and the ordinary operation, oracle, and realizations are preserved",
+            property.id
+        ));
+    }
+    normalizations
+}
+
 fn validate_prepared_spec_plan_change(
     context: &SpecTargetContext,
     task: &str,
@@ -51578,8 +51649,25 @@ fn render_spec_plan_repair_prompt(
         })
         .then_some("\n\nProperty realization repair rule: `realizations` is mandatory and non-empty for every added or changed property. Never delete the list or replace it with `[]` to repair an item. Replace each invalid item with a complete valid realization. Profiles are exactly `smoke|ci|nightly`; `core` is a module profile and is invalid here. Strategies are exactly `deterministic-corpus|deterministic-exhaustive|generated-property|coverage-fuzzer|model-checker|benchmark|static-analyzer|sanitizer|mutation-tester`; `generated` is never a valid strategy. Every realization has a nonblank command and exact `path#symbol` runner. A fuzz target requires `generated-property`, `coverage-fuzzer`, `model-checker`, or a genuinely finite complete `deterministic-exhaustive` realization with `exhaustive: true`; a fixed non-exhaustive `deterministic-corpus` must remain an ordinary property and cannot be relabeled as fuzz proof. `deterministic-exhaustive` additionally has an exact `path#symbol` generator and `exhaustive: true`. For a finite composite export property, use `{profile: smoke, strategy: deterministic-exhaustive, command: composition, generator: scripts/composition_property.sh#generate_property_cases, runner: scripts/composition_property.sh#run_property, exhaustive: true}`.")
         .unwrap_or_default();
+    let temporal_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            matches!(
+                diagnostic.check.as_str(),
+                "semantic.executable-property-incomplete"
+                    | "semantic.executable-property-invalid"
+                    | "semantic.temporal-scope-invalid"
+                    | "semantic.temporal-property-legacy"
+                    | "semantic.property-unit-invalid"
+                    | "evidence.temporal-realization-mismatch"
+            )
+        })
+        .then_some(
+            "\n\nTemporal property repair has exactly two valid outcomes. Complete it only when the candidate contains enough declared names to build closed semantics: `observations` is non-empty and every item is exactly `{id, source, value}`; every optional assumption is exactly `{id, kind: environment|search-preference, expression}` with a non-empty stable id and one closed expression; and `temporal` is exactly `{scope, expression}`. Scopes are exactly `machine|protocol|resource|artifact|composition|runtime|platform`. Each expression contains exactly one `always|eventually|precedence|exclusion|at_most_once|bounded_response` variant over declared observation ids. A temporal block never contains `kind`, `command`, `runner`, `generator`, `seed`, `state`, or `schedule`; those execution fields belong to `realizations`. An assumption never uses `statement` in place of `expression`. Example: `observations: [{id: delivered, source: {kind: output, output_kind: event, name: Delivered}, value: occurrence}]`, `assumptions: [{id: prefer_known_seed, kind: search-preference, expression: {eventually: {occurred: delivered}}}]`, `temporal: {scope: machine, expression: {at_most_once: {occurred: delivered}}}`. Use only names declared in the bounded candidate context. If that is not possible, defer the incomplete temporal claim exactly as `observations: []`, `assumptions: []`, and `temporal: null`; preserve its ordinary `operation`, `oracle`, and `realizations`. Never emit placeholder ids, empty maps, descriptive prose fields, or a partial temporal object.",
+        )
+        .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`. Do not leave the item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`. Do not leave the item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{temporal_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -51589,7 +51677,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     let mut out = String::new();
     writeln!(out, "# RMS Semantic Change Plan Prompt")?;
     writeln!(out)?;
-    writeln!(out, "Prompt: rms.spec-plan@v2")?;
+    writeln!(out, "Prompt: rms.spec-plan@v3")?;
     writeln!(
         out,
         "Mode: advisory; output is not semantic authority until `rms spec apply` succeeds"
@@ -64489,6 +64577,7 @@ struct AddCapabilityTreeRequest {
     purpose: String,
     public_command: Option<String>,
     domain_child: Option<String>,
+    domain_shape: Option<ScaffoldShape>,
     boundary_child: Option<String>,
     domain_command: Option<String>,
     domain_binding: Option<String>,
@@ -64558,6 +64647,15 @@ fn add_capability_tree_scaffold_action(request: &AddCapabilityTreeRequest) -> Ar
     for (flag, value) in [
         ("--public-command", &request.public_command),
         ("--domain-child", &request.domain_child),
+    ] {
+        if let Some(value) = value {
+            args.extend([flag.to_string(), value.clone()]);
+        }
+    }
+    if let Some(shape) = request.domain_shape {
+        args.extend(["--domain-shape".to_string(), shape.as_str().to_string()]);
+    }
+    for (flag, value) in [
         ("--boundary-child", &request.boundary_child),
         ("--domain-command", &request.domain_command),
         ("--domain-binding", &request.domain_binding),
@@ -64762,6 +64860,16 @@ fn scaffold_binding_transactionally(
 fn run_add_capability_tree(request: AddCapabilityTreeRequest) -> Result<()> {
     validate_scaffold_binding(request.domain_binding.as_deref())?;
     validate_scaffold_binding(request.boundary_binding.as_deref())?;
+    let domain_shape = request.domain_shape.unwrap_or(ScaffoldShape::DomainEngine);
+    if !matches!(
+        domain_shape,
+        ScaffoldShape::DomainEngine | ScaffoldShape::Workflow
+    ) {
+        bail!(
+            "capability-tree domain child shape must be `domain-engine` or `workflow`, found `{}`",
+            domain_shape.as_str()
+        );
+    }
 
     let parent_path = request.path;
     let modules_root = parent_path
@@ -64796,6 +64904,7 @@ fn run_add_capability_tree(request: AddCapabilityTreeRequest) -> Result<()> {
         &domain_child,
         &request.name,
         &domain_command,
+        domain_shape,
         request.domain_binding.as_deref(),
     )?;
     scaffold_capability_boundary_child(
@@ -64898,23 +65007,28 @@ fn scaffold_capability_domain_child(
     name: &str,
     semantic_name: &str,
     domain_command: &str,
+    shape: ScaffoldShape,
     binding: Option<&str>,
 ) -> Result<()> {
     let domain_capability = domain_capability_name(domain_command);
     create_module_skeleton(path)?;
     write_new_file(
         &path.join("module.yaml"),
-        &render_capability_domain_module_yaml(name, domain_command),
+        &render_capability_domain_module_yaml(name, domain_command, shape),
     )?;
     write_new_file(
         &path.join("README.md"),
         &render_module_readme(
             name,
-            "Own pure capability decisions and invariants.",
-            "library",
-            &[String::from("core")],
+            shape.purpose(),
+            if shape == ScaffoldShape::Workflow {
+                "module"
+            } else {
+                "library"
+            },
+            &normalized_profiles_for_shape(&[], shape),
             binding,
-            ScaffoldShape::DomainEngine,
+            shape,
         ),
     )?;
     write_new_file(
@@ -64974,25 +65088,14 @@ fn scaffold_capability_domain_child(
     )?;
     scaffold_shape_evidence(
         path,
-        ScaffoldShape::DomainEngine,
-        &inner_structure_names(semantic_name, ScaffoldShape::DomainEngine),
+        shape,
+        &inner_structure_names(semantic_name, shape),
         binding,
         name,
     )?;
-    scaffold_binding_if_requested(
-        path,
-        name,
-        semantic_name,
-        ScaffoldShape::DomainEngine,
-        binding,
-    )?;
+    scaffold_binding_if_requested(path, name, semantic_name, shape, binding)?;
     if let Some(binding) = binding {
-        configure_scaffold_public_behavior_binding(
-            path,
-            binding,
-            ScaffoldShape::DomainEngine,
-            domain_command,
-        )?;
+        configure_scaffold_public_behavior_binding(path, binding, shape, domain_command)?;
     }
     Ok(())
 }
@@ -65124,7 +65227,9 @@ fn configure_scaffold_public_behavior_binding(
     let public_behaviors = declared_public_behaviors(&module.value)
         .into_iter()
         .filter(|((kind, name), _)| {
-            name == public_command || (shape == ScaffoldShape::DomainEngine && kind == "capability")
+            name == public_command
+                || (matches!(shape, ScaffoldShape::DomainEngine | ScaffoldShape::Workflow)
+                    && kind == "capability")
         })
         .collect::<Vec<_>>();
     if let Some(functions) = get_path_mut(&mut implementation.value, &["semantic_functions"])
@@ -66852,19 +66957,39 @@ fn render_capability_parent_module_yaml(
     )
 }
 
-fn render_capability_domain_module_yaml(name: &str, domain_command: &str) -> String {
+fn render_capability_domain_module_yaml(
+    name: &str,
+    domain_command: &str,
+    shape: ScaffoldShape,
+) -> String {
     let domain_capability = domain_capability_name(domain_command);
+    let kind = if shape == ScaffoldShape::Workflow {
+        "module"
+    } else {
+        "library"
+    };
+    let purpose = if shape == ScaffoldShape::Workflow {
+        "Own capability workflow decisions, lifecycle, recovery, and transition evidence."
+    } else {
+        "Own pure capability decisions, validated values, and transition evidence."
+    };
+    let profiles = normalized_profiles_for_shape(&[], shape);
     strip_unrecorded_trace_evidence(format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"library\"\n  purpose: \"Own pure capability decisions, validated values, and transition evidence.\"\n\nprofiles:\n  - \"core\"\n\nowns:\n  concepts:\n    - domain command\n    - transition outcome\n  data: []\n  decisions:\n    - command acceptance\n    - command rejection\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities:\n    - name: {}\n      contract: contracts/{}-capability.v1.yaml\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws/transition_trace.md\n  contracts:\n    - verification/contracts/{}.md\n    - verification/contracts/{}-capability.md\n  scenarios:\n    - verification/scenarios/accepted_rejected.md\n    - verification/scenarios/reusable_package.md\n  boundaries: []\n  traces:\n    - verification/traces/transition_trace.yaml\n  properties:\n    - verification/properties/transition_properties.md\n\nx-rms:\n  reusable: true\n\nx-scaffold:\n  shape: \"domain-engine\"\n  roles:\n{}\n",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts:\n    - domain command\n    - transition outcome\n  data: []\n  decisions:\n    - command acceptance\n    - command rejection\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities:\n    - name: {}\n      contract: contracts/{}-capability.v1.yaml\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws:\n    - verification/laws/transition_trace.md\n  contracts:\n    - verification/contracts/{}.md\n    - verification/contracts/{}-capability.md\n  scenarios:\n    - verification/scenarios/accepted_rejected.md\n    - verification/scenarios/reusable_package.md\n  boundaries: []\n  traces:\n    - verification/traces/transition_trace.yaml\n  properties:\n    - verification/properties/transition_properties.md\n\nx-rms:\n  reusable: true\n\nx-scaffold:\n  shape: {}\n  roles:\n{}\n",
         yaml_quote(name),
+        yaml_quote(kind),
+        yaml_quote(purpose),
+        yaml_string_list(&profiles, 2),
         yaml_quote(domain_command),
         contract_file_stem(domain_command),
         yaml_quote(&domain_capability),
         contract_file_stem(domain_command),
+        render_profile_sections(&profiles),
         contract_file_stem(domain_command),
         contract_file_stem(domain_command),
+        yaml_quote(shape.as_str()),
         yaml_string_list(
-            &ScaffoldShape::DomainEngine
+            &shape
                 .roles()
                 .iter()
                 .map(|role| (*role).to_string())
@@ -85690,15 +85815,28 @@ open_questions: []
         assert!(validate_intent_model(task, Path::new("."), &model).is_empty());
         let decision = decide_architecture(task, &model);
         assert_eq!(decision.topology, ArchitectureTopology::CapabilityTree);
-        assert!(decision
-            .modules
-            .iter()
-            .any(|module| module.shape == "workflow"));
-        assert!(decision
-            .modules
-            .iter()
-            .any(|module| module.shape == "boundary-adapter"));
+        assert!(decision.modules.iter().any(|module| {
+            module.responsibility == "snake-decisions" && module.shape == "workflow"
+        }));
+        assert!(decision.modules.iter().any(|module| {
+            module.responsibility == "snake-boundary" && module.shape == "boundary-adapter"
+        }));
         assert_eq!(decision.scaffold.args[0], "add-capability-tree");
+        assert!(decision
+            .scaffold
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--domain-child", "snake-decisions"]));
+        assert!(decision
+            .scaffold
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--domain-shape", "workflow"]));
+        assert!(decision
+            .scaffold
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--boundary-child", "snake-boundary"]));
     }
 
     #[test]
@@ -88211,6 +88349,7 @@ architecture:
             purpose: "Expose playable game capability.".to_string(),
             public_command: Some("play-game".to_string()),
             domain_child: Some("play-game-rules".to_string()),
+            domain_shape: None,
             boundary_child: Some("play-game-cli".to_string()),
             domain_command: Some("resolve-move".to_string()),
             domain_binding: Some("rust".to_string()),
@@ -88428,6 +88567,7 @@ semantic_functions:
             purpose: "Build a local CLI with pure batching and process effects.".to_string(),
             public_command: Some("mini-xargs".to_string()),
             domain_child: None,
+            domain_shape: None,
             boundary_child: None,
             domain_command: Some("plan-invocations".to_string()),
             domain_binding: Some("rust".to_string()),
@@ -88472,6 +88612,7 @@ semantic_functions:
             purpose: "Expose a local playable game command.".to_string(),
             public_command: Some("play-game".to_string()),
             domain_child: None,
+            domain_shape: None,
             boundary_child: None,
             domain_command: Some("resolve-move".to_string()),
             domain_binding: Some("js".to_string()),
@@ -88645,6 +88786,7 @@ public_behavior_bindings:
             purpose: "Expose line selection.".to_string(),
             public_command: Some("pick-lines".to_string()),
             domain_child: None,
+            domain_shape: None,
             boundary_child: None,
             domain_command: Some("select-lines".to_string()),
             domain_binding: Some("python".to_string()),
@@ -89112,6 +89254,7 @@ semantic_functions:
             purpose: "Expose checkout capability.".to_string(),
             public_command: Some("checkout".to_string()),
             domain_child: None,
+            domain_shape: None,
             boundary_child: None,
             domain_command: Some("decide-checkout".to_string()),
             domain_binding: Some("rust".to_string()),
@@ -89153,6 +89296,7 @@ semantic_functions:
             purpose: "Local browser tool for generating tile assets.".to_string(),
             public_command: Some("generate-tile-assets".to_string()),
             domain_child: None,
+            domain_shape: None,
             boundary_child: None,
             domain_command: Some("create-alpha-mask-tile".to_string()),
             domain_binding: Some("js".to_string()),
@@ -89237,6 +89381,7 @@ semantic_functions:
             purpose: "Expose coupon evaluation.".to_string(),
             public_command: None,
             domain_child: None,
+            domain_shape: None,
             boundary_child: None,
             domain_command: None,
             domain_binding: None,
@@ -89252,6 +89397,85 @@ semantic_functions:
         assert!(parent.contains("name: \"evaluate-coupon-boundary\""));
         assert!(!parent.contains("evaluate-coupon-rules"));
         assert!(!parent.contains("evaluate-coupon-adapter"));
+    }
+
+    #[test]
+    fn add_capability_preserves_recommended_workflow_child_name_and_shape() {
+        let root = unique_test_dir("add-capability-tree-workflow-child");
+        run_init(
+            &root,
+            "workflow-child-fixture",
+            "Exercise typed design to capability-tree scaffolding.",
+            "0.1.0",
+            &["fixture".to_string()],
+        )
+        .unwrap();
+
+        let request = AddCapabilityTreeRequest {
+            path: root.join("modules/connection-media-epoch-delivery"),
+            name: "connection-media-epoch-delivery".to_string(),
+            purpose: "Own stateful lane handover decisions and typed boundary effects.".to_string(),
+            public_command: None,
+            domain_child: Some("connection-media-epoch-delivery-decisions".to_string()),
+            domain_shape: Some(ScaffoldShape::Workflow),
+            boundary_child: Some("connection-media-epoch-delivery-boundary".to_string()),
+            domain_command: None,
+            domain_binding: None,
+            boundary_binding: None,
+            surface: None,
+        };
+        let action = add_capability_tree_scaffold_action(&request);
+        run_add_capability_tree(request).unwrap();
+
+        let parent =
+            load_manifest(&root.join("modules/connection-media-epoch-delivery/module.yaml"))
+                .unwrap();
+        let domain = load_manifest(
+            &root.join("modules/connection-media-epoch-delivery-decisions/module.yaml"),
+        )
+        .unwrap();
+        let mut diagnostics = Vec::new();
+        validate_loaded_manifest(&domain, &mut diagnostics);
+        let route = build_route_report(
+            &root.join("modules/connection-media-epoch-delivery/module.yaml"),
+            &root,
+            "change lane handover transition and invalid generation rules",
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(action.args.windows(2).any(|pair| pair
+            == [
+                "--domain-child",
+                "connection-media-epoch-delivery-decisions"
+            ]));
+        assert!(action
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--domain-shape", "workflow"]));
+        assert!(get_path(&parent.value, &["composition", "contains"])
+            .and_then(YamlValue::as_sequence)
+            .is_some_and(|children| children.iter().any(|child| {
+                get_str(child, &["name"]) == Some("connection-media-epoch-delivery-decisions")
+            })));
+        assert_eq!(get_str(&domain.value, &["module", "kind"]), Some("module"));
+        assert!(get_string_array(&domain.value, &["profiles"])
+            .iter()
+            .any(|profile| profile == "workflow"));
+        assert!(get_path(&domain.value, &["state"]).is_some());
+        assert!(get_path(&domain.value, &["workflow"]).is_some());
+        assert_eq!(
+            get_str(&domain.value, &["x-scaffold", "shape"]),
+            Some("workflow")
+        );
+        assert_eq!(
+            route
+                .recommendation
+                .as_ref()
+                .map(|module| module.name.as_str()),
+            Some("connection-media-epoch-delivery-decisions")
+        );
+        assert_no_error_diagnostics(&diagnostics);
     }
 
     #[test]
@@ -89273,6 +89497,7 @@ semantic_functions:
             purpose: "Expose a playable Tic Tac Toe capability.".to_string(),
             public_command: Some("play-tic-tac-toe".to_string()),
             domain_child: None,
+            domain_shape: None,
             boundary_child: None,
             domain_command: Some("apply-move".to_string()),
             domain_binding: Some("rust".to_string()),
@@ -89283,7 +89508,16 @@ semantic_functions:
         record_generated_traces(&root.join("modules/play-tic-tac-toe-domain"));
         record_generated_traces(&root.join("modules/play-tic-tac-toe-boundary"));
 
-        assert_clean_room_dogfood_artifacts(&root, "play-tic-tac-toe", "rust", "js").unwrap();
+        assert_clean_room_dogfood_artifacts(
+            &root,
+            "play-tic-tac-toe",
+            "play-tic-tac-toe-domain",
+            "domain-engine",
+            "play-tic-tac-toe-boundary",
+            "rust",
+            "js",
+        )
+        .unwrap();
         let report = compose_system(&root).unwrap();
         let rules_route = build_route_report(
             &root.join("modules/play-tic-tac-toe/module.yaml"),
@@ -92294,7 +92528,7 @@ compatibility: {policy: backward-compatible-within-major}
         assert!(prompt.contains("there is no `semantic_profile` field"));
         assert!(prompt.contains("preserve its wrapper, version, evaluation strategy"));
         assert!(prompt.contains("semantics:\n        behavior:"));
-        assert!(prompt.contains("Prompt: rms.spec-plan@v2"));
+        assert!(prompt.contains("Prompt: rms.spec-plan@v3"));
         assert!(prompt.contains("Profiles are exactly `smoke`, `ci`, or `nightly`"));
         assert!(prompt.contains("`core` is a module profile"));
         assert!(prompt.contains("command: composition"));
@@ -92550,6 +92784,132 @@ properties:
         assert!(normalizations
             .iter()
             .any(|item| item.contains("from `missing` to `fuzz`")));
+    }
+
+    #[test]
+    fn semantic_plan_defers_orphaned_temporal_fields_without_weakening_validation() {
+        let root = prompt_fixture("semantic-plan-temporal-deferral");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let response = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+properties:
+  add:
+    - id: media_epoch_delivery_schedule_exploration_property
+      proves: cross_lane_frame_deduplication
+      kind: semantic
+      input_space: {strategy: generated, generator: verification/generators/media_epoch_delivery_cases.yaml#generate_interleaved_schedule_cases}
+      preconditions: []
+      operation: {kind: semantic-function, name: resolve_connection_media_epoch_delivery_semantics}
+      oracle:
+        - no schedule emits more than one terminal delivery for a frame
+      evidence: {kind: property, path: verification/properties/media_epoch_delivery_schedule_exploration}
+      counterexamples: {path: verification/counterexamples/media_epoch_delivery_schedule_exploration}
+      realizations:
+        - profile: nightly
+          strategy: model-checker
+          command: verify
+          runner: verification/properties/media_epoch_delivery_schedule_exploration#run_property
+          exhaustive: false
+      explorations: []
+      observations: []
+      assumptions:
+        - kind: search-preference
+          statement: Explore epoch-114 first because it is the known handover counterexample seed.
+      temporal: null
+  set: []
+  remove: []
+"#;
+
+        let prepared =
+            prepare_spec_plan_provider_response(&context, "add schedule exploration", response);
+        let change: SemanticChange = serde_yaml::from_str(&prepared.response).unwrap();
+        let property = &change.properties.unwrap().add[0];
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(prepared
+            .normalizations
+            .iter()
+            .any(|item| item.contains("deferred incomplete temporal semantics")));
+        assert!(
+            prepared
+                .diagnostics
+                .iter()
+                .all(|item| item.severity != Severity::Error),
+            "{:#?}",
+            prepared.diagnostics
+        );
+        assert!(property.observations.is_empty());
+        assert!(property.assumptions.is_empty());
+        assert!(property.temporal.is_none());
+        assert_eq!(
+            property
+                .operation
+                .as_ref()
+                .and_then(|value| get_str(value, &["name"])),
+            Some("resolve_connection_media_epoch_delivery_semantics")
+        );
+        assert_eq!(property.oracle.len(), 1);
+        assert_eq!(property.realizations.len(), 1);
+    }
+
+    #[test]
+    fn semantic_plan_temporal_repair_rejects_invented_execution_shape_and_teaches_deferral() {
+        let root = prompt_fixture("semantic-plan-temporal-repair");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let mut change: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+properties:
+  add:
+    - id: media_epoch_delivery_schedule_exploration_property
+      proves: cross_lane_frame_deduplication
+      kind: semantic
+      input_space: {strategy: generated, generator: verification/generators/media_epoch_delivery_cases.yaml#generate_interleaved_schedule_cases}
+      operation: {kind: semantic-function, name: resolve_connection_media_epoch_delivery_semantics}
+      oracle: [no schedule emits more than one terminal delivery]
+      evidence: {kind: property, path: verification/properties/media_epoch_delivery_schedule_exploration}
+      realizations:
+        - profile: nightly
+          strategy: model-checker
+          command: verify
+          runner: verification/properties/media_epoch_delivery_schedule_exploration#run_property
+      observations: []
+      assumptions:
+        - kind: search-preference
+          statement: Explore epoch-114 first.
+      temporal:
+        kind: model-checker
+        command: verify
+        runner: verification/properties/media_epoch_delivery_schedule_exploration#run_property
+        generator: verification/generators/media_epoch_delivery_cases.yaml#generate_interleaved_schedule_cases
+        seed: epoch-114
+        state: {initial: generated, transition: resolve_connection_media_epoch_delivery_semantics}
+        schedule: {strategy: interleaving}
+"#,
+        )
+        .unwrap();
+        assert!(normalize_spec_plan_incomplete_temporal_fields(&mut change).is_empty());
+        let property = &change.properties.as_ref().unwrap().add[0];
+        let mut diagnostics = Vec::new();
+        validate_temporal_property(&context, property, &mut diagnostics);
+        let repair = render_spec_plan_repair_prompt(
+            "bounded schema",
+            &serde_yaml::to_string(&change).unwrap(),
+            &diagnostics,
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|item| item.check == "semantic.temporal-scope-invalid"));
+        assert!(diagnostics
+            .iter()
+            .any(|item| item.check == "semantic.executable-property-invalid"));
+        assert!(repair.contains("Temporal property repair has exactly two valid outcomes"));
+        assert!(repair.contains("{id, kind: environment|search-preference, expression}"));
+        assert!(repair.contains("`temporal` is exactly `{scope, expression}`"));
+        assert!(repair.contains("never contains `kind`, `command`, `runner`, `generator`, `seed`, `state`, or `schedule`"));
+        assert!(repair.contains("`observations: []`, `assumptions: []`, and `temporal: null`"));
     }
 
     #[test]
@@ -97189,6 +97549,91 @@ open_questions: []
     }
 
     #[test]
+    fn design_receipt_binds_workflow_capability_child_name_and_shape() {
+        let root = copy_minimal_fixture("design-receipt-workflow-capability");
+        initialize_test_git_repository(&root);
+        let intent = parse_intent_model_source(
+            r#"spec: rms/intent-model/v0.1
+operation: design
+change_scope: new-module
+subjects: [connection-media-epoch-delivery]
+facts:
+  domain_decisions: { disposition: required, basis: explicit, source_quote: "owns lane admission" }
+  lifecycle: { disposition: required, basis: explicit, source_quote: "monotonic lane-handover generation" }
+  effects: { disposition: required, basis: explicit, source_quote: "typed effect boundary" }
+  runnable_surface: { disposition: absent, basis: explicit, source_quote: "no runnable surface" }
+  reuse: { disposition: required, basis: explicit, source_quote: "reusable composite capability" }
+responsibilities:
+  - { id: lane-admission, kind: decision, summary: Own lane admission }
+  - { id: lane-handover, kind: workflow, summary: Advance lane handover }
+  - { id: handover-effects, kind: integration, summary: Emit typed effects }
+surface_kinds: []
+binding_preferences: []
+open_questions: []
+"#,
+        )
+        .unwrap();
+        let task = "adopt connection media epoch delivery as a stateful capability";
+        let decision = decide_architecture(task, &intent);
+        let run_dir = create_route_run_record(&root, "design", task, "prompt", None).unwrap();
+        let target = PathBuf::from(decision.scaffold.args.get(1).unwrap());
+        let route = issue_route_receipt(
+            &root,
+            &run_dir,
+            task,
+            Some(&intent),
+            "ready",
+            "design",
+            None,
+            None,
+            vec!["add-capability-tree".to_string()],
+            vec![target.clone()],
+            Some(decision.scaffold.clone()),
+        )
+        .unwrap();
+        let matching = AddCapabilityTreeRequest {
+            path: target.clone(),
+            name: "connection-media-epoch-delivery".to_string(),
+            purpose: task.to_string(),
+            public_command: None,
+            domain_child: Some("connection-media-epoch-delivery-decisions".to_string()),
+            domain_shape: Some(ScaffoldShape::Workflow),
+            boundary_child: Some("connection-media-epoch-delivery-boundary".to_string()),
+            domain_command: None,
+            domain_binding: None,
+            boundary_binding: None,
+            surface: None,
+        };
+        let matching_action = add_capability_tree_scaffold_action(&matching);
+        let defaulted = AddCapabilityTreeRequest {
+            domain_child: None,
+            domain_shape: None,
+            boundary_child: None,
+            ..matching
+        };
+        let defaulted_action = add_capability_tree_scaffold_action(&defaulted);
+
+        assert_eq!(decision.scaffold.args, matching_action.args);
+        assert!(validate_route_receipt(
+            &root,
+            &route.receipt_path,
+            "add-capability-tree",
+            &target,
+            Some(&matching_action),
+        )
+        .is_ok());
+        assert!(validate_route_receipt(
+            &root,
+            &route.receipt_path,
+            "add-capability-tree",
+            &target,
+            Some(&defaulted_action),
+        )
+        .is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn mutator_cli_requires_route_receipts() {
         let command = Cli::command();
         for path in [
@@ -98620,6 +99065,7 @@ verification:
             purpose: "Expose playable game capability.".to_string(),
             public_command: Some("play-game".to_string()),
             domain_child: None,
+            domain_shape: None,
             boundary_child: None,
             domain_command: Some("resolve-move".to_string()),
             domain_binding: Some("rust".to_string()),

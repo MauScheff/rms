@@ -96,6 +96,10 @@ Managed agents use native project tools for read-only investigation, explanation
 
 An agent or recorded read-only provider extracts typed facts without topology. RMS validates exact quotes, inferred rationales, contradictions, and material unknowns; then deterministic policy chooses the lane, structured subjects route ownership, and facts choose standalone or recursive topology. Adoption of an existing runtime boundary into a missing canonical owner is `new-module` design work; existing modules named only as participants cannot become the owner. Exact existing-owner paths and in-place maintenance stay on the existing-module route. Explicit `--module` is an owner override. Recursive composition routing is cycle-protected, and ties remain ties.
 
+For a capability tree, the signed design action carries the recommended domain child name, boundary child name, and domain shape. `add-capability-tree` accepts only `domain-engine` or `workflow` for that domain shape and renders the matching kind, profiles, scaffold roles, and optional binding. Receipt matching prevents a caller from silently falling back to different child defaults.
+
+Semantic-plan v3 repair gives incomplete temporal properties two closed outcomes: complete typed observations, assumptions, scope, and expression, or clear the orphaned temporal fields and preserve the ordinary property operation, oracle, and realizations. Invalid partial temporal objects still fail validation.
+
 The task is prospective. Raw task keywords and unrelated working-tree diffs have no architecture authority. `next` never mutates files, runs verification, or grants edit or commit authority; `--ai` performs only recorded read-only intent extraction.
 
 Repository installation, plugin or skill synchronization, and Git status/fetch/commit/rebase/merge/push are `repository-operation` tasks with result `no-rms-change`, unless the intent changes RMS's behavior around those operations. A readable uninitialized root may therefore require no RMS bootstrap for an operational task. Invalid canonical artifacts still block semantic work.
