@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Resolve Swift declaration bodies by exact type identifier so a longer helper such as `TransitionWitness` cannot shadow the declared `Transition` output during rejection-channel verification.
+
 - Treat the stable transition `case` as the exact canonical branch discriminator within `input-only` and `state-and-input` signatures, reject duplicate dispatch cases during machine apply, avoid prefix-matching one replay branch to another, and make compact check output disclose omitted failure counts while `--details` shows every reason.
 - Keep generated Rust boundary fuzz runners visibly connected to their declared constructor operation so strict semantic-operation proof accepts clean-room scaffolds without an exemption.
 

@@ -32516,7 +32516,18 @@ fn swift_declaration_body<'a>(
     type_name: &str,
 ) -> Option<&'a str> {
     let marker = format!("{declaration} {type_name}");
-    let start = source.find(&marker)?;
+    let start = source.match_indices(&marker).find_map(|(start, _)| {
+        let before_is_identifier = source[..start]
+            .chars()
+            .next_back()
+            .is_some_and(swift_identifier_character);
+        let after_name = start + marker.len();
+        let after_is_identifier = source[after_name..]
+            .chars()
+            .next()
+            .is_some_and(swift_identifier_character);
+        (!before_is_identifier && !after_is_identifier).then_some(start)
+    })?;
     let after = &source[start..];
     let open = after.find('{')?;
     let body = &after[open + 1..];
@@ -86217,6 +86228,46 @@ public func transitionWidget(_ command: WidgetCommand) -> WidgetTransition {
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.check == "structure.transition-rejection-channel-missing"
         }));
+    }
+
+    #[test]
+    fn swift_transition_rejection_channel_resolves_the_exact_type_name() {
+        let root = swift_typing_fixture(
+            "swift-transition-exact-type-name",
+            &["core"],
+            "",
+            r#"public enum TypingFixtureMachine { case machine }
+public enum WidgetState { case ready }
+public enum WidgetCommand { case apply }
+public enum WidgetEvent { case applied }
+public enum WidgetReply { case accepted }
+public enum WidgetRejection { case rejected }
+
+public struct WidgetTransitionWitness {
+    public let observedCase: String
+}
+
+public struct WidgetTransition {
+    public let rejection: WidgetRejection?
+}
+
+public struct WidgetTransitionRecord {}
+
+public func transitionWidget(_ command: WidgetCommand) -> WidgetTransition {
+    WidgetTransition(rejection: nil)
+}
+"#,
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            diagnostics.iter().all(|diagnostic| {
+                diagnostic.check != "structure.transition-rejection-channel-missing"
+            }),
+            "{diagnostics:#?}"
+        );
     }
 
     #[test]
