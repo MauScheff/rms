@@ -55528,7 +55528,7 @@ fn validate_rendered_semantic_contract(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let path = semantic_contract_artifact_path(context, contract);
-    let rendered = render_semantic_contract(contract);
+    let rendered = render_semantic_contract_for_spec(contract, contract_spec_at_path(&path));
     let value = match serde_yaml::from_str(&rendered) {
         Ok(value) => value,
         Err(parse_error) => {
@@ -59094,8 +59094,11 @@ fn write_semantic_contracts_and_evidence(
                 fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create `{}`", parent.display()))?;
             }
-            fs::write(&path, render_semantic_contract(contract))
-                .with_context(|| format!("failed to write `{}`", path.display()))?;
+            fs::write(
+                &path,
+                render_semantic_contract_for_spec(contract, contract_spec_at_path(&path)),
+            )
+            .with_context(|| format!("failed to write `{}`", path.display()))?;
         }
         for contract in &contracts.remove {
             let path = base.join(semantic_contract_remove_path(contract));
@@ -59183,6 +59186,24 @@ fn module_contract_reference_paths(module: &YamlValue) -> BTreeSet<String> {
 }
 
 fn render_semantic_contract(contract: &SemanticContractChange) -> String {
+    render_semantic_contract_for_spec(contract, behavioral_contract::CONTRACT_SPEC)
+}
+
+fn contract_spec_at_path(path: &Path) -> &'static str {
+    match load_manifest(path)
+        .ok()
+        .and_then(|manifest| get_str(&manifest.value, &["spec"]).map(ToString::to_string))
+        .as_deref()
+    {
+        Some(behavioral_contract::CONTRACT_SPEC_V2) => behavioral_contract::CONTRACT_SPEC_V2,
+        _ => behavioral_contract::CONTRACT_SPEC,
+    }
+}
+
+fn render_semantic_contract_for_spec(
+    contract: &SemanticContractChange,
+    contract_spec: &str,
+) -> String {
     let version = contract.version.as_deref().unwrap_or("v1");
     let version = version.strip_prefix('v').unwrap_or(version);
     let kind = contract
@@ -59194,7 +59215,7 @@ fn render_semantic_contract(contract: &SemanticContractChange) -> String {
         .semantics
         .clone()
         .and_then(|value| value.as_mapping().cloned())
-        .unwrap_or_else(|| legacy_contract_semantics(contract, kind));
+        .unwrap_or_else(|| legacy_contract_semantics(contract, kind, contract_spec));
     if let Some(protocol) = &contract.protocol {
         semantics.insert(
             yaml_key("protocol"),
@@ -59202,10 +59223,7 @@ fn render_semantic_contract(contract: &SemanticContractChange) -> String {
         );
     }
     let mut rendered = yaml_mapping_value([
-        (
-            "spec",
-            YamlValue::String(behavioral_contract::CONTRACT_SPEC.to_string()),
-        ),
+        ("spec", YamlValue::String(contract_spec.to_string())),
         ("name", YamlValue::String(contract.name.clone())),
         ("version", YamlValue::String(version.to_string())),
         ("kind", YamlValue::String(kind.to_string())),
@@ -59233,7 +59251,11 @@ fn render_semantic_contract(contract: &SemanticContractChange) -> String {
     serde_yaml::to_string(&rendered).unwrap_or_default()
 }
 
-fn legacy_contract_semantics(contract: &SemanticContractChange, kind: &str) -> serde_yaml::Mapping {
+fn legacy_contract_semantics(
+    contract: &SemanticContractChange,
+    kind: &str,
+    contract_spec: &str,
+) -> serde_yaml::Mapping {
     let clauses = |prefix: &str, items: &[String]| {
         YamlValue::Sequence(
             items
@@ -59294,38 +59316,55 @@ fn legacy_contract_semantics(contract: &SemanticContractChange, kind: &str) -> s
                     ]),
                 ),
             ]);
-            semantics.insert(
-                yaml_key("behavior"),
+            let mut behavior = serde_yaml::Mapping::new();
+            if contract_spec == behavioral_contract::CONTRACT_SPEC {
+                behavior.insert(
+                    yaml_key("observability"),
+                    YamlValue::String("none".to_string()),
+                );
+            }
+            behavior.insert(yaml_key("observations"), YamlValue::Sequence(Vec::new()));
+            if contract_spec == behavioral_contract::CONTRACT_SPEC {
+                behavior.insert(yaml_key("assumptions"), YamlValue::Sequence(Vec::new()));
+            }
+            behavior.insert(yaml_key("requires"), clauses("accepts", &contract.accepts));
+            behavior.insert(
+                yaml_key("guarantees"),
+                clauses("ensures", &contract.ensures),
+            );
+            behavior.insert(yaml_key("failures"), clauses("rejects", &contract.rejects));
+            behavior.insert(
+                yaml_key("cases"),
+                if contract_spec == behavioral_contract::CONTRACT_SPEC {
+                    YamlValue::Sequence(vec![unresolved_rejection])
+                } else {
+                    YamlValue::Sequence(Vec::new())
+                },
+            );
+            behavior.insert(yaml_key("invariants"), YamlValue::Sequence(Vec::new()));
+            behavior.insert(
+                yaml_key("case_policy"),
                 yaml_mapping_value([
-                    ("observability", YamlValue::String("none".to_string())),
-                    ("observations", YamlValue::Sequence(Vec::new())),
-                    ("assumptions", YamlValue::Sequence(Vec::new())),
-                    ("requires", clauses("accepts", &contract.accepts)),
-                    ("guarantees", clauses("ensures", &contract.ensures)),
-                    ("failures", clauses("rejects", &contract.rejects)),
-                    ("cases", YamlValue::Sequence(vec![unresolved_rejection])),
-                    ("invariants", YamlValue::Sequence(Vec::new())),
-                    (
-                        "case_policy",
-                        yaml_mapping_value([
-                            ("coverage", YamlValue::String("exhaustive".to_string())),
-                            ("overlap", YamlValue::String("forbidden".to_string())),
-                        ]),
-                    ),
+                    ("coverage", YamlValue::String("exhaustive".to_string())),
+                    ("overlap", YamlValue::String("forbidden".to_string())),
                 ]),
             );
+            semantics.insert(yaml_key("behavior"), YamlValue::Mapping(behavior));
         }
         "event" => {
             let mut statements = contract.accepts.clone();
             statements.extend(contract.ensures.clone());
             statements.extend(contract.rejects.clone());
-            semantics.insert(
-                yaml_key("event"),
-                yaml_mapping_value([
-                    ("observations", YamlValue::Sequence(Vec::new())),
-                    ("guarantees", clauses("guarantee", &statements)),
-                ]),
-            );
+            let mut event = serde_yaml::Mapping::new();
+            if contract_spec == behavioral_contract::CONTRACT_SPEC {
+                event.insert(
+                    yaml_key("observability"),
+                    YamlValue::String("none".to_string()),
+                );
+            }
+            event.insert(yaml_key("observations"), YamlValue::Sequence(Vec::new()));
+            event.insert(yaml_key("guarantees"), clauses("guarantee", &statements));
+            semantics.insert(yaml_key("event"), YamlValue::Mapping(event));
         }
         "api" => {
             semantics.insert(
@@ -74641,7 +74680,11 @@ fn validate_contract_behavior_case_repair_change(
             .find(|contract| contract.path == relative)
             .ok_or_else(|| anyhow!("contract `{relative}` is outside signed repair authority"))?;
         let current = load_manifest(&root.join(&relative))?;
-        let rendered: YamlValue = serde_yaml::from_str(&render_semantic_contract(proposed))?;
+        let contract_spec = get_str(&current.value, &["spec"])
+            .filter(|spec| behavioral_contract::is_contract_spec(Some(spec)))
+            .unwrap_or(behavioral_contract::CONTRACT_SPEC);
+        let rendered: YamlValue =
+            serde_yaml::from_str(&render_semantic_contract_for_spec(proposed, contract_spec))?;
         validate_contract_behavior_case_repair_pair(&current.value, &rendered, signed)?;
         if proposed
             .command
@@ -82101,7 +82144,8 @@ open_questions: []
         .contains("preserve every case id, statement, and order"));
 
         let contract_path = root.join("contracts/deliver-epoch.v1.yaml");
-        let mut drifted = fs::read_to_string(&contract_path).unwrap();
+        let original_contract = fs::read_to_string(&contract_path).unwrap();
+        let mut drifted = original_contract.clone();
         drifted.push('\n');
         fs::write(&contract_path, drifted).unwrap();
         assert!(validate_spec_change_route_receipt(
@@ -82115,6 +82159,18 @@ open_questions: []
         .unwrap_err()
         .to_string()
         .contains("authority is stale"));
+        fs::write(&contract_path, original_contract).unwrap();
+        run_spec_apply(&module_path, None, Some(repair), None, false).unwrap();
+        for path in [
+            &contract_path,
+            &root.join("contracts/epoch-delivery.v1.yaml"),
+        ] {
+            let repaired = load_manifest(path).unwrap();
+            assert_eq!(
+                get_str(&repaired.value, &["spec"]),
+                Some(behavioral_contract::CONTRACT_SPEC_V2)
+            );
+        }
         fs::remove_dir_all(&root).unwrap();
     }
 
