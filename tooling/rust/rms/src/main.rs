@@ -13959,6 +13959,11 @@ fn execute_codex_provider_attempt_with_interaction(
     let timeout = Duration::from_secs(options.provider_timeout_seconds);
     let started = Instant::now();
 
+    let canonical_stdout_path = run_dir.join("provider.stdout.log");
+    let canonical_stderr_path = run_dir.join("provider.stderr.log");
+    let stdout_logs = create_provider_log_files(&stdout_path, &canonical_stdout_path)?;
+    let stderr_logs = create_provider_log_files(&stderr_path, &canonical_stderr_path)?;
+
     let mut command = Command::new(provider_program);
     command
         .arg("exec")
@@ -14000,6 +14005,35 @@ fn execute_codex_provider_attempt_with_interaction(
         .spawn()
         .with_context(|| "failed to start `codex exec` provider")?;
 
+    if interaction == ProviderInteraction::ConstrainedTransformation {
+        let attempt = log_prefix
+            .strip_prefix("attempt-")
+            .and_then(|value| value.strip_suffix("-provider"))
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1);
+        let _ = write_provider_status(
+            run_dir,
+            &json!({
+                "provider": options.provider.label(),
+                "model": options.model,
+                "interaction": "constrained-transformation",
+                "attempts": attempt,
+                "elapsed_ms": started.elapsed().as_millis(),
+                "result": "running",
+                "pid": child.id(),
+                "response_path": response_path,
+                "stdout_log": stdout_path,
+                "stderr_log": stderr_path,
+                "timeout_seconds": options.provider_timeout_seconds,
+                "tokens": null,
+            }),
+        );
+        eprintln!(
+            "provider attempt {attempt}/2 pid={} state=running",
+            child.id()
+        );
+    }
+
     let stdout = child
         .stdout
         .take()
@@ -14008,8 +14042,9 @@ fn execute_codex_provider_attempt_with_interaction(
         .stderr
         .take()
         .ok_or_else(|| anyhow!("failed to capture `codex exec` stderr"))?;
-    let stdout_reader = spawn_pipe_reader(stdout);
-    let stderr_reader = spawn_pipe_reader(stderr);
+    let observation = Arc::new(ProcessObservation::new());
+    let stdout_reader = spawn_tee_pipe_reader(stdout, stdout_logs, Arc::clone(&observation));
+    let stderr_reader = spawn_tee_pipe_reader(stderr, stderr_logs, Arc::clone(&observation));
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin
@@ -14017,15 +14052,10 @@ fn execute_codex_provider_attempt_with_interaction(
             .with_context(|| "failed to write prompt to `codex exec` stdin")?;
     }
 
-    let outcome = wait_child_with_timeout(&mut child, timeout)
+    let outcome = wait_provider_child_with_progress(&mut child, timeout, &observation)
         .with_context(|| "failed to wait for `codex exec` provider")?;
     let stdout = join_pipe_reader(stdout_reader, "stdout")?;
     let stderr = join_pipe_reader(stderr_reader, "stderr")?;
-
-    fs::write(&stdout_path, &stdout)
-        .with_context(|| format!("failed to write `{}`", stdout_path.display()))?;
-    fs::write(&stderr_path, &stderr)
-        .with_context(|| format!("failed to write `{}`", stderr_path.display()))?;
 
     match outcome {
         ProviderProcessOutcome::Exited(status) if !status.success() => {
@@ -14085,6 +14115,19 @@ fn execute_codex_provider_attempt_with_interaction(
         elapsed_ms: started.elapsed().as_millis(),
         response_path,
     })
+}
+
+fn create_provider_log_files(primary: &Path, canonical: &Path) -> Result<Vec<fs::File>> {
+    let mut paths = vec![primary];
+    if canonical != primary {
+        paths.push(canonical);
+    }
+    paths
+        .into_iter()
+        .map(|path| {
+            fs::File::create(path).with_context(|| format!("failed to create `{}`", path.display()))
+        })
+        .collect()
 }
 
 enum ProviderProcessOutcome {
@@ -14376,10 +14419,22 @@ fn apple_silicon_hardware_available() -> bool {
     })
 }
 
-fn wait_child_with_timeout(child: &mut Child, timeout: Duration) -> Result<ProviderProcessOutcome> {
+fn wait_provider_child_with_progress(
+    child: &mut Child,
+    timeout: Duration,
+    observation: &ProcessObservation,
+) -> Result<ProviderProcessOutcome> {
     let started = Instant::now();
+    let heartbeat = proof_progress_interval();
+    let mut next_heartbeat = heartbeat;
     loop {
         if let Some(status) = child.try_wait()? {
+            eprintln!(
+                "provider pid={} elapsed={} state=complete status={}",
+                child.id(),
+                human_elapsed(started.elapsed()),
+                exit_status_label(status)
+            );
             return Ok(ProviderProcessOutcome::Exited(status));
         }
         if started.elapsed() >= timeout {
@@ -14400,19 +14455,55 @@ fn wait_child_with_timeout(child: &mut Child, timeout: Duration) -> Result<Provi
             let status = child
                 .wait()
                 .with_context(|| "failed to collect timed-out provider process")?;
+            eprintln!(
+                "provider pid={} elapsed={} state=timeout",
+                child.id(),
+                human_elapsed(started.elapsed())
+            );
             return Ok(ProviderProcessOutcome::TimedOut { status });
+        }
+        if started.elapsed() >= next_heartbeat {
+            eprintln!(
+                "provider pid={} elapsed={} remaining={} state={}",
+                child.id(),
+                human_elapsed(started.elapsed()),
+                human_elapsed(timeout.saturating_sub(started.elapsed())),
+                observation.state(heartbeat)
+            );
+            next_heartbeat = next_heartbeat.saturating_add(heartbeat);
         }
         thread::sleep(Duration::from_millis(100));
     }
 }
 
-fn spawn_pipe_reader<R>(mut reader: R) -> thread::JoinHandle<Result<Vec<u8>>>
+#[cfg(test)]
+fn wait_child_with_timeout(child: &mut Child, timeout: Duration) -> Result<ProviderProcessOutcome> {
+    wait_provider_child_with_progress(child, timeout, &ProcessObservation::new())
+}
+
+fn spawn_tee_pipe_reader<R>(
+    mut reader: R,
+    mut logs: Vec<fs::File>,
+    observation: Arc<ProcessObservation>,
+) -> thread::JoinHandle<Result<Vec<u8>>>
 where
     R: IoRead + Send + 'static,
 {
     thread::spawn(move || {
         let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes)?;
+        let mut buffer = [0u8; 8_192];
+        loop {
+            let count = reader.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+            observation.observe(&buffer[..count]);
+            for log in &mut logs {
+                log.write_all(&buffer[..count])?;
+                log.flush()?;
+            }
+        }
         Ok(bytes)
     })
 }
@@ -51400,6 +51491,7 @@ fn run_spec_plan(
         Provider::Codex => {
             let run_dir =
                 run_dir.ok_or_else(|| anyhow!("provider execution requires run record"))?;
+            eprintln!("run record: {}", run_dir.display());
             execute_spec_plan_provider(
                 root, &context, authority, task, &rendered, &run_dir, options,
             )?;
@@ -51464,6 +51556,26 @@ fn execute_spec_plan_provider_with_program(
         }
         let response_name = format!("attempt-{attempt}-response.md");
         let log_prefix = format!("attempt-{attempt}-provider");
+        write_provider_status(
+            run_dir,
+            &json!({
+                "provider": options.provider.label(),
+                "model": options.model,
+                "interaction": "constrained-transformation",
+                "attempts": attempt,
+                "elapsed_ms": started.elapsed().as_millis(),
+                "result": "dispatching",
+                "response_path": run_dir.join(&response_name),
+                "stdout_log": run_dir.join(format!("{log_prefix}.stdout.log")),
+                "stderr_log": run_dir.join(format!("{log_prefix}.stderr.log")),
+                "timeout_seconds": options.provider_timeout_seconds,
+                "tokens": null,
+            }),
+        )?;
+        eprintln!(
+            "provider attempt {attempt}/2 state=dispatching timeout={}s",
+            options.provider_timeout_seconds
+        );
         let attempt_result = execute_constrained_codex_provider_attempt(
             provider_program,
             root,
@@ -51484,13 +51596,17 @@ fn execute_spec_plan_provider_with_program(
             Ok(metadata) => metadata,
             Err(provider_error) => {
                 let response_path = run_dir.join(&response_name);
-                let result = match fs::metadata(&response_path) {
-                    Ok(metadata) if metadata.len() == 0 => "empty-response",
-                    Ok(_) => "provider-error",
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => "no-response",
-                    Err(_) => "provider-error",
-                };
                 let message = format!("{provider_error:#}");
+                let result = if message.contains("failed to start `codex exec` provider") {
+                    "dispatch-failed"
+                } else {
+                    match fs::metadata(&response_path) {
+                        Ok(metadata) if metadata.len() == 0 => "empty-response",
+                        Ok(_) => "provider-error",
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "no-response",
+                        Err(_) => "provider-error",
+                    }
+                };
                 let diagnostics = vec![error(
                     "semantic-plan.provider-failed",
                     &authority.path,
@@ -51500,9 +51616,9 @@ fn execute_spec_plan_provider_with_program(
                     run_dir.join("semantic-plan-diagnostics.json"),
                     serde_json::to_string_pretty(&diagnostics)?,
                 )?;
-                fs::write(
-                    run_dir.join("provider.json"),
-                    serde_json::to_string_pretty(&json!({
+                write_provider_status(
+                    run_dir,
+                    &json!({
                         "provider": options.provider.label(),
                         "model": options.model,
                         "interaction": "constrained-transformation",
@@ -51510,9 +51626,11 @@ fn execute_spec_plan_provider_with_program(
                         "elapsed_ms": started.elapsed().as_millis(),
                         "result": result,
                         "response_path": response_path,
+                        "stdout_log": run_dir.join(format!("{log_prefix}.stdout.log")),
+                        "stderr_log": run_dir.join(format!("{log_prefix}.stderr.log")),
                         "error": message,
                         "tokens": null,
-                    }))?,
+                    }),
                 )?;
                 return Err(provider_error.context(format!(
                     "provider semantic plan failed; diagnostics preserved in `{}`",
@@ -51534,9 +51652,9 @@ fn execute_spec_plan_provider_with_program(
             .any(|diagnostic| diagnostic.severity == Severity::Error)
         {
             fs::write(run_dir.join("response.md"), &last_response)?;
-            fs::write(
-                run_dir.join("provider.json"),
-                serde_json::to_string_pretty(&json!({
+            write_provider_status(
+                run_dir,
+                &json!({
                     "provider": options.provider.label(),
                     "model": options.model,
                     "interaction": "constrained-transformation",
@@ -51545,7 +51663,7 @@ fn execute_spec_plan_provider_with_program(
                     "result": "valid",
                     "normalizations": last_normalizations,
                     "tokens": null,
-                }))?,
+                }),
             )?;
             return Ok(());
         }
@@ -51556,9 +51674,9 @@ fn execute_spec_plan_provider_with_program(
     }
 
     fs::write(run_dir.join("response.md"), &last_response)?;
-    fs::write(
-        run_dir.join("provider.json"),
-        serde_json::to_string_pretty(&json!({
+    write_provider_status(
+        run_dir,
+        &json!({
             "provider": options.provider.label(),
             "model": options.model,
             "interaction": "constrained-transformation",
@@ -51567,12 +51685,20 @@ fn execute_spec_plan_provider_with_program(
             "result": "invalid-after-repair",
             "normalizations": last_normalizations,
             "tokens": null,
-        }))?,
+        }),
     )?;
     bail!(
         "provider semantic plan remained invalid after one repair; see `{}`",
         run_dir.display()
     )
+}
+
+fn write_provider_status(run_dir: &Path, status: &JsonValue) -> Result<()> {
+    let path = run_dir.join("provider.json");
+    let temporary = run_dir.join("provider.json.tmp");
+    fs::write(&temporary, serde_json::to_string_pretty(status)?)
+        .with_context(|| format!("failed to write `{}`", temporary.display()))?;
+    fs::rename(&temporary, &path).with_context(|| format!("failed to publish `{}`", path.display()))
 }
 
 #[derive(Debug)]
@@ -93781,6 +93907,152 @@ exit 0
                 .unwrap()
                 .contains("semantic-plan.provider-failed")
         );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn semantic_plan_provider_publishes_live_dispatch_status_and_streams_logs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = prompt_fixture("semantic-plan-provider-live-status");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let authority = context.module.as_ref().unwrap();
+        let prompt = render_spec_plan_prompt(&context, &root, "add stable identity").unwrap();
+        let run_dir = root.join("provider-run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let program = root.join("fake-semantic-plan-codex.sh");
+        let started_marker = root.join("provider-started");
+        let release_marker = root.join("provider-release");
+        let valid = serde_json::to_string(&json!({
+            "spec": "rms/semantic-change/v0.1",
+            "module": root.join("module.yaml").display().to_string(),
+            "intent": {"summary": "add stable identity"},
+            "declaration": {
+                "purpose": "Exercise workbench prompt rendering with stable identity"
+            }
+        }))
+        .unwrap();
+        write_test_file(
+            &program,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-last-message) output="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat >/dev/null
+printf '%s\n' 'provider-dispatch-started' >&2
+: > '{}'
+while [ ! -f '{}' ]; do sleep 0.05; done
+printf '%s\n' '{}' > "$output"
+"#,
+                started_marker.display(),
+                release_marker.display(),
+                valid,
+            ),
+        );
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let mut options = no_provider_options();
+        options.provider = Provider::Codex;
+        options.provider_timeout_seconds = 5;
+
+        thread::scope(|scope| {
+            let execution = scope.spawn(|| {
+                execute_spec_plan_provider_with_program(
+                    &program,
+                    &root,
+                    &context,
+                    authority,
+                    "add stable identity",
+                    &prompt,
+                    &run_dir,
+                    &options,
+                )
+            });
+            for _ in 0..100 {
+                if started_marker.is_file()
+                    && fs::read_to_string(run_dir.join("provider.stderr.log"))
+                        .unwrap_or_default()
+                        .contains("provider-dispatch-started")
+                {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            let status: JsonValue =
+                serde_json::from_str(&fs::read_to_string(run_dir.join("provider.json")).unwrap())
+                    .unwrap();
+            assert_eq!(status["result"], "running");
+            assert!(status["pid"].as_u64().is_some());
+            assert!(run_dir.join("attempt-1-provider.stdout.log").is_file());
+            assert!(run_dir.join("attempt-1-provider.stderr.log").is_file());
+            assert!(fs::read_to_string(run_dir.join("provider.stderr.log"))
+                .unwrap()
+                .contains("provider-dispatch-started"));
+            assert!(!run_dir.join("response.md").exists());
+            fs::write(&release_marker, "release").unwrap();
+            execution.join().unwrap().unwrap();
+        });
+
+        assert!(run_dir.join("response.md").is_file());
+        assert!(fs::read_to_string(run_dir.join("provider.json"))
+            .unwrap()
+            .contains("\"result\": \"valid\""));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn semantic_plan_provider_dispatch_failure_is_explicit_and_preserves_logs() {
+        let root = prompt_fixture("semantic-plan-provider-dispatch-failure");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let authority = context.module.as_ref().unwrap();
+        let prompt = render_spec_plan_prompt(&context, &root, "add stable identity").unwrap();
+        let run_dir = root.join("provider-run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let mut options = no_provider_options();
+        options.provider = Provider::Codex;
+        options.provider_timeout_seconds = 5;
+
+        let failure = execute_spec_plan_provider_with_program(
+            &root.join("missing-codex-provider"),
+            &root,
+            &context,
+            authority,
+            "add stable identity",
+            &prompt,
+            &run_dir,
+            &options,
+        )
+        .unwrap_err();
+        let failure = format!("{failure:#}");
+
+        assert!(failure.contains("failed to start `codex exec` provider"));
+        for artifact in [
+            "attempt-1-provider.stderr.log",
+            "attempt-1-provider.stdout.log",
+            "provider.stderr.log",
+            "provider.stdout.log",
+            "semantic-plan-diagnostics.json",
+            "provider.json",
+        ] {
+            assert!(run_dir.join(artifact).is_file(), "{artifact}");
+        }
+        let status: JsonValue =
+            serde_json::from_str(&fs::read_to_string(run_dir.join("provider.json")).unwrap())
+                .unwrap();
+        assert_eq!(status["result"], "dispatch-failed");
+        assert!(status["error"]
+            .as_str()
+            .unwrap()
+            .contains("failed to start `codex exec` provider"));
         fs::remove_dir_all(&root).unwrap();
     }
 
