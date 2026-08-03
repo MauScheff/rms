@@ -12934,6 +12934,170 @@ open_questions: [Clarify every material unknown before architecture is selected.
     .unwrap_or(YamlValue::Null)
 }
 
+fn task_explicitly_declares_canonical_machine_structure(task: &str) -> bool {
+    let normalized = task.to_ascii_lowercase();
+    let declaration = [
+        "declare", "add", "remove", "replace", "revise", "set", "change", "update",
+    ]
+    .iter()
+    .any(|term| task_mentions_token(task, term));
+    let canonical_target = normalized.contains("implementation.yaml")
+        || normalized.contains("canonical machine")
+        || normalized.contains("machine declaration");
+    let machine_structure = [
+        "state",
+        "states",
+        "input",
+        "inputs",
+        "output",
+        "outputs",
+        "transition",
+        "transitions",
+        "command",
+        "commands",
+        "event",
+        "events",
+        "effect",
+        "effects",
+        "observed-event",
+        "observed-events",
+        "effect-result",
+        "effect-results",
+        "reply",
+        "replies",
+        "rejection",
+        "rejections",
+        "source-branch",
+        "machine-role",
+        "role",
+        "roles",
+    ]
+    .iter()
+    .any(|term| task_mentions_token(task, term))
+        || [
+            "observed event",
+            "effect result",
+            "source branch",
+            "machine role",
+        ]
+        .iter()
+        .any(|term| normalized.contains(term));
+    declaration && canonical_target && machine_structure
+}
+
+fn unknown_reuse_is_nonmaterial_for_exact_owner_change(task: &str, model: &IntentModel) -> bool {
+    let normalized = task.to_ascii_lowercase();
+    let asks_reuse_or_topology = [
+        "reuse",
+        "reusable",
+        "shared",
+        "capability",
+        "consumer",
+        "consume",
+        "publish",
+        "export",
+        "topology",
+    ]
+    .iter()
+    .any(|term| task_mentions_token(task, term));
+    model.change_scope == IntentChangeScope::ExistingModule
+        && matches!(
+            model.operation,
+            IntentOperation::SemanticChange | IntentOperation::ImplementationChange
+        )
+        && normalized.contains("implementation.yaml")
+        && !asks_reuse_or_topology
+}
+
+fn task_is_exact_existing_contract_completion(task: &str, model: &IntentModel) -> bool {
+    let normalized = task.to_ascii_lowercase();
+    let exact_contract_path = normalized.contains("/contracts/")
+        && (normalized.contains(".yaml") || normalized.contains(".yml"));
+    let existing_contract = task_mentions_token(task, "existing")
+        && task_mentions_token(task, "contract")
+        && task_mentions_token(task, "version");
+    let completes_scaffold =
+        task_mentions_token(task, "scaffold") || task_mentions_token(task, "unresolved");
+    let preserves_topology = normalized.contains("reuse the existing composite topology")
+        || normalized.contains("no source, wire, runtime, or topology change")
+        || normalized.contains("no source, wire, or runtime change");
+    model.change_scope == IntentChangeScope::ExistingModule
+        && exact_contract_path
+        && existing_contract
+        && completes_scaffold
+        && preserves_topology
+}
+
+fn task_explicitly_preserves_runnable_surface(task: &str, model: &IntentModel) -> bool {
+    let normalized = task.to_ascii_lowercase();
+    let canonical_contract_target = (normalized.contains("module.yaml")
+        || normalized.contains("/contracts/"))
+        && (task_mentions_token(task, "contract")
+            || task_mentions_token(task, "clause")
+            || task_mentions_token(task, "evaluation")
+            || task_mentions_token(task, "property"));
+    let preserves_runtime = normalized.contains("preserve the runtime")
+        || normalized.contains("preserving the runtime")
+        || normalized.contains("preserve runtime")
+        || normalized.contains("preserving runtime")
+        || ((task_mentions_token(task, "preserve") || task_mentions_token(task, "preserving"))
+            && task_mentions_token(task, "runtime")
+            && !normalized.contains("change runtime"))
+        || normalized.contains("no source, wire, runtime")
+        || normalized.contains("no runtime")
+        || normalized.contains("no runnable surface");
+    model.change_scope == IntentChangeScope::ExistingModule
+        && canonical_contract_target
+        && preserves_runtime
+}
+
+fn task_module_owned_path_rank(task: &str, root: &Path, module: &Path) -> u8 {
+    let Some(base) = module.parent() else {
+        return 0;
+    };
+    let normalized_task = task.replace('\\', "/").to_ascii_lowercase();
+    let names_module = [Some(module), module.strip_prefix(root).ok()]
+        .into_iter()
+        .flatten()
+        .filter_map(|path| path.to_str())
+        .any(|path| normalized_task.contains(&path.replace('\\', "/").to_ascii_lowercase()));
+    if names_module {
+        return 2;
+    }
+    let names_owned_path = [Some(base), base.strip_prefix(root).ok()]
+        .into_iter()
+        .flatten()
+        .filter_map(|path| path.to_str())
+        .map(|path| format!("{}/", path.replace('\\', "/").trim_end_matches('/')))
+        .any(|prefix| normalized_task.contains(&prefix.to_ascii_lowercase()));
+    u8::from(names_owned_path)
+}
+
+fn task_explicitly_targets_module_owned_path(task: &str, root: &Path, module: &Path) -> bool {
+    task_module_owned_path_rank(task, root, module) > 0
+}
+
+fn exact_task_owned_module<'a>(
+    task: &str,
+    root: &Path,
+    modules: &'a BTreeMap<String, ModuleIndexEntry>,
+) -> Option<&'a ModuleIndexEntry> {
+    let ranked = modules
+        .values()
+        .filter_map(|module| {
+            let rank = task_module_owned_path_rank(task, root, &module.path);
+            (rank > 0).then_some((rank, module))
+        })
+        .collect::<Vec<_>>();
+    let highest = ranked.iter().map(|(rank, _)| *rank).max()?;
+    let mut highest_matches = ranked
+        .into_iter()
+        .filter(|(rank, _)| *rank == highest)
+        .map(|(_, module)| module);
+    let selected = highest_matches.next()?;
+    highest_matches.next().is_none().then_some(selected)
+}
+
 fn validate_intent_model(task: &str, root: &Path, model: &IntentModel) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     if model.spec != "rms/intent-model/v0.1" {
@@ -12988,10 +13152,28 @@ fn validate_intent_model(task: &str, root: &Path, model: &IntentModel) -> Vec<Di
             }
         }
         if fact.disposition == IntentDisposition::Unknown {
+            let nonmaterial_owner_local_reuse =
+                name == "reuse" && unknown_reuse_is_nonmaterial_for_exact_owner_change(task, model);
+            let nonmaterial_contract_lifecycle = name == "lifecycle"
+                && model.operation == IntentOperation::SemanticChange
+                && task_is_exact_existing_contract_completion(task, model);
+            let nonmaterial = nonmaterial_owner_local_reuse || nonmaterial_contract_lifecycle;
             diagnostics.push(warning(
-                "intent.material-unknown",
+                if nonmaterial {
+                    "intent.nonmaterial-unknown"
+                } else {
+                    "intent.material-unknown"
+                },
                 root,
-                format!("material fact `{name}` remains unknown"),
+                if nonmaterial_owner_local_reuse {
+                    "reuse remains unknown but does not affect routing for this exact existing implementation target"
+                        .to_string()
+                } else if nonmaterial_contract_lifecycle {
+                    "lifecycle remains unknown but does not affect routing for this exact in-place contract scaffold completion"
+                        .to_string()
+                } else {
+                    format!("material fact `{name}` remains unknown")
+                },
             ));
         }
     }
@@ -13115,6 +13297,33 @@ fn validate_intent_model(task: &str, root: &Path, model: &IntentModel) -> Vec<Di
             "intent.contradiction",
             root,
             "surface-change contradicts runnable_surface=absent; correct the operation or fact disposition",
+        ));
+    }
+    if model.operation == IntentOperation::ImplementationChange
+        && task_explicitly_declares_canonical_machine_structure(task)
+    {
+        diagnostics.push(error(
+            "intent.contradiction",
+            root,
+            "implementation-change cannot declare canonical machine structure; use semantic-change for states, inputs, transitions, ordered outputs, source branches, or machine roles",
+        ));
+    }
+    if model.operation == IntentOperation::Design
+        && task_is_exact_existing_contract_completion(task, model)
+    {
+        diagnostics.push(error(
+            "intent.contradiction",
+            root,
+            "design cannot complete an exact existing contract artifact in place while preserving version and topology; use semantic-change",
+        ));
+    }
+    if model.facts.runnable_surface.disposition == IntentDisposition::Required
+        && task_explicitly_preserves_runnable_surface(task, model)
+    {
+        diagnostics.push(error(
+            "intent.contradiction",
+            root,
+            "runnable_surface=required contradicts the explicit preservation of the existing runtime or runnable surface; executable contract evaluation is proof, not a product surface",
         ));
     }
     diagnostics
@@ -19240,10 +19449,12 @@ fn inspect_trace_canonical_conformance(
         {
             continue;
         }
-        let (transition, mismatches) = candidate_mismatches
+        let Some((transition, mismatches)) = candidate_mismatches
             .into_iter()
             .min_by_key(|(_, mismatches)| mismatches.len())
-            .expect("non-empty canonical transition candidates");
+        else {
+            continue;
+        };
 
         push_trace_diagnostic(
             diagnostics,
@@ -35837,13 +36048,24 @@ fn build_next_report_with_intent(
     } else if result == NextResult::Ready {
         match classification.lane {
             TaskLane::Semantic => {
-                allowed_actions.extend(["spec-apply", "machine-apply"]);
+                allowed_actions.push("spec-apply");
+                if context.implementation.is_some() {
+                    allowed_actions.push("machine-apply");
+                }
             }
-            TaskLane::Surface => allowed_actions.push("surface-apply"),
+            TaskLane::Surface if context.implementation.is_some() => {
+                allowed_actions.push("surface-apply")
+            }
             TaskLane::SemanticPlusSurface => {
-                allowed_actions.extend(["spec-apply", "machine-apply", "surface-apply"]);
+                allowed_actions.push("spec-apply");
+                if context.implementation.is_some() {
+                    allowed_actions.extend(["machine-apply", "surface-apply"]);
+                }
             }
-            TaskLane::ImplementationCandidate => allowed_actions.push("add-binding"),
+            TaskLane::ImplementationCandidate if context.implementation.is_none() => {
+                allowed_actions.push("add-binding")
+            }
+            TaskLane::ImplementationCandidate => {}
             _ => {}
         }
     }
@@ -36511,6 +36733,12 @@ fn resolve_next_owner(
                 ));
             }
         }
+    } else if let Some(exact) = exact_task_owned_module(task, root, modules) {
+        (
+            Some(exact.path.clone()),
+            "exact canonical artifact path named by task".to_string(),
+            vec![owner_candidate(task, exact)],
+        )
     } else if let Some(direct) = modules
         .values()
         .find(|module| module.path == root.join("module.yaml"))
@@ -37870,6 +38098,41 @@ fn build_route_report(module: &Path, root: &Path, task: &str) -> Result<RouteRep
             }],
             warnings: Vec::new(),
             next_commands,
+        });
+    }
+
+    if task_explicitly_targets_module_owned_path(task, root, &target_manifest.path) {
+        return Ok(RouteReport {
+            result: RouteResult::TargetOnly,
+            task: task.to_string(),
+            target: target_summary.clone(),
+            recommendation: Some(target_summary.clone()),
+            candidates: vec![RouteCandidate {
+                module: target_summary,
+                score: 10,
+                reasons: vec![
+                    "task explicitly targets a canonical artifact owned by the composite parent"
+                        .to_string(),
+                ],
+            }],
+            warnings: vec![
+                "the explicitly targeted parent artifact retains ownership; exported child behavior may need aligned evidence without transferring public ownership"
+                    .to_string(),
+            ],
+            next_commands: vec![
+                format!(
+                    "rms context {} --root {} --task {:?}",
+                    module.display(),
+                    root.display(),
+                    task
+                ),
+                format!(
+                    "rms spec plan {} --root {} --task {:?}",
+                    module.display(),
+                    root.display(),
+                    task
+                ),
+            ],
         });
     }
 
@@ -57963,8 +58226,8 @@ fn verify_package_manifests(
                 module_manifests.len()
             ),
         ));
-    } else {
-        let module_manifest = load_manifest(selected_root.as_ref().unwrap())?;
+    } else if let Some(selected_root) = selected_root.as_ref() {
+        let module_manifest = load_manifest(selected_root)?;
         verify_package_module_identity(&module_manifest, package_manifest, findings);
         findings.push(verify_package_finding(
             VerifyPackageStatus::Pass,
@@ -91036,6 +91299,421 @@ open_questions: []
             Some(&changed),
         )
         .is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn provider_intent_rejects_machine_declaration_as_body_only_implementation() {
+        let root = unique_test_dir("machine-declaration-intent-contradiction");
+        fs::create_dir_all(&root).unwrap();
+        let task = "In modules/apple-audio-effect-boundary-boundary/implementation.yaml, declare the existing AwaitingInput plus PlaybackPrewarmReady transition produced by transitionRecord, including its exact Completed state, lifecycle events, allowPlaybackPrewarm reply, and source branch.";
+        let response = r#"{
+  "spec":"rms/intent-model/v0.1",
+  "operation":"implementation-change",
+  "change_scope":"existing-module",
+  "subjects":["apple-audio-effect-boundary-boundary","awaiting-input-playback-prewarm-ready-transition"],
+  "facts":{
+    "domain_decisions":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"The task declares existing structure."},
+    "lifecycle":{"disposition":"required","basis":"explicit","source_quote":"transition produced by transitionRecord, including its exact Completed state, lifecycle events","rationale":null},
+    "effects":{"disposition":"required","basis":"explicit","source_quote":"allowPlaybackPrewarm reply","rationale":null},
+    "runnable_surface":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"No runnable surface is requested."},
+    "reuse":{"disposition":"required","basis":"explicit","source_quote":"existing AwaitingInput plus PlaybackPrewarmReady transition produced by transitionRecord","rationale":null}
+  },
+  "responsibilities":[
+    {"id":"awaiting-input-playback-prewarm-ready-transition","kind":"workflow","summary":"Declare the existing transition."},
+    {"id":"allow-playback-prewarm-reply","kind":"integration","summary":"Declare the reply."}
+  ],
+  "surface_kinds":[],
+  "binding_preferences":[],
+  "open_questions":[]
+}"#;
+
+        let diagnostics = provider_intent_candidate(task, &root, response).unwrap_err();
+
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "intent.contradiction"
+                && diagnostic
+                    .message
+                    .contains("cannot declare canonical machine structure")
+                && diagnostic.message.contains("use semantic-change")
+        }));
+        let repair = render_intent_repair_prompt(task, response, &diagnostics);
+        assert!(repair.contains("use semantic-change"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn semantic_machine_declaration_route_authorizes_machine_apply_not_add_binding() {
+        let root = copy_minimal_fixture("machine-declaration-route");
+        initialize_test_git_repository(&root);
+        let task = "In implementation.yaml, declare the existing AwaitingInput plus PlaybackPrewarmReady transition produced by transitionRecord, including its exact Completed state, lifecycle events, allowPlaybackPrewarm reply, and source branch.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [example, awaiting-input-playback-prewarm-ready-transition]
+facts:
+  domain_decisions: { disposition: absent, basis: inferred, rationale: existing machine declaration }
+  lifecycle: { disposition: required, basis: explicit, source_quote: "transition produced by transitionRecord, including its exact Completed state, lifecycle events" }
+  effects: { disposition: required, basis: explicit, source_quote: "allowPlaybackPrewarm reply" }
+  runnable_surface: { disposition: absent, basis: inferred, rationale: no runnable surface }
+  reuse: { disposition: required, basis: explicit, source_quote: "existing AwaitingInput plus PlaybackPrewarmReady transition produced by transitionRecord" }
+responsibilities:
+  - { id: awaiting-input-playback-prewarm-ready-transition, kind: workflow, summary: Declare the existing transition }
+  - { id: allow-playback-prewarm-reply, kind: integration, summary: Declare the existing reply }
+surface_kinds: []
+binding_preferences: []
+open_questions: []
+"#;
+        let report = build_next_report_with_intent(
+            &root,
+            Some(&root.join("module.yaml")),
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
+        let implementation = root.join("implementation.yaml");
+
+        assert_eq!(report.result, NextResult::Ready);
+        assert_eq!(report.task_classification.lane, TaskLane::Semantic);
+        assert_eq!(
+            receipt.payload.allowed_action_families,
+            vec!["machine-apply".to_string(), "spec-apply".to_string()]
+        );
+        assert!(validate_route_receipt(
+            &root,
+            Path::new(&report.receipt_path),
+            "machine-apply",
+            &implementation,
+            None,
+        )
+        .is_ok());
+        assert!(validate_route_receipt(
+            &root,
+            Path::new(&report.receipt_path),
+            "add-binding",
+            &root.join("module.yaml"),
+            None,
+        )
+        .is_err());
+        assert!(report
+            .steps
+            .iter()
+            .flat_map(|group| &group.steps)
+            .any(|step| {
+                step.program.as_deref() == Some("rms")
+                    && step
+                        .args
+                        .starts_with(&["spec".to_string(), "plan".to_string()])
+            }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn exact_existing_machine_target_does_not_block_on_unknown_reuse() {
+        let root = copy_minimal_fixture("existing-machine-unknown-reuse-route");
+        initialize_test_git_repository(&root);
+        let task = "Change the canonical Voice Media boundary machine in modules/voice-media-boundary/implementation.yaml to declare every existing Ready-state render callback with a non-nil identity as IgnoreStaleGeneration: RenderDeadlineExpired, AppleRenderScheduled, AppleRenderTemporarilyUnavailable, AppleRenderFailed, AppleRenderTimedOut, and AppleRenderBusy each preserve Ready, emit StaleRenderIgnored, and reply Stale, matching transitionRecord.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [ignore-stale-generation, ready-state-render-callbacks, voice-media-boundary]
+facts:
+  domain_decisions: { disposition: required, basis: explicit, source_quote: "declare every existing Ready-state render callback with a non-nil identity as IgnoreStaleGeneration" }
+  lifecycle: { disposition: required, basis: explicit, source_quote: "preserve Ready, emit StaleRenderIgnored, and reply Stale, matching transitionRecord" }
+  effects: { disposition: required, basis: explicit, source_quote: "emit StaleRenderIgnored, and reply Stale" }
+  runnable_surface: { disposition: absent, basis: inferred, rationale: no runnable surface }
+  reuse: { disposition: unknown, basis: inferred, rationale: consumption is not stated }
+responsibilities:
+  - { id: classify-ready-render-callbacks, kind: decision, summary: Classify stale render callbacks }
+  - { id: ignore-stale-ready-render-callbacks, kind: workflow, summary: Preserve Ready and emit the stale result }
+surface_kinds: []
+binding_preferences: []
+open_questions: [Clarify whether the machine is consumed by other modules.]
+"#;
+        let report = build_next_report_with_intent(
+            &root,
+            Some(&root.join("module.yaml")),
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
+
+        assert_eq!(report.result, NextResult::Ready);
+        assert_eq!(report.task_classification.lane, TaskLane::Semantic);
+        assert_eq!(
+            receipt.payload.allowed_action_families,
+            vec!["machine-apply".to_string(), "spec-apply".to_string()]
+        );
+        assert!(report.validation.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "intent.nonmaterial-unknown"
+                && diagnostic.message.contains("exact existing implementation")
+        }));
+        assert!(report
+            .validation
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.check != "intent.material-unknown"));
+        let model = parse_intent_model_source(intent).unwrap();
+        let topology_diagnostics = validate_intent_model(
+            &format!("{task} Publish it as a reusable capability."),
+            &root,
+            &model,
+        );
+        assert!(topology_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "intent.material-unknown"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn implementation_candidate_authorizes_add_binding_only_when_binding_is_absent() {
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: implementation-change
+change_scope: existing-module
+subjects: [example]
+facts:
+  domain_decisions: { disposition: absent, basis: inferred, rationale: declared behavior is unchanged }
+  lifecycle: { disposition: absent, basis: inferred, rationale: declared lifecycle is unchanged }
+  effects: { disposition: absent, basis: inferred, rationale: declared effects are unchanged }
+  runnable_surface: { disposition: absent, basis: inferred, rationale: no runnable surface }
+  reuse: { disposition: absent, basis: inferred, rationale: owner-local role body }
+responsibilities: []
+surface_kinds: []
+binding_preferences: []
+open_questions: []
+"#;
+        let root = copy_minimal_fixture("implementation-existing-binding-route");
+        initialize_test_git_repository(&root);
+        let report = build_next_report_with_intent(
+            &root,
+            Some(&root.join("module.yaml")),
+            "Fix the existing parser role body without changing canonical declarations.",
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
+        assert_eq!(report.result, NextResult::Ready);
+        assert_eq!(
+            report.task_classification.lane,
+            TaskLane::ImplementationCandidate
+        );
+        assert!(receipt.payload.allowed_action_families.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+
+        let root = copy_minimal_fixture("implementation-missing-binding-route");
+        fs::remove_file(root.join("implementation.yaml")).unwrap();
+        initialize_test_git_repository(&root);
+        let report = build_next_report_with_intent(
+            &root,
+            Some(&root.join("module.yaml")),
+            "Add the implementation binding for the existing declaration.",
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
+        assert_eq!(
+            receipt.payload.allowed_action_families,
+            vec!["add-binding".to_string()]
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn exact_contract_completion_does_not_block_on_unknown_lifecycle() {
+        let root = copy_minimal_fixture("existing-contract-unknown-lifecycle-route");
+        initialize_test_git_repository(&root);
+        let task = "Evolve the existing composite Receiver Media Readiness public command contract at modules/receiver-media-readiness/contracts/receiver-media-readiness.v1.yaml from its scaffold migration draft into the real version-1 contract exported by the existing receiver-media-readiness-boundary child. Reuse the existing composite topology and unchanged wire command. Bind every requirement, guarantee, and failure to the existing receiver-media-readiness-boundary-contract-property; remove scaffold and unresolved markers; make no source, wire, or runtime change.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [receiver-media-readiness, receiver-media-readiness-contract]
+facts:
+  domain_decisions: { disposition: required, basis: inferred, rationale: contract clauses are completed }
+  lifecycle: { disposition: unknown, basis: inferred, rationale: lifecycle was not restated }
+  effects: { disposition: absent, basis: inferred, rationale: no runtime change }
+  runnable_surface: { disposition: absent, basis: inferred, rationale: no runtime change }
+  reuse: { disposition: required, basis: inferred, rationale: existing child export is retained }
+responsibilities:
+  - { id: receiver-media-readiness-contract, kind: decision, summary: Complete the existing contract clauses }
+surface_kinds: []
+binding_preferences: []
+open_questions: [Clarify the lifecycle.]
+"#;
+        let report = build_next_report_with_intent(
+            &root,
+            Some(&root.join("module.yaml")),
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(report.result, NextResult::Ready);
+        assert!(report.validation.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "intent.nonmaterial-unknown"
+                && diagnostic.message.contains("contract scaffold completion")
+        }));
+        let model = parse_intent_model_source(intent).unwrap();
+        let ambiguous = validate_intent_model(
+            "Decide whether the existing contract should be replaced by a new major version with a different lifecycle.",
+            &root,
+            &model,
+        );
+        assert!(ambiguous
+            .iter()
+            .any(|diagnostic| diagnostic.check == "intent.material-unknown"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn provider_intent_repairs_design_for_exact_contract_completion() {
+        let root = unique_test_dir("existing-contract-design-contradiction");
+        fs::create_dir_all(&root).unwrap();
+        let task = "Evolve in place the existing composite Receiver Media Readiness public command contract at modules/receiver-media-readiness/contracts/receiver-media-readiness.v1.yaml. Preserve version 1 and backward-compatible-within-major lifecycle; this is not a new contract, replacement, deprecation, or removal. Reuse the existing composite topology and unchanged wire command exported by receiver-media-readiness-boundary. Bind every requirement, guarantee, and failure to receiver-media-readiness-boundary-contract-property; remove scaffold and unresolved markers; make no source, wire, runtime, or topology change.";
+        let response = r#"{
+  "spec":"rms/intent-model/v0.1",
+  "operation":"design",
+  "change_scope":"existing-module",
+  "subjects":["receiver-media-readiness","receiver-media-readiness-contract"],
+  "facts":{
+    "domain_decisions":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"Contract clauses are completed."},
+    "lifecycle":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"The existing version and lifecycle are preserved."},
+    "effects":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"No runtime change is requested."},
+    "runnable_surface":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"No runnable surface is requested."},
+    "reuse":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"The existing composite topology is reused."}
+  },
+  "responsibilities":[{"id":"receiver-media-readiness-contract","kind":"decision","summary":"Complete the existing contract clauses."}],
+  "surface_kinds":[],
+  "binding_preferences":[],
+  "open_questions":[]
+}"#;
+
+        let diagnostics = provider_intent_candidate(task, &root, response).unwrap_err();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "intent.contradiction"
+                && diagnostic.message.contains("use semantic-change")
+        }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn provider_intent_does_not_treat_executable_contract_proof_as_surface() {
+        let root = unique_test_dir("contract-proof-surface-contradiction");
+        fs::create_dir_all(&root).unwrap();
+        let task = "Change canonical contract clauses in the existing owner modules/receiver-media-readiness/module.yaml for its existing command receiver-media-readiness version 1: replace the three unresolved evaluations and empty exhaustive case scaffold with external executable evaluation by receiver-media-readiness-boundary-contract-property, matching the already exported child behavior. Preserve the current major version, compatibility policy, command name, wire shape, module topology, and runtime; remove only x-rms scaffold and migration-draft status.";
+        let response = r#"{
+  "spec":"rms/intent-model/v0.1",
+  "operation":"semantic-change",
+  "change_scope":"existing-module",
+  "subjects":["receiver-media-readiness","receiver-media-readiness-contract"],
+  "facts":{
+    "domain_decisions":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"Contract clauses are completed."},
+    "lifecycle":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"The current major version is preserved."},
+    "effects":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"The evaluation is externally executable."},
+    "runnable_surface":{"disposition":"required","basis":"explicit","source_quote":"external executable evaluation","rationale":null},
+    "reuse":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"The existing child behavior is retained."}
+  },
+  "responsibilities":[
+    {"id":"receiver-media-readiness-contract","kind":"decision","summary":"Complete the existing contract clauses."},
+    {"id":"receiver-media-readiness-contract-evaluation","kind":"integration","summary":"Evaluate the contract property."}
+  ],
+  "surface_kinds":["executable"],
+  "binding_preferences":[],
+  "open_questions":[]
+}"#;
+
+        let diagnostics = provider_intent_candidate(task, &root, response).unwrap_err();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "intent.contradiction"
+                && diagnostic.message.contains("proof, not a product surface")
+        }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn exact_composite_parent_path_precedes_child_and_pattern_mentions() {
+        let root = route_capability_fixture("exact-composite-parent-route");
+        let profile = build_repository_profile(&root).unwrap();
+        let task = "Bind the composite parent contract in modules/play-game/module.yaml to a new executable composition-only public-command-child-backing-property, exactly like an existing reference pattern. The property proves the parent command resolves to play-game-boundary and that boundary requires play-game-domain. The parent adds no state, effect, runnable surface, or duplicate decision.";
+
+        let owner = resolve_next_owner(&root, None, task, &profile.modules, false).unwrap();
+
+        assert_eq!(owner.status(), OwnerStatus::Selected);
+        assert_eq!(
+            owner.selected_module().map(|module| module.name.as_str()),
+            Some("play-game")
+        );
+        assert!(owner.reason.contains("exact canonical artifact path"));
+        assert_eq!(owner.route.len(), 1);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn semantic_parent_without_binding_authorizes_spec_apply_only() {
+        let root = copy_minimal_fixture("semantic-parent-without-binding-route");
+        fs::remove_file(root.join("implementation.yaml")).unwrap();
+        initialize_test_git_repository(&root);
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [example, parent-contract]
+facts:
+  domain_decisions: { disposition: required, basis: inferred, rationale: contract clauses are completed }
+  lifecycle: { disposition: required, basis: inferred, rationale: existing lifecycle is preserved }
+  effects: { disposition: absent, basis: inferred, rationale: composition property is pure proof }
+  runnable_surface: { disposition: absent, basis: inferred, rationale: no runnable surface }
+  reuse: { disposition: required, basis: inferred, rationale: existing composition is retained }
+responsibilities:
+  - { id: parent-contract, kind: decision, summary: Complete the parent contract }
+surface_kinds: []
+binding_preferences: []
+open_questions: []
+"#;
+        let report = build_next_report_with_intent(
+            &root,
+            Some(&root.join("module.yaml")),
+            "Complete the existing parent contract without adding an implementation binding.",
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
+
+        assert_eq!(report.result, NextResult::Ready);
+        assert!(report.context.implementation.is_none());
+        assert_eq!(
+            receipt.payload.allowed_action_families,
+            vec!["spec-apply".to_string()]
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 

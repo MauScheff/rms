@@ -36,7 +36,7 @@ Use `rms explain ["<question>"]` when the compact prescription needs clarificati
 
 ## Executable Property Loop
 
-Temporal promises use typed observations, explicit assumptions, closed expressions, and dimensionally valid quantities. Use `property check` to type-check, `evaluate` for a real trace, `search` for a witness or counterexample, `analyze` for finite relationships, `monitor` for an offline or streaming prefix, and `replay` for recorded `rms/property-analysis/v0.1` evidence. A bounded or open run is inconclusive, never proof.
+Behavioral contracts and temporal promises use typed observations, explicit assumptions, closed expressions, and dimensionally valid quantities. Use `property check` to type-check, `evaluate` for real invocation or transition records, `search` for a witness or counterexample, `analyze` for finite or solver-backed obligations, `monitor` for a fail-open streaming prefix, and `replay` for recorded `rms/property-analysis/v0.2` evidence. A bounded or open run is inconclusive, never proof.
 
 For a transition-count bound, declare the metric observation exactly as `source: {kind: trace-metric, name: transition-count}` with `value: {quantity: transition}`; put `{metric: <observation-id>, value: <decimal>, unit: transition}` in the temporal bound. `rms spec plan` renders a complete bounded-response example for other agents and dimensions.
 
