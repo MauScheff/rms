@@ -10023,8 +10023,14 @@ fn run_main() -> Result<()> {
                 route_receipt,
             } => {
                 let root = repository_root_for_target(&target)?;
-                let receipt =
-                    require_route_receipt(&root, &route_receipt, "spec-apply", &target, None);
+                let receipt = require_spec_change_route_receipt(
+                    &root,
+                    &route_receipt,
+                    &target,
+                    change_json.as_deref(),
+                    change_yaml.as_deref(),
+                    change_file.as_deref(),
+                );
                 run_spec_apply(
                     &target,
                     change_json.as_deref(),
@@ -12160,6 +12166,7 @@ fn run_design(
         allowed_actions,
         target_paths,
         scaffold,
+        None,
     )?;
     let report = DesignReport {
         spec: "rms/design-result/v0.1",
@@ -12624,6 +12631,7 @@ fn finalize_provider_operational_failure(
         None,
         Vec::new(),
         Vec::new(),
+        None,
         None,
     )?;
     fs::write(
@@ -35086,6 +35094,24 @@ struct RouteReceiptPayload {
     allowed_action_families: Vec<String>,
     normalized_target_paths: Vec<String>,
     scaffold: Option<ArchitectureAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    repair_authority: Option<SpecRepairAuthority>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SpecRepairAuthority {
+    kind: String,
+    diagnostic_fingerprint: String,
+    contracts: Vec<SpecRepairContractAuthority>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SpecRepairContractAuthority {
+    path: String,
+    source_sha256: String,
+    case_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -37429,6 +37455,14 @@ fn build_next_report_with_intent(
     } else {
         None
     };
+    let spec_repair = contract_behavior_case_repair_ready(
+        &root,
+        task,
+        intent.as_ref(),
+        &validation.diagnostics,
+        &owner,
+    )
+    .then_some(SpecRepairRoute::ContractBehaviorCases);
     let skill_sources = detect_skill_sources(&root, home_dir().ok().as_deref());
     let mut warnings = if classification.lane == TaskLane::RepositoryOperation {
         Vec::new()
@@ -37454,10 +37488,13 @@ fn build_next_report_with_intent(
     if let Some(repair) = machine_repair {
         warnings.push(repair.warning().to_string());
     }
+    if let Some(repair) = spec_repair {
+        warnings.push(repair.warning().to_string());
+    }
     warnings.sort();
     warnings.dedup();
 
-    let mut blockers = if machine_repair.is_some() {
+    let mut blockers = if machine_repair.is_some() || spec_repair.is_some() {
         Vec::new()
     } else {
         validation
@@ -37487,7 +37524,7 @@ fn build_next_report_with_intent(
         .diagnostics
         .iter()
         .any(|item| item.check == "intent.material-unknown");
-    let result = if machine_repair.is_some() {
+    let result = if machine_repair.is_some() || spec_repair.is_some() {
         NextResult::Ready
     } else if model_required {
         NextResult::IntentRequired
@@ -37524,6 +37561,7 @@ fn build_next_report_with_intent(
         &owner,
         &context,
         machine_repair,
+        spec_repair,
     )?;
     let prepares_candidate = classification.lane.prepares_candidate()
         || matches!(
@@ -37584,7 +37622,9 @@ fn build_next_report_with_intent(
         serde_json::to_string_pretty(&extraction_diagnostics)?,
     )?;
     let mut allowed_actions = Vec::new();
-    if machine_repair.is_some() {
+    if spec_repair.is_some() {
+        allowed_actions.push("spec-repair-apply");
+    } else if machine_repair.is_some() {
         allowed_actions.push("machine-apply");
     } else if result == NextResult::Ready {
         match classification.lane {
@@ -37603,11 +37643,21 @@ fn build_next_report_with_intent(
         .selected_module()
         .map(|selected| PathBuf::from(&selected.path));
     let implementation_path = context.implementation.as_ref().map(PathBuf::from);
-    let target_paths = owner_path
-        .iter()
-        .cloned()
-        .chain(implementation_path.iter().cloned())
-        .collect::<Vec<_>>();
+    let target_paths = if spec_repair.is_some() {
+        owner_path.iter().cloned().collect::<Vec<_>>()
+    } else {
+        owner_path
+            .iter()
+            .cloned()
+            .chain(implementation_path.iter().cloned())
+            .collect::<Vec<_>>()
+    };
+    let repair_authority = match (spec_repair, owner_path.as_deref()) {
+        (Some(SpecRepairRoute::ContractBehaviorCases), Some(target)) => Some(
+            build_contract_behavior_case_repair_authority(&root, target, &validation.diagnostics)?,
+        ),
+        _ => None,
+    };
     let route = issue_route_receipt(
         &root,
         &run_dir,
@@ -37624,6 +37674,7 @@ fn build_next_report_with_intent(
             Vec::new()
         },
         None,
+        repair_authority,
     )?;
     let report = NextReport {
         result,
@@ -37928,6 +37979,19 @@ enum MachineRepairRoute {
     OwnerLocalBinding,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SpecRepairRoute {
+    ContractBehaviorCases,
+}
+
+impl SpecRepairRoute {
+    fn warning(self) -> &'static str {
+        match self {
+            Self::ContractBehaviorCases => "The exact named owner has only recognized schema-invalid behavior cases in directly referenced contracts; this ready recovery route authorizes a guarded contracts.set spec repair only. Contract identity, meaning, clauses, case policy, and every existing case id and statement must remain unchanged.",
+        }
+    }
+}
+
 impl MachineRepairRoute {
     fn warning(self) -> &'static str {
         match self {
@@ -38058,6 +38122,168 @@ fn recognized_legacy_machine_migration_diagnostic(diagnostic: &Diagnostic) -> bo
             == "inspectable Rust, Swift, JavaScript, and Python machines must declare `architecture.machine.initial_state`",
         _ => false,
     }
+}
+
+fn contract_behavior_case_repair_ready(
+    root: &Path,
+    task: &str,
+    intent: Option<&IntentModel>,
+    diagnostics: &[Diagnostic],
+    owner: &OwnerResolution,
+) -> bool {
+    let Some(intent) = intent else {
+        return false;
+    };
+    if intent.operation != IntentOperation::SemanticChange
+        || intent.change_scope != IntentChangeScope::ExistingModule
+        || !task_requests_contract_behavior_case_repair(task)
+    {
+        return false;
+    }
+    let Some(selected) = owner.selected_module() else {
+        return false;
+    };
+    let module_path = PathBuf::from(&selected.path);
+    if !task_mentions_exact_path(task, root, &module_path) {
+        return false;
+    }
+    let Ok(module) = load_manifest(&module_path) else {
+        return false;
+    };
+    let base = module.path.parent().unwrap_or(root);
+    let referenced_contracts = module_contract_reference_paths(&module.value)
+        .into_iter()
+        .filter_map(|reference| fs::canonicalize(base.join(reference)).ok())
+        .collect::<BTreeSet<_>>();
+    let errors = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .collect::<Vec<_>>();
+    !errors.is_empty()
+        && errors.iter().all(|diagnostic| {
+            fs::canonicalize(&diagnostic.path)
+                .ok()
+                .is_some_and(|path| referenced_contracts.contains(&path))
+                && recognized_contract_behavior_case_schema_diagnostic(diagnostic)
+        })
+}
+
+fn task_requests_contract_behavior_case_repair(task: &str) -> bool {
+    let repair = ["repair", "fix", "correct", "restore"]
+        .iter()
+        .any(|term| task_mentions_token(task, term));
+    let contract_case = task_mentions_token(task, "contract")
+        && task_mentions_token(task, "case")
+        && (task_mentions_token(task, "schema")
+            || task_mentions_token(task, "invalid")
+            || task_mentions_token(task, "malformed"));
+    repair && contract_case
+}
+
+fn recognized_contract_behavior_case_schema_diagnostic(diagnostic: &Diagnostic) -> bool {
+    if diagnostic.check != "schema.validate"
+        || !diagnostic.message.contains("/semantics/behavior/cases/")
+    {
+        return false;
+    }
+    [
+        "\"when\" is a required property",
+        "\"outcome\" is a required property",
+        "\"ensures\" is a required property",
+        "\"permits\" is a required property",
+        "Additional properties are not allowed ('evaluation' was unexpected)",
+    ]
+    .iter()
+    .any(|message| diagnostic.message.contains(message))
+}
+
+fn build_contract_behavior_case_repair_authority(
+    root: &Path,
+    target: &Path,
+    diagnostics: &[Diagnostic],
+) -> Result<SpecRepairAuthority> {
+    let root = fs::canonicalize(root)
+        .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
+    let target = fs::canonicalize(target)
+        .with_context(|| format!("failed to resolve repair target `{}`", target.display()))?;
+    let module = load_manifest(&target)?;
+    let base = module.path.parent().unwrap_or(&root);
+    let referenced = module_contract_reference_paths(&module.value)
+        .into_iter()
+        .map(|reference| {
+            let path = fs::canonicalize(base.join(&reference))?;
+            Ok((path, reference))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let mut fingerprint_entries = Vec::new();
+    let mut affected = BTreeSet::new();
+    for diagnostic in diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        let path = fs::canonicalize(&diagnostic.path)
+            .with_context(|| format!("failed to resolve blocker path `{}`", diagnostic.path))?;
+        let Some(reference) = referenced.get(&path) else {
+            bail!(
+                "spec repair authority cannot include non-owned blocker `{}`",
+                diagnostic.path
+            );
+        };
+        if !recognized_contract_behavior_case_schema_diagnostic(diagnostic) {
+            bail!(
+                "spec repair authority cannot include unrecognized blocker [{}] {}",
+                diagnostic.check,
+                diagnostic.message
+            );
+        }
+        affected.insert(path);
+        fingerprint_entries.push((
+            reference.clone(),
+            diagnostic.check.clone(),
+            diagnostic.message.clone(),
+        ));
+    }
+    if fingerprint_entries.is_empty() {
+        bail!("spec repair authority requires at least one recognized blocker");
+    }
+    fingerprint_entries.sort();
+
+    let mut contracts = Vec::new();
+    for path in affected {
+        let contract = load_manifest(&path)?;
+        let case_ids = get_path(&contract.value, &["semantics", "behavior", "cases"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .map(|case| {
+                get_str(case, &["id"])
+                    .map(ToString::to_string)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "repair contract `{}` contains a case without an id",
+                            path.display()
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if case_ids.is_empty() || case_ids.iter().collect::<BTreeSet<_>>().len() != case_ids.len() {
+            bail!(
+                "repair contract `{}` must contain nonempty unique case ids",
+                path.display()
+            );
+        }
+        contracts.push(SpecRepairContractAuthority {
+            path: normalize_receipt_target(&root, &path)?,
+            source_sha256: sha256_bytes(&fs::read(&path)?),
+            case_ids,
+        });
+    }
+    contracts.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(SpecRepairAuthority {
+        kind: "contract-behavior-cases".to_string(),
+        diagnostic_fingerprint: sha256_bytes(&serde_json::to_vec(&fingerprint_entries)?),
+        contracts,
+    })
 }
 
 #[cfg(test)]
@@ -39155,6 +39381,7 @@ fn build_next_steps(
     owner: &OwnerResolution,
     context: &NextContext,
     machine_repair: Option<MachineRepairRoute>,
+    spec_repair: Option<SpecRepairRoute>,
 ) -> Result<Vec<NextStepGroup>> {
     let cwd = Some(root.display().to_string());
     if matches!(
@@ -39318,11 +39545,38 @@ fn build_next_steps(
             None,
         ));
     } else if let Some(selected) = owner.selected_module() {
-        let semantic_target = context
-            .implementation
-            .clone()
-            .unwrap_or_else(|| selected.path.clone());
-        if let Some(repair) = machine_repair {
+        let semantic_target = if spec_repair.is_some() {
+            selected.path.clone()
+        } else {
+            context
+                .implementation
+                .clone()
+                .unwrap_or_else(|| selected.path.clone())
+        };
+        if spec_repair.is_some() {
+            declare.push(executable_next_step(
+                "Plan the guarded contract behavior-case schema repair",
+                "rms",
+                vec![
+                    "spec".to_string(),
+                    "plan".to_string(),
+                    semantic_target.clone(),
+                    "--root".to_string(),
+                    root.display().to_string(),
+                    "--task".to_string(),
+                    task.to_string(),
+                ],
+                cwd.clone(),
+            ));
+            declare.push(manual_next_step(
+                "Apply the reviewed contracts.set-only semantic change with `rms spec apply ... --dry-run --route-receipt <RUN_ID>`, then apply it with the same receipt. The recovery receipt rejects contract deletion, case deletion, wrapper or clause drift, and every non-contract semantic operation.",
+                None,
+            ));
+            implement.push(manual_next_step(
+                "Make no source or direct canonical edits. After the forward repair validates, continue with the ordinary semantic workflow from the repaired state.",
+                None,
+            ));
+        } else if let Some(repair) = machine_repair {
             declare.push(executable_next_step(
                 repair.plan_description(),
                 "rms",
@@ -39405,6 +39659,7 @@ fn build_next_steps(
             }
         }
         if machine_repair.is_none()
+            && spec_repair.is_none()
             && !matches!(
                 classification.lane,
                 TaskLane::ReadOnly | TaskLane::RepositoryOperation | TaskLane::Design
@@ -73978,6 +74233,7 @@ fn issue_route_receipt(
     mut allowed_action_families: Vec<String>,
     target_paths: Vec<PathBuf>,
     scaffold: Option<ArchitectureAction>,
+    repair_authority: Option<SpecRepairAuthority>,
 ) -> Result<RouteRunArtifacts> {
     let run_id = run_dir
         .file_name()
@@ -74016,6 +74272,7 @@ fn issue_route_receipt(
         allowed_action_families,
         normalized_target_paths,
         scaffold,
+        repair_authority,
     };
     let receipt_id = sha256_bytes(&serde_json::to_vec(&payload)?);
     let receipt = RouteReceipt {
@@ -74159,6 +74416,285 @@ fn require_route_receipt(
             std::process::exit(2);
         }
     }
+}
+
+fn validate_spec_change_route_receipt(
+    root: &Path,
+    reference: &Path,
+    target: &Path,
+    change_json: Option<&str>,
+    change_yaml: Option<&str>,
+    change_file: Option<&Path>,
+) -> Result<RouteReceipt> {
+    if let Ok(receipt) = validate_route_receipt(root, reference, "spec-apply", target, None) {
+        return Ok(receipt);
+    }
+    let receipt = validate_route_receipt(root, reference, "spec-repair-apply", target, None)?;
+    let expected = receipt
+        .payload
+        .repair_authority
+        .as_ref()
+        .ok_or_else(|| anyhow!("spec repair receipt has no signed repair authority"))?;
+    if expected.kind != "contract-behavior-cases" {
+        bail!("unsupported spec repair authority `{}`", expected.kind);
+    }
+    let diagnostics = collect_validation_diagnostics(
+        root,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )?;
+    let current = build_contract_behavior_case_repair_authority(root, target, &diagnostics)?;
+    if &current != expected {
+        bail!(
+            "spec repair authority is stale: the blocker fingerprint, owned contract sources, paths, or case ids changed; route the exact repair task again"
+        );
+    }
+    let context = load_spec_target(target)?;
+    let change = prepare_semantic_change_for_apply(
+        &context,
+        parse_semantic_change(change_json, change_yaml, change_file)?,
+    );
+    validate_contract_behavior_case_repair_change(root, &context, &change, expected)?;
+    Ok(receipt)
+}
+
+fn require_spec_change_route_receipt(
+    root: &Path,
+    reference: &Path,
+    target: &Path,
+    change_json: Option<&str>,
+    change_yaml: Option<&str>,
+    change_file: Option<&Path>,
+) -> RouteReceipt {
+    match validate_spec_change_route_receipt(
+        root,
+        reference,
+        target,
+        change_json,
+        change_yaml,
+        change_file,
+    ) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            eprintln!("RMS route receipt rejected: {error:#}");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn validate_contract_behavior_case_repair_change(
+    root: &Path,
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    authority: &SpecRepairAuthority,
+) -> Result<()> {
+    let value = serde_json::to_value(change)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("semantic change is not an object"))?;
+    for (field, value) in object {
+        if matches!(
+            field.as_str(),
+            "spec" | "module" | "supersedes" | "intent" | "contracts" | "evidence"
+        ) {
+            continue;
+        }
+        if json_value_has_material_operation(value) {
+            bail!(
+                "spec repair receipt permits only contracts.set and already-declared contract evidence; `{field}` contains an operation"
+            );
+        }
+    }
+
+    let contracts = change
+        .contracts
+        .as_ref()
+        .ok_or_else(|| anyhow!("spec repair requires contracts.set"))?;
+    if !contracts.add.is_empty() || !contracts.remove.is_empty() || contracts.replace.is_empty() {
+        bail!("spec repair requires only a nonempty contracts.set operation");
+    }
+    let module = context
+        .module
+        .as_ref()
+        .ok_or_else(|| anyhow!("spec repair target is not a module manifest"))?;
+    let base = module.path.parent().unwrap_or(root);
+    let expected_paths = authority
+        .contracts
+        .iter()
+        .map(|contract| contract.path.as_str())
+        .collect::<BTreeSet<_>>();
+    let proposed_paths = contracts
+        .replace
+        .iter()
+        .map(|contract| {
+            normalize_receipt_target(root, &base.join(semantic_contract_path(contract)))
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    if proposed_paths
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        != expected_paths
+    {
+        bail!("spec repair must set every and only the signed invalid contract paths");
+    }
+
+    for proposed in &contracts.replace {
+        let relative =
+            normalize_receipt_target(root, &base.join(semantic_contract_path(proposed)))?;
+        let signed = authority
+            .contracts
+            .iter()
+            .find(|contract| contract.path == relative)
+            .ok_or_else(|| anyhow!("contract `{relative}` is outside signed repair authority"))?;
+        let current = load_manifest(&root.join(&relative))?;
+        let rendered: YamlValue = serde_yaml::from_str(&render_semantic_contract(proposed))?;
+        validate_contract_behavior_case_repair_pair(&current.value, &rendered, signed)?;
+        if proposed
+            .command
+            .as_deref()
+            .is_some_and(|command| command != proposed.name)
+            || !proposed.accepts.is_empty()
+            || !proposed.ensures.is_empty()
+            || !proposed.rejects.is_empty()
+        {
+            bail!(
+                "spec repair contract `{}` may not use legacy clauses or rename its command",
+                proposed.name
+            );
+        }
+    }
+
+    let evidence = change
+        .evidence
+        .as_ref()
+        .ok_or_else(|| anyhow!("each repaired contract requires its already-declared evidence"))?;
+    if !evidence.remove.is_empty() || evidence.add.len() != contracts.replace.len() {
+        bail!("spec repair must preserve evidence and cite exactly one existing item per contract");
+    }
+    let declared_evidence = module_verification_references(&module.value);
+    let repaired_names = contracts
+        .replace
+        .iter()
+        .map(|contract| contract.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let proved = evidence
+        .add
+        .iter()
+        .map(|item| item.proves.as_str())
+        .collect::<BTreeSet<_>>();
+    if proved != repaired_names
+        || evidence
+            .add
+            .iter()
+            .any(|item| !declared_evidence.contains(&item.path) || !base.join(&item.path).exists())
+    {
+        bail!(
+            "spec repair evidence must prove each repaired contract through an existing declared path"
+        );
+    }
+    Ok(())
+}
+
+fn json_value_has_material_operation(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Null => false,
+        JsonValue::Bool(value) => *value,
+        JsonValue::String(value) => !value.is_empty(),
+        JsonValue::Array(values) => values.iter().any(json_value_has_material_operation),
+        JsonValue::Object(values) => values.values().any(json_value_has_material_operation),
+        JsonValue::Number(_) => true,
+    }
+}
+
+fn validate_contract_behavior_case_repair_pair(
+    current: &YamlValue,
+    proposed: &YamlValue,
+    authority: &SpecRepairContractAuthority,
+) -> Result<()> {
+    let mut current_top = current
+        .as_mapping()
+        .cloned()
+        .ok_or_else(|| anyhow!("current contract is not an object"))?;
+    let mut proposed_top = proposed
+        .as_mapping()
+        .cloned()
+        .ok_or_else(|| anyhow!("proposed contract is not an object"))?;
+    current_top.remove(&yaml_key("semantics"));
+    proposed_top.remove(&yaml_key("semantics"));
+    if current_top != proposed_top {
+        bail!("spec repair may not change contract identity, meaning, compatibility, or metadata");
+    }
+
+    let mut current_semantics = get_path(current, &["semantics"])
+        .and_then(YamlValue::as_mapping)
+        .cloned()
+        .ok_or_else(|| anyhow!("current contract semantics are not an object"))?;
+    let mut proposed_semantics = get_path(proposed, &["semantics"])
+        .and_then(YamlValue::as_mapping)
+        .cloned()
+        .ok_or_else(|| anyhow!("proposed contract semantics are not an object"))?;
+    let current_behavior = current_semantics
+        .remove(&yaml_key("behavior"))
+        .and_then(|value| value.as_mapping().cloned())
+        .ok_or_else(|| anyhow!("current contract behavior is not an object"))?;
+    let proposed_behavior = proposed_semantics
+        .remove(&yaml_key("behavior"))
+        .and_then(|value| value.as_mapping().cloned())
+        .ok_or_else(|| anyhow!("proposed contract behavior is not an object"))?;
+    if current_semantics != proposed_semantics {
+        bail!("spec repair may not change non-behavior contract semantics");
+    }
+    let mut current_protected = current_behavior.clone();
+    current_protected.remove(&yaml_key("observations"));
+    current_protected.remove(&yaml_key("cases"));
+    let mut proposed_protected = proposed_behavior.clone();
+    proposed_protected.remove(&yaml_key("observations"));
+    proposed_protected.remove(&yaml_key("cases"));
+    if current_protected != proposed_protected {
+        bail!("spec repair may not change requirements, guarantees, failures, invariants, or case policy");
+    }
+    let observations = proposed_behavior
+        .get(&yaml_key("observations"))
+        .and_then(YamlValue::as_sequence)
+        .ok_or_else(|| anyhow!("spec repair must provide behavior observations"))?;
+    if observations.is_empty() {
+        bail!("spec repair must provide at least one behavior observation");
+    }
+    let current_cases = contract_case_id_statements(&current_behavior)?;
+    let proposed_cases = contract_case_id_statements(&proposed_behavior)?;
+    if current_cases != proposed_cases {
+        bail!("spec repair must preserve every case id, statement, and order");
+    }
+    if proposed_cases.iter().map(|(id, _)| id).collect::<Vec<_>>()
+        != authority.case_ids.iter().collect::<Vec<_>>()
+    {
+        bail!("spec repair case ids do not match the signed repair authority");
+    }
+    Ok(())
+}
+
+fn contract_case_id_statements(behavior: &serde_yaml::Mapping) -> Result<Vec<(String, String)>> {
+    behavior
+        .get(&yaml_key("cases"))
+        .and_then(YamlValue::as_sequence)
+        .ok_or_else(|| anyhow!("contract behavior cases are not a sequence"))?
+        .iter()
+        .map(|case| {
+            Ok((
+                get_str(case, &["id"])
+                    .ok_or_else(|| anyhow!("contract case has no id"))?
+                    .to_string(),
+                get_str(case, &["statement"])
+                    .ok_or_else(|| anyhow!("contract case has no statement"))?
+                    .to_string(),
+            ))
+        })
+        .collect()
 }
 
 fn validate_machine_change_route_receipt(
@@ -81377,6 +81913,168 @@ evidence:
         assert_eq!(fs::read(&capability_path).unwrap(), before_capability);
         assert!(!root.join("verification/changes").exists());
 
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn contract_case_repair_receipt_is_narrow_and_source_bound() {
+        let root = unique_test_dir("contract-case-repair-receipt");
+        write_invalid_contract_case_repair_fixture(&root);
+        initialize_test_git_repository(&root);
+        let module_path = root.join("module.yaml");
+        let task = format!(
+            "Repair the invalid contract case schema in the existing owner {} while preserving every case id and all contract meaning.",
+            module_path.display()
+        );
+        let intent = format!(
+            r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [epoch-delivery-contract-case-repair]
+facts:
+  domain_decisions: {{disposition: absent, basis: inferred, rationale: contract schema repair preserves decisions}}
+  lifecycle: {{disposition: absent, basis: inferred, rationale: no lifecycle change}}
+  effects: {{disposition: absent, basis: inferred, rationale: no effect change}}
+  runnable_surface: {{disposition: absent, basis: inferred, rationale: no surface change}}
+  reuse: {{disposition: required, basis: explicit, source_quote: existing owner {}}}
+responsibilities: []
+surface_kinds: []
+binding_preferences: []
+open_questions: []
+"#,
+            module_path.display()
+        );
+        let report = build_next_report_with_intent(
+            &root,
+            None,
+            &task,
+            RawIntentInput {
+                yaml: Some(intent),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.result, NextResult::Ready, "{:#?}", report.blockers);
+        assert!(report.blockers.is_empty());
+        let canonical_module = fs::canonicalize(&module_path)
+            .unwrap()
+            .display()
+            .to_string();
+        assert_eq!(
+            report.owner.selected_module().map(|module| &module.path),
+            Some(&canonical_module)
+        );
+        let receipt_path = PathBuf::from(&report.receipt_path);
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+        assert_eq!(
+            receipt.payload.allowed_action_families,
+            vec!["spec-repair-apply"]
+        );
+        let authority = receipt.payload.repair_authority.as_ref().unwrap();
+        assert_eq!(authority.contracts.len(), 2);
+        assert!(!authority.diagnostic_fingerprint.is_empty());
+        assert!(authority
+            .contracts
+            .iter()
+            .all(|contract| contract.case_ids.len() == 1 && !contract.source_sha256.is_empty()));
+        assert!(
+            validate_route_receipt(&root, &receipt_path, "spec-apply", &module_path, None,)
+                .is_err()
+        );
+
+        let repair = valid_contract_case_repair_change();
+        validate_spec_change_route_receipt(
+            &root,
+            &receipt_path,
+            &module_path,
+            None,
+            Some(repair),
+            None,
+        )
+        .unwrap();
+        run_spec_apply(&module_path, None, Some(repair), None, true).unwrap();
+        let changed_statement = repair.replace(
+            "The current media epoch is delivered.",
+            "The current media epoch may be discarded.",
+        );
+        assert!(validate_spec_change_route_receipt(
+            &root,
+            &receipt_path,
+            &module_path,
+            None,
+            Some(&changed_statement),
+            None,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("preserve every case id, statement, and order"));
+
+        let contract_path = root.join("contracts/deliver-epoch.v1.yaml");
+        let mut drifted = fs::read_to_string(&contract_path).unwrap();
+        drifted.push('\n');
+        fs::write(&contract_path, drifted).unwrap();
+        assert!(validate_spec_change_route_receipt(
+            &root,
+            &receipt_path,
+            &module_path,
+            None,
+            Some(repair),
+            None,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("authority is stale"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn contract_case_repair_requires_exact_owner_and_only_recognized_blockers() {
+        let root = unique_test_dir("contract-case-repair-blockers");
+        write_invalid_contract_case_repair_fixture(&root);
+        fs::write(root.join("invalid.yaml"), "spec: rms/module/v0.1\n").unwrap();
+        initialize_test_git_repository(&root);
+        let module_path = root.join("module.yaml");
+        let task = format!(
+            "Repair the invalid contract case schema in {} while preserving every case id.",
+            module_path.display()
+        );
+        let intent = format!(
+            r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [epoch-delivery-contract-case-repair]
+facts:
+  domain_decisions: {{disposition: absent, basis: inferred, rationale: schema repair}}
+  lifecycle: {{disposition: absent, basis: inferred, rationale: no lifecycle change}}
+  effects: {{disposition: absent, basis: inferred, rationale: no effect change}}
+  runnable_surface: {{disposition: absent, basis: inferred, rationale: no surface change}}
+  reuse: {{disposition: required, basis: explicit, source_quote: {}}}
+responsibilities: []
+surface_kinds: []
+binding_preferences: []
+open_questions: []
+"#,
+            module_path.display()
+        );
+        let report = build_next_report_with_intent(
+            &root,
+            None,
+            &task,
+            RawIntentInput {
+                yaml: Some(intent),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.result, NextResult::Blocked);
+        assert!(report.owner.selected_module().is_none());
+        assert!(report
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("invalid.yaml")));
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -97692,6 +98390,7 @@ open_questions: []
             vec!["machine-apply".to_string()],
             vec![implementation.clone()],
             None,
+            None,
         )
         .unwrap();
         let correct: MachineChange = serde_yaml::from_str(
@@ -97783,6 +98482,7 @@ open_questions: []
             vec![decision.scaffold.args[0].clone()],
             vec![target.clone()],
             Some(decision.scaffold.clone()),
+            None,
         )
         .unwrap();
         assert!(validate_route_receipt(
@@ -97848,6 +98548,7 @@ open_questions: []
             vec!["add-capability-tree".to_string()],
             vec![target.clone()],
             Some(decision.scaffold.clone()),
+            None,
         )
         .unwrap();
         let matching = AddCapabilityTreeRequest {
@@ -98271,6 +98972,7 @@ properties:
                 &undetermined_task_classification(),
                 &owner,
                 &context,
+                None,
                 None,
             )
             .unwrap();
@@ -99128,6 +99830,158 @@ verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
             render_capability_contract("epoch-delivery", "Provide media epoch delivery."),
         )
         .unwrap();
+    }
+
+    fn write_invalid_contract_case_repair_fixture(root: &Path) {
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::create_dir_all(root.join("verification/contracts")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: epoch-delivery
+  version: 0.1.0
+  kind: library
+  purpose: Deliver a monotonic media epoch.
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides:
+  commands:
+    - {name: deliver-epoch, contract: contracts/deliver-epoch.v1.yaml}
+  queries: []
+  events: []
+  capabilities:
+    - {name: epoch-delivery, contract: contracts/epoch-delivery.v1.yaml}
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: []
+compatibility: {policy: backward-compatible-within-major}
+verification:
+  laws: []
+  contracts:
+    - verification/contracts/deliver_epoch.md
+    - verification/contracts/epoch_delivery.md
+  scenarios: []
+  boundaries: []
+"#,
+        )
+        .unwrap();
+        for (name, meaning, case_id, statement) in [
+            (
+                "deliver-epoch",
+                "Deliver one media epoch.",
+                "deliver-current-epoch",
+                "The current media epoch is delivered.",
+            ),
+            (
+                "epoch-delivery",
+                "Provide media epoch delivery.",
+                "provide-current-epoch",
+                "The current media epoch is provided.",
+            ),
+        ] {
+            fs::write(
+                root.join(format!("contracts/{name}.v1.yaml")),
+                format!(
+                    r#"spec: rms/contract/v0.2
+name: {name}
+version: "1"
+kind: {}
+meaning: {meaning}
+semantics:
+  behavior:
+    observations: []
+    requires: []
+    guarantees: []
+    failures: []
+    cases:
+      - id: {case_id}
+        statement: {statement}
+        evaluation: {{kind: external, property: epoch-delivery-property}}
+    invariants: []
+    case_policy: {{coverage: exhaustive, overlap: forbidden}}
+compatibility: {{policy: backward-compatible-within-major}}
+"#,
+                    if name == "deliver-epoch" {
+                        "command"
+                    } else {
+                        "capability"
+                    }
+                ),
+            )
+            .unwrap();
+        }
+        fs::write(
+            root.join("verification/contracts/deliver_epoch.md"),
+            "# Deliver epoch contract evidence\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("verification/contracts/epoch_delivery.md"),
+            "# Epoch delivery contract evidence\n",
+        )
+        .unwrap();
+    }
+
+    fn valid_contract_case_repair_change() -> &'static str {
+        r#"spec: rms/semantic-change/v0.1
+contracts:
+  set:
+    - name: deliver-epoch
+      kind: command
+      direction: provided
+      version: 1
+      meaning: Deliver one media epoch.
+      semantics:
+        behavior:
+          observations:
+            - id: outcome-kind
+              source: {kind: output, pointer: /kind}
+              value: {variant: [accepted]}
+          requires: []
+          guarantees: []
+          failures: []
+          cases:
+            - id: deliver-current-epoch
+              statement: The current media epoch is delivered.
+              when: {equals: {left: {observation: outcome-kind}, right: {literal: accepted}}}
+              outcome:
+                kind: accepted
+                expression: {equals: {left: {observation: outcome-kind}, right: {literal: accepted}}}
+              ensures: []
+              permits: {state_changes: [], events: [], effects: []}
+          invariants: []
+          case_policy: {coverage: exhaustive, overlap: forbidden}
+    - name: epoch-delivery
+      kind: capability
+      direction: provided
+      version: 1
+      meaning: Provide media epoch delivery.
+      semantics:
+        behavior:
+          observations:
+            - id: outcome-kind
+              source: {kind: output, pointer: /kind}
+              value: {variant: [accepted]}
+          requires: []
+          guarantees: []
+          failures: []
+          cases:
+            - id: provide-current-epoch
+              statement: The current media epoch is provided.
+              when: {equals: {left: {observation: outcome-kind}, right: {literal: accepted}}}
+              outcome:
+                kind: accepted
+                expression: {equals: {left: {observation: outcome-kind}, right: {literal: accepted}}}
+              ensures: []
+              permits: {state_changes: [], events: [], effects: []}
+          invariants: []
+          case_policy: {coverage: exhaustive, overlap: forbidden}
+evidence:
+  add:
+    - {kind: contract, proves: deliver-epoch, path: verification/contracts/deliver_epoch.md}
+    - {kind: contract, proves: epoch-delivery, path: verification/contracts/epoch_delivery.md}
+"#
     }
 
     fn saved_clause_shaped_contract_change() -> &'static str {
