@@ -50,7 +50,7 @@ const RMS_LONG_VERSION: &str = concat!(
 const DEFAULT_RUN_ROOT: &str = ".rms/runs";
 const DEFAULT_INTENT_CACHE_ROOT: &str = ".rms/cache/intent";
 const INTENT_SCHEMA_SPEC: &str = "rms/intent-model/v0.1";
-const INTENT_EXTRACTION_PROMPT_VERSION: &str = "rms-intent-extraction/v4";
+const INTENT_EXTRACTION_PROMPT_VERSION: &str = "rms-intent-extraction/v5";
 const CONSTRAINED_PROVIDER_FEATURES: &[&str] = &[
     "apps",
     "browser_use",
@@ -68,7 +68,7 @@ const CONSTRAINED_PROVIDER_FEATURES: &[&str] = &[
     "unified_exec",
     "workspace_dependencies",
 ];
-const INTENT_NORMALIZATION_VERSION: &str = "rms-intent-normalization/v3";
+const INTENT_NORMALIZATION_VERSION: &str = "rms-intent-normalization/v4";
 const ROUTE_RECEIPT_SPEC: &str = "rms/route-receipt/v0.1";
 const DEFAULT_PROVIDER_TIMEOUT_SECONDS: u64 = 900;
 const DEFAULT_DOGFOOD_PHASE_TIMEOUT_SECONDS: u64 = 3600;
@@ -13169,7 +13169,7 @@ fn canonical_provider_surface_kind(value: &str) -> Option<String> {
 
 fn render_intent_extraction_prompt(task: &str) -> String {
     format!(
-        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. This is a bounded transformation: use only the task and schema in this prompt, do not inspect files or call tools, and return the object immediately. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Each fact contains only disposition, basis, source_quote, and rationale. Subjects are stable kebab-case identifiers. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Keep facts and responsibilities consistent: domain_decisions is required exactly when at least one responsibility is a decision; a workflow responsibility forbids lifecycle=absent; a storage or integration responsibility forbids effects=absent; and surface-change forbids runnable_surface=absent. A boundary or implementation adapter is not by itself evidence of an external effect or runnable surface. Domain events, replies, and rejections are semantic machine outputs, not external effects. An executable property, proof, test, probe, or runner is verification evidence, not a product runnable surface. Canonical transitions, states, cases, contracts, laws, and properties are semantic-change work even when their realization names an implementation manifest. Reusing or evolving an exact existing module or canonical artifact in place is existing-module semantic-change work, not design, unless the task actually changes topology. A request that explicitly preserves runtime behavior and changes only contract or proof binding can establish lifecycle=absent when it introduces no ordering or transition change. Surface kinds may contain only browser|cli|mobile-ui|desktop-ui|http|batch|executable; never list product features, integrations, APIs, documentation, onboarding, sign-in, or sign-out as surface kinds. Binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
+        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. This is a bounded transformation: use only the task and schema in this prompt, do not inspect files or call tools, and return the object immediately. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Each fact contains only disposition, basis, source_quote, and rationale. Subjects are stable kebab-case identifiers. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Keep facts and responsibilities consistent: domain_decisions is required exactly when at least one responsibility is a decision; a workflow responsibility forbids lifecycle=absent; a storage or integration responsibility forbids effects=absent; and surface-change forbids runnable_surface=absent. A boundary or implementation adapter is not by itself evidence of an external effect or runnable surface. Domain events, replies, and rejections are semantic machine outputs, not external effects. An executable property, proof, test, probe, or runner is verification evidence, not a product runnable surface. Canonical transitions, states, cases, contracts, laws, and properties are semantic-change work even when their realization names an implementation manifest. Reusing or evolving an exact existing canonical module or artifact in place is existing-module semantic-change work, not design, unless the task actually changes topology. Adopting an existing source or runtime boundary into a missing canonical owner is new-module design work; modules named only as consumed evidence, dependencies, executors, or consumers are participants, not the owner. A request that explicitly preserves runtime behavior and changes only contract or proof binding can establish lifecycle=absent when it introduces no ordering or transition change. Surface kinds may contain only browser|cli|mobile-ui|desktop-ui|http|batch|executable; never list product features, integrations, APIs, documentation, onboarding, sign-in, or sign-out as surface kinds. Binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
         serde_json::to_string_pretty(&intent_model_template()).unwrap_or_default()
     )
 }
@@ -37346,7 +37346,20 @@ fn build_next_report_with_intent(
         .as_ref()
         .map(|model| model.subjects.join(" "))
         .unwrap_or_default();
-    let mut owner = if intent.is_some() {
+    let new_owner_design = explicit_module.is_none()
+        && intent
+            .as_ref()
+            .is_some_and(|model| model.change_scope == IntentChangeScope::NewModule);
+    let mut owner = if new_owner_design {
+        OwnerResolution::unresolved(
+            UnselectedOwnerStatus::None,
+            "typed intent adopts a new canonical module owner; existing module mentions are participant evidence, not owner selection"
+                .to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+    } else if intent.is_some() {
         resolve_next_owner_for_task(
             &root,
             explicit_module,
@@ -37454,6 +37467,8 @@ fn build_next_report_with_intent(
     } else if profile.report.kind == RepositoryKind::Uninitialized {
         NextResult::BootstrapRequired
     } else if profile.report.module_manifests.is_empty() {
+        NextResult::DesignRequired
+    } else if new_owner_design && classification.lane == TaskLane::Design {
         NextResult::DesignRequired
     } else if matches!(owner.status(), OwnerStatus::Ambiguous | OwnerStatus::None) {
         NextResult::NeedsOwner
@@ -37633,6 +37648,21 @@ fn normalize_provider_intent_for_task(task: &str, model: &mut IntentModel) -> bo
     ]
     .iter()
     .any(|phrase| normalized.contains(phrase));
+    let adopts_new_canonical_owner = provider_task_adopts_new_canonical_owner(
+        &normalized,
+        model,
+        names_existing_artifact || explicitly_existing,
+    );
+    if adopts_new_canonical_owner {
+        if model.change_scope != IntentChangeScope::NewModule {
+            model.change_scope = IntentChangeScope::NewModule;
+            changed = true;
+        }
+        if model.operation != IntentOperation::Design {
+            model.operation = IntentOperation::Design;
+            changed = true;
+        }
+    }
     if model.change_scope == IntentChangeScope::Unknown
         && (names_existing_artifact || explicitly_existing)
     {
@@ -37795,6 +37825,59 @@ fn normalize_provider_intent_for_task(task: &str, model: &mut IntentModel) -> bo
         model.open_questions.clear();
     }
     changed
+}
+
+fn provider_task_adopts_new_canonical_owner(
+    normalized_task: &str,
+    model: &IntentModel,
+    explicitly_existing_canonical_owner: bool,
+) -> bool {
+    if explicitly_existing_canonical_owner {
+        return false;
+    }
+    let adoption_quote = (model.facts.reuse.basis == IntentBasis::Explicit
+        && model.facts.reuse.disposition == IntentDisposition::Required)
+        .then(|| model.facts.reuse.source_quote.as_deref())
+        .flatten()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let explicit_adoption = task_mentions_token(&adoption_quote, "adopt")
+        || task_mentions_token(&adoption_quote, "adopting");
+    let adopts_as_canonical_boundary = explicit_adoption
+        && [" as a ", " as an ", " into a ", " into an "]
+            .iter()
+            .any(|phrase| adoption_quote.contains(phrase))
+        && [
+            "owner",
+            "boundary",
+            "module",
+            "capability",
+            "bounded context",
+        ]
+        .iter()
+        .any(|term| adoption_quote.contains(term));
+    let explicitly_missing_owner = [
+        "missing owner",
+        "missing canonical owner",
+        "owner is missing",
+        "owner remains missing",
+        "unadopted owner",
+        "owner is not adopted",
+    ]
+    .iter()
+    .any(|phrase| normalized_task.contains(phrase));
+    let ownership_assignment = model.facts.domain_decisions.basis == IntentBasis::Explicit
+        && model.facts.domain_decisions.disposition == IntentDisposition::Required
+        && model
+            .facts
+            .domain_decisions
+            .source_quote
+            .as_deref()
+            .is_some_and(|quote| {
+                let quote = quote.to_ascii_lowercase();
+                task_mentions_token(&quote, "own") || task_mentions_token(&quote, "owns")
+            });
+    explicitly_missing_owner || adopts_as_canonical_boundary && ownership_assignment
 }
 
 fn inferred_absent_intent_fact(rationale: &str) -> IntentFact {
@@ -74625,6 +74708,140 @@ mod tests {
             &mut reuse,
         ));
         assert_eq!(reuse.operation, IntentOperation::SemanticChange);
+    }
+
+    #[test]
+    fn new_owner_adoption_outranks_incidental_existing_participant_mentions() {
+        let task = "Adopt the existing client Connection media-epoch delivery boundary as an internal reusable composite capability with a pure stateful domain owner and a typed effect boundary, with no runnable surface. It owns active PTT sender lane admission and a monotonic lane-handover generation. When the current admitted Direct QUIC lane terminally loses consent during a held Talk Turn, and an exact receiver-ready Fast Relay lane for the same Talk Turn authority, sender and receiver Devices, Auth Session, Connection fence, network-path generation, and Secure Media lease is already available, it atomically fences the old lane, installs Fast Relay, continues admitting captured frames, and moves terminal delivery to the replacement lane. At every instant and for every frame there is at most one admitted outbound lane; stale, duplicate, delayed, or reordered old-lane results are inert. If no exact replacement is ready, preserve the existing typed all-paths-lost outcome and user-cue behavior. It consumes Talk Turn authority, Receiver Media Readiness proof, Direct QUIC and Fast Relay capability facts, and unchanged Secure Media evidence. It does not own Talk Turn grants, receiver readiness, Fast Relay selection, codec or encryption policy, Apple audio, or UI projection. Realtime Voice Runtime executes the emitted handover effects and Voice Media consumes the current admitted-lane proof. Add the 2026-08-03 epoch-114 incident as a replayable cross-module counterexample and explore consent loss, release, duplicate results, and replacement failure schedules.";
+        let mut model = parse_intent_model_source(
+            r#"{
+              "spec":"rms/intent-model/v0.1",
+              "operation":"semantic-change",
+              "change_scope":"existing-module",
+              "subjects":["client-connection-media-epoch-delivery"],
+              "facts":{
+                "domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"It owns active PTT sender lane admission and a monotonic lane-handover generation."},
+                "lifecycle":{"disposition":"required","basis":"inferred","rationale":"Lane replacement is ordered."},
+                "effects":{"disposition":"required","basis":"inferred","rationale":"A typed boundary executes handover effects."},
+                "runnable_surface":{"disposition":"absent","basis":"explicit","source_quote":"with no runnable surface"},
+                "reuse":{"disposition":"required","basis":"explicit","source_quote":"Adopt the existing client Connection media-epoch delivery boundary as an internal reusable composite capability with a pure stateful domain owner and a typed effect boundary, with no runnable surface."}
+              },
+              "responsibilities":[{"id":"lane-admission","kind":"decision","summary":"Own sender lane admission."}],
+              "surface_kinds":[],
+              "binding_preferences":[],
+              "open_questions":[]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(normalize_provider_intent_for_task(task, &mut model));
+        assert_eq!(model.change_scope, IntentChangeScope::NewModule);
+        assert_eq!(model.operation, IntentOperation::Design);
+        assert_eq!(classify_intent_model(&model).lane, TaskLane::Design);
+
+        let root = route_capability_fixture("next-new-owner-adoption");
+        let receiver_module = root.join("modules/receiver-media-readiness/module.yaml");
+        fs::create_dir_all(receiver_module.parent().unwrap()).unwrap();
+        fs::write(
+            &receiver_module,
+            next_module_source(
+                "receiver-media-readiness",
+                "Own consumed receiver readiness evidence",
+            ),
+        )
+        .unwrap();
+        initialize_test_git_repository(&root);
+        let profile = build_repository_profile(&root).unwrap();
+        let incidental = resolve_next_owner_for_task(
+            &root,
+            None,
+            task,
+            &model.subjects.join(" "),
+            &profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            incidental
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("receiver-media-readiness")
+        );
+        let report = build_next_report_with_intent(
+            &root,
+            None,
+            task,
+            RawIntentInput {
+                yaml: Some(serde_yaml::to_string(&model).unwrap()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, NextResult::DesignRequired);
+        assert_eq!(report.task_classification.lane, TaskLane::Design);
+        assert!(report.owner.selected_module().is_none());
+        assert!(report.context.files.is_empty());
+        assert_eq!(receipt.payload.route_result, "design-required");
+        assert!(receipt.payload.owner_module.is_none());
+        assert!(receipt.payload.allowed_action_families.is_empty());
+        assert!(receipt.payload.normalized_target_paths.is_empty());
+    }
+
+    #[test]
+    fn explicit_existing_owner_language_remains_existing_module_semantic_work() {
+        let task = "Evolve the existing Play Game domain owner in place at modules/play-game-domain/module.yaml; do not add module or change topology.";
+        let mut model = parse_intent_model_source(
+            r#"{
+              "spec":"rms/intent-model/v0.1",
+              "operation":"semantic-change",
+              "change_scope":"existing-module",
+              "subjects":["play-game-domain"],
+              "facts":{
+                "domain_decisions":{"disposition":"required","basis":"inferred","rationale":"The existing owner changes one decision."},
+                "lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No lifecycle change."},
+                "effects":{"disposition":"absent","basis":"inferred","rationale":"No effect change."},
+                "runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"No surface change."},
+                "reuse":{"disposition":"required","basis":"inferred","rationale":"The task evolves the existing owner in place."}
+              },
+              "responsibilities":[{"id":"existing-decision","kind":"decision","summary":"Evolve the existing decision."}],
+              "surface_kinds":[],
+              "binding_preferences":[],
+              "open_questions":[]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!normalize_provider_intent_for_task(task, &mut model));
+        assert_eq!(model.change_scope, IntentChangeScope::ExistingModule);
+        assert_eq!(model.operation, IntentOperation::SemanticChange);
+
+        let root = route_capability_fixture("next-existing-owner-preserved");
+        let profile = build_repository_profile(&root).unwrap();
+        let owner = resolve_next_owner_for_task(
+            &root,
+            None,
+            task,
+            "play-game-domain",
+            &profile.modules,
+            false,
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(owner.status(), OwnerStatus::Selected);
+        assert_eq!(
+            owner.selected_module().map(|module| module.name.as_str()),
+            Some("play-game-domain")
+        );
+        assert_eq!(
+            owner.reason,
+            "task exactly names a canonical artifact owned by the module"
+        );
     }
 
     #[test]

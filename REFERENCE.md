@@ -210,7 +210,7 @@ Task lanes are:
 | `repository-operation` | Installation, skill/plugin synchronization, or Git status/fetch/commit/rebase/merge/push |
 | `undetermined` | Observable evidence cannot yet select a truthful lane |
 
-Classification confidence is `deterministic` after model validation. `operation` chooses the lane, structured `subjects` route ownership, and facts/responsibilities choose topology. Raw task words, including words inside negation, have no architectural authority.
+Classification confidence is `deterministic` after model validation. `operation` chooses the lane, structured `subjects` route ownership, and facts/responsibilities choose topology. Explicit adoption of an existing source or runtime boundary into a missing canonical owner normalizes to `design` with `new-module` scope. Existing modules named only as consumed evidence, dependencies, executors, or consumers cannot become that new owner. Exact canonical owner paths, explicit in-place existing-owner work, and `--module` overrides keep their existing-owner semantics. Other raw task words, including words inside negation, have no architectural authority.
 
 `no-rms-change` contains no design, specification, source-edit, gate, audit, or pending-candidate prescription, even when the readable root is uninitialized. It reports only the repository operation and its applicable authority boundary.
 
