@@ -8,6 +8,7 @@ Project instructions outside this section remain authoritative. Canonical RMS ar
 - New or adopted systems follow `rms init [--adopt]` → authorized bootstrap commit → typed `rms design` → exactly one recommended scaffold.
 - Without commit authority, stop at exactly `bootstrap prepared; provenance baseline pending authorized commit`.
 - Apply canonical semantic or surface changes before source edits, dry-run first; do not hand-edit RMS declarations.
+- Write normative semantic prose using ASD-STE100 rules as the controlled-language baseline. State one obligation, condition, or result in each sentence; name the subject explicitly; use one canonical term for each concept; preserve bounded-context terms, exact identifiers, schema keys, formulas, and quoted contract language; and give semantic precision and compatibility priority.
 - Publish standalone capabilities through `rms spec apply`; use `rms add-capability-tree` only for an explicitly recommended recursive topology.
 - Keep pure roles pure, IO in declared effects, cross-module access on public facades, and runnable surfaces delegated to exact callables.
 - Temporal promises use typed observations, explicit assumptions, closed expressions, and dimensionally valid quantities; bounded exploration is inconclusive unless exhausted.

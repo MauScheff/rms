@@ -41,6 +41,7 @@ New or adopted systems follow `rms init [--adopt]` → authorized bootstrap comm
 | Declared role body only | Edit the role, then run focused proof |
 
 - Use `set` and `remove` to revise canonical semantics; never edit an applied revision.
+- Write normative semantic prose using ASD-STE100 rules as the controlled-language baseline. State one obligation, condition, or result in each sentence; name the subject explicitly; use one canonical term for each concept; preserve bounded-context terms, exact identifiers, schema keys, formulas, and quoted contract language; and give semantic precision and compatibility priority.
 - A pure reusable library is an ordinary standalone module. Only a runnable module mixing invariant-bearing decisions with boundary effects needs `unsplit_runnable_justification`.
 - Fill only declared roles and exact symbols. If RMS cannot express the change, report the RMS gap.
 - Pass the ready route `run_id`, run directory, or receipt file through `--route-receipt` on every prescribed canonical semantic or topology mutation, including dry-runs. Receipts grant neither source-edit nor Git authority.

@@ -92,6 +92,12 @@ syncRecord
 
 Precise names reduce the amount of hidden context an agent or person must infer.
 
+### Write controlled semantic prose
+
+RMS uses ASD-STE100 rules as the controlled-language baseline for normative semantic prose. Each sentence should state one obligation, condition, or result, name its subject explicitly, and use one canonical term for each concept.
+
+Controlled language serves the domain language; it does not replace it. Preserve bounded-context terms, exact identifiers, schema keys, formulas, and quoted contract language. Semantic precision and compatibility take priority.
+
 ### Allow local meanings
 
 A term may mean different things in different contexts. `Customer` might mean a buyer in Ordering, a legal account in Billing, and an authenticated principal in Identity. Forcing one universal object usually creates a vague model full of optional fields.

@@ -125,6 +125,8 @@ A module that is public across an ownership boundary, independently replaceable,
 
 A bounded context MUST define its authoritative domain terminology. A system glossary MAY index terms across contexts but MUST NOT override context-local meanings.
 
+Normative natural-language semantic statements SHOULD use ASD-STE100 rules as a controlled-language baseline. Each sentence SHOULD state one obligation, condition, or result, name its subject explicitly, and use one canonical term for each concept. Bounded-context terms, exact identifiers, schema keys, formulas, and quoted contract language take precedence over the controlled-language vocabulary. Controlled-language rules MUST NOT weaken semantic precision or compatibility.
+
 ### 4.3 Ownership
 
 A module MUST declare the concepts, state, data, and business decisions it owns.
