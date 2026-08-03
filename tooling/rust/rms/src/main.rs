@@ -13,8 +13,8 @@ use std::io::{Read as IoRead, Write as IoWrite};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use syn::visit::{self, Visit};
@@ -32,6 +32,7 @@ mod hunt;
 mod probe;
 mod property;
 mod semantic_graph;
+mod verification;
 mod viewer;
 mod viewer_request;
 mod workflow;
@@ -1882,7 +1883,7 @@ struct PropertyRunReport {
     diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct PropertyRunCommandReport {
     kind: String,
     property: String,
@@ -6859,119 +6860,231 @@ fn run_release_check(root: &Path, skip_cargo_package: bool) -> Result<()> {
     println!();
 
     let rms_exe = std::env::current_exe().with_context(|| "failed to locate current rms binary")?;
-
-    run_release_metadata_check(root)?;
-    run_release_step(
-        "cargo fmt",
-        command_with_args("cargo", &["fmt", "--all", "--check"], root),
-    )?;
-    run_release_step(
-        "cargo test",
-        command_with_args("cargo", &["test", "--workspace", "--locked"], root),
-    )?;
-    run_release_step(
-        "rms validate",
-        command_with_args(
-            &rms_exe,
-            &["validate", "--root", root.to_string_lossy().as_ref()],
-            root,
-        ),
-    )?;
-    run_release_step(
-        "rms verify rms-cli",
-        command_with_args(
-            &rms_exe,
-            &["verify", "tooling/rust/rms/implementation.yaml"],
-            root,
-        ),
-    )?;
-    run_release_step(
-        "rms compose examples/minimal",
-        command_with_args(&rms_exe, &["compose", "--root", "examples/minimal"], root),
-    )?;
-    run_release_step(
-        "rms compose examples/rust",
-        command_with_args(&rms_exe, &["compose", "--root", "examples/rust"], root),
-    )?;
-    run_release_step(
-        "rms compose examples/swift",
-        command_with_args(&rms_exe, &["compose", "--root", "examples/swift"], root),
-    )?;
-    run_release_step(
-        "rms compose examples/python",
-        command_with_args(&rms_exe, &["compose", "--root", "examples/python"], root),
-    )?;
-    let mut verify_python = command_with_args(
-        &rms_exe,
-        &["verify", "examples/python/implementation.yaml"],
+    let source_revision = source_revision(root).unwrap_or_else(|| "uncommitted".to_string());
+    let input_digest = release_input_digest(root, skip_cargo_package)?;
+    let tool_digest = release_tool_digest(&rms_exe)?;
+    let phase_count = if skip_cargo_package { 12 } else { 13 };
+    let mut session = verification::VerificationSession::acquire(
         root,
-    );
-    verify_python.env("PYTHONDONTWRITEBYTECODE", "1");
-    run_release_step("rms verify examples/python", verify_python)?;
-    run_release_step(
-        "rms compose examples/tic-tac-toe",
-        command_with_args(
-            &rms_exe,
-            &["compose", "--root", "examples/tic-tac-toe"],
-            root,
-        ),
+        "release-check",
+        &source_revision,
+        &input_digest,
+        &tool_digest,
+        None,
+        phase_count,
     )?;
-    run_release_step(
-        "rms check-compat smoke",
-        command_with_args(
-            &rms_exe,
-            &[
-                "check-compat",
-                "examples/rust/module.yaml",
-                "examples/rust/module.yaml",
-            ],
-            root,
-        ),
-    )?;
-    run_release_package_smoke(root, &rms_exe)?;
-    run_release_scaffold_roundtrip(root, &rms_exe)?;
-    run_release_step(
-        "example Rust binding tests",
-        command_with_args(
-            "cargo",
-            &[
-                "test",
-                "--manifest-path",
-                "examples/rust/Cargo.toml",
-                "--locked",
-            ],
-            root,
-        ),
-    )?;
-    let mut python_tests = command_with_args(
-        "python",
-        &["-m", "unittest", "discover", "-s", "tests"],
-        &root.join("examples/python"),
-    );
-    python_tests.env("PYTHONDONTWRITEBYTECODE", "1");
-    run_release_step("example Python binding tests", python_tests)?;
-    run_release_binary_smoke(root)?;
-    if !skip_cargo_package {
+    eprintln!("verification run identity: {}", session.identity());
+
+    session.run_phase("metadata", "release metadata", || {
+        run_release_metadata_check(root)
+    })?;
+    session.run_phase("format", "cargo fmt", || {
         run_release_step(
-            "cargo package",
+            "cargo fmt",
+            command_with_args("cargo", &["fmt", "--all", "--check"], root),
+        )
+    })?;
+    session.run_phase("native-tests", "cargo test --workspace --locked", || {
+        run_release_step(
+            "cargo test",
+            command_with_args("cargo", &["test", "--workspace", "--locked"], root),
+        )
+    })?;
+    session.run_phase("canonical-validate", "rms validate", || {
+        run_release_step(
+            "rms validate",
+            command_with_args(
+                &rms_exe,
+                &["validate", "--root", root.to_string_lossy().as_ref()],
+                root,
+            ),
+        )
+    })?;
+    session.run_phase("canonical-verify", "rms verify rms-cli", || {
+        run_release_step(
+            "rms verify rms-cli",
+            command_with_args(
+                &rms_exe,
+                &["verify", "tooling/rust/rms/implementation.yaml"],
+                root,
+            ),
+        )
+    })?;
+    session.run_phase("example-composition", "compose and verify examples", || {
+        run_release_step(
+            "rms compose examples/minimal",
+            command_with_args(&rms_exe, &["compose", "--root", "examples/minimal"], root),
+        )?;
+        run_release_step(
+            "rms compose examples/rust",
+            command_with_args(&rms_exe, &["compose", "--root", "examples/rust"], root),
+        )?;
+        run_release_step(
+            "rms compose examples/swift",
+            command_with_args(&rms_exe, &["compose", "--root", "examples/swift"], root),
+        )?;
+        run_release_step(
+            "rms compose examples/python",
+            command_with_args(&rms_exe, &["compose", "--root", "examples/python"], root),
+        )?;
+        let mut verify_python = command_with_args(
+            &rms_exe,
+            &["verify", "examples/python/implementation.yaml"],
+            root,
+        );
+        verify_python.env("PYTHONDONTWRITEBYTECODE", "1");
+        run_release_step("rms verify examples/python", verify_python)?;
+        run_release_step(
+            "rms compose examples/tic-tac-toe",
+            command_with_args(
+                &rms_exe,
+                &["compose", "--root", "examples/tic-tac-toe"],
+                root,
+            ),
+        )
+    })?;
+    session.run_phase("compatibility", "rms check-compat smoke", || {
+        run_release_step(
+            "rms check-compat smoke",
+            command_with_args(
+                &rms_exe,
+                &[
+                    "check-compat",
+                    "examples/rust/module.yaml",
+                    "examples/rust/module.yaml",
+                ],
+                root,
+            ),
+        )
+    })?;
+    session.run_phase("package-smoke", "RMS package smoke", || {
+        run_release_package_smoke(root, &rms_exe)
+    })?;
+    session.run_phase("scaffold-roundtrip", "RMS scaffold roundtrip", || {
+        run_release_scaffold_roundtrip(root, &rms_exe)
+    })?;
+    session.run_phase("example-tests", "example binding tests", || {
+        run_release_step(
+            "example Rust binding tests",
             command_with_args(
                 "cargo",
                 &[
-                    "package",
+                    "test",
                     "--manifest-path",
-                    "tooling/rust/rms/Cargo.toml",
-                    "--allow-dirty",
-                    "--no-verify",
+                    "examples/rust/Cargo.toml",
+                    "--locked",
                 ],
                 root,
             ),
         )?;
+        let mut python_tests = command_with_args(
+            "python",
+            &["-m", "unittest", "discover", "-s", "tests"],
+            &root.join("examples/python"),
+        );
+        python_tests.env("PYTHONDONTWRITEBYTECODE", "1");
+        run_release_step("example Python binding tests", python_tests)
+    })?;
+    session.run_phase("release-binary", "release binary smoke", || {
+        run_release_binary_smoke(root)
+    })?;
+    if !skip_cargo_package {
+        session.run_phase("cargo-package", "cargo package", || {
+            run_release_step(
+                "cargo package",
+                command_with_args(
+                    "cargo",
+                    &[
+                        "package",
+                        "--manifest-path",
+                        "tooling/rust/rms/Cargo.toml",
+                        "--allow-dirty",
+                        "--no-verify",
+                    ],
+                    root,
+                ),
+            )
+        })?;
     }
-    run_release_plugin_check(root, &release_binary_path(root))?;
+    session.run_phase("plugin", "Codex plugin distribution", || {
+        run_release_plugin_check(root, &release_binary_path(root))
+    })?;
 
     println!();
     println!("pass: release check");
     Ok(())
+}
+
+fn release_input_digest(root: &Path, skip_cargo_package: bool) -> Result<String> {
+    let mut digest = Sha256::new();
+    digest.update(if skip_cargo_package {
+        b"skip-cargo-package".as_slice()
+    } else {
+        b"include-cargo-package".as_slice()
+    });
+    let mut files = WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0
+                || !entry.file_type().is_dir()
+                || !matches!(
+                    entry.file_name().to_str(),
+                    Some(".git")
+                        | Some(".rms")
+                        | Some("target")
+                        | Some(".build")
+                        | Some("build")
+                        | Some("dist")
+                        | Some("node_modules")
+                        | Some("__pycache__")
+                        | Some(".pytest_cache")
+                        | Some(".swiftpm")
+                )
+        })
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .collect::<Vec<_>>();
+    files.sort();
+    for path in files {
+        let relative = path.strip_prefix(root).unwrap_or(&path);
+        digest.update(relative.to_string_lossy().as_bytes());
+        digest.update([0]);
+        digest.update(
+            fs::read(&path)
+                .with_context(|| format!("failed to hash release input `{}`", path.display()))?,
+        );
+        digest.update([0]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn release_tool_digest(rms_exe: &Path) -> Result<String> {
+    let mut digest = Sha256::new();
+    digest.update(
+        fs::read(rms_exe)
+            .with_context(|| format!("failed to hash RMS executable `{}`", rms_exe.display()))?,
+    );
+    for (program, args) in [
+        ("cargo", &["--version"][..]),
+        ("rustc", &["--version"][..]),
+        ("swift", &["--version"][..]),
+        ("python", &["--version"][..]),
+        ("node", &["--version"][..]),
+    ] {
+        digest.update(program.as_bytes());
+        match Command::new(program).args(args).output() {
+            Ok(output) => {
+                digest.update(output.stdout);
+                digest.update(output.stderr);
+                digest.update(output.status.code().unwrap_or(-1).to_le_bytes());
+            }
+            Err(error) => digest.update(error.to_string().as_bytes()),
+        }
+        digest.update([0]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn run_release_metadata_check(root: &Path) -> Result<()> {
@@ -8098,9 +8211,43 @@ fn command_with_args(program: impl AsRef<Path>, args: &[&str], root: &Path) -> C
 
 fn run_release_step(label: &str, mut command: Command) -> Result<()> {
     println!("## {label}");
-    let status = command
-        .status()
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command
+        .spawn()
         .with_context(|| format!("failed to start release check step `{label}`"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("release step `{label}` did not expose stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("release step `{label}` did not expose stderr"))?;
+    let observation = Arc::new(ProcessObservation::new());
+    let stdout_reader = spawn_relay_pipe_reader(stdout, Arc::clone(&observation), false);
+    let stderr_reader = spawn_relay_pipe_reader(stderr, Arc::clone(&observation), true);
+    let started = Instant::now();
+    let heartbeat = proof_progress_interval();
+    let mut next_heartbeat = heartbeat;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= next_heartbeat {
+            eprintln!(
+                "verify child runner={} elapsed={} eta=phase-dependent state={}",
+                shell_arg(label),
+                human_elapsed(started.elapsed()),
+                observation.state(heartbeat)
+            );
+            next_heartbeat = next_heartbeat.saturating_add(heartbeat);
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    join_relay_reader(stdout_reader, "stdout")?;
+    join_relay_reader(stderr_reader, "stderr")?;
     if !status.success() {
         bail!(
             "release check step `{label}` failed with status {}",
@@ -8113,6 +8260,42 @@ fn run_release_step(label: &str, mut command: Command) -> Result<()> {
     println!("pass");
     println!();
     Ok(())
+}
+
+fn spawn_relay_pipe_reader<R>(
+    mut reader: R,
+    observation: Arc<ProcessObservation>,
+    stderr: bool,
+) -> thread::JoinHandle<Result<()>>
+where
+    R: IoRead + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut buffer = [0u8; 8_192];
+        loop {
+            let count = reader.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            observation.observe(&buffer[..count]);
+            if stderr {
+                let mut output = std::io::stderr().lock();
+                output.write_all(&buffer[..count])?;
+                output.flush()?;
+            } else {
+                let mut output = std::io::stdout().lock();
+                output.write_all(&buffer[..count])?;
+                output.flush()?;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn join_relay_reader(handle: thread::JoinHandle<Result<()>>, label: &str) -> Result<()> {
+    handle
+        .join()
+        .map_err(|_| anyhow!("release step {label} reader panicked"))?
 }
 
 fn run_release_step_capture(label: &str, mut command: Command) -> Result<String> {
@@ -13824,11 +14007,90 @@ struct ProofProcessOutput {
     elapsed_ms: u128,
 }
 
+struct ProofExecutionProgress<'a> {
+    current: usize,
+    total: usize,
+    runner: &'a str,
+    suite_started: Instant,
+}
+
+struct ProcessObservation {
+    started: Instant,
+    last_output_ms: AtomicU64,
+    package_lock_wait: AtomicBool,
+}
+
+impl ProcessObservation {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            last_output_ms: AtomicU64::new(0),
+            package_lock_wait: AtomicBool::new(false),
+        }
+    }
+
+    fn observe(&self, bytes: &[u8]) {
+        self.last_output_ms
+            .store(self.started.elapsed().as_millis() as u64, Ordering::Release);
+        let text = String::from_utf8_lossy(bytes);
+        if text.contains("Blocking waiting for file lock") {
+            self.package_lock_wait.store(true, Ordering::Release);
+        } else if !text.trim().is_empty() {
+            self.package_lock_wait.store(false, Ordering::Release);
+        }
+    }
+
+    fn state(&self, heartbeat: Duration) -> &'static str {
+        if self.package_lock_wait.load(Ordering::Acquire) {
+            return "package-lock-wait";
+        }
+        let silence_ms = self
+            .started
+            .elapsed()
+            .as_millis()
+            .saturating_sub(self.last_output_ms.load(Ordering::Acquire) as u128);
+        if silence_ms >= heartbeat.as_millis().saturating_mul(2) {
+            "silent-child-deadlock-not-proven"
+        } else {
+            "active-child"
+        }
+    }
+}
+
+#[cfg(test)]
+mod proof_process_observation_tests {
+    use super::*;
+
+    #[test]
+    fn process_state_distinguishes_package_lock_from_unproven_silence() {
+        let silent = ProcessObservation::new();
+        assert_eq!(
+            silent.state(Duration::ZERO),
+            "silent-child-deadlock-not-proven"
+        );
+        let package_lock = ProcessObservation::new();
+        package_lock.observe(b"Blocking waiting for file lock on build directory");
+        assert_eq!(package_lock.state(Duration::ZERO), "package-lock-wait");
+        package_lock.observe(b"Compiling rms");
+        assert_ne!(package_lock.state(Duration::ZERO), "package-lock-wait");
+    }
+}
+
 fn execute_proof_command(
     root: &Path,
     command: &str,
     environment: &[(&str, &str)],
     timeout_seconds: u64,
+) -> Result<ProofProcessOutput> {
+    execute_proof_command_observed(root, command, environment, timeout_seconds, None)
+}
+
+fn execute_proof_command_observed(
+    root: &Path,
+    command: &str,
+    environment: &[(&str, &str)],
+    timeout_seconds: u64,
+    progress: Option<&ProofExecutionProgress<'_>>,
 ) -> Result<ProofProcessOutput> {
     if timeout_seconds == 0 {
         bail!("proof command timeout must be greater than zero");
@@ -13855,9 +14117,15 @@ fn execute_proof_command(
         .stderr
         .take()
         .ok_or_else(|| anyhow!("failed to capture proof command stderr"))?;
-    let stdout_reader = spawn_pipe_reader(stdout);
-    let stderr_reader = spawn_pipe_reader(stderr);
-    let outcome = wait_child_with_timeout(&mut child, Duration::from_secs(timeout_seconds))?;
+    let observation = Arc::new(ProcessObservation::new());
+    let stdout_reader = spawn_observed_pipe_reader(stdout, Arc::clone(&observation));
+    let stderr_reader = spawn_observed_pipe_reader(stderr, Arc::clone(&observation));
+    let outcome = wait_child_with_timeout_observed(
+        &mut child,
+        Duration::from_secs(timeout_seconds),
+        progress,
+        &observation,
+    )?;
     let stdout = String::from_utf8_lossy(&join_pipe_reader(stdout_reader, "stdout")?).to_string();
     let stderr = String::from_utf8_lossy(&join_pipe_reader(stderr_reader, "stderr")?).to_string();
     let (status, timed_out) = match outcome {
@@ -13871,6 +14139,121 @@ fn execute_proof_command(
         stderr,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+fn wait_child_with_timeout_observed(
+    child: &mut Child,
+    timeout: Duration,
+    progress: Option<&ProofExecutionProgress<'_>>,
+    observation: &ProcessObservation,
+) -> Result<ProviderProcessOutcome> {
+    let started = Instant::now();
+    let heartbeat = proof_progress_interval();
+    let mut next_heartbeat = heartbeat;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            if let Some(progress) = progress {
+                eprintln!(
+                    "proof [{}/{}] runner={} elapsed={} eta={} state=complete status={}",
+                    progress.current,
+                    progress.total,
+                    shell_arg(progress.runner),
+                    human_elapsed(progress.suite_started.elapsed()),
+                    verification::eta_class(
+                        progress.current,
+                        progress.total,
+                        progress.suite_started.elapsed()
+                    ),
+                    exit_status_label(status)
+                );
+            }
+            return Ok(ProviderProcessOutcome::Exited(status));
+        }
+        if started.elapsed() >= timeout {
+            #[cfg(unix)]
+            {
+                let process_group = format!("-{}", child.id());
+                let _ = Command::new("kill")
+                    .args(["-KILL", process_group.as_str()])
+                    .status();
+            }
+            if let Err(error) = child.kill() {
+                if let Some(status) = child.try_wait()? {
+                    return Ok(ProviderProcessOutcome::Exited(status));
+                }
+                return Err(error).with_context(|| "failed to terminate timed-out proof process");
+            }
+            let status = child
+                .wait()
+                .with_context(|| "failed to collect timed-out proof process")?;
+            if let Some(progress) = progress {
+                eprintln!(
+                    "proof [{}/{}] runner={} elapsed={} eta=blocked state=timeout",
+                    progress.current,
+                    progress.total,
+                    shell_arg(progress.runner),
+                    human_elapsed(progress.suite_started.elapsed())
+                );
+            }
+            return Ok(ProviderProcessOutcome::TimedOut { status });
+        }
+        if let Some(progress) = progress.filter(|_| started.elapsed() >= next_heartbeat) {
+            eprintln!(
+                "proof [{}/{}] runner={} elapsed={} eta={} state={}",
+                progress.current,
+                progress.total,
+                shell_arg(progress.runner),
+                human_elapsed(progress.suite_started.elapsed()),
+                verification::eta_class(
+                    progress.current.saturating_sub(1),
+                    progress.total,
+                    progress.suite_started.elapsed()
+                ),
+                observation.state(heartbeat)
+            );
+            next_heartbeat = next_heartbeat.saturating_add(heartbeat);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn spawn_observed_pipe_reader<R>(
+    mut reader: R,
+    observation: Arc<ProcessObservation>,
+) -> thread::JoinHandle<Result<Vec<u8>>>
+where
+    R: IoRead + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut buffer = [0u8; 8_192];
+        loop {
+            let count = reader.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+            observation.observe(&buffer[..count]);
+        }
+        Ok(bytes)
+    })
+}
+
+fn proof_progress_interval() -> Duration {
+    std::env::var("RMS_PROGRESS_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| Duration::from_millis(value.max(100)))
+        .unwrap_or_else(|| Duration::from_secs(15))
+}
+
+fn human_elapsed(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        format!("{}m{}s", seconds / 60, seconds % 60)
+    }
 }
 
 fn proof_shell_command(command: &str) -> Command {
@@ -15421,6 +15804,9 @@ fn execute_trace_producers(
         fs::create_dir_all(&temp_root)?;
     }
     let mut reports = Vec::new();
+    let producer_total = selected.len();
+    let producer_suite_started = Instant::now();
+    let mut producer_current = 0usize;
     for producer in selected {
         let Some(command) = get_str(&manifest.value, &["commands", &producer.command]) else {
             diagnostics.push(error(
@@ -15514,7 +15900,26 @@ fn execute_trace_producers(
             continue;
         }
         let output_display = output_path.display().to_string();
-        let process = execute_proof_command(
+        producer_current += 1;
+        let progress = ProofExecutionProgress {
+            current: producer_current,
+            total: producer_total.max(1),
+            runner: &producer.runner,
+            suite_started: producer_suite_started,
+        };
+        eprintln!(
+            "proof [{}/{}] runner={} elapsed={} eta={} state=starting",
+            progress.current,
+            progress.total,
+            shell_arg(progress.runner),
+            human_elapsed(progress.suite_started.elapsed()),
+            verification::eta_class(
+                progress.current.saturating_sub(1),
+                progress.total,
+                progress.suite_started.elapsed()
+            )
+        );
+        let process = execute_proof_command_observed(
             root,
             command,
             &[
@@ -15522,6 +15927,7 @@ fn execute_trace_producers(
                 ("RMS_TRACE_OUTPUT", output_display.as_str()),
             ],
             timeout_seconds,
+            Some(&progress),
         )?;
         let mut status = if process.status.success() {
             "pass"
@@ -16167,6 +16573,23 @@ fn execute_property_realizations(
     let mut diagnostics = Vec::new();
     validate_property_implementation(&manifest, &mut diagnostics);
     let mut commands = Vec::new();
+    let proof_cache = if dry_run {
+        None
+    } else {
+        let project_root = rms_root_for(implementation);
+        let input_digest = release_input_digest(&project_root, false)?;
+        let executable = std::env::current_exe()?;
+        let tool_digest = release_tool_digest(&executable)?;
+        let seed = std::env::var("RMS_PROPERTY_SEED")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok());
+        Some(verification::ProofCache::new(
+            &project_root,
+            &input_digest,
+            &tool_digest,
+            seed,
+        )?)
+    };
     let targets = property_targets_from_implementation(
         &manifest,
         &["architecture", "reliability", "properties"],
@@ -16194,6 +16617,13 @@ fn execute_property_realizations(
                 counts
             },
         );
+    let realization_total = targets
+        .iter()
+        .flat_map(|target| target.realizations.iter())
+        .filter(|realization| realization.profile == profile.label())
+        .count();
+    let realization_suite_started = Instant::now();
+    let mut realization_current = 0usize;
     for target in &targets {
         let matching = target
             .realizations
@@ -16261,7 +16691,55 @@ fn execute_property_realizations(
             }
             let generator = realization.generator.as_deref().unwrap_or("");
             let generator_symbol = binding_reference_symbol(generator).unwrap_or(generator);
-            let output = execute_proof_command(
+            realization_current += 1;
+            let progress = ProofExecutionProgress {
+                current: realization_current,
+                total: realization_total.max(1),
+                runner: &realization.runner,
+                suite_started: realization_suite_started,
+            };
+            let cache_key = verification::ProofCache::key(&[
+                implementation.to_string_lossy().as_ref(),
+                profile.label(),
+                target.id.as_str(),
+                command,
+                realization.runner.as_str(),
+                realization.generator.as_deref().unwrap_or(""),
+            ]);
+            if let Some(cached) = proof_cache
+                .as_ref()
+                .and_then(|cache| cache.load::<PropertyRunCommandReport>(&cache_key))
+                .filter(|cached| cached.status == "pass")
+            {
+                eprintln!(
+                    "proof [{}/{}] runner={} elapsed={} eta={} state=resume-cache cached={}ms",
+                    progress.current,
+                    progress.total,
+                    shell_arg(progress.runner),
+                    human_elapsed(progress.suite_started.elapsed()),
+                    verification::eta_class(
+                        progress.current,
+                        progress.total,
+                        progress.suite_started.elapsed()
+                    ),
+                    cached.elapsed_ms
+                );
+                commands.push(cached);
+                continue;
+            }
+            eprintln!(
+                "proof [{}/{}] runner={} elapsed={} eta={} state=starting",
+                progress.current,
+                progress.total,
+                shell_arg(progress.runner),
+                human_elapsed(progress.suite_started.elapsed()),
+                verification::eta_class(
+                    progress.current.saturating_sub(1),
+                    progress.total,
+                    progress.suite_started.elapsed()
+                )
+            );
+            let output = execute_proof_command_observed(
                 root,
                 command,
                 &[
@@ -16273,6 +16751,7 @@ fn execute_property_realizations(
                     ),
                 ],
                 timeout_seconds,
+                Some(&progress),
             )?;
             if output.timed_out {
                 diagnostics.push(error(
@@ -16284,7 +16763,7 @@ fn execute_property_realizations(
                     ),
                 ));
             }
-            commands.push(PropertyRunCommandReport {
+            let command_report = PropertyRunCommandReport {
                 kind: format!("{}:{}", target.kind, realization.strategy),
                 property: target.id.clone(),
                 command: command.to_string(),
@@ -16299,7 +16778,13 @@ fn execute_property_realizations(
                 elapsed_ms: output.elapsed_ms,
                 stdout: output.stdout,
                 stderr: output.stderr,
-            });
+            };
+            if command_report.status == "pass" {
+                if let Some(cache) = &proof_cache {
+                    cache.store(&cache_key, &command_report)?;
+                }
+            }
+            commands.push(command_report);
         }
     }
     let base = implementation.parent().unwrap_or_else(|| Path::new("."));
@@ -16461,6 +16946,14 @@ fn execute_module_property_realizations(
         .collect::<Vec<_>>();
     let mut commands = Vec::new();
     let base = module_path.parent().unwrap_or_else(|| Path::new("."));
+    let realization_total = targets
+        .iter()
+        .flat_map(|target| target.realizations.iter())
+        .filter(|realization| realization.profile == profile.label())
+        .map(|realization| usize::from(realization.generator.is_some()) + 1)
+        .sum::<usize>();
+    let realization_suite_started = Instant::now();
+    let mut realization_current = 0usize;
 
     for target in &targets {
         let matching = target
@@ -16579,11 +17072,31 @@ fn execute_module_property_realizations(
                     shell_arg(generator_path),
                     shell_arg(generator_symbol)
                 );
-                let output = execute_proof_command(
+                realization_current += 1;
+                let progress = ProofExecutionProgress {
+                    current: realization_current,
+                    total: realization_total.max(1),
+                    runner: realization.generator.as_deref().unwrap_or(generator_symbol),
+                    suite_started: realization_suite_started,
+                };
+                eprintln!(
+                    "proof [{}/{}] runner={} elapsed={} eta={} state=starting",
+                    progress.current,
+                    progress.total,
+                    shell_arg(progress.runner),
+                    human_elapsed(progress.suite_started.elapsed()),
+                    verification::eta_class(
+                        progress.current.saturating_sub(1),
+                        progress.total,
+                        progress.suite_started.elapsed()
+                    )
+                );
+                let output = execute_proof_command_observed(
                     base,
                     &generator_command,
                     &[("RMS_PROPERTY_ID", target.id.as_str())],
                     timeout_seconds,
+                    Some(&progress),
                 )?;
                 generator_stdout = output.stdout;
                 generator_stderr = output.stderr;
@@ -16631,7 +17144,26 @@ fn execute_module_property_realizations(
             let output = if generator_failed {
                 None
             } else {
-                Some(execute_proof_command(
+                realization_current += 1;
+                let progress = ProofExecutionProgress {
+                    current: realization_current,
+                    total: realization_total.max(1),
+                    runner: &realization.runner,
+                    suite_started: realization_suite_started,
+                };
+                eprintln!(
+                    "proof [{}/{}] runner={} elapsed={} eta={} state=starting",
+                    progress.current,
+                    progress.total,
+                    shell_arg(progress.runner),
+                    human_elapsed(progress.suite_started.elapsed()),
+                    verification::eta_class(
+                        progress.current.saturating_sub(1),
+                        progress.total,
+                        progress.suite_started.elapsed()
+                    )
+                );
+                Some(execute_proof_command_observed(
                     base,
                     &runner_command,
                     &[
@@ -16643,6 +17175,7 @@ fn execute_module_property_realizations(
                         ),
                     ],
                     timeout_seconds,
+                    Some(&progress),
                 )?)
             };
             if output.as_ref().is_some_and(|output| output.timed_out) {
@@ -34934,6 +35467,40 @@ fn run_check(
     if module.is_some() && !matches!(mode, CheckMode::Changes | CheckMode::Committed) {
         bail!("--module is supported only with --changes or --committed");
     }
+    let _strict_lock = if mode == CheckMode::Committed {
+        let canonical_root = fs::canonicalize(root)
+            .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
+        let source_revision =
+            source_revision(&canonical_root).unwrap_or_else(|| "uncommitted".to_string());
+        let repository_digest = release_input_digest(&canonical_root, false)?;
+        let scoped_digest = sha256_bytes(
+            format!(
+                "{}\0{}",
+                repository_digest,
+                module
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "all-modules".to_string())
+            )
+            .as_bytes(),
+        );
+        let executable = std::env::current_exe()?;
+        let tool_digest = release_tool_digest(&executable)?;
+        let session = verification::VerificationSession::acquire(
+            &canonical_root,
+            "check-committed",
+            &source_revision,
+            &scoped_digest,
+            &tool_digest,
+            std::env::var("RMS_PROPERTY_SEED")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok()),
+            1,
+        )?;
+        eprintln!("verification run identity: {}", session.identity());
+        Some(session)
+    } else {
+        None
+    };
     let report = build_check_report_scoped(root, mode, module)?;
     let surface = project_check_report(&report, include_details);
     if json_output {
@@ -58759,6 +59326,35 @@ fn diagnostic_category(check: &str) -> &'static str {
 }
 
 fn run_verify(target: &Path, dry_run: bool) -> Result<()> {
+    if dry_run {
+        return run_verify_unlocked(target, true);
+    }
+    let project_root = rms_root_for(target);
+    let source_revision =
+        source_revision(&project_root).unwrap_or_else(|| "uncommitted".to_string());
+    let repository_digest = release_input_digest(&project_root, false)?;
+    let input_digest =
+        sha256_bytes(format!("{}\0{}", repository_digest, target.display()).as_bytes());
+    let executable = std::env::current_exe()?;
+    let tool_digest = release_tool_digest(&executable)?;
+    let mut session = verification::VerificationSession::acquire(
+        &project_root,
+        "verify",
+        &source_revision,
+        &input_digest,
+        &tool_digest,
+        std::env::var("RMS_PROPERTY_SEED")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok()),
+        1,
+    )?;
+    eprintln!("verification run identity: {}", session.identity());
+    session.run_phase("target", &target.display().to_string(), || {
+        run_verify_unlocked(target, false)
+    })
+}
+
+fn run_verify_unlocked(target: &Path, dry_run: bool) -> Result<()> {
     let manifest = load_manifest(target)?;
     match get_str(&manifest.value, &["spec"]) {
         Some("rms/implementation/v0.1") => run_verify_implementation(target, dry_run),
@@ -81514,10 +82110,11 @@ fn produce_transition_trace() {
     fn property_run_executes_each_shared_command_realization() {
         let root = unique_test_dir("property-shared-command");
         fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::create_dir_all(root.join(".rms/cache")).unwrap();
         fs::create_dir_all(root.join("verification/properties")).unwrap();
         fs::write(
             root.join("scripts/properties.sh"),
-            "#!/bin/sh\nset -eu\nprintf '%s|%s\\n' \"$RMS_PROPERTY_ID\" \"$RMS_PROPERTY_RUNNER\" >> property-runs.log\n",
+            "#!/bin/sh\nset -eu\nprintf '%s|%s\\n' \"$RMS_PROPERTY_ID\" \"$RMS_PROPERTY_RUNNER\" >> .rms/cache/property-runs.log\n",
         )
         .unwrap();
         fs::write(
@@ -81567,16 +82164,41 @@ architecture:
             30,
         )
         .unwrap();
-        let log = fs::read_to_string(root.join("property-runs.log")).unwrap();
+        let first_log = fs::read_to_string(root.join(".rms/cache/property-runs.log")).unwrap();
+        let resumed = execute_property_realizations(
+            &root.join("implementation.yaml"),
+            PropertyProfile::Smoke,
+            false,
+            30,
+        )
+        .unwrap();
+        let resumed_log = fs::read_to_string(root.join(".rms/cache/property-runs.log")).unwrap();
+        fs::write(
+            root.join("scripts/semantic-input.txt"),
+            "source digest changed\n",
+        )
+        .unwrap();
+        let changed = execute_property_realizations(
+            &root.join("implementation.yaml"),
+            PropertyProfile::Smoke,
+            false,
+            30,
+        )
+        .unwrap();
+        let changed_log = fs::read_to_string(root.join(".rms/cache/property-runs.log")).unwrap();
 
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(report.commands.len(), 2);
+        assert_eq!(resumed.commands.len(), 2);
+        assert_eq!(changed.commands.len(), 2);
         assert!(report
             .commands
             .iter()
             .all(|command| command.status == "pass"));
-        assert!(log.contains("first-property|scripts/properties.sh#first_runner"));
-        assert!(log.contains("second-property|scripts/properties.sh#second_runner"));
+        assert!(first_log.contains("first-property|scripts/properties.sh#first_runner"));
+        assert!(first_log.contains("second-property|scripts/properties.sh#second_runner"));
+        assert_eq!(resumed_log.lines().count(), 2);
+        assert_eq!(changed_log.lines().count(), 4);
     }
 
     #[test]
