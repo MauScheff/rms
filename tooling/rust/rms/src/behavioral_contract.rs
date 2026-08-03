@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-pub(super) const CONTRACT_SPEC: &str = "rms/contract/v0.2";
+pub(super) const CONTRACT_SPEC: &str = "rms/contract/v0.3";
+pub(super) const CONTRACT_SPEC_V2: &str = "rms/contract/v0.2";
 pub(super) const LEGACY_CONTRACT_SPEC: &str = "rms/contract/v0.1";
 pub(super) const INVOCATION_SPEC: &str = "rms/invocation-record/v0.1";
 pub(super) const COMPATIBILITY_SPEC: &str = "rms/compatibility-analysis/v0.1";
@@ -47,11 +48,16 @@ pub(super) struct SmtObligation {
     pub(super) script: String,
     expression: Value,
     observations: Vec<Value>,
+    unsupported_reason: Option<String>,
+}
+
+pub(super) fn is_contract_spec(spec: Option<&str>) -> bool {
+    matches!(spec, Some(CONTRACT_SPEC | CONTRACT_SPEC_V2))
 }
 
 pub(super) fn validate(value: &Value, strict: bool) -> Vec<ContractIssue> {
     let mut issues = Vec::new();
-    if value.get("spec").and_then(Value::as_str) != Some(CONTRACT_SPEC) {
+    if !is_contract_spec(value.get("spec").and_then(Value::as_str)) {
         return issues;
     }
     let name = value
@@ -60,6 +66,7 @@ pub(super) fn validate(value: &Value, strict: bool) -> Vec<ContractIssue> {
         .unwrap_or("<unnamed-contract>");
     let kind = value.get("kind").and_then(Value::as_str).unwrap_or("");
     let semantics = value.get("semantics").and_then(Value::as_object);
+    let is_v3 = value.get("spec").and_then(Value::as_str) == Some(CONTRACT_SPEC);
     let mut ids = BTreeSet::new();
     let mut unresolved = Vec::new();
 
@@ -82,6 +89,18 @@ pub(super) fn validate(value: &Value, strict: bool) -> Vec<ContractIssue> {
                         ));
                     }
                 }
+            }
+            if is_v3 {
+                inspect_clauses(
+                    behavior
+                        .and_then(|value| value.get("assumptions"))
+                        .and_then(Value::as_array),
+                    "assumptions",
+                    name,
+                    &mut ids,
+                    &mut unresolved,
+                    &mut issues,
+                );
             }
             inspect_clauses(
                 behavior
@@ -297,7 +316,7 @@ fn contains_external_realization(value: &Value) -> bool {
 pub(super) fn property_definitions(
     contract: &Value,
 ) -> std::result::Result<Vec<Value>, Vec<String>> {
-    if contract.get("spec").and_then(Value::as_str) != Some(CONTRACT_SPEC) {
+    if !is_contract_spec(contract.get("spec").and_then(Value::as_str)) {
         return Ok(Vec::new());
     }
     let name = contract
@@ -305,6 +324,7 @@ pub(super) fn property_definitions(
         .and_then(Value::as_str)
         .unwrap_or("unnamed-contract");
     let kind = contract.get("kind").and_then(Value::as_str).unwrap_or("");
+    let is_v3 = contract.get("spec").and_then(Value::as_str) == Some(CONTRACT_SPEC);
     let semantics = contract.get("semantics").and_then(Value::as_object);
     let profile = match kind {
         "command" | "query" | "capability" => semantics.and_then(|value| value.get("behavior")),
@@ -342,19 +362,33 @@ pub(super) fn property_definitions(
             &observations,
             None,
         );
+        if let Some(observability) = profile.get("observability") {
+            for definition in &mut definitions {
+                definition["observability"] = observability.clone();
+            }
+        }
         return Ok(definitions);
     }
+    let assumption_expressions = if is_v3 {
+        core_expressions(profile, "assumptions")
+    } else {
+        Vec::new()
+    };
+    let applicability = predicate_all(assumption_expressions.clone());
     let requirements = core_expressions(profile, "requires");
     let requirement = predicate_all(requirements.clone());
-    add_core_clauses(
-        &mut definitions,
-        profile,
-        "requires",
-        "requirement",
-        name,
-        &observations,
-        None,
-    );
+    if !is_v3 {
+        add_core_clauses(
+            &mut definitions,
+            profile,
+            "requires",
+            "requirement",
+            name,
+            &observations,
+            None,
+        );
+    }
+    let valid_domain = predicate_all(vec![applicability.clone(), requirement.clone()]);
     add_core_clauses(
         &mut definitions,
         profile,
@@ -362,7 +396,7 @@ pub(super) fn property_definitions(
         "guarantee",
         name,
         &observations,
-        Some(&requirement),
+        Some(&valid_domain),
     );
     add_core_clauses(
         &mut definitions,
@@ -408,8 +442,13 @@ pub(super) fn property_definitions(
             consequences.push(json!({"constant": true}));
         }
         let consequence = predicate_all(consequences);
-        let predicate = implies(requirement.clone(), implies(when.clone(), consequence));
-        let activation = predicate_all(vec![requirement.clone(), when.clone()]);
+        let domain = if is_v3 {
+            applicability.clone()
+        } else {
+            requirement.clone()
+        };
+        let predicate = implies(domain.clone(), implies(when.clone(), consequence));
+        let activation = predicate_all(vec![domain, when.clone()]);
         definitions.push(step_definition(
             name,
             id,
@@ -441,7 +480,7 @@ pub(super) fn property_definitions(
         if rejection_guards.is_empty() {
             continue;
         }
-        let activation = predicate_all(vec![requirement.clone(), predicate_all(rejection_guards)]);
+        let activation = predicate_all(vec![valid_domain.clone(), predicate_all(rejection_guards)]);
         definitions.push(step_definition(
             name,
             id,
@@ -468,12 +507,17 @@ pub(super) fn property_definitions(
         ));
     }
     if !guards.is_empty() {
+        let coverage_domain = if is_v3 {
+            applicability.clone()
+        } else {
+            requirement.clone()
+        };
         definitions.push(step_definition(
             name,
             "case-coverage",
             "coverage",
             implies(
-                requirement.clone(),
+                coverage_domain,
                 json!({"any": guards.iter().map(|(_, guard)| guard.clone()).collect::<Vec<_>>() }),
             ),
             observations.clone(),
@@ -493,7 +537,11 @@ pub(super) fn property_definitions(
                     &format!("case-disjoint-{}-{}", guards[left].0, guards[right].0),
                     "disjointness",
                     implies(
-                        requirement.clone(),
+                        if is_v3 {
+                            applicability.clone()
+                        } else {
+                            requirement.clone()
+                        },
                         json!({"not": {"all": [guards[left].1.clone(), guards[right].1.clone()]}}),
                     ),
                     observations.clone(),
@@ -501,6 +549,90 @@ pub(super) fn property_definitions(
                     None,
                 ));
             }
+        }
+    }
+    if is_v3 {
+        let rejected = cases
+            .iter()
+            .filter(|case| {
+                case.pointer("/outcome/kind").and_then(Value::as_str) == Some("rejected")
+            })
+            .filter_map(|case| case.get("when").cloned())
+            .collect::<Vec<_>>();
+        let accepted = cases
+            .iter()
+            .filter(|case| {
+                case.pointer("/outcome/kind").and_then(Value::as_str) == Some("accepted")
+            })
+            .filter_map(|case| case.get("when").cloned())
+            .collect::<Vec<_>>();
+        let invalid = predicate_all(vec![
+            applicability.clone(),
+            json!({"not": requirement.clone()}),
+        ]);
+        definitions.push(step_definition(
+            name,
+            "invalid-domain-rejection-coverage",
+            "case",
+            implies(invalid.clone(), predicate_any(rejected)),
+            observations.clone(),
+            None,
+            None,
+        ));
+        definitions.push(step_definition(
+            name,
+            "invalid-domain-accepted-exclusion",
+            "case",
+            implies(invalid.clone(), json!({"not": predicate_any(accepted)})),
+            observations.clone(),
+            None,
+            None,
+        ));
+        for case in &cases {
+            if case.pointer("/outcome/kind").and_then(Value::as_str) != Some("rejected") {
+                continue;
+            }
+            let Some(id) = case.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(guard) = case.get("when") else {
+                continue;
+            };
+            definitions.push(step_definition(
+                name,
+                &format!("invalid-frame-{id}"),
+                "case",
+                json!({"constant": true}),
+                observations.clone(),
+                Some(predicate_all(vec![invalid.clone(), guard.clone()])),
+                Some(json!({"state_changes": [], "events": [], "effects": []})),
+            ));
+        }
+        let assumptions = profile
+            .get("assumptions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|clause| {
+                let expression = match clause.pointer("/evaluation/kind").and_then(Value::as_str) {
+                    Some("core") => clause.pointer("/evaluation/expression")?.clone(),
+                    Some("external" | "unresolved") => json!({"constant": false}),
+                    _ => return None,
+                };
+                Some(json!({
+                    "id": clause.get("id")?.as_str()?,
+                    "kind": "environment",
+                    "expression": {"always": expression}
+                }))
+            })
+            .collect::<Vec<_>>();
+        for definition in &mut definitions {
+            definition["assumptions"] = json!(assumptions);
+        }
+    }
+    if let Some(observability) = profile.get("observability") {
+        for definition in &mut definitions {
+            definition["observability"] = observability.clone();
         }
     }
     Ok(definitions)
@@ -560,6 +692,14 @@ fn predicate_all(mut predicates: Vec<Value>) -> Value {
         0 => json!({"constant": true}),
         1 => predicates.remove(0),
         _ => json!({"all": predicates}),
+    }
+}
+
+fn predicate_any(mut predicates: Vec<Value>) -> Value {
+    match predicates.len() {
+        0 => json!({"constant": false}),
+        1 => predicates.remove(0),
+        _ => json!({"any": predicates}),
     }
 }
 
@@ -720,7 +860,7 @@ pub(super) fn migrate_v01(value: &YamlValue) -> Result<YamlValue> {
         semantics.insert("protocol".to_string(), protocol);
     }
     let mut migrated = Map::new();
-    migrated.insert("spec".to_string(), json!(CONTRACT_SPEC));
+    migrated.insert("spec".to_string(), json!(CONTRACT_SPEC_V2));
     migrated.insert("name".to_string(), json!(name));
     migrated.insert("version".to_string(), version);
     migrated.insert("kind".to_string(), json!(kind));
@@ -746,6 +886,58 @@ pub(super) fn migrate_v01(value: &YamlValue) -> Result<YamlValue> {
     serde_yaml::to_value(Value::Object(migrated)).context("failed to render migrated contract")
 }
 
+pub(super) fn migrate(value: &YamlValue) -> Result<YamlValue> {
+    let json_value = serde_json::to_value(value)?;
+    match json_value.get("spec").and_then(Value::as_str) {
+        Some(LEGACY_CONTRACT_SPEC) => migrate_v01(value),
+        Some(CONTRACT_SPEC_V2) => migrate_v02(value),
+        Some(CONTRACT_SPEC) => bail!("contract is already `{CONTRACT_SPEC}` and cannot downgrade"),
+        Some(other) => bail!("unsupported contract migration source `{other}`"),
+        None => bail!("contract migration input has no `spec`"),
+    }
+}
+
+fn migrate_v02(value: &YamlValue) -> Result<YamlValue> {
+    let mut migrated = serde_json::to_value(value)?;
+    migrated["spec"] = json!(CONTRACT_SPEC);
+    let kind = migrated.get("kind").and_then(Value::as_str).unwrap_or("");
+    let mut draft = false;
+    if matches!(kind, "command" | "query" | "capability") {
+        let behavior = migrated
+            .pointer_mut("/semantics/behavior")
+            .ok_or_else(|| anyhow!("v0.2 contract requires `semantics.behavior`"))?;
+        let requires = behavior
+            .get("requires")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        behavior["observability"] = json!("none");
+        behavior["assumptions"] = requires;
+        behavior["requires"] = json!([]);
+        let cases = behavior.get("cases").and_then(Value::as_array);
+        draft = cases.is_none_or(|cases| {
+            cases.is_empty()
+                || cases.iter().any(|case| {
+                    case.pointer("/outcome/kind").and_then(Value::as_str) == Some("rejected")
+                        && case
+                            .pointer("/outcome/category")
+                            .and_then(Value::as_str)
+                            .is_none()
+                })
+        });
+    } else if kind == "event" {
+        migrated["semantics"]["event"]["observability"] = json!("none");
+    }
+    if draft {
+        if !migrated.get("x-rms").is_some_and(Value::is_object) {
+            migrated["x-rms"] = json!({});
+        }
+        migrated["x-rms"]["migration_draft"] = json!(true);
+    } else if let Some(extension) = migrated.get_mut("x-rms").and_then(Value::as_object_mut) {
+        extension.remove("migration_draft");
+    }
+    serde_yaml::to_value(migrated).context("failed to render v0.3 migrated contract")
+}
+
 pub(super) fn smt_obligations(contract: &Value) -> Result<Vec<SmtObligation>> {
     let name = contract
         .get("name")
@@ -761,7 +953,21 @@ pub(super) fn smt_obligations(contract: &Value) -> Result<Vec<SmtObligation>> {
         .cloned()
         .unwrap_or_default();
     let mut obligations = Vec::new();
-    let domain = core_clause_conjunction(behavior, "requires").ok();
+    let is_v3 = contract.get("spec").and_then(Value::as_str) == Some(CONTRACT_SPEC);
+    let applicability = if is_v3 {
+        core_clause_conjunction(behavior, "assumptions").ok()
+    } else {
+        Some(json!({"constant": true}))
+    };
+    let requirements = core_clause_conjunction(behavior, "requires").ok();
+    let domain = match (&applicability, &requirements) {
+        (Some(applicability), Some(requirements)) => Some(predicate_all(vec![
+            applicability.clone(),
+            requirements.clone(),
+        ])),
+        (_, Some(requirements)) => Some(requirements.clone()),
+        _ => None,
+    };
     if let Some(domain) = &domain {
         obligations.push(obligation(
             format!("{name}.requirements.satisfiable"),
@@ -842,10 +1048,199 @@ pub(super) fn smt_obligations(contract: &Value) -> Result<Vec<SmtObligation>> {
             }
         }
     }
+    if is_v3 {
+        let applicability = applicability.unwrap_or_else(|| json!({"constant": true}));
+        let requirements = requirements.unwrap_or_else(|| json!({"constant": true}));
+        let invalid = predicate_all(vec![
+            applicability.clone(),
+            json!({"not": requirements.clone()}),
+        ]);
+        let rejected = behavior
+            .get("cases")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|case| {
+                case.pointer("/outcome/kind").and_then(Value::as_str) == Some("rejected")
+            })
+            .filter_map(|case| case.get("when").cloned())
+            .collect::<Vec<_>>();
+        let accepted = behavior
+            .get("cases")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|case| {
+                case.pointer("/outcome/kind").and_then(Value::as_str) == Some("accepted")
+            })
+            .filter_map(|case| case.get("when").cloned())
+            .collect::<Vec<_>>();
+        obligations.push(obligation(
+            format!("{name}.invalid-domain-rejection-coverage"),
+            ExpectedSolverResult::Unsat,
+            &observations,
+            &predicate_all(vec![
+                invalid.clone(),
+                json!({"not": predicate_any(rejected)}),
+            ]),
+            &observation_definitions,
+        )?);
+        obligations.push(obligation(
+            format!("{name}.invalid-domain-accepted-exclusion"),
+            ExpectedSolverResult::Unsat,
+            &observations,
+            &predicate_all(vec![invalid, predicate_any(accepted)]),
+            &observation_definitions,
+        )?);
+        obligations.extend(invariant_preservation_obligations(
+            name,
+            behavior,
+            &observations,
+            &observation_definitions,
+            &applicability,
+        )?);
+    }
     Ok(obligations)
 }
 
+fn invariant_preservation_obligations(
+    name: &str,
+    behavior: &Value,
+    sorts: &BTreeMap<String, String>,
+    observation_definitions: &[Value],
+    applicability: &Value,
+) -> Result<Vec<SmtObligation>> {
+    let relation = behavior_relation(behavior);
+    let mut before_by_key = BTreeMap::new();
+    for observation in observation_definitions {
+        if observation.pointer("/source/kind").and_then(Value::as_str) != Some("state")
+            || observation.pointer("/source/phase").and_then(Value::as_str) != Some("before")
+        {
+            continue;
+        }
+        if let Some(key) = state_observation_pair_key(observation) {
+            before_by_key.insert(key, observation["id"].as_str().unwrap_or("").to_string());
+        }
+    }
+    let mut after_to_before = BTreeMap::new();
+    for observation in observation_definitions {
+        if observation.pointer("/source/kind").and_then(Value::as_str) != Some("state")
+            || observation.pointer("/source/phase").and_then(Value::as_str) != Some("after")
+        {
+            continue;
+        }
+        if let (Some(id), Some(key)) = (
+            observation.get("id").and_then(Value::as_str),
+            state_observation_pair_key(observation),
+        ) {
+            if let Some(before) = before_by_key.get(&key) {
+                after_to_before.insert(id.to_string(), before.clone());
+            }
+        }
+    }
+    let mut obligations = Vec::new();
+    for invariant in behavior
+        .get("invariants")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|clause| clause.pointer("/evaluation/kind").and_then(Value::as_str) == Some("core"))
+    {
+        let id = invariant
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("invariant");
+        let after = invariant
+            .pointer("/evaluation/expression")
+            .cloned()
+            .unwrap_or_else(|| json!({"constant": true}));
+        let before = rewrite_observation_references(&after, &after_to_before);
+        let expression = match before {
+            Err(reason) => {
+                obligations.push(unsupported_obligation(
+                    format!("{name}.invariant.{id}.transition-preservation"),
+                    reason.to_string(),
+                    observation_definitions,
+                ));
+                continue;
+            }
+            Ok(before) => match &relation {
+                Ok(relation) => predicate_all(vec![
+                    applicability.clone(),
+                    before,
+                    relation.clone(),
+                    json!({"not": after}),
+                ]),
+                Err(reason) => {
+                    obligations.push(unsupported_obligation(
+                        format!("{name}.invariant.{id}.transition-preservation"),
+                        reason.to_string(),
+                        observation_definitions,
+                    ));
+                    continue;
+                }
+            },
+        };
+        obligations.push(obligation(
+            format!("{name}.invariant.{id}.transition-preservation"),
+            ExpectedSolverResult::Unsat,
+            sorts,
+            &expression,
+            observation_definitions,
+        )?);
+    }
+    Ok(obligations)
+}
+
+fn state_observation_pair_key(observation: &Value) -> Option<String> {
+    Some(format!(
+        "{}\u{0}{}\u{0}{}",
+        observation
+            .pointer("/source/instance")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        observation
+            .pointer("/source/pointer")
+            .and_then(Value::as_str)?,
+        serde_json::to_string(observation.get("value")?).ok()?
+    ))
+}
+
+fn rewrite_observation_references(
+    value: &Value,
+    pairs: &BTreeMap<String, String>,
+) -> Result<Value> {
+    match value {
+        Value::Array(items) => Ok(Value::Array(
+            items
+                .iter()
+                .map(|item| rewrite_observation_references(item, pairs))
+                .collect::<Result<_>>()?,
+        )),
+        Value::Object(object) => {
+            if let Some(id) = object.get("observation").and_then(Value::as_str) {
+                let before = pairs.get(id).ok_or_else(|| {
+                    anyhow!("missing before/after state observation pair for `{id}`")
+                })?;
+                return Ok(json!({"observation": before}));
+            }
+            Ok(Value::Object(
+                object
+                    .iter()
+                    .map(|(key, item)| {
+                        Ok((key.clone(), rewrite_observation_references(item, pairs)?))
+                    })
+                    .collect::<Result<Map<_, _>>>()?,
+            ))
+        }
+        scalar => Ok(scalar.clone()),
+    }
+}
+
 pub(super) fn refinement_obligations(old: &Value, new: &Value) -> Result<Vec<SmtObligation>> {
+    if old.get("spec").and_then(Value::as_str) != new.get("spec").and_then(Value::as_str) {
+        bail!("cross-version contract comparison is unsupported; migrate both contracts to `{CONTRACT_SPEC}` first");
+    }
     let old_behavior = old
         .pointer("/semantics/behavior")
         .ok_or_else(|| anyhow!("old contract has no core behavior relation"))?;
@@ -1076,6 +1471,20 @@ fn permitted_frame(value: &Value) -> BTreeMap<&'static str, BTreeSet<String>> {
 
 pub(super) fn solve_cvc5(obligation: &SmtObligation, timeout_ms: u64) -> SolverEvidence {
     let executable = "cvc5".to_string();
+    if let Some(reason) = &obligation.unsupported_reason {
+        return SolverEvidence {
+            adapter: "smt-lib-v2".to_string(),
+            executable,
+            version: None,
+            input_digest: sha256_bytes(obligation.script.as_bytes()),
+            timeout_ms,
+            result: "unresolved".to_string(),
+            output: format!("unsupported obligation: {reason}"),
+            model: None,
+            unsat_core: None,
+            model_revalidated: None,
+        };
+    }
     let version = Command::new(&executable)
         .arg("--version")
         .output()
@@ -1551,7 +1960,23 @@ fn obligation(
         script,
         expression: expression.clone(),
         observations: observation_definitions.to_vec(),
+        unsupported_reason: None,
     })
+}
+
+fn unsupported_obligation(
+    id: String,
+    reason: String,
+    observation_definitions: &[Value],
+) -> SmtObligation {
+    SmtObligation {
+        id,
+        expectation: ExpectedSolverResult::Unsat,
+        script: String::new(),
+        expression: json!({"constant": true}),
+        observations: observation_definitions.to_vec(),
+        unsupported_reason: Some(reason),
+    }
 }
 
 fn smt_predicate(value: &Value) -> Result<String> {
@@ -1750,7 +2175,7 @@ mod tests {
 
     fn behavioral_contract() -> Value {
         json!({
-            "spec": CONTRACT_SPEC,
+            "spec": CONTRACT_SPEC_V2,
             "name": "choose",
             "version": 1,
             "kind": "command",
@@ -1766,6 +2191,186 @@ mod tests {
                 "case_policy": {"coverage": "exhaustive", "overlap": "forbidden"}
             }}
         })
+    }
+
+    fn total_contract() -> Value {
+        json!({
+            "spec": CONTRACT_SPEC,
+            "name": "choose-total",
+            "version": 3,
+            "kind": "command",
+            "meaning": "Choose or reject every applicable value.",
+            "semantics": {"behavior": {
+                "observability": "full",
+                "observations": [
+                    {"id": "trusted", "source": {"kind": "input", "pointer": "/trusted"}, "value": "boolean"},
+                    {"id": "amount", "source": {"kind": "input", "pointer": "/amount"}, "value": "integer"},
+                    {"id": "result", "source": {"kind": "output", "pointer": "/kind"}, "value": {"variant": ["Accepted", "Rejected"]}}
+                ],
+                "assumptions": [{"id": "trusted-clock", "statement": "The input source is trusted.", "evaluation": {"kind": "core", "expression": {"equals": {"left": {"observation": "trusted"}, "right": {"literal": true}}}}}],
+                "requires": [{"id": "positive", "statement": "Amount is positive.", "evaluation": {"kind": "core", "expression": {"compare": {"left": {"observation": "amount"}, "operator": "gt", "right": {"literal": 0}}}}}],
+                "guarantees": [], "failures": [], "invariants": [],
+                "cases": [
+                    {"id": "accepted", "statement": "Ordinary valid values are accepted.", "when": {"all": [{"compare": {"left": {"observation": "amount"}, "operator": "gt", "right": {"literal": 0}}}, {"not": {"equals": {"left": {"observation": "amount"}, "right": {"literal": 13}}}}]}, "outcome": {"kind": "accepted", "expression": {"equals": {"left": {"observation": "result"}, "right": {"literal": "Accepted"}}}}, "ensures": [], "permits": {"state_changes": [], "events": [], "effects": []}},
+                    {"id": "business-rejection", "statement": "Thirteen is unavailable.", "when": {"equals": {"left": {"observation": "amount"}, "right": {"literal": 13}}}, "outcome": {"kind": "rejected", "category": "unavailable", "expression": {"equals": {"left": {"observation": "result"}, "right": {"literal": "Rejected"}}}}, "ensures": [], "permits": {"state_changes": ["/reservation"], "events": [], "effects": []}},
+                    {"id": "invalid-rejection", "statement": "Invalid values are rejected.", "when": {"compare": {"left": {"observation": "amount"}, "operator": "lte", "right": {"literal": 0}}}, "outcome": {"kind": "rejected", "category": "invalid-input", "expression": {"equals": {"left": {"observation": "result"}, "right": {"literal": "Rejected"}}}}, "ensures": [], "permits": {"state_changes": [], "events": [], "effects": []}}
+                ],
+                "case_policy": {"coverage": "exhaustive", "overlap": "forbidden"}
+            }}
+        })
+    }
+
+    fn invocation_record(amount: i64, trusted: bool, result: &str) -> Value {
+        json!({
+            "spec": INVOCATION_SPEC,
+            "contract": "choose-total",
+            "binding": "rust",
+            "contract_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "input": {"amount": amount, "trusted": trusted},
+            "output": {"kind": result, "events": [], "effects": []}
+        })
+    }
+
+    #[test]
+    fn v03_totality_assigns_provider_blame_and_assumption_gaps_are_inconclusive() {
+        let definitions = property_definitions(&total_contract()).unwrap();
+        let evaluate = |id: &str, record: Value| {
+            let definition = definitions.iter().find(|value| value["id"] == id).unwrap();
+            let compiled = property::compile_property(definition).unwrap();
+            property::evaluate_trace(&compiled, &record).unwrap()
+        };
+        assert_eq!(
+            evaluate(
+                "contract:choose-total#invalid-rejection",
+                invocation_record(0, true, "Accepted")
+            )
+            .verdict(),
+            &property::Verdict::Violated
+        );
+        let violation = serde_json::to_value(evaluate(
+            "contract:choose-total#invalid-rejection",
+            invocation_record(0, true, "Accepted"),
+        ))
+        .unwrap();
+        assert_eq!(
+            violation.pointer("/explanation/blame"),
+            Some(&json!("provider"))
+        );
+
+        let mut mutated = invocation_record(0, true, "Rejected");
+        mutated["state_before"] = json!({"count": 0});
+        mutated["state_after"] = json!({"count": 1});
+        let frame = evaluate(
+            "contract:choose-total#invalid-frame-invalid-rejection",
+            mutated,
+        );
+        assert_eq!(frame.verdict(), &property::Verdict::Violated);
+
+        let assumption = evaluate(
+            "contract:choose-total#invalid-domain-rejection-coverage",
+            invocation_record(0, false, "Accepted"),
+        );
+        assert_eq!(assumption.verdict(), &property::Verdict::Inconclusive);
+        assert!(serde_json::to_value(assumption)
+            .unwrap()
+            .pointer("/explanation/blame")
+            .is_none());
+
+        for record in [
+            invocation_record(1, true, "Accepted"),
+            invocation_record(13, true, "Rejected"),
+            invocation_record(0, true, "Rejected"),
+        ] {
+            for definition in &definitions {
+                let evaluation = property::evaluate_trace(
+                    &property::compile_property(definition).unwrap(),
+                    &record,
+                )
+                .unwrap();
+                assert_eq!(evaluation.verdict(), &property::Verdict::Satisfied);
+            }
+        }
+    }
+
+    #[test]
+    fn v02_migration_preserves_requires_as_assumptions_and_marks_incomplete_drafts() {
+        let migrated = migrate(&serde_yaml::to_value(behavioral_contract()).unwrap()).unwrap();
+        let migrated = serde_json::to_value(migrated).unwrap();
+        assert_eq!(migrated["spec"], CONTRACT_SPEC);
+        assert_eq!(
+            migrated.pointer("/semantics/behavior/observability"),
+            Some(&json!("none"))
+        );
+        assert_eq!(
+            migrated.pointer("/semantics/behavior/requires"),
+            Some(&json!([]))
+        );
+        assert_eq!(
+            migrated.pointer("/semantics/behavior/assumptions/0/id"),
+            Some(&json!("positive"))
+        );
+
+        let mut incomplete = behavioral_contract();
+        incomplete["semantics"]["behavior"]["cases"] = json!([]);
+        let draft = migrate(&serde_yaml::to_value(incomplete).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(draft)
+                .unwrap()
+                .pointer("/x-rms/migration_draft"),
+            Some(&json!(true))
+        );
+        assert!(
+            refinement_obligations(&behavioral_contract(), &total_contract())
+                .unwrap_err()
+                .to_string()
+                .contains("migrate both")
+        );
+    }
+
+    #[test]
+    fn invariant_preservation_is_named_and_missing_pairs_are_explicitly_unsupported() {
+        let mut contract = total_contract();
+        contract["semantics"]["behavior"]["observations"]
+            .as_array_mut()
+            .unwrap()
+            .extend([
+                json!({"id": "count_before", "source": {"kind": "state", "phase": "before", "instance": "counter", "pointer": "/count"}, "value": "integer"}),
+                json!({"id": "count_after", "source": {"kind": "state", "phase": "after", "instance": "counter", "pointer": "/count"}, "value": "integer"}),
+            ]);
+        contract["semantics"]["behavior"]["invariants"] = json!([{
+            "id": "nonnegative",
+            "statement": "Count remains nonnegative.",
+            "evaluation": {"kind": "core", "expression": {"compare": {"left": {"observation": "count_after"}, "operator": "gte", "right": {"literal": 0}}}}
+        }]);
+        let obligations = smt_obligations(&contract).unwrap();
+        let preservation = obligations
+            .iter()
+            .find(|obligation| {
+                obligation
+                    .id
+                    .ends_with("invariant.nonnegative.transition-preservation")
+            })
+            .unwrap();
+        assert!(preservation.unsupported_reason.is_none());
+        assert!(preservation.script.contains("count_before"));
+        assert!(preservation.script.contains("count_after"));
+
+        contract["semantics"]["behavior"]["observations"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|observation| observation["id"] != "count_before");
+        let unsupported = smt_obligations(&contract)
+            .unwrap()
+            .into_iter()
+            .find(|obligation| {
+                obligation
+                    .id
+                    .ends_with("invariant.nonnegative.transition-preservation")
+            })
+            .unwrap();
+        assert!(solve_cvc5(&unsupported, 10)
+            .output
+            .contains("missing before/after"));
     }
 
     #[test]
@@ -1842,7 +2447,7 @@ mod tests {
         ).unwrap();
         let migrated = migrate_v01(&legacy).unwrap();
         let migrated = serde_json::to_value(migrated).unwrap();
-        assert_eq!(migrated["spec"], CONTRACT_SPEC);
+        assert_eq!(migrated["spec"], CONTRACT_SPEC_V2);
         assert_eq!(migrated["name"], "choose");
         assert_eq!(
             migrated
@@ -1955,7 +2560,7 @@ mod tests {
     }
 
     #[test]
-    fn all_tracked_contracts_use_v02_and_are_closed() {
+    fn contract_v03_totality_invariants_migration_and_observability_are_closed() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../..")
             .canonicalize()
@@ -1991,10 +2596,9 @@ mod tests {
             }
             let yaml: YamlValue = serde_yaml::from_str(&source).unwrap();
             let value = serde_json::to_value(yaml).unwrap();
-            assert_eq!(
-                value.get("spec").and_then(Value::as_str),
-                Some(CONTRACT_SPEC),
-                "{} is not a v0.2 contract",
+            assert!(
+                is_contract_spec(value.get("spec").and_then(Value::as_str)),
+                "{} is not a supported behavioral contract",
                 entry.path().display()
             );
             let issues = validate(&value, true)
@@ -2017,7 +2621,7 @@ mod tests {
                 contract_directory_count += 1;
             }
         }
-        assert_eq!(contract_directory_count, 101);
-        assert_eq!(all_contract_count, 103);
+        assert_eq!(contract_directory_count, 103);
+        assert_eq!(all_contract_count, 105);
     }
 }

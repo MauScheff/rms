@@ -1826,6 +1826,8 @@ struct PropertyTargetReport {
     evidence: Option<String>,
     counterexamples: Option<String>,
     realizations: Vec<PropertyRealization>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observability: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     observations: Vec<YamlValue>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3259,6 +3261,8 @@ struct SemanticPropertyChange {
     explorations: Vec<SemanticPropertyExploration>,
     #[serde(default)]
     observations: Vec<YamlValue>,
+    #[serde(default)]
+    observability: Option<String>,
     #[serde(default)]
     assumptions: Vec<YamlValue>,
     #[serde(default)]
@@ -9805,7 +9809,7 @@ fn run_main() -> Result<()> {
                             get_str(&manifest.value, &["spec"]).map(str::to_string)
                         })
                         .as_deref()
-                        == Some(behavioral_contract::CONTRACT_SPEC)
+                        .is_some_and(|spec| behavioral_contract::is_contract_spec(Some(spec)))
                 {
                     run_behavioral_contract_analysis(&target, out.as_deref(), json, timeout_seconds)
                 } else {
@@ -10443,7 +10447,7 @@ fn build_repository_profile(root: &Path) -> Result<BuiltRepositoryProfile> {
             == Some("contracts")
             && path.extension().and_then(|extension| extension.to_str()) == Some("yaml")
         {
-            Some("rms/contract/v0.2")
+            Some("rms/contract/v0.2|v0.3")
         } else {
             None
         };
@@ -10458,7 +10462,11 @@ fn build_repository_profile(root: &Path) -> Result<BuiltRepositoryProfile> {
         match load_manifest(path) {
             Ok(manifest) => {
                 let actual = get_str(&manifest.value, &["spec"]);
-                if actual != Some(*expected_spec) {
+                if if *expected_spec == "rms/contract/v0.2|v0.3" {
+                    !behavioral_contract::is_contract_spec(actual)
+                } else {
+                    actual != Some(*expected_spec)
+                } {
                     diagnostics.push(Diagnostic {
                         severity: Severity::Error,
                         check: "repository.canonical-spec".to_string(),
@@ -17512,7 +17520,7 @@ fn rust_test_names_for_runner(runner: &str) -> Option<BTreeSet<String>> {
 
 fn executable_property_targets(target: &Path) -> Result<Vec<PropertyTargetReport>> {
     let direct = load_manifest(target)?;
-    if get_str(&direct.value, &["spec"]) == Some(behavioral_contract::CONTRACT_SPEC) {
+    if behavioral_contract::is_contract_spec(get_str(&direct.value, &["spec"])) {
         let normalized = serde_json::to_value(&direct.value)?;
         let mut definitions = behavioral_contract::property_definitions(&normalized)
             .map_err(|issues| anyhow!(issues.join("; ")))?;
@@ -18187,6 +18195,16 @@ fn run_property_monitor(
             json!({"malformed_or_unavailable": true, "source": source}),
         ),
     };
+    let evaluation = property::apply_monitor_observability(
+        evaluation,
+        target_property.observability.as_deref(),
+        complete,
+    );
+    let evaluation = property::apply_monitor_observability(
+        evaluation,
+        target_property.observability.as_deref(),
+        complete,
+    );
     let result = evaluation.verdict().label();
     let analysis = json!({
         "spec": property::ANALYSIS_SPEC,
@@ -18203,6 +18221,8 @@ fn run_property_monitor(
         "coverage": {
             "kind": "monitor-prefix",
             "complete": complete,
+            "observability": target_property.observability.as_deref().unwrap_or("unspecified"),
+            "observability": target_property.observability.as_deref().unwrap_or("unspecified"),
             "mode": "production-fail-open",
             "missing_observations_are_gaps": true
         },
@@ -20260,6 +20280,7 @@ fn property_target_from_yaml(
         .and_then(YamlValue::as_sequence)
         .cloned()
         .unwrap_or_default();
+    let observability = get_str(item, &["observability"]).map(ToString::to_string);
     let assumptions = get_path(item, &["assumptions"])
         .and_then(YamlValue::as_sequence)
         .cloned()
@@ -20283,6 +20304,7 @@ fn property_target_from_yaml(
         evidence,
         counterexamples,
         realizations,
+        observability,
         observations,
         assumptions,
         temporal,
@@ -24400,6 +24422,7 @@ fn is_supported_yaml_manifest(path: &Path) -> bool {
                 | "spec: rms/module/v0.1"
                 | "spec: rms/contract/v0.1"
                 | "spec: rms/contract/v0.2"
+                | "spec: rms/contract/v0.3"
                 | "spec: rms/context-map/v0.1"
                 | "spec: rms/implementation/v0.1"
         )
@@ -24424,7 +24447,9 @@ fn validate_loaded_manifest(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
                 manifest.path.display()
             ),
         )),
-        Some("rms/contract/v0.2") => validate_behavioral_contract(manifest, diagnostics, false),
+        Some("rms/contract/v0.2" | "rms/contract/v0.3") => {
+            validate_behavioral_contract(manifest, diagnostics, false)
+        }
         Some("rms/context-map/v0.1") => validate_context_map(manifest, diagnostics),
         Some("rms/implementation/v0.1") => validate_implementation(manifest, diagnostics),
         Some("rms/conformance/v0.1") => {}
@@ -24517,6 +24542,9 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
         "rms/contract/v0.1" => Some(include_str!("../../../../schemas/contract.schema.json")),
         "rms/contract/v0.2" => Some(include_str!(
             "../../../../schemas/contract-v0.2.schema.json"
+        )),
+        "rms/contract/v0.3" => Some(include_str!(
+            "../../../../schemas/contract-v0.3.schema.json"
         )),
         "rms/context-map/v0.1" => Some(include_str!("../../../../schemas/context-map.schema.json")),
         "rms/implementation/v0.1" => Some(include_str!(
@@ -35840,7 +35868,7 @@ fn build_check_report_scoped(
             report.components.push(surface_projection::CheckComponent {
                 id: "behavioral-contracts".to_string(),
                 subject: root.display().to_string(),
-                scope: "rms/contract/v0.2".to_string(),
+                scope: "rms/contract/v0.2|v0.3".to_string(),
                 result: "fail".to_string(),
                 summary: format!(
                     "{} incomplete behavioral contract finding(s)",
@@ -35993,7 +36021,7 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
                 "contract.migration-required".to_string(),
                 "legacy contract must be migrated to rms/contract/v0.2".to_string(),
             )),
-            Some(behavioral_contract::CONTRACT_SPEC) => {
+            Some(behavioral_contract::CONTRACT_SPEC | behavioral_contract::CONTRACT_SPEC_V2) => {
                 let value = serde_json::to_value(&manifest.value)?;
                 findings.extend(
                     behavioral_contract::validate(&value, true)
@@ -36032,8 +36060,7 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
                             .join(reference);
                         match load_manifest(&referenced_path) {
                             Ok(referenced)
-                                if get_str(&referenced.value, &["spec"])
-                                    == Some(behavioral_contract::CONTRACT_SPEC)
+                                if behavioral_contract::is_contract_spec(get_str(&referenced.value, &["spec"]))
                                     && get_str(&referenced.value, &["name"])
                                         == operation.get("name").and_then(JsonValue::as_str)
                                     && get_str(&referenced.value, &["kind"])
@@ -36043,7 +36070,7 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
                                 path.to_path_buf(),
                                 "contract.api-reference-mismatch".to_string(),
                                 format!(
-                                    "API operation reference `{reference}` must resolve to a v0.2 contract with matching name and kind"
+                                    "API operation reference `{reference}` must resolve to a supported behavioral contract with matching name and kind"
                                 ),
                             )),
                             Err(error) => findings.push((
@@ -52034,7 +52061,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Composite parents may delegate an exported law proof through `verification.delegations`; name the contained provider, provider law, provider property, public export, and concrete evidence instead of duplicating the child property in the parent.")?;
     writeln!(out, "Before adding a law, invariant, owned decision, or purpose text, compare the requested promise with the target's existing invariants and ownership declarations in the bounded context. If an existing invariant already expresses the promise, set the property `proves` field to that exact invariant id and do not add a synonymous law, duplicate ownership decision, or expanded purpose. Preserve current meaning and topology unless the task explicitly changes them.")?;
     writeln!(out, "When a promise says always, never, bounded, ordered, normalized, parsed, generated, or impossible, declare semantic properties with input spaces and oracles before relying on binding tests.")?;
-    writeln!(out, "Public behavior uses `rms/contract/v0.2`: give every requirement, guarantee, failure, invariant, and case a stable id, then choose exactly one core expression or exact external property realization. Queries have an empty state/event/effect frame.")?;
+    writeln!(out, "New public behavior uses `rms/contract/v0.3`: separate provider-external assumptions from boundary-validatable requirements, declare observability, cover every applicable input with acceptance or typed rejection, and keep invalid rejection frames empty. Existing v0.2 contracts preserve caller-obligation semantics until explicitly migrated.")?;
     writeln!(out, "Reusable modules must declare capabilities/contracts, one public facade, and package/reuse evidence before consumers import them; native package files only describe how to import the RMS facade.")?;
     writeln!(out, "Ask clarifying questions only when needed. Otherwise infer the smallest coherent semantic model from the task, name edge cases and must-never-happen conditions, and encode them in the semantic-change object.")?;
     writeln!(out, "For external truth, include reconciliation or recovery evidence when outcomes can be unknown, duplicate, stale, partial, conflicting, delayed, or later corrected.")?;
@@ -52507,7 +52534,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
 
 fn run_spec_migrate_contract(input: &Path, out: Option<&Path>) -> Result<()> {
     let legacy = load_yaml_value(input)?;
-    let migrated = behavioral_contract::migrate_v01(&legacy)?;
+    let migrated = behavioral_contract::migrate(&legacy)?;
     let rendered = serde_yaml::to_string(&migrated)?;
     let Some(out) = out else {
         print!("{rendered}");
@@ -55784,6 +55811,19 @@ fn validate_semantic_properties(
     let existing = existing_semantic_property_ids(context);
     let mut seen = BTreeSet::new();
     for property in properties.add.iter().chain(&properties.replace) {
+        if property.observability.as_deref().is_some_and(|level| {
+            !matches!(level, "full" | "sampled" | "delayed" | "partial" | "none")
+        }) {
+            diagnostics.push(error(
+                "semantic.property-observability",
+                &context.target,
+                format!(
+                    "property `{}` has unsupported observability `{}`",
+                    property.id,
+                    property.observability.as_deref().unwrap_or_default()
+                ),
+            ));
+        }
         if !is_stable_semantic_id(&property.id) {
             diagnostics.push(error(
                 "semantic.property-id",
@@ -58973,6 +59013,12 @@ fn semantic_property_yaml(property: &SemanticPropertyChange) -> YamlValue {
             YamlValue::Sequence(property.observations.clone()),
         );
     }
+    if let Some(observability) = &property.observability {
+        mapping.insert(
+            yaml_key("observability"),
+            YamlValue::String(observability.clone()),
+        );
+    }
     if !property.assumptions.is_empty() {
         mapping.insert(
             yaml_key("assumptions"),
@@ -59212,14 +59258,52 @@ fn legacy_contract_semantics(contract: &SemanticContractChange, kind: &str) -> s
     let mut semantics = serde_yaml::Mapping::new();
     match kind {
         "command" | "query" | "capability" => {
+            let unresolved_rejection = yaml_mapping_value([
+                ("id", YamlValue::String("unresolved-rejection".to_string())),
+                (
+                    "statement",
+                    YamlValue::String(
+                        "The total outcome relation remains to be declared.".to_string(),
+                    ),
+                ),
+                (
+                    "when",
+                    yaml_mapping_value([("constant", YamlValue::Bool(false))]),
+                ),
+                (
+                    "outcome",
+                    yaml_mapping_value([
+                        ("kind", YamlValue::String("rejected".to_string())),
+                        (
+                            "category",
+                            YamlValue::String("unresolved-rejection".to_string()),
+                        ),
+                        (
+                            "expression",
+                            yaml_mapping_value([("constant", YamlValue::Bool(false))]),
+                        ),
+                    ]),
+                ),
+                ("ensures", YamlValue::Sequence(Vec::new())),
+                (
+                    "permits",
+                    yaml_mapping_value([
+                        ("state_changes", YamlValue::Sequence(Vec::new())),
+                        ("events", YamlValue::Sequence(Vec::new())),
+                        ("effects", YamlValue::Sequence(Vec::new())),
+                    ]),
+                ),
+            ]);
             semantics.insert(
                 yaml_key("behavior"),
                 yaml_mapping_value([
+                    ("observability", YamlValue::String("none".to_string())),
                     ("observations", YamlValue::Sequence(Vec::new())),
+                    ("assumptions", YamlValue::Sequence(Vec::new())),
                     ("requires", clauses("accepts", &contract.accepts)),
                     ("guarantees", clauses("ensures", &contract.ensures)),
                     ("failures", clauses("rejects", &contract.rejects)),
-                    ("cases", YamlValue::Sequence(Vec::new())),
+                    ("cases", YamlValue::Sequence(vec![unresolved_rejection])),
                     ("invariants", YamlValue::Sequence(Vec::new())),
                     (
                         "case_policy",
@@ -61985,15 +62069,17 @@ fn run_check_compat(old: &Path, new: &Path, json_output: bool) -> Result<()> {
     let old_spec = get_str(&old_manifest.value, &["spec"]);
     let new_spec = get_str(&new_manifest.value, &["spec"]);
     let report = match (old_spec, new_spec) {
-        (
-            Some(behavioral_contract::CONTRACT_SPEC),
-            Some(behavioral_contract::CONTRACT_SPEC),
-        ) => check_behavioral_contract_compat(&old_manifest, &new_manifest)?,
+        (Some(old), Some(new))
+            if behavioral_contract::is_contract_spec(Some(old))
+                && behavioral_contract::is_contract_spec(Some(new)) =>
+        {
+            check_behavioral_contract_compat(&old_manifest, &new_manifest)?
+        }
         (Some("rms/module/v0.1"), Some("rms/module/v0.1")) => {
             check_module_compat(&old_manifest, &new_manifest)?
         }
         _ => bail!(
-            "compatibility inputs must both be module manifests or both be rms/contract/v0.2 contracts"
+            "compatibility inputs must both be module manifests or both be supported behavioral contracts"
         ),
     };
 
@@ -62628,10 +62714,10 @@ fn compose_capability_refinement(
         Err(_) if same_reference => return Ok(CompatResult::Compatible),
         Err(_) => return Ok(CompatResult::Breaking),
     };
-    if get_str(&required.value, &["spec"]) != Some(behavioral_contract::CONTRACT_SPEC)
-        || get_str(&provided.value, &["spec"]) != Some(behavioral_contract::CONTRACT_SPEC)
+    if !behavioral_contract::is_contract_spec(get_str(&required.value, &["spec"]))
+        || !behavioral_contract::is_contract_spec(get_str(&provided.value, &["spec"]))
     {
-        return Err("both capability contracts must use rms/contract/v0.2".to_string());
+        return Err("both capability contracts must use rms/contract/v0.2 or v0.3".to_string());
     }
     check_behavioral_contract_compat(&required, &provided)
         .map(|report| report.result)
@@ -64062,8 +64148,8 @@ fn compare_public_contract_behavior(
         ) else {
             continue;
         };
-        if get_str(&old_contract.value, &["spec"]) != Some(behavioral_contract::CONTRACT_SPEC)
-            || get_str(&new_contract.value, &["spec"]) != Some(behavioral_contract::CONTRACT_SPEC)
+        if !behavioral_contract::is_contract_spec(get_str(&old_contract.value, &["spec"]))
+            || !behavioral_contract::is_contract_spec(get_str(&new_contract.value, &["spec"]))
         {
             findings.push(compat_finding(
                 CompatResult::OperationalReviewRequired,
@@ -67440,7 +67526,7 @@ fn render_capability_contract(name: &str, meaning: &str) -> String {
 
 fn render_typed_capability_contract(name: &str, meaning: &str, kind: &str) -> String {
     format!(
-        "spec: rms/contract/v0.2\nname: {}\nversion: 1\nkind: {}\nmeaning: {}\nsemantics:\n  behavior:\n    observations: []\n    requires:\n      - id: valid-request\n        statement: The caller supplies input accepted by this boundary.\n        evaluation:\n          kind: unresolved\n    guarantees:\n      - id: explicit-outcome\n        statement: The operation returns an accepted result or an explicit rejection.\n        evaluation:\n          kind: unresolved\n    failures:\n      - id: rejected-request\n        statement: Boundary validation or domain rules may reject the request.\n        evaluation:\n          kind: unresolved\n    cases: []\n    invariants: []\n    case_policy:\n      coverage: exhaustive\n      overlap: forbidden\ncompatibility:\n  policy: backward-compatible-within-major\nx-rms:\n  scaffold: true\n  migration_draft: true\n",
+        "spec: rms/contract/v0.3\nname: {}\nversion: 1\nkind: {}\nmeaning: {}\nsemantics:\n  behavior:\n    observability: none\n    observations: []\n    assumptions: []\n    requires:\n      - id: valid-request\n        statement: The boundary-validatable request conditions are unresolved.\n        evaluation:\n          kind: unresolved\n    guarantees:\n      - id: explicit-outcome\n        statement: The operation returns an accepted result or a typed rejection.\n        evaluation:\n          kind: unresolved\n    failures:\n      - id: rejected-request\n        statement: Boundary validation or domain rules may reject the request.\n        evaluation:\n          kind: unresolved\n    cases:\n      - id: unresolved-rejection\n        statement: Invalid input receives a typed rejection without mutation.\n        when: {{constant: false}}\n        outcome:\n          kind: rejected\n          category: rejected-request\n          expression: {{constant: false}}\n        ensures: []\n        permits: {{state_changes: [], events: [], effects: []}}\n    invariants: []\n    case_policy:\n      coverage: exhaustive\n      overlap: forbidden\ncompatibility:\n  policy: backward-compatible-within-major\nx-rms:\n  scaffold: true\n  migration_draft: true\n",
         yaml_quote(name),
         yaml_quote(kind),
         yaml_quote(meaning),
@@ -91322,7 +91408,7 @@ semantic_functions: []
             diagnostic.check == "repository.canonical-spec"
                 && diagnostic
                     .message
-                    .contains("expects spec `rms/contract/v0.2`")
+                    .contains("expects spec `rms/contract/v0.2|v0.3`")
         }));
 
         fs::remove_dir_all(&root).unwrap();
@@ -97837,6 +97923,7 @@ temporal:
             command: Some("property".to_string()),
             evidence: Some("verification/properties/eventually.md".to_string()),
             counterexamples: None,
+            observability: None,
             realizations: vec![PropertyRealization {
                 profile: "smoke".to_string(),
                 strategy: "deterministic-corpus".to_string(),
@@ -97891,6 +97978,7 @@ temporal:
             command: Some("property".to_string()),
             evidence: Some("verification/properties/eventually.md".to_string()),
             counterexamples: None,
+            observability: None,
             realizations: vec![PropertyRealization {
                 profile: "smoke".to_string(),
                 strategy: "deterministic-exhaustive".to_string(),

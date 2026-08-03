@@ -81,6 +81,47 @@ impl Evaluation {
     }
 }
 
+pub(super) fn apply_monitor_observability(
+    mut evaluation: Evaluation,
+    observability: Option<&str>,
+    complete: bool,
+) -> Evaluation {
+    let preserve_violation = evaluation.verdict == Verdict::Violated;
+    let (verdict, summary, pending) = match observability {
+        Some("none") => (
+            Verdict::Unsupported,
+            "monitoring is unsupported because observability is `none`",
+            Some("observable-production-stream"),
+        ),
+        Some("sampled" | "partial") if !preserve_violation => (
+            Verdict::Inconclusive,
+            "no violation was observed, but incomplete observability cannot establish satisfaction",
+            Some("complete-observation-stream"),
+        ),
+        Some("delayed") if !complete => (
+            Verdict::Inconclusive,
+            "delayed observability keeps live prefixes inconclusive until the caller declares completion",
+            Some("complete-delayed-stream"),
+        ),
+        Some("full") if !complete && evaluation.verdict == Verdict::Satisfied => (
+            Verdict::Inconclusive,
+            "a full stream can establish satisfaction only when declared complete",
+            Some("complete-observation-stream"),
+        ),
+        None if !preserve_violation => (
+            Verdict::Inconclusive,
+            "legacy property has unspecified observability; add explicit observability metadata",
+            Some("observability-migration"),
+        ),
+        _ => return evaluation,
+    };
+    evaluation.verdict = verdict;
+    evaluation.explanation.summary = summary.to_string();
+    evaluation.explanation.pending_obligation = pending.map(str::to_string);
+    evaluation.explanation.blame = None;
+    evaluation
+}
+
 pub(super) fn invalid_monitor_evaluation(property: &str, summary: impl Into<String>) -> Evaluation {
     Evaluation {
         property: property.to_string(),
@@ -3128,6 +3169,62 @@ mod tests {
         let evaluation = evaluate_trace(&compiled, &trace(Vec::new(), true)).unwrap();
         assert_eq!(evaluation.verdict, Verdict::Inconclusive);
         assert!(evaluation.explanation.summary.contains("assumption"));
+    }
+
+    #[test]
+    fn monitor_observability_is_conservative_while_offline_evaluation_is_unchanged() {
+        let compiled = step_property(
+            "guarantee",
+            json!({"equals": {"left": {"observation": "result"}, "right": {"literal": "Accepted"}}}),
+            json!([{"id": "result", "source": {"kind": "output", "pointer": "/kind"}, "value": {"variant": ["Accepted", "Rejected"]}}]),
+        );
+        let accepted = evaluate_trace(
+            &compiled,
+            &invocation("rust", json!({}), json!({"kind": "Accepted"})),
+        )
+        .unwrap();
+        let rejected = evaluate_trace(
+            &compiled,
+            &invocation("rust", json!({}), json!({"kind": "Rejected"})),
+        )
+        .unwrap();
+        assert_eq!(accepted.verdict(), &Verdict::Satisfied);
+        assert_eq!(rejected.verdict(), &Verdict::Violated);
+
+        assert_eq!(
+            apply_monitor_observability(accepted.clone(), Some("full"), false).verdict(),
+            &Verdict::Inconclusive
+        );
+        assert_eq!(
+            apply_monitor_observability(accepted.clone(), Some("full"), true).verdict(),
+            &Verdict::Satisfied
+        );
+        for level in ["sampled", "partial"] {
+            assert_eq!(
+                apply_monitor_observability(accepted.clone(), Some(level), true).verdict(),
+                &Verdict::Inconclusive
+            );
+            assert_eq!(
+                apply_monitor_observability(rejected.clone(), Some(level), false).verdict(),
+                &Verdict::Violated
+            );
+        }
+        assert_eq!(
+            apply_monitor_observability(accepted.clone(), Some("delayed"), false).verdict(),
+            &Verdict::Inconclusive
+        );
+        assert_eq!(
+            apply_monitor_observability(accepted.clone(), Some("delayed"), true).verdict(),
+            &Verdict::Satisfied
+        );
+        assert_eq!(
+            apply_monitor_observability(accepted.clone(), Some("none"), true).verdict(),
+            &Verdict::Unsupported
+        );
+        assert_eq!(
+            apply_monitor_observability(accepted, None, true).verdict(),
+            &Verdict::Inconclusive
+        );
     }
 
     #[test]
