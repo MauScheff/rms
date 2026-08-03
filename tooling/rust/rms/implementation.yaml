@@ -3230,7 +3230,7 @@ semantic_functions:
     - verification/laws/canonical_mutations_require_route_receipts.md
 x-rms:
   semantic_revision:
-    digest: sha256:ded629356bd6c7fa205cecc50f545cd1df5051447f638a4419b58ad395ab6dd9
-    change_record: verification/changes/introduce-rms-behavioral-contracts-v0-2.yaml
+    digest: sha256:a6a016bd2c994bc88e759075431fd46abd0eb43b5b197bec6da8eab6592f71c0
+    change_record: verification/changes/add-probe-assembly-v0-3-product-state-expressions.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:585c04cf4ef0ccd9bfba427f6e1bc3a650311544fada12592988cf4621a4b779
+    change_record_digest: sha256:632ad0a0d928f072df26f3a17cc2ce830cb47a3bee54dd7f7e08f55ef2b2249b
