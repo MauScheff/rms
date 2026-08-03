@@ -694,10 +694,10 @@ fn discover_direct_assembly_lane(
         .with_context(|| format!("hunt assembly `{}` could not be loaded", assembly.display()))?;
     if !matches!(
         get_str(&value, &["spec"]),
-        Some("rms/probe-assembly/v0.1" | "rms/probe-assembly/v0.2")
+        Some("rms/probe-assembly/v0.1" | "rms/probe-assembly/v0.2" | "rms/probe-assembly/v0.3",)
     ) {
         bail!(
-            "hunt assembly `{}` is not an rms/probe-assembly/v0.1 or v0.2 declaration",
+            "hunt assembly `{}` is not an rms/probe-assembly/v0.1, v0.2, or v0.3 declaration",
             assembly.display()
         );
     }

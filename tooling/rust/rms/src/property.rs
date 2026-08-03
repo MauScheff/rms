@@ -143,6 +143,36 @@ pub(super) struct CompiledProperty {
     expression: PropertyExpression,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct CompiledCoreExpression {
+    observations: BTreeMap<String, ObservationDefinition>,
+    predicate: Predicate,
+}
+
+impl CompiledCoreExpression {
+    pub(super) fn evaluate(&self, assignments: &BTreeMap<String, Value>) -> Result<bool> {
+        let facts = self
+            .observations
+            .iter()
+            .map(|(id, definition)| {
+                let observed = assignments
+                    .get(id)
+                    .map(|value| typed_observed_value(value, &definition.value_type))
+                    .transpose()?
+                    .unwrap_or(ObservedValue::Missing);
+                Ok((id.clone(), observed))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let frame = Frame {
+            index: 0,
+            facts,
+            source: ObservationSourceMetadata::default(),
+            raw: Value::Null,
+        };
+        evaluate_predicate(&self.predicate, &frame, &mut Vec::new())
+    }
+}
+
 impl CompiledProperty {
     pub(super) fn supports_vacuity_analysis(&self) -> bool {
         matches!(
@@ -1427,30 +1457,33 @@ pub(super) fn evaluate_core_expression(
     expression: &Value,
     assignments: &BTreeMap<String, Value>,
 ) -> Result<bool> {
-    let definitions = observations
-        .iter()
-        .map(parse_observation)
-        .map(|result| result.map(|definition| (definition.id.clone(), definition)))
-        .collect::<Result<BTreeMap<_, _>>>()?;
+    compile_core_expression(observations, expression)?.evaluate(assignments)
+}
+
+pub(super) fn compile_core_expression(
+    observations: &[Value],
+    expression: &Value,
+) -> Result<CompiledCoreExpression> {
+    let mut definitions = BTreeMap::new();
+    for observation in observations {
+        let definition = parse_observation(observation)?;
+        if definitions
+            .insert(definition.id.clone(), definition.clone())
+            .is_some()
+        {
+            bail!("duplicate observation id `{}`", definition.id);
+        }
+    }
     let predicate = parse_predicate(expression)?;
-    let facts = definitions
-        .iter()
-        .map(|(id, definition)| {
-            let observed = assignments
-                .get(id)
-                .map(|value| typed_observed_value(value, &definition.value_type))
-                .transpose()?
-                .unwrap_or(ObservedValue::Missing);
-            Ok((id.clone(), observed))
-        })
-        .collect::<Result<BTreeMap<_, _>>>()?;
-    let frame = Frame {
-        index: 0,
-        facts,
-        source: ObservationSourceMetadata::default(),
-        raw: Value::Null,
-    };
-    evaluate_predicate(&predicate, &frame, &mut Vec::new())
+    let mut issues = Vec::new();
+    validate_predicate_references(&predicate, &definitions, &mut issues);
+    if !issues.is_empty() {
+        bail!(issues.join("; "));
+    }
+    Ok(CompiledCoreExpression {
+        observations: definitions,
+        predicate,
+    })
 }
 
 pub(super) fn normalize_trace(
@@ -2809,6 +2842,42 @@ mod tests {
         assert_eq!(evaluation.verdict, Verdict::Violated);
         assert_eq!(evaluation.explanation.blame.as_deref(), Some("provider"));
         assert!(evaluation.explanation.summary.contains("permitted frame"));
+    }
+
+    #[test]
+    fn frame_regression_reports_provider_blame_at_the_exact_state_path() {
+        let compiled = compile_property(&json!({
+            "id": "contract:increment#accepted",
+            "observations": [],
+            "step": {
+                "role": "case",
+                "contract": "increment",
+                "clause": "accepted",
+                "expression": {"constant": true},
+                "activation": {"constant": true},
+                "permits": {
+                    "state_changes": ["/data/count"],
+                    "events": [],
+                    "effects": []
+                }
+            }
+        }))
+        .unwrap();
+        let mut bad_transition = invocation(
+            "python",
+            json!({"name": "BadIncrement", "data": {}}),
+            json!({"kind": "Accepted", "events": [], "effects": []}),
+        );
+        bad_transition["contract"] = json!("increment");
+        bad_transition["state_before"] =
+            json!({"name": "Ready", "data": {"count": 0, "owner": "alice"}});
+        bad_transition["state_after"] =
+            json!({"name": "Ready", "data": {"count": 1, "owner": "mallory"}});
+
+        let evaluation = evaluate_trace(&compiled, &bad_transition).unwrap();
+        assert_eq!(evaluation.verdict, Verdict::Violated);
+        assert_eq!(evaluation.explanation.blame.as_deref(), Some("provider"));
+        assert!(evaluation.explanation.summary.contains("`/data/owner`"));
     }
 
     #[test]

@@ -1,0 +1,17 @@
+spec: rms/probe-assembly/v0.3
+instances:
+- id: subject
+  implementation: ../probe-topologies/frame-machine/implementation.fixture
+stimuli:
+- id: increment
+  target: subject
+  input: {kind: command, name: GoodIncrement, data: {}}
+checks:
+- id: owner-is-preserved
+  when: always
+  assert:
+    kind: state-expression
+    observations:
+    - {id: owner, instance: subject, pointer: /data/owner, value: string}
+    expression: {equals: {left: {observation: owner}, right: {literal: alice}}}
+exploration: {max_steps: 2, max_schedules: 5, max_states: 20}

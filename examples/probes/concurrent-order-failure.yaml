@@ -1,4 +1,4 @@
-spec: rms/probe-assembly/v0.1
+spec: rms/probe-assembly/v0.3
 instances:
   - id: source
     implementation: ../probe-topologies/source/implementation.fixture

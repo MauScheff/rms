@@ -4137,7 +4137,7 @@ enum PropertyCommands {
         /// Path to module.yaml or implementation.yaml.
         target: PathBuf,
 
-        /// Canonical rms/probe-assembly/v0.1 or v0.2 input.
+        /// Canonical rms/probe-assembly/v0.1, v0.2, or v0.3 input.
         #[arg(long)]
         assembly: PathBuf,
 
@@ -14601,13 +14601,13 @@ fn run_probe(request: ProbeDispatchRequest) -> Result<()> {
         return Ok(());
     }
     if request.describe && request.file.is_some() {
-        bail!("`--describe --file` requires an rms/probe-assembly/v0.1 or v0.2 file");
+        bail!("`--describe --file` requires an rms/probe-assembly/v0.1, v0.2, or v0.3 file");
     }
     if request.max_steps.is_some()
         || request.max_schedules.is_some()
         || request.max_states.is_some()
     {
-        bail!("probe exploration bounds require an rms/probe-assembly/v0.1 or v0.2 file");
+        bail!("probe exploration bounds require an rms/probe-assembly/v0.1, v0.2, or v0.3 file");
     }
     run_single_machine_probe(ProbeCliRequest {
         implementation: request.implementation,
@@ -24533,6 +24533,9 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
         )),
         "rms/probe-assembly/v0.2" => Some(include_str!(
             "../../../../schemas/probe-assembly-v0.2.schema.json"
+        )),
+        "rms/probe-assembly/v0.3" => Some(include_str!(
+            "../../../../schemas/probe-assembly-v0.3.schema.json"
         )),
         "rms/probe-system-trace/v0.1" => Some(include_str!(
             "../../../../schemas/probe-system-trace.schema.json"
@@ -52312,7 +52315,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "    exhaustive: true")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2|v0.3` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
     writeln!(out, "The exact property exploration shape is:")?;
     writeln!(out, "```yaml")?;
     writeln!(out, "explorations:")?;

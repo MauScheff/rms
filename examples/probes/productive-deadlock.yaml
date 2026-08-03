@@ -1,0 +1,29 @@
+spec: rms/probe-assembly/v0.3
+instances:
+- id: left
+  implementation: ../probe-topologies/waiting-peer/implementation.fixture
+- id: right
+  implementation: ../probe-topologies/waiting-peer/implementation.fixture
+stimuli:
+- id: wait-left
+  target: left
+  at: {value: 0, unit: ms}
+  input: {kind: command, name: WaitForPeer, data: {peer: right}}
+- id: wait-right
+  target: right
+  at: {value: 0, unit: ms}
+  input: {kind: command, name: WaitForPeer, data: {peer: left}}
+checks:
+- id: peers-cannot-both-wait
+  when: quiescent
+  assert:
+    kind: state-expression
+    observations:
+    - {id: left_state, instance: left, pointer: /name, value: {variant: [Ready, WaitingForPeer]}}
+    - {id: right_state, instance: right, pointer: /name, value: {variant: [Ready, WaitingForPeer]}}
+    expression:
+      not:
+        all:
+        - {equals: {left: {observation: left_state}, right: {literal: WaitingForPeer}}}
+        - {equals: {left: {observation: right_state}, right: {literal: WaitingForPeer}}}
+exploration: {max_steps: 4, max_schedules: 10, max_states: 50}

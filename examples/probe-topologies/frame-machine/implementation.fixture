@@ -1,0 +1,49 @@
+spec: rms/implementation/v0.1
+module: probe-frame-machine
+binding: python
+source: {root: ., public_entrypoint: machine_probe.fixture}
+commands: {probe: python machine_probe.fixture}
+architecture:
+  shape: domain-engine
+  probe:
+    protocol: rms/machine-probe/v0.2
+    command: probe
+    runner: machine_probe.fixture#probe_machine
+    initial_state_function: machine_probe.fixture#initial_state
+  machine:
+    name: FrameMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    initial_state: Ready
+    types: {state: FrameState, command: FrameCommand, reply: FrameReply, rejection: FrameRejection, transition: FrameTransition, transition_record: FrameTransitionRecord}
+    states: [Ready]
+    commands: [GoodIncrement, BadIncrement]
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: []
+    replies: [Incremented]
+    rejections: [IllegalTransition]
+    effect_protocols: []
+    resource_protocols: []
+    transition_function: transition
+    transition_record_function: transition_record
+    transitions:
+    - {from: Ready, on: GoodIncrement, to: Ready, case: GoodIncrement, reply: Incremented}
+    - {from: Ready, on: BadIncrement, to: Ready, case: BadIncrement, reply: Incremented}
+  roles:
+    representation: [machine_probe.fixture]
+    transition: [machine_probe.fixture]
+    transition_record: [machine_probe.fixture]
+    probe_adapter: [machine_probe.fixture]
+  public_behavior_bindings:
+  - id: increment-public
+    public_kind: command
+    public_name: increment
+    contract: contracts/increment.v1.yaml
+    semantic_function: transition
+    machine_inputs: [GoodIncrement, BadIncrement]
+    machine_outputs: [Incremented]
+semantic_functions:
+- {id: transition, symbol: machine_probe.fixture#transition, kind: transition, purity: pure}
+dependencies: {allowed_external_packages: [], allowed_local_packages: [], local_modules: []}

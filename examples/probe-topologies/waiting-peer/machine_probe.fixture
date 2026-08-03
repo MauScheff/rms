@@ -1,0 +1,55 @@
+import json
+import os
+from pathlib import Path
+
+
+def named(name, data=None):
+    return {"name": name, "data": data or {}}
+
+
+def initial_state():
+    return named("Ready")
+
+
+def record(state, value):
+    if state["name"] != "Ready" or value["name"] != "WaitForPeer":
+        raise ValueError("illegal peer transition")
+    next_state = named("WaitingForPeer", {"peer": value.get("data", {}).get("peer")})
+    return {
+        "scenario_start": True,
+        "state_before": state,
+        "state_after": next_state,
+        "input": value,
+        "output": {"next_state": next_state, "events": [], "commands": [], "effects": [], "reply": None, "rejection": None},
+        "source": {"file": "machine_probe.fixture", "function": "transition", "branch": "EnterPeerWait"},
+    }
+
+
+def probe_machine():
+    request = json.loads(Path(os.environ["RMS_PROBE_REQUEST"]).read_text())
+    if request["operation"] == "describe":
+        output = {
+            "spec": "rms/machine-probe-description/v0.1",
+            "machine": "WaitingPeerMachine",
+            "initial_state": initial_state(),
+            "states": [
+                {"name": "Ready", "data_schema": {"type": "object"}, "examples": [initial_state()]},
+                {"name": "WaitingForPeer", "data_schema": {"type": "object"}, "examples": [named("WaitingForPeer", {"peer": "right"})]},
+            ],
+            "inputs": [{"kind": "command", "name": "WaitForPeer", "data_schema": {"type": "object"}, "example": {"kind": "command", "name": "WaitForPeer", "data": {"peer": "right"}}}],
+        }
+    elif request["operation"] == "evaluate":
+        output = {"spec": "rms/machine-probe-evaluation/v0.2", "machine": "WaitingPeerMachine", "results": [{"id": case["id"], "record": record(case["state"], case["input"])} for case in request["cases"]]}
+    else:
+        state = initial_state() if request["start"] == "initial" else request["start"]
+        records = []
+        for step in request["steps"]:
+            item = record(state, step["input"])
+            records.append(item)
+            state = item["state_after"]
+        output = {"spec": "rms/trace-bundle/v0.1", "machine": "WaitingPeerMachine", "records": records}
+    Path(os.environ["RMS_PROBE_OUTPUT"]).write_text(json.dumps(output))
+
+
+if __name__ == "__main__":
+    probe_machine()

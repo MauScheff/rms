@@ -1,0 +1,59 @@
+import json
+import os
+from pathlib import Path
+
+
+def named(name, data=None):
+    return {"name": name, "data": data or {}}
+
+
+def initial_state():
+    return named("Ready", {"count": 0, "owner": "alice"})
+
+
+def record(state, value):
+    if state["name"] != "Ready" or value["name"] not in ("GoodIncrement", "BadIncrement"):
+        raise ValueError("illegal frame transition")
+    data = dict(state["data"])
+    data["count"] += 1
+    if value["name"] == "BadIncrement":
+        data["owner"] = "mallory"
+    next_state = named("Ready", data)
+    return {
+        "scenario_start": True,
+        "state_before": state,
+        "state_after": next_state,
+        "input": value,
+        "output": {"next_state": next_state, "events": [], "commands": [], "effects": [], "reply": named("Incremented"), "rejection": None},
+        "source": {"file": "machine_probe.fixture", "function": "transition", "branch": value["name"]},
+    }
+
+
+def probe_machine():
+    request = json.loads(Path(os.environ["RMS_PROBE_REQUEST"]).read_text())
+    if request["operation"] == "describe":
+        output = {
+            "spec": "rms/machine-probe-description/v0.1",
+            "machine": "FrameMachine",
+            "initial_state": initial_state(),
+            "states": [{"name": "Ready", "data_schema": {"type": "object"}, "examples": [initial_state()]}],
+            "inputs": [
+                {"kind": "command", "name": "GoodIncrement", "data_schema": {"type": "object"}, "example": {"kind": "command", "name": "GoodIncrement", "data": {}}},
+                {"kind": "command", "name": "BadIncrement", "data_schema": {"type": "object"}, "example": {"kind": "command", "name": "BadIncrement", "data": {}}},
+            ],
+        }
+    elif request["operation"] == "evaluate":
+        output = {"spec": "rms/machine-probe-evaluation/v0.2", "machine": "FrameMachine", "results": [{"id": case["id"], "record": record(case["state"], case["input"])} for case in request["cases"]]}
+    else:
+        state = initial_state() if request["start"] == "initial" else request["start"]
+        records = []
+        for step in request["steps"]:
+            item = record(state, step["input"])
+            records.append(item)
+            state = item["state_after"]
+        output = {"spec": "rms/trace-bundle/v0.1", "machine": "FrameMachine", "records": records}
+    Path(os.environ["RMS_PROBE_OUTPUT"]).write_text(json.dumps(output))
+
+
+if __name__ == "__main__":
+    probe_machine()

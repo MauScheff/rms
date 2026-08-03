@@ -1,0 +1,81 @@
+import json
+import os
+from pathlib import Path
+
+
+def named(name, data=None):
+    return {"name": name, "data": data or {}}
+
+
+def initial_state():
+    return named("Ready", {"applied": 0})
+
+
+def transition(state, value):
+    state_name = state["name"]
+    input_name = value["name"]
+    incoming = value.get("data", {})
+    current = state.get("data", {})
+    if state_name == "Ready" and input_name == "Start":
+        operation_id = incoming["operation_id"]
+        return named("AwaitingRead", {"operation_id": operation_id, "applied": 0}), [named("ReadCounter", {"operation_id": operation_id})], None, "StartRead"
+    if state_name == "AwaitingRead" and input_name == "Snapshot":
+        operation_id = current["operation_id"]
+        commit = {"operation_id": operation_id, "expected_version": incoming["version"], "proposed_value": incoming["value"] + 1}
+        return named("AwaitingCommit", {**commit, "applied": 0}), [named("CommitCounter", commit)], None, "PrepareCommit"
+    if state_name == "AwaitingCommit" and input_name == "CommitApplied":
+        return named("Applied", {"operation_id": current["operation_id"], "applied": 1}), [], named("Completed", {"applied": 1}), "CommitApplied"
+    if state_name == "AwaitingCommit" and input_name == "StaleVersion":
+        return named("Stale", {"operation_id": current["operation_id"], "applied": 0}), [], named("Completed", {"applied": 0}), "CommitStale"
+    if state_name == "AwaitingCommit" and input_name == "Duplicate":
+        return state, [], None, "CommitDuplicate"
+    if state_name == "Applied" and input_name == "Duplicate":
+        return state, [], None, "IgnoreDuplicateAfterApplied"
+    if state_name == "Stale" and input_name == "Duplicate":
+        return state, [], None, "IgnoreDuplicateAfterStale"
+    raise ValueError(f"illegal worker transition {state_name}:{input_name}")
+
+
+def record(state, value):
+    next_state, effects, reply, branch = transition(state, value)
+    return {
+        "scenario_start": True,
+        "state_before": state,
+        "state_after": next_state,
+        "input": value,
+        "output": {"next_state": next_state, "events": [], "commands": [], "effects": effects, "reply": reply, "rejection": None},
+        "source": {"file": "machine_probe.fixture", "function": "transition", "branch": branch},
+    }
+
+
+def probe_machine():
+    request = json.loads(Path(os.environ["RMS_PROBE_REQUEST"]).read_text())
+    if request["operation"] == "describe":
+        output = {
+            "spec": "rms/machine-probe-description/v0.1",
+            "machine": "OptimisticWorkerMachine",
+            "initial_state": initial_state(),
+            "states": [{"name": name, "data_schema": {"type": "object"}, "examples": [named(name, {"applied": 0})]} for name in ["Ready", "AwaitingRead", "AwaitingCommit", "Applied", "Stale"]],
+            "inputs": [
+                {"kind": "command", "name": "Start", "data_schema": {"type": "object"}, "example": {"kind": "command", "name": "Start", "data": {"operation_id": "example"}}},
+                {"kind": "effect-result", "name": "Snapshot", "data_schema": {"type": "object"}, "example": {"kind": "effect-result", "name": "Snapshot", "data": {"value": 0, "version": 0}}},
+                {"kind": "effect-result", "name": "CommitApplied", "data_schema": {"type": "object"}, "example": {"kind": "effect-result", "name": "CommitApplied", "data": {"operation_id": "example"}}},
+                {"kind": "effect-result", "name": "StaleVersion", "data_schema": {"type": "object"}, "example": {"kind": "effect-result", "name": "StaleVersion", "data": {"operation_id": "example"}}},
+                {"kind": "effect-result", "name": "Duplicate", "data_schema": {"type": "object"}, "example": {"kind": "effect-result", "name": "Duplicate", "data": {"operation_id": "example"}}},
+            ],
+        }
+    elif request["operation"] == "evaluate":
+        output = {"spec": "rms/machine-probe-evaluation/v0.2", "machine": "OptimisticWorkerMachine", "results": [{"id": case["id"], "record": record(case["state"], case["input"])} for case in request["cases"]]}
+    else:
+        state = initial_state() if request["start"] == "initial" else request["start"]
+        records = []
+        for step in request["steps"]:
+            item = record(state, step["input"])
+            records.append(item)
+            state = item["state_after"]
+        output = {"spec": "rms/trace-bundle/v0.1", "machine": "OptimisticWorkerMachine", "records": records}
+    Path(os.environ["RMS_PROBE_OUTPUT"]).write_text(json.dumps(output))
+
+
+if __name__ == "__main__":
+    probe_machine()

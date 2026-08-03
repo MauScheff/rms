@@ -1,0 +1,100 @@
+spec: rms/implementation/v0.1
+module: probe-optimistic-worker
+binding: python
+source:
+  root: .
+  public_entrypoint: machine_probe.fixture
+commands:
+  probe: python machine_probe.fixture
+architecture:
+  shape: domain-engine
+  probe:
+    protocol: rms/machine-probe/v0.2
+    command: probe
+    runner: machine_probe.fixture#probe_machine
+    initial_state_function: machine_probe.fixture#initial_state
+  machine:
+    name: OptimisticWorkerMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    initial_state: Ready
+    types:
+      state: WorkerState
+      command: WorkerCommand
+      effect: WorkerEffect
+      effect_result: WorkerEffectResult
+      reply: WorkerReply
+      rejection: WorkerRejection
+      transition: WorkerTransition
+      transition_record: WorkerTransitionRecord
+    states: [Ready, AwaitingRead, AwaitingCommit, Applied, Stale]
+    commands: [Start]
+    observed_events: []
+    events: []
+    effects: [ReadCounter, CommitCounter]
+    effect_results: [Snapshot, CommitApplied, StaleVersion, Duplicate]
+    replies: [Completed]
+    rejections: [IllegalTransition]
+    effect_protocols: []
+    resource_protocols: []
+    transition_function: transition
+    transition_record_function: transition_record
+    transitions:
+    - {from: Ready, on: Start, to: AwaitingRead, case: StartRead, effects: [ReadCounter]}
+    - {from: AwaitingRead, on: Snapshot, to: AwaitingCommit, case: PrepareCommit, effects: [CommitCounter]}
+    - {from: AwaitingCommit, on: CommitApplied, to: Applied, case: CommitApplied, reply: Completed}
+    - {from: AwaitingCommit, on: StaleVersion, to: Stale, case: CommitStale, reply: Completed}
+    - {from: AwaitingCommit, on: Duplicate, to: AwaitingCommit, case: CommitDuplicate}
+    - {from: Applied, on: Duplicate, to: Applied, case: IgnoreDuplicateAfterApplied}
+    - {from: Stale, on: Duplicate, to: Stale, case: IgnoreDuplicateAfterStale}
+  roles:
+    representation: [machine_probe.fixture]
+    transition: [machine_probe.fixture]
+    transition_record: [machine_probe.fixture]
+    probe_adapter: [machine_probe.fixture]
+  public_behavior_bindings:
+  - id: start-public
+    public_kind: command
+    public_name: start
+    contract: contracts/start.v1.yaml
+    semantic_function: transition
+    machine_inputs: [Start]
+    machine_outputs: [ReadCounter, CommitCounter, Completed]
+  dependency_behavior_bindings:
+  - id: counter-provider
+    capability: counter
+    contract: contracts/counter.v1.yaml
+    consumer: machine_probe.fixture#transition
+    resolution: module
+    provider_module: probe-optimistic-resource
+    provider_contract: contracts/counter.v1.yaml
+    probe_bridge:
+      request:
+        from: {kind: effect, name: ReadCounter}
+        to: {kind: command, name: ReadCounter}
+      outcomes:
+      - {from: {kind: reply, name: Snapshot}, to: {kind: effect-result, name: Snapshot}}
+  - id: commit-provider
+    capability: counter
+    contract: contracts/counter.v1.yaml
+    consumer: machine_probe.fixture#transition
+    resolution: module
+    provider_module: probe-optimistic-resource
+    provider_contract: contracts/counter.v1.yaml
+    probe_bridge:
+      request:
+        from: {kind: effect, name: CommitCounter}
+        to: {kind: command, name: CommitCounter}
+      outcomes:
+      - {from: {kind: reply, name: CommitApplied}, to: {kind: effect-result, name: CommitApplied}}
+      - {from: {kind: reply, name: StaleVersion}, to: {kind: effect-result, name: StaleVersion}}
+      - {from: {kind: reply, name: Duplicate}, to: {kind: effect-result, name: Duplicate}}
+semantic_functions:
+- id: transition
+  symbol: machine_probe.fixture#transition
+  kind: transition
+  purity: pure
+dependencies:
+  allowed_external_packages: []
+  allowed_local_packages: []
+  local_modules: [probe-optimistic-resource]

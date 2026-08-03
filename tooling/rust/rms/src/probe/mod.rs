@@ -1,7 +1,8 @@
 use super::{
     apply_probe_trace_conformance, execute_proof_command, get_path, get_str, load_manifest,
-    load_probe_binding, load_yaml_value, probe_conformance_diagnostic_summary, sha256_bytes,
-    trace_has_errors, validate_probe_description, validate_probe_trace_shape, ProbeBinding,
+    load_probe_binding, load_yaml_value, probe_conformance_diagnostic_summary, property,
+    sha256_bytes, trace_has_errors, validate_probe_description, validate_probe_trace_shape,
+    ProbeBinding,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use jsonschema::validator_for;
@@ -18,6 +19,7 @@ use walkdir::WalkDir;
 
 pub(super) const ASSEMBLY_SPEC: &str = "rms/probe-assembly/v0.1";
 pub(super) const ASSEMBLY_SPEC_V2: &str = "rms/probe-assembly/v0.2";
+pub(super) const ASSEMBLY_SPEC_V3: &str = "rms/probe-assembly/v0.3";
 const TRACE_SPEC: &str = "rms/probe-system-trace/v0.1";
 const COUNTEREXAMPLE_SPEC: &str = "rms/probe-counterexample/v0.1";
 const DEFAULT_MAX_STEPS: usize = 30;
@@ -402,6 +404,19 @@ enum CheckAssertion {
         command: String,
         runner: String,
     },
+    StateExpression {
+        observations: Vec<StateObservationSpec>,
+        expression: Value,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StateObservationSpec {
+    id: String,
+    instance: String,
+    pointer: String,
+    value: Value,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -641,6 +656,8 @@ struct ProbeFailure {
     #[serde(with = "time_quantity")]
     time: u64,
     message: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    observations: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -711,6 +728,17 @@ struct Engine {
     deadline: Option<Instant>,
     cancellation: Option<Arc<AtomicBool>>,
     cache: BTreeMap<String, Value>,
+    state_expressions: BTreeMap<String, CompiledStateExpression>,
+}
+
+struct CompiledStateExpression {
+    observations: Vec<StateObservationSpec>,
+    expression: property::CompiledCoreExpression,
+}
+
+struct AssertionEvaluation {
+    satisfied: bool,
+    observations: BTreeMap<String, Value>,
 }
 
 #[derive(Clone)]
@@ -739,7 +767,10 @@ pub(super) fn file_spec(path: &Path) -> Result<Option<String>> {
 }
 
 pub(super) fn is_assembly_spec(spec: Option<&str>) -> bool {
-    matches!(spec, Some(ASSEMBLY_SPEC | ASSEMBLY_SPEC_V2))
+    matches!(
+        spec,
+        Some(ASSEMBLY_SPEC | ASSEMBLY_SPEC_V2 | ASSEMBLY_SPEC_V3)
+    )
 }
 
 fn validate_assembly_schema(value: &Value) -> Result<()> {
@@ -747,6 +778,9 @@ fn validate_assembly_schema(value: &Value) -> Result<()> {
         Some(ASSEMBLY_SPEC) => include_str!("../../../../../schemas/probe-assembly.schema.json"),
         Some(ASSEMBLY_SPEC_V2) => {
             include_str!("../../../../../schemas/probe-assembly-v0.2.schema.json")
+        }
+        Some(ASSEMBLY_SPEC_V3) => {
+            include_str!("../../../../../schemas/probe-assembly-v0.3.schema.json")
         }
         Some(spec) => bail!("unsupported probe assembly spec `{spec}`"),
         None => bail!("probe assembly is missing `spec`"),
@@ -935,7 +969,7 @@ pub(super) fn verify_evidence(path: &Path, timeout_seconds: u64) -> Result<Optio
         return Ok(None);
     };
     match spec.as_str() {
-        ASSEMBLY_SPEC | ASSEMBLY_SPEC_V2 => {
+        ASSEMBLY_SPEC | ASSEMBLY_SPEC_V2 | ASSEMBLY_SPEC_V3 => {
             let (assembly_value, base_dir) = load_input(path)?;
             validate_assembly_schema(&assembly_value)?;
             let assembly: ProbeAssembly = serde_json::from_value(assembly_value.clone())
@@ -1249,6 +1283,11 @@ fn print_replay_report(report: &Value, artifact: &Path, json_output: bool) -> Re
         if let Some(message) = failure.get("message").and_then(Value::as_str) {
             println!("failure: {message}");
         }
+        if let Some(observations) = failure.get("observations").and_then(Value::as_object) {
+            for (id, value) in observations {
+                println!("observed {id}: {value}");
+            }
+        }
         if let Some(step) = failure.get("step").and_then(Value::as_u64) {
             if let Some(entry) = report
                 .get("trace")
@@ -1351,11 +1390,15 @@ impl Engine {
     ) -> Result<Self> {
         if !is_assembly_spec(Some(&assembly.spec)) {
             bail!(
-                "probe assembly must declare `spec: {ASSEMBLY_SPEC}` or `spec: {ASSEMBLY_SPEC_V2}`"
+                "probe assembly must declare `spec: {ASSEMBLY_SPEC}`, `spec: {ASSEMBLY_SPEC_V2}`, or `spec: {ASSEMBLY_SPEC_V3}`"
             );
         }
-        if assembly.workload.is_some() && assembly.spec != ASSEMBLY_SPEC_V2 {
-            bail!("probe workloads require `spec: {ASSEMBLY_SPEC_V2}`");
+        if assembly.workload.is_some()
+            && !matches!(assembly.spec.as_str(), ASSEMBLY_SPEC_V2 | ASSEMBLY_SPEC_V3)
+        {
+            bail!(
+                "probe workloads require `spec: {ASSEMBLY_SPEC_V2}` or `spec: {ASSEMBLY_SPEC_V3}`"
+            );
         }
         validate_unique_ids(&assembly)?;
         let mut instances = BTreeMap::new();
@@ -1413,10 +1456,12 @@ impl Engine {
             deadline: None,
             cancellation: None,
             cache: BTreeMap::new(),
+            state_expressions: BTreeMap::new(),
         };
         engine.routes = engine.resolve_dependency_routes()?;
         engine.protocol_routes = engine.resolve_protocol_routes()?;
         engine.validate_assembly()?;
+        engine.compile_state_expressions()?;
         Ok(engine)
     }
 
@@ -1600,10 +1645,39 @@ impl Engine {
             }
         }
         for check in &self.assembly.checks {
-            if let CheckAssertion::State { instance, .. } = &check.assert {
-                if !self.instances.contains_key(instance) {
-                    bail!("check `{}` names unknown instance `{instance}`", check.id);
+            match &check.assert {
+                CheckAssertion::State { instance, .. } => {
+                    if !self.instances.contains_key(instance) {
+                        bail!("check `{}` names unknown instance `{instance}`", check.id);
+                    }
                 }
+                CheckAssertion::StateExpression { observations, .. } => {
+                    if self.assembly.spec != ASSEMBLY_SPEC_V3 {
+                        bail!(
+                            "check `{}` uses state-expression outside `spec: {ASSEMBLY_SPEC_V3}`",
+                            check.id
+                        );
+                    }
+                    for observation in observations {
+                        if !self.instances.contains_key(&observation.instance) {
+                            bail!(
+                                "check `{}` observation `{}` names unknown instance `{}`",
+                                check.id,
+                                observation.id,
+                                observation.instance
+                            );
+                        }
+                        if !valid_json_pointer(&observation.pointer) {
+                            bail!(
+                                "check `{}` observation `{}` has invalid RFC 6901 pointer `{}`",
+                                check.id,
+                                observation.id,
+                                observation.pointer
+                            );
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         for fault in &self.assembly.faults {
@@ -1625,6 +1699,43 @@ impl Engine {
             }
         }
         self.validate_output_closure()
+    }
+
+    fn compile_state_expressions(&mut self) -> Result<()> {
+        for check in &self.assembly.checks {
+            let CheckAssertion::StateExpression {
+                observations,
+                expression,
+            } = &check.assert
+            else {
+                continue;
+            };
+            let definitions = observations
+                .iter()
+                .map(|observation| {
+                    json!({
+                        "id": observation.id,
+                        "source": {
+                            "kind": "state",
+                            "phase": "after",
+                            "pointer": observation.pointer,
+                            "instance": observation.instance
+                        },
+                        "value": observation.value
+                    })
+                })
+                .collect::<Vec<_>>();
+            let compiled = property::compile_core_expression(&definitions, expression)
+                .with_context(|| format!("invalid state-expression check `{}`", check.id))?;
+            self.state_expressions.insert(
+                check.id.clone(),
+                CompiledStateExpression {
+                    observations: observations.clone(),
+                    expression: compiled,
+                },
+            );
+        }
+        Ok(())
     }
 
     fn validate_dependency_route(&self, route: &ResolvedRoute) -> Result<()> {
@@ -2288,7 +2399,11 @@ impl Engine {
                         .iter()
                         .find(|check| check.id == expected.check)
                     {
-                        failure = Some(check_failure(check, &world, check_failure_detail(check)));
+                        failure = Some(self.failure_for_check(
+                            check,
+                            &world,
+                            check_failure_detail(check),
+                        )?);
                         break;
                     }
                 }
@@ -2545,7 +2660,7 @@ impl Engine {
                             record_guided_finding(
                                 self,
                                 &next,
-                                check_failure(check, &next, check_failure_detail(check)),
+                                self.failure_for_check(check, &next, check_failure_detail(check))?,
                                 &coverage,
                                 &mut findings,
                             );
@@ -3181,6 +3296,7 @@ impl Engine {
                         "message `{}` is illegal from protocol state `{current}`",
                         route.message
                     ),
+                    observations: BTreeMap::new(),
                 }));
             };
             world
@@ -3332,15 +3448,26 @@ impl Engine {
             if world.violated_checks.contains(&check.id) {
                 continue;
             }
-            let satisfied = self.assertion_satisfied(&check.assert, world)?;
+            let evaluation = self.assertion_evaluation(check, world)?;
+            let satisfied = evaluation.satisfied;
             match check.when {
                 CheckWhen::Always if !satisfied => {
                     world.violated_checks.insert(check.id.clone());
-                    failures.push(check_failure(check, world, "always assertion is false"));
+                    failures.push(check_failure(
+                        check,
+                        world,
+                        "always assertion is false",
+                        evaluation.observations,
+                    ));
                 }
                 CheckWhen::Quiescent if quiescent && !satisfied => {
                     world.violated_checks.insert(check.id.clone());
-                    failures.push(check_failure(check, world, "quiescent assertion is false"));
+                    failures.push(check_failure(
+                        check,
+                        world,
+                        "quiescent assertion is false",
+                        evaluation.observations,
+                    ));
                 }
                 CheckWhen::Within => {
                     if satisfied {
@@ -3358,6 +3485,7 @@ impl Engine {
                             check,
                             world,
                             "bounded eventual assertion was not reached",
+                            evaluation.observations,
                         ));
                     }
                 }
@@ -3367,13 +3495,17 @@ impl Engine {
         Ok(failures)
     }
 
-    fn assertion_satisfied(&self, assertion: &CheckAssertion, world: &World) -> Result<bool> {
-        match assertion {
-            CheckAssertion::State { instance, equals } => Ok(world
+    fn assertion_evaluation(
+        &self,
+        check: &CheckSpec,
+        world: &World,
+    ) -> Result<AssertionEvaluation> {
+        let satisfied = match &check.assert {
+            CheckAssertion::State { instance, equals } => world
                 .states
                 .get(instance)
-                .is_some_and(|state| state == equals)),
-            CheckAssertion::QueueEmpty => Ok(world.queue.is_empty()),
+                .is_some_and(|state| state == equals),
+            CheckAssertion::QueueEmpty => world.queue.is_empty(),
             CheckAssertion::MessageCount {
                 name,
                 equals,
@@ -3381,14 +3513,67 @@ impl Engine {
                 max,
             } => {
                 let observed = world.message_counts.get(name).copied().unwrap_or(0);
-                Ok(equals.is_none_or(|value| observed == value)
+                equals.is_none_or(|value| observed == value)
                     && min.is_none_or(|value| observed >= value)
-                    && max.is_none_or(|value| observed <= value))
+                    && max.is_none_or(|value| observed <= value)
             }
             CheckAssertion::Oracle { command, runner } => {
-                self.execute_oracle(command, runner, world)
+                self.execute_oracle(command, runner, world)?
             }
-        }
+            CheckAssertion::StateExpression { .. } => {
+                let compiled = self.state_expressions.get(&check.id).ok_or_else(|| {
+                    anyhow!("state-expression check `{}` was not compiled", check.id)
+                })?;
+                let mut assignments = BTreeMap::new();
+                for observation in &compiled.observations {
+                    let state = world.states.get(&observation.instance).ok_or_else(|| {
+                        anyhow!(
+                            "state-expression check `{}` observation `{}` cannot read missing instance `{}`",
+                            check.id,
+                            observation.id,
+                            observation.instance
+                        )
+                    })?;
+                    let value = state.pointer(&observation.pointer).ok_or_else(|| {
+                        anyhow!(
+                            "state-expression check `{}` observation `{}` cannot read missing state path `{}` from `{}`",
+                            check.id,
+                            observation.id,
+                            observation.pointer,
+                            observation.instance
+                        )
+                    })?;
+                    assignments.insert(observation.id.clone(), value.clone());
+                }
+                let satisfied = compiled
+                    .expression
+                    .evaluate(&assignments)
+                    .with_context(|| {
+                        format!(
+                            "state-expression check `{}` has a runtime observation type mismatch",
+                            check.id
+                        )
+                    })?;
+                return Ok(AssertionEvaluation {
+                    satisfied,
+                    observations: assignments,
+                });
+            }
+        };
+        Ok(AssertionEvaluation {
+            satisfied,
+            observations: BTreeMap::new(),
+        })
+    }
+
+    fn failure_for_check(
+        &self,
+        check: &CheckSpec,
+        world: &World,
+        detail: &str,
+    ) -> Result<ProbeFailure> {
+        let observations = self.assertion_evaluation(check, world)?.observations;
+        Ok(check_failure(check, world, detail, observations))
     }
 
     fn execute_oracle(&self, command: &str, runner: &str, world: &World) -> Result<bool> {
@@ -4074,13 +4259,32 @@ fn envelope_from_route(
     }
 }
 
-fn check_failure(check: &CheckSpec, world: &World, detail: &str) -> ProbeFailure {
+fn check_failure(
+    check: &CheckSpec,
+    world: &World,
+    detail: &str,
+    observations: BTreeMap<String, Value>,
+) -> ProbeFailure {
     ProbeFailure {
         check: check.id.clone(),
         step: world.step,
         time: world.time,
         message: detail.to_string(),
+        observations,
     }
+}
+
+fn valid_json_pointer(pointer: &str) -> bool {
+    if !pointer.starts_with('/') {
+        return false;
+    }
+    let mut bytes = pointer.as_bytes().iter().copied();
+    while let Some(byte) = bytes.next() {
+        if byte == b'~' && !matches!(bytes.next(), Some(b'0' | b'1')) {
+            return false;
+        }
+    }
+    true
 }
 
 fn check_failure_detail(check: &CheckSpec) -> &'static str {
@@ -4611,6 +4815,9 @@ fn print_trace(trace: &SystemTrace) {
             "first_failure: {} at step {}: {}",
             failure.check, failure.step, failure.message
         );
+        for (id, value) in &failure.observations {
+            println!("  observed {id}: {value}");
+        }
     }
 }
 
@@ -4664,6 +4871,266 @@ mod tests {
             .unwrap()
             .insert("topology".to_string(), json!("guessed"));
         assert!(validate_schema(&invalid, schema, "probe assembly").is_err());
+    }
+
+    #[test]
+    fn state_expression_schema_is_closed_and_legacy_versions_reject_it() {
+        let value = json!({
+            "spec": ASSEMBLY_SPEC_V3,
+            "instances": [
+                {"id": "counter", "implementation": "counter/implementation.yaml"},
+                {"id": "left", "implementation": "worker/implementation.yaml"},
+                {"id": "right", "implementation": "worker/implementation.yaml"}
+            ],
+            "stimuli": [],
+            "checks": [{
+                "id": "contributions-are-preserved",
+                "when": "quiescent",
+                "assert": {
+                    "kind": "state-expression",
+                    "observations": [
+                        {"id": "counter_value", "instance": "counter", "pointer": "/data/value", "value": "integer"},
+                        {"id": "left_applied", "instance": "left", "pointer": "/data/applied", "value": "integer"},
+                        {"id": "right_applied", "instance": "right", "pointer": "/data/applied", "value": "integer"},
+                        {"id": "counter_state", "instance": "counter", "pointer": "/name", "value": {"variant": ["Ready"]}}
+                    ],
+                    "expression": {
+                        "all": [
+                            {"equals": {
+                                "left": {"observation": "counter_value"},
+                                "right": {"add": [
+                                    {"observation": "left_applied"},
+                                    {"observation": "right_applied"}
+                                ]}
+                            }},
+                            {"equals": {
+                                "left": {"observation": "counter_state"},
+                                "right": {"literal": "Ready"}
+                            }}
+                        ]
+                    }
+                }
+            }]
+        });
+        validate_assembly_schema(&value).expect("v0.3 state expression schema");
+
+        let mut legacy = value;
+        legacy["spec"] = json!(ASSEMBLY_SPEC_V2);
+        assert!(validate_assembly_schema(&legacy).is_err());
+    }
+
+    #[test]
+    fn state_expression_evaluates_typed_current_state_and_reports_facts() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let value = json!({
+            "spec": ASSEMBLY_SPEC_V3,
+            "instances": [{
+                "id": "widget",
+                "implementation": repository.join("examples/rust/implementation.yaml")
+            }],
+            "stimuli": [],
+            "checks": [{
+                "id": "widget-is-not-impossible",
+                "when": "quiescent",
+                "assert": {
+                    "kind": "state-expression",
+                    "observations": [{
+                        "id": "widget_state",
+                        "instance": "widget",
+                        "pointer": "/name",
+                        "value": {"variant": ["Ready"]}
+                    }],
+                    "expression": {"not": {"equals": {
+                        "left": {"observation": "widget_state"},
+                        "right": {"literal": "Ready"}
+                    }}}
+                }
+            }],
+            "exploration": {"max_steps": 2, "max_schedules": 4, "max_states": 10}
+        });
+        let assembly: ProbeAssembly = serde_json::from_value(value.clone()).unwrap();
+        let mut engine = Engine::new(
+            assembly,
+            value,
+            repository.to_path_buf(),
+            None,
+            None,
+            None,
+            30,
+        )
+        .unwrap();
+        let (trace, counterexample) = engine.explore().unwrap();
+        assert_eq!(trace.result, "fail");
+        let failure = trace.failure.unwrap();
+        assert_eq!(failure.observations["widget_state"], json!("Ready"));
+        assert!(counterexample.is_some());
+    }
+
+    #[test]
+    fn state_expression_rejects_invalid_declarations_before_exploration() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let path = repository.join("examples/probes/frame-good.yaml");
+        let (valid, base_dir) = load_input(&path).unwrap();
+        let build = |value: Value| {
+            let assembly: ProbeAssembly = serde_json::from_value(value.clone()).unwrap();
+            Engine::new(assembly, value, base_dir.clone(), None, None, None, 30)
+        };
+        let error = |value: Value| match build(value) {
+            Ok(_) => panic!("invalid state expression was accepted"),
+            Err(error) => format!("{error:#}"),
+        };
+
+        let mut duplicate = valid.clone();
+        let observation = duplicate["checks"][0]["assert"]["observations"][0].clone();
+        duplicate["checks"][0]["assert"]["observations"]
+            .as_array_mut()
+            .unwrap()
+            .push(observation);
+        assert!(error(duplicate).contains("duplicate observation id"));
+
+        let mut unknown_instance = valid.clone();
+        unknown_instance["checks"][0]["assert"]["observations"][0]["instance"] = json!("missing");
+        assert!(error(unknown_instance).contains("unknown instance"));
+
+        let mut bad_pointer = valid.clone();
+        bad_pointer["checks"][0]["assert"]["observations"][0]["pointer"] = json!("data/owner");
+        assert!(error(bad_pointer).contains("invalid RFC 6901 pointer"));
+
+        let mut unknown_reference = valid.clone();
+        unknown_reference["checks"][0]["assert"]["expression"]["equals"]["left"] =
+            json!({"observation": "missing"});
+        assert!(error(unknown_reference).contains("unknown observation"));
+
+        let mut incompatible = valid;
+        incompatible["checks"][0]["assert"]["expression"]["equals"]["right"] =
+            json!({"literal": 1});
+        assert!(error(incompatible).contains("incompatible"));
+    }
+
+    #[test]
+    fn state_expression_missing_paths_and_runtime_types_invalidate_the_run() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let path = repository.join("examples/probes/frame-good.yaml");
+        let (valid, base_dir) = load_input(&path).unwrap();
+        let run = |value: Value| {
+            let assembly: ProbeAssembly = serde_json::from_value(value.clone()).unwrap();
+            let mut engine =
+                Engine::new(assembly, value, base_dir.clone(), None, None, None, 30).unwrap();
+            match engine.deterministic() {
+                Ok(_) => panic!("invalid runtime observation was accepted"),
+                Err(error) => format!("{error:#}"),
+            }
+        };
+
+        let mut missing = valid.clone();
+        missing["checks"][0]["assert"]["observations"][0]["pointer"] = json!("/data/missing");
+        assert!(run(missing).contains("missing state path"));
+
+        let mut wrong_type = valid;
+        wrong_type["checks"][0]["assert"]["observations"][0]["value"] = json!("integer");
+        wrong_type["checks"][0]["assert"]["expression"]["equals"]["right"] = json!({"literal": 1});
+        let wrong_type_error = run(wrong_type);
+        assert!(
+            wrong_type_error.contains("runtime observation type mismatch"),
+            "{wrong_type_error}"
+        );
+    }
+
+    #[test]
+    fn state_expression_concurrency_acceptance_corpus_is_replayable() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let run = |name: &str| {
+            let path = repository.join("examples/probes").join(name);
+            let (value, base_dir) = load_input(&path).unwrap();
+            let assembly: ProbeAssembly = serde_json::from_value(value.clone()).unwrap();
+            let mut engine =
+                Engine::new(assembly, value, base_dir.clone(), None, None, None, 30).unwrap();
+            let result = engine.explore().unwrap();
+            (result, base_dir)
+        };
+        let replay = |counterexample: &Counterexample, base_dir: &Path| {
+            let assembly: ProbeAssembly =
+                serde_json::from_value(counterexample.assembly.clone()).unwrap();
+            let mut engine = Engine::new(
+                assembly,
+                counterexample.assembly.clone(),
+                base_dir.to_path_buf(),
+                None,
+                None,
+                None,
+                30,
+            )
+            .unwrap();
+            engine
+                .run_forced(&counterexample.decisions, Some(&counterexample.failure))
+                .unwrap()
+                .0
+        };
+
+        let ((lost, lost_counterexample), lost_base) = run("lost-update.yaml");
+        assert_eq!(lost.result, "fail");
+        assert_eq!(
+            lost.failure.as_ref().unwrap().observations,
+            BTreeMap::from([
+                ("counter_value".to_string(), json!(1)),
+                ("left_applied".to_string(), json!(1)),
+                ("right_applied".to_string(), json!(1)),
+            ])
+        );
+        let lost_counterexample = lost_counterexample.unwrap();
+        assert_eq!(
+            replay(&lost_counterexample, &lost_base)
+                .failure
+                .unwrap()
+                .observations,
+            lost_counterexample.failure.observations
+        );
+
+        for safe in [
+            "stale-write-protection.yaml",
+            "duplicate-delivery.yaml",
+            "frame-good.yaml",
+        ] {
+            let ((trace, counterexample), _) = run(safe);
+            assert_eq!(trace.result, "pass", "{safe} did not pass");
+            assert!(trace.exhausted, "{safe} did not exhaust its finite bounds");
+            assert!(counterexample.is_none());
+        }
+
+        for unsafe_fixture in [
+            "concurrent-order-failure.yaml",
+            "productive-deadlock.yaml",
+            "frame-bad.yaml",
+        ] {
+            let ((trace, counterexample), base_dir) = run(unsafe_fixture);
+            assert_eq!(trace.result, "fail", "{unsafe_fixture} did not fail");
+            let counterexample = counterexample.unwrap();
+            let replayed = replay(&counterexample, &base_dir);
+            assert_eq!(
+                replayed
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.check.as_str()),
+                Some(counterexample.failure.check.as_str()),
+                "{unsafe_fixture} did not replay"
+            );
+            if unsafe_fixture == "concurrent-order-failure.yaml" {
+                assert_eq!(counterexample.failure.step, 2);
+                assert_eq!(counterexample.decisions.len(), 2);
+            }
+        }
     }
 
     #[test]

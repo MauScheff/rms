@@ -1,0 +1,39 @@
+spec: rms/probe-assembly/v0.3
+instances:
+- id: counter
+  implementation: ../probe-topologies/optimistic-resource/implementation.fixture
+- id: worker
+  implementation: ../probe-topologies/optimistic-worker/implementation.fixture
+stimuli:
+- id: start
+  target: worker
+  input: {kind: command, name: Start, data: {operation_id: once}}
+checks:
+- id: operation-completes-within-bound
+  when: within
+  within_steps: 8
+  assert:
+    kind: state-expression
+    observations:
+    - {id: counter_value, instance: counter, pointer: /data/value, value: integer}
+    - {id: counter_version, instance: counter, pointer: /data/version, value: integer}
+    - {id: worker_applied, instance: worker, pointer: /data/applied, value: integer}
+    expression:
+      all:
+      - {equals: {left: {observation: counter_value}, right: {literal: 1}}}
+      - {equals: {left: {observation: counter_version}, right: {literal: 1}}}
+      - {equals: {left: {observation: worker_applied}, right: {literal: 1}}}
+- id: one-operation-mutates-once
+  when: quiescent
+  assert:
+    kind: state-expression
+    observations:
+    - {id: counter_value, instance: counter, pointer: /data/value, value: integer}
+    - {id: counter_version, instance: counter, pointer: /data/version, value: integer}
+    expression:
+      all:
+      - {equals: {left: {observation: counter_value}, right: {literal: 1}}}
+      - {equals: {left: {observation: counter_version}, right: {literal: 1}}}
+faults:
+- {route: commit-provider, kind: duplicate, budget: 1}
+exploration: {max_steps: 12, max_schedules: 100, max_states: 1000}

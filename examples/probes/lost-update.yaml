@@ -1,0 +1,35 @@
+spec: rms/probe-assembly/v0.3
+instances:
+- id: counter
+  implementation: ../probe-topologies/optimistic-resource/implementation.fixture
+  start: {name: Ready, data: {value: 0, version: 0, mode: unsafe, applied_ids: []}}
+- id: left
+  implementation: ../probe-topologies/optimistic-worker/implementation.fixture
+- id: right
+  implementation: ../probe-topologies/optimistic-worker/implementation.fixture
+stimuli:
+- id: start-left
+  target: left
+  at: {value: 0, unit: ms}
+  input: {kind: command, name: Start, data: {operation_id: left}}
+- id: start-right
+  target: right
+  at: {value: 0, unit: ms}
+  input: {kind: command, name: Start, data: {operation_id: right}}
+checks:
+- id: contributions-are-preserved
+  when: quiescent
+  assert:
+    kind: state-expression
+    observations:
+    - {id: counter_value, instance: counter, pointer: /data/value, value: integer}
+    - {id: left_applied, instance: left, pointer: /data/applied, value: integer}
+    - {id: right_applied, instance: right, pointer: /data/applied, value: integer}
+    expression:
+      equals:
+        left: {observation: counter_value}
+        right:
+          add:
+          - {observation: left_applied}
+          - {observation: right_applied}
+exploration: {max_steps: 16, max_schedules: 200, max_states: 2000}
