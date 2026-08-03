@@ -715,6 +715,23 @@ fn validate_assembly_schema(value: &Value) -> Result<()> {
     validate_schema(value, schema, "probe assembly")
 }
 
+pub(super) fn validate_assembly_declaration(path: &Path, timeout_seconds: u64) -> Result<()> {
+    let (assembly_value, base_dir) = load_input(path)?;
+    validate_assembly_schema(&assembly_value)?;
+    let assembly: ProbeAssembly = serde_json::from_value(assembly_value.clone())
+        .context("invalid canonical probe assembly")?;
+    Engine::new(
+        assembly,
+        assembly_value,
+        base_dir,
+        None,
+        None,
+        None,
+        timeout_seconds,
+    )?;
+    Ok(())
+}
+
 pub(super) fn verify_evidence(path: &Path, timeout_seconds: u64) -> Result<Option<String>> {
     let Some(spec) = file_spec(path)? else {
         return Ok(None);
@@ -3550,10 +3567,31 @@ fn execute_binding_request(
             let results = get_path(&output_yaml, &["results"])
                 .and_then(serde_yaml::Value::as_sequence)
                 .ok_or_else(|| anyhow!("v0.2 probe evaluation returned no results"))?;
+            let requested = request
+                .get("cases")
+                .and_then(Value::as_array)
+                .ok_or_else(|| anyhow!("v0.2 probe evaluation request has no cases"))?;
+            if results.len() != requested.len() {
+                bail!(
+                    "v0.2 probe evaluation returned {} results for {} requested cases",
+                    results.len(),
+                    requested.len()
+                );
+            }
             for (index, result) in results.iter().enumerate() {
                 let record = get_path(result, &["record"])
                     .cloned()
                     .ok_or_else(|| anyhow!("v0.2 result {index} has no record"))?;
+                let expected = serde_yaml::to_value(&requested[index])?;
+                let expected_id = get_str(&expected, &["id"]).unwrap_or("");
+                let observed_id = get_str(result, &["id"]).unwrap_or("");
+                if observed_id != expected_id {
+                    bail!(
+                        "v0.2 probe evaluation result {} has id `{observed_id}`, expected `{expected_id}`",
+                        index + 1
+                    );
+                }
+                super::validate_probe_evaluation_record_identity(&expected, &record, expected_id)?;
                 let bundle = serde_yaml::to_value(json!({
                     "spec": "rms/trace-bundle/v0.1",
                     "machine": instance.binding.machine,
@@ -4410,6 +4448,33 @@ mod tests {
             .unwrap()
             .insert("topology".to_string(), json!("guessed"));
         assert!(validate_schema(&invalid, schema, "probe assembly").is_err());
+    }
+
+    #[test]
+    fn assembly_declaration_rejects_unresolved_effect_before_exploration() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let root = probe_temp_root("rms-unresolved-effect-assembly");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("assembly.yaml");
+        let value = json!({
+            "spec": ASSEMBLY_SPEC_V2,
+            "instances": [{
+                "id": "source",
+                "implementation": repository.join("examples/probe-topologies/source/implementation.fixture")
+            }],
+            "stimuli": [{
+                "target": "source",
+                "input": {"kind": "command", "name": "Start", "data": {}}
+            }]
+        });
+        fs::write(&path, serde_yaml::to_string(&value).unwrap()).unwrap();
+
+        let error = validate_assembly_declaration(&path, 30).unwrap_err();
+        assert!(error.to_string().contains("unresolved effect `Work`"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -317,7 +317,14 @@ pub(super) fn property_definitions(
         }
     };
     let Some(profile) = profile else {
-        return Err(vec![format!("contract `{name}` has no semantic profile")]);
+        let required_path = match kind {
+            "command" | "query" | "capability" => "semantics.behavior",
+            "event" => "semantics.event",
+            _ => "semantics",
+        };
+        return Err(vec![format!(
+            "contract `{name}` kind `{kind}` requires the `{required_path}` object; there is no `semantic_profile` field"
+        )]);
     };
     let observations = profile
         .get("observations")
@@ -1770,6 +1777,25 @@ mod tests {
         assert!(definitions
             .iter()
             .all(|value| property::compile_property(value).is_ok()));
+    }
+
+    #[test]
+    fn missing_behavior_profile_names_the_exact_contract_path() {
+        let mut contract = behavioral_contract();
+        contract["semantics"] = json!({
+            "observations": [],
+            "requires": [],
+            "guarantees": [],
+            "failures": [],
+            "cases": [],
+            "invariants": []
+        });
+
+        let errors = property_definitions(&contract).unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("requires the `semantics.behavior` object"));
+        assert!(errors[0].contains("there is no `semantic_profile` field"));
     }
 
     #[test]

@@ -53,7 +53,7 @@ def probe_machine():
             "machine": "ProbeFanoutMachine",
             "initial_state": initial_state(),
             "states": [
-                {"name": name, "data_schema": {"type": "object"}}
+                {"name": name, "data_schema": {"type": "object"}, "examples": [named(name)]}
                 for name in ["Ready", "WaitingBoth", "WaitingA", "WaitingB"]
             ],
             "inputs": [

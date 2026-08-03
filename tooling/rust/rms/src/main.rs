@@ -5,7 +5,7 @@ use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io::{Read as IoRead, Write as IoWrite};
@@ -14,6 +14,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use syn::visit::{self, Visit};
@@ -48,7 +49,7 @@ const RMS_LONG_VERSION: &str = concat!(
 const DEFAULT_RUN_ROOT: &str = ".rms/runs";
 const DEFAULT_INTENT_CACHE_ROOT: &str = ".rms/cache/intent";
 const INTENT_SCHEMA_SPEC: &str = "rms/intent-model/v0.1";
-const INTENT_EXTRACTION_PROMPT_VERSION: &str = "rms-intent-extraction/v3";
+const INTENT_EXTRACTION_PROMPT_VERSION: &str = "rms-intent-extraction/v4";
 const CONSTRAINED_PROVIDER_FEATURES: &[&str] = &[
     "apps",
     "browser_use",
@@ -66,7 +67,7 @@ const CONSTRAINED_PROVIDER_FEATURES: &[&str] = &[
     "unified_exec",
     "workspace_dependencies",
 ];
-const INTENT_NORMALIZATION_VERSION: &str = "rms-intent-normalization/v2";
+const INTENT_NORMALIZATION_VERSION: &str = "rms-intent-normalization/v3";
 const ROUTE_RECEIPT_SPEC: &str = "rms/route-receipt/v0.1";
 const DEFAULT_PROVIDER_TIMEOUT_SECONDS: u64 = 900;
 const DEFAULT_DOGFOOD_PHASE_TIMEOUT_SECONDS: u64 = 3600;
@@ -3205,13 +3206,36 @@ struct SemanticPropertyChange {
     #[serde(default)]
     realizations: Vec<PropertyRealization>,
     #[serde(default)]
-    explorations: Vec<YamlValue>,
+    explorations: Vec<SemanticPropertyExploration>,
     #[serde(default)]
     observations: Vec<YamlValue>,
     #[serde(default)]
     assumptions: Vec<YamlValue>,
     #[serde(default)]
     temporal: Option<YamlValue>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticPropertyExploration {
+    assembly: String,
+    goal: SemanticPropertyExplorationGoal,
+    bounds: SemanticPropertyExplorationBounds,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum SemanticPropertyExplorationGoal {
+    Satisfy,
+    Violate,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticPropertyExplorationBounds {
+    max_steps: usize,
+    max_schedules: usize,
+    max_states: usize,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -3527,6 +3551,8 @@ struct MachineTypeNames {
     command: Option<String>,
     #[serde(default)]
     command_envelope: Option<String>,
+    #[serde(default)]
+    observed_event: Option<String>,
     #[serde(default)]
     event: Option<String>,
     #[serde(default)]
@@ -9618,12 +9644,16 @@ fn run_main() -> Result<()> {
                 route_receipt,
             } => {
                 let root = repository_root_for_target(&implementation)?;
-                let receipt = require_route_receipt(
+                let change = parse_machine_change(
+                    change_json.as_deref(),
+                    change_yaml.as_deref(),
+                    change_file.as_deref(),
+                )?;
+                let receipt = require_machine_change_route_receipt(
                     &root,
                     &route_receipt,
-                    "machine-apply",
                     &implementation,
-                    None,
+                    &change,
                 );
                 run_machine_apply(
                     &implementation,
@@ -12215,8 +12245,9 @@ fn provider_intent_candidate(
         )]
     })?;
     let normalized = normalize_provider_intent_source(&raw_source);
-    let model = parse_intent_model_source(&normalized)
+    let mut model = parse_intent_model_source(&normalized)
         .map_err(|message| vec![error_diagnostic("intent.model-invalid", root, message)])?;
+    normalize_provider_intent_for_task(task, &mut model);
     let diagnostics = validate_intent_model(task, root, &model);
     if diagnostics
         .iter()
@@ -12224,6 +12255,7 @@ fn provider_intent_candidate(
     {
         return Err(diagnostics);
     }
+    let normalized = serde_json::to_string(&model).unwrap_or(normalized);
     Ok((model, diagnostics, normalized))
 }
 
@@ -12909,7 +12941,7 @@ fn canonical_provider_surface_kind(value: &str) -> Option<String> {
 
 fn render_intent_extraction_prompt(task: &str) -> String {
     format!(
-        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. This is a bounded transformation: use only the task and schema in this prompt, do not inspect files or call tools, and return the object immediately. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Each fact contains only disposition, basis, source_quote, and rationale. Subjects are stable kebab-case identifiers. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Keep facts and responsibilities consistent: domain_decisions is required exactly when at least one responsibility is a decision; a workflow responsibility forbids lifecycle=absent; a storage or integration responsibility forbids effects=absent; and surface-change forbids runnable_surface=absent. A boundary or implementation adapter is not by itself evidence of an external effect or runnable surface. Surface kinds may contain only browser|cli|mobile-ui|desktop-ui|http|batch|executable; never list product features, integrations, APIs, documentation, onboarding, sign-in, or sign-out as surface kinds. Binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
+        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. This is a bounded transformation: use only the task and schema in this prompt, do not inspect files or call tools, and return the object immediately. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Each fact contains only disposition, basis, source_quote, and rationale. Subjects are stable kebab-case identifiers. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Keep facts and responsibilities consistent: domain_decisions is required exactly when at least one responsibility is a decision; a workflow responsibility forbids lifecycle=absent; a storage or integration responsibility forbids effects=absent; and surface-change forbids runnable_surface=absent. A boundary or implementation adapter is not by itself evidence of an external effect or runnable surface. Domain events, replies, and rejections are semantic machine outputs, not external effects. An executable property, proof, test, probe, or runner is verification evidence, not a product runnable surface. Canonical transitions, states, cases, contracts, laws, and properties are semantic-change work even when their realization names an implementation manifest. Reusing or evolving an exact existing module or canonical artifact in place is existing-module semantic-change work, not design, unless the task actually changes topology. A request that explicitly preserves runtime behavior and changes only contract or proof binding can establish lifecycle=absent when it introduces no ordering or transition change. Surface kinds may contain only browser|cli|mobile-ui|desktop-ui|http|batch|executable; never list product features, integrations, APIs, documentation, onboarding, sign-in, or sign-out as surface kinds. Binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
         serde_json::to_string_pretty(&intent_model_template()).unwrap_or_default()
     )
 }
@@ -12933,170 +12965,6 @@ open_questions: [Clarify every material unknown before architecture is selected.
 "#,
     )
     .unwrap_or(YamlValue::Null)
-}
-
-fn task_explicitly_declares_canonical_machine_structure(task: &str) -> bool {
-    let normalized = task.to_ascii_lowercase();
-    let declaration = [
-        "declare", "add", "remove", "replace", "revise", "set", "change", "update",
-    ]
-    .iter()
-    .any(|term| task_mentions_token(task, term));
-    let canonical_target = normalized.contains("implementation.yaml")
-        || normalized.contains("canonical machine")
-        || normalized.contains("machine declaration");
-    let machine_structure = [
-        "state",
-        "states",
-        "input",
-        "inputs",
-        "output",
-        "outputs",
-        "transition",
-        "transitions",
-        "command",
-        "commands",
-        "event",
-        "events",
-        "effect",
-        "effects",
-        "observed-event",
-        "observed-events",
-        "effect-result",
-        "effect-results",
-        "reply",
-        "replies",
-        "rejection",
-        "rejections",
-        "source-branch",
-        "machine-role",
-        "role",
-        "roles",
-    ]
-    .iter()
-    .any(|term| task_mentions_token(task, term))
-        || [
-            "observed event",
-            "effect result",
-            "source branch",
-            "machine role",
-        ]
-        .iter()
-        .any(|term| normalized.contains(term));
-    declaration && canonical_target && machine_structure
-}
-
-fn unknown_reuse_is_nonmaterial_for_exact_owner_change(task: &str, model: &IntentModel) -> bool {
-    let normalized = task.to_ascii_lowercase();
-    let asks_reuse_or_topology = [
-        "reuse",
-        "reusable",
-        "shared",
-        "capability",
-        "consumer",
-        "consume",
-        "publish",
-        "export",
-        "topology",
-    ]
-    .iter()
-    .any(|term| task_mentions_token(task, term));
-    model.change_scope == IntentChangeScope::ExistingModule
-        && matches!(
-            model.operation,
-            IntentOperation::SemanticChange | IntentOperation::ImplementationChange
-        )
-        && normalized.contains("implementation.yaml")
-        && !asks_reuse_or_topology
-}
-
-fn task_is_exact_existing_contract_completion(task: &str, model: &IntentModel) -> bool {
-    let normalized = task.to_ascii_lowercase();
-    let exact_contract_path = normalized.contains("/contracts/")
-        && (normalized.contains(".yaml") || normalized.contains(".yml"));
-    let existing_contract = task_mentions_token(task, "existing")
-        && task_mentions_token(task, "contract")
-        && task_mentions_token(task, "version");
-    let completes_scaffold =
-        task_mentions_token(task, "scaffold") || task_mentions_token(task, "unresolved");
-    let preserves_topology = normalized.contains("reuse the existing composite topology")
-        || normalized.contains("no source, wire, runtime, or topology change")
-        || normalized.contains("no source, wire, or runtime change");
-    model.change_scope == IntentChangeScope::ExistingModule
-        && exact_contract_path
-        && existing_contract
-        && completes_scaffold
-        && preserves_topology
-}
-
-fn task_explicitly_preserves_runnable_surface(task: &str, model: &IntentModel) -> bool {
-    let normalized = task.to_ascii_lowercase();
-    let canonical_contract_target = (normalized.contains("module.yaml")
-        || normalized.contains("/contracts/"))
-        && (task_mentions_token(task, "contract")
-            || task_mentions_token(task, "clause")
-            || task_mentions_token(task, "evaluation")
-            || task_mentions_token(task, "property"));
-    let preserves_runtime = normalized.contains("preserve the runtime")
-        || normalized.contains("preserving the runtime")
-        || normalized.contains("preserve runtime")
-        || normalized.contains("preserving runtime")
-        || ((task_mentions_token(task, "preserve") || task_mentions_token(task, "preserving"))
-            && task_mentions_token(task, "runtime")
-            && !normalized.contains("change runtime"))
-        || normalized.contains("no source, wire, runtime")
-        || normalized.contains("no runtime")
-        || normalized.contains("no runnable surface");
-    model.change_scope == IntentChangeScope::ExistingModule
-        && canonical_contract_target
-        && preserves_runtime
-}
-
-fn task_module_owned_path_rank(task: &str, root: &Path, module: &Path) -> u8 {
-    let Some(base) = module.parent() else {
-        return 0;
-    };
-    let normalized_task = task.replace('\\', "/").to_ascii_lowercase();
-    let names_module = [Some(module), module.strip_prefix(root).ok()]
-        .into_iter()
-        .flatten()
-        .filter_map(|path| path.to_str())
-        .any(|path| normalized_task.contains(&path.replace('\\', "/").to_ascii_lowercase()));
-    if names_module {
-        return 2;
-    }
-    let names_owned_path = [Some(base), base.strip_prefix(root).ok()]
-        .into_iter()
-        .flatten()
-        .filter_map(|path| path.to_str())
-        .map(|path| format!("{}/", path.replace('\\', "/").trim_end_matches('/')))
-        .any(|prefix| normalized_task.contains(&prefix.to_ascii_lowercase()));
-    u8::from(names_owned_path)
-}
-
-fn task_explicitly_targets_module_owned_path(task: &str, root: &Path, module: &Path) -> bool {
-    task_module_owned_path_rank(task, root, module) > 0
-}
-
-fn exact_task_owned_module<'a>(
-    task: &str,
-    root: &Path,
-    modules: &'a BTreeMap<String, ModuleIndexEntry>,
-) -> Option<&'a ModuleIndexEntry> {
-    let ranked = modules
-        .values()
-        .filter_map(|module| {
-            let rank = task_module_owned_path_rank(task, root, &module.path);
-            (rank > 0).then_some((rank, module))
-        })
-        .collect::<Vec<_>>();
-    let highest = ranked.iter().map(|(rank, _)| *rank).max()?;
-    let mut highest_matches = ranked
-        .into_iter()
-        .filter(|(rank, _)| *rank == highest)
-        .map(|(_, module)| module);
-    let selected = highest_matches.next()?;
-    highest_matches.next().is_none().then_some(selected)
 }
 
 fn validate_intent_model(task: &str, root: &Path, model: &IntentModel) -> Vec<Diagnostic> {
@@ -13153,28 +13021,10 @@ fn validate_intent_model(task: &str, root: &Path, model: &IntentModel) -> Vec<Di
             }
         }
         if fact.disposition == IntentDisposition::Unknown {
-            let nonmaterial_owner_local_reuse =
-                name == "reuse" && unknown_reuse_is_nonmaterial_for_exact_owner_change(task, model);
-            let nonmaterial_contract_lifecycle = name == "lifecycle"
-                && model.operation == IntentOperation::SemanticChange
-                && task_is_exact_existing_contract_completion(task, model);
-            let nonmaterial = nonmaterial_owner_local_reuse || nonmaterial_contract_lifecycle;
             diagnostics.push(warning(
-                if nonmaterial {
-                    "intent.nonmaterial-unknown"
-                } else {
-                    "intent.material-unknown"
-                },
+                "intent.material-unknown",
                 root,
-                if nonmaterial_owner_local_reuse {
-                    "reuse remains unknown but does not affect routing for this exact existing implementation target"
-                        .to_string()
-                } else if nonmaterial_contract_lifecycle {
-                    "lifecycle remains unknown but does not affect routing for this exact in-place contract scaffold completion"
-                        .to_string()
-                } else {
-                    format!("material fact `{name}` remains unknown")
-                },
+                format!("material fact `{name}` remains unknown"),
             ));
         }
     }
@@ -13298,33 +13148,6 @@ fn validate_intent_model(task: &str, root: &Path, model: &IntentModel) -> Vec<Di
             "intent.contradiction",
             root,
             "surface-change contradicts runnable_surface=absent; correct the operation or fact disposition",
-        ));
-    }
-    if model.operation == IntentOperation::ImplementationChange
-        && task_explicitly_declares_canonical_machine_structure(task)
-    {
-        diagnostics.push(error(
-            "intent.contradiction",
-            root,
-            "implementation-change cannot declare canonical machine structure; use semantic-change for states, inputs, transitions, ordered outputs, source branches, or machine roles",
-        ));
-    }
-    if model.operation == IntentOperation::Design
-        && task_is_exact_existing_contract_completion(task, model)
-    {
-        diagnostics.push(error(
-            "intent.contradiction",
-            root,
-            "design cannot complete an exact existing contract artifact in place while preserving version and topology; use semantic-change",
-        ));
-    }
-    if model.facts.runnable_surface.disposition == IntentDisposition::Required
-        && task_explicitly_preserves_runnable_surface(task, model)
-    {
-        diagnostics.push(error(
-            "intent.contradiction",
-            root,
-            "runnable_surface=required contradicts the explicit preservation of the existing runtime or runnable surface; executable contract evaluation is proof, not a product surface",
         ));
     }
     diagnostics
@@ -14011,10 +13834,8 @@ fn execute_proof_command(
         bail!("proof command timeout must be greater than zero");
     }
     let started = Instant::now();
-    let mut process = Command::new("sh");
+    let mut process = proof_shell_command(command);
     process
-        .arg("-c")
-        .arg(command)
         .current_dir(root)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -14049,6 +13870,32 @@ fn execute_proof_command(
         stdout,
         stderr,
         elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn proof_shell_command(command: &str) -> Command {
+    if apple_silicon_hardware_available() {
+        let mut process = Command::new("/usr/bin/arch");
+        process.args(["-arm64", "/bin/sh", "-c", command]);
+        return process;
+    }
+    let mut process = Command::new("sh");
+    process.args(["-c", command]);
+    process
+}
+
+fn apple_silicon_hardware_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        if !cfg!(target_os = "macos") {
+            return false;
+        }
+        Command::new("/usr/sbin/sysctl")
+            .args(["-n", "hw.optional.arm64"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .is_some_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "1")
     })
 }
 
@@ -14480,33 +14327,158 @@ fn validate_probe_evaluation(
             requested.len()
         );
     }
+    let mut failures = Vec::new();
     for (index, (expected, result)) in requested.iter().zip(results).enumerate() {
-        let expected_id = get_str(expected, &["id"]).unwrap_or("");
-        let observed_id = get_str(result, &["id"]).unwrap_or("");
-        if observed_id != expected_id {
+        if let Err(error) =
+            validate_probe_evaluation_case(binding, expected, result, index, temp_root)
+        {
+            failures.push(format!("{error:#}"));
+        }
+    }
+    if !failures.is_empty() {
+        const MAX_REPORTED_FAILURES: usize = 32;
+        let total = failures.len();
+        let reported = failures
+            .iter()
+            .take(MAX_REPORTED_FAILURES)
+            .map(|failure| format!("- {failure}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let omitted = total.saturating_sub(MAX_REPORTED_FAILURES);
+        bail!(
+            "probe v0.2 representative matrix found {total} nonconforming case(s):\n{reported}{}",
+            if omitted == 0 {
+                String::new()
+            } else {
+                format!("\n- ... {omitted} additional failure(s) omitted")
+            }
+        );
+    }
+    Ok(())
+}
+
+fn validate_probe_evaluation_case(
+    binding: &ProbeBinding,
+    expected: &YamlValue,
+    result: &YamlValue,
+    index: usize,
+    temp_root: &Path,
+) -> Result<()> {
+    let expected_id = get_str(expected, &["id"]).unwrap_or("");
+    let observed_id = get_str(result, &["id"]).unwrap_or("");
+    if observed_id != expected_id {
+        bail!(
+            "probe evaluation result {} has id `{observed_id}`, expected `{expected_id}`",
+            index + 1
+        );
+    }
+    let record = get_path(result, &["record"])
+        .cloned()
+        .ok_or_else(|| anyhow!("probe evaluation result `{expected_id}` has no record"))?;
+    validate_probe_evaluation_record_identity(expected, &record, expected_id)?;
+    let bundle = serde_yaml::to_value(json!({
+        "spec": "rms/trace-bundle/v0.1",
+        "machine": binding.machine,
+        "records": [serde_json::to_value(&record)?]
+    }))?;
+    validate_probe_trace_shape(&bundle)
+        .with_context(|| format!("invalid evaluation result `{expected_id}`"))?;
+    if !probe_case_has_declared_transition(expected, &binding.implementation) {
+        return validate_undeclared_probe_transition_refusal(expected, &record, expected_id);
+    }
+    let path = temp_root.join(format!("evaluation-{index}.json"));
+    fs::write(&path, serde_json::to_vec_pretty(&bundle)?)?;
+    let mut trace = build_trace_report(&path)?;
+    apply_probe_trace_conformance(&path, &binding.implementation, &mut trace);
+    if trace_has_errors(&trace) {
+        bail!(
+            "probe evaluation result `{expected_id}` is nonconforming: {}",
+            probe_conformance_diagnostic_summary(&trace.diagnostics)
+        );
+    }
+    Ok(())
+}
+
+fn probe_case_has_declared_transition(case: &YamlValue, implementation: &LoadedManifest) -> bool {
+    let state = get_str(case, &["state", "name"]);
+    let input = get_str(case, &["input", "name"]);
+    existing_machine_transitions(implementation)
+        .iter()
+        .any(|transition| {
+            Some(transition.from.as_str()) == state
+                && Some(transition_input_variant(&transition.on).as_str()) == input
+        })
+}
+
+fn validate_undeclared_probe_transition_refusal(
+    requested: &YamlValue,
+    record: &YamlValue,
+    case_id: &str,
+) -> Result<()> {
+    let state = get_path(requested, &["state"])
+        .ok_or_else(|| anyhow!("probe evaluation case `{case_id}` has no state"))?;
+    let state_name = get_str(state, &["name"]).unwrap_or("?");
+    let input_name = get_str(requested, &["input", "name"]).unwrap_or("?");
+    let state_json = serde_json::to_value(state)?;
+    for path in [&["state_after"][..], &["output", "next_state"][..]] {
+        let observed = get_path(record, path).ok_or_else(|| {
+            anyhow!(
+                "probe evaluation result `{case_id}` is missing `{}`",
+                path.join(".")
+            )
+        })?;
+        if serde_json::to_value(observed)? != state_json {
             bail!(
-                "probe evaluation result {} has id `{observed_id}`, expected `{expected_id}`",
-                index + 1
+                "probe evaluation result `{case_id}` accepted undeclared transition `{state_name}` --`{input_name}`-->; an undeclared state/input pair must preserve state"
             );
         }
-        let record = get_path(result, &["record"])
-            .cloned()
-            .ok_or_else(|| anyhow!("probe evaluation result `{expected_id}` has no record"))?;
-        let bundle = serde_yaml::to_value(json!({
-            "spec": "rms/trace-bundle/v0.1",
-            "machine": binding.machine,
-            "records": [serde_json::to_value(record)?]
-        }))?;
-        validate_probe_trace_shape(&bundle)
-            .with_context(|| format!("invalid evaluation result `{expected_id}`"))?;
-        let path = temp_root.join(format!("evaluation-{index}.json"));
-        fs::write(&path, serde_json::to_vec_pretty(&bundle)?)?;
-        let mut trace = build_trace_report(&path)?;
-        apply_probe_trace_conformance(&path, &binding.implementation, &mut trace);
-        if trace_has_errors(&trace) {
+    }
+    for field in ["commands", "effects"] {
+        let values = get_path(record, &["output", field])
+            .and_then(YamlValue::as_sequence)
+            .ok_or_else(|| {
+                anyhow!("probe evaluation result `{case_id}` output.{field} must be an array")
+            })?;
+        if !values.is_empty() {
             bail!(
-                "probe evaluation result `{expected_id}` is nonconforming: {}",
-                probe_conformance_diagnostic_summary(&trace.diagnostics)
+                "probe evaluation result `{case_id}` accepted undeclared transition `{state_name}` --`{input_name}`-->; refusal cannot emit {field}"
+            );
+        }
+    }
+    if get_path(record, &["output", "reply"]).is_some_and(|value| !value.is_null()) {
+        bail!(
+            "probe evaluation result `{case_id}` accepted undeclared transition `{state_name}` --`{input_name}`-->; refusal cannot return a reply"
+        );
+    }
+    let rejection = get_path(record, &["output", "rejection"]);
+    if rejection.is_none_or(|value| value.is_null() || get_str(value, &["name"]).is_none()) {
+        bail!(
+            "probe evaluation result `{case_id}` accepted undeclared transition `{state_name}` --`{input_name}`-->; an undeclared state/input pair must return a typed rejection"
+        );
+    }
+    if get_str(record, &["source", "branch"]).is_none() {
+        bail!(
+            "probe evaluation result `{case_id}` refused undeclared transition without source.branch evidence"
+        );
+    }
+    Ok(())
+}
+
+fn validate_probe_evaluation_record_identity(
+    expected: &YamlValue,
+    record: &YamlValue,
+    case_id: &str,
+) -> Result<()> {
+    for (requested_field, record_field) in [("state", "state_before"), ("input", "input")] {
+        let requested = get_path(expected, &[requested_field]).ok_or_else(|| {
+            anyhow!("probe evaluation case `{case_id}` is missing `{requested_field}`")
+        })?;
+        let observed = get_path(record, &[record_field]).ok_or_else(|| {
+            anyhow!("probe evaluation result `{case_id}` is missing `{record_field}`")
+        })?;
+        if serde_json::to_value(requested)? != serde_json::to_value(observed)? {
+            bail!(
+                "probe evaluation result `{case_id}` did not evaluate the requested `{requested_field}`; record `{record_field}` differs"
             );
         }
     }
@@ -14831,6 +14803,12 @@ fn validate_probe_description(
     if get_str(description, &["machine"]) != Some(expected_machine) {
         bail!("probe description machine does not match `{expected_machine}`");
     }
+    let protocol = get_str(
+        &implementation.value,
+        &["architecture", "probe", "protocol"],
+    )
+    .unwrap_or("");
+    let requires_representative_matrix = protocol == "rms/machine-probe/v0.2";
     let inputs = get_path(description, &["inputs"])
         .and_then(YamlValue::as_sequence)
         .ok_or_else(|| anyhow!("probe description must contain inputs"))?;
@@ -14876,25 +14854,84 @@ fn validate_probe_description(
             );
         }
     }
+    if requires_representative_matrix {
+        let described_inputs = inputs
+            .iter()
+            .filter_map(|input| get_str(input, &["name"]))
+            .collect::<BTreeSet<_>>();
+        for transition in existing_machine_transitions(implementation) {
+            let input = transition_input_variant(&transition.on);
+            if !described_inputs.contains(input.as_str()) {
+                bail!(
+                    "probe description has no representative input example for canonical transition input `{input}`"
+                );
+            }
+        }
+    }
     let states = get_path(description, &["states"])
         .and_then(YamlValue::as_sequence)
         .ok_or_else(|| anyhow!("probe description must contain states"))?;
+    let declared_states = get_string_array(
+        &implementation.value,
+        &["architecture", "machine", "states"],
+    );
+    let mut described_states = BTreeSet::new();
+    let mut representative_states = Vec::new();
     for state in states {
-        reject_unknown_probe_fields(state, &["name", "data_schema"], "probe state description")?;
+        reject_unknown_probe_fields(
+            state,
+            &["name", "data_schema", "examples"],
+            "probe state description",
+        )?;
         let name = get_str(state, &["name"])
             .ok_or_else(|| anyhow!("probe state description must contain name"))?;
-        let declared = get_string_array(
-            &implementation.value,
-            &["architecture", "machine", "states"],
-        );
-        if !declared.iter().any(|candidate| candidate == name) {
+        if !declared_states.iter().any(|candidate| candidate == name) {
             bail!("probe description contains undeclared state `{name}`");
+        }
+        if !described_states.insert(name) {
+            bail!("probe description contains duplicate state `{name}`");
         }
         let schema = get_path(state, &["data_schema"])
             .ok_or_else(|| anyhow!("probe state description must contain data_schema"))?;
         let schema_json = serde_json::to_value(schema)?;
-        jsonschema::validator_for(&schema_json)
+        let validator = jsonschema::validator_for(&schema_json)
             .with_context(|| format!("probe state schema for `{name}` is malformed"))?;
+        if let Some(examples) = get_path(state, &["examples"]) {
+            let examples = examples.as_sequence().ok_or_else(|| {
+                anyhow!("probe state `{name}` examples must be a non-empty array")
+            })?;
+            if examples.is_empty() {
+                bail!("probe state `{name}` examples must be a non-empty array");
+            }
+            for example in examples {
+                reject_unknown_probe_fields(example, &["name", "data"], "probe state example")?;
+                if get_str(example, &["name"]) != Some(name) {
+                    bail!("probe state example name must match its `{name}` description");
+                }
+                let data = get_path(example, &["data"]).unwrap_or(&YamlValue::Null);
+                let data_json = serde_json::to_value(data)?;
+                let errors = validator
+                    .iter_errors(&data_json)
+                    .map(|error| format!("{error} at `{}`", error.instance_path()))
+                    .collect::<Vec<_>>();
+                if !errors.is_empty() {
+                    bail!(
+                        "probe state `{name}` example does not satisfy data_schema: {}",
+                        errors.join("; ")
+                    );
+                }
+                representative_states.push(example);
+            }
+        } else if requires_representative_matrix {
+            bail!("probe v0.2 state `{name}` must declare at least one concrete `examples` state");
+        }
+    }
+    if requires_representative_matrix {
+        for state in &declared_states {
+            if !described_states.contains(state.as_str()) {
+                bail!("probe description has no representative state for declared state `{state}`");
+            }
+        }
     }
     let initial = get_str(
         &implementation.value,
@@ -14903,6 +14940,20 @@ fn validate_probe_description(
     .ok_or_else(|| anyhow!("probe-capable machine must declare initial_state"))?;
     if get_str(description, &["initial_state", "name"]) != Some(initial) {
         bail!("probe description initial_state does not match `{initial}`");
+    }
+    if requires_representative_matrix {
+        let initial_json = serde_json::to_value(
+            get_path(description, &["initial_state"])
+                .ok_or_else(|| anyhow!("probe description has no initial_state"))?,
+        )?;
+        if !representative_states
+            .iter()
+            .any(|state| serde_json::to_value(state).ok().as_ref() == Some(&initial_json))
+        {
+            bail!(
+                "probe initial_state must exactly match one concrete example for state `{initial}`"
+            );
+        }
     }
     Ok(())
 }
@@ -16365,10 +16416,9 @@ fn execute_property_realizations(
             "implementation has no property/fuzz realization command for the requested profile",
         ));
     }
-    let result = if diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.severity == Severity::Error)
-        || commands.iter().any(|command| command.status == "fail")
+    let result = if diagnostics.iter().any(|diagnostic| {
+        diagnostic.severity == Severity::Error || property_blocking_diagnostic(&diagnostic.check)
+    }) || commands.iter().any(|command| command.status == "fail")
     {
         "fail"
     } else if dry_run {
@@ -16391,6 +16441,298 @@ fn execute_property_realizations(
         diagnostics,
     };
     Ok(report)
+}
+
+fn execute_module_property_realizations(
+    module_path: &Path,
+    manifest: &LoadedManifest,
+    profile: PropertyProfile,
+    dry_run: bool,
+    timeout_seconds: u64,
+) -> Result<PropertyRunReport> {
+    if get_str(&manifest.value, &["spec"]) != Some("rms/module/v0.1") {
+        bail!("`{}` is not an RMS module", module_path.display());
+    }
+    let check = build_property_check_report(module_path)?;
+    let mut diagnostics = check.diagnostics;
+    let targets = property_targets_from_module(manifest, "property")
+        .into_iter()
+        .chain(fuzz_targets_from_module(manifest))
+        .collect::<Vec<_>>();
+    let mut commands = Vec::new();
+    let base = module_path.parent().unwrap_or_else(|| Path::new("."));
+
+    for target in &targets {
+        let matching = target
+            .realizations
+            .iter()
+            .filter(|realization| realization.profile == profile.label())
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            diagnostics.push(error(
+                "property.realization-missing",
+                module_path,
+                format!(
+                    "{} `{}` has no `{}` realization",
+                    target.kind,
+                    target.id,
+                    profile.label()
+                ),
+            ));
+        }
+        for realization in matching {
+            if realization.command != "composition" {
+                diagnostics.push(error(
+                    "property.realization-not-executed",
+                    module_path,
+                    format!(
+                        "module property `{}` uses unsupported command `{}`; composite module verification executes only the closed `composition` command",
+                        target.id, realization.command
+                    ),
+                ));
+                continue;
+            }
+            let Some((runner_path, runner_symbol)) = binding_reference_parts(&realization.runner)
+            else {
+                diagnostics.push(error(
+                    "property.runner-missing",
+                    module_path,
+                    format!(
+                        "module property `{}` runner `{}` is not an exact relative `path#symbol` reference",
+                        target.id, realization.runner
+                    ),
+                ));
+                continue;
+            };
+            let runner_file = base.join(runner_path);
+            if !shell_function_exists(&runner_file, runner_symbol) {
+                diagnostics.push(error(
+                    "property.runner-missing",
+                    module_path,
+                    format!(
+                        "module property `{}` runner `{}` does not resolve to a shell function",
+                        target.id, realization.runner
+                    ),
+                ));
+                continue;
+            }
+            let generator_parts = realization
+                .generator
+                .as_deref()
+                .and_then(binding_reference_parts);
+            if property_realization_requires_generator(&realization.strategy)
+                && generator_parts.is_none()
+            {
+                diagnostics.push(error(
+                    "property.generator-missing",
+                    module_path,
+                    format!(
+                        "module property `{}` requires an exact relative `path#symbol` generator",
+                        target.id
+                    ),
+                ));
+                continue;
+            }
+            if let Some((generator_path, generator_symbol)) = generator_parts {
+                let generator_file = base.join(generator_path);
+                if !shell_function_exists(&generator_file, generator_symbol) {
+                    diagnostics.push(error(
+                        "property.generator-missing",
+                        module_path,
+                        format!(
+                            "module property `{}` generator `{}` does not resolve to a shell function",
+                            target.id,
+                            realization.generator.as_deref().unwrap_or_default()
+                        ),
+                    ));
+                    continue;
+                }
+            }
+
+            let runner_command = format!(
+                "/bin/sh {} {}",
+                shell_arg(runner_path),
+                shell_arg(runner_symbol)
+            );
+            if dry_run {
+                commands.push(PropertyRunCommandReport {
+                    kind: format!("{}:{}", target.kind, realization.strategy),
+                    property: target.id.clone(),
+                    command: runner_command,
+                    runner: realization.runner.clone(),
+                    generator: realization.generator.clone(),
+                    status: "planned".to_string(),
+                    exit_code: None,
+                    elapsed_ms: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                });
+                continue;
+            }
+
+            let mut generator_stdout = String::new();
+            let mut generator_stderr = String::new();
+            let mut generator_failed = false;
+            if let Some((generator_path, generator_symbol)) = generator_parts {
+                let generator_command = format!(
+                    "/bin/sh {} {}",
+                    shell_arg(generator_path),
+                    shell_arg(generator_symbol)
+                );
+                let output = execute_proof_command(
+                    base,
+                    &generator_command,
+                    &[("RMS_PROPERTY_ID", target.id.as_str())],
+                    timeout_seconds,
+                )?;
+                generator_stdout = output.stdout;
+                generator_stderr = output.stderr;
+                generator_failed = output.timed_out
+                    || !output.status.success()
+                    || (realization.strategy == "deterministic-exhaustive"
+                        && generator_stdout.trim().is_empty());
+                if output.timed_out {
+                    diagnostics.push(error(
+                        "proof.command-timeout",
+                        module_path,
+                        format!(
+                            "module property `{}` generator exceeded {} second(s)",
+                            target.id, timeout_seconds
+                        ),
+                    ));
+                } else if !output.status.success() {
+                    diagnostics.push(error(
+                        "proof.command-failed",
+                        module_path,
+                        format!(
+                            "module property `{}` generator exited with status {}{}",
+                            target.id,
+                            exit_status_label(output.status),
+                            if generator_stderr.trim().is_empty() {
+                                String::new()
+                            } else {
+                                format!(": {}", truncate_for_prompt(generator_stderr.trim(), 512))
+                            }
+                        ),
+                    ));
+                } else if realization.strategy == "deterministic-exhaustive"
+                    && generator_stdout.trim().is_empty()
+                {
+                    diagnostics.push(error(
+                        "property.generator-empty",
+                        module_path,
+                        format!(
+                            "deterministic-exhaustive module property `{}` generated no cases",
+                            target.id
+                        ),
+                    ));
+                }
+            }
+            let output = if generator_failed {
+                None
+            } else {
+                Some(execute_proof_command(
+                    base,
+                    &runner_command,
+                    &[
+                        ("RMS_PROPERTY_ID", target.id.as_str()),
+                        ("RMS_PROPERTY_RUNNER", realization.runner.as_str()),
+                        (
+                            "RMS_PROPERTY_GENERATOR",
+                            realization.generator.as_deref().unwrap_or(""),
+                        ),
+                    ],
+                    timeout_seconds,
+                )?)
+            };
+            if output.as_ref().is_some_and(|output| output.timed_out) {
+                diagnostics.push(error(
+                    "proof.command-timeout",
+                    module_path,
+                    format!(
+                        "module property `{}` runner exceeded {} second(s)",
+                        target.id, timeout_seconds
+                    ),
+                ));
+            }
+            let passed = !generator_failed
+                && output
+                    .as_ref()
+                    .is_some_and(|output| output.status.success() && !output.timed_out);
+            commands.push(PropertyRunCommandReport {
+                kind: format!("{}:{}", target.kind, realization.strategy),
+                property: target.id.clone(),
+                command: runner_command,
+                runner: realization.runner.clone(),
+                generator: realization.generator.clone(),
+                status: if passed { "pass" } else { "fail" }.to_string(),
+                exit_code: output.as_ref().and_then(|output| output.status.code()),
+                elapsed_ms: output.as_ref().map_or(0, |output| output.elapsed_ms),
+                stdout: format!(
+                    "{}{}",
+                    generator_stdout,
+                    output
+                        .as_ref()
+                        .map(|output| output.stdout.as_str())
+                        .unwrap_or_default()
+                ),
+                stderr: format!(
+                    "{}{}",
+                    generator_stderr,
+                    output
+                        .as_ref()
+                        .map(|output| output.stderr.as_str())
+                        .unwrap_or_default()
+                ),
+            });
+        }
+    }
+    if !targets.is_empty() && commands.is_empty() {
+        diagnostics.push(error(
+            "property.command-missing",
+            module_path,
+            "module has no executable property/fuzz realization command for the requested profile",
+        ));
+    }
+    let result = if diagnostics.iter().any(|diagnostic| {
+        diagnostic.severity == Severity::Error || property_blocking_diagnostic(&diagnostic.check)
+    }) || commands.iter().any(|command| command.status == "fail")
+    {
+        "fail"
+    } else if dry_run {
+        "dry-run"
+    } else if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Warning)
+    {
+        "review-required"
+    } else {
+        "pass"
+    }
+    .to_string();
+    Ok(PropertyRunReport {
+        result,
+        implementation: module_path.display().to_string(),
+        profile: profile.label().to_string(),
+        dry_run,
+        commands,
+        diagnostics,
+    })
+}
+
+fn shell_function_exists(path: &Path, symbol: &str) -> bool {
+    let Ok(source) = fs::read_to_string(path) else {
+        return false;
+    };
+    source.lines().any(|line| {
+        let line = line.trim_start();
+        line.strip_prefix(symbol).is_some_and(|rest| {
+            rest.trim_start().starts_with("()") || rest.trim_start().starts_with(" ()")
+        }) || line
+            .strip_prefix("function ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .is_some_and(|name| name.trim_end_matches("()") == symbol)
+    })
 }
 
 fn proof_command_selects_runner(command: &str, runner: &str, environment: &str) -> bool {
@@ -18188,14 +18530,15 @@ fn validate_property_explorations(
                 "semantic.property-exploration-invalid",
                 &manifest.path,
                 format!(
-                    "property `{}` exploration {} is missing `assembly`",
+                    "property `{}` exploration {} needs `assembly` as a scalar safe relative path to an existing canonical probe assembly; inline assembly objects are invalid",
                     target.id,
                     index + 1
                 ),
             ));
             continue;
         };
-        if !is_safe_relative_artifact_path(assembly) || !base.join(assembly).is_file() {
+        let assembly_path = base.join(assembly);
+        if !is_safe_relative_artifact_path(assembly) || !assembly_path.is_file() {
             diagnostics.push(error(
                 "semantic.property-exploration-invalid",
                 &manifest.path,
@@ -18205,6 +18548,18 @@ fn validate_property_explorations(
                     index + 1
                 ),
             ));
+        } else if let Err(source_error) =
+            probe::validate_assembly_declaration(&assembly_path, DEFAULT_PROOF_TIMEOUT_SECONDS)
+        {
+            diagnostics.push(error(
+                    "semantic.property-exploration-invalid",
+                    &manifest.path,
+                    format!(
+                        "property `{}` exploration {} assembly `{assembly}` is not execution-ready: {source_error}",
+                        target.id,
+                        index + 1
+                    ),
+                ));
         }
         let goal = get_str(exploration, &["goal"]).unwrap_or_default();
         if !matches!(goal, "satisfy" | "violate") {
@@ -18234,6 +18589,42 @@ fn validate_property_explorations(
                 ));
             }
         }
+    }
+}
+
+fn validate_spec_candidate_property_explorations(
+    candidate: &SpecTargetContext,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let Some(module) = candidate.module.as_ref() {
+        let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+        for target in property_targets_from_module(module, "property")
+            .into_iter()
+            .chain(fuzz_targets_from_module(module))
+        {
+            validate_property_explorations(module, base, &target, diagnostics);
+        }
+        return;
+    }
+    let Some(implementation) = candidate.implementation.as_ref() else {
+        return;
+    };
+    let base = implementation
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    for target in property_targets_from_implementation(
+        implementation,
+        &["architecture", "reliability", "properties"],
+        "property",
+    )
+    .into_iter()
+    .chain(property_targets_from_implementation(
+        implementation,
+        &["architecture", "reliability", "fuzz_targets"],
+        "fuzz",
+    )) {
+        validate_property_explorations(implementation, base, &target, diagnostics);
     }
 }
 
@@ -18435,14 +18826,12 @@ fn binding_function_references_symbol(
             match binding {
                 Some("js") | Some("javascript") => js_function_source(&source, function_symbol)
                     .is_some_and(|function| source_identifier_occurs(&function, target_symbol)),
-                Some("swift") => {
-                    swift_function_source(&source, function_symbol).is_some_and(|function| {
-                        source_identifier_occurs(&function, target_symbol)
-                            || target_symbol.rsplit_once('.').is_some_and(|(_, member)| {
-                                function.contains(&format!(".{member}("))
-                            })
-                    })
-                }
+                Some("swift") => swift_function_transitively_references_symbol(
+                    base,
+                    &full_path,
+                    function_symbol,
+                    target_symbol,
+                ),
                 Some("python") => python_function_source(&source, function_symbol)
                     .is_some_and(|function| source_identifier_occurs(function, target_symbol)),
                 Some("executable") => true,
@@ -18453,6 +18842,75 @@ fn binding_function_references_symbol(
             }
         }
     }
+}
+
+fn swift_function_transitively_references_symbol(
+    base: &Path,
+    start_path: &Path,
+    start_symbol: &str,
+    target_symbol: &str,
+) -> bool {
+    let mut files = WalkDir::new(base)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            !matches!(
+                entry.file_name().to_str(),
+                Some(".build" | ".git" | "target" | ".rms")
+            )
+        })
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("swift"))
+        .filter_map(|entry| {
+            fs::read_to_string(entry.path())
+                .ok()
+                .map(|source| (entry.into_path(), source))
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    let known_functions = files
+        .iter()
+        .flat_map(|(_, source)| source.lines().filter_map(parse_swift_function_name))
+        .collect::<BTreeSet<_>>();
+    let target_leaf = semantic_symbol_name(target_symbol)
+        .rsplit('.')
+        .next()
+        .unwrap_or(target_symbol);
+    let mut queue = VecDeque::from([(start_path.to_path_buf(), start_symbol.to_string())]);
+    let mut visited = BTreeSet::new();
+
+    while let Some((path, symbol)) = queue.pop_front() {
+        if visited.len() >= 256 || !visited.insert((path.clone(), symbol.clone())) {
+            continue;
+        }
+        let Some(source) = files
+            .iter()
+            .find(|(candidate, _)| candidate == &path)
+            .map(|(_, source)| source.as_str())
+        else {
+            continue;
+        };
+        let Some(function) = swift_function_source(source, semantic_symbol_name(&symbol)) else {
+            continue;
+        };
+        if source_identifier_occurs(function, target_leaf)
+            || function.contains(&format!(".{target_leaf}("))
+        {
+            return true;
+        }
+        for helper in &known_functions {
+            if helper == semantic_symbol_name(&symbol) || !source_calls_symbol(function, helper) {
+                continue;
+            }
+            for (helper_path, helper_source) in &files {
+                if swift_function_source(helper_source, helper).is_some() {
+                    queue.push_back((helper_path.clone(), helper.clone()));
+                }
+            }
+        }
+    }
+    false
 }
 
 fn trace_producer_serializes_transition_records(
@@ -19424,18 +19882,69 @@ fn inspect_trace_canonical_conformance(
         let Some(case) = case else {
             continue;
         };
-        let candidates = transitions
+        let pair_candidates = transitions
             .iter()
+            .filter(|transition| trace_transition_matches_state_and_input(record, transition))
+            .collect::<Vec<_>>();
+        if pair_candidates.is_empty() {
+            let case_is_declared = transitions
+                .iter()
+                .any(|transition| transition.case.as_deref() == Some(case));
+            push_trace_diagnostic(
+                diagnostics,
+                Severity::Error,
+                if case_is_declared {
+                    "trace.canonical-transition-mismatch"
+                } else {
+                    "trace.canonical-case-missing"
+                },
+                bundle,
+                Some(record.index),
+                if case_is_declared {
+                    format!(
+                        "trace case `{case}` is declared only for other state/input pairs; no canonical transition matches observed state `{}` and input `{}`",
+                        record.state_before.as_deref().unwrap_or("<missing>"),
+                        record.input.as_deref().unwrap_or("<missing>")
+                    )
+                } else {
+                    format!(
+                        "trace source branch `{case}` is not a declared canonical transition case"
+                    )
+                },
+            );
+            continue;
+        }
+
+        let candidates = pair_candidates
+            .iter()
+            .copied()
             .filter(|transition| transition.case.as_deref() == Some(case))
             .collect::<Vec<_>>();
         if candidates.is_empty() {
+            let transition = pair_candidates[0];
+            let declared_cases = pair_candidates
+                .iter()
+                .filter_map(|transition| transition.case.as_deref())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ");
             push_trace_diagnostic(
                 diagnostics,
                 Severity::Error,
                 "trace.canonical-case-missing",
                 bundle,
                 Some(record.index),
-                format!("trace source branch `{case}` is not a declared canonical transition case"),
+                format!(
+                    "trace source branch `{case}` is not declared for canonical {} --{}-->; declared case(s): {}",
+                    transition.from,
+                    transition_input_variant(&transition.on),
+                    if declared_cases.is_empty() {
+                        "<none>"
+                    } else {
+                        &declared_cases
+                    }
+                ),
             );
             continue;
         }
@@ -19472,6 +19981,19 @@ fn inspect_trace_canonical_conformance(
             ),
         );
     }
+}
+
+fn trace_transition_matches_state_and_input(
+    record: &TraceRecordSummary,
+    transition: &MachineTransitionChange,
+) -> bool {
+    record
+        .state_before
+        .as_deref()
+        .is_some_and(|state| trace_state_mentions(state, &transition.from))
+        && record.input.as_deref().is_some_and(|observed| {
+            semantic_text_mentions_id(observed, &transition_input_variant(&transition.on))
+        })
 }
 
 fn trace_transition_mismatches(
@@ -21706,9 +22228,7 @@ fn run_verify_implementation_captured(implementation: &Path) -> Result<String> {
     let command = get_str(&manifest.value, &["commands", "verify"])
         .ok_or_else(|| anyhow!("implementation binding does not declare `commands.verify`"))?;
     let root = implementation.parent().unwrap_or_else(|| Path::new("."));
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(command)
+    let output = proof_shell_command(command)
         .current_dir(root)
         .output()
         .with_context(|| format!("failed to run verify command `{command}`"))?;
@@ -21723,12 +22243,21 @@ fn run_verify_implementation_captured(implementation: &Path) -> Result<String> {
 
     let probe_summary = verify_probe_handshake(implementation, DEFAULT_PROOF_TIMEOUT_SECONDS)?;
     let trace_reports = verify_declared_trace_bundles(&manifest, root)?;
+    let property_summary = verify_implementation_smoke_properties(
+        implementation,
+        &manifest,
+        false,
+        DEFAULT_PROOF_TIMEOUT_SECONDS,
+    )?;
     Ok(format!(
-        "verify command passed: {command}{}{}",
+        "verify command passed: {command}{}{}{}",
         probe_summary
             .map(|summary| format!("; {summary}"))
             .unwrap_or_default(),
-        trace_verify_suffix(&trace_reports)
+        trace_verify_suffix(&trace_reports),
+        property_summary
+            .map(|summary| format!("; {summary}"))
+            .unwrap_or_default()
     ))
 }
 
@@ -21760,9 +22289,23 @@ fn verify_probe_handshake(implementation: &Path, timeout_seconds: u64) -> Result
             timeout_seconds,
         )?;
         validate_probe_description(&description, &binding.implementation)?;
+        let initial_state_name = get_str(&description, &["initial_state", "name"]);
+        let initial_input_name = existing_machine_transitions(&binding.implementation)
+            .into_iter()
+            .find(|transition| Some(transition.from.as_str()) == initial_state_name)
+            .map(|transition| transition_input_variant(&transition.on));
         let example = get_path(&description, &["inputs"])
             .and_then(YamlValue::as_sequence)
-            .and_then(|inputs| inputs.first())
+            .and_then(|inputs| {
+                initial_input_name
+                    .as_deref()
+                    .and_then(|name| {
+                        inputs
+                            .iter()
+                            .find(|input| get_str(input, &["name"]) == Some(name))
+                    })
+                    .or_else(|| inputs.first())
+            })
             .and_then(|input| get_path(input, &["example"]))
             .cloned()
             .ok_or_else(|| anyhow!("probe description has no smoke input example"))?;
@@ -21790,13 +22333,81 @@ fn verify_probe_handshake(implementation: &Path, timeout_seconds: u64) -> Result
                 trace_error_suffix(&report)
             );
         }
+        if binding.protocol == "rms/machine-probe/v0.2" {
+            let evaluation_request = build_probe_verification_matrix(&binding, &description)?;
+            validate_probe_request(&evaluation_request, &binding.implementation)?;
+            let evaluation = execute_machine_probe_request(
+                &binding,
+                &evaluation_request,
+                &temp_root,
+                "evaluate",
+                timeout_seconds,
+            )?;
+            validate_probe_evaluation(&evaluation, &evaluation_request, &binding, &temp_root)?;
+        }
         Ok(Some(format!(
-            "probe handshake passed: {} describe + smoke",
-            binding.machine
+            "probe handshake passed: {} describe + smoke{}",
+            binding.machine,
+            if binding.protocol == "rms/machine-probe/v0.2" {
+                " + representative state/input matrix"
+            } else {
+                ""
+            }
         )))
     })();
     let _ = fs::remove_dir_all(temp_root);
     result
+}
+
+const MAX_VERIFY_PROBE_MATRIX_CASES: usize = 512;
+
+fn build_probe_verification_matrix(
+    binding: &ProbeBinding,
+    description: &YamlValue,
+) -> Result<YamlValue> {
+    let states = get_path(description, &["states"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .flat_map(|state| {
+            get_path(state, &["examples"])
+                .and_then(YamlValue::as_sequence)
+                .into_iter()
+                .flatten()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let inputs = get_path(description, &["inputs"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|input| get_path(input, &["example"]).cloned())
+        .collect::<Vec<_>>();
+    let case_count = states.len().saturating_mul(inputs.len());
+    if case_count == 0 {
+        bail!("probe v0.2 representative state/input matrix is empty");
+    }
+    if case_count > MAX_VERIFY_PROBE_MATRIX_CASES {
+        bail!(
+            "probe v0.2 representative state/input matrix has {case_count} cases; maximum is {MAX_VERIFY_PROBE_MATRIX_CASES}"
+        );
+    }
+    let mut cases = Vec::with_capacity(case_count);
+    for (state_index, state) in states.iter().enumerate() {
+        for (input_index, input) in inputs.iter().enumerate() {
+            cases.push(json!({
+                "id": format!("verify-state-{state_index}-input-{input_index}"),
+                "state": serde_json::to_value(state)?,
+                "input": serde_json::to_value(input)?
+            }));
+        }
+    }
+    serde_yaml::to_value(json!({
+        "spec": binding.protocol.as_str(),
+        "operation": "evaluate",
+        "cases": cases
+    }))
+    .context("failed to build representative probe verification matrix")
 }
 
 fn execute_machine_probe_request(
@@ -22011,6 +22622,20 @@ fn run_verify_composite_module_captured(
     }
 
     ensure_composite_scenario_evidence(manifest, module_path)?;
+
+    let property_report = execute_module_property_realizations(
+        module_path,
+        manifest,
+        PropertyProfile::Smoke,
+        false,
+        DEFAULT_PROOF_TIMEOUT_SECONDS,
+    )?;
+    if property_report.result == "fail" {
+        bail!(
+            "composite module smoke properties failed{}",
+            property_run_failure_suffix(&property_report)
+        );
+    }
 
     let modules = load_module_index(&root)?;
     let mut verified_children = 0usize;
@@ -23827,6 +24452,7 @@ fn validate_active_evidence_semantic_references(
     let type_to_variants = [
         ("state", "states"),
         ("command", "commands"),
+        ("observed_event", "observed_events"),
         ("event", "events"),
         ("effect", "effects"),
         ("effect_result", "effect_results"),
@@ -24855,6 +25481,7 @@ fn validate_canonical_machine_model(
         types.input.as_deref(),
         types.command.as_deref(),
         types.command_envelope.as_deref(),
+        types.observed_event.as_deref(),
         types.event.as_deref(),
         types.event_envelope.as_deref(),
         types.effect.as_deref(),
@@ -25121,7 +25748,9 @@ fn inspect_transition_case_source_conformance(
         .filter(|case| !case.trim().is_empty())
         .collect::<BTreeSet<_>>();
     for case in &declared_cases {
-        if !source_identifier_occurs(&source, case) {
+        if !source_identifier_occurs(&source, case)
+            && !source_constructs_transition_case(&source, case)
+        {
             push_unique_warning(
                 diagnostics,
                 "structure.transition-case-source-missing",
@@ -25166,6 +25795,17 @@ fn inspect_transition_case_source_conformance(
             ),
         );
     }
+}
+
+fn source_constructs_transition_case(source: &str, case: &str) -> bool {
+    case.match_indices('_').any(|(split, _)| {
+        let prefix = &case[..split];
+        let suffix = &case[split..];
+        !prefix.is_empty()
+            && source.contains(&format!("\"{prefix}\""))
+            && (source.contains(&format!("){suffix}\""))
+                || source.contains(&format!("+ \"{suffix}\"")))
+    })
 }
 
 fn rust_transition_provenance_branches(manifest: &LoadedManifest) -> BTreeSet<String> {
@@ -27169,11 +27809,13 @@ fn inspect_effect_result_handling(manifest: &LoadedManifest, diagnostics: &mut V
         );
     }
     for effect_result in &effect_results {
-        if semantic_name_contains_any(
+        let uncertain_truth = semantic_name_contains_any(
             effect_result,
-            &["unknown", "uncertain", "stale", "partial", "conflict"],
-        ) && !has_reconciliation_evidence
-        {
+            &["unknown", "uncertain", "partial", "conflict"],
+        );
+        let unfenced_stale = semantic_name_contains_any(effect_result, &["stale"])
+            && !stale_effect_result_is_explicitly_fenced(manifest, effect_result);
+        if (uncertain_truth || unfenced_stale) && !has_reconciliation_evidence {
             push_unique_warning(
                 diagnostics,
                 "structure.unknown-effect-result-without-reconciliation",
@@ -27270,6 +27912,34 @@ fn inspect_effect_result_handling(manifest: &LoadedManifest, diagnostics: &mut V
             );
         }
     }
+}
+
+fn stale_effect_result_is_explicitly_fenced(
+    manifest: &LoadedManifest,
+    effect_result: &str,
+) -> bool {
+    let transitions = existing_machine_transitions(manifest)
+        .into_iter()
+        .filter(|transition| transition_input_variant(&transition.on) == effect_result)
+        .collect::<Vec<_>>();
+    !transitions.is_empty()
+        && transitions.iter().all(|transition| {
+            let disposition = [
+                transition.to.as_str(),
+                transition.case.as_deref().unwrap_or_default(),
+                transition.reply.as_deref().unwrap_or_default(),
+                transition.rejection.as_deref().unwrap_or_default(),
+            ]
+            .into_iter()
+            .chain(transition.events.iter().map(String::as_str))
+            .chain(transition.commands.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
+            semantic_name_contains_any(
+                &disposition,
+                &["stale", "ignore", "supersed", "discard", "fence"],
+            )
+        })
 }
 
 fn effect_result_like_transition_input(input: &str) -> bool {
@@ -28088,6 +28758,7 @@ fn declared_architecture_symbols(value: &YamlValue) -> Vec<DeclaredArchitectureS
         "input",
         "command",
         "command_envelope",
+        "observed_event",
         "event",
         "event_envelope",
         "effect",
@@ -29863,10 +30534,8 @@ fn validate_rust_machine_variants_and_signature(
         if variants.is_empty() {
             continue;
         }
-        let Some(type_name) = get_str(
-            &implementation.value,
-            &["architecture", "machine", "types", type_field],
-        ) else {
+        let Some(type_name) = machine_semantic_variant_type(&implementation.value, type_field)
+        else {
             continue;
         };
         let represented = summary.enum_variants.get(type_name);
@@ -30010,13 +30679,21 @@ fn machine_semantic_variant_fields() -> [(&'static str, &'static str); 8] {
     [
         ("states", "state"),
         ("commands", "command"),
-        ("observed_events", "event"),
+        ("observed_events", "observed_event"),
         ("events", "event"),
         ("effects", "effect"),
         ("effect_results", "effect_result"),
         ("replies", "reply"),
         ("rejections", "rejection"),
     ]
+}
+
+fn machine_semantic_variant_type<'a>(value: &'a YamlValue, type_field: &str) -> Option<&'a str> {
+    get_str(value, &["architecture", "machine", "types", type_field]).or_else(|| {
+        (type_field == "observed_event")
+            .then(|| get_str(value, &["architecture", "machine", "types", "event"]))
+            .flatten()
+    })
 }
 
 fn variant_not_represented_check(field: &str) -> &'static str {
@@ -31658,10 +32335,8 @@ fn validate_swift_machine_variants_and_signature(
         if variants.is_empty() {
             continue;
         }
-        let Some(type_name) = get_str(
-            &implementation.value,
-            &["architecture", "machine", "types", type_field],
-        ) else {
+        let Some(type_name) = machine_semantic_variant_type(&implementation.value, type_field)
+        else {
             continue;
         };
         let body = swift_enum_body(&source, type_name).unwrap_or_default();
@@ -35847,9 +36522,11 @@ fn build_next_report_with_intent(
     let provider_extraction = input.ai;
     let (mut intent, mut intent_diagnostics, existing_run_dir) =
         resolve_intent_model(&root, "next", task, &input, options)?;
-    if provider_extraction && explicit_module.is_some() {
+    if provider_extraction {
         if let Some(model) = intent.as_mut() {
-            if normalize_provider_change_scope_for_explicit_module(model) {
+            let explicit_scope_changed = explicit_module
+                .is_some_and(|_| normalize_provider_change_scope_for_explicit_module(model));
+            if normalize_provider_intent_for_task(task, model) || explicit_scope_changed {
                 intent_diagnostics = validate_intent_model(task, &root, model);
             }
         }
@@ -35897,9 +36574,10 @@ fn build_next_report_with_intent(
         .map(|model| model.subjects.join(" "))
         .unwrap_or_default();
     let mut owner = if intent.is_some() {
-        resolve_next_owner(
+        resolve_next_owner_for_task(
             &root,
             explicit_module,
+            task,
             &subject_route,
             &profile.modules,
             errors > 0,
@@ -35914,8 +36592,24 @@ fn build_next_report_with_intent(
         )
     };
     let mut context = build_next_context(&root, &profile.report, owner.selected_module())?;
-    let legacy_machine_migration =
-        legacy_machine_migration_ready(&root, explicit_module, &validation.diagnostics, &owner);
+    let machine_repair = if legacy_machine_migration_ready(
+        &root,
+        explicit_module,
+        &validation.diagnostics,
+        &owner,
+    ) {
+        Some(MachineRepairRoute::LegacyMigration)
+    } else if owner_local_binding_repair_ready(
+        &root,
+        explicit_module,
+        task,
+        &validation.diagnostics,
+        &owner,
+    ) {
+        Some(MachineRepairRoute::OwnerLocalBinding)
+    } else {
+        None
+    };
     let skill_sources = detect_skill_sources(&root, home_dir().ok().as_deref());
     let mut warnings = if classification.lane == TaskLane::RepositoryOperation {
         Vec::new()
@@ -35938,16 +36632,13 @@ fn build_next_report_with_intent(
             skill_sources.review_required
         ));
     }
-    if legacy_machine_migration {
-        warnings.push(
-            "The explicitly selected implementation has only recognized pre-rc.8 machine probe/initial-state omissions; this ready route authorizes machine-apply only. Apply and validate that canonical migration, then rerun `rms next` for the product change."
-                .to_string(),
-        );
+    if let Some(repair) = machine_repair {
+        warnings.push(repair.warning().to_string());
     }
     warnings.sort();
     warnings.dedup();
 
-    let mut blockers = if legacy_machine_migration {
+    let mut blockers = if machine_repair.is_some() {
         Vec::new()
     } else {
         validation
@@ -35977,7 +36668,7 @@ fn build_next_report_with_intent(
         .diagnostics
         .iter()
         .any(|item| item.check == "intent.material-unknown");
-    let result = if legacy_machine_migration {
+    let result = if machine_repair.is_some() {
         NextResult::Ready
     } else if model_required {
         NextResult::IntentRequired
@@ -36011,7 +36702,7 @@ fn build_next_report_with_intent(
         &classification,
         &owner,
         &context,
-        legacy_machine_migration,
+        machine_repair,
     )?;
     let prepares_candidate = classification.lane.prepares_candidate()
         || matches!(
@@ -36061,34 +36752,29 @@ fn build_next_report_with_intent(
         options,
         existing_run_dir,
     )?;
+    if let Some(model) = intent.as_ref() {
+        fs::write(
+            run_dir.join("normalized-intent.json"),
+            serde_json::to_string_pretty(model)?,
+        )?;
+    }
     fs::write(
         run_dir.join("intent-diagnostics.json"),
         serde_json::to_string_pretty(&extraction_diagnostics)?,
     )?;
     let mut allowed_actions = Vec::new();
-    if legacy_machine_migration {
+    if machine_repair.is_some() {
         allowed_actions.push("machine-apply");
     } else if result == NextResult::Ready {
         match classification.lane {
             TaskLane::Semantic => {
-                allowed_actions.push("spec-apply");
-                if context.implementation.is_some() {
-                    allowed_actions.push("machine-apply");
-                }
+                allowed_actions.extend(["spec-apply", "machine-apply"]);
             }
-            TaskLane::Surface if context.implementation.is_some() => {
-                allowed_actions.push("surface-apply")
-            }
+            TaskLane::Surface => allowed_actions.push("surface-apply"),
             TaskLane::SemanticPlusSurface => {
-                allowed_actions.push("spec-apply");
-                if context.implementation.is_some() {
-                    allowed_actions.extend(["machine-apply", "surface-apply"]);
-                }
+                allowed_actions.extend(["spec-apply", "machine-apply", "surface-apply"]);
             }
-            TaskLane::ImplementationCandidate if context.implementation.is_none() => {
-                allowed_actions.push("add-binding")
-            }
-            TaskLane::ImplementationCandidate => {}
+            TaskLane::ImplementationCandidate => allowed_actions.push("add-binding"),
             _ => {}
         }
     }
@@ -36154,34 +36840,307 @@ fn normalize_provider_change_scope_for_explicit_module(model: &mut IntentModel) 
     }
 }
 
+fn normalize_provider_intent_for_task(task: &str, model: &mut IntentModel) -> bool {
+    let mut changed = false;
+    let normalized = task.to_ascii_lowercase();
+    let names_existing_artifact = normalized.contains("module.yaml")
+        || normalized.contains("implementation.yaml")
+        || normalized.contains("contracts/")
+        || normalized.contains("verification/");
+    let explicitly_existing = [
+        "existing module",
+        "existing-module",
+        "reuse and evolve existing",
+        "reuse existing",
+        "evolve existing",
+        "in place",
+        "in-place",
+        "do not add module",
+        "no new module",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+    if model.change_scope == IntentChangeScope::Unknown
+        && (names_existing_artifact || explicitly_existing)
+    {
+        model.change_scope = IntentChangeScope::ExistingModule;
+        changed = true;
+    }
+
+    let semantic_machine_or_contract = [
+        "transition",
+        "state",
+        "case",
+        "rejection",
+        "reply",
+        "observed event",
+        "contract",
+        "law",
+        "property",
+        "invariant",
+        "domain decision",
+        "machine semantics",
+    ]
+    .iter()
+    .any(|term| task_mentions_token(task, term));
+    let owns_semantic_decision = model.facts.domain_decisions.disposition
+        == IntentDisposition::Required
+        || model.facts.lifecycle.disposition == IntentDisposition::Required;
+    if model.change_scope == IntentChangeScope::ExistingModule
+        && matches!(
+            model.operation,
+            IntentOperation::ImplementationChange | IntentOperation::Design
+        )
+        && (semantic_machine_or_contract || owns_semantic_decision)
+        && (model.operation == IntentOperation::ImplementationChange
+            || explicitly_existing
+            || names_existing_artifact)
+    {
+        model.operation = IntentOperation::SemanticChange;
+        changed = true;
+    }
+
+    let evidence_only_executable = task_mentions_token(task, "executable")
+        && [
+            "property",
+            "proof",
+            "test",
+            "probe",
+            "runner",
+            "verification",
+        ]
+        .iter()
+        .any(|term| task_mentions_token(task, term))
+        && ![
+            "browser",
+            "cli",
+            "command-line",
+            "screen",
+            "mobile-ui",
+            "desktop-ui",
+            "endpoint",
+            "http",
+            "batch",
+            "product surface",
+            "runnable product",
+        ]
+        .iter()
+        .any(|term| task_mentions_token(task, term));
+    let explicitly_no_surface = [
+        "no runnable surface",
+        "without a runnable surface",
+        "no product surface",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+    if (evidence_only_executable || explicitly_no_surface)
+        && model.facts.runnable_surface.disposition != IntentDisposition::Absent
+    {
+        model.facts.runnable_surface = inferred_absent_intent_fact(
+            "Executable verification evidence is not a product runnable surface.",
+        );
+        model.surface_kinds.clear();
+        changed = true;
+    }
+
+    let explicitly_no_external_effect = [
+        "no external effect",
+        "no external effects",
+        "without external effects",
+        "no effect",
+        "no effects",
+        "emit no event",
+        "emits no event",
+        "no runtime change",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+    let owns_external_effect = model.responsibilities.iter().any(|responsibility| {
+        matches!(
+            responsibility.kind,
+            ResponsibilityKind::Storage | ResponsibilityKind::Integration
+        )
+    });
+    if explicitly_no_external_effect
+        && !owns_external_effect
+        && model.facts.effects.disposition != IntentDisposition::Absent
+    {
+        model.facts.effects = inferred_absent_intent_fact(
+            "The task excludes external effects; machine outputs are semantic facts.",
+        );
+        changed = true;
+    }
+
+    let preserves_runtime = [
+        "no runtime change",
+        "without runtime change",
+        "preserve runtime",
+        "preserves runtime",
+        "runtime unchanged",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+    let changes_ordering = ["transition", "state", "ordering", "lifecycle", "sequence"]
+        .iter()
+        .any(|term| task_mentions_token(task, term));
+    if preserves_runtime
+        && !changes_ordering
+        && model.facts.lifecycle.disposition == IntentDisposition::Unknown
+    {
+        model.facts.lifecycle = inferred_absent_intent_fact(
+            "The task preserves runtime behavior and changes no ordering semantics.",
+        );
+        changed = true;
+    }
+
+    if model.facts.reuse.disposition == IntentDisposition::Unknown
+        && ["reuse", "bind existing", "existing contract"]
+            .iter()
+            .any(|phrase| normalized.contains(phrase))
+    {
+        model.facts.reuse = IntentFact {
+            disposition: IntentDisposition::Required,
+            basis: IntentBasis::Inferred,
+            source_quote: None,
+            rationale: Some("The task explicitly reuses an existing canonical asset.".to_string()),
+        };
+        changed = true;
+    }
+
+    if changed
+        && model.change_scope != IntentChangeScope::Unknown
+        && [
+            &model.facts.domain_decisions,
+            &model.facts.lifecycle,
+            &model.facts.effects,
+            &model.facts.runnable_surface,
+            &model.facts.reuse,
+        ]
+        .iter()
+        .all(|fact| fact.disposition != IntentDisposition::Unknown)
+    {
+        model.open_questions.clear();
+    }
+    changed
+}
+
+fn inferred_absent_intent_fact(rationale: &str) -> IntentFact {
+    IntentFact {
+        disposition: IntentDisposition::Absent,
+        basis: IntentBasis::Inferred,
+        source_quote: None,
+        rationale: Some(rationale.to_string()),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MachineRepairRoute {
+    LegacyMigration,
+    OwnerLocalBinding,
+}
+
+impl MachineRepairRoute {
+    fn warning(self) -> &'static str {
+        match self {
+            Self::LegacyMigration => "The explicitly selected implementation has only recognized pre-rc.8 machine probe/initial-state omissions; this ready route authorizes machine-apply only. Apply and validate that canonical migration, then rerun `rms next` for the product change.",
+            Self::OwnerLocalBinding => "The explicitly selected implementation has only recognized owner-local machine-binding realization errors and the task explicitly requests their repair; this ready route authorizes machine-apply only. Repair the canonical binding and its declared roles, validate it, then rerun `rms next` for the product change.",
+        }
+    }
+
+    fn plan_description(self) -> &'static str {
+        match self {
+            Self::LegacyMigration => "Plan the focused legacy machine-binding migration",
+            Self::OwnerLocalBinding => "Plan the focused owner-local machine-binding repair",
+        }
+    }
+}
+
+fn owner_local_binding_repair_ready(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    task: &str,
+    diagnostics: &[Diagnostic],
+    owner: &OwnerResolution,
+) -> bool {
+    if !task_requests_owner_local_binding_repair(task) {
+        return false;
+    }
+    let Some(implementation) = explicit_owner_implementation(root, explicit_module, owner) else {
+        return false;
+    };
+    let errors = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .collect::<Vec<_>>();
+    !errors.is_empty()
+        && errors.iter().all(|diagnostic| {
+            Path::new(&diagnostic.path) == implementation
+                && recognized_owner_local_binding_repair_diagnostic(diagnostic)
+        })
+}
+
+fn task_requests_owner_local_binding_repair(task: &str) -> bool {
+    let repair = ["repair", "fix", "align", "restore", "declare"]
+        .iter()
+        .any(|term| task_mentions_token(task, term));
+    let binding = [
+        "binding",
+        "declaration",
+        "representation",
+        "machine",
+        "driver",
+        "executor",
+        "probe",
+    ]
+    .iter()
+    .any(|term| task_mentions_token(task, term));
+    repair && binding
+}
+
+fn recognized_owner_local_binding_repair_diagnostic(diagnostic: &Diagnostic) -> bool {
+    matches!(
+        diagnostic.check.as_str(),
+        "structure.declared-variant-not-represented"
+            | "structure.declared-state-not-represented"
+            | "structure.declared-command-not-represented"
+            | "structure.declared-effect-result-not-represented"
+            | "structure.effect-protocol-executor-signature-mismatch"
+            | "structure.machine-driver-effect-executor-missing"
+            | "structure.machine-driver-transition-record-not-preserved"
+            | "structure.machine-driver-missing"
+            | "structure.machine-driver-role-missing"
+            | "structure.machine-transition-record-function-missing"
+            | "structure.machine-type-missing"
+            | "structure.machine-input-type-missing"
+    )
+}
+
+fn explicit_owner_implementation(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    owner: &OwnerResolution,
+) -> Option<PathBuf> {
+    let explicit_module = explicit_module?;
+    let requested = if explicit_module.is_absolute() {
+        explicit_module.to_path_buf()
+    } else {
+        root.join(explicit_module)
+    };
+    let requested = fs::canonicalize(requested).ok()?;
+    let selected = owner.selected_module()?;
+    if fs::canonicalize(&selected.path).ok().as_deref() != Some(requested.as_path()) {
+        return None;
+    }
+    fs::canonicalize(requested.parent()?.join("implementation.yaml")).ok()
+}
+
 fn legacy_machine_migration_ready(
     root: &Path,
     explicit_module: Option<&Path>,
     diagnostics: &[Diagnostic],
     owner: &OwnerResolution,
 ) -> bool {
-    let Some(explicit_module) = explicit_module else {
-        return false;
-    };
-    let requested = if explicit_module.is_absolute() {
-        explicit_module.to_path_buf()
-    } else {
-        root.join(explicit_module)
-    };
-    let Ok(requested) = fs::canonicalize(requested) else {
-        return false;
-    };
-    let Some(selected) = owner.selected_module() else {
-        return false;
-    };
-    if fs::canonicalize(&selected.path).ok().as_deref() != Some(requested.as_path()) {
-        return false;
-    }
-    let Some(base) = requested.parent() else {
-        return false;
-    };
-    let implementation = base.join("implementation.yaml");
-    let Ok(implementation) = fs::canonicalize(implementation) else {
+    let Some(implementation) = explicit_owner_implementation(root, explicit_module, owner) else {
         return false;
     };
     let errors = diagnostics
@@ -36685,10 +37644,29 @@ fn classify_prospective_task(task: &str) -> TaskClassification {
     }
 }
 
+#[cfg(test)]
 fn resolve_next_owner(
     root: &Path,
     explicit_module: Option<&Path>,
+    subject_route: &str,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+    canonical_blocked: bool,
+) -> Result<OwnerResolution> {
+    resolve_next_owner_for_task(
+        root,
+        explicit_module,
+        subject_route,
+        subject_route,
+        modules,
+        canonical_blocked,
+    )
+}
+
+fn resolve_next_owner_for_task(
+    root: &Path,
+    explicit_module: Option<&Path>,
     task: &str,
+    subject_route: &str,
     modules: &BTreeMap<String, ModuleIndexEntry>,
     canonical_blocked: bool,
 ) -> Result<OwnerResolution> {
@@ -36756,49 +37734,177 @@ fn resolve_next_owner(
                 ));
             }
         }
-    } else if let Some(exact) = exact_task_owned_module(task, root, modules) {
-        (
-            Some(exact.path.clone()),
-            "exact canonical artifact path named by task".to_string(),
-            vec![owner_candidate(task, exact)],
-        )
-    } else if let Some(direct) = modules
-        .values()
-        .find(|module| module.path == root.join("module.yaml"))
-    {
-        (
-            Some(direct.path.clone()),
-            "direct root module".to_string(),
-            vec![owner_candidate(task, direct)],
-        )
-    } else if top_level.len() == 1 {
-        (
-            Some(top_level[0].path.clone()),
-            "sole top-level module".to_string(),
-            vec![owner_candidate(task, &top_level[0])],
-        )
     } else {
-        let mut ranked = top_level
-            .iter()
-            .map(|module| owner_candidate(task, module))
-            .collect::<Vec<_>>();
-        ranked.sort_by(|left, right| {
-            right
-                .score
-                .cmp(&left.score)
-                .then_with(|| left.module.name.cmp(&right.module.name))
-        });
-        let unique = unique_top_route(&ranked).map(|candidate| candidate.module.path.clone());
-        let reason = if unique.is_some() {
-            "unique positive prospective task match"
-        } else if ranked.is_empty() {
-            "no module manifests were discovered"
-        } else if ranked.first().is_some_and(|candidate| candidate.score > 0) {
-            "task matches multiple top-level modules equally"
+        let exact_artifact_modules = exact_task_canonical_artifact_modules(task, root, modules);
+        if exact_artifact_modules.len() == 1 {
+            let selected = exact_artifact_modules[0];
+            let summary = route_module_summary(selected, None);
+            return Ok(OwnerResolution::selected(
+                "task exactly names a canonical artifact owned by the module".to_string(),
+                summary.clone(),
+                vec![RouteCandidate {
+                    module: summary,
+                    score: 1,
+                    reasons: vec![format!(
+                        "task exactly names a canonical artifact under module `{}`",
+                        selected.name
+                    )],
+                }],
+                vec![selected.path.display().to_string()],
+                Vec::new(),
+            ));
+        }
+        if exact_artifact_modules.len() > 1 {
+            let candidates = exact_artifact_modules
+                .into_iter()
+                .map(|module| RouteCandidate {
+                    module: route_module_summary(module, None),
+                    score: 1,
+                    reasons: vec![format!(
+                        "task exactly names a canonical artifact under module `{}`",
+                        module.name
+                    )],
+                })
+                .collect();
+            return Ok(OwnerResolution::unresolved(
+                UnselectedOwnerStatus::Ambiguous,
+                "task exactly names canonical artifacts owned by multiple modules".to_string(),
+                candidates,
+                Vec::new(),
+                vec![
+                    "RMS will not choose among multiple explicitly named canonical artifact owners"
+                        .to_string(),
+                ],
+            ));
+        }
+
+        let exact_task_modules = longest_exact_task_module_mentions(task, modules);
+        if exact_task_modules.len() == 1 {
+            let selected = exact_task_modules[0];
+            let summary = route_module_summary(selected, None);
+            return Ok(OwnerResolution::selected(
+                "task exactly names canonical module".to_string(),
+                summary.clone(),
+                vec![RouteCandidate {
+                    module: summary,
+                    score: 1,
+                    reasons: vec![format!(
+                        "task exactly names module `{}` with the most-qualified canonical identity",
+                        selected.name
+                    )],
+                }],
+                vec![selected.path.display().to_string()],
+                Vec::new(),
+            ));
+        }
+        if exact_task_modules.len() > 1 {
+            let candidates = exact_task_modules
+                .into_iter()
+                .map(|module| RouteCandidate {
+                    module: route_module_summary(module, None),
+                    score: 1,
+                    reasons: vec![format!(
+                        "task exactly names module `{}` with an equally qualified canonical identity",
+                        module.name
+                    )],
+                })
+                .collect();
+            return Ok(OwnerResolution::unresolved(
+                UnselectedOwnerStatus::Ambiguous,
+                "task exactly names multiple equally qualified canonical modules".to_string(),
+                candidates,
+                Vec::new(),
+                vec![
+                    "RMS will not choose among multiple equally qualified module identities"
+                        .to_string(),
+                ],
+            ));
+        }
+
+        let exact_subjects = exact_structured_subject_modules(subject_route, modules);
+        if exact_subjects.len() == 1 {
+            let selected = exact_subjects[0];
+            let summary = route_module_summary(selected, None);
+            return Ok(OwnerResolution::selected(
+                "structured intent subject exactly names canonical module".to_string(),
+                summary.clone(),
+                vec![RouteCandidate {
+                    module: summary,
+                    score: 1,
+                    reasons: vec![format!(
+                        "structured intent subject exactly names module `{}`",
+                        selected.name
+                    )],
+                }],
+                vec![selected.path.display().to_string()],
+                Vec::new(),
+            ));
+        }
+        if exact_subjects.len() > 1 {
+            let candidates = exact_subjects
+                .into_iter()
+                .map(|module| RouteCandidate {
+                    module: route_module_summary(module, None),
+                    score: 1,
+                    reasons: vec![format!(
+                        "structured intent subject exactly names module `{}`",
+                        module.name
+                    )],
+                })
+                .collect();
+            return Ok(OwnerResolution::unresolved(
+                UnselectedOwnerStatus::Ambiguous,
+                "structured intent explicitly names multiple canonical modules".to_string(),
+                candidates,
+                Vec::new(),
+                vec![
+                    "RMS will not choose among multiple explicitly named module subjects"
+                        .to_string(),
+                ],
+            ));
+        }
+
+        if let Some(direct) = modules
+            .values()
+            .find(|module| module.path == root.join("module.yaml"))
+        {
+            (
+                Some(direct.path.clone()),
+                "direct root module".to_string(),
+                vec![owner_candidate(subject_route, direct)],
+            )
         } else {
-            "task has no positive top-level module match"
-        };
-        (unique.map(PathBuf::from), reason.to_string(), ranked)
+            if top_level.len() == 1 {
+                (
+                    Some(top_level[0].path.clone()),
+                    "sole top-level module".to_string(),
+                    vec![owner_candidate(subject_route, &top_level[0])],
+                )
+            } else {
+                let mut ranked = top_level
+                    .iter()
+                    .map(|module| owner_candidate(subject_route, module))
+                    .collect::<Vec<_>>();
+                ranked.sort_by(|left, right| {
+                    right
+                        .score
+                        .cmp(&left.score)
+                        .then_with(|| left.module.name.cmp(&right.module.name))
+                });
+                let unique =
+                    unique_top_route(&ranked).map(|candidate| candidate.module.path.clone());
+                let reason = if unique.is_some() {
+                    "unique positive prospective task match"
+                } else if ranked.is_empty() {
+                    "no module manifests were discovered"
+                } else if ranked.first().is_some_and(|candidate| candidate.score > 0) {
+                    "task matches multiple top-level modules equally"
+                } else {
+                    "task has no positive top-level module match"
+                };
+                (unique.map(PathBuf::from), reason.to_string(), ranked)
+            }
+        }
     };
 
     let Some(initial_path) = initial_path else {
@@ -36835,7 +37941,80 @@ fn resolve_next_owner(
         });
     }
 
-    route_next_owner(root, task, initial_path, reason, candidates)
+    route_next_owner(root, subject_route, initial_path, reason, candidates)
+}
+
+fn exact_task_canonical_artifact_modules<'a>(
+    task: &str,
+    root: &Path,
+    modules: &'a BTreeMap<String, ModuleIndexEntry>,
+) -> Vec<&'a ModuleIndexEntry> {
+    let mut exact_manifests = modules
+        .values()
+        .filter(|module| task_mentions_exact_path(task, root, &module.path))
+        .collect::<Vec<_>>();
+    if !exact_manifests.is_empty() {
+        exact_manifests.sort_by(|left, right| left.path.cmp(&right.path));
+        return exact_manifests;
+    }
+
+    let mut matches = modules
+        .values()
+        .filter_map(|module| {
+            let directory = module.path.parent()?;
+            let relative = display_relative(root, directory);
+            let absolute = directory.display().to_string();
+            let relative_prefix = format!("{relative}/");
+            let absolute_prefix = format!("{absolute}/");
+            (task.contains(&relative_prefix) || task.contains(&absolute_prefix))
+                .then_some((module, directory.components().count()))
+        })
+        .collect::<Vec<_>>();
+    let Some(deepest) = matches.iter().map(|(_, depth)| *depth).max() else {
+        return Vec::new();
+    };
+    matches.retain(|(_, depth)| *depth == deepest);
+    matches.sort_by(|(left, _), (right, _)| left.path.cmp(&right.path));
+    matches.into_iter().map(|(module, _)| module).collect()
+}
+
+fn task_mentions_exact_path(task: &str, root: &Path, path: &Path) -> bool {
+    let absolute = path.display().to_string();
+    let relative = display_relative(root, path);
+    task.contains(&absolute) || task.contains(&relative)
+}
+
+fn exact_structured_subject_modules<'a>(
+    subject_route: &str,
+    modules: &'a BTreeMap<String, ModuleIndexEntry>,
+) -> Vec<&'a ModuleIndexEntry> {
+    let subjects = subject_route.split_whitespace().collect::<BTreeSet<_>>();
+    let mut matches = modules
+        .values()
+        .filter(|module| subjects.contains(module.name.as_str()))
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| left.path.cmp(&right.path));
+    matches
+}
+
+fn longest_exact_task_module_mentions<'a>(
+    task: &str,
+    modules: &'a BTreeMap<String, ModuleIndexEntry>,
+) -> Vec<&'a ModuleIndexEntry> {
+    let mut matches = modules
+        .values()
+        .filter(|module| task_mentions_token(task, &module.name))
+        .collect::<Vec<_>>();
+    let Some(longest) = matches
+        .iter()
+        .map(|module| semantic_id_segment(&module.name).split('-').count())
+        .max()
+    else {
+        return Vec::new();
+    };
+    matches.retain(|module| semantic_id_segment(&module.name).split('-').count() == longest);
+    matches.sort_by(|left, right| left.path.cmp(&right.path));
+    matches
 }
 
 fn owner_candidate(task: &str, module: &ModuleIndexEntry) -> RouteCandidate {
@@ -37086,7 +38265,7 @@ fn build_next_steps(
     classification: &TaskClassification,
     owner: &OwnerResolution,
     context: &NextContext,
-    legacy_machine_migration: bool,
+    machine_repair: Option<MachineRepairRoute>,
 ) -> Result<Vec<NextStepGroup>> {
     let cwd = Some(root.display().to_string());
     if matches!(
@@ -37254,9 +38433,9 @@ fn build_next_steps(
             .implementation
             .clone()
             .unwrap_or_else(|| selected.path.clone());
-        if legacy_machine_migration {
+        if let Some(repair) = machine_repair {
             declare.push(executable_next_step(
-                "Plan the focused legacy machine-binding migration",
+                repair.plan_description(),
                 "rms",
                 vec![
                     "machine".to_string(),
@@ -37270,11 +38449,11 @@ fn build_next_steps(
                 cwd.clone(),
             ));
             declare.push(manual_next_step(
-                "Apply the reviewed machine-change with `rms machine apply ... --dry-run --route-receipt <RUN_ID>`, apply it with the same receipt, and pass normal machine and structure validation. This receipt authorizes no other mutation.",
+                "Apply the reviewed machine-change with `rms machine apply ... --dry-run --route-receipt <RUN_ID>`, apply it with the same receipt, fill only already-declared role bodies needed to close owner-local realization findings, and pass normal machine and structure validation. This receipt authorizes no other canonical mutation.",
                 None,
             ));
             implement.push(manual_next_step(
-                "After the canonical migration validates, rerun `rms next` for the original product change and use the newly issued route; this migration receipt grants no source-edit authority.",
+                "After the canonical binding validates, rerun `rms next` for the original product change and use the newly issued route; canonical mutation authority remains limited to this machine repair.",
                 None,
             ));
         } else {
@@ -37336,7 +38515,7 @@ fn build_next_steps(
             )),
             }
         }
-        if !legacy_machine_migration
+        if machine_repair.is_none()
             && !matches!(
                 classification.lane,
                 TaskLane::ReadOnly | TaskLane::RepositoryOperation | TaskLane::Design
@@ -38122,41 +39301,6 @@ fn build_route_report(module: &Path, root: &Path, task: &str) -> Result<RouteRep
             }],
             warnings: Vec::new(),
             next_commands,
-        });
-    }
-
-    if task_explicitly_targets_module_owned_path(task, root, &target_manifest.path) {
-        return Ok(RouteReport {
-            result: RouteResult::TargetOnly,
-            task: task.to_string(),
-            target: target_summary.clone(),
-            recommendation: Some(target_summary.clone()),
-            candidates: vec![RouteCandidate {
-                module: target_summary,
-                score: 10,
-                reasons: vec![
-                    "task explicitly targets a canonical artifact owned by the composite parent"
-                        .to_string(),
-                ],
-            }],
-            warnings: vec![
-                "the explicitly targeted parent artifact retains ownership; exported child behavior may need aligned evidence without transferring public ownership"
-                    .to_string(),
-            ],
-            next_commands: vec![
-                format!(
-                    "rms context {} --root {} --task {:?}",
-                    module.display(),
-                    root.display(),
-                    task
-                ),
-                format!(
-                    "rms spec plan {} --root {} --task {:?}",
-                    module.display(),
-                    root.display(),
-                    task
-                ),
-            ],
         });
     }
 
@@ -42784,7 +43928,7 @@ fn append_semantic_change_implementation_reflection_checks(
     }
 
     if let Some(transitions) = &machine.transitions {
-        let declared_transitions = implementation_transition_triplets(implementation);
+        let declared_transitions = implementation_machine_transitions(implementation);
         let declared_commands =
             get_string_array(implementation, &["architecture", "machine", "commands"])
                 .into_iter()
@@ -42805,19 +43949,17 @@ fn append_semantic_change_implementation_reflection_checks(
             semantic_machine_transition_expectations(transitions);
         for transition in expected_transitions {
             let input = transition_input_variant(&transition.on);
-            if !declared_transitions.contains(&(
-                transition.from.clone(),
-                input.clone(),
-                transition.to.clone(),
-                transition.case.clone().unwrap_or_default(),
-            )) {
+            if !declared_transitions
+                .iter()
+                .any(|declared| machine_transition_values_match(declared, &transition))
+            {
                 push_applied_change_reflection_failure(
                     checks,
                     strict,
                     "semantic.applied-change-not-reflected",
                     implementation_path,
                     format!(
-                        "semantic-change `{}` declares transition {} --{}--> {}, but implementation transitions do not reflect it",
+                        "semantic-change `{}` declares transition {} --{}--> {}, but implementation transitions do not reflect its exact ordered outputs and outcome",
                         change_path.display(),
                         transition.from,
                         transition.on,
@@ -42843,17 +43985,11 @@ fn append_semantic_change_implementation_reflection_checks(
             }
         }
         for removal in removed_transitions {
-            if declared_transitions.iter().any(|(from, on, to, case)| {
-                from == &removal.from
-                    && on == &transition_input_variant(&removal.on)
-                    && removal
-                        .to
-                        .as_ref()
-                        .is_none_or(|expected_to| expected_to == to)
-                    && removal
-                        .case
-                        .as_ref()
-                        .is_none_or(|expected_case| expected_case == case)
+            if declared_transitions.iter().any(|declared| {
+                machine_transition_matches_audit_removal(declared, &removal)
+                    && !transitions.add.iter().any(|replacement| {
+                        machine_transition_identity_matches(declared, replacement)
+                    })
             }) {
                 push_applied_change_reflection_failure(
                     checks,
@@ -42945,25 +44081,54 @@ fn module_verification_references(module: &YamlValue) -> BTreeSet<String> {
         .collect()
 }
 
-fn implementation_transition_triplets(
-    value: &YamlValue,
-) -> BTreeSet<(String, String, String, String)> {
+fn implementation_machine_transitions(value: &YamlValue) -> Vec<MachineTransitionChange> {
     get_path(value, &["architecture", "machine", "transitions"])
         .and_then(YamlValue::as_sequence)
         .map(|items| {
             items
                 .iter()
-                .filter_map(|item| {
-                    Some((
-                        get_str(item, &["from"])?.to_string(),
-                        transition_input_variant(get_str(item, &["on"])?),
-                        get_str(item, &["to"])?.to_string(),
-                        get_str(item, &["case"]).unwrap_or_default().to_string(),
-                    ))
-                })
+                .filter_map(machine_transition_from_yaml)
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn machine_transition_identity_matches(
+    left: &MachineTransitionChange,
+    right: &MachineTransitionChange,
+) -> bool {
+    left.from == right.from
+        && transition_input_variant(&left.on) == transition_input_variant(&right.on)
+        && left.to == right.to
+        && left.case.as_deref().unwrap_or_default() == right.case.as_deref().unwrap_or_default()
+}
+
+fn machine_transition_values_match(
+    declared: &MachineTransitionChange,
+    expected: &MachineTransitionChange,
+) -> bool {
+    machine_transition_identity_matches(declared, expected)
+        && declared.events == expected.events
+        && declared.commands == expected.commands
+        && declared.effects == expected.effects
+        && declared.reply == expected.reply
+        && declared.rejection == expected.rejection
+        && declared.no_reply_justification == expected.no_reply_justification
+}
+
+fn machine_transition_matches_audit_removal(
+    transition: &MachineTransitionChange,
+    removal: &MachineTransitionRemoveChange,
+) -> bool {
+    transition.from == removal.from
+        && transition_input_variant(&transition.on) == transition_input_variant(&removal.on)
+        && removal
+            .to
+            .as_ref()
+            .is_none_or(|expected_to| expected_to == &transition.to)
+        && removal.case.as_deref().is_none_or(|expected_case| {
+            expected_case == transition.case.as_deref().unwrap_or_default()
+        })
 }
 
 fn is_production_claim_path(path: &str) -> bool {
@@ -44662,6 +45827,10 @@ fn print_structure_report(report: &StructureReport) {
             "command_envelope",
             report.machine.types.command_envelope.as_deref(),
         ),
+        (
+            "observed_event",
+            report.machine.types.observed_event.as_deref(),
+        ),
         ("event", report.machine.types.event.as_deref()),
         (
             "event_envelope",
@@ -44895,12 +46064,12 @@ fn run_machine_plan(
         Provider::Codex => {
             let run_dir =
                 run_dir.ok_or_else(|| anyhow!("provider execution requires run record"))?;
-            execute_codex_provider(root, &manifest, &rendered, &run_dir, options)?;
+            execute_machine_plan_provider(root, &manifest, &rendered, &run_dir, options)?;
             let response = run_dir.join("response.md");
             if let Some(output) = output {
                 fs::copy(&response, output).with_context(|| {
                     format!(
-                        "failed to copy provider response `{}` to `{}`",
+                        "failed to copy normalized provider response `{}` to `{}`",
                         response.display(),
                         output.display()
                     )
@@ -44913,6 +46082,145 @@ fn run_machine_plan(
     }
 
     Ok(())
+}
+
+fn execute_machine_plan_provider(
+    root: &Path,
+    manifest: &LoadedManifest,
+    prompt: &str,
+    run_dir: &Path,
+    options: &PromptRunOptions,
+) -> Result<()> {
+    execute_machine_plan_provider_with_program(
+        Path::new("codex"),
+        root,
+        manifest,
+        prompt,
+        run_dir,
+        options,
+    )
+}
+
+fn execute_machine_plan_provider_with_program(
+    provider_program: &Path,
+    root: &Path,
+    manifest: &LoadedManifest,
+    prompt: &str,
+    run_dir: &Path,
+    options: &PromptRunOptions,
+) -> Result<()> {
+    let metadata = execute_codex_provider_attempt(
+        provider_program,
+        root,
+        manifest,
+        prompt,
+        run_dir,
+        options,
+        None,
+        "response.md",
+        "provider",
+        true,
+    )?;
+    let raw_response = fs::read_to_string(&metadata.response_path).with_context(|| {
+        format!(
+            "failed to read provider response `{}`",
+            metadata.response_path.display()
+        )
+    })?;
+    fs::write(run_dir.join("attempt-1-response.md"), &raw_response)?;
+    let prepared = prepare_machine_plan_provider_response(manifest, &raw_response);
+    fs::write(
+        run_dir.join("machine-plan-diagnostics.json"),
+        serde_json::to_string_pretty(&prepared.diagnostics)?,
+    )?;
+    let has_errors = prepared
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error);
+    fs::write(
+        run_dir.join("provider.json"),
+        serde_json::to_string_pretty(&json!({
+            "provider": options.provider.label(),
+            "model": options.model,
+            "interaction": "agentic-machine-plan",
+            "attempts": 1,
+            "elapsed_ms": metadata.elapsed_ms,
+            "result": if has_errors { "invalid" } else { "valid" },
+            "normalizations": prepared.normalizations,
+            "tokens": null,
+        }))?,
+    )?;
+    if has_errors {
+        bail!(
+            "provider machine plan is not a consumable rms/machine-change/v0.1 document; diagnostics preserved in `{}`",
+            run_dir.display()
+        );
+    }
+    fs::write(&metadata.response_path, &prepared.response).with_context(|| {
+        format!(
+            "failed to write normalized provider response `{}`",
+            metadata.response_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+#[derive(Debug)]
+struct PreparedMachinePlanProviderResponse {
+    response: String,
+    diagnostics: Vec<Diagnostic>,
+    normalizations: Vec<String>,
+}
+
+fn prepare_machine_plan_provider_response(
+    manifest: &LoadedManifest,
+    response: &str,
+) -> PreparedMachinePlanProviderResponse {
+    let extracted = extract_structured_provider_response(response);
+    let mut normalizations = Vec::new();
+    if extracted.trim() != response.trim() {
+        normalizations.push(
+            "extracted the single structured machine-change document from provider markup"
+                .to_string(),
+        );
+    }
+    let lower = extracted.to_ascii_lowercase();
+    if !lower.contains("rms/machine-change/v0.1")
+        && lower.contains("existing machine is sufficient")
+    {
+        return PreparedMachinePlanProviderResponse {
+            response: extracted,
+            diagnostics: Vec::new(),
+            normalizations,
+        };
+    }
+    let change = match serde_yaml::from_str::<MachineChange>(&extracted) {
+        Ok(change) => change,
+        Err(error) => {
+            return PreparedMachinePlanProviderResponse {
+                response: extracted,
+                diagnostics: vec![error_diagnostic(
+                    "machine-plan.response-invalid",
+                    &manifest.path,
+                    format!("provider response is not an rms/machine-change/v0.1 object: {error}"),
+                )],
+                normalizations,
+            };
+        }
+    };
+    let response = serde_yaml::to_string(&change).unwrap_or(extracted);
+    let mut diagnostics = validate_machine_change(manifest, &change);
+    let mut candidate = LoadedManifest {
+        path: manifest.path.clone(),
+        value: manifest.value.clone(),
+    };
+    apply_machine_change_to_manifest(&mut candidate.value, &change);
+    validate_against_embedded_schema(&candidate, &mut diagnostics);
+    PreparedMachinePlanProviderResponse {
+        response,
+        diagnostics,
+        normalizations,
+    }
 }
 
 fn render_machine_plan_prompt(
@@ -44987,11 +46295,12 @@ fn render_machine_plan_prompt(
             .as_deref()
             .unwrap_or("<not declared>")
     )?;
-    writeln!(out, "- binding types: state={}, input={}, command={}, command_envelope={}, event={}, event_envelope={}, effect={}, effect_envelope={}, effect_result={}, effect_result_envelope={}, reply={}, rejection={}, transition={}, transition_record={}",
+    writeln!(out, "- binding types: state={}, input={}, command={}, command_envelope={}, observed_event={}, event={}, event_envelope={}, effect={}, effect_envelope={}, effect_result={}, effect_result_envelope={}, reply={}, rejection={}, transition={}, transition_record={}",
         report.machine.types.state.as_deref().unwrap_or("<missing>"),
         report.machine.types.input.as_deref().unwrap_or("<not applicable>"),
         report.machine.types.command.as_deref().unwrap_or("<missing>"),
         report.machine.types.command_envelope.as_deref().unwrap_or("<missing>"),
+        report.machine.types.observed_event.as_deref().unwrap_or("<falls back to event>"),
         report.machine.types.event.as_deref().unwrap_or("<missing>"),
         report.machine.types.event_envelope.as_deref().unwrap_or("<missing>"),
         report.machine.types.effect.as_deref().unwrap_or("<not applicable>"),
@@ -45081,6 +46390,10 @@ fn render_machine_plan_prompt(
             "command_envelope",
             report.machine.types.command_envelope.as_deref(),
         ),
+        (
+            "observed_event",
+            report.machine.types.observed_event.as_deref(),
+        ),
         ("event", report.machine.types.event.as_deref()),
         (
             "event_envelope",
@@ -45163,7 +46476,10 @@ fn render_machine_plan_prompt(
     writeln!(out, "```")?;
     writeln!(out)?;
     writeln!(out, "For each variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
+    writeln!(out, "`machine.types.observed_event` names the binding-native enum for external observations entering the machine. Omit it only when observed inputs and emitted events intentionally share `machine.types.event`; older bindings without the field keep that fallback. Machine apply synchronizes a declared observed-event type into `representation.closed_variants`.")?;
     writeln!(out, "Transition items use `from`, `on`, `to`, stable `case`, optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every semantic branch has its own case, including multiple destinations or outputs for the same state and input.")?;
+    writeln!(out, "For an `rms/machine-probe/v0.2` binding, verification evaluates the Cartesian product of every concrete representative state example and input example. A state/input pair with no declared transition may remain implicit only when the implementation preserves the complete state, emits no commands or effects, returns no reply, and produces a typed rejection. Once any transition for a state/input pair is declared, every branch exercised by representative examples for that pair must be declared separately.")?;
+    writeln!(out, "Canonical machine transitions have no wildcard state syntax. Expand a source branch such as `case (_, input)` into every exact `from`/`on` pair where it changes state, emits output, replies, or otherwise accepts the input. A generic state-preserving typed-refusal default does not require enumeration for otherwise undeclared pairs. One source branch case name may be reused across several exact pairs; conformance scopes case identity by `from` plus `on` plus `case`.")?;
     writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effect-protocol removal items use `effect`. Resource-protocol items declare `resource`, `ownership`, closed `states`, `initial_state`, `terminal_states`, and acquire/use/release/transfer transitions; removal items use `resource`. Role removal items use `kind` and optional `path`.")?;
     writeln!(out, "Legacy inspectable bindings missing rc.8 probe declarations are repaired in this same machine change: set `commands: {{ probe: <binding-native command> }}`, set `machine.initial_state` to one declared state, set `probe` with `protocol`, `command: probe`, `runner: path#symbol`, and `initial_state_function: path#symbol` for state-and-input machines, and add the exact runner path as `roles.add[].kind: probe_adapter`. Omit `commands` and `probe` only when those declarations already exist and are not changing.")?;
     writeln!(out, "Role items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`. A role with `kind: effect_executor` must include the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. Shared IO mechanics used by multiple executors use `kind: effect_support`; they cannot own state progression, transitions, drivers, or public/runnable behavior. Effectful stateful machines declare one `machine_driver` role, set `machine.driver_function` to its exact callable, and set `machine.transition_record_function` to the exact pure record constructor used by that driver. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; atomicity applies to that exact protocol. Machine apply binds each executor as an effectful `effect-executor` semantic function. Aggregate protocols use `atomicity: aggregate` plus `aggregate_justification` and evidence.")?;
@@ -45208,6 +46524,15 @@ fn run_machine_apply(
     change_file: Option<&Path>,
     dry_run: bool,
 ) -> Result<()> {
+    let change = parse_machine_change(change_json, change_yaml, change_file)?;
+    run_machine_apply_change(implementation, &change, dry_run)
+}
+
+fn run_machine_apply_change(
+    implementation: &Path,
+    change: &MachineChange,
+    dry_run: bool,
+) -> Result<()> {
     let mut manifest = load_manifest(implementation)?;
     if get_str(&manifest.value, &["spec"]) != Some("rms/implementation/v0.1") {
         bail!(
@@ -45215,27 +46540,26 @@ fn run_machine_apply(
             implementation.display()
         );
     }
-    let change = parse_machine_change(change_json, change_yaml, change_file)?;
     let mut diagnostics = Vec::new();
-    diagnostics.extend(validate_machine_change(&manifest, &change));
+    diagnostics.extend(validate_machine_change(&manifest, change));
     let mut candidate = LoadedManifest {
         path: manifest.path.clone(),
         value: manifest.value.clone(),
     };
-    apply_machine_change_to_manifest(&mut candidate.value, &change);
+    apply_machine_change_to_manifest(&mut candidate.value, change);
     validate_against_embedded_schema(&candidate, &mut diagnostics);
-    let writes = planned_machine_apply_writes(&manifest, &change);
-    let final_machine = machine_final_state_report(&manifest, &change);
+    let writes = planned_machine_apply_writes(&manifest, change);
+    let final_machine = machine_final_state_report(&manifest, change);
     let has_errors = diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == Severity::Error);
     let result = if has_errors { "fail" } else { "pass" }.to_string();
 
     if !has_errors && !dry_run {
-        apply_machine_change_to_manifest(&mut manifest.value, &change);
+        apply_machine_change_to_manifest(&mut manifest.value, change);
         write_machine_manifest(&manifest)?;
-        write_machine_apply_placeholders(&manifest, &change)?;
-        let record_path = write_machine_change_record(&manifest, &change)?;
+        write_machine_apply_placeholders(&manifest, change)?;
+        let record_path = write_machine_change_record(&manifest, change)?;
         seal_implementation_semantics(
             &mut manifest,
             &record_path,
@@ -45780,6 +47104,131 @@ fn validate_machine_transition_references(
             ));
         }
     }
+    validate_machine_transition_behavior_preservation(
+        manifest,
+        change,
+        &transition_changes,
+        &events,
+        &replies,
+        &commands
+            .iter()
+            .chain(&observed_events)
+            .chain(&effect_results)
+            .cloned()
+            .collect(),
+        diagnostics,
+    );
+}
+
+fn validate_machine_transition_behavior_preservation(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+    final_transitions: &[MachineTransitionChange],
+    final_events: &BTreeSet<String>,
+    final_replies: &BTreeSet<String>,
+    final_inputs: &BTreeSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(transition_change) = change.transitions.as_ref() else {
+        return;
+    };
+    if transition_change.replace.is_none()
+        && transition_change.add.is_empty()
+        && transition_change.remove.is_empty()
+    {
+        return;
+    }
+    let existing = existing_machine_transitions(manifest);
+    let accepted_inputs = |transitions: &[MachineTransitionChange]| {
+        transitions
+            .iter()
+            .filter(|transition| transition.rejection.is_none())
+            .map(|transition| transition_input_variant(&transition.on))
+            .collect::<BTreeSet<_>>()
+    };
+    let existing_accepted = accepted_inputs(&existing);
+    let final_accepted = accepted_inputs(final_transitions);
+    for input in existing_accepted.difference(&final_accepted) {
+        if final_inputs.contains(input) {
+            diagnostics.push(error(
+                "machine-change.success-path-eliminated",
+                &manifest.path,
+                format!(
+                    "final transitions eliminate every non-rejection path for still-declared input `{input}`; retain or replace an accepted transition, or remove the input explicitly"
+                ),
+            ));
+        }
+    }
+
+    let realized_events = |transitions: &[MachineTransitionChange]| {
+        transitions
+            .iter()
+            .flat_map(|transition| transition.events.iter().cloned())
+            .collect::<BTreeSet<_>>()
+    };
+    let realized_replies = |transitions: &[MachineTransitionChange]| {
+        transitions
+            .iter()
+            .filter_map(|transition| transition.reply.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let existing_events = get_string_array(&manifest.value, &["architecture", "machine", "events"])
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let existing_replies =
+        get_string_array(&manifest.value, &["architecture", "machine", "replies"])
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+    let previously_realized_events = realized_events(&existing);
+    let finally_realized_events = realized_events(final_transitions);
+    let previously_realized_replies = realized_replies(&existing);
+    let finally_realized_replies = realized_replies(final_transitions);
+
+    for (kind, newly_declared, previously_realized, finally_realized, final_variants) in [
+        (
+            "event",
+            final_events
+                .difference(&existing_events)
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            previously_realized_events,
+            finally_realized_events,
+            final_events,
+        ),
+        (
+            "reply",
+            final_replies
+                .difference(&existing_replies)
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            previously_realized_replies,
+            finally_realized_replies,
+            final_replies,
+        ),
+    ] {
+        for variant in &newly_declared {
+            if !finally_realized.contains(variant) {
+                diagnostics.push(error(
+                    "machine-change.output-unrealized",
+                    &manifest.path,
+                    format!(
+                        "new {kind} `{variant}` is not produced by any final transition; add its success/rejection path or do not declare the output"
+                    ),
+                ));
+            }
+        }
+        for variant in previously_realized.difference(&finally_realized) {
+            if final_variants.contains(variant) {
+                diagnostics.push(error(
+                    "machine-change.output-path-eliminated",
+                    &manifest.path,
+                    format!(
+                        "final transitions eliminate every path producing still-declared {kind} `{variant}`; retain or replace a producing transition, or remove the output explicitly"
+                    ),
+                ));
+            }
+        }
+    }
 }
 
 fn validate_machine_role_additions(
@@ -46038,6 +47487,7 @@ fn overlay_machine_types(base: &mut MachineTypeNames, changed: &MachineTypeNames
     overlay!(input);
     overlay!(command);
     overlay!(command_envelope);
+    overlay!(observed_event);
     overlay!(event);
     overlay!(event_envelope);
     overlay!(effect);
@@ -47185,6 +48635,7 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
         ("input", types.input.as_deref()),
         ("command", types.command.as_deref()),
         ("command_envelope", types.command_envelope.as_deref()),
+        ("observed_event", types.observed_event.as_deref()),
         ("event", types.event.as_deref()),
         ("event_envelope", types.event_envelope.as_deref()),
         ("effect", types.effect.as_deref()),
@@ -47297,6 +48748,7 @@ fn sync_machine_type_closed_variants(
             types.input.as_deref(),
             types.command.as_deref(),
             types.command_envelope.as_deref(),
+            types.observed_event.as_deref(),
             types.event.as_deref(),
             types.event_envelope.as_deref(),
             types.effect.as_deref(),
@@ -47851,6 +49303,10 @@ fn print_machine_final_state(final_machine: &MachineFinalStateReport) {
         (
             "command_envelope",
             final_machine.types.command_envelope.as_deref(),
+        ),
+        (
+            "observed_event",
+            final_machine.types.observed_event.as_deref(),
         ),
         ("event", final_machine.types.event.as_deref()),
         (
@@ -48756,7 +50212,9 @@ fn run_spec_plan(
         Provider::Codex => {
             let run_dir =
                 run_dir.ok_or_else(|| anyhow!("provider execution requires run record"))?;
-            execute_spec_plan_provider(root, &context, authority, &rendered, &run_dir, options)?;
+            execute_spec_plan_provider(
+                root, &context, authority, task, &rendered, &run_dir, options,
+            )?;
             let response = run_dir.join("response.md");
             if let Some(output) = output {
                 fs::copy(&response, output).with_context(|| {
@@ -48780,6 +50238,7 @@ fn execute_spec_plan_provider(
     root: &Path,
     context: &SpecTargetContext,
     authority: &LoadedManifest,
+    task: &str,
     prompt: &str,
     run_dir: &Path,
     options: &PromptRunOptions,
@@ -48789,6 +50248,7 @@ fn execute_spec_plan_provider(
         root,
         context,
         authority,
+        task,
         prompt,
         run_dir,
         options,
@@ -48800,6 +50260,7 @@ fn execute_spec_plan_provider_with_program(
     root: &Path,
     context: &SpecTargetContext,
     authority: &LoadedManifest,
+    task: &str,
     prompt: &str,
     run_dir: &Path,
     options: &PromptRunOptions,
@@ -48807,6 +50268,7 @@ fn execute_spec_plan_provider_with_program(
     let started = Instant::now();
     let mut prompt_for_attempt = prompt.to_string();
     let mut last_response = String::new();
+    let mut last_normalizations = Vec::new();
 
     for attempt in 1..=2 {
         if attempt > 1 {
@@ -48871,8 +50333,10 @@ fn execute_spec_plan_provider_with_program(
             }
         };
         let response = fs::read_to_string(&metadata.response_path)?;
-        last_response = response.clone();
-        let diagnostics = validate_spec_plan_provider_response(context, &response);
+        let candidate = prepare_spec_plan_provider_response(context, task, &response);
+        last_response = candidate.response.clone();
+        last_normalizations = candidate.normalizations.clone();
+        let diagnostics = candidate.diagnostics;
         fs::write(
             run_dir.join("semantic-plan-diagnostics.json"),
             serde_json::to_string_pretty(&diagnostics)?,
@@ -48881,7 +50345,7 @@ fn execute_spec_plan_provider_with_program(
             .iter()
             .any(|diagnostic| diagnostic.severity == Severity::Error)
         {
-            fs::write(run_dir.join("response.md"), &response)?;
+            fs::write(run_dir.join("response.md"), &last_response)?;
             fs::write(
                 run_dir.join("provider.json"),
                 serde_json::to_string_pretty(&json!({
@@ -48891,13 +50355,15 @@ fn execute_spec_plan_provider_with_program(
                     "attempts": attempt,
                     "elapsed_ms": started.elapsed().as_millis(),
                     "result": "valid",
+                    "normalizations": last_normalizations,
                     "tokens": null,
                 }))?,
             )?;
             return Ok(());
         }
         if attempt == 1 {
-            prompt_for_attempt = render_spec_plan_repair_prompt(prompt, &response, &diagnostics);
+            prompt_for_attempt =
+                render_spec_plan_repair_prompt(prompt, &last_response, &diagnostics);
         }
     }
 
@@ -48911,6 +50377,7 @@ fn execute_spec_plan_provider_with_program(
             "attempts": 2,
             "elapsed_ms": started.elapsed().as_millis(),
             "result": "invalid-after-repair",
+            "normalizations": last_normalizations,
             "tokens": null,
         }))?,
     )?;
@@ -48920,37 +50387,269 @@ fn execute_spec_plan_provider_with_program(
     )
 }
 
-fn validate_spec_plan_provider_response(
+#[derive(Debug)]
+struct PreparedSpecPlanProviderResponse {
+    response: String,
+    diagnostics: Vec<Diagnostic>,
+    normalizations: Vec<String>,
+}
+
+fn prepare_spec_plan_provider_response(
     context: &SpecTargetContext,
+    task: &str,
     response: &str,
-) -> Vec<Diagnostic> {
+) -> PreparedSpecPlanProviderResponse {
     let extracted = extract_structured_provider_response(response);
     let lower = extracted.to_ascii_lowercase();
     if !lower.contains("rms/semantic-change/v0.1")
         && lower.contains("current semantics are sufficient")
     {
-        return Vec::new();
+        let diagnostics = validate_spec_plan_no_change_response(context, task, &extracted);
+        return PreparedSpecPlanProviderResponse {
+            response: extracted,
+            diagnostics,
+            normalizations: Vec::new(),
+        };
     }
-    let change = match serde_yaml::from_str::<SemanticChange>(&extracted) {
+    let (normalized_yaml, mut normalizations) =
+        normalize_spec_plan_property_evidence_kinds(&extracted);
+    let mut change = match serde_yaml::from_str::<SemanticChange>(&normalized_yaml) {
         Ok(change) => change,
         Err(error) => {
-            return vec![error_diagnostic(
-                "semantic-plan.response-invalid",
-                &context.target,
-                format!("provider response is not an rms/semantic-change/v0.1 object: {error}"),
-            )];
+            return PreparedSpecPlanProviderResponse {
+                response: normalized_yaml,
+                diagnostics: vec![error_diagnostic(
+                    "semantic-plan.response-invalid",
+                    &context.target,
+                    format!("provider response is not an rms/semantic-change/v0.1 object: {error}"),
+                )],
+                normalizations,
+            };
         }
     };
+    normalizations.extend(normalize_spec_plan_property_operations(
+        context,
+        &mut change,
+    ));
     let change = prepare_semantic_change_for_apply(context, change);
-    let mut diagnostics = validate_semantic_change(context, &change);
+    let response = match serde_yaml::to_string(&change) {
+        Ok(response) => response,
+        Err(_) => normalized_yaml,
+    };
+    let diagnostics = validate_prepared_spec_plan_change(context, task, &change);
+    PreparedSpecPlanProviderResponse {
+        response,
+        diagnostics,
+        normalizations,
+    }
+}
+
+fn semantic_plan_task_requires_canonical_change(task: &str) -> bool {
+    let task = task.to_ascii_lowercase();
+    [
+        "module.yaml",
+        "implementation.yaml",
+        "proof binding",
+        "property realization",
+        "public behavior binding",
+        "observation source",
+        "semantic-function binding",
+        "semantic function binding",
+        "evidence obligation",
+        "deterministic-corpus",
+        "deterministic-exhaustive",
+    ]
+    .iter()
+    .any(|marker| task.contains(marker))
+}
+
+fn validate_spec_plan_no_change_response(
+    context: &SpecTargetContext,
+    task: &str,
+    response: &str,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let lower = response.to_ascii_lowercase();
+    if semantic_plan_task_requires_canonical_change(task) {
+        diagnostics.push(error_diagnostic(
+            "semantic-plan.canonical-change-required",
+            &context.target,
+            "the task explicitly changes canonical proof bindings, property realizations, observation sources, evidence obligations, or manifests; return an applicable `rms/semantic-change/v0.1` object instead of a source-role edit instruction",
+        ));
+    }
+    if lower.contains("module.yaml") || lower.contains("implementation.yaml") {
+        diagnostics.push(error_diagnostic(
+            "semantic-plan.canonical-file-hand-edit",
+            &context.target,
+            "`module.yaml` and `implementation.yaml` are canonical RMS manifests, not declared source role files; they may be changed only through an authorized RMS mutator",
+        ));
+    }
+    diagnostics
+}
+
+fn normalize_spec_plan_property_evidence_kinds(response: &str) -> (String, Vec<String>) {
+    let mut value = match serde_yaml::from_str::<YamlValue>(response) {
+        Ok(value) => value,
+        Err(_) => return (response.to_string(), Vec::new()),
+    };
+    let Some(properties) = value
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(yaml_key("properties")))
+        .and_then(YamlValue::as_mapping_mut)
+    else {
+        return (response.to_string(), Vec::new());
+    };
+
+    let mut normalizations = Vec::new();
+    for operation in ["add", "set"] {
+        let Some(items) = properties
+            .get_mut(yaml_key(operation))
+            .and_then(YamlValue::as_sequence_mut)
+        else {
+            continue;
+        };
+        for item in items {
+            let Some(property) = item.as_mapping_mut() else {
+                continue;
+            };
+            let id = property
+                .get(yaml_key("id"))
+                .and_then(YamlValue::as_str)
+                .unwrap_or("<unknown>")
+                .to_string();
+            let property_kind = property
+                .get(yaml_key("kind"))
+                .and_then(YamlValue::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            let expected_kind = if matches!(
+                property_kind.as_str(),
+                "fuzz" | "fuzzer" | "fuzzing" | "counterexample" | "counterexamples"
+            ) {
+                "fuzz"
+            } else {
+                "property"
+            };
+            let Some(evidence) = property
+                .get_mut(yaml_key("evidence"))
+                .and_then(YamlValue::as_mapping_mut)
+            else {
+                continue;
+            };
+            let actual_kind = evidence.get(yaml_key("kind")).and_then(YamlValue::as_str);
+            if actual_kind == Some(expected_kind) {
+                continue;
+            }
+            normalizations.push(format!(
+                "normalized property `{id}` evidence kind from `{}` to `{expected_kind}`",
+                actual_kind.unwrap_or("missing")
+            ));
+            evidence.insert(
+                yaml_key("kind"),
+                YamlValue::String(expected_kind.to_string()),
+            );
+        }
+    }
+
+    match serde_yaml::to_string(&value) {
+        Ok(response) => (response, normalizations),
+        Err(_) => (response.to_string(), Vec::new()),
+    }
+}
+
+fn existing_semantic_property_ids(context: &SpecTargetContext) -> BTreeSet<String> {
+    let mut existing = match context.module.as_ref() {
+        Some(module) => module_property_promises_by_id(&module.value)
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
+        None => BTreeSet::new(),
+    };
+    if let Some(implementation) = &context.implementation {
+        for section in ["properties", "fuzz_targets"] {
+            existing.extend(
+                get_path(
+                    &implementation.value,
+                    &["architecture", "reliability", section],
+                )
+                .and_then(YamlValue::as_sequence)
+                .into_iter()
+                .flatten()
+                .filter_map(|item| get_str(item, &["id"]).map(ToString::to_string)),
+            );
+        }
+    }
+    existing
+}
+
+fn normalize_spec_plan_property_operations(
+    context: &SpecTargetContext,
+    change: &mut SemanticChange,
+) -> Vec<String> {
+    let Some(properties) = change.properties.as_mut() else {
+        return Vec::new();
+    };
+    let existing = existing_semantic_property_ids(context);
+    let mut normalizations = Vec::new();
+    let mut additions = Vec::new();
+    let mut replacements = Vec::new();
+
+    for property in std::mem::take(&mut properties.add) {
+        if existing.contains(&property.id) {
+            normalizations.push(format!(
+                "moved existing property `{}` from properties.add to properties.set",
+                property.id
+            ));
+            replacements.push(property);
+        } else {
+            additions.push(property);
+        }
+    }
+    for property in std::mem::take(&mut properties.replace) {
+        if existing.contains(&property.id) {
+            replacements.push(property);
+        } else {
+            normalizations.push(format!(
+                "moved new property `{}` from properties.set to properties.add",
+                property.id
+            ));
+            additions.push(property);
+        }
+    }
+    properties.add = additions;
+    properties.replace = replacements;
+    normalizations
+}
+
+fn validate_prepared_spec_plan_change(
+    context: &SpecTargetContext,
+    task: &str,
+    change: &SemanticChange,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = validate_semantic_change(context, change);
+    if semantic_plan_task_requests_fuzz_target(task)
+        && change.properties.as_ref().is_none_or(|properties| {
+            !properties
+                .add
+                .iter()
+                .chain(&properties.replace)
+                .any(semantic_property_is_fuzz)
+        })
+    {
+        diagnostics.push(error_diagnostic(
+            "semantic-plan.fuzz-target-change-missing",
+            &context.target,
+            "the task explicitly requests an implementation fuzz target; emit the complete existing or new property under `properties.set` or `properties.add` with `kind: fuzz`, which `rms spec apply` maps to canonical module and implementation `fuzz_targets`",
+        ));
+    }
     let machine_change =
-        semantic_machine_change_to_machine_change(&change, context.implementation.as_ref());
+        semantic_machine_change_to_machine_change(change, context.implementation.as_ref());
     if let (Some(implementation), Some(machine_change)) =
         (context.implementation.as_ref(), machine_change.as_ref())
     {
         diagnostics.extend(validate_machine_change(implementation, machine_change));
     }
-    match spec_apply_candidate_context(context, &change, machine_change.as_ref()) {
+    match spec_apply_candidate_context(context, change, machine_change.as_ref()) {
         Ok(candidate) => {
             if let Some(module) = &candidate.module {
                 validate_against_embedded_schema(module, &mut diagnostics);
@@ -48958,6 +50657,7 @@ fn validate_spec_plan_provider_response(
             if let Some(implementation) = &candidate.implementation {
                 validate_against_embedded_schema(implementation, &mut diagnostics);
             }
+            validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
         }
         Err(error) => diagnostics.push(error_diagnostic(
             "semantic-plan.candidate-invalid",
@@ -48968,13 +50668,63 @@ fn validate_spec_plan_provider_response(
     diagnostics
 }
 
+fn semantic_plan_task_requests_fuzz_target(task: &str) -> bool {
+    let task = task.to_ascii_lowercase();
+    task.contains("fuzz target") || task.contains("fuzz_target")
+}
+
+#[cfg(test)]
+fn validate_spec_plan_provider_response(
+    context: &SpecTargetContext,
+    task: &str,
+    response: &str,
+) -> Vec<Diagnostic> {
+    prepare_spec_plan_provider_response(context, task, response).diagnostics
+}
+
 fn render_spec_plan_repair_prompt(
     prompt: &str,
     invalid_response: &str,
     diagnostics: &[Diagnostic],
 ) -> String {
+    let include_schema = diagnostics.iter().any(|diagnostic| {
+        diagnostic.check == "semantic-plan.response-invalid"
+            || diagnostic.check == "semantic-plan.canonical-change-required"
+            || diagnostic.check == "semantic-plan.canonical-file-hand-edit"
+            || diagnostic.check == "semantic-plan.fuzz-target-change-missing"
+            || diagnostic.check.starts_with("contract.")
+            || diagnostic
+                .check
+                .starts_with("evidence.property-realization")
+            || diagnostic.check == "evidence.fuzz-realization-mismatch"
+            || matches!(
+                diagnostic.check.as_str(),
+                "property.runner-missing" | "property.generator-missing"
+            )
+    });
+    let bounded_context = if include_schema {
+        format!(
+            "\n\nOriginal bounded schema context:\n{}",
+            truncate_for_prompt(prompt, 48_000)
+        )
+    } else {
+        String::new()
+    };
+    let realization_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            diagnostic.check.starts_with("evidence.property-realization")
+                || diagnostic.check == "evidence.fuzz-realization-mismatch"
+                || matches!(
+                    diagnostic.check.as_str(),
+                    "property.runner-missing" | "property.generator-missing"
+                )
+        })
+        .then_some("\n\nProperty realization repair rule: `realizations` is mandatory and non-empty for every added or changed property. Never delete the list or replace it with `[]` to repair an item. Replace each invalid item with a complete valid realization. Profiles are exactly `smoke|ci|nightly`; `core` is a module profile and is invalid here. Strategies are exactly `deterministic-corpus|deterministic-exhaustive|generated-property|coverage-fuzzer|model-checker|benchmark|static-analyzer|sanitizer|mutation-tester`; `generated` is never a valid strategy. Every realization has a nonblank command and exact `path#symbol` runner. A fuzz target requires `generated-property`, `coverage-fuzzer`, `model-checker`, or a genuinely finite complete `deterministic-exhaustive` realization with `exhaustive: true`; a fixed non-exhaustive `deterministic-corpus` must remain an ordinary property and cannot be relabeled as fuzz proof. `deterministic-exhaustive` additionally has an exact `path#symbol` generator and `exhaustive: true`. For a finite composite export property, use `{profile: smoke, strategy: deterministic-exhaustive, command: composition, generator: scripts/composition_property.sh#generate_property_cases, runner: scripts/composition_property.sh#run_property, exhaustive: true}`.")
+        .unwrap_or_default();
     format!(
-        "{prompt}\n\n## Required Repair\nThe previous response was not an apply-ready rms/semantic-change/v0.1 object. Repair it once using only this prompt, the invalid response, and the exact RMS diagnostics below. Preserve the requested meaning, use only the rendered closed shapes, and return only the corrected YAML or JSON object. Do not inspect files or call tools.\n\nInvalid response:\n```yaml\n{invalid_response}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`. Do not leave the item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
 }
@@ -48983,7 +50733,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     let mut out = String::new();
     writeln!(out, "# RMS Semantic Change Plan Prompt")?;
     writeln!(out)?;
-    writeln!(out, "Prompt: rms.spec-plan@v1")?;
+    writeln!(out, "Prompt: rms.spec-plan@v2")?;
     writeln!(
         out,
         "Mode: advisory; output is not semantic authority until `rms spec apply` succeeds"
@@ -49022,7 +50772,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Use only the task, schema, diagnostics, and bounded canonical context in this prompt. Do not inspect files, call tools, load skills or plugins, or seek broader repository context. Return the requested final response immediately after reasoning from this input.")?;
     writeln!(out)?;
     writeln!(out, "## Bounded Canonical Context")?;
-    writeln!(out, "These target manifests are the complete canonical planning context. Referenced source, evidence, sibling modules, and prior run artifacts are intentionally outside this provider interaction.")?;
+    writeln!(out, "The target manifests and their directly referenced public contracts are the complete canonical planning context. Referenced source, evidence, sibling modules, and prior run artifacts are intentionally outside this provider interaction.")?;
     if let Some(module) = &context.module {
         writeln!(out)?;
         writeln!(out, "### Module Manifest: {}", module.path.display())?;
@@ -49041,11 +50791,36 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         write!(out, "{}", serde_yaml::to_string(&implementation.value)?)?;
         writeln!(out, "```")?;
     }
+    if let Some(module) = &context.module {
+        let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+        for reference in module_contract_reference_paths(&module.value) {
+            let path = base.join(&reference);
+            if !path.is_file() {
+                continue;
+            }
+            let contract = load_manifest(&path).with_context(|| {
+                format!(
+                    "failed to load directly referenced public contract `{}` for semantic planning",
+                    path.display()
+                )
+            })?;
+            writeln!(out)?;
+            writeln!(
+                out,
+                "### Direct Public Contract: {}",
+                contract.path.display()
+            )?;
+            writeln!(out, "```yaml")?;
+            write!(out, "{}", serde_yaml::to_string(&contract.value)?)?;
+            writeln!(out, "```")?;
+        }
+    }
     writeln!(out)?;
     writeln!(out, "## Operating Rule")?;
     writeln!(out, "RMS owns semantics and architecture. Agents fill declared role bodies. If meaning changes, return an `rms/semantic-change/v0.1` object; do not encode behavior only in source files.")?;
     writeln!(out, "Laws, contracts, machine transitions, runnable surfaces, effects, and evidence obligations come before implementation code. Provider output is advisory until `rms spec apply` updates canonical artifacts and records the exact applied change under `verification/changes/`.")?;
     writeln!(out, "Composite parents may delegate an exported law proof through `verification.delegations`; name the contained provider, provider law, provider property, public export, and concrete evidence instead of duplicating the child property in the parent.")?;
+    writeln!(out, "Before adding a law, invariant, owned decision, or purpose text, compare the requested promise with the target's existing invariants and ownership declarations in the bounded context. If an existing invariant already expresses the promise, set the property `proves` field to that exact invariant id and do not add a synonymous law, duplicate ownership decision, or expanded purpose. Preserve current meaning and topology unless the task explicitly changes them.")?;
     writeln!(out, "When a promise says always, never, bounded, ordered, normalized, parsed, generated, or impossible, declare semantic properties with input spaces and oracles before relying on binding tests.")?;
     writeln!(out, "Public behavior uses `rms/contract/v0.2`: give every requirement, guarantee, failure, invariant, and case a stable id, then choose exactly one core expression or exact external property realization. Queries have an empty state/event/effect frame.")?;
     writeln!(out, "Reusable modules must declare capabilities/contracts, one public facade, and package/reuse evidence before consumers import them; native package files only describe how to import the RMS facade.")?;
@@ -49054,7 +50829,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Use the bounded canonical context in this prompt and RMS diagnostics as the complete planning context. Do not infer undeclared facts from sibling modules, prior runs, source files, or generated examples.")?;
     writeln!(out)?;
     writeln!(out, "## Required Output")?;
-    writeln!(out, "Return only YAML or JSON matching this language-neutral schema when meaning changes. If no semantic change is needed, say that current semantics are sufficient and name the declared role files to edit.")?;
+    writeln!(out, "Return only YAML or JSON matching this language-neutral schema whenever canonical declarations change, including proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, or `implementation.yaml`, even when runtime behavior is unchanged. Only when the task requires exclusively source-role body edits and all canonical declarations are already sufficient may you say that current semantics are sufficient; then name exact paths already declared under `architecture.roles`. Canonical manifests are never role files and must never be recommended for direct editing.")?;
     writeln!(out)?;
     writeln!(out, "```yaml")?;
     writeln!(out, "spec: rms/semantic-change/v0.1")?;
@@ -49282,6 +51057,22 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         "      evidence: {{properties: [verification/properties/stable_property]}}"
     )?;
     writeln!(out, "      authorities: []")?;
+    writeln!(out, "public_behavior_bindings:")?;
+    writeln!(out, "  set:")?;
+    writeln!(out, "    - id: stable-public-binding-id")?;
+    writeln!(out, "      public_kind: command")?;
+    writeln!(out, "      public_name: stable-public-command")?;
+    writeln!(
+        out,
+        "      contract: contracts/stable-public-command.v1.yaml"
+    )?;
+    writeln!(out, "      semantic_function: semantic-function-id")?;
+    writeln!(out, "      machine_inputs: [StableCommand]")?;
+    writeln!(out, "      machine_outputs: [StableReply]")?;
+    writeln!(
+        out,
+        "      observation_source: {{kind: transition-record, command: trace}}"
+    )?;
     writeln!(out, "evidence:")?;
     writeln!(out, "  add:")?;
     writeln!(out, "    - kind: law")?;
@@ -49293,7 +51084,55 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "      delete_file: true")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations` with `assembly`, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "Property realization grammar is closed. `realizations` is mandatory and non-empty for every property in `add` or `set`; never emit `realizations: []`. Profiles are exactly `smoke`, `ci`, or `nightly`; `core` is a module profile and is not a realization profile. Strategies are exactly `deterministic-corpus`, `deterministic-exhaustive`, `generated-property`, `coverage-fuzzer`, `model-checker`, `benchmark`, `static-analyzer`, `sanitizer`, or `mutation-tester`. Every realization declares a nonblank implementation command and an exact relative `path#symbol` runner. `generated-property` and `deterministic-exhaustive` also declare an exact relative `path#symbol` generator. `deterministic-exhaustive` always declares `exhaustive: true`.")?;
+    writeln!(out, "Fuzz-target grammar uses the same `properties` change section. Set `kind: fuzz` on the complete property item; `rms spec apply` then places it under canonical module `fuzz_targets` and implementation `architecture.reliability.fuzz_targets`. Use `properties.set` when the ID already exists in either properties or fuzz targets, and `properties.add` only for a new ID. There is no top-level `fuzz_targets` semantic-change field.")?;
+    writeln!(out, "For a finite composite export/child-backing property, use this exact realization unless the bounded context already declares another exact realization:")?;
+    writeln!(out, "```yaml")?;
+    writeln!(out, "realizations:")?;
+    writeln!(out, "  - profile: smoke")?;
+    writeln!(out, "    strategy: deterministic-exhaustive")?;
+    writeln!(out, "    command: composition")?;
+    writeln!(
+        out,
+        "    generator: scripts/composition_property.sh#generate_property_cases"
+    )?;
+    writeln!(
+        out,
+        "    runner: scripts/composition_property.sh#run_property"
+    )?;
+    writeln!(out, "    exhaustive: true")?;
+    writeln!(out, "```")?;
+    writeln!(out)?;
+    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "The exact property exploration shape is:")?;
+    writeln!(out, "```yaml")?;
+    writeln!(out, "explorations:")?;
+    writeln!(
+        out,
+        "  - assembly: verification/assemblies/existing_probe_assembly.yaml"
+    )?;
+    writeln!(out, "    goal: violate")?;
+    writeln!(out, "    bounds:")?;
+    writeln!(out, "      max_steps: 64")?;
+    writeln!(out, "      max_schedules: 512")?;
+    writeln!(out, "      max_states: 128")?;
+    writeln!(out, "```")?;
+    writeln!(out, "A referenced assembly must already be execution-ready: `rms probe --describe --file <assembly>` must succeed before the exploration is added. Every command or effect emitted by every included machine transition must be closed by a canonical dependency bridge, protocol route, or explicit assembly substitute. `rms spec apply` neither creates nor repairs probe assemblies. For an external effect with no RMS provider module, use this exact substitute shape inside the assembly:")?;
+    writeln!(out, "```yaml")?;
+    writeln!(out, "substitutes:")?;
+    writeln!(out, "  - id: external-effect-substitute")?;
+    writeln!(out, "    source: machine-instance-id")?;
+    writeln!(out, "    output: {{kind: effect, name: DeclaredEffect}}")?;
+    writeln!(out, "    outcomes:")?;
+    writeln!(out, "      - id: delayed-result")?;
+    writeln!(out, "        target: machine-instance-id")?;
+    writeln!(out, "        after: {{value: 250, unit: ms}}")?;
+    writeln!(
+        out,
+        "        input: {{kind: effect-result, name: DeclaredEffectResult, data: {{}}}}"
+    )?;
+    writeln!(out, "```")?;
+    writeln!(out, "Operation choice is target-aware: put a property ID already present in the bounded canonical context under `properties.set`, and put every newly introduced property ID under `properties.add`. Never put a new ID under `set` or an existing ID under `add`.")?;
     writeln!(out)?;
     writeln!(out, "A bounded response measured in nominal transitions uses this exact executable shape inside `properties.add[]` or `properties.set[]`:")?;
     writeln!(out, "```yaml")?;
@@ -49329,7 +51168,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     )?;
     writeln!(out, "```")?;
     writeln!(out, "Closed trace metrics are `elapsed` with `value: {{quantity: time}}`, `transition-count` with `value: {{quantity: transition}}`, `attempt-count` with `value: {{quantity: attempt}}`, and `message-count` with `value: {{quantity: message}}`. Quantity dimensions are scalar strings under `value.quantity`; units belong on predicate comparison values and temporal bounds, not in the observation type.")?;
-    writeln!(out, "`properties.remove[]` contains existing property ids. Binding-native realizations name a `path#symbol` runner and an exact generator. Protocol observations reference a public protocol automaton. `semantic_functions.add[]` and `semantic_functions.set[]` use the rendered function shape; `semantic_functions.remove[]` contains existing function ids.")?;
+    writeln!(out, "`properties.remove[]` contains existing property ids. Binding-native realizations name a `path#symbol` runner and an exact generator. Protocol observations reference a public protocol automaton. `semantic_functions.add[]` and `semantic_functions.set[]` use the rendered function shape; `semantic_functions.remove[]` contains existing function ids. `public_behavior_bindings.add[]` and `.set[]` use the exact rendered binding shape. Their optional `observation_source` is exactly `{{kind: transition-record|invocation-record, command: existing-command-key}}`; it never contains `name` or `value`, and its `kind` is never `semantic-function`.")?;
     writeln!(out, "`hunt_exceptions.set` replaces the complete list, `add` replaces an existing item with the same obligation, and `remove` contains obligation names. Obligations are exactly `generated-input`, `boundary-fuzz`, `finite-state-exploration`, `schedule-fault-exploration`, `unsafe-code-analysis`, `oracle-mutation`, and `temporal-violation-search`; every exception needs a focused reason and is valid only when that lane is genuinely inapplicable.")?;
     writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module. `evidence.remove[]` uses exact scalar `kind`, exact relative `path`, and `delete_file: true|false`; deletion is allowed only after the final declaration no longer references that path.")?;
     writeln!(out, "`allowed_missing_constructors` uses set/remove/add semantics for public result/read-model structs intentionally produced only by a declared machine, query, or projector; do not use it to excuse an actually missing validated constructor.")?;
@@ -49338,11 +51177,46 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Use `semantic_functions.add`, `set`, and `remove` whenever a law's authority owner, public semantic callable, parser, projector, adapter, transformation, or executor binding changes. Do not edit `implementation.yaml.semantic_functions` directly. Function kinds are `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, `interpreter`, `transformation`, or `effect-executor`; purity is `pure`, `effectful`, or `boundary`. Privileged, unsafe, or foreign functions list their declared authority ids.")?;
     writeln!(out, "For every machine variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "Machine transition items use `from`, `on`, `to`, stable ASCII identifier `case` values such as `valid_example_accepted` (not kebab-case), optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names.")?;
+    writeln!(out, "When external observations use a different binding enum from emitted events, set `machine.types.observed_event` to that exact type. Omit it only for an intentional shared event enum; older declarations continue to fall back to `machine.types.event`.")?;
     writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use scalar `resource`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings map a declared authority to role names, one exact safe-facade `path#symbol`, and evidence. Role removal items use `kind` and optional `path`. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically.")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
-    writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and structured v0.2 `semantics`. Command, query, and capability semantics contain typed observations; stable-id requires, guarantees, failures, cases, and invariants; exhaustive case policy; and explicit permitted state/event/effect frames. Event semantics contain typed payload observations and guarantees. API contracts aggregate exact contract references. Each clause uses exactly one `evaluation.kind: core|external`; `unresolved` is migration-draft-only and fails strict checks. Legacy `accepts`, `ensures`, and `rejects` inputs produce unresolved drafts and are not completion-ready. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`: only capability contracts may be required. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
+    writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and structured v0.2 `semantics`. For command, query, and capability contracts, `contracts.add[].semantics` and `contracts.set[].semantics` must contain an exact `behavior` object; there is no `semantic_profile` field. Event contracts use an exact `event` object and API contracts use an exact `api` object. When setting an existing contract, preserve its wrapper, version, evaluation strategy (`core` versus `external`), and every unaffected clause unless the task explicitly changes them. Each clause uses exactly one `evaluation.kind: core|external`; an external clause names its exact property and needs no core expression or semantic profile. `unresolved` is migration-draft-only and fails strict checks. Legacy `accepts`, `ensures`, and `rejects` inputs produce unresolved drafts and are not completion-ready. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`: only capability contracts may be required. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
+    writeln!(
+        out,
+        "The exact external command/query/capability contract shape is:"
+    )?;
+    writeln!(out, "```yaml")?;
+    writeln!(out, "contracts:")?;
+    writeln!(out, "  set:")?;
+    writeln!(out, "    - name: existing-contract")?;
+    writeln!(out, "      kind: capability")?;
+    writeln!(out, "      direction: provided")?;
+    writeln!(out, "      version: 1.0.0")?;
+    writeln!(out, "      meaning: Product-specific meaning.")?;
+    writeln!(out, "      semantics:")?;
+    writeln!(out, "        behavior:")?;
+    writeln!(out, "          observations: []")?;
+    writeln!(out, "          requires:")?;
+    writeln!(out, "            - id: stable-requirement")?;
+    writeln!(
+        out,
+        "              statement: Product-specific requirement."
+    )?;
+    writeln!(
+        out,
+        "              evaluation: {{kind: external, property: stable-property-id}}"
+    )?;
+    writeln!(out, "          guarantees: []")?;
+    writeln!(out, "          failures: []")?;
+    writeln!(out, "          cases: []")?;
+    writeln!(out, "          invariants: []")?;
+    writeln!(
+        out,
+        "          case_policy: {{coverage: exhaustive, overlap: forbidden}}"
+    )?;
+    writeln!(out, "```")?;
     if context.implementation.is_none() {
         writeln!(out, "This target has no implementation binding, so `semantic_functions`, `machine`, `roles`, and `surfaces` are null. Keep them null for contract/law/property-only work. Before requesting implementation bindings, machine roles, or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|python|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
     }
@@ -49452,6 +51326,7 @@ fn run_spec_apply(
     if let Some(implementation) = &candidate.implementation {
         validate_against_embedded_schema(implementation, &mut diagnostics);
     }
+    validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
 
     let planned_writes = planned_spec_apply_writes(&context, &change, machine_change.as_ref());
     let final_machine = context
@@ -52568,29 +54443,7 @@ fn validate_semantic_properties(
     let Some(properties) = &change.properties else {
         return;
     };
-    let mut existing = context
-        .module
-        .as_ref()
-        .map(|module| {
-            module_property_promises_by_id(&module.value)
-                .into_keys()
-                .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_default();
-    if let Some(implementation) = &context.implementation {
-        for section in ["properties", "fuzz_targets"] {
-            existing.extend(
-                get_path(
-                    &implementation.value,
-                    &["architecture", "reliability", section],
-                )
-                .and_then(YamlValue::as_sequence)
-                .into_iter()
-                .flatten()
-                .filter_map(|item| get_str(item, &["id"]).map(ToString::to_string)),
-            );
-        }
-    }
+    let existing = existing_semantic_property_ids(context);
     let mut seen = BTreeSet::new();
     for property in properties.add.iter().chain(&properties.replace) {
         if !is_stable_semantic_id(&property.id) {
@@ -52665,8 +54518,11 @@ fn validate_semantic_properties(
                     "evidence.property-realization-invalid",
                     &context.target,
                     format!(
-                        "property `{}` has an invalid realization profile, strategy, or command",
-                        property.id
+                        "property `{}` has realization profile `{}`, strategy `{}`, command `{}`; profiles are exactly smoke|ci|nightly, strategies are exactly deterministic-corpus|deterministic-exhaustive|generated-property|coverage-fuzzer|model-checker|benchmark|static-analyzer|sanitizer|mutation-tester, and command must be nonblank",
+                        property.id,
+                        realization.profile,
+                        realization.strategy,
+                        realization.command,
                     ),
                 ));
             }
@@ -55763,7 +57619,13 @@ fn semantic_property_yaml(property: &SemanticPropertyChange) -> YamlValue {
     if !property.explorations.is_empty() {
         mapping.insert(
             yaml_key("explorations"),
-            YamlValue::Sequence(property.explorations.clone()),
+            YamlValue::Sequence(
+                property
+                    .explorations
+                    .iter()
+                    .map(|exploration| serde_yaml::to_value(exploration).unwrap_or(YamlValue::Null))
+                    .collect(),
+            ),
         );
     }
     if !property.observations.is_empty() {
@@ -56920,6 +58782,12 @@ fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()>
                 println!("{smoke}");
             }
         }
+        verify_implementation_smoke_properties(
+            implementation,
+            &manifest,
+            true,
+            DEFAULT_PROOF_TIMEOUT_SECONDS,
+        )?;
         return Ok(());
     }
 
@@ -56945,6 +58813,15 @@ fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()>
         );
     }
 
+    if let Some(summary) = verify_implementation_smoke_properties(
+        implementation,
+        &manifest,
+        false,
+        DEFAULT_PROOF_TIMEOUT_SECONDS,
+    )? {
+        println!("{summary}");
+    }
+
     for smoke in declared_surface_smoke_commands(&manifest)? {
         if smoke == command {
             continue;
@@ -56962,6 +58839,88 @@ fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()>
     }
 
     Ok(())
+}
+
+fn verify_implementation_smoke_properties(
+    implementation: &Path,
+    manifest: &LoadedManifest,
+    dry_run: bool,
+    timeout_seconds: u64,
+) -> Result<Option<String>> {
+    let targets = property_targets_from_implementation(
+        manifest,
+        &["architecture", "reliability", "properties"],
+        "property",
+    )
+    .into_iter()
+    .chain(property_targets_from_implementation(
+        manifest,
+        &["architecture", "reliability", "fuzz_targets"],
+        "fuzz",
+    ))
+    .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Ok(None);
+    }
+    let report = execute_property_realizations(
+        implementation,
+        PropertyProfile::Smoke,
+        dry_run,
+        timeout_seconds,
+    )?;
+    if dry_run {
+        for command in &report.commands {
+            println!("{}", command.command);
+        }
+    }
+    if report.result == "fail" {
+        bail!(
+            "implementation smoke properties failed{}",
+            property_run_failure_suffix(&report)
+        );
+    }
+    Ok(Some(format!(
+        "property smoke {}: {} realization(s)",
+        if dry_run { "planned" } else { "passed" },
+        report.commands.len()
+    )))
+}
+
+fn property_run_failure_suffix(report: &PropertyRunReport) -> String {
+    report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.severity == Severity::Error
+                || property_blocking_diagnostic(&diagnostic.check)
+        })
+        .map(|diagnostic| format!(": [{}] {}", diagnostic.check, diagnostic.message))
+        .or_else(|| {
+            report
+                .commands
+                .iter()
+                .find(|command| command.status == "fail")
+                .map(|command| {
+                    format!(
+                        ": property `{}` runner `{}` failed{}{}",
+                        command.property,
+                        command.runner,
+                        (!command.stdout.trim().is_empty())
+                            .then(|| format!(
+                                "; stdout: {}",
+                                bounded_stream_excerpt(&command.stdout)
+                            ))
+                            .unwrap_or_default(),
+                        (!command.stderr.trim().is_empty())
+                            .then(|| format!(
+                                "; stderr: {}",
+                                bounded_stream_excerpt(&command.stderr)
+                            ))
+                            .unwrap_or_default()
+                    )
+                })
+        })
+        .unwrap_or_default()
 }
 
 fn declared_surface_smoke_commands(manifest: &LoadedManifest) -> Result<Vec<String>> {
@@ -57025,6 +58984,31 @@ fn run_verify_composite_module(
     }
 
     ensure_composite_scenario_evidence(manifest, module_path)?;
+
+    let property_report = execute_module_property_realizations(
+        module_path,
+        manifest,
+        PropertyProfile::Smoke,
+        dry_run,
+        DEFAULT_PROOF_TIMEOUT_SECONDS,
+    )?;
+    if dry_run {
+        for command in &property_report.commands {
+            println!("{}", command.command);
+        }
+    }
+    if property_report.result == "fail" {
+        bail!(
+            "composite module smoke properties failed{}",
+            property_run_failure_suffix(&property_report)
+        );
+    }
+    if !dry_run && !property_report.commands.is_empty() {
+        println!(
+            "composite property smoke passed: {} realization(s)",
+            property_report.commands.len()
+        );
+    }
 
     let modules = load_module_index(&root)?;
     for child in composition_children_for(module_name, &manifest.value) {
@@ -62513,6 +64497,7 @@ impl BindingScaffoldModel {
             input: self.stateful().then_some(self.names.input.clone()),
             command: Some(self.names.command.clone()),
             command_envelope: Some(self.names.command_envelope.clone()),
+            observed_event: None,
             event: Some(self.names.event.clone()),
             event_envelope: Some(self.names.event_envelope.clone()),
             effect: self.declares_effects.then_some(self.names.effect.clone()),
@@ -64659,6 +66644,7 @@ fn render_machine_architecture_yaml(model: &BindingScaffoldModel, binding: &str)
         ("input", types.input.as_deref()),
         ("command", types.command.as_deref()),
         ("command_envelope", types.command_envelope.as_deref()),
+        ("observed_event", types.observed_event.as_deref()),
         ("event", types.event.as_deref()),
         ("event_envelope", types.event_envelope.as_deref()),
         ("effect", types.effect.as_deref()),
@@ -64778,6 +66764,14 @@ fn render_machine_architecture_yaml(model: &BindingScaffoldModel, binding: &str)
         let _ = writeln!(out, "        events: [Rejected]");
         let _ = writeln!(out, "        rejection: InvalidCommand");
     }
+    for observed in model.declared_observed_events() {
+        let _ = writeln!(out, "      - from: {initial}");
+        let _ = writeln!(out, "        on: {observed}");
+        let _ = writeln!(out, "        to: {completed}");
+        let _ = writeln!(out, "        case: Observed");
+        let _ = writeln!(out, "        events: [Accepted]");
+        let _ = writeln!(out, "        reply: Accepted");
+    }
     out
 }
 
@@ -64814,6 +66808,7 @@ fn render_property_commands_yaml(shape: ScaffoldShape, binding: &str) -> String 
             "swift" => SWIFT_BINDING_ADAPTER.property_proof_command(),
             "js" => JS_BINDING_ADAPTER.property_proof_command(),
             "python" => PYTHON_BINDING_ADAPTER.property_proof_command(),
+            "executable" => EXECUTABLE_BINDING_ADAPTER.property_proof_command(),
             _ => "",
         };
         if !command.is_empty() {
@@ -64826,6 +66821,7 @@ fn render_property_commands_yaml(shape: ScaffoldShape, binding: &str) -> String 
             "swift" => SWIFT_BINDING_ADAPTER.property_proof_command(),
             "js" => JS_BINDING_ADAPTER.property_proof_command(),
             "python" => PYTHON_BINDING_ADAPTER.property_proof_command(),
+            "executable" => EXECUTABLE_BINDING_ADAPTER.property_proof_command(),
             _ => "",
         };
         if !command.is_empty() {
@@ -65373,9 +67369,10 @@ pub fn generate_malformed_input_cases() -> Vec<String> {{
     };
     let observed_event_arm = if !model.declared_observed_events().is_empty() {
         format!(
-            "\n        (_, {input}::ObservedEvent(_)) => ({state}::{completed}, vec![{event}::Accepted], Vec::new(), Some({reply}::Accepted), None, \"Observed\"),",
+            "\n        ({state}::{initial}, {input}::ObservedEvent(_)) => ({state}::{completed}, vec![{event}::Accepted], Vec::new(), Some({reply}::Accepted), None, \"Observed\"),",
             input = names.input,
             state = names.state,
+            initial = initial,
             completed = completed,
             event = names.event,
             reply = names.reply,
@@ -65400,8 +67397,8 @@ pub fn transition(state: {state}, input: {input}) -> {transition} {{
 pub fn transition_record(state: {state}, input: {input}) -> {transition_record} {{
     let state_before = state.clone();
     let (next_state, events, effects, reply, rejection, branch) = match (&state, &input) {{
-        (_, {input}::Command({command}::Accept(label))) => {command_accept},
-        (_, {input}::Command({command}::Reject(reason))) => {{
+        ({state}::{initial}, {input}::Command({command}::Accept(label))) => {command_accept},
+        ({state}::{initial}, {input}::Command({command}::Reject(reason))) => {{
             let rejection = {rejection}::InvalidCommand(reason.clone());
             ({state}::{rejected}, vec![{event}::Rejected(rejection.clone())], Vec::new(), None, Some(rejection), "Reject")
         }},{effect_result_arms}{observed_event_arm}
@@ -65449,6 +67446,7 @@ pub fn generate_malformed_input_cases() -> Vec<String> {{
         common = common,
         machine = names.machine,
         state = names.state,
+        initial = initial,
         input = names.input,
         transition = names.transition,
         transition_record = names.transition_record,
@@ -65638,6 +67636,16 @@ fn render_rust_machine_probe_rs(package_name: &str, model: &BindingScaffoldModel
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let state_descriptions = starter_states_for_shape(model.shape)
+        .iter()
+        .map(|state| {
+            format!(
+                r#"json!({{"name":"{state}","data_schema":{{"type":"object"}},"examples":[variant_json(&{state_type}::{state})]}})"#,
+                state_type = names.state,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n            ");
     let observed_arms = model
         .declared_observed_events()
         .iter()
@@ -65843,8 +67851,10 @@ fn probe_machine() {{
         json!({{
             "spec": "rms/machine-probe-description/v0.1",
             "machine": "{machine}",
-            "initial_state": {{"name":"{initial}","data":{{}}}},
-            "states": [],
+            "initial_state": variant_json(&{state_type}::{initial}),
+            "states": [
+                {state_descriptions}
+            ],
             "inputs": [
                 {descriptions}
             ],
@@ -65873,7 +67883,9 @@ fn probe_machine() {{
         transition_record = names.transition_record,
         parse_and_run = parse_and_run,
         machine = names.machine,
+        state_type = names.state,
         initial = initial,
+        state_descriptions = state_descriptions,
         descriptions = descriptions,
     )
 }
@@ -66301,7 +68313,8 @@ public func generate_malformed_input_cases() -> [String] {{
     };
     let observed_arm = if !model.declared_observed_events().is_empty() {
         format!(
-            "\n    case (_, .observedEvent):\n        result = (.{completed}, [.accepted], [], .accepted, nil, \"Observed\")"
+            "\n    case (.{initial}, .observedEvent):\n        result = (.{completed}, [.accepted], [], .accepted, nil, \"Observed\")",
+            initial = swift_case_name(&initial),
         )
     } else {
         String::new()
@@ -66321,9 +68334,9 @@ public func transition(_ state: {state}, _ input: {input}) -> {transition} {{
 public func transitionRecord(_ state: {state}, _ input: {input}) -> {transition_record} {{
     let result: ({state}, [{event}], [{effect_type}], {reply}?, {rejection}?, String)
     switch (state, input) {{
-    case (_, .command(.accept(let label))):
+    case (.{initial_case}, .command(.accept(let label))):
         result = {accept_tuple}
-    case (_, .command(.reject(let reason))):
+    case (.{initial_case}, .command(.reject(let reason))):
         let rejection = {rejection}.invalidCommand(reason)
         result = (.{rejected}, [.rejected(rejection)], [], nil, rejection, "Reject"){effect_arms}{observed_arm}
     default:
@@ -66374,6 +68387,7 @@ public func generate_malformed_input_cases() -> [String] {{
         observed_arm = observed_arm,
         source_provenance = names.source_provenance,
         transition_source = transition_source,
+        initial_case = swift_case_name(&initial),
     )
 }
 
@@ -66552,7 +68566,13 @@ fn render_swift_machine_probe_tests(target_name: &str, model: &BindingScaffoldMo
         .join("\n");
     let state_descriptions = states
         .iter()
-        .map(|state| format!("[\"name\": \"{state}\", \"data_schema\": [\"type\": \"object\"]]"))
+        .map(|state| {
+            format!(
+                "[\"name\": \"{state}\", \"data_schema\": [\"type\": \"object\"], \"examples\": [variantJSON({state_type}.{})]]",
+                swift_case_name(state),
+                state_type = names.state,
+            )
+        })
         .collect::<Vec<_>>()
         .join(",\n                ");
     let observed_arms = model
@@ -66771,7 +68791,7 @@ final class MachineProbeTests: XCTestCase {{
             output = [
                 "spec": "rms/machine-probe-description/v0.1",
                 "machine": "{machine}",
-                "initial_state": ["name": "{initial}", "data": [:]],
+                "initial_state": variantJSON({state_type}.{initial_case}),
                 "states": [
                     {state_descriptions}
                 ],
@@ -66801,7 +68821,8 @@ final class MachineProbeTests: XCTestCase {{
         transition_record = names.transition_record,
         stateful_helpers = stateful_helpers,
         machine = names.machine,
-        initial = initial,
+        state_type = names.state,
+        initial_case = swift_case_name(&initial),
         state_descriptions = state_descriptions,
         input_descriptions = input_descriptions,
     )
@@ -66921,7 +68942,7 @@ fn render_python_implementation_yaml(model: &BindingScaffoldModel) -> Result<Str
                 "tests/test_binding.py#run_transition_property",
             ),
             (
-                "tests/boundary-smoke.mjs#runMalformedInputFuzz",
+                "tests/boundary-smoke.mjs#runMalformedInputProperty",
                 "tests/test_binding.py#run_malformed_input_fuzz",
             ),
         ],
@@ -67163,10 +69184,39 @@ class {envelope}:
         String::new()
     };
     let input = if model.stateful() {
-        let union = if model.declares_effect_results {
-            format!("{} | {}", names.command, names.effect_result)
+        let mut union = vec![names.command.clone()];
+        if model.declares_effect_results {
+            union.push(names.effect_result.clone());
+        }
+        if !model.declared_observed_events().is_empty() {
+            union.push(names.event.clone());
+        }
+        let union = union.join(" | ");
+        let effect_result_constructor = if model.declares_effect_results {
+            format!(
+                r#"
+
+def effect_result_input(result: {effect_result}) -> {input}:
+    return {input}("effect-result", result)
+"#,
+                effect_result = names.effect_result,
+                input = names.input,
+            )
         } else {
-            names.command.clone()
+            String::new()
+        };
+        let observed_event_constructor = if !model.declared_observed_events().is_empty() {
+            format!(
+                r#"
+
+def observed_event_input(event: {event}) -> {input}:
+    return {input}("observed-event", event)
+"#,
+                event = names.event,
+                input = names.input,
+            )
+        } else {
+            String::new()
         };
         format!(
             r#"
@@ -67178,9 +69228,13 @@ class {input}:
 
 def command_input(command: {command}) -> {input}:
     return {input}("command", command)
+{effect_result_constructor}
+{observed_event_constructor}
 "#,
             input = names.input,
             command = names.command,
+            effect_result_constructor = effect_result_constructor,
+            observed_event_constructor = observed_event_constructor,
         )
     } else {
         String::new()
@@ -67334,20 +69388,21 @@ fn render_python_transition(model: &BindingScaffoldModel) -> String {
             format!(
                 "next_state = {state}.{completed}\n        events = ({event}(\"Accepted\"),)\n        effects = ()\n        reply = {reply}(\"Accepted\")",
                 state = names.state,
+                completed = completed,
                 event = names.event,
                 reply = names.reply,
             )
         };
         let result_arms = if model.declares_effect_results {
             format!(
-                r#"    elif input.kind == "effect-result" and isinstance(input.value, {result}) and input.value.kind == "Succeeded":
+                r#"    elif state == {state}.{waiting} and input.kind == "effect-result" and isinstance(input.value, {result}) and input.value.kind == "Succeeded":
         next_state = {state}.{completed}
         events = ({event}("EffectCompleted"),)
         effects = ()
         reply = {reply}("Accepted")
         rejection = None
         branch = "Succeeded"
-    elif input.kind == "effect-result" and isinstance(input.value, {result}):
+    elif state == {state}.{waiting} and input.kind == "effect-result" and isinstance(input.value, {result}):
         next_state = {state}.{rejected}
         rejection = {rejection_type}("InvalidCommand", input.value.reason)
         events = ({event}("Rejected", rejection),)
@@ -67364,24 +69419,43 @@ fn render_python_transition(model: &BindingScaffoldModel) -> String {
         } else {
             String::new()
         };
+        let observed_arm = if !model.declared_observed_events().is_empty() {
+            format!(
+                r#"    elif state == {state}.{initial} and input.kind == "observed-event" and isinstance(input.value, {event}):
+        next_state = {state}.{completed}
+        events = ({event}("Accepted"),)
+        effects = ()
+        reply = {reply}("Accepted")
+        rejection = None
+        branch = "Observed"
+"#,
+                state = names.state,
+                initial = initial,
+                completed = completed,
+                event = names.event,
+                reply = names.reply,
+            )
+        } else {
+            String::new()
+        };
         format!(
             r#"def transition(state: {state}, input: {input}) -> {transition}:
     return transition_record(state, input).output
 
 
 def transition_record(state: {state}, input: {input}) -> {record}:
-    if input.kind == "command" and isinstance(input.value, {command}) and input.value.kind == "Accept":
+    if state == {state}.{initial} and input.kind == "command" and isinstance(input.value, {command}) and input.value.kind == "Accept":
         {accept}
         rejection = None
         branch = "Accept"
-    elif input.kind == "command" and isinstance(input.value, {command}) and input.value.kind == "Reject":
+    elif state == {state}.{initial} and input.kind == "command" and isinstance(input.value, {command}) and input.value.kind == "Reject":
         next_state = {state}.{rejected}
         rejection = {rejection_type}("InvalidCommand", input.value.value.value)
         events = ({event}("Rejected", rejection),)
         effects = ()
         reply = None
         branch = "Reject"
-{result_arms}    else:
+{result_arms}{observed_arm}    else:
         next_state = state
         rejection = {rejection_type}("IllegalTransition")
         events = ({event}("Rejected", rejection),)
@@ -67404,6 +69478,7 @@ def replay_trace(initial: {state}, inputs: Iterable[{input}]) -> tuple[{record},
     return tuple(records)
 "#,
             state = names.state,
+            initial = initial,
             input = names.input,
             transition = names.transition,
             record = names.transition_record,
@@ -67412,6 +69487,7 @@ def replay_trace(initial: {state}, inputs: Iterable[{input}]) -> tuple[{record},
             event = names.event,
             source = names.source_provenance,
             package = sanitize_python_import_package(&model.module_name),
+            observed_arm = observed_arm,
         )
     } else {
         format!(
@@ -67818,27 +69894,136 @@ def produce_transition_trace() -> None:
 
 fn render_python_machine_probe(model: &BindingScaffoldModel) -> String {
     let package = sanitize_python_import_package(&model.module_name);
-    let initial = starter_states_for_shape(model.shape)
+    let states = starter_states_for_shape(model.shape);
+    let initial = states
         .first()
         .cloned()
         .unwrap_or_else(|| "Ready".to_string());
-    let imports = if model.stateful() {
-        ", command_input, initial_state"
+    let state_descriptions = states
+        .iter()
+        .map(|state| {
+            format!(
+                r#"{{"name": "{state}", "data_schema": {{"type": "object"}}, "examples": [{{"name": "{state}", "data": {{}}}}]}}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n                ");
+    let effect_imports = if model.declares_effect_results {
+        format!(", effect_result_input, {}", model.names.effect_result)
     } else {
-        ""
+        String::new()
+    };
+    let observed_imports = if !model.declared_observed_events().is_empty() {
+        format!(", observed_event_input, {}", model.names.event)
+    } else {
+        String::new()
+    };
+    let imports = if model.stateful() {
+        format!(
+            ", command_input, initial_state, {}{}{}",
+            model.names.state, effect_imports, observed_imports
+        )
+    } else {
+        String::new()
     };
     let record_call = if model.stateful() {
-        "transition_record(initial_state(), command_input(command))"
+        "transition_record(state, parse_probe_input(normalized))"
     } else {
-        "transition_record(command)"
+        "transition_record(parse_probe_input(normalized))"
     };
     let evaluation_record_call = if model.stateful() {
         format!(
-            "transition_record({}(case[\"state\"][\"name\"]), command_input(command))",
+            "transition_record({}(case[\"state\"][\"name\"]), parse_probe_input(normalized))",
             model.names.state
         )
     } else {
-        "transition_record(command)".to_string()
+        "transition_record(parse_probe_input(normalized))".to_string()
+    };
+    let effect_input_descriptions = if model.declares_effect_results {
+        r#"
+                {"kind": "effect-result", "name": "Succeeded", "data_schema": {"type": "object"}, "example": {"kind": "effect-result", "name": "Succeeded", "data": {}}},
+                {"kind": "effect-result", "name": "Failed", "data_schema": {"type": "object", "properties": {"reason": {"type": "string"}}}, "example": {"kind": "effect-result", "name": "Failed", "data": {"reason": "failed"}}},"#
+            .to_string()
+    } else {
+        String::new()
+    };
+    let observed_input_descriptions = model
+        .declared_observed_events()
+        .iter()
+        .map(|event| {
+            format!(
+                r#"{{"kind": "observed-event", "name": "{event}", "data_schema": {{"type": "object"}}, "example": {{"kind": "observed-event", "name": "{event}", "data": {{}}}}}}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n                ");
+    let effect_input_parser = if model.declares_effect_results {
+        format!(
+            r#"
+    if name == "Succeeded":
+        return effect_result_input({effect_result}("Succeeded"))
+    if name == "Failed":
+        return effect_result_input({effect_result}("Failed", data.get("reason", "failed")))"#,
+            effect_result = model.names.effect_result,
+        )
+    } else {
+        String::new()
+    };
+    let observed_input_parser = if let Some(event) = model.declared_observed_events().first() {
+        format!(
+            r#"
+    if name == "{event}":
+        return observed_event_input({event_type}("{event}"))"#,
+            event_type = model.names.event,
+        )
+    } else {
+        String::new()
+    };
+    let parse_probe_input = if model.stateful() {
+        format!(
+            r#"def parse_probe_input(value: dict[str, object]):
+    name = str(value.get("name", ""))
+    data = value.get("data", {{}})
+    if not isinstance(data, dict):
+        raise ValueError("probe input data must be an object")
+    if name == "Accept":
+        label = make_label(data.get("label", "probe"))
+        if label is None:
+            raise ValueError("probe label must be non-empty")
+        return command_input(accept_command(label))
+    if name == "Reject":
+        reason = make_label(data.get("reason", "rejected"))
+        if reason is None:
+            raise ValueError("probe reason must be non-empty")
+        return command_input(reject_command(reason)){effect_input_parser}{observed_input_parser}
+    raise ValueError(f"unsupported probe input {{name}}")
+"#,
+        )
+    } else {
+        r#"def parse_probe_input(value: dict[str, object]):
+    name = str(value.get("name", ""))
+    data = value.get("data", {})
+    if not isinstance(data, dict):
+        raise ValueError("probe input data must be an object")
+    field = "reason" if name == "Reject" else "label"
+    label = make_label(data.get(field, "probe"))
+    if label is None:
+        raise ValueError("probe label must be non-empty")
+    if name == "Accept":
+        return accept_command(label)
+    if name == "Reject":
+        return reject_command(label)
+    raise ValueError(f"unsupported probe input {name}")
+"#
+        .to_string()
+    };
+    let run_state_initialization = if model.stateful() {
+        format!(
+            "        state = initial_state() if request.get(\"start\") == \"initial\" else {}(request[\"start\"][\"name\"])",
+            model.names.state
+        )
+    } else {
+        String::new()
     };
     format!(
         r#"import json
@@ -67859,6 +70044,9 @@ def variant(value: object) -> dict[str, object]:
     return {{"name": str(raw), "data": {{}}}}
 
 
+{parse_probe_input}
+
+
 def probe_machine() -> None:
     request = json.loads(pathlib.Path(os.environ["RMS_PROBE_REQUEST"]).read_text(encoding="utf-8"))
     if request.get("operation") == "describe":
@@ -67866,20 +70054,20 @@ def probe_machine() -> None:
             "spec": "rms/machine-probe-description/v0.1",
             "machine": "{machine}",
             "initial_state": {{"name": "{initial}", "data": {{}}}},
-            "states": [{{"name": "{initial}", "data_schema": {{"type": "object"}}}}],
+            "states": [
+                {state_descriptions}
+            ],
             "inputs": [
                 {{"kind": "command", "name": "Accept", "data_schema": {{"type": "object", "properties": {{"label": {{"type": "string"}}}}}}, "example": {{"kind": "command", "name": "Accept", "data": {{"label": "example"}}}}}},
                 {{"kind": "command", "name": "Reject", "data_schema": {{"type": "object", "properties": {{"reason": {{"type": "string"}}}}}}, "example": {{"kind": "command", "name": "Reject", "data": {{"reason": "rejected"}}}}}},
+                {effect_input_descriptions}
+                {observed_input_descriptions}
             ],
         }}
     elif request.get("operation") == "evaluate":
         results = []
         for case in request.get("cases", []):
             normalized = case.get("input", {{}})
-            label = make_label(normalized.get("data", {{}}).get("value", "probe"))
-            if label is None:
-                raise ValueError("probe label must be non-empty")
-            command = reject_command(label) if normalized.get("name") == "Reject" else accept_command(label)
             record = {evaluation_record_call}
             results.append({{
                 "id": case["id"],
@@ -67906,13 +70094,11 @@ def probe_machine() -> None:
         output = {{"spec": "rms/machine-probe-evaluation/v0.2", "machine": "{machine}", "results": results}}
     else:
         records = []
+{run_state_initialization}
         for index, step in enumerate(request.get("steps", [])):
             normalized = step.get("input", {{}})
-            label = make_label(normalized.get("data", {{}}).get("value", "probe"))
-            if label is None:
-                raise ValueError("probe label must be non-empty")
-            command = reject_command(label) if normalized.get("name") == "Reject" else accept_command(label)
             record = {record_call}
+            {advance_state}
             records.append({{
                 "scenario_start": index == 0,
                 "state_before": variant(record.state_before),
@@ -67940,7 +70126,17 @@ if __name__ == "__main__":
     probe_machine()
 "#,
         machine = model.names.machine,
+        state_descriptions = state_descriptions,
+        parse_probe_input = parse_probe_input,
+        effect_input_descriptions = effect_input_descriptions,
+        observed_input_descriptions = observed_input_descriptions,
         evaluation_record_call = evaluation_record_call,
+        run_state_initialization = run_state_initialization,
+        advance_state = if model.stateful() {
+            "state = record.state_after"
+        } else {
+            ""
+        },
     )
 }
 
@@ -68443,7 +70639,7 @@ export const {machine} = Object.freeze({{ transition, transitionRecord, replayTr
     };
     let observed_branch = if !model.declared_observed_events().is_empty() {
         format!(
-            r#" else if (input?.tag === "{input}.ObservedEvent") {{
+            r#" else if (state?.tag === "{state}.{initial}" && input?.tag === "{input}.ObservedEvent") {{
     nextState = {completed};
     events = [make{event}Accepted()];
     effects = [];
@@ -68452,6 +70648,8 @@ export const {machine} = Object.freeze({{ transition, transitionRecord, replayTr
     branch = "Observed";
   }}"#,
             input = names.input,
+            state = names.state,
+            initial = initial,
             event = names.event,
             reply = names.reply,
         )
@@ -68474,12 +70672,12 @@ export function transitionRecord(state, input) {{
   let reply;
   let rejectionValue;
   let branch;
-  if (input?.tag === "{input}.Command" && input.command?.tag === "{command}.Accept") {{
+  if (state?.tag === "{state}.{initial}" && input?.tag === "{input}.Command" && input.command?.tag === "{command}.Accept") {{
     const command = input.command;
     {accept_body}
     rejectionValue = null;
     branch = "Accept";
-  }} else if (input?.tag === "{input}.Command" && input.command?.tag === "{command}.Reject") {{
+  }} else if (state?.tag === "{state}.{initial}" && input?.tag === "{input}.Command" && input.command?.tag === "{command}.Reject") {{
     const rejection = make{rejection}InvalidCommand(input.command.reason);
     nextState = {rejected};
     events = [make{event}Rejected(rejection)];
@@ -68527,6 +70725,8 @@ export const {machine} = Object.freeze({{ transition, transitionRecord, replayTr
 "#,
         imports = imports,
         input = names.input,
+        state = names.state,
+        initial = initial,
         command = names.command,
         accept_body = accept_body,
         rejection = names.rejection,
@@ -68870,7 +71070,11 @@ fn render_js_machine_probe_mjs(model: &BindingScaffoldModel) -> String {
         .join("\n");
     let state_descriptions = states
         .iter()
-        .map(|state| format!(r#"{{ name: "{state}", data_schema: {{ type: "object" }} }}"#))
+        .map(|state| {
+            format!(
+                r#"{{ name: "{state}", data_schema: {{ type: "object" }}, examples: [variantJSON({state})] }}"#
+            )
+        })
         .collect::<Vec<_>>()
         .join(",\n    ");
     let observed_arms = model
@@ -69039,7 +71243,7 @@ export async function probeMachine() {{
     output = {{
       spec: "rms/machine-probe-description/v0.1",
       machine: "{machine}",
-      initial_state: {{ name: "{initial}", data: {{}} }},
+      initial_state: variantJSON({initial}),
       states: [
       {state_descriptions}
       ],
@@ -70736,6 +72940,240 @@ fn require_route_receipt(
     }
 }
 
+fn validate_machine_change_route_receipt(
+    root: &Path,
+    reference: &Path,
+    target: &Path,
+    change: &MachineChange,
+) -> Result<RouteReceipt> {
+    let receipt = validate_route_receipt(root, reference, "machine-apply", target, None)?;
+    let root = fs::canonicalize(root)
+        .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
+    let receipt_path = resolve_route_receipt_path(&root, reference)?;
+    let run_dir = receipt_path
+        .parent()
+        .ok_or_else(|| anyhow!("route receipt has no run directory"))?;
+    let request: YamlValue =
+        serde_yaml::from_str(&fs::read_to_string(run_dir.join("request.yaml"))?)?;
+    let task = get_str(&request, &["task"])
+        .ok_or_else(|| anyhow!("route run request does not preserve the exact task"))?;
+    let intent: IntentModel =
+        serde_json::from_slice(&fs::read(run_dir.join("normalized-intent.json"))?)
+            .context("route run normalized intent is not an rms/intent-model/v0.1 object")?;
+    let manifest = load_manifest(target)?;
+    validate_machine_change_intent_anchors(&manifest, change, task, &intent)?;
+    Ok(receipt)
+}
+
+fn require_machine_change_route_receipt(
+    root: &Path,
+    reference: &Path,
+    target: &Path,
+    change: &MachineChange,
+) -> RouteReceipt {
+    match validate_machine_change_route_receipt(root, reference, target, change) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            eprintln!("RMS route receipt rejected: {error:#}");
+            std::process::exit(2);
+        }
+    }
+}
+
+#[derive(Default)]
+struct MachineIntentAnchors {
+    states: BTreeSet<String>,
+    inputs: BTreeSet<String>,
+    events: BTreeSet<String>,
+    commands: BTreeSet<String>,
+    effects: BTreeSet<String>,
+    replies: BTreeSet<String>,
+    rejections: BTreeSet<String>,
+    cases: BTreeSet<String>,
+}
+
+fn validate_machine_change_intent_anchors(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+    task: &str,
+    intent: &IntentModel,
+) -> Result<()> {
+    let anchors = machine_intent_anchors(manifest, change, task, intent);
+    // Exact transition-case identifiers are the review boundary that lets RMS
+    // bind a route receipt to a concrete machine delta without guessing at the
+    // semantics of prose-only tasks. Broader tasks retain the existing
+    // owner/action/target receipt scope and require an explicit plan review.
+    if anchors.cases.is_empty() {
+        return Ok(());
+    }
+    let delta = machine_transition_delta(manifest, change)?;
+    let mut realized = MachineIntentAnchors::default();
+    for transition in &delta {
+        realized
+            .states
+            .insert(semantic_id_segment(&transition.from));
+        realized.states.insert(semantic_id_segment(&transition.to));
+        realized
+            .inputs
+            .insert(semantic_id_segment(&transition_input_variant(
+                &transition.on,
+            )));
+        realized.events.extend(
+            transition
+                .events
+                .iter()
+                .map(|item| semantic_id_segment(item)),
+        );
+        realized.commands.extend(
+            transition
+                .commands
+                .iter()
+                .map(|item| semantic_id_segment(item)),
+        );
+        realized.effects.extend(
+            transition
+                .effects
+                .iter()
+                .map(|item| semantic_id_segment(item)),
+        );
+        if let Some(reply) = &transition.reply {
+            realized.replies.insert(semantic_id_segment(reply));
+        }
+        if let Some(rejection) = &transition.rejection {
+            realized.rejections.insert(semantic_id_segment(rejection));
+        }
+        if let Some(case) = &transition.case {
+            realized.cases.insert(semantic_id_segment(case));
+        }
+    }
+
+    for (kind, expected, observed) in [
+        ("state", &anchors.states, &realized.states),
+        ("input", &anchors.inputs, &realized.inputs),
+        ("event", &anchors.events, &realized.events),
+        ("command", &anchors.commands, &realized.commands),
+        ("effect", &anchors.effects, &realized.effects),
+        ("reply", &anchors.replies, &realized.replies),
+        ("rejection", &anchors.rejections, &realized.rejections),
+        ("transition case", &anchors.cases, &realized.cases),
+    ] {
+        for missing in expected.difference(observed) {
+            bail!(
+                "machine change does not realize reviewed {kind} intent anchor `{missing}` from the route receipt"
+            );
+        }
+    }
+
+    if !anchors.cases.is_empty() {
+        for transition in &delta {
+            let case = transition
+                .case
+                .as_deref()
+                .map(semantic_id_segment)
+                .unwrap_or_else(|| "<missing>".to_string());
+            if !anchors.cases.contains(&case) {
+                bail!(
+                    "machine transition case `{case}` is outside reviewed route-receipt case anchor(s): {}",
+                    anchors.cases.iter().cloned().collect::<Vec<_>>().join(", ")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn machine_intent_anchors(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+    task: &str,
+    intent: &IntentModel,
+) -> MachineIntentAnchors {
+    let intent_ids = intent
+        .subjects
+        .iter()
+        .chain(intent.responsibilities.iter().map(|item| &item.id))
+        .map(|item| semantic_id_segment(item))
+        .collect::<BTreeSet<_>>();
+    let mut anchors = MachineIntentAnchors::default();
+    let collect_variants = |field: &str, destination: &mut BTreeSet<String>, ready_fallback| {
+        for variant in final_machine_variant_values(
+            manifest,
+            field,
+            machine_variant_change(change, field),
+            ready_fallback,
+        ) {
+            let normalized = semantic_id_segment(&variant);
+            if intent_ids.contains(&normalized) {
+                destination.insert(normalized);
+            }
+        }
+    };
+    collect_variants("states", &mut anchors.states, true);
+    collect_variants("commands", &mut anchors.inputs, false);
+    collect_variants("observed_events", &mut anchors.inputs, false);
+    collect_variants("effect_results", &mut anchors.inputs, false);
+    collect_variants("events", &mut anchors.events, false);
+    collect_variants("effects", &mut anchors.effects, false);
+    collect_variants("replies", &mut anchors.replies, false);
+    collect_variants("rejections", &mut anchors.rejections, false);
+
+    for token in
+        task.split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+    {
+        if token.contains('_') && is_stable_identifier(token) {
+            let normalized = semantic_id_segment(token);
+            if intent_ids.contains(&normalized) {
+                anchors.cases.insert(normalized);
+            }
+        }
+    }
+    anchors
+}
+
+fn machine_variant_change<'a>(
+    change: &'a MachineChange,
+    field: &str,
+) -> &'a MachineVariantListChange {
+    match field {
+        "states" => &change.machine.states,
+        "commands" => &change.machine.commands,
+        "observed_events" => &change.machine.observed_events,
+        "events" => &change.machine.events,
+        "effects" => &change.machine.effects,
+        "effect_results" => &change.machine.effect_results,
+        "replies" => &change.machine.replies,
+        "rejections" => &change.machine.rejections,
+        _ => unreachable!("closed machine variant field"),
+    }
+}
+
+fn machine_transition_delta(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+) -> Result<Vec<MachineTransitionChange>> {
+    let existing = existing_machine_transitions(manifest);
+    let final_values = final_machine_transitions_without_diagnostics(manifest, change);
+    let existing_by_value = existing
+        .iter()
+        .map(|transition| Ok((serde_json::to_string(transition)?, transition)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let final_by_value = final_values
+        .iter()
+        .map(|transition| Ok((serde_json::to_string(transition)?, transition)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    Ok(existing_by_value
+        .iter()
+        .filter(|(key, _)| !final_by_value.contains_key(*key))
+        .map(|(_, transition)| (*transition).clone())
+        .chain(
+            final_by_value
+                .iter()
+                .filter(|(key, _)| !existing_by_value.contains_key(*key))
+                .map(|(_, transition)| (*transition).clone()),
+        )
+        .collect())
+}
+
 fn repository_root_for_target(target: &Path) -> Result<PathBuf> {
     let start = if target.is_dir() {
         target
@@ -70964,10 +73402,18 @@ mod tests {
             json!({
                 "spec": "rms/machine-probe-description/v0.1",
                 "machine": "RmsWorkbenchMachine",
-                "initial_state": {"name": "Ready", "data": {}},
+                "initial_state": workbench_state_json(&RmsWorkbenchState::Ready),
                 "states": [
-                    {"name": "Ready", "data_schema": {"type": "object"}},
-                    {"name": "WritingSemanticChangeRecord", "data_schema": {"type": "object"}}
+                    {
+                        "name": "Ready",
+                        "data_schema": {"type": "object"},
+                        "examples": [workbench_state_json(&RmsWorkbenchState::Ready)]
+                    },
+                    {
+                        "name": "WritingSemanticChangeRecord",
+                        "data_schema": {"type": "object"},
+                        "examples": [workbench_state_json(&RmsWorkbenchState::WritingSemanticChangeRecord)]
+                    }
                 ],
                 "inputs": [
                     {
@@ -70988,12 +73434,6 @@ mod tests {
                                 "record_contents": "spec: rms/semantic-change/v0.1\n"
                             }
                         }
-                    },
-                    {
-                        "kind": "command",
-                        "name": "ValidateRmsArtifacts",
-                        "data_schema": {"type": "object"},
-                        "example": {"kind": "command", "name": "ValidateRmsArtifacts", "data": {}}
                     },
                     {
                         "kind": "effect-result",
@@ -71269,6 +73709,82 @@ mod tests {
         assert!(!normalize_provider_change_scope_for_explicit_module(
             &mut model
         ));
+    }
+
+    #[test]
+    fn provider_intent_normalization_keeps_canonical_semantics_out_of_binding_and_design_lanes() {
+        let source = r#"{
+          "spec":"rms/intent-model/v0.1",
+          "operation":"implementation-change",
+          "change_scope":"existing-module",
+          "subjects":["receiver-media-readiness"],
+          "facts":{
+            "domain_decisions":{"disposition":"required","basis":"inferred","rationale":"transition decision"},
+            "lifecycle":{"disposition":"required","basis":"inferred","rationale":"state transition"},
+            "effects":{"disposition":"required","basis":"inferred","rationale":"emit no event"},
+            "runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"no surface"},
+            "reuse":{"disposition":"required","basis":"inferred","rationale":"existing owner"}
+          },
+          "responsibilities":[{"id":"reject-illegal-transition","kind":"decision","summary":"Reject the illegal transition."}],
+          "surface_kinds":[],
+          "binding_preferences":["swift"],
+          "open_questions":[]
+        }"#;
+        let mut transition = parse_intent_model_source(source).unwrap();
+        assert!(normalize_provider_intent_for_task(
+            "In modules/receiver-media-readiness/implementation.yaml, declare the canonical transition that emits no event and rejects IllegalTransition.",
+            &mut transition,
+        ));
+        assert_eq!(transition.operation, IntentOperation::SemanticChange);
+        assert_eq!(
+            transition.facts.effects.disposition,
+            IntentDisposition::Absent
+        );
+
+        let mut reuse = transition.clone();
+        reuse.operation = IntentOperation::Design;
+        reuse.facts.lifecycle = inferred_absent_intent_fact("no lifecycle change");
+        assert!(normalize_provider_intent_for_task(
+            "Reuse and evolve existing receiver-media-readiness module only; do not add module or capability. Canonically declare the existing contract property.",
+            &mut reuse,
+        ));
+        assert_eq!(reuse.operation, IntentOperation::SemanticChange);
+    }
+
+    #[test]
+    fn provider_intent_normalization_treats_executable_properties_as_evidence() {
+        let mut model = parse_intent_model_source(
+            r#"{
+              "spec":"rms/intent-model/v0.1",
+              "operation":"semantic-change",
+              "change_scope":"existing-module",
+              "subjects":["receiver-media-readiness"],
+              "facts":{
+                "domain_decisions":{"disposition":"required","basis":"inferred","rationale":"property oracle"},
+                "lifecycle":{"disposition":"unknown","basis":"inferred","rationale":"provider uncertainty"},
+                "effects":{"disposition":"absent","basis":"inferred","rationale":"no IO"},
+                "runnable_surface":{"disposition":"required","basis":"inferred","rationale":"executable property"},
+                "reuse":{"disposition":"required","basis":"inferred","rationale":"existing contract"}
+              },
+              "responsibilities":[{"id":"receiver-readiness-property","kind":"decision","summary":"Define the readiness property oracle."}],
+              "surface_kinds":["executable"],
+              "binding_preferences":["swift"],
+              "open_questions":["Does this change lifecycle?", "Is this a runnable surface?"]
+            }"#,
+        )
+        .unwrap();
+        assert!(normalize_provider_intent_for_task(
+            "In modules/receiver-media-readiness/module.yaml add a deterministic-exhaustive parent property, bind the existing contract as executable property evidence, and preserve runtime with no runtime change.",
+            &mut model,
+        ));
+        assert_eq!(
+            model.facts.runnable_surface.disposition,
+            IntentDisposition::Absent
+        );
+        assert!(model.surface_kinds.is_empty());
+        assert_eq!(model.facts.lifecycle.disposition, IntentDisposition::Absent);
+        assert!(model.open_questions.is_empty());
+        assert_eq!(classify_intent_model(&model).lane, TaskLane::Semantic);
     }
 
     #[test]
@@ -74944,6 +77460,47 @@ architecture:
     }
 
     #[test]
+    fn structure_report_accepts_generation_fenced_stale_effect_result() {
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"spec: rms/implementation/v0.1
+module: render-domain
+binding: swift
+architecture:
+  shape: workflow
+  machine:
+    name: RenderMachine
+    mode: workflow-effect-machine
+    states: [Rendering, Superseded]
+    commands: []
+    observed_events: []
+    events: [ResultIgnored]
+    effects: [SchedulePlayback]
+    effect_results: [ApplePlaybackStale]
+    replies: [Ignored]
+    rejections: []
+    transitions:
+      - from: Rendering
+        on: ApplePlaybackStale
+        to: Superseded
+        case: ignore_stale_playback_generation
+        events: [ResultIgnored]
+        reply: Ignored
+"#,
+            )
+            .unwrap(),
+        };
+        let mut diagnostics = Vec::new();
+
+        inspect_effect_result_handling(&manifest, &mut diagnostics);
+
+        assert!(diagnostics.iter().all(|diagnostic| {
+            diagnostic.check != "structure.unknown-effect-result-without-reconciliation"
+        }));
+    }
+
+    #[test]
     fn structure_report_accepts_unknown_effect_result_with_referenced_reconciliation_evidence() {
         let root = unique_test_dir("structure-unknown-effect-result-reconciled");
         fs::create_dir_all(root.join("src")).unwrap();
@@ -76657,6 +79214,83 @@ transitions:
     }
 
     #[test]
+    fn machine_change_accepts_distinct_cases_for_the_same_state_input_and_destination() {
+        let root = unique_test_dir("machine-distinct-same-signature-cases");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/transition.mjs"),
+            "export function transition(state, command) { return { state, command }; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: distinct-branch-example
+binding: js
+source: {root: ., public_entrypoint: src/transition.mjs}
+commands: {build: "node --check src/transition.mjs", verify: "node --check src/transition.mjs"}
+architecture:
+  shape: domain-engine
+  machine:
+    name: DistinctBranchMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    types:
+      state: DistinctBranchState
+      input: DistinctBranchInput
+      command: DistinctBranchCommand
+      event: DistinctBranchEvent
+      reply: DistinctBranchReply
+      rejection: DistinctBranchRejection
+      transition: DistinctBranchTransition
+      transition_record: DistinctBranchTransitionRecord
+    states: [TerminalDraining, Failed]
+    commands: [Cancellation]
+    observed_events: []
+    events: [FrameDispositionRecorded, PlayoutFailed, ReceiveOwnershipReleased]
+    effects: []
+    effect_results: []
+    replies: [OwnershipReleased]
+    rejections: []
+    effect_protocols: []
+    transition_function: transition
+    transitions: []
+  roles: {transition: [src/transition.mjs]}
+"#,
+        )
+        .unwrap();
+
+        let implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let change: MachineChange = serde_yaml::from_str(
+            r#"spec: rms/machine-change/v0.1
+machine:
+  mode: stateful-transition-machine
+transitions:
+  add:
+    - from: TerminalDraining
+      on: Cancellation
+      to: Failed
+      case: CancelTerminalDrainWithDisposition
+      events: [FrameDispositionRecorded, PlayoutFailed, ReceiveOwnershipReleased]
+      reply: OwnershipReleased
+    - from: TerminalDraining
+      on: Cancellation
+      to: Failed
+      case: CancelTerminalDrainWithoutDisposition
+      events: [PlayoutFailed, ReceiveOwnershipReleased]
+      reply: OwnershipReleased
+"#,
+        )
+        .unwrap();
+        let diagnostics = validate_machine_change(&implementation, &change);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(!diagnostics
+            .iter()
+            .any(|item| item.check == "machine-change.duplicate-transition"));
+    }
+
+    #[test]
     fn machine_apply_rejects_unknown_transition_state() {
         let root = unique_test_dir("machine-apply-unknown-state");
         fs::create_dir_all(root.join("src")).unwrap();
@@ -78228,6 +80862,64 @@ properties:
                 r#"spec: rms/semantic-change/v0.1
 module: module.yaml
 properties:
+  set:
+    - id: values-remain-valid
+      proves: value-validity
+      kind: fuzz
+      input_space: { values: generated examples }
+      oracle: [every generated value is valid]
+      evidence:
+        kind: fuzz
+        path: verification/properties/values_remain_valid.md
+      realizations:
+        - profile: ci
+          strategy: generated-property
+          command: properties
+          generator: src/property.rs#generate_values
+          runner: src/property.rs#check_generated_values
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let fuzz_module = load_manifest(&root.join("module.yaml")).unwrap();
+        let fuzz_implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        assert!(get_path(&fuzz_module.value, &["properties"])
+            .and_then(YamlValue::as_sequence)
+            .is_none_or(Vec::is_empty));
+        assert_eq!(
+            get_path(&fuzz_module.value, &["fuzz_targets"])
+                .and_then(YamlValue::as_sequence)
+                .and_then(|items| items.first())
+                .and_then(|item| get_str(item, &["id"])),
+            Some("values-remain-valid")
+        );
+        assert!(get_path(
+            &fuzz_implementation.value,
+            &["architecture", "reliability", "properties"]
+        )
+        .and_then(YamlValue::as_sequence)
+        .is_none_or(Vec::is_empty));
+        assert_eq!(
+            get_path(
+                &fuzz_implementation.value,
+                &["architecture", "reliability", "fuzz_targets"]
+            )
+            .and_then(YamlValue::as_sequence)
+            .and_then(|items| items.first())
+            .and_then(|item| get_str(item, &["id"])),
+            Some("values-remain-valid")
+        );
+
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+properties:
   remove: [values-remain-valid]
 "#,
             ),
@@ -78327,7 +81019,9 @@ architecture:
             generator: src/property.rs#fixed_values
             runner: src/property.rs#check_fixed_values
   machine: {}
-  roles: {}
+  roles:
+    representation: [src/lib.rs]
+    transition: [src/lib.rs]
 "#,
         )
         .unwrap();
@@ -78484,6 +81178,52 @@ semantic_functions: []
             "Tests/ExecutorTests.swift#submissionProperty",
             None,
             Some(&operation),
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(calls_operation);
+    }
+
+    #[test]
+    fn swift_property_runner_resolves_semantic_operation_through_bounded_helper_chain() {
+        let root = unique_test_dir("swift-property-transitive-operation");
+        fs::create_dir_all(root.join("Sources")).unwrap();
+        fs::create_dir_all(root.join("Tests")).unwrap();
+        fs::write(
+            root.join("Sources/Transition.swift"),
+            "public func transitionRecord() -> Int { 1 }\npublic func replayTrace() -> Int { transitionRecord() }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Tests/TransitionTests.swift"),
+            "private func run() -> Int { replayTrace() }\nfunc transitionProperty() { assert(run() == 1) }\n",
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: root.join("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"spec: rms/implementation/v0.1
+module: swift-property
+binding: swift
+semantic_functions:
+  - id: transition-record
+    symbol: Sources/Transition.swift#transitionRecord
+    kind: transition
+    purity: pure
+architecture:
+  machine:
+    transition_record_function: transitionRecord
+"#,
+            )
+            .unwrap(),
+        };
+
+        let calls_operation = property_runner_calls_operation(
+            &root,
+            &manifest,
+            "Tests/TransitionTests.swift#transitionProperty",
+            None,
+            None,
         );
 
         fs::remove_dir_all(&root).unwrap();
@@ -80026,6 +82766,103 @@ machine:
     }
 
     #[test]
+    fn strict_audit_treats_remove_add_same_identity_as_exact_transition_replacement() {
+        let exact_implementation: YamlValue = serde_yaml::from_str(
+            r#"architecture:
+  machine:
+    commands: [ClockTick]
+    effect_results: []
+    observed_events: []
+    transitions:
+      - from: Playing
+        on: ClockTick
+        to: RenderBlocked
+        case: FenceUnresolvedRenderOnClockDeadline
+        events: [TickAdvanced, FrameDispositionRecorded, RenderGenerationFenced]
+        commands: []
+        effects: []
+        reply: RenderBusy
+"#,
+        )
+        .unwrap();
+        let stale_implementation: YamlValue = serde_yaml::from_str(
+            r#"architecture:
+  machine:
+    commands: [ClockTick]
+    effect_results: []
+    observed_events: []
+    transitions:
+      - from: Playing
+        on: ClockTick
+        to: RenderBlocked
+        case: FenceUnresolvedRenderOnClockDeadline
+        events: [TickAdvanced, RenderGenerationFenced]
+        commands: []
+        effects: []
+        reply: RenderBusy
+"#,
+        )
+        .unwrap();
+        let change: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+machine:
+  transitions:
+    add:
+      - from: Playing
+        on: ClockTick
+        to: RenderBlocked
+        case: FenceUnresolvedRenderOnClockDeadline
+        events: [TickAdvanced, FrameDispositionRecorded, RenderGenerationFenced]
+        commands: []
+        effects: []
+        reply: RenderBusy
+    remove:
+      - from: Playing
+        on: ClockTick
+        to: RenderBlocked
+        case: FenceUnresolvedRenderOnClockDeadline
+"#,
+        )
+        .unwrap();
+        let implementation_path = Path::new("implementation.yaml");
+        let change_path = Path::new("verification/changes/replace-transition.yaml");
+
+        let mut exact_checks = Vec::new();
+        append_semantic_change_implementation_reflection_checks(
+            &exact_implementation,
+            implementation_path,
+            change_path,
+            &change,
+            true,
+            &mut exact_checks,
+        );
+        assert!(!exact_checks
+            .iter()
+            .any(|check| check.id == "semantic.applied-change-not-reflected"));
+
+        let mut stale_checks = Vec::new();
+        append_semantic_change_implementation_reflection_checks(
+            &stale_implementation,
+            implementation_path,
+            change_path,
+            &change,
+            true,
+            &mut stale_checks,
+        );
+        assert_eq!(
+            stale_checks
+                .iter()
+                .filter(|check| check.id == "semantic.applied-change-not-reflected")
+                .count(),
+            1
+        );
+        assert!(stale_checks.iter().any(|check| {
+            check.id == "semantic.applied-change-not-reflected"
+                && check.note.contains("exact ordered outputs and outcome")
+        }));
+    }
+
+    #[test]
     fn strict_audit_flags_applied_semantic_property_not_reflected() {
         let root = unique_test_dir("strict-audit-semantic-property-reflection");
         let module_root = root.join("modules/line-selection");
@@ -80776,6 +83613,23 @@ transitions:
     }
 
     #[test]
+    fn transition_case_source_accepts_literal_prefix_with_dynamic_proof_suffix() {
+        let source = r#"
+let branch = evidenceBranch(awaiting: "record_apple_ownership")
+return snapshot.hasExactProof ? "\(branch)_proof_complete" : branch
+"#;
+
+        assert!(source_constructs_transition_case(
+            source,
+            "record_apple_ownership_proof_complete"
+        ));
+        assert!(!source_constructs_transition_case(
+            source,
+            "record_secure_media_proof_complete"
+        ));
+    }
+
+    #[test]
     fn machine_apply_rejects_unreachable_final_states_before_write() {
         let manifest = LoadedManifest {
             path: PathBuf::from("implementation.yaml"),
@@ -80849,6 +83703,90 @@ transitions:
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.check == "machine-change.state-unreachable"));
+    }
+
+    #[test]
+    fn machine_change_cannot_replace_every_success_path_with_rejections() {
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"architecture:
+  machine:
+    name: AdmissionMachine
+    mode: stateful-transition-machine
+    initial_state: Acknowledged
+    transition_signature: state-and-input
+    states: [Acknowledged]
+    commands: [ReceiveProof, OpenAdmission]
+    observed_events: []
+    events: [ProofRecorded, AdmissionOpened]
+    effects: []
+    effect_results: []
+    replies: [ProofRecorded, AdmissionOpened]
+    rejections: [EvidenceMismatch, MissingProof]
+    effect_protocols: []
+    transitions:
+      - from: Acknowledged
+        on: ReceiveProof
+        to: Acknowledged
+        case: record_matching_proof
+        events: [ProofRecorded]
+        reply: ProofRecorded
+      - from: Acknowledged
+        on: OpenAdmission
+        to: Acknowledged
+        case: open_admission
+        events: [AdmissionOpened]
+        reply: AdmissionOpened
+"#,
+            )
+            .unwrap(),
+        };
+        let change: MachineChange = serde_yaml::from_str(
+            r#"spec: rms/machine-change/v0.1
+machine:
+  mode: stateful-transition-machine
+  events:
+    add: [NewProofRecorded]
+  replies:
+    add: [NewProofRecorded]
+transitions:
+  add:
+    - from: Acknowledged
+      on: ReceiveProof
+      to: Acknowledged
+      case: reject_mismatched_proof
+      rejection: EvidenceMismatch
+    - from: Acknowledged
+      on: OpenAdmission
+      to: Acknowledged
+      case: reject_missing_proof
+      rejection: MissingProof
+  remove:
+    - { from: Acknowledged, on: ReceiveProof, to: Acknowledged, case: record_matching_proof }
+    - { from: Acknowledged, on: OpenAdmission, to: Acknowledged, case: open_admission }
+"#,
+        )
+        .unwrap();
+
+        let diagnostics = validate_machine_change(&manifest, &change);
+
+        for input in ["ReceiveProof", "OpenAdmission"] {
+            assert!(diagnostics.iter().any(|diagnostic| {
+                diagnostic.check == "machine-change.success-path-eliminated"
+                    && diagnostic.message.contains(input)
+            }));
+        }
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "machine-change.output-unrealized"
+                && diagnostic.message.contains("NewProofRecorded")
+        }));
+        for output in ["ProofRecorded", "AdmissionOpened"] {
+            assert!(diagnostics.iter().any(|diagnostic| {
+                diagnostic.check == "machine-change.output-path-eliminated"
+                    && diagnostic.message.contains(output)
+            }));
+        }
     }
 
     #[test]
@@ -81943,6 +84881,277 @@ cases:
         )
         .unwrap();
         assert!(validate_probe_request(&evaluation, &implementation).is_ok());
+    }
+
+    #[test]
+    fn probe_evaluation_result_must_preserve_requested_state_and_input() {
+        let expected: YamlValue = serde_yaml::from_str(
+            r#"
+id: scheduled-timeout
+state: { name: Submitting, data: { generation: 2 } }
+input: { kind: effect-result, name: TimedOut, data: { generation: 2 } }
+"#,
+        )
+        .unwrap();
+        let matching: YamlValue = serde_yaml::from_str(
+            r#"
+state_before: { name: Submitting, data: { generation: 2 } }
+input: { kind: effect-result, name: TimedOut, data: { generation: 2 } }
+"#,
+        )
+        .unwrap();
+        let ignored_state: YamlValue = serde_yaml::from_str(
+            r#"
+state_before: { name: Ready, data: {} }
+input: { kind: effect-result, name: TimedOut, data: { generation: 2 } }
+"#,
+        )
+        .unwrap();
+
+        assert!(validate_probe_evaluation_record_identity(
+            &expected,
+            &matching,
+            "scheduled-timeout"
+        )
+        .is_ok());
+        let error = validate_probe_evaluation_record_identity(
+            &expected,
+            &ignored_state,
+            "scheduled-timeout",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("requested `state`"));
+    }
+
+    #[test]
+    fn probe_evaluation_reports_the_bounded_matrix_failure_set_together() {
+        let root = unique_test_dir("probe-matrix-failure-set");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: probe-matrix-failure-set
+binding: rust
+source: { root: ., public_entrypoint: src/lib.rs }
+commands: { build: "true", verify: "true" }
+architecture:
+  shape: domain-engine
+  machine:
+    name: MatrixMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    initial_state: Ready
+    states: [Ready, Started]
+    commands: [Begin, Cancel]
+    observed_events: []
+    events: [Started, Cancelled]
+    effects: []
+    effect_results: []
+    replies: [Accepted]
+    rejections: [IllegalTransition]
+    effect_protocols: []
+    transitions:
+      - { from: Ready, on: Begin, to: Started, case: Start, events: [Started], reply: Accepted }
+      - { from: Ready, on: Cancel, to: Ready, case: Cancel, events: [Cancelled], reply: Accepted }
+  roles: {}
+"#,
+        )
+        .unwrap();
+        let binding = ProbeBinding {
+            implementation: load_manifest(&root.join("implementation.yaml")).unwrap(),
+            protocol: "rms/machine-probe/v0.2".to_string(),
+            command: "probe".to_string(),
+            runner: "tests/probe.rs#probe".to_string(),
+            machine: "MatrixMachine".to_string(),
+        };
+        let request: YamlValue = serde_yaml::from_str(
+            r#"cases:
+  - id: wrong-begin-branch
+    state: { name: Ready }
+    input: { kind: command, name: Begin, data: {} }
+  - id: wrong-cancel-branch
+    state: { name: Ready }
+    input: { kind: command, name: Cancel, data: {} }
+  - id: undeclared-generic-refusal
+    state: { name: Started }
+    input: { kind: command, name: Cancel, data: {} }
+"#,
+        )
+        .unwrap();
+        let evaluation: YamlValue = serde_yaml::from_str(
+            r#"spec: rms/machine-probe-evaluation/v0.2
+machine: MatrixMachine
+results:
+  - id: wrong-begin-branch
+    record:
+      scenario_start: true
+      state_before: { name: Ready }
+      input: { kind: command, name: Begin, data: {} }
+      output:
+        next_state: { name: Started }
+        events: [Started]
+        commands: []
+        effects: []
+        reply: Accepted
+        rejection: null
+      state_after: { name: Started }
+      source: { file: src/lib.rs, function: transition, branch: WrongStart }
+  - id: wrong-cancel-branch
+    record:
+      scenario_start: true
+      state_before: { name: Ready }
+      input: { kind: command, name: Cancel, data: {} }
+      output:
+        next_state: { name: Ready }
+        events: [Cancelled]
+        commands: []
+        effects: []
+        reply: Accepted
+        rejection: null
+      state_after: { name: Ready }
+      source: { file: src/lib.rs, function: transition, branch: WrongCancel }
+  - id: undeclared-generic-refusal
+    record:
+      scenario_start: true
+      state_before: { name: Started }
+      input: { kind: command, name: Cancel, data: {} }
+      output:
+        next_state: { name: Started }
+        events: []
+        commands: []
+        effects: []
+        reply: null
+        rejection: { name: IllegalTransition, data: {} }
+      state_after: { name: Started }
+      source: { file: src/lib.rs, function: transition, branch: Start }
+"#,
+        )
+        .unwrap();
+
+        let error = validate_probe_evaluation(&evaluation, &request, &binding, &root).unwrap_err();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            error.to_string().contains("2 nonconforming case(s)"),
+            "{error:#}"
+        );
+        assert!(
+            error.to_string().contains("wrong-begin-branch"),
+            "{error:#}"
+        );
+        assert!(
+            error.to_string().contains("wrong-cancel-branch"),
+            "{error:#}"
+        );
+        assert!(
+            !error.to_string().contains("undeclared-generic-refusal"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn probe_rejects_source_behavior_that_accepts_input_from_an_undeclared_state() {
+        let requested: YamlValue = serde_yaml::from_str(
+            r#"
+id: wrong-state-authorization
+state: { name: AckInFlight, data: { epoch: 7 } }
+input: { kind: command, name: AuthorizeAcknowledgement, data: { epoch: 7 } }
+"#,
+        )
+        .unwrap();
+        let accepted: YamlValue = serde_yaml::from_str(
+            r#"
+state_before: { name: AckInFlight, data: { epoch: 7 } }
+state_after: { name: AckInFlight, data: { epoch: 7 } }
+input: { kind: command, name: AuthorizeAcknowledgement, data: { epoch: 7 } }
+output:
+  next_state: { name: AckInFlight, data: { epoch: 7 } }
+  events: []
+  commands: []
+  effects: []
+  reply: { name: AcknowledgementAuthorized, data: { epoch: 7 } }
+  rejection: null
+source: { file: Domain.swift, function: authorizeAcknowledgement, branch: AuthorizeAcknowledgement }
+"#,
+        )
+        .unwrap();
+        let error = validate_undeclared_probe_transition_refusal(
+            &requested,
+            &accepted,
+            "wrong-state-authorization",
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "accepted undeclared transition `AckInFlight` --`AuthorizeAcknowledgement`-->"
+            ),
+            "{error:#}"
+        );
+
+        let refused: YamlValue = serde_yaml::from_str(
+            r#"
+state_before: { name: AckInFlight, data: { epoch: 7 } }
+state_after: { name: AckInFlight, data: { epoch: 7 } }
+input: { kind: command, name: AuthorizeAcknowledgement, data: { epoch: 7 } }
+output:
+  next_state: { name: AckInFlight, data: { epoch: 7 } }
+  events: []
+  commands: []
+  effects: []
+  reply: null
+  rejection: { name: IllegalTransition, data: {} }
+source: { file: Domain.swift, function: authorizeAcknowledgement, branch: RejectWrongState }
+"#,
+        )
+        .unwrap();
+        assert!(validate_undeclared_probe_transition_refusal(
+            &requested,
+            &refused,
+            "wrong-state-authorization",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn probe_v02_description_requires_concrete_examples_for_every_declared_state() {
+        let implementation =
+            load_manifest(&Path::new(env!("CARGO_MANIFEST_DIR")).join("implementation.yaml"))
+                .unwrap();
+        let description: YamlValue = serde_yaml::from_str(
+            r#"
+spec: rms/machine-probe-description/v0.1
+machine: RmsWorkbenchMachine
+initial_state: { name: Ready, data: { debug: Ready } }
+states:
+  - name: Ready
+    data_schema: { type: object }
+    examples: [{ name: Ready, data: { debug: Ready } }]
+  - name: WritingSemanticChangeRecord
+    data_schema: { type: object }
+inputs:
+  - kind: command
+    name: ApplySemanticChange
+    data_schema: { type: object }
+    example: { kind: command, name: ApplySemanticChange, data: {} }
+  - kind: effect-result
+    name: SemanticChangeRecordWritten
+    data_schema: { type: object }
+    example: { kind: effect-result, name: SemanticChangeRecordWritten, data: {} }
+  - kind: effect-result
+    name: SemanticChangeRecordWriteRejected
+    data_schema: { type: object }
+    example: { kind: effect-result, name: SemanticChangeRecordWriteRejected, data: {} }
+"#,
+        )
+        .unwrap();
+
+        let error = validate_probe_description(&description, &implementation).unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "WritingSemanticChangeRecord` must declare at least one concrete `examples`"
+            ),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -83643,6 +86852,135 @@ verification:
         run_verify(&root.join("parent.module.yaml"), false).unwrap();
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn composite_module_verify_executes_parent_smoke_property_and_rejects_missing_symbol() {
+        let root = unique_test_dir("verify-composite-property-execution");
+        write_composite_verify_fixture(&root);
+        write_composite_property_fixture(&root);
+
+        run_verify(&root.join("parent.module.yaml"), false).unwrap();
+        assert!(root.join("composition-property-ran").is_file());
+
+        let module_path = root.join("parent.module.yaml");
+        let module = fs::read_to_string(&module_path)
+            .unwrap()
+            .replace("#run_property", "#missing_property");
+        fs::write(&module_path, module).unwrap();
+        let failure = run_verify(&module_path, false).unwrap_err().to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(failure.contains("property.runner-missing"), "{failure}");
+    }
+
+    #[test]
+    fn composite_module_verify_executes_relative_parent_property_paths_from_module_root() {
+        let cwd = std::env::current_dir().unwrap();
+        let unique = unique_test_dir("verify-relative-composite-property");
+        let root = cwd
+            .join("target")
+            .join(unique.file_name().expect("unique test directory name"));
+        write_composite_verify_fixture(&root);
+        write_composite_property_fixture(&root);
+        let relative_module = root
+            .join("parent.module.yaml")
+            .strip_prefix(&cwd)
+            .unwrap()
+            .to_path_buf();
+
+        run_verify(&relative_module, false).unwrap();
+
+        assert!(root.join("composition-property-ran").is_file());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn implementation_verify_smoke_phase_fails_when_declared_runner_symbol_is_missing() {
+        let root = unique_test_dir("verify-implementation-property-symbol");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub fn decide() -> bool { true }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("property-evidence.md"),
+            "# Property evidence\n\nPromise: the decision is true.\n\nCommand/tool: rms verify.\n\nObserved result: fixture execution is expected to fail before this proof runs.\n\nSource revision: test fixture.\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: verify-property
+binding: rust
+source: {root: ., public_entrypoint: src/lib.rs}
+commands: {build: "true", verify: "true", properties: "true"}
+architecture:
+  shape: domain-engine
+  machine:
+    name: VerifyPropertyMachine
+    mode: stateless-decision-machine
+    transition_signature: input-only
+    stateless_justification: This proof fixture has no lifecycle or effects.
+    types:
+      state: VerifyPropertyState
+      command: VerifyPropertyCommand
+      event: VerifyPropertyEvent
+      reply: VerifyPropertyReply
+      rejection: VerifyPropertyRejection
+      transition: VerifyPropertyTransition
+      transition_record: VerifyPropertyTransitionRecord
+    states: [Ready]
+    commands: [Check]
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: []
+    replies: [Checked]
+    rejections: [Rejected]
+    effect_protocols: []
+    transition_function: decide
+    transitions:
+      - from: Ready
+        on: Check
+        to: Ready
+        case: check_decision
+        reply: Checked
+  reliability:
+    properties:
+      - id: decision-property
+        proves: decision-law
+        kind: semantic
+        input_space: {values: [true]}
+        operation: decide
+        oracle: [the decision is true]
+        evidence: {path: property-evidence.md}
+        realizations:
+          - profile: smoke
+            strategy: deterministic-corpus
+            command: properties
+            runner: src/lib.rs#missing_property
+  roles:
+    representation: [src/lib.rs]
+    transition: [src/lib.rs]
+"#,
+        )
+        .unwrap();
+
+        let implementation_path = root.join("implementation.yaml");
+        let manifest = load_manifest(&implementation_path).unwrap();
+        let failure = verify_implementation_smoke_properties(
+            &implementation_path,
+            &manifest,
+            false,
+            DEFAULT_PROOF_TIMEOUT_SECONDS,
+        )
+        .unwrap_err()
+        .to_string();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(failure.contains("property.runner-missing"), "{failure}");
     }
 
     #[test]
@@ -85752,13 +89090,104 @@ semantic_functions: []
             false,
         )
         .unwrap();
-        fs::remove_dir_all(&recursive).unwrap();
         assert_eq!(routed.status(), OwnerStatus::Selected);
         assert_eq!(
             routed.selected_module().map(|module| module.name.as_str()),
             Some("play-game")
         );
         assert_eq!(routed.route.len(), 1);
+
+        let exact_child = resolve_next_owner_for_task(
+            &recursive,
+            None,
+            "migrate the machine probe description",
+            "machine-probe-description play-game-domain rms-v0-2",
+            &recursive_profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(exact_child.status(), OwnerStatus::Selected);
+        assert_eq!(
+            exact_child
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("play-game-domain")
+        );
+        assert_eq!(
+            exact_child.reason,
+            "structured intent subject exactly names canonical module"
+        );
+        assert_eq!(exact_child.route.len(), 1);
+
+        let humanized_child = resolve_next_owner_for_task(
+            &recursive,
+            None,
+            "In Play Game domain, change the BeginRequest transition.",
+            "begin-request play-game",
+            &recursive_profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(humanized_child.status(), OwnerStatus::Selected);
+        assert_eq!(
+            humanized_child
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("play-game-domain")
+        );
+        assert_eq!(
+            humanized_child.reason,
+            "task exactly names canonical module"
+        );
+        assert_eq!(humanized_child.route.len(), 1);
+
+        let exact_parent_path = resolve_next_owner_for_task(
+            &recursive,
+            None,
+            "Caller-owned canonical owner decision: modules/play-game/module.yaml is the sole owner; play-game-boundary remains the execution owner.",
+            "play-game play-game-boundary",
+            &recursive_profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(exact_parent_path.status(), OwnerStatus::Selected);
+        assert_eq!(
+            exact_parent_path
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("play-game")
+        );
+        assert_eq!(
+            exact_parent_path.reason,
+            "task exactly names a canonical artifact owned by the module"
+        );
+        assert_eq!(exact_parent_path.route.len(), 1);
+
+        let multiple_humanized_children = resolve_next_owner_for_task(
+            &recursive,
+            None,
+            "Change Play Game domain and Play Game boundary together.",
+            "play-game",
+            &recursive_profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(multiple_humanized_children.status(), OwnerStatus::Ambiguous);
+        assert!(multiple_humanized_children.selected_module().is_none());
+        assert_eq!(multiple_humanized_children.candidates.len(), 2);
+
+        let multiple_exact_children = resolve_next_owner(
+            &recursive,
+            None,
+            "play-game-domain play-game-boundary",
+            &recursive_profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(multiple_exact_children.status(), OwnerStatus::Ambiguous);
+        assert!(multiple_exact_children.selected_module().is_none());
+        assert_eq!(multiple_exact_children.candidates.len(), 2);
+        fs::remove_dir_all(&recursive).unwrap();
 
         let cycle_root = unique_test_dir("next-recursive-cycle");
         fs::create_dir_all(&cycle_root).unwrap();
@@ -86347,6 +89776,169 @@ semantic_functions: []
         );
         assert!(validate_route_receipt(&root, receipt, "add-binding", &module, None).is_err());
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn owner_local_binding_repair_routes_only_recognized_explicit_owner_errors() {
+        let root = copy_minimal_fixture("next-owner-local-binding-repair");
+        let module = root.join("module.yaml");
+        let implementation = fs::canonicalize(root.join("implementation.yaml")).unwrap();
+        let profile = build_repository_profile(&root).unwrap();
+        let owner = resolve_next_owner(
+            &root,
+            Some(&module),
+            "repair the machine binding declaration",
+            &profile.modules,
+            true,
+        )
+        .unwrap();
+        let local = error(
+            "structure.declared-variant-not-represented",
+            &implementation,
+            "declared observed input enum is missing from machine types",
+        );
+        assert!(owner_local_binding_repair_ready(
+            &root,
+            Some(&module),
+            "repair the machine binding declaration",
+            std::slice::from_ref(&local),
+            &owner,
+        ));
+        assert!(!owner_local_binding_repair_ready(
+            &root,
+            Some(&module),
+            "change product behavior",
+            std::slice::from_ref(&local),
+            &owner,
+        ));
+        let unrelated = error(
+            "semantic.contract-invalid",
+            &implementation,
+            "unrelated semantic error",
+        );
+        assert!(!owner_local_binding_repair_ready(
+            &root,
+            Some(&module),
+            "repair the machine binding declaration",
+            &[local, unrelated],
+            &owner,
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn machine_apply_declares_distinct_observed_event_type_and_closed_variant() {
+        let root = unique_test_dir("machine-observed-event-type");
+        run_add_module(
+            add_module_request(
+                &root,
+                "observed-event-machine",
+                "Exercise a distinct observed event representation.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("swift"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let implementation = root.join("implementation.yaml");
+        let mut declared = load_manifest(&implementation).unwrap();
+        set_yaml_string_sequence_path(
+            &mut declared.value,
+            &["architecture", "machine", "observed_events"],
+            &["Observed".to_string()],
+        );
+        write_yaml_manifest(&declared).unwrap();
+        let representation = root.join("Sources/ObservedEventMachine/Representation.swift");
+        let mut representation_source = fs::read_to_string(&representation).unwrap();
+        representation_source
+            .push_str("\npublic enum ExampleObservedEvent: Equatable { case observed }\n");
+        fs::write(&representation, representation_source).unwrap();
+        let before = load_manifest(&implementation).unwrap();
+        assert_eq!(
+            machine_semantic_variant_type(&before.value, "observed_event"),
+            get_str(
+                &before.value,
+                &["architecture", "machine", "types", "event"]
+            )
+        );
+        let before_diagnostics = collect_validation_diagnostics(
+            &root,
+            vec![root.join("module.yaml")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![implementation.clone()],
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(before_diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.declared-variant-not-represented"
+                && diagnostic.message.contains("Observed")
+        }));
+        initialize_test_git_repository(&root);
+        let repair = build_next_report(
+            &root,
+            Some(&root.join("module.yaml")),
+            "repair the machine binding declaration for the distinct observed event representation",
+        )
+        .unwrap();
+        assert_eq!(repair.result, NextResult::Ready);
+        assert_eq!(repair.owner.status(), OwnerStatus::Selected);
+        assert!(repair.blockers.is_empty());
+        assert!(repair
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("owner-local machine-binding")));
+        assert!(validate_route_receipt(
+            &root,
+            Path::new(&repair.receipt_path),
+            "machine-apply",
+            &implementation,
+            None,
+        )
+        .is_ok());
+        assert!(validate_route_receipt(
+            &root,
+            Path::new(&repair.receipt_path),
+            "spec-apply",
+            &implementation,
+            None,
+        )
+        .is_err());
+        let mode = get_str(&before.value, &["architecture", "machine", "mode"])
+            .unwrap()
+            .to_string();
+        let change = format!(
+            "spec: rms/machine-change/v0.1\nmodule: implementation.yaml\nmachine:\n  mode: {mode}\n  types:\n    observed_event: ExampleObservedEvent\n"
+        );
+        run_machine_apply(&implementation, None, Some(&change), None, false).unwrap();
+        let after = load_manifest(&implementation).unwrap();
+        assert_eq!(
+            machine_semantic_variant_type(&after.value, "observed_event"),
+            Some("ExampleObservedEvent")
+        );
+        assert!(get_string_array(
+            &after.value,
+            &["architecture", "representation", "closed_variants"]
+        )
+        .contains(&"ExampleObservedEvent".to_string()));
+        let diagnostics = collect_validation_diagnostics(
+            &root,
+            vec![root.join("module.yaml")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![implementation],
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(!diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.declared-variant-not-represented"
+                && diagnostic.message.contains("Observed")
+        }));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -87189,6 +90781,7 @@ verification:
         assert!(semantic.contains("public_behavior_bindings"));
         assert!(semantic.contains("non-empty `oracle`"));
         assert!(semantic.contains("`properties.add[]` and `properties.set[]`"));
+        assert!(semantic.contains("put every newly introduced property ID under `properties.add`"));
         assert!(semantic.contains("`properties.remove[]` contains existing property ids"));
         assert!(semantic.contains("path#symbol runner"));
         assert!(semantic.contains("exact generator"));
@@ -87233,6 +90826,13 @@ verification:
         ));
         assert!(semantic.contains("Prefer `set` when replacing generated scaffold semantics"));
         assert!(semantic.contains("Do not infer undeclared facts from sibling modules"));
+        assert!(semantic.contains("Never put an inline object under `assembly`"));
+        assert!(semantic.contains("assembly: verification/assemblies/existing_probe_assembly.yaml"));
+        assert!(semantic.contains(
+            "Every command or effect emitted by every included machine transition must be closed"
+        ));
+        assert!(semantic.contains("output: {kind: effect, name: DeclaredEffect}"));
+        assert!(semantic.contains("`rms spec apply` neither creates nor repairs probe assemblies"));
         assert!(machine.matches("set: null").count() >= 10);
         assert!(machine.contains(
             "Transition removal items use `from`, `on`, optional `to`, and optional `case`"
@@ -87246,6 +90846,255 @@ verification:
             machine.contains("`kind: effect_executor` must include the exact declared `effect`")
         );
         assert!(machine.contains("must not loop around a one-step driver"));
+        assert!(machine.contains(
+            "Cartesian product of every concrete representative state example and input example"
+        ));
+        assert!(machine.contains("Canonical machine transitions have no wildcard state syntax"));
+        assert!(
+            machine.contains("conformance scopes case identity by `from` plus `on` plus `case`")
+        );
+    }
+
+    #[test]
+    fn machine_plan_provider_normalizes_fenced_change_into_apply_ready_yaml() {
+        let root = unique_test_dir("machine-plan-fenced-provider-response");
+        run_add_module(
+            add_module_request(
+                &root,
+                "fenced-plan",
+                "Exercise machine plan provider normalization.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("rust"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let implementation_path = root.join("implementation.yaml");
+        let manifest = load_manifest(&implementation_path).unwrap();
+        let mode = get_str(&manifest.value, &["architecture", "machine", "mode"]).unwrap();
+        let raw = format!(
+            "```yaml\nspec: rms/machine-change/v0.1\nmodule: implementation.yaml\nmachine:\n  mode: {mode}\n```\n"
+        );
+
+        let prepared = prepare_machine_plan_provider_response(&manifest, &raw);
+        assert!(
+            prepared
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != Severity::Error),
+            "{:#?}",
+            prepared.diagnostics
+        );
+        assert!(!prepared.response.contains("```"));
+        assert!(prepared
+            .normalizations
+            .iter()
+            .any(|normalization| normalization.contains("provider markup")));
+        let output = root.join("machine-plan.yaml");
+        fs::write(&output, &prepared.response).unwrap();
+        let parsed = parse_machine_change(None, None, Some(&output)).unwrap();
+        assert_eq!(parsed.spec, "rms/machine-change/v0.1");
+        assert_eq!(parsed.machine.mode, mode);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn machine_plan_provider_rejects_non_consumable_fenced_change() {
+        let root = unique_test_dir("machine-plan-invalid-provider-response");
+        run_add_module(
+            add_module_request(
+                &root,
+                "invalid-plan",
+                "Reject non-consumable machine plan output.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("rust"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let manifest = load_manifest(&root.join("implementation.yaml")).unwrap();
+
+        let prepared = prepare_machine_plan_provider_response(
+            &manifest,
+            "```yaml\nspec: rms/machine-change/v0.1\nmachine:\n  mode: [broken\n```",
+        );
+
+        assert!(prepared.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == Severity::Error
+                && diagnostic.check == "machine-plan.response-invalid"
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn machine_plan_provider_preserves_explicit_no_change_advice() {
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str("spec: rms/implementation/v0.1\n").unwrap(),
+        };
+        let prepared = prepare_machine_plan_provider_response(
+            &manifest,
+            "The existing machine is sufficient; fill the declared transition role.",
+        );
+        assert!(prepared.diagnostics.is_empty());
+        assert_eq!(
+            prepared.response,
+            "The existing machine is sufficient; fill the declared transition role."
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn machine_plan_provider_run_preserves_raw_attempt_and_writes_consumable_response() {
+        let root = unique_test_dir("machine-plan-provider-run-normalization");
+        run_add_module(
+            add_module_request(
+                &root,
+                "provider-plan",
+                "Normalize the complete provider machine-plan path.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("rust"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let manifest = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let mode = get_str(&manifest.value, &["architecture", "machine", "mode"]).unwrap();
+        let program = root.join("fake-codex.sh");
+        write_test_file(
+            &program,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-last-message) output="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%s\n' '```yaml' 'spec: rms/machine-change/v0.1' 'module: implementation.yaml' 'machine:' '  mode: {mode}' '```' > "$output"
+"#
+            ),
+        );
+        make_executable(&program).unwrap();
+        let run_dir = root.join(".rms/runs/provider-plan");
+        fs::create_dir_all(&run_dir).unwrap();
+        let mut options = no_provider_options();
+        options.provider = Provider::Codex;
+        options.provider_timeout_seconds = 5;
+
+        execute_machine_plan_provider_with_program(
+            &program,
+            &root,
+            &manifest,
+            "bounded machine plan prompt",
+            &run_dir,
+            &options,
+        )
+        .unwrap();
+
+        let raw = fs::read_to_string(run_dir.join("attempt-1-response.md")).unwrap();
+        let normalized = fs::read_to_string(run_dir.join("response.md")).unwrap();
+        assert!(raw.starts_with("```yaml"));
+        assert!(!normalized.contains("```"));
+        let parsed: MachineChange = serde_yaml::from_str(&normalized).unwrap();
+        assert_eq!(parsed.machine.mode, mode);
+        assert!(fs::read_to_string(run_dir.join("provider.json"))
+            .unwrap()
+            .contains("extracted the single structured machine-change document"));
+        assert!(fs::read_to_string(run_dir.join("machine-plan-diagnostics.json")).is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn semantic_plan_includes_direct_external_contract_and_exact_behavior_shape() {
+        let root = unique_test_dir("semantic-plan-external-contract-context");
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module:
+  name: external-contract-fixture
+  version: 0.1.0
+  kind: library
+  purpose: Preserve an externally evaluated capability contract.
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities:
+    - name: playout-liveness
+      contract: contracts/playout-liveness.v1.0.0.yaml
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: []
+compatibility: {policy: backward-compatible-within-major}
+verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("contracts/playout-liveness.v1.0.0.yaml"),
+            r#"spec: rms/contract/v0.2
+name: playout-liveness
+version: 1.0.0
+kind: capability
+meaning: Preserve playout liveness.
+semantics:
+  behavior:
+    observations: []
+    requires:
+      - id: valid-input
+        statement: Input is validated.
+        evaluation: {kind: external, property: playout-contract-property}
+    guarantees: []
+    failures: []
+    cases: []
+    invariants: []
+    case_policy: {coverage: exhaustive, overlap: forbidden}
+compatibility: {policy: backward-compatible-within-major}
+"#,
+        )
+        .unwrap();
+
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let prompt = render_spec_plan_prompt(
+            &context,
+            &root,
+            "change one clause while preserving external evaluation",
+        )
+        .unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(prompt.contains("### Direct Public Contract:"));
+        assert!(prompt.contains("name: playout-liveness"));
+        assert!(prompt.contains("kind: external"));
+        assert!(prompt.contains("property: playout-contract-property"));
+        assert!(prompt.contains("must contain an exact `behavior` object"));
+        assert!(prompt.contains("there is no `semantic_profile` field"));
+        assert!(prompt.contains("preserve its wrapper, version, evaluation strategy"));
+        assert!(prompt.contains("semantics:\n        behavior:"));
+        assert!(prompt.contains("Prompt: rms.spec-plan@v2"));
+        assert!(prompt.contains("Profiles are exactly `smoke`, `ci`, or `nightly`"));
+        assert!(prompt.contains("`core` is a module profile"));
+        assert!(prompt.contains("command: composition"));
+        assert!(
+            prompt.contains("generator: scripts/composition_property.sh#generate_property_cases")
+        );
+        assert!(prompt.contains("set the property `proves` field to that exact invariant id"));
+        assert!(prompt.contains("do not add a synonymous law"));
+        assert!(prompt.contains("observation_source: {kind: transition-record, command: trace}"));
+        assert!(prompt.contains("it never contains `name` or `value`"));
     }
 
     #[cfg(unix)]
@@ -87286,7 +91135,7 @@ if [ -f "$counter_file" ]; then count=$(sed -n '1p' "$counter_file"); fi
 count=$((count + 1))
 printf '%s\n' "$count" > "$counter_file"
 if [ "$count" -eq 1 ]; then
-  response='{{"invalid":true}}'
+  response='Current semantics are sufficient; edit module.yaml and implementation.yaml directly.'
 else
   response='{}'
 fi
@@ -87304,7 +91153,14 @@ printf '%s\n' "$response" > "$output"
         options.provider_timeout_seconds = 5;
 
         execute_spec_plan_provider_with_program(
-            &program, &root, &context, authority, &prompt, &run_dir, &options,
+            &program,
+            &root,
+            &context,
+            authority,
+            "add stable identity",
+            &prompt,
+            &run_dir,
+            &options,
         )
         .unwrap();
 
@@ -87323,12 +91179,13 @@ printf '%s\n' "$response" > "$output"
         }
         assert!(fs::read_to_string(run_dir.join("prompt-repair.md"))
             .unwrap()
-            .contains("semantic-plan.response-invalid"));
+            .contains("semantic-plan.canonical-file-hand-edit"));
         assert!(fs::read_to_string(run_dir.join("provider.json"))
             .unwrap()
             .contains("\"result\": \"valid\""));
         assert!(validate_spec_plan_provider_response(
             &context,
+            "add stable identity",
             &fs::read_to_string(run_dir.join("response.md")).unwrap(),
         )
         .iter()
@@ -87365,7 +91222,14 @@ exit 0
         options.provider_timeout_seconds = 5;
 
         let failure = execute_spec_plan_provider_with_program(
-            &program, &root, &context, authority, &prompt, &run_dir, &options,
+            &program,
+            &root,
+            &context,
+            authority,
+            "add stable identity",
+            &prompt,
+            &run_dir,
+            &options,
         )
         .unwrap_err();
         let failure = format!("{failure:#}");
@@ -87396,6 +91260,275 @@ exit 0
                 .contains("semantic-plan.provider-failed")
         );
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn semantic_plan_normalizes_new_properties_from_set_to_add() {
+        let root = prompt_fixture("semantic-plan-property-operation-normalization");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let mut change: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+properties:
+  add: []
+  set:
+    - id: render-timeout-discard-before-fence-property
+      proves: render-timeout-discards-before-generation-fence
+  remove: []
+"#,
+        )
+        .unwrap();
+
+        let normalizations = normalize_spec_plan_property_operations(&context, &mut change);
+        let properties = change.properties.unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(properties.replace.is_empty());
+        assert_eq!(properties.add.len(), 1);
+        assert_eq!(
+            properties.add[0].id,
+            "render-timeout-discard-before-fence-property"
+        );
+        assert_eq!(normalizations.len(), 1);
+        assert!(normalizations[0].contains("properties.set to properties.add"));
+    }
+
+    #[test]
+    fn semantic_plan_normalizes_every_property_evidence_kind_before_typed_parse() {
+        let response = r#"spec: rms/semantic-change/v0.1
+properties:
+  add:
+    - id: new-semantic-property
+      proves: semantic-law
+      kind: semantic
+      evidence:
+        path: verification/properties/new_semantic_property.md
+    - id: new-fuzz-property
+      proves: fuzz-law
+      kind: fuzz
+      evidence:
+        path: verification/fuzz/new_fuzz_property.md
+  set:
+    - id: existing-semantic-property
+      proves: existing-law
+      kind: semantic
+      evidence:
+        kind: markdown
+        path: verification/properties/existing_semantic_property.md
+"#;
+
+        let (normalized, normalizations) = normalize_spec_plan_property_evidence_kinds(response);
+        let change: SemanticChange = serde_yaml::from_str(&normalized).unwrap();
+        let properties = change.properties.unwrap();
+
+        assert_eq!(
+            properties.add[0].evidence.as_ref().unwrap().kind,
+            "property"
+        );
+        assert_eq!(properties.add[1].evidence.as_ref().unwrap().kind, "fuzz");
+        assert_eq!(
+            properties.replace[0].evidence.as_ref().unwrap().kind,
+            "property"
+        );
+        assert_eq!(normalizations.len(), 3);
+        assert!(normalizations
+            .iter()
+            .any(|item| item.contains("from `missing` to `property`")));
+        assert!(normalizations
+            .iter()
+            .any(|item| item.contains("from `markdown` to `property`")));
+        assert!(normalizations
+            .iter()
+            .any(|item| item.contains("from `missing` to `fuzz`")));
+    }
+
+    #[test]
+    fn semantic_plan_repair_prompt_is_small_and_operation_aware() {
+        let diagnostics = vec![error_diagnostic(
+            "semantic.property-set-missing",
+            Path::new("module.yaml"),
+            "property `new-property` does not exist; create it through `properties.add`",
+        )];
+        let prompt = "schema context that should not be repeated for an apply-shaped candidate";
+        let candidate = "spec: rms/semantic-change/v0.1\nproperties:\n  add: []\n  set:\n    - id: new-property\n";
+
+        let repair = render_spec_plan_repair_prompt(prompt, candidate, &diagnostics);
+
+        assert!(!repair.contains(prompt));
+        assert!(repair.contains("move the named item unchanged"));
+        assert!(repair.contains("from that section's `set` list to its `add` list"));
+        assert!(repair.contains("semantic.property-set-missing"));
+        assert!(repair.contains(
+            "observation_source` has exactly two scalar fields: `{kind: transition-record, command: trace}"
+        ));
+        assert!(repair.contains("Never emit `name`, `value`, or `kind: semantic-function`"));
+        assert!(repair.len() < 4_000);
+    }
+
+    #[test]
+    fn semantic_plan_repair_teaches_exact_public_behavior_observation_source_shape() {
+        let diagnostics = vec![error_diagnostic(
+            "semantic-plan.response-invalid",
+            Path::new("implementation.yaml"),
+            "unknown field `name`, expected `kind` or `command`",
+        )];
+        let candidate = r#"spec: rms/semantic-change/v0.1
+public_behavior_bindings:
+  set:
+    - id: receive-media-public
+      observation_source:
+        kind: semantic-function
+        name: transition-record
+        value: trace
+"#;
+
+        let repair =
+            render_spec_plan_repair_prompt("bounded semantic schema", candidate, &diagnostics);
+
+        assert!(repair.contains("{kind: transition-record, command: trace}"));
+        assert!(repair.contains("{kind: invocation-record, command: trace}"));
+        assert!(repair.contains("`command` names an existing implementation `commands` key"));
+        assert!(repair.contains("Original bounded schema context:"));
+    }
+
+    #[test]
+    fn semantic_plan_rejects_manifest_hand_edits_for_canonical_proof_binding_tasks() {
+        let root = prompt_fixture("semantic-plan-canonical-proof-binding");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let task = "Correct module.yaml and implementation.yaml proof bindings, property realizations, and public behavior observation sources without changing runtime semantics.";
+        let response = "Current semantics are sufficient; edit the declared role files module.yaml and implementation.yaml.";
+
+        let diagnostics = validate_spec_plan_provider_response(&context, task, response);
+        let repair = render_spec_plan_repair_prompt("bounded schema", response, &diagnostics);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|item| item.check == "semantic-plan.canonical-change-required"));
+        assert!(diagnostics
+            .iter()
+            .any(|item| item.check == "semantic-plan.canonical-file-hand-edit"));
+        assert!(repair.contains("require an applicable `rms/semantic-change/v0.1` object"));
+        assert!(repair.contains("Canonical manifests are never declared source role files"));
+        assert!(repair.contains("Original bounded schema context:"));
+    }
+
+    #[test]
+    fn semantic_plan_requires_requested_fuzz_target_and_teaches_its_mutator_shape() {
+        let root = prompt_fixture("semantic-plan-fuzz-target");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let task = "Declare the existing malformed-input property as the boundary fuzz target.";
+        let semantic_property: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+properties:
+  add:
+    - id: malformed-input-property
+      proves: malformed-input-is-rejected
+      kind: semantic
+      input_space: {strategy: generated, generator: malformed-inputs}
+      operation: {kind: semantic-function, name: parse}
+      oracle: [malformed input is rejected]
+      evidence: {kind: property, path: verification/properties/malformed_input.md}
+      counterexamples: {path: verification/fuzz/counterexamples/malformed-input}
+      realizations:
+        - profile: smoke
+          strategy: generated-property
+          command: fuzz
+          generator: src/property.rs#generate_malformed
+          runner: src/property.rs#check_malformed
+"#,
+        )
+        .unwrap();
+        let mut fuzz_target = semantic_property.clone();
+        fuzz_target.properties.as_mut().unwrap().add[0].kind = Some("fuzz".to_string());
+
+        let missing = validate_prepared_spec_plan_change(&context, task, &semantic_property);
+        let present = validate_prepared_spec_plan_change(&context, task, &fuzz_target);
+        let repair = render_spec_plan_repair_prompt("bounded schema", "candidate", &missing);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(missing
+            .iter()
+            .any(|item| item.check == "semantic-plan.fuzz-target-change-missing"));
+        assert!(!present
+            .iter()
+            .any(|item| item.check == "semantic-plan.fuzz-target-change-missing"));
+        assert!(repair.contains("uses the existing `properties` change section with `kind: fuzz`"));
+        assert!(repair.contains("never invent a top-level `fuzz_targets` change field"));
+        assert!(repair.contains("Original bounded schema context:"));
+    }
+
+    #[test]
+    fn semantic_plan_fuzz_repair_rejects_fixed_corpus_and_generated_aliases() {
+        let diagnostics = vec![error_diagnostic(
+            "evidence.fuzz-realization-mismatch",
+            Path::new("implementation.yaml"),
+            "fuzz property is not backed by a generated or exhaustive realization",
+        )];
+
+        let repair = render_spec_plan_repair_prompt(
+            "bounded schema",
+            "spec: rms/semantic-change/v0.1",
+            &diagnostics,
+        );
+
+        assert!(repair.contains("`generated` is never a valid strategy"));
+        assert!(repair.contains("a fixed non-exhaustive `deterministic-corpus`"));
+        assert!(repair.contains("cannot be relabeled as fuzz proof"));
+        assert!(repair.contains("Original bounded schema context:"));
+    }
+
+    #[test]
+    fn semantic_plan_repair_preserves_and_replaces_mandatory_property_realizations() {
+        let diagnostics = vec![error_diagnostic(
+            "evidence.property-realization-invalid",
+            Path::new("module.yaml"),
+            "property `public-command-child-backing-property` has realization profile `core`, strategy `deterministic-exhaustive`, command `verify`",
+        )];
+        let prompt = "bounded schema and canonical target context";
+        let candidate = r#"spec: rms/semantic-change/v0.1
+properties:
+  add:
+    - id: public-command-child-backing-property
+      proves: public-command-is-child-backed
+      realizations:
+        - profile: core
+          strategy: deterministic-exhaustive
+          command: verify
+          generator: verification/property#generate
+          runner: verification/property#run
+          exhaustive: true
+"#;
+
+        let repair = render_spec_plan_repair_prompt(prompt, candidate, &diagnostics);
+
+        assert!(repair.contains("Original bounded schema context:"));
+        assert!(repair.contains("`realizations` is mandatory and non-empty"));
+        assert!(repair.contains("Never delete the list or replace it with `[]`"));
+        assert!(repair.contains("Profiles are exactly `smoke|ci|nightly`"));
+        assert!(repair.contains("`core` is a module profile and is invalid here"));
+        assert!(repair.contains("command: composition"));
+        assert!(repair.contains("scripts/composition_property.sh#run_property"));
+        assert!(repair.contains(candidate));
+    }
+
+    #[test]
+    fn semantic_plan_contract_repair_restores_bounded_schema_context() {
+        let diagnostics = vec![error_diagnostic(
+            "contract.compile",
+            Path::new("module.yaml"),
+            "contract `playout-liveness` kind `capability` requires the `semantics.behavior` object; there is no `semantic_profile` field",
+        )];
+        let prompt = "bounded schema with exact semantics.behavior shape";
+        let candidate =
+            "spec: rms/semantic-change/v0.1\ncontracts: {add: [], set: [], remove: []}\n";
+
+        let repair = render_spec_plan_repair_prompt(prompt, candidate, &diagnostics);
+
+        assert!(repair.contains("Original bounded schema context:"));
+        assert!(repair.contains(prompt));
+        assert!(repair.contains("requires the `semantics.behavior` object"));
     }
 
     #[test]
@@ -88300,6 +92433,19 @@ evidence:
         fs::remove_dir_all(&root).unwrap();
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn proof_shell_runs_natively_on_apple_silicon() {
+        if !apple_silicon_hardware_available() {
+            return;
+        }
+
+        let output = proof_shell_command("arch").output().unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "arm64");
+    }
+
     #[test]
     fn generated_swift_probe_command_uses_native_arm64_on_apple_silicon() {
         let commands = render_property_commands_yaml(ScaffoldShape::DomainEngine, "swift");
@@ -88916,6 +93062,101 @@ records:
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(report.result, "pass", "{:#?}", report.diagnostics);
         assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn trace_bundle_scopes_reused_case_identity_to_the_state_input_pair() {
+        let root = unique_test_dir("trace-reused-case-pair-scope");
+        fs::create_dir_all(root.join("verification/traces")).unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: trace-reused-case-pair-scope
+binding: rust
+source: { root: ., public_entrypoint: src/lib.rs }
+commands: { build: "true", verify: "true" }
+architecture:
+  shape: domain-engine
+  machine:
+    name: PairScopedCaseMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    initial_state: Ready
+    states: [Ready, Scheduled]
+    commands: []
+    observed_events: [AppleRenderStale, RenderCompleted]
+    events: [StaleRenderIgnored, RenderRecorded]
+    effects: []
+    effect_results: []
+    replies: [Stale, Completed]
+    rejections: []
+    effect_protocols: []
+    transition_record_function: transition_record
+    transitions:
+      - from: Scheduled
+        on: AppleRenderStale
+        to: Scheduled
+        case: IgnoreStaleGeneration
+        events: [StaleRenderIgnored]
+        reply: Stale
+      - from: Ready
+        on: RenderCompleted
+        to: Ready
+        case: RecordRenderCompletion
+        events: [RenderRecorded]
+        reply: Completed
+  roles:
+    transition: [src/lib.rs]
+    transition_record: [src/lib.rs]
+    replay_bundle: [verification/traces/trace.yaml]
+"#,
+        )
+        .unwrap();
+        let bundle = root.join("verification/traces/trace.yaml");
+        fs::write(
+            &bundle,
+            r#"spec: rms/trace-bundle/v0.1
+machine: PairScopedCaseMachine
+records:
+  - scenario_start: true
+    state_before: Ready
+    input: RenderCompleted
+    output:
+      next_state: Ready
+      events: []
+      commands: []
+      effects: []
+      reply: null
+      rejection: null
+    state_after: Ready
+    source: { file: src/lib.rs, function: transition_record, branch: IgnoreStaleGeneration }
+"#,
+        )
+        .unwrap();
+
+        let report = build_trace_report(&bundle).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, "fail");
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.check == "trace.canonical-case-missing"
+                    && diagnostic.message.contains("Ready --RenderCompleted-->")
+                    && diagnostic.message.contains("RecordRenderCompletion")
+            }),
+            "{:#?}",
+            report.diagnostics
+        );
+        assert!(
+            !report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.check == "trace.canonical-transition-mismatch"
+                    && diagnostic
+                        .message
+                        .contains("Scheduled --AppleRenderStale-->")
+            }),
+            "{:#?}",
+            report.diagnostics
+        );
     }
 
     #[test]
@@ -91558,6 +95799,123 @@ records:
     }
 
     #[test]
+    fn machine_apply_receipt_binds_explicit_reviewed_transition_intent() {
+        let root = unique_test_dir("machine-receipt-intent-anchors");
+        fs::create_dir_all(&root).unwrap();
+        let implementation = root.join("implementation.yaml");
+        fs::write(
+            &implementation,
+            r#"spec: rms/implementation/v0.1
+module: receiver-media-readiness-domain
+binding: swift
+architecture:
+  shape: domain-engine
+  machine:
+    name: ReceiverMediaReadinessMachine
+    mode: stateful-transition-machine
+    states: [Acknowledged]
+    commands: [ReceiveSenderAdmissionProof, AuthorizeAcknowledgement]
+    observed_events: []
+    events: []
+    effects: []
+    effect_results: []
+    replies: []
+    rejections: [IllegalTransition, MissingReadinessProof]
+    transitions: []
+"#,
+        )
+        .unwrap();
+        initialize_test_git_repository(&root);
+        let task = "Add reject_sender_proof_outside_preparing for Acknowledged plus ReceiveSenderAdmissionProof, preserve Acknowledged, and reject IllegalTransition.";
+        let intent = parse_intent_model_source(
+            r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects:
+  - acknowledged
+  - receive-sender-admission-proof
+  - illegal-transition
+  - reject-sender-proof-outside-preparing
+facts:
+  domain_decisions: { disposition: required, basis: explicit, source_quote: reject_sender_proof_outside_preparing }
+  lifecycle: { disposition: required, basis: explicit, source_quote: preserve Acknowledged }
+  effects: { disposition: absent, basis: inferred, rationale: pure rejection }
+  runnable_surface: { disposition: absent, basis: inferred, rationale: no surface }
+  reuse: { disposition: absent, basis: inferred, rationale: owner-local change }
+responsibilities:
+  - { id: reject-sender-proof-outside-preparing, kind: decision, summary: Reject the proof outside preparing }
+surface_kinds: []
+binding_preferences: [swift]
+open_questions: []
+"#,
+        )
+        .unwrap();
+        let run_dir = create_route_run_record(&root, "next", task, "prompt", None).unwrap();
+        let route = issue_route_receipt(
+            &root,
+            &run_dir,
+            task,
+            Some(&intent),
+            "ready",
+            "semantic",
+            Some(&root.join("module.yaml")),
+            Some(&implementation),
+            vec!["machine-apply".to_string()],
+            vec![implementation.clone()],
+            None,
+        )
+        .unwrap();
+        let correct: MachineChange = serde_yaml::from_str(
+            r#"spec: rms/machine-change/v0.1
+machine: { mode: stateful-transition-machine }
+transitions:
+  add:
+    - from: Acknowledged
+      on: ReceiveSenderAdmissionProof
+      to: Acknowledged
+      case: reject_sender_proof_outside_preparing
+      rejection: IllegalTransition
+"#,
+        )
+        .unwrap();
+        assert!(validate_machine_change_route_receipt(
+            &root,
+            &route.receipt_path,
+            &implementation,
+            &correct,
+        )
+        .is_ok());
+
+        let unrelated: MachineChange = serde_yaml::from_str(
+            r#"spec: rms/machine-change/v0.1
+machine: { mode: stateful-transition-machine }
+transitions:
+  add:
+    - from: Acknowledged
+      on: AuthorizeAcknowledgement
+      to: Acknowledged
+      case: reject_ack_without_exact_proof
+      rejection: MissingReadinessProof
+"#,
+        )
+        .unwrap();
+        let error = validate_machine_change_route_receipt(
+            &root,
+            &route.receipt_path,
+            &implementation,
+            &unrelated,
+        )
+        .unwrap_err();
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("reject-sender-proof-outside-preparing"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
     fn design_receipt_binds_exact_scaffold_arguments() {
         let root = copy_minimal_fixture("design-receipt-scaffold");
         initialize_test_git_repository(&root);
@@ -91617,421 +95975,6 @@ open_questions: []
             Some(&changed),
         )
         .is_err());
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn provider_intent_rejects_machine_declaration_as_body_only_implementation() {
-        let root = unique_test_dir("machine-declaration-intent-contradiction");
-        fs::create_dir_all(&root).unwrap();
-        let task = "In modules/apple-audio-effect-boundary-boundary/implementation.yaml, declare the existing AwaitingInput plus PlaybackPrewarmReady transition produced by transitionRecord, including its exact Completed state, lifecycle events, allowPlaybackPrewarm reply, and source branch.";
-        let response = r#"{
-  "spec":"rms/intent-model/v0.1",
-  "operation":"implementation-change",
-  "change_scope":"existing-module",
-  "subjects":["apple-audio-effect-boundary-boundary","awaiting-input-playback-prewarm-ready-transition"],
-  "facts":{
-    "domain_decisions":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"The task declares existing structure."},
-    "lifecycle":{"disposition":"required","basis":"explicit","source_quote":"transition produced by transitionRecord, including its exact Completed state, lifecycle events","rationale":null},
-    "effects":{"disposition":"required","basis":"explicit","source_quote":"allowPlaybackPrewarm reply","rationale":null},
-    "runnable_surface":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"No runnable surface is requested."},
-    "reuse":{"disposition":"required","basis":"explicit","source_quote":"existing AwaitingInput plus PlaybackPrewarmReady transition produced by transitionRecord","rationale":null}
-  },
-  "responsibilities":[
-    {"id":"awaiting-input-playback-prewarm-ready-transition","kind":"workflow","summary":"Declare the existing transition."},
-    {"id":"allow-playback-prewarm-reply","kind":"integration","summary":"Declare the reply."}
-  ],
-  "surface_kinds":[],
-  "binding_preferences":[],
-  "open_questions":[]
-}"#;
-
-        let diagnostics = provider_intent_candidate(task, &root, response).unwrap_err();
-
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.check == "intent.contradiction"
-                && diagnostic
-                    .message
-                    .contains("cannot declare canonical machine structure")
-                && diagnostic.message.contains("use semantic-change")
-        }));
-        let repair = render_intent_repair_prompt(task, response, &diagnostics);
-        assert!(repair.contains("use semantic-change"));
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn semantic_machine_declaration_route_authorizes_machine_apply_not_add_binding() {
-        let root = copy_minimal_fixture("machine-declaration-route");
-        initialize_test_git_repository(&root);
-        let task = "In implementation.yaml, declare the existing AwaitingInput plus PlaybackPrewarmReady transition produced by transitionRecord, including its exact Completed state, lifecycle events, allowPlaybackPrewarm reply, and source branch.";
-        let intent = r#"spec: rms/intent-model/v0.1
-operation: semantic-change
-change_scope: existing-module
-subjects: [example, awaiting-input-playback-prewarm-ready-transition]
-facts:
-  domain_decisions: { disposition: absent, basis: inferred, rationale: existing machine declaration }
-  lifecycle: { disposition: required, basis: explicit, source_quote: "transition produced by transitionRecord, including its exact Completed state, lifecycle events" }
-  effects: { disposition: required, basis: explicit, source_quote: "allowPlaybackPrewarm reply" }
-  runnable_surface: { disposition: absent, basis: inferred, rationale: no runnable surface }
-  reuse: { disposition: required, basis: explicit, source_quote: "existing AwaitingInput plus PlaybackPrewarmReady transition produced by transitionRecord" }
-responsibilities:
-  - { id: awaiting-input-playback-prewarm-ready-transition, kind: workflow, summary: Declare the existing transition }
-  - { id: allow-playback-prewarm-reply, kind: integration, summary: Declare the existing reply }
-surface_kinds: []
-binding_preferences: []
-open_questions: []
-"#;
-        let report = build_next_report_with_intent(
-            &root,
-            Some(&root.join("module.yaml")),
-            task,
-            RawIntentInput {
-                yaml: Some(intent.to_string()),
-                ..RawIntentInput::default()
-            },
-            None,
-        )
-        .unwrap();
-        let receipt: RouteReceipt =
-            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
-        let implementation = root.join("implementation.yaml");
-
-        assert_eq!(report.result, NextResult::Ready);
-        assert_eq!(report.task_classification.lane, TaskLane::Semantic);
-        assert_eq!(
-            receipt.payload.allowed_action_families,
-            vec!["machine-apply".to_string(), "spec-apply".to_string()]
-        );
-        assert!(validate_route_receipt(
-            &root,
-            Path::new(&report.receipt_path),
-            "machine-apply",
-            &implementation,
-            None,
-        )
-        .is_ok());
-        assert!(validate_route_receipt(
-            &root,
-            Path::new(&report.receipt_path),
-            "add-binding",
-            &root.join("module.yaml"),
-            None,
-        )
-        .is_err());
-        assert!(report
-            .steps
-            .iter()
-            .flat_map(|group| &group.steps)
-            .any(|step| {
-                step.program.as_deref() == Some("rms")
-                    && step
-                        .args
-                        .starts_with(&["spec".to_string(), "plan".to_string()])
-            }));
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn exact_existing_machine_target_does_not_block_on_unknown_reuse() {
-        let root = copy_minimal_fixture("existing-machine-unknown-reuse-route");
-        initialize_test_git_repository(&root);
-        let task = "Change the canonical Voice Media boundary machine in modules/voice-media-boundary/implementation.yaml to declare every existing Ready-state render callback with a non-nil identity as IgnoreStaleGeneration: RenderDeadlineExpired, AppleRenderScheduled, AppleRenderTemporarilyUnavailable, AppleRenderFailed, AppleRenderTimedOut, and AppleRenderBusy each preserve Ready, emit StaleRenderIgnored, and reply Stale, matching transitionRecord.";
-        let intent = r#"spec: rms/intent-model/v0.1
-operation: semantic-change
-change_scope: existing-module
-subjects: [ignore-stale-generation, ready-state-render-callbacks, voice-media-boundary]
-facts:
-  domain_decisions: { disposition: required, basis: explicit, source_quote: "declare every existing Ready-state render callback with a non-nil identity as IgnoreStaleGeneration" }
-  lifecycle: { disposition: required, basis: explicit, source_quote: "preserve Ready, emit StaleRenderIgnored, and reply Stale, matching transitionRecord" }
-  effects: { disposition: required, basis: explicit, source_quote: "emit StaleRenderIgnored, and reply Stale" }
-  runnable_surface: { disposition: absent, basis: inferred, rationale: no runnable surface }
-  reuse: { disposition: unknown, basis: inferred, rationale: consumption is not stated }
-responsibilities:
-  - { id: classify-ready-render-callbacks, kind: decision, summary: Classify stale render callbacks }
-  - { id: ignore-stale-ready-render-callbacks, kind: workflow, summary: Preserve Ready and emit the stale result }
-surface_kinds: []
-binding_preferences: []
-open_questions: [Clarify whether the machine is consumed by other modules.]
-"#;
-        let report = build_next_report_with_intent(
-            &root,
-            Some(&root.join("module.yaml")),
-            task,
-            RawIntentInput {
-                yaml: Some(intent.to_string()),
-                ..RawIntentInput::default()
-            },
-            None,
-        )
-        .unwrap();
-        let receipt: RouteReceipt =
-            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
-
-        assert_eq!(report.result, NextResult::Ready);
-        assert_eq!(report.task_classification.lane, TaskLane::Semantic);
-        assert_eq!(
-            receipt.payload.allowed_action_families,
-            vec!["machine-apply".to_string(), "spec-apply".to_string()]
-        );
-        assert!(report.validation.diagnostics.iter().any(|diagnostic| {
-            diagnostic.check == "intent.nonmaterial-unknown"
-                && diagnostic.message.contains("exact existing implementation")
-        }));
-        assert!(report
-            .validation
-            .diagnostics
-            .iter()
-            .all(|diagnostic| diagnostic.check != "intent.material-unknown"));
-        let model = parse_intent_model_source(intent).unwrap();
-        let topology_diagnostics = validate_intent_model(
-            &format!("{task} Publish it as a reusable capability."),
-            &root,
-            &model,
-        );
-        assert!(topology_diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.check == "intent.material-unknown"));
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn implementation_candidate_authorizes_add_binding_only_when_binding_is_absent() {
-        let intent = r#"spec: rms/intent-model/v0.1
-operation: implementation-change
-change_scope: existing-module
-subjects: [example]
-facts:
-  domain_decisions: { disposition: absent, basis: inferred, rationale: declared behavior is unchanged }
-  lifecycle: { disposition: absent, basis: inferred, rationale: declared lifecycle is unchanged }
-  effects: { disposition: absent, basis: inferred, rationale: declared effects are unchanged }
-  runnable_surface: { disposition: absent, basis: inferred, rationale: no runnable surface }
-  reuse: { disposition: absent, basis: inferred, rationale: owner-local role body }
-responsibilities: []
-surface_kinds: []
-binding_preferences: []
-open_questions: []
-"#;
-        let root = copy_minimal_fixture("implementation-existing-binding-route");
-        initialize_test_git_repository(&root);
-        let report = build_next_report_with_intent(
-            &root,
-            Some(&root.join("module.yaml")),
-            "Fix the existing parser role body without changing canonical declarations.",
-            RawIntentInput {
-                yaml: Some(intent.to_string()),
-                ..RawIntentInput::default()
-            },
-            None,
-        )
-        .unwrap();
-        let receipt: RouteReceipt =
-            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
-        assert_eq!(report.result, NextResult::Ready);
-        assert_eq!(
-            report.task_classification.lane,
-            TaskLane::ImplementationCandidate
-        );
-        assert!(receipt.payload.allowed_action_families.is_empty());
-        fs::remove_dir_all(&root).unwrap();
-
-        let root = copy_minimal_fixture("implementation-missing-binding-route");
-        fs::remove_file(root.join("implementation.yaml")).unwrap();
-        initialize_test_git_repository(&root);
-        let report = build_next_report_with_intent(
-            &root,
-            Some(&root.join("module.yaml")),
-            "Add the implementation binding for the existing declaration.",
-            RawIntentInput {
-                yaml: Some(intent.to_string()),
-                ..RawIntentInput::default()
-            },
-            None,
-        )
-        .unwrap();
-        let receipt: RouteReceipt =
-            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
-        assert_eq!(
-            receipt.payload.allowed_action_families,
-            vec!["add-binding".to_string()]
-        );
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn exact_contract_completion_does_not_block_on_unknown_lifecycle() {
-        let root = copy_minimal_fixture("existing-contract-unknown-lifecycle-route");
-        initialize_test_git_repository(&root);
-        let task = "Evolve the existing composite Receiver Media Readiness public command contract at modules/receiver-media-readiness/contracts/receiver-media-readiness.v1.yaml from its scaffold migration draft into the real version-1 contract exported by the existing receiver-media-readiness-boundary child. Reuse the existing composite topology and unchanged wire command. Bind every requirement, guarantee, and failure to the existing receiver-media-readiness-boundary-contract-property; remove scaffold and unresolved markers; make no source, wire, or runtime change.";
-        let intent = r#"spec: rms/intent-model/v0.1
-operation: semantic-change
-change_scope: existing-module
-subjects: [receiver-media-readiness, receiver-media-readiness-contract]
-facts:
-  domain_decisions: { disposition: required, basis: inferred, rationale: contract clauses are completed }
-  lifecycle: { disposition: unknown, basis: inferred, rationale: lifecycle was not restated }
-  effects: { disposition: absent, basis: inferred, rationale: no runtime change }
-  runnable_surface: { disposition: absent, basis: inferred, rationale: no runtime change }
-  reuse: { disposition: required, basis: inferred, rationale: existing child export is retained }
-responsibilities:
-  - { id: receiver-media-readiness-contract, kind: decision, summary: Complete the existing contract clauses }
-surface_kinds: []
-binding_preferences: []
-open_questions: [Clarify the lifecycle.]
-"#;
-        let report = build_next_report_with_intent(
-            &root,
-            Some(&root.join("module.yaml")),
-            task,
-            RawIntentInput {
-                yaml: Some(intent.to_string()),
-                ..RawIntentInput::default()
-            },
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(report.result, NextResult::Ready);
-        assert!(report.validation.diagnostics.iter().any(|diagnostic| {
-            diagnostic.check == "intent.nonmaterial-unknown"
-                && diagnostic.message.contains("contract scaffold completion")
-        }));
-        let model = parse_intent_model_source(intent).unwrap();
-        let ambiguous = validate_intent_model(
-            "Decide whether the existing contract should be replaced by a new major version with a different lifecycle.",
-            &root,
-            &model,
-        );
-        assert!(ambiguous
-            .iter()
-            .any(|diagnostic| diagnostic.check == "intent.material-unknown"));
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn provider_intent_repairs_design_for_exact_contract_completion() {
-        let root = unique_test_dir("existing-contract-design-contradiction");
-        fs::create_dir_all(&root).unwrap();
-        let task = "Evolve in place the existing composite Receiver Media Readiness public command contract at modules/receiver-media-readiness/contracts/receiver-media-readiness.v1.yaml. Preserve version 1 and backward-compatible-within-major lifecycle; this is not a new contract, replacement, deprecation, or removal. Reuse the existing composite topology and unchanged wire command exported by receiver-media-readiness-boundary. Bind every requirement, guarantee, and failure to receiver-media-readiness-boundary-contract-property; remove scaffold and unresolved markers; make no source, wire, runtime, or topology change.";
-        let response = r#"{
-  "spec":"rms/intent-model/v0.1",
-  "operation":"design",
-  "change_scope":"existing-module",
-  "subjects":["receiver-media-readiness","receiver-media-readiness-contract"],
-  "facts":{
-    "domain_decisions":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"Contract clauses are completed."},
-    "lifecycle":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"The existing version and lifecycle are preserved."},
-    "effects":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"No runtime change is requested."},
-    "runnable_surface":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"No runnable surface is requested."},
-    "reuse":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"The existing composite topology is reused."}
-  },
-  "responsibilities":[{"id":"receiver-media-readiness-contract","kind":"decision","summary":"Complete the existing contract clauses."}],
-  "surface_kinds":[],
-  "binding_preferences":[],
-  "open_questions":[]
-}"#;
-
-        let diagnostics = provider_intent_candidate(task, &root, response).unwrap_err();
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.check == "intent.contradiction"
-                && diagnostic.message.contains("use semantic-change")
-        }));
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn provider_intent_does_not_treat_executable_contract_proof_as_surface() {
-        let root = unique_test_dir("contract-proof-surface-contradiction");
-        fs::create_dir_all(&root).unwrap();
-        let task = "Change canonical contract clauses in the existing owner modules/receiver-media-readiness/module.yaml for its existing command receiver-media-readiness version 1: replace the three unresolved evaluations and empty exhaustive case scaffold with external executable evaluation by receiver-media-readiness-boundary-contract-property, matching the already exported child behavior. Preserve the current major version, compatibility policy, command name, wire shape, module topology, and runtime; remove only x-rms scaffold and migration-draft status.";
-        let response = r#"{
-  "spec":"rms/intent-model/v0.1",
-  "operation":"semantic-change",
-  "change_scope":"existing-module",
-  "subjects":["receiver-media-readiness","receiver-media-readiness-contract"],
-  "facts":{
-    "domain_decisions":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"Contract clauses are completed."},
-    "lifecycle":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"The current major version is preserved."},
-    "effects":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"The evaluation is externally executable."},
-    "runnable_surface":{"disposition":"required","basis":"explicit","source_quote":"external executable evaluation","rationale":null},
-    "reuse":{"disposition":"required","basis":"inferred","source_quote":null,"rationale":"The existing child behavior is retained."}
-  },
-  "responsibilities":[
-    {"id":"receiver-media-readiness-contract","kind":"decision","summary":"Complete the existing contract clauses."},
-    {"id":"receiver-media-readiness-contract-evaluation","kind":"integration","summary":"Evaluate the contract property."}
-  ],
-  "surface_kinds":["executable"],
-  "binding_preferences":[],
-  "open_questions":[]
-}"#;
-
-        let diagnostics = provider_intent_candidate(task, &root, response).unwrap_err();
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.check == "intent.contradiction"
-                && diagnostic.message.contains("proof, not a product surface")
-        }));
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn exact_composite_parent_path_precedes_child_and_pattern_mentions() {
-        let root = route_capability_fixture("exact-composite-parent-route");
-        let profile = build_repository_profile(&root).unwrap();
-        let task = "Bind the composite parent contract in modules/play-game/module.yaml to a new executable composition-only public-command-child-backing-property, exactly like an existing reference pattern. The property proves the parent command resolves to play-game-boundary and that boundary requires play-game-domain. The parent adds no state, effect, runnable surface, or duplicate decision.";
-
-        let owner = resolve_next_owner(&root, None, task, &profile.modules, false).unwrap();
-
-        assert_eq!(owner.status(), OwnerStatus::Selected);
-        assert_eq!(
-            owner.selected_module().map(|module| module.name.as_str()),
-            Some("play-game")
-        );
-        assert!(owner.reason.contains("exact canonical artifact path"));
-        assert_eq!(owner.route.len(), 1);
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn semantic_parent_without_binding_authorizes_spec_apply_only() {
-        let root = copy_minimal_fixture("semantic-parent-without-binding-route");
-        fs::remove_file(root.join("implementation.yaml")).unwrap();
-        initialize_test_git_repository(&root);
-        let intent = r#"spec: rms/intent-model/v0.1
-operation: semantic-change
-change_scope: existing-module
-subjects: [example, parent-contract]
-facts:
-  domain_decisions: { disposition: required, basis: inferred, rationale: contract clauses are completed }
-  lifecycle: { disposition: required, basis: inferred, rationale: existing lifecycle is preserved }
-  effects: { disposition: absent, basis: inferred, rationale: composition property is pure proof }
-  runnable_surface: { disposition: absent, basis: inferred, rationale: no runnable surface }
-  reuse: { disposition: required, basis: inferred, rationale: existing composition is retained }
-responsibilities:
-  - { id: parent-contract, kind: decision, summary: Complete the parent contract }
-surface_kinds: []
-binding_preferences: []
-open_questions: []
-"#;
-        let report = build_next_report_with_intent(
-            &root,
-            Some(&root.join("module.yaml")),
-            "Complete the existing parent contract without adding an implementation binding.",
-            RawIntentInput {
-                yaml: Some(intent.to_string()),
-                ..RawIntentInput::default()
-            },
-            None,
-        )
-        .unwrap();
-        let receipt: RouteReceipt =
-            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
-
-        assert_eq!(report.result, NextResult::Ready);
-        assert!(report.context.implementation.is_none());
-        assert_eq!(
-            receipt.payload.allowed_action_families,
-            vec!["spec-apply".to_string()]
-        );
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -92414,7 +96357,7 @@ properties:
                 &undetermined_task_classification(),
                 &owner,
                 &context,
-                false,
+                None,
             )
             .unwrap();
             assert!(steps.iter().flat_map(|group| &group.steps).all(|step| {
@@ -92907,6 +96850,100 @@ add:
             get_str(&exceptions[0], &["obligation"]),
             Some("oracle-mutation")
         );
+    }
+
+    #[test]
+    fn semantic_change_rejects_inline_property_exploration_assembly() {
+        let error = serde_yaml::from_str::<SemanticChange>(
+            r#"spec: rms/semantic-change/v0.1
+properties:
+  add:
+    - id: blocked-render
+      proves: render-liveness
+      explorations:
+        - assembly:
+            id: invented-inline-assembly
+            operation_kinds: [render, cleanup]
+          goal: violate
+          bounds: { max_steps: 64, max_schedules: 512, max_states: 128 }
+  set: []
+  remove: []
+"#,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("assembly"));
+        assert!(error.to_string().contains("expected a string"));
+    }
+
+    #[test]
+    fn spec_apply_rejects_missing_or_open_property_exploration_assembly_without_writes() {
+        let root = prompt_fixture("spec-apply-missing-property-exploration");
+        let module = root.join("module.yaml");
+        let before = fs::read_to_string(&module).unwrap();
+        let change = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent:
+  summary: Add one bounded render exploration.
+properties:
+  add:
+    - id: blocked-render
+      proves: render-liveness
+      kind: semantic
+      input_space: { description: bounded render schedules, bounds: 512 schedules }
+      preconditions: []
+      operation: { kind: semantic-function, name: render-transition }
+      oracle: [Blocked rendering never owns the caller thread.]
+      evidence: { kind: property, path: verification/properties/blocked_render.md }
+      counterexamples: { path: verification/counterexamples/blocked-render }
+      realizations:
+        - profile: smoke
+          strategy: deterministic-corpus
+          command: properties
+          runner: Tests/RenderTests.swift#testBlockedRender
+          exhaustive: true
+      explorations:
+        - assembly: verification/assemblies/missing_render_probe.yaml
+          goal: violate
+          bounds: { max_steps: 64, max_schedules: 512, max_states: 128 }
+      observations: []
+      assumptions: []
+      temporal: null
+  set: []
+  remove: []
+"#;
+
+        assert!(run_spec_apply(&module, None, Some(change), None, true).is_err());
+        assert!(run_spec_apply(&module, None, Some(change), None, false).is_err());
+
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let assembly = root.join("verification/assemblies/missing_render_probe.yaml");
+        fs::create_dir_all(assembly.parent().unwrap()).unwrap();
+        fs::write(
+            &assembly,
+            serde_yaml::to_string(&json!({
+                "spec": "rms/probe-assembly/v0.2",
+                "instances": [{
+                    "id": "source",
+                    "implementation": repository.join("examples/probe-topologies/source/implementation.fixture")
+                }],
+                "stimuli": [{
+                    "target": "source",
+                    "input": {"kind": "command", "name": "Start", "data": {}}
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(run_spec_apply(&module, None, Some(change), None, true).is_err());
+        assert!(run_spec_apply(&module, None, Some(change), None, false).is_err());
+
+        assert_eq!(fs::read_to_string(&module).unwrap(), before);
+        assert!(!root.join("verification/changes").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -93566,6 +97603,57 @@ architecture:
             "#!/usr/bin/env sh\nset -eu\nprintf '%s\\n' child-ok\n",
         )
         .unwrap();
+    }
+
+    fn write_composite_property_fixture(root: &Path) {
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::create_dir_all(root.join("verification/properties/composition-property")).unwrap();
+        fs::write(
+            root.join("verification/properties/composition-property/evidence.md"),
+            "# Composition property evidence\n\nPromise: the parent export is child-backed.\n\nCommand/tool: rms verify parent.module.yaml.\n\nObserved result: the deterministic fixture runner checks the export and writes its bounded marker.\n\nSource revision: test fixture.\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("scripts/composition_property.sh"),
+            r#"#!/usr/bin/env sh
+set -eu
+generate_property_cases() { printf '%s\n' parent-export child-export; }
+run_property() { grep -Fq 'from: child' parent.module.yaml; printf '%s\n' ran > composition-property-ran; }
+case "${1:-}" in
+  generate_property_cases) generate_property_cases ;;
+  run_property) run_property ;;
+  *) exit 2 ;;
+esac
+"#,
+        )
+        .unwrap();
+        let module_path = root.join("parent.module.yaml");
+        let module = fs::read_to_string(&module_path)
+            .unwrap()
+            .replace(
+                "invariants: []",
+                "invariants:\n  - id: parent-export-is-child-backed\n    statement: The parent export is backed by its contained child.\n    authority: composition\n    enforced_by: composition",
+            )
+            + r#"
+properties:
+  - id: composition-property
+    proves: parent-export-is-child-backed
+    kind: semantic
+    subject: parent
+    input_space: {strategy: deterministic-exhaustive, generator: scripts/composition_property.sh#generate_property_cases}
+    operation: {kind: composition, name: parent}
+    oracle: [the parent command is exported from child]
+    evidence: {path: verification/properties/composition-property}
+    counterexamples: {path: verification/counterexamples/composition-property}
+    realizations:
+      - profile: smoke
+        strategy: deterministic-exhaustive
+        command: composition
+        generator: scripts/composition_property.sh#generate_property_cases
+        runner: scripts/composition_property.sh#run_property
+        exhaustive: true
+"#;
+        fs::write(module_path, module).unwrap();
     }
 
     fn swift_typing_fixture(

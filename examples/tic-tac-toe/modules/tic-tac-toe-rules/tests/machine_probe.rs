@@ -196,9 +196,33 @@ fn probe_machine() {
             "machine": "TicTacToeMachine",
             "initial_state": state_json(&initial_game()),
             "states": [
-                {"name": "InProgress", "data_schema": {"type": "object"}},
-                {"name": "Won", "data_schema": {"type": "object"}},
-                {"name": "Draw", "data_schema": {"type": "object"}}
+                {
+                    "name": "InProgress",
+                    "data_schema": {"type": "object"},
+                    "examples": [state_json(&initial_game())]
+                },
+                {
+                    "name": "Won",
+                    "data_schema": {"type": "object"},
+                    "examples": [{
+                        "name": "Won",
+                        "data": {
+                            "board": ["X", "X", "X", "O", "O", null, null, null, null],
+                            "winner": "X",
+                            "line": [0, 1, 2]
+                        }
+                    }]
+                },
+                {
+                    "name": "Draw",
+                    "data_schema": {"type": "object"},
+                    "examples": [{
+                        "name": "Draw",
+                        "data": {
+                            "board": ["X", "O", "X", "X", "O", "O", "O", "X", "X"]
+                        }
+                    }]
+                }
             ],
             "inputs": [{
                 "kind": "command",

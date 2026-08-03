@@ -97,8 +97,22 @@ export async function probeMachine() {
       machine: "TicTacToeBoundaryMachine",
       initial_state: stateJSON(initialState()),
       states: [
-        { name: "AwaitingInput", data_schema: { type: "object" } },
-        { name: "AwaitingRulesResult", data_schema: { type: "object" } },
+        {
+          name: "AwaitingInput",
+          data_schema: { type: "object" },
+          examples: [stateJSON(initialState())],
+        },
+        {
+          name: "AwaitingRulesResult",
+          data_schema: { type: "object" },
+          examples: [{
+            name: "AwaitingRulesResult",
+            data: {
+              accepted_move_indexes: [],
+              move: { row: 0, column: 0 },
+            },
+          }],
+        },
       ],
       inputs: [
         {

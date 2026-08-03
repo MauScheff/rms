@@ -87,7 +87,11 @@ fn probe_machine() {
             "machine": "RustExampleMachine",
             "initial_state": {"name": "Ready", "data": {}},
             "states": [
-                {"name": "Ready", "data_schema": {"type": "object"}}
+                {
+                    "name": "Ready",
+                    "data_schema": {"type": "object"},
+                    "examples": [{"name": "Ready", "data": {}}]
+                }
             ],
             "inputs": [
                 {
