@@ -55938,19 +55938,6 @@ fn validate_spec_candidate_capability_contracts(
         &["architecture", "dependency_behavior_bindings"],
     );
     let changed_paths = changed_semantic_contract_paths(change);
-    let changed_binding_ids = bindings_change
-        .into_iter()
-        .flat_map(|request| {
-            request
-                .add
-                .iter()
-                .chain(request.replace.as_ref().into_iter().flatten())
-                .map(|binding| binding.id.as_str())
-                .chain(request.remove.iter().map(String::as_str))
-                .collect::<Vec<_>>()
-        })
-        .collect::<BTreeSet<_>>();
-
     for binding in final_bindings {
         if binding.resolution != "module" {
             continue;
@@ -55971,8 +55958,7 @@ fn validate_spec_candidate_capability_contracts(
                             && semantic_contract_path(contract) == binding_contract
                     })
             });
-        let binding_changed = changed_binding_ids.contains(binding.id.as_str());
-        if !contract_changed && !binding_changed {
+        if !contract_changed {
             continue;
         }
         let Some(provider_module_name) = binding.provider_module.as_deref() else {
