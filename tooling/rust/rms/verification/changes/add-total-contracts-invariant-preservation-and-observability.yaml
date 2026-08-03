@@ -20,6 +20,7 @@ properties:
   - id: rms-behavioral-contract-conformance-corpus
     proves: rms-behavioral-contracts-are-closed-and-executable
     kind: property
+    observability: full
     input_space: v0.2 and v0.3 contracts, totality and assumption domains, before and after invariant observations, observability levels, migrations, records, and compatibility obligations
     preconditions:
     - the repository contract corpus, shared evaluator, optional cvc5 adapter, and monitor are available

@@ -914,10 +914,10 @@ x-rms:
     evidence: verification/laws/rms_self_application_boundary.md
   last_semantic_intent: Add total behavioral contracts v0.3, explicit assumptions, transition invariant-preservation obligations, conservative observability, and lazy v0.2 migration through the shared compiled expression model.
   semantic_revision:
-    digest: sha256:2e97dbef3b46dcc1604ab749ed5d3e617dd2846d65ad47997da89b5b4fc89c5f
+    digest: sha256:58037ebc3602cd5f96ed0ca99ba6bc1d4282101c71b8fa5350ef36c824dbd1f2
     change_record: verification/changes/add-total-contracts-invariant-preservation-and-observability.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:5225341c1d45f61e9e218972754ceab76cd31f80bc522254fc870fadfeab25e1
+    change_record_digest: sha256:38f3f60cf4a9b7459069a2df3438ef00ac564402c08aedd2e70457fd3b82ac8b
 properties:
 - id: probe-product-state-expression-concurrency-corpus
   proves: probe-product-state-expressions-are-closed-and-replayable
@@ -945,6 +945,7 @@ properties:
 - id: rms-behavioral-contract-conformance-corpus
   proves: rms-behavioral-contracts-are-closed-and-executable
   kind: property
+  observability: full
   input_space: v0.2 and v0.3 contracts, totality and assumption domains, before and after invariant observations, observability levels, migrations, records, and compatibility obligations
   preconditions:
   - the repository contract corpus and reference evaluator are available
