@@ -11,6 +11,11 @@ Bounded exploration is deterministic, and a pass means the reachable bounded
 space was exhausted. Failures retain their exact check while being minimized
 into replayable schedules and fault decisions.
 
+Assembly v0.3 may also project typed values from the current states of several
+named instances and evaluate one closed RMS core expression. This projection
+does not add effects, transition phases, scheduler behavior, or symbolic machine
+execution.
+
 Probe reports remain diagnostics unless the caller explicitly writes them.
 Canonical probe evidence is stronger: referenced assemblies must rerun and
 exhaust successfully, while referenced counterexamples must replay as

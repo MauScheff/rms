@@ -1,0 +1,429 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:probe-assembly:v0.3",
+  "title": "RMS Probe Assembly v0.3",
+  "type": "object",
+  "required": ["spec", "instances", "stimuli"],
+  "properties": {
+    "spec": { "const": "rms/probe-assembly/v0.3" },
+    "instances": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "implementation"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "implementation": { "type": "string", "minLength": 1 },
+          "start": { "oneOf": [{ "const": "initial" }, { "$ref": "#/$defs/variant" }], "default": "initial" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "stimuli": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["target", "input"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "target": { "$ref": "#/$defs/id" },
+          "at": { "$ref": "#/$defs/timeQuantity" },
+          "input": { "$ref": "#/$defs/input" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "routing": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["binding", "provider"],
+        "properties": {
+          "consumer": { "$ref": "#/$defs/id" },
+          "binding": { "$ref": "#/$defs/id" },
+          "provider": { "$ref": "#/$defs/id" }
+        },
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "substitutes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "source", "output", "outcomes"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "source": { "$ref": "#/$defs/id" },
+          "output": { "$ref": "#/$defs/namedKind" },
+          "outcomes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["target", "input"],
+              "properties": {
+                "id": { "$ref": "#/$defs/id" },
+                "target": { "$ref": "#/$defs/id" },
+                "after": { "$ref": "#/$defs/timeQuantity" },
+                "input": { "$ref": "#/$defs/input" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "when", "assert"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "when": { "enum": ["always", "quiescent", "within"] },
+          "within_steps": { "type": "integer", "minimum": 1 },
+          "within_time": { "$ref": "#/$defs/timeQuantity" },
+          "assert": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["kind", "instance", "equals"],
+                "properties": {
+                  "kind": { "const": "state" },
+                  "instance": { "$ref": "#/$defs/id" },
+                  "equals": { "$ref": "#/$defs/variant" }
+                },
+                "additionalProperties": false
+              },
+              { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "queue-empty" } }, "additionalProperties": false },
+              {
+                "type": "object",
+                "required": ["kind", "name"],
+                "properties": {
+                  "kind": { "const": "message-count" },
+                  "name": { "type": "string", "minLength": 1 },
+                  "equals": { "type": "integer", "minimum": 0 },
+                  "min": { "type": "integer", "minimum": 0 },
+                  "max": { "type": "integer", "minimum": 0 }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": ["kind", "command", "runner"],
+                "properties": {
+                  "kind": { "const": "oracle" },
+                  "command": { "type": "string", "minLength": 1 },
+                  "runner": { "type": "string", "pattern": "^[^#]+#[^#]+$" }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": ["kind", "observations", "expression"],
+                "properties": {
+                  "kind": { "const": "state-expression" },
+                  "observations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "$ref": "#/$defs/stateObservation" }
+                  },
+                  "expression": { "$ref": "#/$defs/predicate" }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "when": { "const": "within" } }, "required": ["when"] },
+            "then": { "anyOf": [{ "required": ["within_steps"] }, { "required": ["within_time"] }] }
+          }
+        ],
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "exploration": {
+      "type": "object",
+      "properties": {
+        "max_steps": { "type": "integer", "minimum": 1, "default": 30 },
+        "max_schedules": { "type": "integer", "minimum": 1, "default": 100 },
+        "max_states": { "type": "integer", "minimum": 1, "default": 10000 }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "faults": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["route", "kind", "budget"],
+        "properties": {
+          "route": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["delay", "duplicate", "drop", "timeout"] },
+          "budget": { "type": "integer", "minimum": 1 },
+          "delay": { "$ref": "#/$defs/timeQuantity" }
+        },
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "workload": {
+      "type": "object",
+      "required": ["source", "budget_per_action"],
+      "properties": {
+        "source": { "const": "public-input-examples" },
+        "budget_per_action": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "required_modules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" },
+          "uniqueItems": true,
+          "default": []
+        },
+        "fault_families": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "owner_module", "generator"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "owner_module": { "$ref": "#/$defs/id" },
+              "generator": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": ["kind", "id"],
+                    "properties": {
+                      "kind": { "const": "stimulus" },
+                      "id": { "$ref": "#/$defs/id" }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": ["kind", "id"],
+                    "properties": {
+                      "kind": { "const": "substitute" },
+                      "id": { "$ref": "#/$defs/id" }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": ["kind", "route", "fault"],
+                    "properties": {
+                      "kind": { "const": "route-fault" },
+                      "route": { "type": "string", "minLength": 1 },
+                      "fault": { "enum": ["delay", "duplicate", "drop", "timeout"] }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$" },
+    "variant": {
+      "type": "object",
+      "required": ["name"],
+      "properties": { "name": { "type": "string", "minLength": 1 }, "data": true },
+      "additionalProperties": false
+    },
+    "input": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": { "enum": ["command", "observed-event", "effect-result"] },
+        "name": { "type": "string", "minLength": 1 },
+        "data": true
+      },
+      "additionalProperties": false
+    },
+    "namedKind": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": { "enum": ["event", "command", "effect", "reply", "rejection"] },
+        "name": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "stateObservation": {
+      "type": "object",
+      "required": ["id", "instance", "pointer", "value"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "instance": { "$ref": "#/$defs/id" },
+        "pointer": { "type": "string", "pattern": "^/" },
+        "value": { "$ref": "#/$defs/stateObservationValue" }
+      },
+      "additionalProperties": false
+    },
+    "stateObservationValue": {
+      "oneOf": [
+        { "enum": ["boolean", "integer", "string"] },
+        {
+          "type": "object",
+          "required": ["variant"],
+          "properties": {
+            "variant": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/id" }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "predicate": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["constant"],
+          "properties": { "constant": { "type": "boolean" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["equals"],
+          "properties": {
+            "equals": {
+              "type": "object",
+              "required": ["left", "right"],
+              "properties": {
+                "left": { "$ref": "#/$defs/term" },
+                "right": { "$ref": "#/$defs/term" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["compare"],
+          "properties": {
+            "compare": {
+              "type": "object",
+              "required": ["left", "operator", "right"],
+              "properties": {
+                "left": { "$ref": "#/$defs/term" },
+                "operator": { "enum": ["lt", "lte", "eq", "gte", "gt"] },
+                "right": { "$ref": "#/$defs/term" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["not"],
+          "properties": { "not": { "$ref": "#/$defs/predicate" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["all"],
+          "properties": {
+            "all": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/predicate" }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["any"],
+          "properties": {
+            "any": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/predicate" }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "term": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["observation"],
+          "properties": { "observation": { "$ref": "#/$defs/id" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["literal"],
+          "properties": { "literal": true },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["add"],
+          "properties": {
+            "add": {
+              "type": "array",
+              "minItems": 2,
+              "items": { "$ref": "#/$defs/term" }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["subtract"],
+          "properties": {
+            "subtract": {
+              "type": "object",
+              "required": ["left", "right"],
+              "properties": {
+                "left": { "$ref": "#/$defs/term" },
+                "right": { "$ref": "#/$defs/term" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "timeQuantity": {
+      "type": "object",
+      "required": ["value", "unit"],
+      "properties": {
+        "value": { "type": "integer", "minimum": 0 },
+        "unit": { "enum": ["ns", "us", "ms", "s", "min", "h"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}

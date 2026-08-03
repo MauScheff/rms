@@ -159,7 +159,7 @@ provides:
   - name: inspect-trace-bundle
     contract: contracts/inspect-trace-bundle.v1.yaml
   - name: probe-machine
-    contract: contracts/probe-machine.v2.yaml
+    contract: contracts/probe-machine.v3.yaml
   - name: plan-machine-change
     contract: contracts/plan-machine-change.v1.yaml
   - name: apply-machine-change
@@ -191,7 +191,7 @@ provides:
   - name: evaluate-semantic-properties
     contract: contracts/evaluate-semantic-properties.v1.yaml
   - name: search-semantic-properties
-    contract: contracts/search-semantic-properties.v1.yaml
+    contract: contracts/search-semantic-properties.v2.yaml
   - name: analyze-semantic-properties
     contract: contracts/analyze-semantic-properties.v1.yaml
   - name: monitor-semantic-properties
@@ -249,6 +249,12 @@ invariants:
   authority: parser
   enforced_by: probe-machine-validator
   verified_by: verification/laws/machine_probes_are_pure_and_ephemeral.md
+- id: probe-product-state-expressions-are-closed-and-replayable
+  statement: Probe assembly v0.3 state expressions are closed and typed before exploration, observe only declared current state projections from named instances, make missing or ill-typed projections invalid, and preserve false results as minimized replayable failures with structured observed facts.
+  kind: safety
+  authority: parser
+  enforced_by: probe-machine-validator
+  verified_by: verification/laws/probe_product_state_expressions_are_closed_and_replayable.md
 - id: composite-evidence-lanes-are-concrete
   statement: Composite capability-tree scaffolds declare only concrete evidence lanes for production claims.
   kind: invariant
@@ -895,6 +901,7 @@ verification:
   - verification/properties/non_ready_route_owner_closure.md
   - verification/properties/hunt_orchestration.md
   - verification/properties/behavioral_contracts.md
+  - verification/properties/probe_product_state_expressions.md
   fuzz:
   - verification/fuzz/malformed_artifacts.md
   hunt_exceptions:
@@ -912,6 +919,29 @@ x-rms:
     applied_by: repository maintainer seal
     change_record_digest: sha256:585c04cf4ef0ccd9bfba427f6e1bc3a650311544fada12592988cf4621a4b779
 properties:
+- id: probe-product-state-expression-concurrency-corpus
+  proves: probe-product-state-expressions-are-closed-and-replayable
+  kind: property
+  subject: probe-assembly-product-state
+  input_space: scalar and closed-variant state observations, closed core expressions, every timing, invalid definitions and projections, and bounded concurrency fixtures
+  preconditions:
+  - the v0.3 schema, probe engine, fixture implementations, and replay engine are available
+  operation: validate, compile, explore, minimize, and replay v0.3 product-state checks; evaluate the frame fixture through the behavioral contract checker
+  oracle:
+  - invalid definitions fail before exploration and runtime projection errors invalidate the run
+  - false expressions preserve typed observed facts in minimized replayable counterexamples
+  - safe optimistic concurrency and duplicate delivery exhaust their finite bounds
+  - lost update, ordering, deadlock, and frame mutations yield the intended replayable failures
+  - v0.1 and v0.2 remain supported and reject state expressions
+  evidence:
+    path: verification/properties/probe_product_state_expressions.md
+  counterexamples:
+    path: verification/fuzz/counterexamples
+  realizations:
+  - profile: smoke
+    strategy: deterministic-corpus
+    command: properties
+    runner: src/probe/mod.rs#state_expression_concurrency_acceptance_corpus_is_replayable
 - id: rms-behavioral-contract-conformance-corpus
   proves: rms-behavioral-contracts-are-closed-and-executable
   kind: property

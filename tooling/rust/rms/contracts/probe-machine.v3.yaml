@@ -1,0 +1,106 @@
+spec: rms/contract/v0.2
+name: probe-machine
+version: 3
+kind: command
+meaning: Execute one or more bounded module instances through their declared pure
+  transition-record paths, explore canonical message schedules and declared faults,
+  and report a deterministic replayable timeline.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: The target is one inspectable Rust, Swift, JavaScript, or Python
+        implementation, or an rms/probe-assembly/v0.1, v0.2, or v0.3 containing such instances.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: Each command, observed event, or effect result names a declared input
+        and supplies schema-valid payload data.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-3
+      statement: Multi-module routes are resolved from canonical protocol bindings,
+        dependency probe bridges, explicit instance selections, and explicit substitutes;
+        the assembly cannot invent semantic transformations or private inputs.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-4
+      statement: A v0.3 state expression declares unique typed observations over
+        current states of named assembly instances and uses only the closed RMS core expression grammar.
+      evaluation:
+        kind: external
+        property: probe-product-state-expressions-are-closed-and-replayable
+    guarantees:
+    - id: ensures-1
+      statement: Every step calls the exact transition-record function and the next
+        step receives the preceding state_after.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Single-machine results are validated trace bundles; assembly results
+        are rms/probe-system-trace/v0.1 timelines with source, causation, correlation,
+        idempotency, routing, fault, check, bound, coverage, and observed state-expression data.
+      evaluation:
+        kind: external
+        property: probe-product-state-expressions-are-closed-and-replayable
+    - id: ensures-3
+      statement: Probing never invokes a machine driver or real effect executor; ordinary
+        deterministic execution is stable and breadth-first exploration returns pass
+        only after exhausting the declared bounded state space.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-4
+      statement: No project artifact is written unless the caller supplies --out.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-5
+      statement: Every discovered failure is reduced to a deterministic rms/probe-counterexample/v0.1
+        whose exact schedule and fault decisions replay as reproduced, resolved, or
+        invalid; human replay leads with the failed check, observed facts, first bad
+        transition when available, source drift, exit meaning, and a copyable full-trace command.
+      evaluation:
+        kind: external
+        property: probe-product-state-expressions-are-closed-and-replayable
+    - id: ensures-6
+      statement: Probe artifacts are ephemeral unless canonical verification explicitly
+        references them, at which point assemblies must exhaust successfully and counterexamples
+        must replay as resolved.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-7
+      statement: A v0.2 or v0.3 public-input-examples workload injects only exact schema-valid
+        public command examples within the per-action budget and records each normalized
+        input for deterministic replay.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-8
+      statement: A v0.3 state expression is compiled before exploration, projects only
+        its declared current-state observations at check time, treats missing or ill-typed
+        projections as invalid runs, and treats a false expression as a replayable check failure.
+      evaluation:
+        kind: external
+        property: probe-product-state-expressions-are-closed-and-replayable
+    failures:
+    - id: rejects-1
+      statement: Ambiguous or incompatible wiring, invalid protocol or state-expression
+        data, unsafe bindings, runner failure, timeout, nonconforming output, a failed law,
+        a reproduced or invalid canonical counterexample, or inconclusive bounded exploration.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
+compatibility:
+  policy: breaking-before-1.0

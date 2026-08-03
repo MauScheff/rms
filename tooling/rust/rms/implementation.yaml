@@ -63,6 +63,29 @@ architecture:
         generator: src/main.rs#generate_malformed_artifact_cases
         runner: src/main.rs#schema_validation_reports_shape_errors
     properties:
+    - id: probe-product-state-expression-concurrency-corpus
+      proves: probe-product-state-expressions-are-closed-and-replayable
+      kind: property
+      subject: probe-assembly-product-state
+      input_space: scalar and closed-variant state observations, closed core expressions, every timing, invalid definitions and projections, and bounded concurrency fixtures
+      preconditions:
+      - the v0.3 schema, probe engine, fixture implementations, and replay engine are available
+      operation: validate, compile, explore, minimize, and replay v0.3 product-state checks; evaluate the frame fixture through the behavioral contract checker
+      oracle:
+      - invalid definitions fail before exploration and runtime projection errors invalidate the run
+      - false expressions preserve typed observed facts in minimized replayable counterexamples
+      - safe optimistic concurrency and duplicate delivery exhaust their finite bounds
+      - lost update, ordering, deadlock, and frame mutations yield the intended replayable failures
+      - v0.1 and v0.2 remain supported and reject state expressions
+      evidence:
+        path: verification/properties/probe_product_state_expressions.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: properties
+        runner: src/probe/mod.rs#state_expression_concurrency_acceptance_corpus_is_replayable
     - id: rms-behavioral-contract-conformance-corpus
       proves: rms-behavioral-contracts-are-closed-and-executable
       kind: property
@@ -1529,7 +1552,7 @@ architecture:
   - id: probe-machine-public
     public_kind: command
     public_name: probe-machine
-    contract: contracts/probe-machine.v2.yaml
+    contract: contracts/probe-machine.v3.yaml
     semantic_function: probe-machine-command
     machine_inputs:
     - ProbeMachine
@@ -1705,7 +1728,7 @@ architecture:
   - id: search-semantic-properties-public
     public_kind: command
     public_name: search-semantic-properties
-    contract: contracts/search-semantic-properties.v1.yaml
+    contract: contracts/search-semantic-properties.v2.yaml
     semantic_function: semantic-property-search-command
     machine_inputs:
     - SearchSemanticProperties
@@ -2447,10 +2470,11 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/probe-machine.v2.yaml
+    - contracts/probe-machine.v3.yaml
     invariants:
     - diagnostics-are-evidence-not-authority
     - machine-probes-are-pure-and-ephemeral
+    - probe-product-state-expressions-are-closed-and-replayable
     - trace-records-conform-to-canonical-transitions
   assumptions:
     ensures:
@@ -2458,6 +2482,8 @@ semantic_functions:
     - probe traces are validated against canonical transition cases before expectations are reported
     - assembly routing is derived only from canonical protocol bindings and dependency probe bridges
     - v0.2 workloads derive only exact schema-valid public command examples and record normalized inputs for replay
+    - v0.3 state expressions compile before exploration and project only declared typed current-state observations
+    - missing or ill-typed state projections invalidate the run while false expressions retain structured replay facts
     - bounded breadth-first exploration is deterministic and pass means the reachable bounded space was exhausted
     - failures are minimized without changing the exact failing check and retain replayable schedule and fault decisions
     - human replay leads with the finding and exit meaning while JSON retains the complete trace
@@ -2471,10 +2497,12 @@ semantic_functions:
   discharges:
     invariants:
     - machine-probes-are-pure-and-ephemeral
+    - probe-product-state-expressions-are-closed-and-replayable
   assumptions:
     ensures:
     - probe bindings resolve the exact transition-record function and exclude drivers and effect executors
     - canonical probe evidence reruns assemblies and requires saved counterexamples to replay as resolved
+    - state-expression observations and references are closed and typed before exploration
   evidence:
     contracts:
     - verification/contracts/probe_machine.md
@@ -2748,7 +2776,7 @@ semantic_functions:
   purity: effectful
   discharges:
     contracts:
-    - contracts/search-semantic-properties.v1.yaml
+    - contracts/search-semantic-properties.v2.yaml
   evidence:
     contracts:
     - verification/contracts/executable_property_loop.md

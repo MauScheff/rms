@@ -12,6 +12,7 @@ These JSON Schemas validate the structural shape of RMS 0.1 manifests:
 - `machine-probe-v2.schema.json`
 - `probe-assembly.schema.json`
 - `probe-assembly-v0.2.schema.json`
+- `probe-assembly-v0.3.schema.json`
 - `probe-system-trace.schema.json`
 - `property-analysis.schema.json`
 - `property-analysis-v0.2.schema.json`

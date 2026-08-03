@@ -1,0 +1,54 @@
+spec: rms/contract/v0.2
+name: search-semantic-properties
+version: 2
+kind: command
+meaning: Explore a finite probe assembly deterministically for the shortest satisfying
+  witness or a minimized replayable violation.
+semantics:
+  behavior:
+    observations: []
+    requires:
+    - id: accepts-1
+      statement: One executable property and a valid rms/probe-assembly/v0.1, v0.2,
+        or v0.3.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: accepts-2
+      statement: A satisfy or violate goal and finite probe bounds.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    guarantees:
+    - id: ensures-1
+      statement: Breadth-first search and stable tie-breaking choose the shortest
+        matching trace.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-2
+      statement: Exhaustive conclusions are emitted only when state, schedule, and
+        step spaces are exhausted.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-3
+      statement: Evidence retains source digests, bounds, coverage, assumptions, and
+        a replay recipe, including structured state-expression observations when present.
+      evaluation:
+        kind: external
+        property: probe-product-state-expressions-are-closed-and-replayable
+    failures:
+    - id: rejects-1
+      statement: Invalid properties or assemblies, unsupported domains, runner failures,
+        timeouts, or non-exhausted bounds presented as proof.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    cases: []
+    invariants: []
+    case_policy:
+      coverage: exhaustive
+      overlap: forbidden
+compatibility:
+  policy: backward-compatible-within-major
