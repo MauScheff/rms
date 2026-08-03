@@ -370,6 +370,7 @@
         "input": { "type": "string" },
         "command": { "type": "string" },
         "command_envelope": { "type": "string" },
+        "observed_event": { "type": "string" },
         "event": { "type": "string" },
         "event_envelope": { "type": "string" },
         "effect": { "type": "string" },

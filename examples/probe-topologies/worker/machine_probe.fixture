@@ -38,7 +38,7 @@ def probe_machine():
             "spec": "rms/machine-probe-description/v0.1",
             "machine": "ProbeWorkerMachine",
             "initial_state": initial_state(),
-            "states": [{"name": "Ready", "data_schema": {"type": "object"}}],
+            "states": [{"name": "Ready", "data_schema": {"type": "object"}, "examples": [named("Ready")]}],
             "inputs": [{
                 "kind": "command",
                 "name": "DoWork",

@@ -88,7 +88,11 @@ final class MachineProbeTests: XCTestCase {
                 "machine": "SwiftExampleMachine",
                 "initial_state": named("Ready"),
                 "states": [
-                    ["name": "Ready", "data_schema": ["type": "object"]]
+                    [
+                        "name": "Ready",
+                        "data_schema": ["type": "object"],
+                        "examples": [named("Ready")],
+                    ]
                 ],
                 "inputs": [
                     [

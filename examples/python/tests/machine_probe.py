@@ -23,7 +23,11 @@ def probe_machine() -> None:
             "spec": "rms/machine-probe-description/v0.1",
             "machine": "ExampleMachine",
             "initial_state": {"name": "Ready", "data": {}},
-            "states": [{"name": "Ready", "data_schema": {"type": "object"}}],
+            "states": [{
+                "name": "Ready",
+                "data_schema": {"type": "object"},
+                "examples": [{"name": "Ready", "data": {}}],
+            }],
             "inputs": [
                 {"kind": "command", "name": "Accept", "data_schema": {"type": "object", "properties": {"label": {"type": "string"}}}, "example": {"kind": "command", "name": "Accept", "data": {"label": "example"}}},
                 {"kind": "command", "name": "Reject", "data_schema": {"type": "object", "properties": {"reason": {"type": "string"}}}, "example": {"kind": "command", "name": "Reject", "data": {"reason": "rejected"}}},

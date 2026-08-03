@@ -89,8 +89,8 @@ def probe_machine():
             "machine": "ProbeSourceMachine",
             "initial_state": initial_state(),
             "states": [
-                {"name": "Ready", "data_schema": {"type": "object"}},
-                {"name": "Waiting", "data_schema": {"type": "object"}},
+                {"name": "Ready", "data_schema": {"type": "object"}, "examples": [named("Ready")]},
+                {"name": "Waiting", "data_schema": {"type": "object"}, "examples": [named("Waiting")]},
             ],
             "inputs": [
                 {
