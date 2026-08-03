@@ -3232,7 +3232,7 @@ semantic_functions:
     - verification/laws/canonical_mutations_require_route_receipts.md
 x-rms:
   semantic_revision:
-    digest: sha256:a6a016bd2c994bc88e759075431fd46abd0eb43b5b197bec6da8eab6592f71c0
-    change_record: verification/changes/add-probe-assembly-v0-3-product-state-expressions.yaml
+    digest: sha256:2e97dbef3b46dcc1604ab749ed5d3e617dd2846d65ad47997da89b5b4fc89c5f
+    change_record: verification/changes/add-total-contracts-invariant-preservation-and-observability.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:632ad0a0d928f072df26f3a17cc2ce830cb47a3bee54dd7f7e08f55ef2b2249b
+    change_record_digest: sha256:5225341c1d45f61e9e218972754ceab76cd31f80bc522254fc870fadfeab25e1
