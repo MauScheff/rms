@@ -75,7 +75,7 @@ rms check --committed --root .
 
 Production order is `focused checks → check --changes → authorized candidate commit → check --committed`.
 
-Strict verification and the maintainer release gate emit bounded phase/runner progress with elapsed time, an ETA class, and child state. Content-addressed run locks reject a duplicate active invocation for the same source, declarations, tools, and seed. Successful exact proof runners and release phases are cached under ignored `.rms/cache/verification/`; a retry resumes them only while that identity is unchanged. `package-lock-wait`, active child execution, and silent-child/deadlock-not-proven states are reported distinctly.
+Strict verification and the maintainer release gate emit bounded phase/runner progress with elapsed time, an ETA class, and child state. Content-addressed run locks reject a duplicate active invocation for the same source, declarations, tools, and seed. Successful exact proof runners and release phases are cached under ignored `.rms/cache/verification/`; a retry resumes them only while that identity is unchanged. A successful unfiltered Rust suite is reused only for exact tests whose `... ok` result is present in that suite's output. `package-lock-wait`, active child execution, and silent-child/deadlock-not-proven states are reported distinctly.
 
 Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness. The pending states are `bootstrap prepared; provenance baseline pending authorized commit` and `candidate prepared; strict audit pending authorized commit`.
 

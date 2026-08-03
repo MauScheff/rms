@@ -12,7 +12,7 @@ use std::io::{Read as IoRead, Write as IoWrite};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread;
@@ -1896,6 +1896,51 @@ struct PropertyRunCommandReport {
     elapsed_ms: u128,
     stdout: String,
     stderr: String,
+}
+
+#[derive(Clone, Debug)]
+struct RustBatchProofEvidence {
+    verify_command: String,
+    output: String,
+}
+
+impl RustBatchProofEvidence {
+    fn from_successful_verify(
+        manifest: &LoadedManifest,
+        verify_command: &str,
+        output: &Output,
+    ) -> Option<Self> {
+        if get_str(&manifest.value, &["binding"]) != Some("rust")
+            || !output.status.success()
+            || !is_unfiltered_cargo_test(verify_command)
+        {
+            return None;
+        }
+        Some(Self {
+            verify_command: verify_command.to_string(),
+            output: format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        })
+    }
+
+    fn exact_pass_line(&self, property_command: &str, runner: &str) -> Option<String> {
+        if !is_runner_selected_cargo_test(property_command)
+            || !proof_command_selects_runner(property_command, runner, "RMS_PROPERTY_RUNNER")
+        {
+            return None;
+        }
+        let expected = rust_test_names_for_runner(runner)?;
+        self.output.lines().find_map(|line| {
+            let trimmed = line.trim();
+            let name = trimmed.strip_prefix("test ")?.strip_suffix(" ... ok")?;
+            expected
+                .contains(name)
+                .then(|| format!("{}: {trimmed}", self.verify_command))
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -16563,6 +16608,22 @@ fn execute_property_realizations(
     dry_run: bool,
     timeout_seconds: u64,
 ) -> Result<PropertyRunReport> {
+    execute_property_realizations_with_batch(
+        implementation,
+        profile,
+        dry_run,
+        timeout_seconds,
+        None,
+    )
+}
+
+fn execute_property_realizations_with_batch(
+    implementation: &Path,
+    profile: PropertyProfile,
+    dry_run: bool,
+    timeout_seconds: u64,
+    batch_evidence: Option<&RustBatchProofEvidence>,
+) -> Result<PropertyRunReport> {
     let manifest = load_manifest(implementation)?;
     if get_str(&manifest.value, &["spec"]) != Some("rms/implementation/v0.1") {
         bail!(
@@ -16706,6 +16767,39 @@ fn execute_property_realizations(
                 realization.runner.as_str(),
                 realization.generator.as_deref().unwrap_or(""),
             ]);
+            if let Some(pass_line) =
+                batch_evidence.and_then(|batch| batch.exact_pass_line(command, &realization.runner))
+            {
+                let command_report = PropertyRunCommandReport {
+                    kind: format!("{}:{}", target.kind, realization.strategy),
+                    property: target.id.clone(),
+                    command: command.to_string(),
+                    runner: realization.runner.clone(),
+                    generator: realization.generator.clone(),
+                    status: "pass".to_string(),
+                    exit_code: Some(0),
+                    elapsed_ms: 0,
+                    stdout: format!("batched by successful unfiltered Rust suite; {pass_line}"),
+                    stderr: String::new(),
+                };
+                eprintln!(
+                    "proof [{}/{}] runner={} elapsed={} eta={} state=batch-reuse",
+                    progress.current,
+                    progress.total,
+                    shell_arg(progress.runner),
+                    human_elapsed(progress.suite_started.elapsed()),
+                    verification::eta_class(
+                        progress.current,
+                        progress.total,
+                        progress.suite_started.elapsed()
+                    )
+                );
+                if let Some(cache) = &proof_cache {
+                    cache.store(&cache_key, &command_report)?;
+                }
+                commands.push(command_report);
+                continue;
+            }
             if let Some(cached) = proof_cache
                 .as_ref()
                 .and_then(|cache| cache.load::<PropertyRunCommandReport>(&cache_key))
@@ -17275,6 +17369,104 @@ fn proof_command_selects_runner(command: &str, runner: &str, environment: &str) 
         || command.contains(&format!("${{{environment}"))
         || command.contains(&format!("process.env.{environment}"))
         || command.contains(&format!("tests/rms_proof_runner.py {environment}"))
+}
+
+fn is_unfiltered_cargo_test(command: &str) -> bool {
+    let tokens = command.split_ascii_whitespace().collect::<Vec<_>>();
+    if tokens.len() < 2
+        || !tokens[0].trim_matches(['\'', '"']).ends_with("cargo")
+        || tokens[1] != "test"
+        || command.contains('$')
+    {
+        return false;
+    }
+    let mut index = 2;
+    while index < tokens.len() {
+        let token = tokens[index].trim_matches(['\'', '"']);
+        let takes_value = matches!(
+            token,
+            "--manifest-path"
+                | "--package"
+                | "-p"
+                | "--target"
+                | "--target-dir"
+                | "--features"
+                | "--jobs"
+                | "-j"
+                | "--color"
+        );
+        if takes_value {
+            index += 2;
+            if index > tokens.len() {
+                return false;
+            }
+            continue;
+        }
+        if matches!(
+            token,
+            "--workspace"
+                | "--all"
+                | "--all-targets"
+                | "--all-features"
+                | "--no-default-features"
+                | "--locked"
+                | "--offline"
+                | "--frozen"
+                | "--release"
+                | "--quiet"
+                | "-q"
+                | "--verbose"
+                | "-v"
+        ) {
+            index += 1;
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+fn is_runner_selected_cargo_test(command: &str) -> bool {
+    let trimmed = command.trim_start();
+    (trimmed.starts_with("cargo test ") || trimmed == "cargo test")
+        && (command.contains("$RMS_PROPERTY_RUNNER")
+            || command.contains("${RMS_PROPERTY_RUNNER}")
+            || command.contains("${RMS_PROPERTY_RUNNER")
+            || command.contains("process.env.RMS_PROPERTY_RUNNER"))
+}
+
+fn rust_test_names_for_runner(runner: &str) -> Option<BTreeSet<String>> {
+    let (path, symbol) = runner.rsplit_once('#')?;
+    if symbol.trim().is_empty() || !path.ends_with(".rs") {
+        return None;
+    }
+    let path = Path::new(path);
+    let mut names = BTreeSet::new();
+    if path.starts_with("tests") {
+        names.insert(symbol.to_string());
+        return Some(names);
+    }
+    let relative = path.strip_prefix("src").ok()?;
+    let mut modules = relative
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => value.to_str().map(str::to_string),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let file = modules.pop()?;
+    let stem = Path::new(&file).file_stem()?.to_str()?;
+    if !matches!(stem, "main" | "lib" | "mod") {
+        modules.push(stem.to_string());
+    }
+    let prefix = if modules.is_empty() {
+        String::new()
+    } else {
+        format!("{}::", modules.join("::"))
+    };
+    names.insert(format!("{prefix}{symbol}"));
+    names.insert(format!("{prefix}tests::{symbol}"));
+    Some(names)
 }
 
 fn executable_property_targets(target: &Path) -> Result<Vec<PropertyTargetReport>> {
@@ -22773,6 +22965,8 @@ fn run_verify_implementation_captured(implementation: &Path) -> Result<String> {
             command_output_excerpt(&output)
         );
     }
+    let batch_evidence =
+        RustBatchProofEvidence::from_successful_verify(&manifest, command, &output);
 
     let probe_summary = verify_probe_handshake(implementation, DEFAULT_PROOF_TIMEOUT_SECONDS)?;
     let trace_reports = verify_declared_trace_bundles(&manifest, root)?;
@@ -22781,6 +22975,7 @@ fn run_verify_implementation_captured(implementation: &Path) -> Result<String> {
         &manifest,
         false,
         DEFAULT_PROOF_TIMEOUT_SECONDS,
+        batch_evidence.as_ref(),
     )?;
     Ok(format!(
         "verify command passed: {command}{}{}{}",
@@ -59370,6 +59565,74 @@ fn run_verify_unlocked(target: &Path, dry_run: bool) -> Result<()> {
     }
 }
 
+fn run_shell_command_streaming_capture(command: &str, root: &Path) -> Result<Output> {
+    let mut process = proof_shell_command(command);
+    process
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    process.process_group(0);
+    let mut child = process.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("verify command did not expose stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("verify command did not expose stderr"))?;
+    let stdout_reader = spawn_capture_relay_pipe_reader(stdout, false);
+    let stderr_reader = spawn_capture_relay_pipe_reader(stderr, true);
+    let status = child.wait()?;
+    let stdout = join_capture_relay_reader(stdout_reader, "stdout")?;
+    let stderr = join_capture_relay_reader(stderr_reader, "stderr")?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn spawn_capture_relay_pipe_reader<R>(
+    mut reader: R,
+    stderr: bool,
+) -> thread::JoinHandle<Result<Vec<u8>>>
+where
+    R: IoRead + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut captured = Vec::new();
+        let mut buffer = [0u8; 8_192];
+        loop {
+            let count = reader.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            captured.extend_from_slice(&buffer[..count]);
+            if stderr {
+                let mut output = std::io::stderr().lock();
+                output.write_all(&buffer[..count])?;
+                output.flush()?;
+            } else {
+                let mut output = std::io::stdout().lock();
+                output.write_all(&buffer[..count])?;
+                output.flush()?;
+            }
+        }
+        Ok(captured)
+    })
+}
+
+fn join_capture_relay_reader(
+    handle: thread::JoinHandle<Result<Vec<u8>>>,
+    label: &str,
+) -> Result<Vec<u8>> {
+    handle
+        .join()
+        .map_err(|_| anyhow!("verify command {label} reader panicked"))?
+}
+
 fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()> {
     let manifest = load_manifest(implementation)?;
     ensure_implementation_manifest_valid_for_verify(&manifest)?;
@@ -59394,20 +59657,23 @@ fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()>
             &manifest,
             true,
             DEFAULT_PROOF_TIMEOUT_SECONDS,
+            None,
         )?;
         return Ok(());
     }
 
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .current_dir(root)
-        .status()
+    let output = run_shell_command_streaming_capture(command, root)
         .with_context(|| format!("failed to run verify command `{command}`"))?;
 
-    if !status.success() {
-        bail!("verify command failed with status {status}");
+    if !output.status.success() {
+        bail!(
+            "verify command failed with status {}{}",
+            exit_status_label(output.status),
+            command_output_excerpt(&output)
+        );
     }
+    let batch_evidence =
+        RustBatchProofEvidence::from_successful_verify(&manifest, command, &output);
 
     if let Some(summary) = verify_probe_handshake(implementation, DEFAULT_PROOF_TIMEOUT_SECONDS)? {
         println!("{summary}");
@@ -59425,6 +59691,7 @@ fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()>
         &manifest,
         false,
         DEFAULT_PROOF_TIMEOUT_SECONDS,
+        batch_evidence.as_ref(),
     )? {
         println!("{summary}");
     }
@@ -59453,6 +59720,7 @@ fn verify_implementation_smoke_properties(
     manifest: &LoadedManifest,
     dry_run: bool,
     timeout_seconds: u64,
+    batch_evidence: Option<&RustBatchProofEvidence>,
 ) -> Result<Option<String>> {
     let targets = property_targets_from_implementation(
         manifest,
@@ -59469,11 +59737,12 @@ fn verify_implementation_smoke_properties(
     if targets.is_empty() {
         return Ok(None);
     }
-    let report = execute_property_realizations(
+    let report = execute_property_realizations_with_batch(
         implementation,
         PropertyProfile::Smoke,
         dry_run,
         timeout_seconds,
+        batch_evidence,
     )?;
     if dry_run {
         for command in &report.commands {
@@ -82107,6 +82376,49 @@ fn produce_transition_trace() {
     }
 
     #[test]
+    fn rust_batch_proof_requires_an_exact_passed_test_from_an_unfiltered_suite() {
+        let batch = RustBatchProofEvidence {
+            verify_command: "cargo test --manifest-path Cargo.toml".to_string(),
+            output: concat!(
+                "test tests::exact_runner_extra ... ok\n",
+                "test tests::exact_runner ... ok\n",
+                "test behavioral_contract::tests::closed_contract ... ok\n",
+                "test tests::ignored_runner ... ignored\n",
+                "test tests::failed_runner ... FAILED\n",
+            )
+            .to_string(),
+        };
+        let property_command =
+            "cargo test --manifest-path Cargo.toml \"${RMS_PROPERTY_RUNNER##*#}\"";
+
+        assert!(is_unfiltered_cargo_test(&batch.verify_command));
+        assert!(!is_unfiltered_cargo_test(
+            "cargo test --manifest-path Cargo.toml exact_runner"
+        ));
+        assert!(batch
+            .exact_pass_line(property_command, "src/main.rs#exact_runner")
+            .is_some());
+        assert!(batch
+            .exact_pass_line(
+                property_command,
+                "src/behavioral_contract.rs#closed_contract"
+            )
+            .is_some());
+        assert!(batch
+            .exact_pass_line(property_command, "src/main.rs#exact_runner_extra_suffix")
+            .is_none());
+        assert!(batch
+            .exact_pass_line(property_command, "src/main.rs#ignored_runner")
+            .is_none());
+        assert!(batch
+            .exact_pass_line(property_command, "src/main.rs#failed_runner")
+            .is_none());
+        assert!(batch
+            .exact_pass_line("sh scripts/property.sh", "src/main.rs#exact_runner")
+            .is_none());
+    }
+
+    #[test]
     fn property_run_executes_each_shared_command_realization() {
         let root = unique_test_dir("property-shared-command");
         fs::create_dir_all(root.join("scripts")).unwrap();
@@ -87655,6 +87967,7 @@ architecture:
             &manifest,
             false,
             DEFAULT_PROOF_TIMEOUT_SECONDS,
+            None,
         )
         .unwrap_err()
         .to_string();

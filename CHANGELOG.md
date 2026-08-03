@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Give release and proof verification a content-addressed run identity, active-process lock, bounded phase/runner progress, package-lock versus silent-child diagnostics, successful-proof caching, and safe same-input resume without weakening exact runner evidence.
+- Give release and proof verification a content-addressed run identity, active-process lock, bounded phase/runner progress, package-lock versus silent-child diagnostics, successful-proof caching, safe same-input resume, and exact-test reuse from a successful unfiltered Rust suite without weakening runner evidence.
 - Let v0.2 probe assemblies declare required campaign modules and owned fault-family generators; direct hunt planning now reports an unsupported coverage gap when an owner is unadopted, absent from the assembly, or has no requested generator instead of silently exploring a partial local model.
 - Resolve Swift declaration bodies by exact type identifier so a longer helper such as `TransitionWitness` cannot shadow the declared `Transition` output during rejection-channel verification.
 
