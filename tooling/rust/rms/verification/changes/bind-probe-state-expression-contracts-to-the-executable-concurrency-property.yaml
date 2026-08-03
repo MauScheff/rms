@@ -1,0 +1,24 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/add-total-contracts-invariant-preservation-and-observability.yaml
+intent:
+  summary: Bind probe v0.3 state-expression contract clauses to the exact executable concurrency-corpus property and seal the corrected canonical state without changing their meaning.
+laws: null
+contracts: null
+properties: null
+hunt_exceptions: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence: null
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

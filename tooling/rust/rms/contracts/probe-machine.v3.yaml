@@ -33,7 +33,7 @@ semantics:
         current states of named assembly instances and uses only the closed RMS core expression grammar.
       evaluation:
         kind: external
-        property: probe-product-state-expressions-are-closed-and-replayable
+        property: probe-product-state-expression-concurrency-corpus
     guarantees:
     - id: ensures-1
       statement: Every step calls the exact transition-record function and the next
@@ -47,7 +47,7 @@ semantics:
         idempotency, routing, fault, check, bound, coverage, and observed state-expression data.
       evaluation:
         kind: external
-        property: probe-product-state-expressions-are-closed-and-replayable
+        property: probe-product-state-expression-concurrency-corpus
     - id: ensures-3
       statement: Probing never invokes a machine driver or real effect executor; ordinary
         deterministic execution is stable and breadth-first exploration returns pass
@@ -67,7 +67,7 @@ semantics:
         transition when available, source drift, exit meaning, and a copyable full-trace command.
       evaluation:
         kind: external
-        property: probe-product-state-expressions-are-closed-and-replayable
+        property: probe-product-state-expression-concurrency-corpus
     - id: ensures-6
       statement: Probe artifacts are ephemeral unless canonical verification explicitly
         references them, at which point assemblies must exhaust successfully and counterexamples
@@ -88,7 +88,7 @@ semantics:
         projections as invalid runs, and treats a false expression as a replayable check failure.
       evaluation:
         kind: external
-        property: probe-product-state-expressions-are-closed-and-replayable
+        property: probe-product-state-expression-concurrency-corpus
     failures:
     - id: rejects-1
       statement: Ambiguous or incompatible wiring, invalid protocol or state-expression

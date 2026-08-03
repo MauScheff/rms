@@ -37,7 +37,7 @@ semantics:
         a replay recipe, including structured state-expression observations when present.
       evaluation:
         kind: external
-        property: probe-product-state-expressions-are-closed-and-replayable
+        property: probe-product-state-expression-concurrency-corpus
     failures:
     - id: rejects-1
       statement: Invalid properties or assemblies, unsupported domains, runner failures,

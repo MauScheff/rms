@@ -3233,7 +3233,7 @@ semantic_functions:
     - verification/laws/canonical_mutations_require_route_receipts.md
 x-rms:
   semantic_revision:
-    digest: sha256:58037ebc3602cd5f96ed0ca99ba6bc1d4282101c71b8fa5350ef36c824dbd1f2
-    change_record: verification/changes/add-total-contracts-invariant-preservation-and-observability.yaml
+    digest: sha256:17bdc2368ba44c64e244291acb2b33fa514d3e723899ca1496d398f7c567c8d6
+    change_record: verification/changes/bind-probe-state-expression-contracts-to-the-executable-concurrency-property.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:38f3f60cf4a9b7459069a2df3438ef00ac564402c08aedd2e70457fd3b82ac8b
+    change_record_digest: sha256:77d202ec4cad40c85f4227caf15bdd5f248cc9a0837c81a3671762fa754ef626
