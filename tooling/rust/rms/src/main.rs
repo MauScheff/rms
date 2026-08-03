@@ -66935,7 +66935,7 @@ fn render_rust_lib_rs(model: &BindingScaffoldModel) -> String {
         format!("replay_trace([{}::Accept(label)])", names.command)
     };
     let rendered = format!(
-        "mod representation;\nmod transition;\n\npub use crate::representation::{{{representation_exports}}};\npub use crate::transition::{{replay_trace, transition, transition_record, {machine}, {source_provenance}, {transition}, {transition_record}}};\n\npub fn semantic_shape() -> &'static str {{\n    {:?}\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn rejects_invalid_representation() {{\n        assert!({label}::new(\"\").is_none());\n    }}\n\n    #[test]\n    fn transition_returns_traceable_output() {{\n        let label = {label}::new(\"example\").unwrap();\n        let outcome = {transition_call};\n        assert!(matches!(outcome.reply, Some({reply}::Accepted) | None));\n        assert_eq!(outcome.events.len(), 1);\n    }}\n\n    #[test]\n    fn transition_replay_records_source_branch() {{\n        let label = {label}::new(\"example\").unwrap();\n        let records = {replay_call};\n        assert_eq!(records.len(), 1);\n        assert_eq!(records[0].source.branch, \"Accept\");\n    }}\n\n    #[test]\n    fn property_transition_outputs_use_declared_variants() {{\n        for raw in [\"a\", \"example\", \"generated-case-1\", \"with punctuation !?\"] {{\n            let label = {label}::new(raw).unwrap();\n            let outcome = {transition_call};\n            assert_eq!(outcome.events.len(), 1);\n        }}\n    }}\n\n    #[test]\n    fn fuzz_malformed_generated_values_are_rejected_by_constructor() {{\n        for raw in [\"\", \" \", \"\\n\", \"\\t\"] {{\n            assert!({label}::new(raw).is_none());\n        }}\n    }}\n}}\n",
+        "mod representation;\nmod transition;\n\npub use crate::representation::{{{representation_exports}}};\npub use crate::transition::{{replay_trace, transition, transition_record, {machine}, {source_provenance}, {transition}, {transition_record}}};\n\npub fn semantic_shape() -> &'static str {{\n    {:?}\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn rejects_invalid_representation() {{\n        assert!({label}::new(\"\").is_none());\n    }}\n\n    #[test]\n    fn transition_returns_traceable_output() {{\n        let label = {label}::new(\"example\").unwrap();\n        let outcome = {transition_call};\n        assert!(matches!(outcome.reply, Some({reply}::Accepted) | None));\n        assert_eq!(outcome.events.len(), 1);\n    }}\n\n    #[test]\n    fn transition_replay_records_source_branch() {{\n        let label = {label}::new(\"example\").unwrap();\n        let records = {replay_call};\n        assert_eq!(records.len(), 1);\n        assert_eq!(records[0].source.branch, \"Accept\");\n    }}\n\n    #[test]\n    fn property_transition_outputs_use_declared_variants() {{\n        for raw in [\"a\", \"example\", \"generated-case-1\", \"with punctuation !?\"] {{\n            let label = {label}::new(raw).unwrap();\n            let outcome = {transition_call};\n            assert_eq!(outcome.events.len(), 1);\n        }}\n    }}\n\n    #[test]\n    fn fuzz_malformed_generated_values_are_rejected_by_constructor() {{\n        for raw in [\"\", \" \", \"\\n\", \"\\t\"] {{\n            let parsed = {label}::new(raw);\n            assert!(parsed.is_none());\n        }}\n    }}\n}}\n",
         model.shape.as_str(),
         label = names.label,
         machine = names.machine,
@@ -77243,6 +77243,13 @@ architecture:
                 .diagnostics
                 .iter()
                 .all(|diagnostic| diagnostic.check != "structure.boundary-parser-missing"),
+            "{:#?}",
+            report.diagnostics
+        );
+        assert!(
+            report.diagnostics.iter().all(|diagnostic| {
+                diagnostic.check != "property.runner-does-not-call-operation"
+            }),
             "{:#?}",
             report.diagnostics
         );
