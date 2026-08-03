@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Give release and proof verification a content-addressed run identity, active-process lock, bounded phase/runner progress, package-lock versus silent-child diagnostics, successful-proof caching, and safe same-input resume without weakening exact runner evidence.
+- Let v0.2 probe assemblies declare required campaign modules and owned fault-family generators; direct hunt planning now reports an unsupported coverage gap when an owner is unadopted, absent from the assembly, or has no requested generator instead of silently exploring a partial local model.
 - Resolve Swift declaration bodies by exact type identifier so a longer helper such as `TransitionWitness` cannot shadow the declared `Transition` output during rejection-channel verification.
 
 - Treat the stable transition `case` as the exact canonical branch discriminator within `input-only` and `state-and-input` signatures, reject duplicate dispatch cases during machine apply, avoid prefix-matching one replay branch to another, and make compact check output disclose omitted failure counts while `--details` shows every reason.

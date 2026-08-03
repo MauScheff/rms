@@ -75,6 +75,8 @@ rms check --committed --root .
 
 Production order is `focused checks → check --changes → authorized candidate commit → check --committed`.
 
+Strict verification and the maintainer release gate emit bounded phase/runner progress with elapsed time, an ETA class, and child state. Content-addressed run locks reject a duplicate active invocation for the same source, declarations, tools, and seed. Successful exact proof runners and release phases are cached under ignored `.rms/cache/verification/`; a retry resumes them only while that identity is unchanged. `package-lock-wait`, active child execution, and silent-child/deadlock-not-proven states are reported distinctly.
+
 Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness. The pending states are `bootstrap prepared; provenance baseline pending authorized commit` and `candidate prepared; strict audit pending authorized commit`.
 
 ## Command Semantics
@@ -97,6 +99,8 @@ Git commits are required evidence, not implied authority. This guidance does not
 `view` is an experimental loopback-only, read-only semantic explorer. It does not edit canonical artifacts or become another semantic source.
 
 `hunt` is the resumable specialist path for expensive verification. From a clean commit, `rms hunt --root . --dry-run` shows risk-derived lanes and tool gaps; `rms hunt --root . --budget 8h` runs them in an isolated checkout, minimizes and replays behavioral findings, and records bounded proof scope. It never turns fuzzing or a time budget into a global bug-free claim.
+
+A v0.2 probe assembly may add `coverage.required_modules` and owned `coverage.fault_families` with an exact stimulus, substitute, or route-fault generator. Direct hunt planning marks the campaign unsupported when a required participant or decision owner is not adopted, is absent from the assembly, or cannot generate the requested family; it never treats partial local exploration as the requested composition campaign.
 
 Detected skill sources are observable evidence only. The CLI cannot inspect the current thread's injected skill catalog, so runtime activation is unknown and precedence is host-defined.
 

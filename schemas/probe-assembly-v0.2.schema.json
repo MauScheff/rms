@@ -168,6 +168,64 @@
         "budget_per_action": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "required_modules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" },
+          "uniqueItems": true,
+          "default": []
+        },
+        "fault_families": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "owner_module", "generator"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "owner_module": { "$ref": "#/$defs/id" },
+              "generator": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": ["kind", "id"],
+                    "properties": {
+                      "kind": { "const": "stimulus" },
+                      "id": { "$ref": "#/$defs/id" }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": ["kind", "id"],
+                    "properties": {
+                      "kind": { "const": "substitute" },
+                      "id": { "$ref": "#/$defs/id" }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": ["kind", "route", "fault"],
+                    "properties": {
+                      "kind": { "const": "route-fault" },
+                      "route": { "type": "string", "minLength": 1 },
+                      "fault": { "enum": ["delay", "duplicate", "drop", "timeout"] }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
     }
   },
   "additionalProperties": false,

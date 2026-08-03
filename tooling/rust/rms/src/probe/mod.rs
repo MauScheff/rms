@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use walkdir::WalkDir;
 
 pub(super) const ASSEMBLY_SPEC: &str = "rms/probe-assembly/v0.1";
 pub(super) const ASSEMBLY_SPEC_V2: &str = "rms/probe-assembly/v0.2";
@@ -251,6 +252,33 @@ struct ProbeAssembly {
     faults: Vec<FaultSpec>,
     #[serde(default)]
     workload: Option<WorkloadSpec>,
+    #[serde(default)]
+    coverage: CampaignCoverage,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignCoverage {
+    #[serde(default)]
+    required_modules: Vec<String>,
+    #[serde(default)]
+    fault_families: Vec<FaultFamilyRequirement>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FaultFamilyRequirement {
+    id: String,
+    owner_module: String,
+    generator: FaultFamilyGenerator,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum FaultFamilyGenerator {
+    Stimulus { id: String },
+    Substitute { id: String },
+    RouteFault { route: String, fault: FaultKind },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -404,6 +432,17 @@ enum FaultKind {
     Duplicate,
     Drop,
     Timeout,
+}
+
+impl FaultKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Delay => "delay",
+            Self::Duplicate => "duplicate",
+            Self::Drop => "drop",
+            Self::Timeout => "timeout",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -730,6 +769,165 @@ pub(super) fn validate_assembly_declaration(path: &Path, timeout_seconds: u64) -
         timeout_seconds,
     )?;
     Ok(())
+}
+
+pub(super) fn campaign_planning_gaps(path: &Path, source_root: &Path) -> Result<Vec<String>> {
+    let (assembly_value, base_dir) = load_input(path)?;
+    validate_assembly_schema(&assembly_value)?;
+    let assembly: ProbeAssembly =
+        serde_json::from_value(assembly_value).context("invalid canonical probe assembly")?;
+    if assembly.coverage.required_modules.is_empty() && assembly.coverage.fault_families.is_empty()
+    {
+        return Ok(Vec::new());
+    }
+
+    let mut assembled = BTreeSet::new();
+    for instance in &assembly.instances {
+        let implementation = resolve_from(&base_dir, &instance.implementation);
+        let manifest = load_manifest(&implementation).with_context(|| {
+            format!(
+                "campaign instance `{}` implementation `{}` could not be inspected",
+                instance.id,
+                implementation.display()
+            )
+        })?;
+        if let Some(module) = get_str(&manifest.value, &["module"]) {
+            assembled.insert(module.to_string());
+        }
+    }
+    let adopted = adopted_module_names(source_root);
+    let mut gaps = BTreeSet::new();
+    for module in &assembly.coverage.required_modules {
+        if assembled.contains(module) {
+            continue;
+        }
+        gaps.insert(if adopted.contains(module) {
+            format!(
+                "required participant module `{module}` is adopted but absent from the assembly"
+            )
+        } else {
+            format!(
+                "required participant module `{module}` is not adopted; its decisions and fault surfaces cannot be explored"
+            )
+        });
+    }
+    for family in &assembly.coverage.fault_families {
+        if !assembled.contains(&family.owner_module) {
+            gaps.insert(if adopted.contains(&family.owner_module) {
+                format!(
+                    "fault family `{}` owner `{}` is adopted but absent from the assembly",
+                    family.id, family.owner_module
+                )
+            } else {
+                format!(
+                    "fault family `{}` cannot be generated because decision owner module `{}` is not adopted",
+                    family.id, family.owner_module
+                )
+            });
+        }
+        if !fault_family_generator_present(&assembly, &family.generator) {
+            gaps.insert(format!(
+                "fault family `{}` declares generator `{}` that is absent from the assembly",
+                family.id,
+                fault_family_generator_label(&family.generator)
+            ));
+        }
+    }
+    Ok(gaps.into_iter().collect())
+}
+
+fn resolve_from(base: &Path, path: &str) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
+}
+
+fn adopted_module_names(root: &Path) -> BTreeSet<String> {
+    WalkDir::new(root)
+        .max_depth(12)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0
+                || !entry.file_type().is_dir()
+                || !matches!(
+                    entry.file_name().to_str(),
+                    Some(".git") | Some(".rms") | Some("target") | Some("node_modules")
+                )
+        })
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_type().is_file() && entry.file_name() == "module.yaml")
+        .filter_map(|entry| load_manifest(entry.path()).ok())
+        .filter_map(|manifest| {
+            (get_str(&manifest.value, &["spec"]) == Some("rms/module/v0.1"))
+                .then(|| get_str(&manifest.value, &["module", "name"]).map(str::to_string))
+                .flatten()
+        })
+        .collect()
+}
+
+fn campaign_coverage_gaps(
+    coverage: &CampaignCoverage,
+    assembled_modules: &[String],
+    assembly: &ProbeAssembly,
+) -> Vec<String> {
+    let assembled = assembled_modules.iter().cloned().collect::<BTreeSet<_>>();
+    let mut gaps = BTreeSet::new();
+    for module in &coverage.required_modules {
+        if !assembled.contains(module) {
+            gaps.insert(format!(
+                "required participant module `{module}` is not assembled"
+            ));
+        }
+    }
+    for family in &coverage.fault_families {
+        if !assembled.contains(&family.owner_module) {
+            gaps.insert(format!(
+                "fault family `{}` owner module `{}` is not assembled",
+                family.id, family.owner_module
+            ));
+        }
+        if !fault_family_generator_present(assembly, &family.generator) {
+            gaps.insert(format!(
+                "fault family `{}` generator `{}` is not assembled",
+                family.id,
+                fault_family_generator_label(&family.generator)
+            ));
+        }
+    }
+    gaps.into_iter().collect()
+}
+
+fn fault_family_generator_present(
+    assembly: &ProbeAssembly,
+    generator: &FaultFamilyGenerator,
+) -> bool {
+    match generator {
+        FaultFamilyGenerator::Stimulus { id } => assembly
+            .stimuli
+            .iter()
+            .any(|stimulus| stimulus.id.as_deref() == Some(id.as_str())),
+        FaultFamilyGenerator::Substitute { id } => {
+            assembly.substitutes.iter().any(|item| &item.id == id)
+        }
+        FaultFamilyGenerator::RouteFault { route, fault } => assembly
+            .faults
+            .iter()
+            .any(|item| &item.route == route && item.kind == *fault),
+    }
+}
+
+fn fault_family_generator_label(generator: &FaultFamilyGenerator) -> String {
+    match generator {
+        FaultFamilyGenerator::Stimulus { id } => format!("stimulus:{id}"),
+        FaultFamilyGenerator::Substitute { id } => format!("substitute:{id}"),
+        FaultFamilyGenerator::RouteFault { route, fault } => {
+            format!("route-fault:{route}:{}", fault.label())
+        }
+    }
 }
 
 pub(super) fn verify_evidence(path: &Path, timeout_seconds: u64) -> Result<Option<String>> {
@@ -1276,12 +1474,30 @@ impl Engine {
             })).collect::<Vec<_>>(),
             "substitutes": self.assembly.substitutes,
             "faults": self.assembly.faults,
+            "coverage": self.assembly.coverage,
             "checks": self.assembly.checks,
             "bounds": self.bounds
         })
     }
 
     fn validate_assembly(&self) -> Result<()> {
+        let assembled_modules = self
+            .instances
+            .values()
+            .map(|instance| instance.module.clone())
+            .collect::<BTreeSet<_>>();
+        let assembled_module_names = assembled_modules.into_iter().collect::<Vec<_>>();
+        let coverage_gaps = campaign_coverage_gaps(
+            &self.assembly.coverage,
+            &assembled_module_names,
+            &self.assembly,
+        );
+        if !coverage_gaps.is_empty() {
+            bail!(
+                "probe assembly campaign coverage is incomplete: {}",
+                coverage_gaps.join("; ")
+            );
+        }
         for stimulus in &self.assembly.stimuli {
             let instance = self.instances.get(&stimulus.target).ok_or_else(|| {
                 anyhow!("stimulus targets unknown instance `{}`", stimulus.target)
@@ -4474,6 +4690,45 @@ mod tests {
 
         let error = validate_assembly_declaration(&path, 30).unwrap_err();
         assert!(error.to_string().contains("unresolved effect `Work`"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn campaign_planning_reports_unadopted_owner_and_missing_fault_generator() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let root = probe_temp_root("rms-campaign-coverage");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("assembly.yaml");
+        let value = json!({
+            "spec": ASSEMBLY_SPEC_V2,
+            "instances": [{
+                "id": "readiness",
+                "implementation": repository.join("examples/rust/implementation.yaml")
+            }],
+            "stimuli": [],
+            "coverage": {
+                "required_modules": ["connection-media-epoch-delivery", "rust-example"],
+                "fault_families": [{
+                    "id": "direct-consent-loss",
+                    "owner_module": "connection-media-epoch-delivery",
+                    "generator": {"kind": "stimulus", "id": "direct-consent-loss"}
+                }]
+            }
+        });
+        fs::write(&path, serde_yaml::to_string(&value).unwrap()).unwrap();
+
+        let gaps = campaign_planning_gaps(&path, repository).unwrap();
+        assert!(gaps.iter().any(|gap| gap
+            .contains("decision owner module `connection-media-epoch-delivery` is not adopted")));
+        assert!(gaps
+            .iter()
+            .any(|gap| gap.contains("generator `stimulus:direct-consent-loss` that is absent")));
+        assert!(!gaps
+            .iter()
+            .any(|gap| gap.contains("required participant module `rust-example`")));
         let _ = fs::remove_dir_all(root);
     }
 

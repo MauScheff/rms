@@ -714,7 +714,8 @@ fn discover_direct_assembly_lane(
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("probe-assembly");
-    Ok(HuntLane {
+    let coverage_gaps = super::probe::campaign_planning_gaps(&path, checkout)?;
+    let mut lane = HuntLane {
         report: lane_report(
             format!("assembly:{}:guided", sanitize_segment(name)),
             &format!("assembly:{name}"),
@@ -736,7 +737,15 @@ fn discover_direct_assembly_lane(
             max_schedules,
             max_states,
         },
-    })
+    };
+    if !coverage_gaps.is_empty() {
+        lane.report.status = "unsupported".to_string();
+        lane.report.diagnostic = Some(format!(
+            "composition hunt campaign coverage is incomplete: {}",
+            coverage_gaps.join("; ")
+        ));
+    }
+    Ok(lane)
 }
 
 fn discover_lanes(
@@ -2532,6 +2541,50 @@ mod tests {
             declaration_digest(&repository, None, Some(assembly)).unwrap(),
             sha256_bytes(&[])
         );
+    }
+
+    #[test]
+    fn direct_assembly_hunt_is_unsupported_when_required_owner_is_not_adopted() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root")
+            .canonicalize()
+            .unwrap();
+        let checkout = std::env::temp_dir().join(format!(
+            "rms-hunt-campaign-gap-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&checkout).unwrap();
+        let assembly = checkout.join("assembly.yaml");
+        let value = serde_json::json!({
+            "spec": "rms/probe-assembly/v0.2",
+            "instances": [{
+                "id": "readiness",
+                "implementation": repository.join("examples/rust/implementation.yaml")
+            }],
+            "stimuli": [],
+            "coverage": {
+                "required_modules": ["connection-media-epoch-delivery"],
+                "fault_families": [{
+                    "id": "direct-consent-loss",
+                    "owner_module": "connection-media-epoch-delivery",
+                    "generator": {"kind": "stimulus", "id": "direct-consent-loss"}
+                }]
+            }
+        });
+        fs::write(&assembly, serde_yaml::to_string(&value).unwrap()).unwrap();
+
+        let lane =
+            discover_direct_assembly_lane(&checkout, &repository, Path::new("assembly.yaml"), 30)
+                .unwrap();
+        assert_eq!(lane.report.status, "unsupported");
+        let diagnostic = lane.report.diagnostic.unwrap();
+        assert!(diagnostic
+            .contains("decision owner module `connection-media-epoch-delivery` is not adopted"));
+        assert!(diagnostic.contains("generator `stimulus:direct-consent-loss` that is absent"));
+        fs::remove_dir_all(checkout).unwrap();
     }
 
     #[test]

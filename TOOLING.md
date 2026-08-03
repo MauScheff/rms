@@ -181,6 +181,8 @@ Probe adapters accept commands, observed events, and effect results, chain retur
 
 A probe assembly is an ephemeral development laboratory for a bounded slice of instances. RMS resolves only canonical protocol mappings and dependency probe bridges, schedules virtual deliveries deterministically, branches over declared outcomes and transport faults, checks laws after each microstep, and emits a minimal replayable counterexample. `rms/probe-assembly/v0.2` may add `workload: {source: public-input-examples, budget_per_action: N}`; RMS then injects each exact, validated public command example up to that budget, with every injection recorded for exact replay. It is not an application runtime or a general model checker. Assemblies do not satisfy evidence obligations unless canonical verification explicitly references and reruns them.
 
+For composition campaigns, v0.2 may also declare `coverage.required_modules` and `coverage.fault_families`. Every family binds an owner module to an exact stimulus, substitute, or route-fault generator. Hunt planning compares those declarations with adopted module manifests and assembled instances; missing adoption, participation, or generation makes the lane `unsupported` rather than silently narrowing the requested campaign.
+
 `rms hunt` automatically adds a seeded semantic-novelty lane for declared probe assemblies. It favors new check outcomes, transition cases, states, routes, and faults; continues after a failure; and retains up to eight distinct replayable findings. Guided exhaustion is always reported as bounded evidence, never finite proof.
 
 ## 4. Language-Binding Interface
