@@ -34335,15 +34335,28 @@ fn braced_source_from_open(source: &str, open: usize) -> Option<&str> {
 }
 
 fn swift_function_source<'a>(source: &'a str, function_name: &str) -> Option<&'a str> {
-    braced_declaration_source(source, &format!("func {function_name}("))
-}
-
-fn braced_declaration_source<'a>(source: &'a str, marker: &str) -> Option<&'a str> {
-    let start = source.find(marker)?;
-    let after = &source[start..];
-    let open = after.find('{')?;
-    let body = braced_source_from_open(after, open)?;
-    Some(&after[..open + body.len()])
+    let marker = format!("func {function_name}(");
+    source.match_indices(&marker).find_map(|(start, _)| {
+        let before_is_identifier = source[..start]
+            .chars()
+            .next_back()
+            .is_some_and(swift_identifier_character);
+        if before_is_identifier {
+            return None;
+        }
+        let declaration = &source[start..];
+        let parameter_start = marker.len() - 1;
+        let after_parameters =
+            swift_source_after_balanced_group(&declaration[parameter_start..], '(', ')')?;
+        let parameter_close = declaration.len() - after_parameters.len() - 1;
+        let open = after_parameters.find('{')?;
+        let signature_tail = &after_parameters[..open];
+        if signature_tail.contains('}') {
+            return None;
+        }
+        let body = braced_source_from_open(after_parameters, open)?;
+        Some(&declaration[..parameter_close + 1 + open + body.len()])
+    })
 }
 
 fn js_function_parameter_count(source: &str, function_name: &str) -> Option<usize> {
@@ -88189,6 +88202,32 @@ architecture:
             diagnostic.check == "structure.probe-unsafe-execution"
                 && diagnostic.message.contains("driveMachine")
         }));
+    }
+
+    #[test]
+    fn swift_probe_call_graph_ignores_protocol_requirements_before_next_declaration() {
+        let root = unique_test_dir("swift-probe-protocol-call-graph");
+        let probe_path = root.join("MachineProbe.swift");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            &probe_path,
+            "func transitionRecord() {}\nfunc testProbeMachine() { transitionRecord() }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("EffectExecutor.swift"),
+            "protocol ReceiverSystemRemoteReceiveActivating {\n    func requestSystemRemoteReceiveActivation(_ request: Request) async -> Result\n}\n\nstruct ApplePlaybackEffectExecutor {\n    func executePrepareApplePlayback(_ effect: Effect) async -> Result {\n        return Result()\n    }\n}\n",
+        )
+        .unwrap();
+
+        assert!(!swift_function_transitively_references_symbol(
+            &root,
+            &probe_path,
+            "testProbeMachine",
+            "executePrepareApplePlayback",
+        ));
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
