@@ -19517,6 +19517,16 @@ fn validate_spec_candidate_property_realizations(
     }) else {
         return;
     };
+    if candidate.implementation.is_none() {
+        if let Some(module) = candidate
+            .module
+            .as_ref()
+            .filter(|module| get_str(&module.value, &["module", "kind"]) == Some("composite"))
+        {
+            validate_composite_property_realizations(module, diagnostics);
+        }
+        return;
+    }
     let Some(implementation) = candidate.implementation.as_ref() else {
         return;
     };
@@ -19595,6 +19605,104 @@ fn validate_spec_candidate_property_realizations(
                         realization.generator.as_deref().unwrap_or_default()
                     ),
                 ));
+            }
+        }
+    }
+}
+
+fn validate_composite_property_realizations(
+    module: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    for target in property_targets_from_module(module, "property")
+        .into_iter()
+        .chain(fuzz_targets_from_module(module))
+    {
+        if target.realizations.is_empty() {
+            diagnostics.push(error_diagnostic(
+                "property.realization-missing",
+                &module.path,
+                format!(
+                    "module property `{}` has no executable realization",
+                    target.id
+                ),
+            ));
+            continue;
+        }
+        let operation_kind = get_str(&target.definition, &["operation", "kind"]);
+        if operation_kind.is_some_and(|kind| kind != "composition") {
+            diagnostics.push(error_diagnostic(
+                "property.composite-behavior-owner-required",
+                &module.path,
+                format!(
+                    "module property `{}` declares behavioral operation `{}` on a composition-only owner; declare and execute this proof in the contained runnable owner, then preserve the exact child contract or use a verified proof delegation",
+                    target.id,
+                    operation_kind.unwrap_or_default()
+                ),
+            ));
+        }
+        for realization in target.realizations {
+            if realization.command != "composition" {
+                diagnostics.push(error_diagnostic(
+                    "property.realization-not-executed",
+                    &module.path,
+                    format!(
+                        "module property `{}` uses unsupported command `{}`; a composition-only module executes only the closed `composition` command, and behavioral proof must move to its runnable owner rather than be relabeled",
+                        target.id, realization.command
+                    ),
+                ));
+                continue;
+            }
+            let Some((runner_path, runner_symbol)) = binding_reference_parts(&realization.runner)
+            else {
+                diagnostics.push(error_diagnostic(
+                    "property.runner-missing",
+                    &module.path,
+                    format!(
+                        "module property `{}` runner `{}` is not an exact relative `path#symbol` reference",
+                        target.id, realization.runner
+                    ),
+                ));
+                continue;
+            };
+            if !shell_function_exists(&base.join(runner_path), runner_symbol) {
+                diagnostics.push(error_diagnostic(
+                    "property.runner-missing",
+                    &module.path,
+                    format!(
+                        "module property `{}` runner `{}` does not resolve to a shell function",
+                        target.id, realization.runner
+                    ),
+                ));
+            }
+            if property_realization_requires_generator(&realization.strategy) {
+                let Some((generator_path, generator_symbol)) = realization
+                    .generator
+                    .as_deref()
+                    .and_then(binding_reference_parts)
+                else {
+                    diagnostics.push(error_diagnostic(
+                        "property.generator-missing",
+                        &module.path,
+                        format!(
+                            "module property `{}` requires an exact relative `path#symbol` generator",
+                            target.id
+                        ),
+                    ));
+                    continue;
+                };
+                if !shell_function_exists(&base.join(generator_path), generator_symbol) {
+                    diagnostics.push(error_diagnostic(
+                        "property.generator-missing",
+                        &module.path,
+                        format!(
+                            "module property `{}` generator `{}` does not resolve to a shell function",
+                            target.id,
+                            realization.generator.as_deref().unwrap_or_default()
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -52464,6 +52572,8 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "semantic-plan.canonical-file-hand-edit"
             || diagnostic.check == "semantic-plan.fuzz-target-change-missing"
             || diagnostic.check == "property.command-does-not-select-runner"
+            || diagnostic.check == "property.composite-behavior-owner-required"
+            || diagnostic.check == "property.realization-not-executed"
             || diagnostic.check.starts_with("contract.")
             || diagnostic
                 .check
@@ -52495,10 +52605,13 @@ fn render_spec_plan_repair_prompt(
                 || diagnostic.check == "evidence.fuzz-realization-mismatch"
                 || matches!(
                     diagnostic.check.as_str(),
-                    "property.runner-missing" | "property.generator-missing"
+                    "property.runner-missing"
+                        | "property.generator-missing"
+                        | "property.composite-behavior-owner-required"
+                        | "property.realization-not-executed"
                 )
         })
-        .then_some("\n\nProperty realization repair rule: `realizations` is mandatory and non-empty for every added or changed property. Never delete the list or replace it with `[]` to repair an item. Replace each invalid item with a complete valid realization. Profiles are exactly `smoke|ci|nightly`; `core` is a module profile and is invalid here. Strategies are exactly `deterministic-corpus|deterministic-exhaustive|generated-property|coverage-fuzzer|model-checker|benchmark|static-analyzer|sanitizer|mutation-tester`; `generated` is never a valid strategy. Every realization has a nonblank command and exact `path#symbol` runner. A fuzz target requires `generated-property`, `coverage-fuzzer`, `model-checker`, or a genuinely finite complete `deterministic-exhaustive` realization with `exhaustive: true`; a fixed non-exhaustive `deterministic-corpus` must remain an ordinary property and cannot be relabeled as fuzz proof. `deterministic-exhaustive` additionally has an exact `path#symbol` generator and `exhaustive: true`. For a finite composite export property, use `{profile: smoke, strategy: deterministic-exhaustive, command: composition, generator: scripts/composition_property.sh#generate_property_cases, runner: scripts/composition_property.sh#run_property, exhaustive: true}`.")
+        .then_some("\n\nProperty realization repair rule: `realizations` is mandatory and non-empty for every added or changed property. Never delete the list or replace it with `[]` to repair an item. Replace each invalid item with a complete valid realization. Profiles are exactly `smoke|ci|nightly`; `core` is a module profile and is invalid here. Strategies are exactly `deterministic-corpus|deterministic-exhaustive|generated-property|coverage-fuzzer|model-checker|benchmark|static-analyzer|sanitizer|mutation-tester`; `generated` is never a valid strategy. Every realization has a nonblank command and exact `path#symbol` runner. A fuzz target requires `generated-property`, `coverage-fuzzer`, `model-checker`, or a genuinely finite complete `deterministic-exhaustive` realization with `exhaustive: true`; a fixed non-exhaustive `deterministic-corpus` must remain an ordinary property and cannot be relabeled as fuzz proof. `deterministic-exhaustive` additionally has an exact `path#symbol` generator and `exhaustive: true`. A composition-only module may declare only parent topology/export properties with `operation.kind: composition`. Each such realization uses `{profile: smoke, strategy: deterministic-exhaustive, command: composition, generator: scripts/composition_property.sh#generate_property_cases, runner: scripts/composition_property.sh#run_property, exhaustive: true}` and both symbols must exist. Never relabel a behavioral property or test as `composition`. Move behavioral meaning, the property, its executable runner, and concrete evidence to the contained runnable owner; then preserve the exact exported child contract or use a verified proof delegation.")
         .unwrap_or_default();
     let temporal_repair = diagnostics
         .iter()
@@ -52717,6 +52830,12 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "RMS owns semantics and architecture. Agents fill declared role bodies. If meaning changes, return an `rms/semantic-change/v0.1` object; do not encode behavior only in source files.")?;
     writeln!(out, "Laws, contracts, machine transitions, runnable surfaces, effects, and evidence obligations come before implementation code. Provider output is advisory until `rms spec apply` updates canonical artifacts and records the exact applied change under `verification/changes/`.")?;
     writeln!(out, "Composite parents may delegate an exported law proof through `verification.delegations`; name the contained provider, provider law, provider property, public export, and concrete evidence instead of duplicating the child property in the parent.")?;
+    if context.module.as_ref().is_some_and(|module| {
+        get_str(&module.value, &["module", "kind"]) == Some("composite")
+            && context.implementation.is_none()
+    }) {
+        writeln!(out, "This target is a composition-only module. Parent-local properties may prove only composition topology or export claims. They must use `operation.kind: composition` and the closed `composition` realization backed by real shell functions. Do not invent a custom verify command, point a runner at Markdown, or relabel behavioral evidence as composition evidence. Put behavioral laws, properties, runners, and concrete evidence in the contained runnable owner. Keep the parent contract identical to the exported child contract, or declare a verified child proof delegation through the export.")?;
+    }
     writeln!(out, "Before adding a law, invariant, owned decision, or purpose text, compare the requested promise with the target's existing invariants and ownership declarations in the bounded context. If an existing invariant already expresses the promise, set the property `proves` field to that exact invariant id and do not add a synonymous law, duplicate ownership decision, or expanded purpose. Preserve current meaning and topology unless the task explicitly changes them.")?;
     writeln!(out, "When a promise says always, never, bounded, ordered, normalized, parsed, generated, or impossible, declare semantic properties with input spaces and oracles before relying on binding tests.")?;
     writeln!(out, "New public behavior uses `rms/contract/v0.3`: separate provider-external assumptions from boundary-validatable requirements, declare observability, cover every applicable input with acceptance or typed rejection, and keep invalid rejection frames empty. Existing v0.2 contracts preserve caller-obligation semantics until explicitly migrated.")?;
@@ -53067,7 +53186,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Closed trace metrics are `elapsed` with `value: {{quantity: time}}`, `transition-count` with `value: {{quantity: transition}}`, `attempt-count` with `value: {{quantity: attempt}}`, and `message-count` with `value: {{quantity: message}}`. Quantity dimensions are scalar strings under `value.quantity`; units belong on predicate comparison values and temporal bounds, not in the observation type.")?;
     writeln!(out, "`properties.remove[]` contains existing property ids. Binding-native realizations name a `path#symbol` runner and an exact generator. Protocol observations reference a public protocol automaton. `semantic_functions.add[]` and `semantic_functions.set[]` use the rendered function shape; `semantic_functions.remove[]` contains existing function ids. `public_behavior_bindings.add[]` and `.set[]` use the exact rendered binding shape. Their optional `observation_source` is exactly `{{kind: transition-record|invocation-record, command: existing-command-key}}`; it never contains `name` or `value`, and its `kind` is never `semantic-function`.")?;
     writeln!(out, "`hunt_exceptions.set` replaces the complete list, `add` replaces an existing item with the same obligation, and `remove` contains obligation names. Obligations are exactly `generated-input`, `boundary-fuzz`, `finite-state-exploration`, `schedule-fault-exploration`, `unsafe-code-analysis`, `oracle-mutation`, and `temporal-violation-search`; every exception needs a focused reason and is valid only when that lane is genuinely inapplicable.")?;
-    writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module. `evidence.remove[]` uses exact scalar `kind`, exact relative `path`, and `delete_file: true|false`; deletion is allowed only after the final declaration no longer references that path.")?;
+    writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module. A new path creates only a declared evidence obligation and reports `semantic.evidence-obligation-only`; it is not observed proof. Bind behavioral promises to executable property runners and replace the obligation with the exact command, observed result, and source revision before strict completion. Never present generated scaffold text as completed evidence. `evidence.remove[]` uses exact scalar `kind`, exact relative `path`, and `delete_file: true|false`; deletion is allowed only after the final declaration no longer references that path.")?;
     writeln!(out, "`allowed_missing_constructors` uses set/remove/add semantics for public result/read-model structs intentionally produced only by a declared machine, query, or projector; do not use it to excuse an actually missing validated constructor.")?;
     writeln!(out, "`rms spec apply` automatically adds every currently active semantic revision to `supersedes` and hash-seals the exact new record. Use explicit `supersedes` only for additional branches that are not locally discoverable. Applied records are append-only: never edit or delete them.")?;
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
@@ -57160,6 +57279,22 @@ fn validate_semantic_evidence(
                 &context.target,
                 format!(
                     "evidence path `{}` must be relative and stay inside the module",
+                    evidence.path
+                ),
+            ));
+        } else if context.module.as_ref().is_some_and(|module| {
+            !module
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(&evidence.path)
+                .exists()
+        }) {
+            diagnostics.push(warning(
+                "semantic.evidence-obligation-only",
+                &context.target,
+                format!(
+                    "evidence `{}` does not exist; apply will create a declared evidence obligation, not observed proof. Bind the promise to an executable property runner and replace the obligation with command, result, and source-revision evidence before strict completion",
                     evidence.path
                 ),
             ));
@@ -95097,6 +95232,128 @@ properties:
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.check == "evidence.property-realization-fixed-corpus"));
+    }
+
+    #[test]
+    fn semantic_plan_rejects_behavioral_realizations_on_composition_only_module() {
+        let root = unique_test_dir("semantic-plan-composite-property-realization");
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(root.join("system.yaml"), "spec: rms/system/v0.1\n").unwrap();
+        fs::write(
+            root.join("scripts/composition_property.sh"),
+            "generate_property_cases() { printf '%s\\n' export; }\nrun_property() { return 0; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: {name: composite-fixture, version: 0.1.0, kind: composite, purpose: Composite fixture.}
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides: {commands: [], queries: [], events: [], capabilities: []}
+requires: {modules: [], capabilities: []}
+composition: {contains: [], exports: []}
+invariants:
+  - {id: export-is-closed, statement: The export is closed., kind: composition, authority: composition, enforced_by: composition}
+effects: []
+compatibility: {policy: backward-compatible-within-major}
+verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
+"#,
+        )
+        .unwrap();
+
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let invalid: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+properties:
+  add:
+    - id: behavioral-parent-property
+      proves: export-is-closed
+      kind: semantic
+      input_space: {strategy: deterministic-corpus}
+      operation: {kind: command, name: run}
+      oracle: [Behavior is correct.]
+      evidence: {kind: property, path: verification/properties/behavioral-parent-property}
+      realizations:
+        - {profile: smoke, strategy: deterministic-corpus, command: verify-behavior, runner: verification/properties/behavioral-parent-property.md#run}
+evidence:
+  add:
+    - {kind: contract, proves: composite-export, path: verification/contracts/composite-export.md}
+"#,
+        )
+        .unwrap();
+        let invalid_diagnostics =
+            validate_prepared_spec_plan_change(&context, "add behavioral proof", &invalid);
+        assert!(invalid_diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "property.composite-behavior-owner-required"
+        }));
+        assert!(invalid_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "property.realization-not-executed"));
+        assert!(invalid_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "semantic.evidence-obligation-only"));
+        let invalid_yaml = serde_yaml::to_string(&invalid).unwrap();
+        assert!(run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(&invalid_yaml),
+            None,
+            true,
+        )
+        .is_err());
+        let invalid_candidate = spec_apply_candidate_context(&context, &invalid, None).unwrap();
+        let recovery: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+properties:
+  remove: [behavioral-parent-property]
+"#,
+        )
+        .unwrap();
+        let recovery_diagnostics = validate_prepared_spec_plan_change(
+            &invalid_candidate,
+            "move behavioral proof to its runnable child",
+            &recovery,
+        );
+        assert!(!recovery_diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.check.as_str(),
+                "property.composite-behavior-owner-required" | "property.realization-not-executed"
+            )
+        }));
+
+        let valid: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+properties:
+  add:
+    - id: composite-export-property
+      proves: export-is-closed
+      kind: semantic
+      input_space: {strategy: deterministic-exhaustive, generator: scripts/composition_property.sh#generate_property_cases}
+      operation: {kind: composition, name: composite-fixture}
+      oracle: [The export is closed.]
+      evidence: {kind: property, path: verification/properties/composite-export-property}
+      realizations:
+        - {profile: smoke, strategy: deterministic-exhaustive, command: composition, generator: scripts/composition_property.sh#generate_property_cases, runner: scripts/composition_property.sh#run_property, exhaustive: true}
+"#,
+        )
+        .unwrap();
+        let valid_diagnostics =
+            validate_prepared_spec_plan_change(&context, "add composition proof", &valid);
+        assert!(!valid_diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.check.as_str(),
+                "property.composite-behavior-owner-required"
+                    | "property.realization-not-executed"
+                    | "property.runner-missing"
+                    | "property.generator-missing"
+            )
+        }));
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[cfg(unix)]
