@@ -52529,6 +52529,11 @@ fn validate_prepared_spec_plan_change(
             }
             validate_unchanged_candidate_contract_artifacts(&candidate, change, &mut diagnostics);
             validate_spec_candidate_capability_contracts(&candidate, change, &mut diagnostics);
+            validate_spec_candidate_composite_export_contracts(
+                &candidate,
+                change,
+                &mut diagnostics,
+            );
             validate_spec_candidate_property_realizations(&candidate, change, &mut diagnostics);
             validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
         }
@@ -52574,6 +52579,7 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "property.command-does-not-select-runner"
             || diagnostic.check == "property.composite-behavior-owner-required"
             || diagnostic.check == "property.realization-not-executed"
+            || diagnostic.check == "semantic-plan.composite-export-contract-mismatch"
             || diagnostic.check.starts_with("contract.")
             || diagnostic
                 .check
@@ -52647,9 +52653,15 @@ fn render_spec_plan_repair_prompt(
         .unwrap_or_default();
     let capability_contract_repair = diagnostics
         .iter()
-        .any(|diagnostic| diagnostic.check == "semantic-plan.capability-contract-mismatch")
+        .any(|diagnostic| {
+            matches!(
+                diagnostic.check.as_str(),
+                "semantic-plan.capability-contract-mismatch"
+                    | "semantic-plan.composite-export-contract-mismatch"
+            )
+        })
         .then_some(
-            "\n\nProvider capability contract repair rule: when a module-resolution dependency binding names `provider_module` and `provider_contract`, its consumer `contract` artifact must be semantically identical to that provider artifact. Preserve the provider's exact wrapper, version, meaning, observations, clauses, case ids, expressions, and permits. Do not synthesize a consumer-specific contract with the same capability name, copy only a subset of cases, or change the consumer path to hide the mismatch. Either copy the exact provider contract into the required seam, leave the contract and binding unchanged, or model a distinct capability with an explicit provider; do not weaken validation.",
+            "\n\nExact provider contract repair rule: a module-resolution dependency or composite export must preserve the complete exact provider artifact. Copy the provider's wrapper, version, meaning, observations, clauses, case ids, expressions, and permits unchanged. Do not synthesize consumer- or parent-specific cases, copy a subset, or change a path to hide the mismatch. A composition-only parent removes parent-local behavioral properties and keeps behavioral proof in the runnable child; it never relabels that proof as composition evidence.",
         )
         .unwrap_or_default();
     let runner_selection_repair = diagnostics
@@ -52729,7 +52741,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Use only the task, schema, diagnostics, and bounded canonical context in this prompt. Do not inspect files, call tools, load skills or plugins, or seek broader repository context. Return the requested final response immediately after reasoning from this input.")?;
     writeln!(out)?;
     writeln!(out, "## Bounded Canonical Context")?;
-    writeln!(out, "The target manifests, their directly referenced public contracts, and explicitly named provider contracts for module-resolution bindings are the complete canonical planning context. Referenced source, unrelated sibling modules, and prior run artifacts are intentionally outside this provider interaction.")?;
+    writeln!(out, "The target manifests, their directly referenced public contracts, exact provider contracts for declared composite exports or module-resolution bindings, and no other repository content are the complete canonical planning context. Referenced source, unrelated sibling modules, and prior run artifacts are intentionally outside this provider interaction.")?;
     if let Some(module) = &context.module {
         writeln!(out)?;
         writeln!(out, "### Module Manifest: {}", module.path.display())?;
@@ -52819,6 +52831,69 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
             writeln!(
                 out,
                 "This artifact is the canonical source for the module-resolution binding. If the task requires the exact provider contract, copy this complete object unchanged, including every wrapper, version, meaning, observation, clause, case, expression, and permits field."
+            )?;
+            writeln!(out, "```yaml")?;
+            write!(out, "{}", serde_yaml::to_string(&provider.value)?)?;
+            writeln!(out, "```")?;
+        }
+    }
+    // A composite export is also an explicit, bounded cross-module edge. Give
+    // the provider the exact child artifact so parent repair never reconstructs
+    // exported behavior from prose or scans unrelated repository context.
+    if let Some(module) = context
+        .module
+        .as_ref()
+        .filter(|module| get_str(&module.value, &["module", "kind"]) == Some("composite"))
+    {
+        let mut provider_paths = BTreeSet::new();
+        for export in get_path(&module.value, &["composition", "exports"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+        {
+            let (Some(group), Some(name), Some(provider_name)) = (
+                get_str(export, &["group"]),
+                get_str(export, &["name"]),
+                get_str(export, &["from"]),
+            ) else {
+                continue;
+            };
+            let Some(provider_module) = find_named_provider_module(root, module, provider_name)
+            else {
+                continue;
+            };
+            let Some(provider_contract) = get_path(&provider_module.value, &["provides", group])
+                .and_then(YamlValue::as_sequence)
+                .into_iter()
+                .flatten()
+                .find(|item| get_str(item, &["name"]) == Some(name))
+                .and_then(|item| get_str(item, &["contract"]))
+            else {
+                continue;
+            };
+            let provider_path = provider_module
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(provider_contract);
+            if !provider_paths.insert(provider_path.clone()) || !provider_path.is_file() {
+                continue;
+            }
+            let provider = load_manifest(&provider_path).with_context(|| {
+                format!(
+                    "failed to load composite export provider contract {} for semantic planning",
+                    provider_path.display()
+                )
+            })?;
+            writeln!(out)?;
+            writeln!(
+                out,
+                "### Composite Export Provider Contract (exact-copy source): {}",
+                provider.path.display()
+            )?;
+            writeln!(
+                out,
+                "The parent export `{name}` is backed by `{provider_name}`. A parent contracts.set repair must copy this complete object unchanged, including its wrapper, version, meaning, observations, clauses, cases, expressions, and permits."
             )?;
             writeln!(out, "```yaml")?;
             write!(out, "{}", serde_yaml::to_string(&provider.value)?)?;
@@ -53406,6 +53481,7 @@ fn run_spec_apply(
     }
     validate_unchanged_candidate_contract_artifacts(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_capability_contracts(&candidate, &change, &mut diagnostics);
+    validate_spec_candidate_composite_export_contracts(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_property_realizations(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
 
@@ -56544,6 +56620,114 @@ fn find_named_provider_module(
         let manifest = load_manifest(&path).ok()?;
         (get_str(&manifest.value, &["module", "name"]) == Some(provider_name)).then_some(manifest)
     })
+}
+
+fn validate_spec_candidate_composite_export_contracts(
+    candidate: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(module) = candidate
+        .module
+        .as_ref()
+        .filter(|module| get_str(&module.value, &["module", "kind"]) == Some("composite"))
+    else {
+        return;
+    };
+    let properties_changed = change.properties.as_ref().is_some_and(|properties| {
+        !properties.add.is_empty()
+            || !properties.replace.is_empty()
+            || !properties.remove.is_empty()
+    });
+    let changed_paths = changed_semantic_contract_paths(candidate, change);
+    if !properties_changed && changed_paths.is_empty() {
+        return;
+    }
+    let root = rms_root_for(&module.path);
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    for export in get_path(&module.value, &["composition", "exports"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+    {
+        let (Some(group), Some(name), Some(provider_name)) = (
+            get_str(export, &["group"]),
+            get_str(export, &["name"]),
+            get_str(export, &["from"]),
+        ) else {
+            continue;
+        };
+        let Some(parent_reference) = get_path(&module.value, &["provides", group])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .find(|item| get_str(item, &["name"]) == Some(name))
+            .and_then(|item| get_str(item, &["contract"]))
+        else {
+            continue;
+        };
+        if !properties_changed && !changed_paths.contains(parent_reference) {
+            continue;
+        }
+        let Some(provider_module) = find_named_provider_module(&root, module, provider_name) else {
+            continue;
+        };
+        let Some(provider_reference) = get_path(&provider_module.value, &["provides", group])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .find(|item| get_str(item, &["name"]) == Some(name))
+            .and_then(|item| get_str(item, &["contract"]))
+        else {
+            continue;
+        };
+        let parent_path = base.join(parent_reference);
+        let provider_path = provider_module
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(provider_reference);
+        let parent = match candidate_contract_manifest(
+            candidate,
+            &parent_path,
+            change,
+            parent_reference,
+        ) {
+            Ok(contract) => contract,
+            Err(error) => {
+                diagnostics.push(error_diagnostic(
+                    "semantic-plan.composite-export-contract-unreadable",
+                    &parent_path,
+                    format!(
+                        "composite export `{name}` contract could not be read from the planned candidate: {error:#}"
+                    ),
+                ));
+                continue;
+            }
+        };
+        let provider = match load_manifest(&provider_path) {
+            Ok(contract) => contract,
+            Err(error) => {
+                diagnostics.push(error_diagnostic(
+                    "semantic-plan.composite-export-provider-contract-unreadable",
+                    &provider_path,
+                    format!(
+                        "export provider `{provider_name}` has no readable `{provider_reference}` contract for `{name}`: {error:#}"
+                    ),
+                ));
+                continue;
+            }
+        };
+        if parent.value != provider.value {
+            diagnostics.push(error_diagnostic(
+                "semantic-plan.composite-export-contract-mismatch",
+                &parent_path,
+                format!(
+                    "composition-only parent export `{name}` must preserve the exact contract published by child `{provider_name}` (`{provider_reference}`); copy the complete child contract unchanged and keep behavioral properties in the runnable child"
+                ),
+            ));
+        }
+    }
 }
 
 fn candidate_contract_manifest(
@@ -95238,6 +95422,8 @@ properties:
     fn semantic_plan_rejects_behavioral_realizations_on_composition_only_module() {
         let root = unique_test_dir("semantic-plan-composite-property-realization");
         fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::create_dir_all(root.join("child/contracts")).unwrap();
         fs::write(root.join("system.yaml"), "spec: rms/system/v0.1\n").unwrap();
         fs::write(
             root.join("scripts/composition_property.sh"),
@@ -95250,9 +95436,11 @@ properties:
 module: {name: composite-fixture, version: 0.1.0, kind: composite, purpose: Composite fixture.}
 profiles: [core]
 owns: {concepts: [], data: [], decisions: []}
-provides: {commands: [], queries: [], events: [], capabilities: []}
+provides: {commands: [{name: run, contract: contracts/run.v1.yaml}], queries: [], events: [], capabilities: []}
 requires: {modules: [], capabilities: []}
-composition: {contains: [], exports: []}
+composition:
+  contains: [{name: child, visibility: internal, path: child/module.yaml}]
+  exports: [{group: commands, name: run, from: child, contract: contracts/run.v1.yaml}]
 invariants:
   - {id: export-is-closed, statement: The export is closed., kind: composition, authority: composition, enforced_by: composition}
 effects: []
@@ -95261,8 +95449,54 @@ verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
 "#,
         )
         .unwrap();
+        let contract = r#"spec: rms/contract/v0.2
+name: run
+version: '1'
+kind: command
+meaning: Child behavior.
+semantics:
+  behavior:
+    observations: []
+    requires: []
+    guarantees: []
+    failures: []
+    cases:
+      - id: accepted
+        statement: The command is accepted.
+        when: {constant: true}
+        outcome: {kind: accepted, expression: {constant: true}}
+        ensures: []
+        permits: {state_changes: [], events: [], effects: []}
+    invariants: []
+    case_policy: {coverage: exhaustive, overlap: forbidden}
+compatibility: {policy: backward-compatible-within-major}
+"#;
+        fs::write(root.join("child/contracts/run.v1.yaml"), contract).unwrap();
+        fs::write(
+            root.join("contracts/run.v1.yaml"),
+            contract.replace("Child behavior.", "Incorrect parent behavior."),
+        )
+        .unwrap();
+        fs::write(
+            root.join("child/module.yaml"),
+            r#"spec: rms/module/v0.1
+module: {name: child, version: 0.1.0, kind: library, purpose: Child fixture.}
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides: {commands: [{name: run, contract: contracts/run.v1.yaml}], queries: [], events: [], capabilities: []}
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: []
+compatibility: {policy: backward-compatible-within-major}
+verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
+"#,
+        )
+        .unwrap();
 
         let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let prompt = render_spec_plan_prompt(&context, &root, "repair parent export").unwrap();
+        assert!(prompt.contains("Composite Export Provider Contract (exact-copy source)"));
+        assert!(prompt.contains("meaning: Child behavior."));
         let invalid: SemanticChange = serde_yaml::from_str(
             r#"spec: rms/semantic-change/v0.1
 module: module.yaml
@@ -95323,6 +95557,58 @@ properties:
                 "property.composite-behavior-owner-required" | "property.realization-not-executed"
             )
         }));
+        assert!(recovery_diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "semantic-plan.composite-export-contract-mismatch"
+        }));
+        let exact_recovery: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+contracts:
+  set:
+    - name: run
+      kind: command
+      direction: provided
+      version: '1'
+      meaning: Child behavior.
+      semantics:
+        behavior:
+          observations: []
+          requires: []
+          guarantees: []
+          failures: []
+          cases:
+            - id: accepted
+              statement: The command is accepted.
+              when: {constant: true}
+              outcome: {kind: accepted, expression: {constant: true}}
+              ensures: []
+              permits: {state_changes: [], events: [], effects: []}
+          invariants: []
+          case_policy: {coverage: exhaustive, overlap: forbidden}
+properties:
+  remove: [behavioral-parent-property]
+evidence:
+  add:
+    - {kind: contract, proves: run, path: verification/contracts/run.md}
+"#,
+        )
+        .unwrap();
+        let exact_recovery_diagnostics = validate_prepared_spec_plan_change(
+            &invalid_candidate,
+            "restore the exact child export and remove parent behavioral proof",
+            &exact_recovery,
+        );
+        assert!(
+            !exact_recovery_diagnostics.iter().any(|diagnostic| {
+                matches!(
+                    diagnostic.check.as_str(),
+                    "semantic-plan.composite-export-contract-mismatch"
+                        | "property.composite-behavior-owner-required"
+                        | "property.realization-not-executed"
+                )
+            }),
+            "{exact_recovery_diagnostics:#?}"
+        );
 
         let valid: SemanticChange = serde_yaml::from_str(
             r#"spec: rms/semantic-change/v0.1
