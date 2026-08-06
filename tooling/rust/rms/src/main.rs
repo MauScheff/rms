@@ -52517,7 +52517,7 @@ fn render_spec_plan_repair_prompt(
         .unwrap_or_default();
     let contract_behavior_repair = contract_behavior_repair
         .then_some(
-            "\n\nContract behavior repair rule: preserve the exact directly referenced contract path, wrapper, version, evaluation strategy, clause ids, case ids, and every unaffected field shown in the exact-contract repair context. A `contracts.set` operation revises that existing artifact in place; it does not create a conventionally named replacement or silently migrate v0.2 to v0.3. Omit an unchanged contract from `contracts.set`. When the task explicitly migrates a contract or diagnostics genuinely apply to an existing v0.3 contract, `semantics.behavior` has exactly `observability`, `observations`, `assumptions`, `requires`, `guarantees`, `failures`, `cases`, `invariants`, and `case_policy`. `observability` is exactly `full|sampled|delayed|partial|none`. Every observation is exactly `{id, source, value}`. A source has a declared kind such as `input|output|transition|state` plus its applicable closed fields. A value is `occurrence|boolean|integer|string`, `{variant: [closed, variants]}`, or `{quantity: dimension}`. Every assumption, requirement, guarantee, failure, invariant, and case ensure is a clause with exactly `{id, statement, evaluation}`. A `cases` item is not a clause and never contains `evaluation`: it has exactly `id`, `statement`, `when`, `outcome`, `ensures`, and `permits`. Predicates are only `{constant: bool}`, `{occurred: observation-id}`, `{equals: {left: term, right: term}}`, `{compare: {left: term, operator: lt|lte|eq|gte|gt, right: term}}`, `{not: predicate}`, `{all: [predicate, ...]}`, or `{any: [predicate, ...]}`. `{observation: id}` is a term only inside `equals` or `compare`; it is never a predicate by itself. An outcome has `kind: accepted|rejected` and a predicate `expression`; rejected outcomes also require a stable `category`, while accepted outcomes forbid it. `permits` has exactly `state_changes`, `events`, and `effects`; every state change is an absolute JSON pointer beginning with `/`. `case_policy` is exactly `{coverage: exhaustive, overlap: forbidden|allowed}`. Do not move an external property evaluation onto a case. Construct complete accepted and rejected cases from the bounded contract meaning. Preserve a complete existing protocol unchanged; otherwise omit `protocol` entirely, because `protocol: null` is invalid. Return syntactically complete YAML or JSON with every mapping/object and sequence/array closed.",
+            "\n\nContract behavior repair rule: preserve the exact directly referenced contract path, wrapper, version, evaluation strategy, clause ids, case ids, and every unaffected field shown in the exact-contract repair context. A `contracts.set` operation revises that existing artifact in place; it does not create a conventionally named replacement or silently migrate v0.2 to v0.3. Omit an unchanged contract from `contracts.set`. When the task explicitly migrates a contract or diagnostics genuinely apply to an existing v0.3 contract, `semantics.behavior` has exactly `observability`, `observations`, `assumptions`, `requires`, `guarantees`, `failures`, `cases`, `invariants`, and `case_policy`. `observability` is exactly `full|sampled|delayed|partial|none`. Every observation is exactly `{id, source, value}`. Observation sources use these exact closed variants: an input occurrence is `{kind: input, optional input_kind, name}` with `value: occurrence`; an input value is `{kind: input, pointer: /absolute/json/pointer}` with a non-occurrence value type; an output occurrence is `{kind: output, output_kind: reply|event|effect|command|rejection, name}` with `value: occurrence`; an output value is `{kind: output, pointer: /absolute/json/pointer}` with a non-occurrence value type; a transition occurrence is `{kind: transition, case: exact_case_id}` with `value: occurrence`; a state value is `{kind: state, phase: before|after, pointer: /absolute/json/pointer, optional instance}` with a non-occurrence value type; protocol-message and protocol-state occurrences require `{kind, name}` with `value: occurrence`; and trace-metric requires `{kind: trace-metric, name}` with a quantity value. Never put a variant, scalar value type, or product type name where `output_kind`, `phase`, `pointer`, or occurrence is required. A value is `occurrence|boolean|integer|string`, `{variant: [closed, variants]}`, or `{quantity: dimension}`. Every assumption, requirement, guarantee, failure, invariant, and case ensure is a clause with exactly `{id, statement, evaluation}`. A `cases` item is not a clause and never contains `evaluation`: it has exactly `id`, `statement`, `when`, `outcome`, `ensures`, and `permits`. Predicates are only `{constant: bool}`, `{occurred: observation-id}`, `{equals: {left: term, right: term}}`, `{compare: {left: term, operator: lt|lte|eq|gte|gt, right: term}}`, `{not: predicate}`, `{all: [predicate, ...]}`, or `{any: [predicate, ...]}`. `{observation: id}` is a term only inside `equals` or `compare`; it is never a predicate by itself. An outcome has `kind: accepted|rejected` and a predicate `expression`; rejected outcomes also require a stable `category`, while accepted outcomes forbid it. `permits` has exactly `state_changes`, `events`, and `effects`; every state change is an absolute JSON pointer beginning with `/`. `case_policy` is exactly `{coverage: exhaustive, overlap: forbidden|allowed}`. Do not move an external property evaluation onto a case. Construct complete accepted and rejected cases from the bounded contract meaning. Preserve a complete existing protocol unchanged; otherwise omit `protocol` entirely, because `protocol: null` is invalid. Return syntactically complete YAML or JSON with every mapping/object and sequence/array closed.",
         )
         .unwrap_or_default();
     let dependency_binding_repair = diagnostics
@@ -53099,6 +53099,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
     writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and structured `semantics` for the retained contract wrapper. New contract artifacts use v0.3 total behavior. A `contracts.set` entry revises the exact directly referenced artifact in place. It preserves a non-conventional path such as `*.behavior.yaml`; it does not create a conventionally named replacement. Existing v0.2 artifacts preserve their v0.2 wrapper and caller-obligation semantics until the task explicitly requests migration. Omit an unchanged contract from `contracts.set`. For command, query, and capability contracts, `contracts.add[].semantics` and `contracts.set[].semantics` must contain an exact `behavior` object; there is no `semantic_profile` field. Event contracts use an exact `event` object and API contracts use an exact `api` object. When setting an existing contract, copy its complete current behavior first, then change only task-owned meaning; preserve its wrapper, version, evaluation strategy (`core` versus `external`), clause ids, case ids, and every unaffected field. Requirements, guarantees, failures, invariants, assumptions, and case `ensures` entries are clauses. Each clause uses exactly one `evaluation.kind: core|external`; an external clause names its exact property. A behavior `cases` item is not a clause and never contains `evaluation`: it requires `id`, `statement`, a closed core `when` predicate, `outcome: {{kind: accepted|rejected, optional category, expression}}`, clause-list `ensures`, and `permits: {{state_changes, events, effects}}`. Rejected outcomes require a stable `category`; accepted outcomes forbid it. Declare typed `{{id, source, value}}` observations for every observation id used by `when` or `outcome.expression`. In v0.3, declare scalar `observability: full|sampled|delayed|partial|none` and an explicit `assumptions` clause list. Predicates use only the closed contract predicate variants; `{{observation: id}}` is a term inside `equals` or `compare`, never a predicate by itself. Every `permits.state_changes` item is an absolute JSON pointer beginning with `/`. Omit an unchanged or absent protocol; `protocol: null` is invalid. `unresolved` is migration-draft-only and fails strict checks. Legacy `accepts`, `ensures`, and `rejects` inputs produce unresolved drafts and are not completion-ready. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`: only capability contracts may be required. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
+    writeln!(out, "Contract observation sources are closed. Use `{{kind: input, name: ExactInput}}` plus `value: occurrence` for an input occurrence, or `{{kind: input, pointer: /absolute/json/pointer}}` plus a non-occurrence value type for an input field. Use `{{kind: output, output_kind: reply, name: ExactReply}}` plus `value: occurrence` for an output occurrence, or `{{kind: output, pointer: /absolute/json/pointer}}` plus a non-occurrence value type for an output field. Use `{{kind: transition, case: exact_case_id}}` plus `value: occurrence` for a transition. Use `{{kind: state, phase: before|after, pointer: /absolute/json/pointer}}` plus a non-occurrence value type for state; `instance` is optional. Protocol-message and protocol-state sources require `name` and `value: occurrence`. Trace-metric sources require `name` and a quantity value. `output_kind`, state `phase`, source `name`, source `case`, and source `pointer` must never be empty.")?;
     writeln!(
         out,
         "The exact external command/query/capability contract shape is:"
@@ -59728,16 +59729,10 @@ fn apply_semantic_law_changes_to_module(value: &mut YamlValue, laws: &SemanticLa
     invariants.extend(laws.add.iter().map(semantic_law_yaml));
 }
 
-fn semantic_contract_reference_yaml(
-    contract: &SemanticContractChange,
-    path: String,
-) -> YamlValue {
+fn semantic_contract_reference_yaml(contract: &SemanticContractChange, path: String) -> YamlValue {
     let mut mapping = serde_yaml::Mapping::new();
     mapping.insert(yaml_key("name"), YamlValue::String(contract.name.clone()));
-    mapping.insert(
-        yaml_key("contract"),
-        YamlValue::String(path),
-    );
+    mapping.insert(yaml_key("contract"), YamlValue::String(path));
     YamlValue::Mapping(mapping)
 }
 
@@ -59786,8 +59781,10 @@ fn apply_semantic_contract_changes_to_module(
         let Some(path) = kind.module_path(direction) else {
             continue;
         };
-        ensure_yaml_sequence_path(value, path)
-            .push(semantic_contract_reference_yaml(contract, semantic_contract_path(contract)));
+        ensure_yaml_sequence_path(value, path).push(semantic_contract_reference_yaml(
+            contract,
+            semantic_contract_path(contract),
+        ));
     }
 }
 
@@ -59959,10 +59956,7 @@ fn semantic_contract_path(contract: &SemanticContractChange) -> String {
     semantic_contract_path_parts(&contract.name, contract.version.as_deref())
 }
 
-fn semantic_contract_change_path(
-    module: &YamlValue,
-    contract: &SemanticContractChange,
-) -> String {
+fn semantic_contract_change_path(module: &YamlValue, contract: &SemanticContractChange) -> String {
     let Some(kind) = contract.kind else {
         return semantic_contract_path(contract);
     };
@@ -83111,10 +83105,9 @@ evidence:
         .unwrap();
 
         let module = fs::read_to_string(root.join("module.yaml")).unwrap();
-        let retained = fs::read_to_string(
-            root.join("contracts/talk-turn-decision.v0.2.0.behavior.yaml"),
-        )
-        .unwrap();
+        let retained =
+            fs::read_to_string(root.join("contracts/talk-turn-decision.v0.2.0.behavior.yaml"))
+                .unwrap();
         assert!(module.contains("contracts/talk-turn-decision.v0.2.0.behavior.yaml"));
         assert!(retained.contains("spec: rms/contract/v0.2"));
         assert!(retained.contains("current Secure Media v2 proof"));
@@ -95851,7 +95844,8 @@ properties:
             "{}\n### Direct Public Contract: contracts/talk-turn-decision.v0.2.0.behavior.yaml\n```yaml\nspec: rms/contract/v0.2\nname: talk-turn-decision\nsemantics:\n  behavior:\n    guarantees:\n      - id: preserve-this-exact-guarantee\n        statement: Preserve this complete contract body.\n        evaluation: {{kind: external, property: talk-turn-property}}\n```\n\n## Operating Rule\n",
             "bounded manifest context\n".repeat(4_000)
         );
-        let candidate = "spec: rms/semantic-change/v0.1\ncontracts: {add: [], set: [], remove: []}\n";
+        let candidate =
+            "spec: rms/semantic-change/v0.1\ncontracts: {add: [], set: [], remove: []}\n";
 
         let repair = render_spec_plan_repair_prompt(&prompt, candidate, &diagnostics);
 
@@ -95860,6 +95854,60 @@ properties:
         assert!(repair.contains("preserve-this-exact-guarantee"));
         assert!(repair.contains("revises that existing artifact in place"));
         assert!(repair.contains("does not create a conventionally named replacement"));
+    }
+
+    #[test]
+    fn semantic_plan_saved_talk_turn_response_teaches_exact_observation_sources() {
+        let diagnostics = vec![
+            error_diagnostic(
+                "contract.expression-invalid",
+                Path::new("contracts/talk-turn-decision.v0.2.0.yaml"),
+                "observation `command-input` occurrence source requires `value: occurrence`",
+            ),
+            error_diagnostic(
+                "contract.expression-invalid",
+                Path::new("contracts/talk-turn-decision.v0.2.0.yaml"),
+                "observation `transition-output` source requires non-empty `output_kind`",
+            ),
+            error_diagnostic(
+                "contract.expression-invalid",
+                Path::new("contracts/talk-turn-receive-playback.v0.1.0.yaml"),
+                "observation `receive-state` source requires non-empty `phase`",
+            ),
+        ];
+        let saved_response_excerpt = r#"spec: rms/semantic-change/v0.1
+contracts:
+  set:
+    - name: talk-turn-decision
+      kind: capability
+      semantics:
+        behavior:
+          observations:
+            - id: command-input
+              source: {kind: input, name: TalkTurnCommand}
+              value: {variant: [request, renew, release]}
+            - id: transition-output
+              source: {kind: output, name: TalkTurnTransition}
+              value: {variant: [accepted, rejected]}
+    - name: talk-turn-receive-playback
+      kind: capability
+      semantics:
+        behavior:
+          observations:
+            - id: receive-state
+              source: {kind: state, pointer: /kind}
+              value: {variant: [idle, active]}
+"#;
+
+        let repair =
+            render_spec_plan_repair_prompt("bounded schema", saved_response_excerpt, &diagnostics);
+
+        assert!(repair.contains("an input occurrence is `{kind: input, optional input_kind, name}` with `value: occurrence`"));
+        assert!(repair.contains("output_kind: reply|event|effect|command|rejection"));
+        assert!(repair.contains("phase: before|after"));
+        assert!(repair.contains("pointer: /absolute/json/pointer"));
+        assert!(repair.contains("Never put a variant, scalar value type, or product type name"));
+        assert!(repair.contains(saved_response_excerpt));
     }
 
     #[test]
