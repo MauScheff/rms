@@ -52130,6 +52130,9 @@ fn prepare_spec_plan_provider_response(
     let (normalized_yaml, evidence_normalizations) =
         normalize_spec_plan_property_evidence_kinds(&quoted_response);
     normalizations.extend(evidence_normalizations);
+    let (normalized_yaml, surface_normalizations) =
+        normalize_spec_plan_surface_evidence_paths(&normalized_yaml);
+    normalizations.extend(surface_normalizations);
     let mut change = match serde_yaml::from_str::<SemanticChange>(&normalized_yaml) {
         Ok(change) => change,
         Err(error) => {
@@ -52405,6 +52408,60 @@ fn normalize_spec_plan_property_evidence_kinds(response: &str) -> (String, Vec<S
     }
 }
 
+/// Providers sometimes emit the one evidence path for a surface as a scalar even
+/// though the semantic-change schema intentionally uses a list. This is a
+/// lossless shape normalization: it does not invent, remove, or reinterpret an
+/// evidence reference. It lets the candidate reach semantic validation, where
+/// an invalid surface declaration can receive a useful repair diagnostic.
+fn normalize_spec_plan_surface_evidence_paths(response: &str) -> (String, Vec<String>) {
+    let mut value = match serde_yaml::from_str::<YamlValue>(response) {
+        Ok(value) => value,
+        Err(_) => return (response.to_string(), Vec::new()),
+    };
+    let Some(surfaces) = value
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(yaml_key("surfaces")))
+        .and_then(YamlValue::as_mapping_mut)
+    else {
+        return (response.to_string(), Vec::new());
+    };
+
+    let mut normalizations = Vec::new();
+    for operation in ["add", "set"] {
+        let Some(items) = surfaces
+            .get_mut(yaml_key(operation))
+            .and_then(YamlValue::as_sequence_mut)
+        else {
+            continue;
+        };
+        for item in items {
+            let Some(surface) = item.as_mapping_mut() else {
+                continue;
+            };
+            let Some(evidence) = surface.get_mut(yaml_key("evidence")) else {
+                continue;
+            };
+            let YamlValue::String(path) = evidence else {
+                continue;
+            };
+            let path = path.clone();
+            *evidence = YamlValue::Sequence(vec![YamlValue::String(path)]);
+            let name = surface
+                .get(yaml_key("name"))
+                .and_then(YamlValue::as_str)
+                .unwrap_or("<unknown>");
+            normalizations.push(format!(
+                "normalized surface `{name}` evidence path from a scalar to a one-item list"
+            ));
+        }
+    }
+
+    match serde_yaml::to_string(&value) {
+        Ok(response) => (response, normalizations),
+        Err(_) => (response.to_string(), Vec::new()),
+    }
+}
+
 fn existing_semantic_property_ids(context: &SpecTargetContext) -> BTreeSet<String> {
     let mut existing = match context.module.as_ref() {
         Some(module) => module_property_promises_by_id(&module.value)
@@ -52497,6 +52554,18 @@ fn validate_prepared_spec_plan_change(
     change: &SemanticChange,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = validate_semantic_change(context, change);
+    if semantic_plan_task_forbids_runnable_surface(task)
+        && change
+            .surfaces
+            .as_ref()
+            .is_some_and(semantic_surfaces_change_has_operations)
+    {
+        diagnostics.push(error_diagnostic(
+            "semantic-plan.runnable-surface-forbidden",
+            &context.target,
+            "the task explicitly has no runnable surface; a callable Rust library or reusable capability is not a runnable surface. Leave `surfaces` null and do not synthesize an executable, CLI, HTTP, or language-library surface",
+        ));
+    }
     if semantic_plan_task_requests_fuzz_target(task)
         && change.properties.as_ref().is_none_or(|properties| {
             !properties
@@ -52549,6 +52618,13 @@ fn validate_prepared_spec_plan_change(
 fn semantic_plan_task_requests_fuzz_target(task: &str) -> bool {
     let task = task.to_ascii_lowercase();
     task.contains("fuzz target") || task.contains("fuzz_target")
+}
+
+fn semantic_plan_task_forbids_runnable_surface(task: &str) -> bool {
+    let task = task.to_ascii_lowercase();
+    task.contains("no runnable surface")
+        || task.contains("does not add a runnable surface")
+        || task.contains("without a runnable surface")
 }
 
 #[cfg(test)]
@@ -52736,6 +52812,11 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         }
     }
     writeln!(out, "Task: {task}")?;
+    if semantic_plan_task_forbids_runnable_surface(task) {
+        writeln!(out)?;
+        writeln!(out, "## Task Constraint: No Runnable Surface")?;
+        writeln!(out, "This task does not add a runnable surface. A callable Rust library, reusable capability, adapter, or effect executor is not a runnable surface. Return `surfaces: null`; do not add an executable, CLI, HTTP, mobile, desktop, browser, batch, or language-library surface.")?;
+    }
     writeln!(out)?;
     writeln!(out, "## Bounded Transformation")?;
     writeln!(out, "Use only the task, schema, diagnostics, and bounded canonical context in this prompt. Do not inspect files, call tools, load skills or plugins, or seek broader repository context. Return the requested final response immediately after reasoning from this input.")?;
@@ -96031,6 +96112,73 @@ properties:
         assert!(normalizations
             .iter()
             .any(|item| item.contains("from `missing` to `fuzz`")));
+    }
+
+    #[test]
+    fn semantic_plan_normalizes_scalar_surface_evidence_before_typed_parse() {
+        let response = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+surfaces:
+  set: null
+  add:
+    - name: apns-delivery-executable
+      kind: runnable-boundary
+      surface: executable
+      entrypoint: src/main.rs#main
+      delegates_to: {symbol: src/driver.rs#drive, command: Deliver}
+      no_effects_justification: The fixture has no effects.
+      usage_document: verification/surfaces/apns_delivery.md
+      smoke_command: verify
+      evidence: verification/surfaces/apns_delivery.md
+  remove: []
+"#;
+
+        let (normalized, normalizations) = normalize_spec_plan_surface_evidence_paths(response);
+        let change: SemanticChange = serde_yaml::from_str(&normalized).unwrap();
+        let surface = &change.surfaces.unwrap().add[0];
+
+        assert_eq!(
+            surface.evidence,
+            vec!["verification/surfaces/apns_delivery.md"]
+        );
+        assert_eq!(normalizations.len(), 1);
+        assert!(normalizations[0].contains("from a scalar to a one-item list"));
+    }
+
+    #[test]
+    fn semantic_plan_no_surface_task_is_rendered_and_rejects_surface_addition() {
+        let root = prompt_fixture("semantic-plan-no-runnable-surface");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let task = "Define reusable capability semantics with no runnable surface.";
+        let prompt = render_spec_plan_prompt(&context, &root, task).unwrap();
+        assert!(prompt.contains("## Task Constraint: No Runnable Surface"));
+        assert!(prompt.contains("Return `surfaces: null`"));
+
+        let change: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+surfaces:
+  set: null
+  add:
+    - name: invented-surface
+      kind: runnable-boundary
+      surface: executable
+      entrypoint: src/main.rs#main
+      delegates_to: {symbol: src/driver.rs#drive, command: Deliver}
+      no_effects_justification: The fixture has no effects.
+      usage_document: verification/surfaces/invented.md
+      smoke_command: verify
+      evidence: [verification/surfaces/invented.md]
+  remove: []
+"#,
+        )
+        .unwrap();
+        let diagnostics = validate_prepared_spec_plan_change(&context, task, &change);
+
+        fs::remove_dir_all(root).unwrap();
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "semantic-plan.runnable-surface-forbidden" }));
     }
 
     #[test]
