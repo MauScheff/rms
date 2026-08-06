@@ -52133,6 +52133,9 @@ fn prepare_spec_plan_provider_response(
     let (normalized_yaml, surface_normalizations) =
         normalize_spec_plan_surface_evidence_paths(&normalized_yaml);
     normalizations.extend(surface_normalizations);
+    let (normalized_yaml, evidence_normalizations) =
+        normalize_spec_plan_evidence_obligation_fields(&normalized_yaml);
+    normalizations.extend(evidence_normalizations);
     let mut change = match serde_yaml::from_str::<SemanticChange>(&normalized_yaml) {
         Ok(change) => change,
         Err(error) => {
@@ -52462,6 +52465,55 @@ fn normalize_spec_plan_surface_evidence_paths(response: &str) -> (String, Vec<St
     }
 }
 
+/// `evidence.add` declares only a future evidence obligation. Provider output
+/// occasionally carries legacy execution metadata (`command`, `result`, or
+/// `source_revision`) with that declaration. Those fields cannot be applied:
+/// execution evidence is recorded after a proof run, not in a semantic change.
+/// Remove only these known non-semantic fields so the candidate reaches the
+/// typed validator. Unknown fields remain an error and receive a repair turn.
+fn normalize_spec_plan_evidence_obligation_fields(response: &str) -> (String, Vec<String>) {
+    let mut value = match serde_yaml::from_str::<YamlValue>(response) {
+        Ok(value) => value,
+        Err(_) => return (response.to_string(), Vec::new()),
+    };
+    let Some(items) = value
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(yaml_key("evidence")))
+        .and_then(YamlValue::as_mapping_mut)
+        .and_then(|evidence| evidence.get_mut(yaml_key("add")))
+        .and_then(YamlValue::as_sequence_mut)
+    else {
+        return (response.to_string(), Vec::new());
+    };
+
+    let mut normalizations = Vec::new();
+    for item in items {
+        let Some(evidence) = item.as_mapping_mut() else {
+            continue;
+        };
+        let path = evidence
+            .get(yaml_key("path"))
+            .and_then(YamlValue::as_str)
+            .unwrap_or("<unknown>")
+            .to_string();
+        let removed = ["command", "result", "source_revision"]
+            .into_iter()
+            .filter(|field| evidence.remove(yaml_key(field)).is_some())
+            .collect::<Vec<_>>();
+        if !removed.is_empty() {
+            normalizations.push(format!(
+                "removed legacy execution metadata [{}] from evidence obligation `{path}`",
+                removed.join(", ")
+            ));
+        }
+    }
+
+    match serde_yaml::to_string(&value) {
+        Ok(response) => (response, normalizations),
+        Err(_) => (response.to_string(), Vec::new()),
+    }
+}
+
 fn existing_semantic_property_ids(context: &SpecTargetContext) -> BTreeSet<String> {
     let mut existing = match context.module.as_ref() {
         Some(module) => module_property_promises_by_id(&module.value)
@@ -52727,6 +52779,16 @@ fn render_spec_plan_repair_prompt(
             "\n\nDependency behavior binding repair rule: `dependency_behavior_bindings.add[]` and `.set[]` contain only `{id, capability, contract?, consumer, resolution, provider_module?, provider_contract?, probe_bridge?}`. `capability` is the required capability name, `contract` is the consumer-facing contract path, `consumer` is the exact declared implementation `path#symbol` that resolves the dependency, and `resolution` is exactly `module` or `external`. A module resolution requires both `provider_module` and `provider_contract`; an external resolution omits them. `probe_bridge` is optional and must use the declared `{request, outcomes}` bridge shape. Never emit `dependency_kind`, `dependency_name`, `semantic_function`, `machine_inputs`, `machine_outputs`, or `observation_source` in this section. Do not guess a missing consumer symbol or provider; use the exact bounded implementation context or leave the dependency binding unchanged and report the unresolved fact. Preserve every unaffected binding and keep `set`/`add` ownership semantics exact.",
         )
         .unwrap_or_default();
+    let evidence_obligation_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            diagnostic.check == "semantic-plan.response-invalid"
+                && diagnostic.message.contains("evidence.add")
+        })
+        .then_some(
+            "\n\nEvidence obligation repair rule: every `evidence.add[]` item has exactly `{kind, proves, path}`. `kind` is a stable evidence category, `proves` is the exact changed law id or contract/command name, and `path` is a unique safe module-relative path. An evidence obligation never contains `command`, `result`, `source_revision`, observed output, execution metadata, or any other fields. The semantic change declares the obligation only. Record command, observed result, and source revision after a real proof run, outside this semantic change.",
+        )
+        .unwrap_or_default();
     let capability_contract_repair = diagnostics
         .iter()
         .any(|diagnostic| {
@@ -52748,7 +52810,7 @@ fn render_spec_plan_repair_prompt(
         )
         .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`. Do not leave the item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`. Do not leave the item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -95308,6 +95370,24 @@ contracts:
     }
 
     #[test]
+    fn semantic_plan_repair_prompt_handles_legacy_evidence_obligation_metadata() {
+        let diagnostic = error_diagnostic(
+            "semantic-plan.response-invalid",
+            Path::new("module.yaml"),
+            "provider response is not an rms/semantic-change/v0.1 object: evidence.add[0]: unknown field `command`, expected `kind`, `proves`, or `path`",
+        );
+        let repair = render_spec_plan_repair_prompt(
+            "bounded schema context",
+            "spec: rms/semantic-change/v0.1\n",
+            &[diagnostic],
+        );
+
+        assert!(repair.contains("Evidence obligation repair rule"));
+        assert!(repair.contains("exactly `{kind, proves, path}`"));
+        assert!(repair.contains("never contains `command`, `result`, `source_revision`"));
+    }
+
+    #[test]
     fn semantic_plan_rejects_consumer_specific_provider_capability_contract() {
         let root = unique_test_dir("semantic-plan-provider-capability-contract");
         fs::create_dir_all(root.join("provider/contracts")).unwrap();
@@ -96112,6 +96192,34 @@ properties:
         assert!(normalizations
             .iter()
             .any(|item| item.contains("from `missing` to `fuzz`")));
+    }
+
+    #[test]
+    fn semantic_plan_normalizes_legacy_execution_metadata_from_evidence_obligations() {
+        let response = r#"spec: rms/semantic-change/v0.1
+evidence:
+  add:
+    - kind: law
+      proves: apns-provider-result-delegates-disposition
+      path: verification/laws/apns_provider_result_delegates_disposition.md
+      command: fuzz
+      result: obligation
+      source_revision: null
+  remove: []
+"#;
+
+        let (normalized, normalizations) = normalize_spec_plan_evidence_obligation_fields(response);
+        let change: SemanticChange = serde_yaml::from_str(&normalized).unwrap();
+        let evidence = change.evidence.unwrap();
+
+        assert_eq!(evidence.add.len(), 1);
+        assert_eq!(
+            evidence.add[0].proves,
+            "apns-provider-result-delegates-disposition"
+        );
+        assert_eq!(normalizations.len(), 1);
+        assert!(normalizations[0].contains("command, result, source_revision"));
+        assert!(!normalized.contains("source_revision"));
     }
 
     #[test]
