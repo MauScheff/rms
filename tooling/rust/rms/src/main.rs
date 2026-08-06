@@ -36135,6 +36135,7 @@ fn build_check_report_scoped(
 fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, String, String)>> {
     let modules = discover_module_manifests(root)?;
     let mut owners: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+    let mut executable_properties_by_module = BTreeMap::new();
     for module in &modules {
         let base = module.path.parent().unwrap_or_else(|| Path::new("."));
         let mut properties = property_targets_from_module(module, "property")
@@ -36160,6 +36161,9 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
                         .map(|property| property.id),
                 );
             }
+        }
+        if let Some(name) = get_str(&module.value, &["module", "name"]) {
+            executable_properties_by_module.insert(name.to_string(), properties.clone());
         }
         for reference in module_contract_reference_paths(&module.value) {
             let path = base.join(reference);
@@ -36195,6 +36199,12 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
             }
         }
     }
+
+    extend_exact_composite_export_contract_owners(
+        &modules,
+        &executable_properties_by_module,
+        &mut owners,
+    );
 
     let mut findings = Vec::new();
     for entry in WalkDir::new(root)
@@ -36237,7 +36247,7 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
                             path.to_path_buf(),
                             "contract.external-property-unresolved".to_string(),
                             format!(
-                                "external property `{property}` is not an executable property of a module or binding that owns this contract"
+                                "external property `{property}` is not an executable property of a module, binding, or exact exported provider child that owns this contract"
                             ),
                         ));
                     }
@@ -36287,6 +36297,106 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
         }
     }
     Ok(findings)
+}
+
+fn extend_exact_composite_export_contract_owners(
+    modules: &[LoadedManifest],
+    executable_properties_by_module: &BTreeMap<String, BTreeSet<String>>,
+    owners: &mut BTreeMap<PathBuf, BTreeSet<String>>,
+) {
+    for parent in modules {
+        let parent_base = parent.path.parent().unwrap_or_else(|| Path::new("."));
+        let exports = get_path(&parent.value, &["composition", "exports"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten();
+
+        for export in exports {
+            let (Some(group), Some(name), Some(provider_name)) = (
+                get_str(export, &["group"]),
+                get_str(export, &["name"]),
+                get_str(export, &["from"]),
+            ) else {
+                continue;
+            };
+            let Some(provider) = contained_provider_module(parent, modules, provider_name) else {
+                continue;
+            };
+            let Some(parent_reference) = provided_contract_reference(&parent.value, group, name)
+            else {
+                continue;
+            };
+            let Some(provider_reference) =
+                provided_contract_reference(&provider.value, group, name)
+            else {
+                continue;
+            };
+            if get_str(export, &["contract"]).is_some_and(|reference| {
+                reference != parent_reference || reference != provider_reference
+            }) {
+                continue;
+            }
+
+            let parent_path = parent_base.join(parent_reference);
+            let provider_base = provider.path.parent().unwrap_or_else(|| Path::new("."));
+            let provider_path = provider_base.join(provider_reference);
+            let (Ok(parent_contract), Ok(provider_contract)) =
+                (load_manifest(&parent_path), load_manifest(&provider_path))
+            else {
+                continue;
+            };
+            if parent_contract.value != provider_contract.value {
+                continue;
+            }
+            let Some(provider_properties) = executable_properties_by_module.get(provider_name)
+            else {
+                continue;
+            };
+            let identity = fs::canonicalize(&parent_path).unwrap_or(parent_path);
+            owners
+                .entry(identity)
+                .or_default()
+                .extend(provider_properties.iter().cloned());
+        }
+    }
+}
+
+fn contained_provider_module<'a>(
+    parent: &LoadedManifest,
+    modules: &'a [LoadedManifest],
+    provider_name: &str,
+) -> Option<&'a LoadedManifest> {
+    let child = get_path(&parent.value, &["composition", "contains"])
+        .and_then(YamlValue::as_sequence)?
+        .iter()
+        .find(|child| get_str(child, &["name"]) == Some(provider_name))?;
+    let expected_path = get_str(child, &["path"]).map(|path| {
+        parent
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(path)
+    });
+    let mut candidates = modules.iter().filter(|module| {
+        get_str(&module.value, &["module", "name"]) == Some(provider_name)
+            && expected_path
+                .as_ref()
+                .is_none_or(|expected| paths_equivalent(expected, &module.path))
+    });
+    let provider = candidates.next()?;
+    candidates.next().is_none().then_some(provider)
+}
+
+fn provided_contract_reference<'a>(
+    module: &'a YamlValue,
+    group: &str,
+    name: &str,
+) -> Option<&'a str> {
+    get_path(module, &["provides", group])
+        .and_then(YamlValue::as_sequence)?
+        .iter()
+        .find(|provided| get_str(provided, &["name"]) == Some(name))
+        .and_then(|provided| get_str(provided, &["contract"]))
 }
 
 fn project_check_coverage(
@@ -102099,6 +102209,105 @@ architecture:
         assert!(report.findings.iter().any(|item| {
             item.check == "composition.proof-delegation"
                 && item.status == ComposeStatus::Incompatible
+        }));
+    }
+
+    #[test]
+    fn strict_contract_resolution_follows_only_an_exact_composite_export() {
+        let root = unique_test_dir("strict-contract-exact-composite-export");
+        fs::create_dir_all(root.join("parent/contracts")).unwrap();
+        fs::create_dir_all(root.join("child/contracts")).unwrap();
+        let contract = r#"spec: rms/contract/v0.2
+name: deploy
+version: 1.0.0
+kind: command
+meaning: Deploy the validated release.
+semantics:
+  behavior:
+    observations: []
+    requires:
+      - id: release-is-valid
+        statement: The release is valid.
+        evaluation: { kind: external, property: deployment-contract-property }
+    guarantees: []
+    failures: []
+    cases: []
+    invariants: []
+    case_policy: { coverage: exhaustive, overlap: forbidden }
+compatibility: { policy: backward-compatible-within-major }
+"#;
+        fs::write(root.join("parent/contracts/deploy.v1.yaml"), contract).unwrap();
+        fs::write(root.join("child/contracts/deploy.v1.yaml"), contract).unwrap();
+        fs::write(
+            root.join("parent/module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: parent, version: 0.1.0, kind: composite, purpose: Export deployment validation. }
+profiles: [core]
+owns: { concepts: [composition], data: [], decisions: [exports] }
+provides:
+  commands: [{ name: deploy, contract: contracts/deploy.v1.yaml }]
+  queries: []
+  events: []
+  capabilities: []
+requires: { modules: [], capabilities: [] }
+composition:
+  contains: [{ name: child, visibility: internal, path: ../child/module.yaml }]
+  exports: [{ group: commands, name: deploy, from: child, contract: contracts/deploy.v1.yaml }]
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("child/module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: child, version: 0.1.0, kind: library, purpose: Validate deployment. }
+profiles: [core]
+owns: { concepts: [deployment], data: [], decisions: [validation] }
+provides:
+  commands: [{ name: deploy, contract: contracts/deploy.v1.yaml }]
+  queries: []
+  events: []
+  capabilities: []
+requires: { modules: [], capabilities: [] }
+invariants: []
+properties:
+  - id: deployment-contract-property
+    proves: deploy
+    kind: property
+    input_space: { cases: [valid-release] }
+    operation: validate deployment
+    oracle: [the valid release is deployed]
+    evidence: { path: verification/properties/deployment.md }
+    realizations: [{ profile: smoke, strategy: deterministic-corpus, command: verify }]
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+
+        let findings = strict_behavioral_contract_findings(&root).unwrap();
+        assert!(!findings.iter().any(|(path, check, _)| {
+            path == &root.join("parent/contracts/deploy.v1.yaml")
+                && check == "contract.external-property-unresolved"
+        }));
+
+        fs::write(
+            root.join("parent/contracts/deploy.v1.yaml"),
+            contract.replace(
+                "The release is valid.",
+                "The release has a different parent-only meaning.",
+            ),
+        )
+        .unwrap();
+        let findings = strict_behavioral_contract_findings(&root).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(findings.iter().any(|(path, check, _)| {
+            path.ends_with("parent/contracts/deploy.v1.yaml")
+                && check == "contract.external-property-unresolved"
         }));
     }
 
