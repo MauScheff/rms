@@ -37584,16 +37584,8 @@ fn build_next_report_with_intent(
     let (mut intent, mut intent_diagnostics, existing_run_dir) =
         resolve_intent_model(&root, "next", task, &input, options)?;
     if let Some(model) = intent.as_mut() {
-        let explicit_scope_changed = provider_extraction
-            && explicit_module
-                .is_some_and(|_| normalize_provider_change_scope_for_explicit_module(model));
-        let explicit_binding_attachment = explicit_module
-            .is_some_and(|module| explicit_module_needs_binding(&root, module, task));
-        let implementation_lane_changed = explicit_binding_attachment
-            && normalize_provider_implementation_binding_for_task(model);
-        let provider_normalization_changed =
-            provider_extraction && normalize_provider_intent_for_task(task, model);
-        if provider_normalization_changed || explicit_scope_changed || implementation_lane_changed {
+        if normalize_provider_next_intent(&root, explicit_module, task, provider_extraction, model)
+        {
             intent_diagnostics = validate_intent_model(task, &root, model);
         }
     }
@@ -37935,6 +37927,28 @@ fn build_next_report_with_intent(
         serde_json::to_string_pretty(&report)?,
     )?;
     Ok(report)
+}
+
+fn normalize_provider_next_intent(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    task: &str,
+    provider_extraction: bool,
+    model: &mut IntentModel,
+) -> bool {
+    let explicit_scope_changed = provider_extraction
+        && explicit_module
+            .is_some_and(|_| normalize_provider_change_scope_for_explicit_module(model));
+    let explicit_binding_attachment =
+        explicit_module.is_some_and(|module| explicit_module_needs_binding(root, module, task));
+    let provider_normalization_changed =
+        provider_extraction && normalize_provider_intent_for_task(task, model);
+    // Apply this last. Generic semantic normalization intentionally handles
+    // transition and contract language, but an explicit path-scoped request
+    // to attach a missing implementation binding is a narrower authority.
+    let implementation_lane_changed =
+        explicit_binding_attachment && normalize_provider_implementation_binding_for_task(model);
+    provider_normalization_changed || explicit_scope_changed || implementation_lane_changed
 }
 
 fn explicit_module_needs_binding(root: &Path, explicit_module: &Path, task: &str) -> bool {
@@ -76293,6 +76307,22 @@ mod tests {
             }"#,
         )
         .unwrap();
+        let mut provider_model = model.clone();
+        assert!(normalize_provider_next_intent(
+            &root,
+            Some(&module),
+            task,
+            true,
+            &mut provider_model,
+        ));
+        assert_eq!(
+            provider_model.operation,
+            IntentOperation::ImplementationChange
+        );
+        assert_eq!(
+            classify_intent_model(&provider_model).lane,
+            TaskLane::ImplementationCandidate
+        );
         assert!(normalize_provider_implementation_binding_for_task(
             &mut model
         ));
