@@ -37583,13 +37583,18 @@ fn build_next_report_with_intent(
     let provider_extraction = input.ai;
     let (mut intent, mut intent_diagnostics, existing_run_dir) =
         resolve_intent_model(&root, "next", task, &input, options)?;
-    if provider_extraction {
-        if let Some(model) = intent.as_mut() {
-            let explicit_scope_changed = explicit_module
+    if let Some(model) = intent.as_mut() {
+        let explicit_scope_changed = provider_extraction
+            && explicit_module
                 .is_some_and(|_| normalize_provider_change_scope_for_explicit_module(model));
-            if normalize_provider_intent_for_task(task, model) || explicit_scope_changed {
-                intent_diagnostics = validate_intent_model(task, &root, model);
-            }
+        let explicit_binding_attachment = explicit_module
+            .is_some_and(|module| explicit_module_needs_binding(&root, module, task));
+        let implementation_lane_changed = explicit_binding_attachment
+            && normalize_provider_implementation_binding_for_task(model);
+        let provider_normalization_changed =
+            provider_extraction && normalize_provider_intent_for_task(task, model);
+        if provider_normalization_changed || explicit_scope_changed || implementation_lane_changed {
+            intent_diagnostics = validate_intent_model(task, &root, model);
         }
     }
     let extraction_diagnostics = intent_diagnostics.clone();
@@ -37930,6 +37935,58 @@ fn build_next_report_with_intent(
         serde_json::to_string_pretty(&report)?,
     )?;
     Ok(report)
+}
+
+fn explicit_module_needs_binding(root: &Path, explicit_module: &Path, task: &str) -> bool {
+    if !task_requests_implementation_binding_attachment(task) {
+        return false;
+    }
+    let requested = if explicit_module.is_absolute() {
+        explicit_module.to_path_buf()
+    } else {
+        root.join(explicit_module)
+    };
+    let module_path = if requested.is_dir() {
+        requested.join("module.yaml")
+    } else {
+        requested
+    };
+    let Ok(module) = load_manifest(&module_path) else {
+        return false;
+    };
+    get_str(&module.value, &["spec"]) == Some("rms/module/v0.1")
+        && !module_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("implementation.yaml")
+            .is_file()
+}
+
+fn task_requests_implementation_binding_attachment(task: &str) -> bool {
+    let normalized = task.to_ascii_lowercase();
+    let binding = normalized.contains("implementation binding")
+        || normalized.contains("implementation-binding")
+        || (task_mentions_token(task, "binding")
+            && ["python", "rust", "swift", "javascript", "js", "executable"]
+                .iter()
+                .any(|language| task_mentions_token(task, language)));
+    let attach = [
+        "attach", "add", "scaffold", "provide", "assign", "realize", "realise",
+    ]
+    .iter()
+    .any(|verb| task_mentions_token(task, verb));
+    binding && attach
+}
+
+fn normalize_provider_implementation_binding_for_task(model: &mut IntentModel) -> bool {
+    if model.operation == IntentOperation::ImplementationChange
+        && model.change_scope == IntentChangeScope::ExistingModule
+    {
+        return false;
+    }
+    model.operation = IntentOperation::ImplementationChange;
+    model.change_scope = IntentChangeScope::ExistingModule;
+    true
 }
 
 fn normalize_provider_change_scope_for_explicit_module(model: &mut IntentModel) -> bool {
@@ -52322,7 +52379,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Use only the task, schema, diagnostics, and bounded canonical context in this prompt. Do not inspect files, call tools, load skills or plugins, or seek broader repository context. Return the requested final response immediately after reasoning from this input.")?;
     writeln!(out)?;
     writeln!(out, "## Bounded Canonical Context")?;
-    writeln!(out, "The target manifests and their directly referenced public contracts are the complete canonical planning context. Referenced source, evidence, sibling modules, and prior run artifacts are intentionally outside this provider interaction.")?;
+    writeln!(out, "The target manifests, their directly referenced public contracts, and explicitly named provider contracts for module-resolution bindings are the complete canonical planning context. Referenced source, unrelated sibling modules, and prior run artifacts are intentionally outside this provider interaction.")?;
     if let Some(module) = &context.module {
         writeln!(out)?;
         writeln!(out, "### Module Manifest: {}", module.path.display())?;
@@ -52362,6 +52419,59 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
             )?;
             writeln!(out, "```yaml")?;
             write!(out, "{}", serde_yaml::to_string(&contract.value)?)?;
+            writeln!(out, "```")?;
+        }
+    }
+    // A module-resolution binding is an explicit, bounded cross-module edge.
+    // Include only the named provider artifact so an exact-contract task can
+    // copy its canonical semantics without giving the provider broad
+    // repository access or asking it to reconstruct the contract from prose.
+    if let (Some(module), Some(implementation)) = (&context.module, &context.implementation) {
+        let mut provider_paths = BTreeSet::new();
+        for binding in typed_yaml_sequence::<DependencyBehaviorBinding>(
+            &implementation.value,
+            &["architecture", "dependency_behavior_bindings"],
+        ) {
+            if binding.resolution != "module" {
+                continue;
+            }
+            let (Some(provider_module_name), Some(provider_contract)) = (
+                binding.provider_module.as_deref(),
+                binding.provider_contract.as_deref(),
+            ) else {
+                continue;
+            };
+            let Some(provider_module) =
+                find_named_provider_module(root, module, provider_module_name)
+            else {
+                continue;
+            };
+            let provider_path = provider_module
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(provider_contract);
+            if !provider_paths.insert(provider_path.clone()) || !provider_path.is_file() {
+                continue;
+            }
+            let provider = load_manifest(&provider_path).with_context(|| {
+                format!(
+                    "failed to load named provider contract {} for semantic planning",
+                    provider_path.display()
+                )
+            })?;
+            writeln!(out)?;
+            writeln!(
+                out,
+                "### Named Provider Contract (exact-copy source): {}",
+                provider.path.display()
+            )?;
+            writeln!(
+                out,
+                "This artifact is the canonical source for the module-resolution binding. If the task requires the exact provider contract, copy this complete object unchanged, including every wrapper, version, meaning, observation, clause, case, expression, and permits field."
+            )?;
+            writeln!(out, "```yaml")?;
+            write!(out, "{}", serde_yaml::to_string(&provider.value)?)?;
             writeln!(out, "```")?;
         }
     }
@@ -76143,6 +76253,89 @@ mod tests {
     }
 
     #[test]
+    fn explicit_semantic_only_module_binding_request_forces_add_binding_lane() {
+        let root = unique_test_dir("explicit-semantic-only-binding-route");
+        let module = root.join("module.yaml");
+        run_add_module(
+            add_module_request(
+                &root,
+                "deployment-validation-decisions",
+                "Own deployment validation decisions.",
+                "workflow",
+                &["core".to_string()],
+                Some(ScaffoldShape::Workflow),
+                None,
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        initialize_test_git_repository(&root);
+
+        let task = "Attach a Python implementation binding to the existing deployment-validation-decisions child.";
+        assert!(explicit_module_needs_binding(&root, &module, task));
+        let mut model = parse_intent_model_source(
+            r#"{
+              "spec":"rms/intent-model/v0.1",
+              "operation":"semantic-change",
+              "change_scope":"existing-module",
+              "subjects":["deployment-validation-decisions"],
+              "facts":{
+                "domain_decisions":{"disposition":"required","basis":"inferred","rationale":"The child owns validation decisions."},
+                "lifecycle":{"disposition":"required","basis":"inferred","rationale":"The workflow is ordered."},
+                "effects":{"disposition":"absent","basis":"inferred","rationale":"The child is semantic-only."},
+                "runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"No product surface is requested."},
+                "reuse":{"disposition":"required","basis":"explicit","source_quote":"existing deployment-validation-decisions child"}
+              },
+              "responsibilities":[{"id":"deployment-validation-decisions","kind":"decision","summary":"Own deployment validation decisions."}],
+              "surface_kinds":[],
+              "binding_preferences":["python"],
+              "open_questions":[]
+            }"#,
+        )
+        .unwrap();
+        assert!(normalize_provider_implementation_binding_for_task(
+            &mut model
+        ));
+        assert_eq!(model.operation, IntentOperation::ImplementationChange);
+        assert_eq!(model.change_scope, IntentChangeScope::ExistingModule);
+        assert_eq!(
+            classify_intent_model(&model).lane,
+            TaskLane::ImplementationCandidate
+        );
+        let report = build_next_report_with_intent(
+            &root,
+            Some(&module),
+            task,
+            RawIntentInput {
+                yaml: Some(serde_yaml::to_string(&model).unwrap()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            report.result,
+            NextResult::Ready,
+            "blockers={:?} diagnostics={:?}",
+            report.blockers,
+            report.validation.diagnostics
+        );
+        assert_eq!(
+            report.task_classification.lane,
+            TaskLane::ImplementationCandidate
+        );
+        assert!(validate_route_receipt(
+            &root,
+            Path::new(&report.receipt_path),
+            "add-binding",
+            &module,
+            None,
+        )
+        .is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn new_owner_adoption_outranks_incidental_existing_participant_mentions() {
         let task = "Adopt the existing client Connection media-epoch delivery boundary as an internal reusable composite capability with a pure stateful domain owner and a typed effect boundary, with no runnable surface. It owns active PTT sender lane admission and a monotonic lane-handover generation. When the current admitted Direct QUIC lane terminally loses consent during a held Talk Turn, and an exact receiver-ready Fast Relay lane for the same Talk Turn authority, sender and receiver Devices, Auth Session, Connection fence, network-path generation, and Secure Media lease is already available, it atomically fences the old lane, installs Fast Relay, continues admitting captured frames, and moves terminal delivery to the replacement lane. At every instant and for every frame there is at most one admitted outbound lane; stale, duplicate, delayed, or reordered old-lane results are inert. If no exact replacement is ready, preserve the existing typed all-paths-lost outcome and user-cue behavior. It consumes Talk Turn authority, Receiver Media Readiness proof, Direct QUIC and Fast Relay capability facts, and unchanged Secure Media evidence. It does not own Talk Turn grants, receiver readiness, Fast Relay selection, codec or encryption policy, Apple audio, or UI projection. Realtime Voice Runtime executes the emitted handover effects and Voice Media consumes the current admitted-lane proof. Add the 2026-08-03 epoch-114 incident as a replayable cross-module counterexample and explore consent loss, release, duplicate results, and replacement failure schedules.";
         let mut model = parse_intent_model_source(
@@ -94196,6 +94389,49 @@ contracts:
             prompt.contains("consumer: Sources/Boundary/PropertySupport.swift#verifyDependency")
         );
         assert!(prompt.contains("Never use legacy fields such as `dependency_kind`, `dependency_name`, `semantic_function`"));
+    }
+
+    #[test]
+    fn semantic_plan_includes_named_provider_contract_for_exact_copy() {
+        let root = unique_test_dir("semantic-plan-named-provider-contract");
+        fs::create_dir_all(root.join("provider/contracts")).unwrap();
+        fs::create_dir_all(root.join("consumer/contracts")).unwrap();
+        write_compose_module(
+            &root.join("provider/module.yaml"),
+            "provider",
+            "  capabilities:\n    - name: deploy-validation\n      contract: contracts/deploy-validation.v1.yaml\n",
+            "",
+            "",
+        );
+        write_compose_module(
+            &root.join("consumer/module.yaml"),
+            "consumer",
+            "  capabilities: []\n",
+            "",
+            "  capabilities:\n    - name: deploy-validation\n      contract: contracts/deploy-validation.v1.yaml\n",
+        );
+        fs::write(
+            root.join("provider/contracts/deploy-validation.v1.yaml"),
+            "spec: rms/contract/v0.2\nname: deploy-validation\nversion: '1'\nkind: capability\nmeaning: Exact provider decision contract.\nsemantics: {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("consumer/implementation.yaml"),
+            "spec: rms/implementation/v0.1\nmodule: consumer\nbinding: rust\narchitecture:\n  dependency_behavior_bindings:\n    - id: deploy-validation-provider\n      capability: deploy-validation\n      contract: contracts/deploy-validation.v1.yaml\n      consumer: src/lib.rs#resolve\n      resolution: module\n      provider_module: provider\n      provider_contract: contracts/deploy-validation.v1.yaml\n",
+        )
+        .unwrap();
+        let context = load_spec_target(&root.join("consumer/module.yaml")).unwrap();
+        let prompt = render_spec_plan_prompt(
+            &context,
+            &root,
+            "Require the exact deploy-validation contract published by provider.",
+        )
+        .unwrap();
+
+        assert!(prompt.contains("Named Provider Contract (exact-copy source)"));
+        assert!(prompt.contains("Exact provider decision contract."));
+        assert!(prompt.contains("copy this complete object unchanged"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
