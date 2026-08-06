@@ -52100,7 +52100,9 @@ fn normalize_spec_plan_json_closing_delimiters(response: &str) -> (String, Vec<S
                     if inserted == MAX_INSERTED_DELIMITERS {
                         return (response.to_string(), Vec::new());
                     }
-                    let open = stack.pop().expect("delimiter stack is non-empty");
+                    let Some(open) = stack.pop() else {
+                        return (response.to_string(), Vec::new());
+                    };
                     rendered.push(if open == '{' { '}' } else { ']' });
                     inserted += 1;
                 }
