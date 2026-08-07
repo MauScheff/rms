@@ -6,7 +6,8 @@ Promise:
 
 Scenario:
 
-- Exercise valid, repairable, operationally failed, ambiguous-owner, blocked, and ready routes.
+- Exercise valid, repairable, quota-exhausted, read-only-state, operationally failed, ambiguous-owner, blocked, and ready routes.
+- Exercise default provider selection and a one-run Codex CLI profile.
 - Inspect every route's artifacts, owner projection, receipt actions, next step, and exit class.
 
 Command/tool:
@@ -17,6 +18,8 @@ Command/tool:
 Expected result:
 
 - Operational failure records are complete and non-authorizing.
+- Quota exhaustion and read-only provider state are classified truthfully and preserve caller-authored recovery.
+- A one-run profile is forwarded, audited, and cache-separated without changing ownership policy.
 - Non-ready routes expose no selected owner or owner-scoped implementation step.
 - Ready routes retain deterministic owner selection and receipt-gated actions.
 

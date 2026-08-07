@@ -18,7 +18,8 @@ semantics:
         property: rms-behavioral-contract-conformance-corpus
     - id: accepts-2
       statement: An optional intent-cache refresh request and compact or detailed
-        projection selection.
+        projection selection, plus an optional one-run Codex CLI profile when provider
+        extraction is requested.
       evaluation:
         kind: external
         property: rms-behavioral-contract-conformance-corpus
@@ -34,7 +35,8 @@ semantics:
     - id: ensures-2
       statement: Operational provider failures are classified without schema repair,
         exit one, preserve complete failure artifacts, select no owner, and prescribe
-        provider remediation or intentional caller-supplied typed intent.
+        provider remediation or intentional caller-supplied typed intent. Quota exhaustion
+        and read-only provider state have distinct classifications.
       evaluation:
         kind: external
         property: rms-behavioral-contract-conformance-corpus
@@ -49,6 +51,13 @@ semantics:
       statement: Ready and no-rms-change results exit zero, while the rms.surface/v2
         report additively exposes run_id, receipt_id, receipt_path, and explicit ownership
         status without granting source-edit or Git authority.
+      evaluation:
+        kind: external
+        property: rms-behavioral-contract-conformance-corpus
+    - id: ensures-5
+      statement: A one-run Codex CLI profile is forwarded only to the requested provider
+        execution, is recorded in provider evidence, and separates the validated intent
+        cache identity without changing deterministic routing or owner selection.
       evaluation:
         kind: external
         property: rms-behavioral-contract-conformance-corpus

@@ -1,0 +1,94 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/implementation.yaml
+supersedes:
+- verification/changes/bind-probe-state-expression-contracts-to-the-executable-concurrency-property.yaml
+intent:
+  summary: Add an optional one-run Codex CLI profile for structured intent extraction, classify quota exhaustion and read-only provider state truthfully, and preserve deterministic ownerless recovery through caller-authored typed intent.
+laws:
+  add: []
+  set:
+  - id: provider-intent-extraction-is-structured-cached-and-auditable
+    statement: Explicit provider intent extraction uses the exact intent-model schema, performs at most one diagnostic repair, keys validated cache entries by the effective provider model and optional one-run profile, and records a complete terminal run including raw attempts, normalization or diagnostics, cache provenance, truthful operational failure class, route, and non-ready receipt even when provider execution fails, without making provider output semantic authority or inferring an owner.
+    kind: safety
+    authority: composition
+    enforced_by: recommend-next-rms-work-command
+  remove: []
+contracts:
+  add: []
+  set:
+  - name: recommend-next-rms-work
+    kind: command
+    direction: provided
+    version: '4'
+    command: null
+    meaning: Validate typed or explicitly provider-extracted intent, route it deterministically, persist a complete terminal run, issue a content-addressed route receipt, and prevent non-ready routing from being treated as owner selection or mutation authority.
+    accepts:
+    - A nonblank prospective task, readable repository root, optional explicit owner, and exactly one typed intent source or explicit read-only provider extraction.
+    - An optional intent-cache refresh request and compact or detailed projection selection, plus an optional one-run Codex CLI profile when provider extraction is requested.
+    ensures:
+    - Every invocation records request, intent schema, prompt, provider attempt evidence when applicable, normalized intent or diagnostics, terminal route result, and a route receipt whose allowed actions are nonempty only for ready work.
+    - Operational provider failures are classified without schema repair, exit one, preserve complete failure artifacts, select no owner, and prescribe provider remediation or intentional caller-supplied typed intent. Quota exhaustion and read-only provider state have distinct classifications.
+    - Clarification, missing model, missing owner, ambiguous owner, design-required, bootstrap-required, and blocked routes exit two and never expose a selected owner or owner-scoped implementation instruction.
+    - Ready and no-rms-change results exit zero, while the rms.surface/v2 report additively exposes run_id, receipt_id, receipt_path, and explicit ownership status without granting source-edit or Git authority.
+    - A one-run Codex CLI profile is forwarded only to the requested provider execution, is recorded in provider evidence, and separates the validated intent cache identity without changing deterministic routing or owner selection.
+    rejects:
+    - Blank tasks, unreadable roots, malformed or source-mismatched models, unsupported provider structure, provider process failure, unresolved material facts, contradictory intent, ambiguous ownership, and receipt persistence failure.
+    protocol: null
+  remove: []
+properties:
+  add: []
+  set:
+  - id: intent-extraction-cache-determinism
+    proves: provider-intent-extraction-is-structured-cached-and-auditable
+    kind: property
+    subject: null
+    input_space:
+      attempts: valid, repairable, materially unknown, schema-invalid, provider-process-failed, provider-incompatible, quota-exhausted, read-only-state, timed-out, default-profile, one-run-profile, cache-hit, refresh, and concurrent provider outcomes
+    preconditions:
+    - Provider execution is explicitly requested.
+    operation:
+      symbol: src/main.rs#extract_provider_intent_with_program
+      behavior: Execute or reuse structured extraction and persist a terminal route run for every outcome.
+    oracle:
+    - validated identical requests reuse one normalized model without another provider invocation
+    - invalid structured responses perform at most one repair and failed extraction is never cached
+    - operational failures perform no schema repair and produce diagnostics, provider metadata, terminal route, and a non-ready receipt with no owner or allowed actions
+    - quota exhaustion and read-only provider state have distinct truthful classifications and caller-authored fail-closed recovery artifacts
+    - a one-run Codex profile is forwarded to provider execution, recorded in evidence, and separated in the cache identity
+    - every invocation preserves exact raw response and provider logs or cache provenance
+    evidence:
+      kind: property
+      path: verification/properties/intent_extraction_terminal_runs.md
+    counterexamples:
+      path: verification/fuzz/counterexamples/intent-extraction-cache
+    realizations:
+    - profile: smoke
+      strategy: generated-property
+      command: properties
+      generator: src/main.rs#generate_intent_cache_cases
+      runner: src/main.rs#intent_extraction_cache_is_deterministic
+      exhaustive: false
+    temporal: null
+  remove: []
+hunt_exceptions: null
+trace_producers: null
+semantic_functions: null
+machine: null
+roles: null
+evidence:
+  add:
+  - kind: law
+    proves: provider-intent-extraction-is-structured-cached-and-auditable
+    path: verification/laws/provider_intent_extraction_terminal_runs.md
+  - kind: contract
+    proves: recommend-next-rms-work
+    path: verification/contracts/recommend_next_rms_work_v4.md
+surfaces: null
+binding_dependencies: null
+artifacts: null
+transformations: null
+authorities: null
+protocol_bindings: null
+authority_bindings: null
+public_behavior_bindings: null
+dependency_behavior_bindings: null

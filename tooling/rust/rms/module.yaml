@@ -662,7 +662,7 @@ invariants:
   authority: parser
   enforced_by: route-receipt-validator
 - id: provider-intent-extraction-is-structured-cached-and-auditable
-  statement: Explicit provider intent extraction uses the exact intent-model schema, performs at most one diagnostic repair, caches only validated normalized models, and records a complete terminal run including raw attempts, normalization or diagnostics, cache provenance, route, and non-ready receipt even when provider execution fails, without making provider output semantic authority.
+  statement: Explicit provider intent extraction uses the exact intent-model schema, performs at most one diagnostic repair, keys validated cache entries by the effective provider model and optional one-run profile, and records a complete terminal run including raw attempts, normalization or diagnostics, cache provenance, truthful operational failure class, route, and non-ready receipt even when provider execution fails, without making provider output semantic authority or inferring an owner.
   kind: safety
   authority: composition
   enforced_by: recommend-next-rms-work-command
@@ -912,12 +912,12 @@ x-rms:
     scope: rms-self-development
     semantic_revision_authority: repository maintainer seal
     evidence: verification/laws/rms_self_application_boundary.md
-  last_semantic_intent: Bind probe v0.3 state-expression contract clauses to the exact executable concurrency-corpus property and seal the corrected canonical state without changing their meaning.
+  last_semantic_intent: Add an optional one-run Codex CLI profile for structured intent extraction, classify quota exhaustion and read-only provider state truthfully, and preserve deterministic ownerless recovery through caller-authored typed intent.
   semantic_revision:
-    digest: sha256:17bdc2368ba44c64e244291acb2b33fa514d3e723899ca1496d398f7c567c8d6
-    change_record: verification/changes/bind-probe-state-expression-contracts-to-the-executable-concurrency-property.yaml
+    digest: sha256:3955abfdb184f72b08560d36a925e257e260b2b6b8c4b025583e7b71489c549b
+    change_record: verification/changes/add-one-run-codex-profile-and-fail-closed-provider-recovery.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:77d202ec4cad40c85f4227caf15bdd5f248cc9a0837c81a3671762fa754ef626
+    change_record_digest: sha256:b9f32ecb2f1da212ba677be7de9be6afd3f47cc0327b1752b51b3ea69378acce
 properties:
 - id: probe-product-state-expression-concurrency-corpus
   proves: probe-product-state-expressions-are-closed-and-replayable
@@ -1746,7 +1746,7 @@ properties:
   proves: provider-intent-extraction-is-structured-cached-and-auditable
   kind: property
   input_space:
-    attempts: valid, repairable, materially unknown, schema-invalid, provider-process-failed, provider-incompatible, timed-out, cache-hit, refresh, and concurrent provider outcomes
+    attempts: valid, repairable, materially unknown, schema-invalid, provider-process-failed, provider-incompatible, quota-exhausted, read-only-state, timed-out, default-profile, one-run-profile, cache-hit, refresh, and concurrent provider outcomes
   preconditions:
   - Provider execution is explicitly requested.
   operation:
@@ -1756,6 +1756,8 @@ properties:
   - validated identical requests reuse one normalized model without another provider invocation
   - invalid structured responses perform at most one repair and failed extraction is never cached
   - operational failures perform no schema repair and produce diagnostics, provider metadata, terminal route, and a non-ready receipt with no owner or allowed actions
+  - quota exhaustion and read-only provider state have distinct truthful classifications and caller-authored fail-closed recovery artifacts
+  - a one-run Codex profile is forwarded to provider execution, recorded in evidence, and separated in the cache identity
   - every invocation preserves exact raw response and provider logs or cache provenance
   evidence:
     path: verification/properties/intent_extraction_terminal_runs.md

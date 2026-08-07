@@ -297,6 +297,10 @@ enum Commands {
         #[arg(long, requires = "ai")]
         refresh_intent: bool,
 
+        /// Use a named Codex CLI profile for this provider extraction only.
+        #[arg(long = "codex-profile", requires = "ai")]
+        codex_profile: Option<String>,
+
         /// Emit the shared report as machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -4961,6 +4965,7 @@ struct PromptRunOptions {
     record: bool,
     run_root: PathBuf,
     model: Option<String>,
+    profile: Option<String>,
     sandbox: CodexSandbox,
     write_scope: ProviderWriteScope,
     provider_timeout_seconds: u64,
@@ -5627,6 +5632,7 @@ fn resolve_prompt_run_options(root: &Path, raw: RawPromptRunOptions) -> Result<P
             None
         }
     });
+    let profile = None;
 
     let sandbox = if let Some(sandbox) = raw.sandbox {
         sandbox
@@ -5675,6 +5681,7 @@ fn resolve_prompt_run_options(root: &Path, raw: RawPromptRunOptions) -> Result<P
         record: raw.record,
         run_root,
         model,
+        profile,
         sandbox,
         write_scope,
         provider_timeout_seconds,
@@ -9276,10 +9283,11 @@ fn run_main() -> Result<()> {
             intent_file,
             ai,
             refresh_intent,
+            codex_profile,
             json,
             details,
         } => {
-            let options = ai
+            let mut options = ai
                 .then(|| {
                     resolve_prompt_run_options(
                         &root,
@@ -9296,6 +9304,14 @@ fn run_main() -> Result<()> {
                     )
                 })
                 .transpose()?;
+            if let Some(profile) = codex_profile {
+                if profile.trim().is_empty() {
+                    bail!("--codex-profile must contain a nonblank Codex CLI profile name");
+                }
+                if let Some(options) = options.as_mut() {
+                    options.profile = Some(profile);
+                }
+            }
             run_next(
                 &root,
                 module.as_deref(),
@@ -12358,6 +12374,7 @@ fn intent_cache_key(task: &str, options: &PromptRunOptions) -> Result<String> {
         "prompt_version": INTENT_EXTRACTION_PROMPT_VERSION,
         "provider": options.provider.label(),
         "model": options.model.as_deref().unwrap_or("<provider-default>"),
+        "profile": options.profile.as_deref().unwrap_or("<provider-default>"),
         "normalization_version": INTENT_NORMALIZATION_VERSION,
     }))?))
 }
@@ -12547,7 +12564,23 @@ fn provider_failure_classification(
     stderr: &str,
 ) -> (&'static str, &'static str) {
     let evidence = format!("{error:#}\n{stderr}").to_ascii_lowercase();
-    if evidence.contains("requires a newer version")
+    if evidence.contains("you've hit your usage limit")
+        || evidence.contains("you have hit your usage limit")
+        || evidence.contains("purchase more credits")
+    {
+        (
+            "provider-quota-exhausted",
+            "The Codex extraction process uses the configured Codex account allowance, which is exhausted. Wait for allowance recovery or intentionally author the recorded typed-intent template, then run the recorded recovery command. Do not infer an owner from this failure.",
+        )
+    } else if evidence.contains("attempt to write a readonly database")
+        || evidence.contains("failed to open state db")
+        || evidence.contains("failed to initialize state runtime")
+    {
+        (
+            "provider-state-read-only",
+            "The Codex extraction process could not write its runtime state. Run provider extraction where the configured Codex state directory is writable, or intentionally author the recorded typed-intent template and run the recorded recovery command. Do not infer an owner from this failure.",
+        )
+    } else if evidence.contains("requires a newer version")
         || evidence.contains("upgrade codex")
         || evidence.contains("does not support required structured output")
         || evidence.contains("unknown option --output-schema")
@@ -12603,6 +12636,23 @@ fn finalize_provider_operational_failure(
     }
     let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
     let (result, recovery) = provider_failure_classification(failure, &stderr);
+    let intent_template_path = run_dir.join("caller-intent-template.yaml");
+    fs::write(
+        &intent_template_path,
+        serde_yaml::to_string(&intent_model_template())?,
+    )?;
+    let recovery_args = [
+        "next".to_string(),
+        task.to_string(),
+        "--root".to_string(),
+        root.display().to_string(),
+        "--intent-file".to_string(),
+        intent_template_path.display().to_string(),
+    ];
+    let recovery_command = std::iter::once("rms".to_string())
+        .chain(recovery_args.iter().map(|argument| shell_arg(argument)))
+        .collect::<Vec<_>>()
+        .join(" ");
     let diagnostics = vec![error_diagnostic(
         format!("intent.{result}"),
         root,
@@ -12617,6 +12667,7 @@ fn finalize_provider_operational_failure(
         serde_json::to_string_pretty(&json!({
             "provider": options.provider.label(),
             "model": options.model,
+            "profile": options.profile,
             "cache": "not-written",
             "cache_key": cache_key,
             "attempts": attempt,
@@ -12624,6 +12675,11 @@ fn finalize_provider_operational_failure(
             "tokens": null,
             "result": result,
             "error": format!("{failure:#}"),
+            "accounting": if options.provider == Provider::Codex {
+                "separate-codex-execution-using-configured-account-allowance"
+            } else {
+                "provider-defined"
+            },
             "stdout_log": stdout_path,
             "stderr_log": stderr_path,
         }))?,
@@ -12651,10 +12707,20 @@ fn finalize_provider_operational_failure(
             "summary": "Structured intent extraction failed operationally; RMS selected no owner and authorized no mutation.",
             "reasons": [format!("{failure:#}")],
             "warnings": [],
+            "recovery": {
+                "mode": "intentional-caller-authored-typed-intent",
+                "template_path": intent_template_path,
+                "command": recovery_command,
+                "constraints": [
+                    "The caller must replace the template placeholders and resolve every material unknown.",
+                    "RMS validates the typed intent before deterministic routing.",
+                    "The recovery does not select or infer an owner."
+                ]
+            },
             "next_action": {
-                "kind": "manual",
+                "kind": "executable",
                 "phase": "recover",
-                "instruction": recovery,
+                "instruction": format!("{recovery} Recovery command after the caller authors the template: {recovery_command}"),
                 "authorization": "none"
             },
             "done_when": ["The exact task is rerun successfully through structured extraction or the caller intentionally supplies a validated typed intent."],
@@ -12714,6 +12780,7 @@ fn extract_provider_intent_with_program(
                 serde_json::to_string_pretty(&json!({
                     "provider": options.provider.label(),
                     "model": options.model,
+                    "profile": options.profile,
                     "cache": "hit",
                     "cache_key": cache_key,
                     "cache_entry": cache_entry,
@@ -12752,6 +12819,7 @@ fn extract_provider_intent_with_program(
                 serde_json::to_string_pretty(&json!({
                     "provider": options.provider.label(),
                     "model": options.model,
+                    "profile": options.profile,
                     "cache": "hit-after-wait",
                     "cache_key": cache_key,
                     "cache_entry": cache_entry,
@@ -12845,6 +12913,7 @@ fn extract_provider_intent_with_program(
                     serde_json::to_string_pretty(&json!({
                         "provider": options.provider.label(),
                         "model": options.model,
+                        "profile": options.profile,
                         "cache": if refresh { "refreshed" } else { "miss" },
                         "cache_key": cache_key,
                         "cache_entry": cache_entry,
@@ -12877,6 +12946,7 @@ fn extract_provider_intent_with_program(
         serde_json::to_string_pretty(&json!({
             "provider": options.provider.label(),
             "model": options.model,
+            "profile": options.profile,
             "cache": "not-written",
             "cache_key": cache_key,
             "attempts": 2,
@@ -13993,6 +14063,9 @@ fn execute_codex_provider_attempt_with_interaction(
     if let Some(model) = &options.model {
         command.arg("--model").arg(model);
     }
+    if let Some(profile) = &options.profile {
+        command.arg("--profile").arg(profile);
+    }
     command.arg("-");
 
     #[cfg(unix)]
@@ -14016,6 +14089,7 @@ fn execute_codex_provider_attempt_with_interaction(
             &json!({
                 "provider": options.provider.label(),
                 "model": options.model,
+                "profile": options.profile,
                 "interaction": "constrained-transformation",
                 "attempts": attempt,
                 "elapsed_ms": started.elapsed().as_millis(),
@@ -97416,6 +97490,7 @@ evidence:
             record: true,
             run_root: PathBuf::from("runs"),
             model: None,
+            profile: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
             provider_timeout_seconds: DEFAULT_PROVIDER_TIMEOUT_SECONDS,
@@ -97494,6 +97569,7 @@ evidence:
             record: true,
             run_root: PathBuf::from("runs"),
             model: None,
+            profile: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
             provider_timeout_seconds: DEFAULT_PROVIDER_TIMEOUT_SECONDS,
@@ -97546,6 +97622,7 @@ evidence:
             record: true,
             run_root: PathBuf::from("runs"),
             model: Some("test-model".to_string()),
+            profile: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
             provider_timeout_seconds: 5,
@@ -97621,6 +97698,7 @@ evidence:
             record: true,
             run_root: PathBuf::from("runs"),
             model: None,
+            profile: None,
             sandbox: CodexSandbox::WorkspaceWrite,
             write_scope: ProviderWriteScope::Module,
             provider_timeout_seconds: DEFAULT_PROVIDER_TIMEOUT_SECONDS,
@@ -98046,6 +98124,7 @@ evidence:
             record: true,
             run_root: PathBuf::from("runs"),
             model: None,
+            profile: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
             provider_timeout_seconds: DEFAULT_PROVIDER_TIMEOUT_SECONDS,
@@ -99080,6 +99159,7 @@ runs:
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(options.provider, Provider::Codex);
         assert_eq!(options.model.as_deref(), Some("gpt-test"));
+        assert!(options.profile.is_none());
         assert!(matches!(options.sandbox, CodexSandbox::ReadOnly));
         assert_eq!(options.write_scope, ProviderWriteScope::Root);
         assert_eq!(options.provider_timeout_seconds, 45);
@@ -101783,6 +101863,8 @@ count=$((count + 1))
 printf '%s\n' "$count" > "$counter_file"
 case '{}' in
   incompatible) printf '%s\n' 'unknown option --output-schema' >&2; exit 2 ;;
+  quota) printf '%s\n' "ERROR: You've hit your usage limit. Visit settings to purchase more credits or try again tomorrow." >&2; exit 1 ;;
+  readonly-state) printf '%s\n' 'failed to open state db: attempt to write a readonly database' >&2; exit 1 ;;
   invalid) response='{{"invalid":true}}' ;;
   repair) if [ "$count" -eq 1 ]; then response='{{"invalid":true}}'; else response='{}'; fi ;;
   slow) sleep 1; response='{}' ;;
@@ -101847,6 +101929,25 @@ printf '%s\n' "$response" > "$output"
         ] {
             assert!(recorded_invocation.contains(argument), "{argument}");
         }
+        assert!(!recorded_invocation.contains("<--profile>"));
+
+        let profiled_root = unique_test_dir("provider-profile");
+        fs::create_dir_all(&profiled_root).unwrap();
+        let (profiled_program, _, profiled_invocation) =
+            write_fake_codex(&profiled_root, "success");
+        let mut profiled_options = options.clone();
+        profiled_options.profile = Some("cheaper".to_string());
+        extract_provider_intent_with_program(
+            &profiled_root,
+            "next",
+            "profiled cache task",
+            &profiled_options,
+            false,
+            &profiled_program,
+        )
+        .unwrap();
+        let profiled_invocation = fs::read_to_string(profiled_invocation).unwrap();
+        assert!(profiled_invocation.contains("<--profile> <cheaper>"));
         for artifact in [
             "request.yaml",
             "prompt.md",
@@ -101961,6 +102062,58 @@ printf '%s\n' "$response" > "$output"
             .as_str()
             .unwrap()
             .contains("selected no owner"));
+        assert!(failure_run.join("caller-intent-template.yaml").is_file());
+        assert!(failure_route["recovery"]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--intent-file"));
+
+        for (mode, expected_result) in [
+            ("quota", "provider-quota-exhausted"),
+            ("readonly-state", "provider-state-read-only"),
+        ] {
+            let failure_root = unique_test_dir(&format!("provider-{mode}"));
+            fs::create_dir_all(&failure_root).unwrap();
+            let (failure_program, _, _) = write_fake_codex(&failure_root, mode);
+            let failure = extract_provider_intent_with_program(
+                &failure_root,
+                "next",
+                "urgent deterministic defect",
+                &options,
+                false,
+                &failure_program,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(failure.contains("selected no owner"), "{failure}");
+            let failure_run = fs::read_dir(failure_root.join(".rms/runs"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .max_by_key(|entry| entry.file_name())
+                .unwrap()
+                .path();
+            let receipt: RouteReceipt =
+                serde_json::from_slice(&fs::read(failure_run.join("route-receipt.json")).unwrap())
+                    .unwrap();
+            assert_eq!(receipt.payload.route_result, expected_result);
+            assert!(receipt.payload.owner_module.is_none());
+            assert!(receipt.payload.allowed_action_families.is_empty());
+            let route: JsonValue =
+                serde_json::from_slice(&fs::read(failure_run.join("route.json")).unwrap()).unwrap();
+            assert_eq!(route["owner"]["status"], "none");
+            assert_eq!(
+                route["recovery"]["mode"],
+                "intentional-caller-authored-typed-intent"
+            );
+            assert!(route["recovery"]["command"]
+                .as_str()
+                .unwrap()
+                .contains("caller-intent-template.yaml"));
+            let template =
+                fs::read_to_string(failure_run.join("caller-intent-template.yaml")).unwrap();
+            parse_intent_model_source(&template).unwrap();
+            fs::remove_dir_all(failure_root).unwrap();
+        }
 
         let concurrent_root = unique_test_dir("provider-concurrent");
         fs::create_dir_all(&concurrent_root).unwrap();
@@ -102003,6 +102156,7 @@ printf '%s\n' "$response" > "$output"
             invalid_root,
             incompatible_root,
             concurrent_root,
+            profiled_root,
         ] {
             fs::remove_dir_all(path).unwrap();
         }
@@ -102531,6 +102685,7 @@ properties:
             record: false,
             run_root: PathBuf::from("runs"),
             model: None,
+            profile: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
             provider_timeout_seconds: DEFAULT_PROVIDER_TIMEOUT_SECONDS,
