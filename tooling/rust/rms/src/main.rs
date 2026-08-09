@@ -2459,6 +2459,8 @@ struct SemanticChange {
     #[serde(default)]
     trace_producers: Option<TraceProducersChange>,
     #[serde(default)]
+    probe: Option<MachineProbeChange>,
+    #[serde(default)]
     semantic_functions: Option<SemanticFunctionsChange>,
     #[serde(default)]
     implementation_commands: Option<ImplementationCommandsChange>,
@@ -48765,11 +48767,21 @@ fn validate_machine_probe_migration(
             format!("unsupported machine probe protocol `{}`", probe.protocol),
         ));
     }
-    if probe.command != "probe" {
+    let command_is_declared = get_str(&manifest.value, &["commands", &probe.command]).is_some()
+        || probe.command == "probe"
+            && change
+                .commands
+                .as_ref()
+                .and_then(|commands| commands.probe.as_deref())
+                .is_some();
+    if !is_stable_semantic_id(&probe.command) || !command_is_declared {
         diagnostics.push(error(
             "machine-change.probe-command",
             &manifest.path,
-            "architecture.probe.command must reference commands.probe",
+            format!(
+                "architecture.probe.command `{}` must reference a declared implementation command key",
+                probe.command
+            ),
         ));
     }
     if !safe_machine_symbol_reference(&probe.runner) {
@@ -51747,7 +51759,12 @@ fn validate_surface_declaration(
             manifest.path.parent().unwrap_or_else(|| Path::new(".")),
         ) {
             let public_commands = module_provided_command_names(&module.value);
-            if !public_commands.is_empty() && !public_commands.iter().any(|item| item == command) {
+            let machine_commands =
+                get_string_array(&manifest.value, &["architecture", "machine", "commands"]);
+            if !public_commands.is_empty()
+                && !public_commands.iter().any(|item| item == command)
+                && !machine_commands.iter().any(|item| item == command)
+            {
                 diagnostics.push(warning(
                     "surface.command-not-public",
                     &manifest.path,
@@ -52559,6 +52576,15 @@ fn prepare_spec_plan_provider_response(
     let (normalized_yaml, contract_normalizations) =
         normalize_spec_plan_contract_artifact_wrappers(&normalized_yaml);
     normalizations.extend(contract_normalizations);
+    if let Some(diagnostic) =
+        diagnose_misplaced_semantic_machine_evidence(context, &normalized_yaml)
+    {
+        return PreparedSpecPlanProviderResponse {
+            response: normalized_yaml,
+            diagnostics: vec![diagnostic],
+            normalizations,
+        };
+    }
     let mut change = match serde_yaml::from_str::<SemanticChange>(&normalized_yaml) {
         Ok(change) => change,
         Err(error) => {
@@ -52584,7 +52610,11 @@ fn prepare_spec_plan_provider_response(
         context,
         &mut change,
     ));
-    normalizations.extend(normalize_spec_plan_surface_fields(context, &mut change));
+    normalizations.extend(normalize_spec_plan_surface_fields(
+        context,
+        task,
+        &mut change,
+    ));
     let change = prepare_semantic_change_for_apply(context, change);
     let response = match serde_yaml::to_string(&change) {
         Ok(response) => response,
@@ -52596,6 +52626,33 @@ fn prepare_spec_plan_provider_response(
         diagnostics,
         normalizations,
     }
+}
+
+fn diagnose_misplaced_semantic_machine_evidence(
+    context: &SpecTargetContext,
+    response: &str,
+) -> Option<Diagnostic> {
+    let value = serde_yaml::from_str::<YamlValue>(response).ok()?;
+    let machine = get_path(&value, &["machine"])?.as_mapping()?;
+    let misplaced = ["probe", "trace_producer"]
+        .into_iter()
+        .filter(|field| machine.contains_key(YamlValue::String((*field).to_string())))
+        .collect::<Vec<_>>();
+    if misplaced.is_empty() {
+        return None;
+    }
+    Some(error_diagnostic(
+        "semantic-plan.response-invalid",
+        &context.target,
+        format!(
+            "provider response places {} under `machine`; `probe` and `trace_producers` are top-level rms/semantic-change/v0.1 sections and neither is a machine structural field",
+            misplaced
+                .iter()
+                .map(|field| format!("`{field}`"))
+                .collect::<Vec<_>>()
+                .join(" and ")
+        ),
+    ))
 }
 
 fn normalize_spec_plan_changed_law_evidence(change: &mut SemanticChange) -> Vec<String> {
@@ -52753,34 +52810,44 @@ fn normalize_spec_plan_required_existing_roles(
 }
 
 fn normalize_spec_plan_surface_fields(
-    context: &SpecTargetContext,
+    _context: &SpecTargetContext,
+    task: &str,
     change: &mut SemanticChange,
 ) -> Vec<String> {
     let Some(surfaces) = change.surfaces.as_mut() else {
         return Vec::new();
     };
-    let mut machine_input_to_public = BTreeMap::new();
-    if let Some(implementation) = context.implementation.as_ref() {
-        for binding in typed_yaml_sequence::<PublicBehaviorBinding>(
-            &implementation.value,
-            &["architecture", "public_behavior_bindings"],
-        ) {
-            if binding.public_kind == "command" {
-                for input in binding.machine_inputs {
-                    machine_input_to_public.insert(input, binding.public_name.clone());
-                }
-            }
-        }
-    }
-    if let Some(bindings) = change.public_behavior_bindings.as_ref() {
-        for binding in bindings.replace.iter().flatten().chain(&bindings.add) {
-            if binding.public_kind == "command" {
-                for input in &binding.machine_inputs {
-                    machine_input_to_public.insert(input.clone(), binding.public_name.clone());
-                }
-            }
-        }
-    }
+    let requested_entrypoint = task
+        .split_ascii_whitespace()
+        .map(|token| {
+            token
+                .trim_matches(|character: char| {
+                    matches!(character, '`' | '"' | '\'' | ',' | ';' | '(' | ')')
+                })
+                .trim_end_matches('.')
+        })
+        .find(|token| {
+            token.split_once('#').is_some_and(|(path, symbol)| {
+                !path.is_empty()
+                    && !symbol.is_empty()
+                    && symbol
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric() || character == '_')
+            })
+        })
+        .map(ToString::to_string);
+    let requested_command = task
+        .find("delegates")
+        .and_then(|offset| task[offset..].find(" command ").map(|inner| offset + inner))
+        .map(|offset| &task[offset + " command ".len()..])
+        .and_then(|tail| tail.split_ascii_whitespace().next())
+        .map(|token| {
+            token.trim_matches(|character: char| {
+                !character.is_ascii_alphanumeric() && character != '_'
+            })
+        })
+        .filter(|token| is_stable_identifier(token))
+        .map(ToString::to_string);
     let mut normalizations = Vec::new();
     for surface in surfaces
         .replace
@@ -52803,18 +52870,23 @@ fn normalize_spec_plan_surface_fields(
                 surface.surface = binding;
             }
         }
-        let Some(delegation) = surface.delegates_to.as_mut() else {
-            continue;
-        };
-        let Some(command) = delegation.command.as_mut() else {
-            continue;
-        };
-        if let Some(public) = machine_input_to_public.get(command) {
-            let machine_input = command.clone();
-            *command = public.clone();
-            normalizations.push(format!(
-                "mapped surface machine input `{machine_input}` to owning public command `{public}`"
-            ));
+        if let Some(entrypoint) = requested_entrypoint.as_ref() {
+            if surface.entrypoint != *entrypoint {
+                surface.entrypoint = entrypoint.clone();
+                normalizations.push(format!(
+                    "restored the exact task-declared runnable surface entrypoint `{entrypoint}`"
+                ));
+            }
+        }
+        if let (Some(delegation), Some(requested_command)) =
+            (surface.delegates_to.as_mut(), requested_command.as_ref())
+        {
+            if delegation.command.as_deref() != Some(requested_command) {
+                delegation.command = Some(requested_command.clone());
+                normalizations.push(format!(
+                    "restored the exact task-declared surface command `{requested_command}`"
+                ));
+            }
         }
     }
     normalizations
@@ -53385,6 +53457,43 @@ fn validate_prepared_spec_plan_change(
     change: &SemanticChange,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = validate_semantic_change(context, change);
+    if semantic_plan_task_is_contract_proof_only(task) {
+        let machine_change =
+            semantic_machine_change_requests_change(change, context.implementation.as_ref());
+        let implementation_change = machine_change
+            || change
+                .semantic_functions
+                .as_ref()
+                .is_some_and(semantic_functions_change_has_operations)
+            || change
+                .implementation_commands
+                .as_ref()
+                .is_some_and(implementation_commands_change_has_operations)
+            || change
+                .public_behavior_bindings
+                .as_ref()
+                .is_some_and(public_behavior_bindings_change_has_operations)
+            || change
+                .dependency_behavior_bindings
+                .as_ref()
+                .is_some_and(dependency_behavior_bindings_change_has_operations)
+            || change
+                .roles
+                .as_ref()
+                .is_some_and(|roles| machine_roles_change_has_operations(Some(roles)))
+            || change.probe.is_some()
+            || change
+                .trace_producers
+                .as_ref()
+                .is_some_and(trace_producers_change_has_operations);
+        if implementation_change {
+            diagnostics.push(error_diagnostic(
+                "semantic-plan.unrequested-implementation-change",
+                &context.target,
+                "the task scopes this change to contracts, laws, properties, and evidence obligations; preserve implementation bindings, semantic functions, machine declarations, probes, trace producers, commands, and roles unchanged",
+            ));
+        }
+    }
     if semantic_plan_task_requests_implementation_command_change(context, task)
         && change
             .implementation_commands
@@ -53429,7 +53538,8 @@ fn validate_prepared_spec_plan_change(
     if let (Some(implementation), Some(machine_change)) =
         (context.implementation.as_ref(), machine_change.as_ref())
     {
-        diagnostics.extend(validate_machine_change(implementation, machine_change));
+        let implementation = implementation_with_semantic_commands(implementation, change);
+        diagnostics.extend(validate_machine_change(&implementation, machine_change));
     }
     match spec_apply_candidate_context(context, change, machine_change.as_ref()) {
         Ok(candidate) => {
@@ -53456,6 +53566,16 @@ fn validate_prepared_spec_plan_change(
         )),
     }
     diagnostics
+}
+
+fn semantic_plan_task_is_contract_proof_only(task: &str) -> bool {
+    let task = task.to_ascii_lowercase();
+    (task.contains("update both the command and capability contracts, laws, properties, and evidence obligations")
+        || task.contains("change only the contract")
+        || task.contains("contract-only"))
+        && !task.contains("implementation binding")
+        && !task.contains("machine semantics")
+        && !task.contains("source change")
 }
 
 fn semantic_plan_task_requests_implementation_command_change(
@@ -53513,6 +53633,7 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "semantic-plan.canonical-file-hand-edit"
             || diagnostic.check == "semantic-plan.fuzz-target-change-missing"
             || diagnostic.check == "semantic-plan.implementation-command-change-missing"
+            || diagnostic.check == "semantic-plan.unrequested-implementation-change"
             || diagnostic
                 .check
                 .starts_with("semantic.implementation-command-")
@@ -53542,6 +53663,8 @@ fn render_spec_plan_repair_prompt(
                 "semantic.authority-binding-owner-missing"
                     | "semantic.public-binding-owner-missing"
                     | "semantic.dependency-binding-owner-missing"
+                    | "semantic.probe-without-implementation"
+                    | "trace.producer-implementation-missing"
             )
             || diagnostic.check.starts_with("surface.")
             || diagnostic.check.starts_with("contract.")
@@ -53685,9 +53808,22 @@ fn render_spec_plan_repair_prompt(
                     | "semantic.public-binding-owner-missing"
                     | "semantic.dependency-binding-owner-missing"
             )
+                || diagnostic.check == "semantic-plan.response-invalid"
+                    && prompt.contains("This target has no implementation binding")
         })
         .then_some(
-            "\n\nMissing implementation owner repair rule: the bounded target has no `implementation.yaml`. The `rms/semantic-change/v0.1` object has no top-level `implementation` field, and a path string cannot create or select an implementation owner. Keep `semantic_functions`, `implementation_commands`, `machine`, `roles`, `allowed_missing_constructors`, `surfaces`, `binding_dependencies`, `protocol_bindings`, `authority_bindings`, `public_behavior_bindings`, and `dependency_behavior_bindings` null. Preserve the contract, law, property, and evidence changes that the module can own. A later authorized `rms add-binding` creates the implementation manifest before any implementation-owned binding is declared.",
+            "\n\nMissing implementation owner repair rule: the bounded target has no `implementation.yaml`. The `rms/semantic-change/v0.1` object has no top-level `implementation` field, and a path string cannot create or select an implementation owner. Keep `trace_producers`, `probe`, `semantic_functions`, `implementation_commands`, `machine`, `roles`, `allowed_missing_constructors`, `surfaces`, `binding_dependencies`, `protocol_bindings`, `authority_bindings`, `public_behavior_bindings`, and `dependency_behavior_bindings` null. Preserve the contract, law, property, and evidence changes that the module can own. A later authorized `rms add-binding` creates the implementation manifest before any implementation-owned binding is declared.",
+        )
+        .unwrap_or_default();
+    let probe_trace_projection_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            diagnostic.check == "semantic-plan.response-invalid"
+                && (diagnostic.message.contains("trace_producer")
+                    || diagnostic.message.contains("probe"))
+        })
+        .then_some(
+            "\n\nProbe and trace-producer projection rule: `machine` contains only semantic machine structure: mode, transition signature, driver and transition-record functions, closed variant changes, protocols, and transitions. It never contains `probe` or `trace_producer`. A machine probe is the top-level `probe` object `{protocol: rms/machine-probe/v0.1|v0.2, command: <declared implementation command key>, runner: <relative path#symbol>, initial_state_function?: <relative path#symbol>, mappers: []}`; its runner file uses `roles.add[].kind: probe_adapter`. Trace producers use the top-level plural change `{trace_producers: {set: null, add: [{id, profile: smoke|ci|nightly, bundle: <safe relative trace bundle path>, command: <declared implementation command key>, runner: <relative path#symbol>}], remove: []}}`; their files use `roles.add[].kind: trace_producer`. Never place scalar runner strings under `machine.probe` or `machine.trace_producer`. If the bounded target has no implementation binding, keep both top-level sections null and require `rms add-binding` before declaring them.",
         )
         .unwrap_or_default();
     let proof_closure_repair = diagnostics
@@ -53750,6 +53886,13 @@ fn render_spec_plan_repair_prompt(
             "\n\nDiagnostic-scoped repair rule: this is a patch to the candidate, not a new plan. Change only the smallest fields named by error diagnostics. Warning-only evidence obligations do not authorize deleting or rewriting any section. A `surface.*` diagnostic authorizes only the diagnosed `surfaces` item fields. A capability or composite exact-contract mismatch authorizes only the matching `contracts.set` artifact. Preserve all unrelated top-level sections and every unaffected item in `laws`, `properties`, `semantic_functions`, `machine`, `roles`, `evidence`, `public_behavior_bindings`, and `dependency_behavior_bindings`. Never shorten or empty an unrelated `set` or `add` list. Preserve stable ids, property `proves` links, property evidence paths, semantic-function discharges, and the complete transition relation unless a diagnostic explicitly names that exact item. Preserve every explicit `properties.remove[]` item requested by the task. Removing an obsolete scaffold property is not authority to overwrite its concrete evidence or reintroduce that ID under `properties.set`.",
         )
         .unwrap_or_default();
+    let contract_proof_scope_repair = diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.check == "semantic-plan.unrequested-implementation-change")
+        .then_some(
+            "\n\nContract-and-proof-only scope rule: the task authorizes only the named `contracts`, `laws`, `properties`, and `evidence` items. Keep `semantic_functions`, `implementation_commands`, `public_behavior_bindings`, `dependency_behavior_bindings`, `machine`, `probe`, `trace_producers`, `roles`, surfaces, protocols, and authorities null or unchanged. Never bind a real public contract to scaffold-generic machine inputs such as `Accept|Reject` or outputs such as `Accepted|InvalidCommand`. A later explicit implementation-binding plan replaces the scaffold and binds the real request and outcome types.",
+        )
+        .unwrap_or_default();
     let machine_identifier_repair = diagnostics
         .iter()
         .any(|diagnostic| {
@@ -53776,7 +53919,7 @@ fn render_spec_plan_repair_prompt(
         .iter()
         .any(|diagnostic| diagnostic.check.starts_with("surface."))
         .then_some(
-            "\n\nRunnable surface repair rule: a language public facade, library API, package export, protocol, or reusable capability is not by itself a runnable product surface. Do not emit a `surfaces` change for a Swift public API. Declare the facade through the `public_facade` role and public behavior binding. Only a user- or operator-runnable boundary may use `kind: runnable-boundary`, and its `surface` is exactly one of browser|cli|mobile-ui|desktop-ui|http|batch|executable; an HTTP method and route does not replace the closed `surface` value. `delegates_to.command` names the exact owning module public command, not a private machine input variant. For `surface.command-not-public`, change only `delegates_to.command`; preserve `delegates_to.symbol`, `entrypoint`, `smoke_command`, and every `implementation_commands.set` key and value byte-for-byte. For `surface.surface`, change only the closed `surface` value. A callable entrypoint may use `../` only when it resolves inside the same RMS system root. Language names and phrases such as `Swift public API` are never surface values. Change only the diagnosed surface fields and preserve every unrelated proof and machine declaration.",
+            "\n\nRunnable surface repair rule: a language public facade, library API, package export, protocol, or reusable capability is not by itself a runnable product surface. Do not emit a `surfaces` change for a Swift public API. Declare the facade through the `public_facade` role and public behavior binding. Only a user- or operator-runnable boundary may use `kind: runnable-boundary`, and its `surface` is exactly one of browser|cli|mobile-ui|desktop-ui|http|batch|executable; an HTTP method and route does not replace the closed `surface` value. `delegates_to.command` names the exact task-declared owning public command or declared machine command. Never substitute a similarly named kebab-case public contract when the task explicitly names a machine command. For `surface.command-not-public`, change only `delegates_to.command`; preserve `delegates_to.symbol`, `entrypoint`, `smoke_command`, and every `implementation_commands.set` key and value byte-for-byte. For `surface.surface`, change only the closed `surface` value. Preserve an exact task-declared `../` entrypoint byte-for-byte when it resolves inside the same RMS system root; never strip its parent segments or reinterpret it relative to the workspace root. Language names and phrases such as `Swift public API` are never surface values. Change only the diagnosed surface fields and preserve every unrelated proof and machine declaration.",
         )
         .unwrap_or_default();
     let transition_output_repair = diagnostics
@@ -53847,7 +53990,7 @@ fn render_spec_plan_repair_prompt(
         )
         .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{machine_identifier_repair}{required_role_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{contract_proof_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{probe_trace_projection_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{machine_identifier_repair}{required_role_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -54241,6 +54384,11 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "  remove: []")?;
     if let Some(implementation) = &context.implementation {
+        writeln!(out, "trace_producers:")?;
+        writeln!(out, "  set: null")?;
+        writeln!(out, "  add: []")?;
+        writeln!(out, "  remove: []")?;
+        writeln!(out, "probe: null")?;
         writeln!(out, "semantic_functions:")?;
         writeln!(out, "  add: []")?;
         writeln!(out, "  set: []")?;
@@ -54336,6 +54484,8 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "  add: []")?;
         writeln!(out, "  remove: []")?;
     } else {
+        writeln!(out, "trace_producers: null")?;
+        writeln!(out, "probe: null")?;
         writeln!(out, "semantic_functions: null")?;
         writeln!(out, "implementation_commands: null")?;
         writeln!(out, "protocol_bindings: null")?;
@@ -54416,6 +54566,24 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         "      evidence: {{properties: [verification/properties/stable_property]}}"
     )?;
     writeln!(out, "      authorities: []")?;
+    writeln!(out, "probe:")?;
+    writeln!(out, "  protocol: rms/machine-probe/v0.2")?;
+    writeln!(out, "  command: probe")?;
+    writeln!(out, "  runner: path/to/probe#probe_machine")?;
+    writeln!(out, "  initial_state_function: path/to/probe#initial_state")?;
+    writeln!(out, "  mappers: []")?;
+    writeln!(out, "trace_producers:")?;
+    writeln!(out, "  add:")?;
+    writeln!(out, "    - id: stable-trace-producer-id")?;
+    writeln!(out, "      profile: smoke")?;
+    writeln!(
+        out,
+        "      bundle: verification/traces/transition-trace.yaml"
+    )?;
+    writeln!(out, "      command: trace")?;
+    writeln!(out, "      runner: path/to/trace_producer#produce_trace")?;
+    writeln!(out, "  set: null")?;
+    writeln!(out, "  remove: []")?;
     writeln!(out, "public_behavior_bindings:")?;
     writeln!(out, "  set:")?;
     writeln!(out, "    - id: stable-public-binding-id")?;
@@ -54744,7 +54912,8 @@ fn run_spec_apply(
     if let (Some(implementation), Some(machine_change)) =
         (context.implementation.as_ref(), machine_change.as_ref())
     {
-        diagnostics.extend(validate_machine_change(implementation, machine_change));
+        let implementation = implementation_with_semantic_commands(implementation, &change);
+        diagnostics.extend(validate_machine_change(&implementation, machine_change));
     } else if semantic_machine_change_requests_change(&change, context.implementation.as_ref()) {
         diagnostics.push(warning(
             "semantic.machine-without-implementation",
@@ -56110,6 +56279,13 @@ fn validate_semantic_change(
     validate_semantic_composition_exports(context, change, &mut diagnostics);
     validate_semantic_properties(context, change, evidence_items, &mut diagnostics);
     validate_trace_producers(context, change, &mut diagnostics);
+    if change.probe.is_some() && context.implementation.is_none() {
+        diagnostics.push(error(
+            "semantic.probe-without-implementation",
+            &context.target,
+            "probe changes require an existing implementation binding; run `rms add-binding` first",
+        ));
+    }
     validate_semantic_functions(context, change, &mut diagnostics);
     validate_implementation_commands(context, change, &mut diagnostics);
     validate_semantic_evidence(context, change, evidence_items, &mut diagnostics);
@@ -56272,6 +56448,19 @@ fn implementation_commands_change_has_operations(change: &ImplementationCommands
     !change.replace.is_empty()
 }
 
+fn implementation_with_semantic_commands(
+    implementation: &LoadedManifest,
+    change: &SemanticChange,
+) -> LoadedManifest {
+    let mut snapshot = implementation.clone();
+    if let Some(commands) = change.implementation_commands.as_ref() {
+        for (name, command) in &commands.replace {
+            set_yaml_string_path(&mut snapshot.value, &["commands", name], command);
+        }
+    }
+    snapshot
+}
+
 fn validate_implementation_commands(
     context: &SpecTargetContext,
     change: &SemanticChange,
@@ -56299,6 +56488,7 @@ fn validate_implementation_commands(
         .flat_map(|surfaces| surfaces.replace.iter().flatten().chain(&surfaces.add))
         .filter_map(|surface| surface.smoke_command.as_deref())
         .collect::<BTreeSet<_>>();
+    let probe_command = change.probe.as_ref().map(|probe| probe.command.as_str());
     for (name, command) in &commands.replace {
         if !is_stable_semantic_id(name) {
             diagnostics.push(error(
@@ -56309,12 +56499,13 @@ fn validate_implementation_commands(
         }
         if get_str(&implementation.value, &["commands", name]).is_none()
             && !surface_smoke_commands.contains(name.as_str())
+            && probe_command != Some(name.as_str())
         {
             diagnostics.push(error(
                 "semantic.implementation-command-missing",
                 &implementation.path,
                 format!(
-                    "implementation_commands.set may revise only existing command key `{name}` or add the exact smoke command of a surface added in the same change"
+                    "implementation_commands.set may revise only existing command key `{name}`, add the exact smoke command of a surface added in the same change, or add the exact command key of a probe declared in the same change"
                 ),
             ));
         }
@@ -57285,6 +57476,9 @@ fn semantic_machine_change_requests_change(
     change: &SemanticChange,
     implementation: Option<&LoadedManifest>,
 ) -> bool {
+    if change.probe.is_some() {
+        return true;
+    }
     if machine_roles_change_has_operations(change.roles.as_ref()) {
         return true;
     }
@@ -60234,7 +60428,18 @@ fn semantic_machine_change_to_machine_change(
         module: implementation
             .map(|implementation| implementation.path.display().to_string())
             .or_else(|| change.module.clone()),
-        commands: None,
+        commands: change.probe.as_ref().and_then(|probe| {
+            (probe.command == "probe")
+                .then(|| {
+                    change
+                        .implementation_commands
+                        .as_ref()
+                        .and_then(|commands| commands.replace.get("probe"))
+                        .cloned()
+                })
+                .flatten()
+                .map(|probe| MachineCommandBindingsChange { probe: Some(probe) })
+        }),
         machine: MachineChangeMachine {
             mode,
             initial_state: None,
@@ -60254,7 +60459,7 @@ fn semantic_machine_change_to_machine_change(
             effect_protocols: machine.effect_protocols.clone(),
             resource_protocols: machine.resource_protocols.clone(),
         },
-        probe: None,
+        probe: change.probe.clone(),
         transitions: machine.transitions.clone(),
         roles: change.roles.clone(),
     })
@@ -60524,10 +60729,27 @@ fn property_evidence_write_disposition(
             module, change, property, &existing,
         );
     }
+    if manifest_property_matches_except_realizations(old_property, property) {
+        return Ok(PropertyEvidenceWriteDisposition::Unchanged);
+    }
     if render_manifest_property_evidence(old_property).as_deref() == Some(existing.as_str()) {
         return Ok(PropertyEvidenceWriteDisposition::Write);
     }
     property_evidence_write_disposition_from_superseded_change(module, change, property, &existing)
+}
+
+fn manifest_property_matches_except_realizations(
+    old_property: &YamlValue,
+    property: &SemanticPropertyChange,
+) -> bool {
+    let Ok(mut existing) = serde_yaml::from_value::<SemanticPropertyChange>(old_property.clone())
+    else {
+        return false;
+    };
+    let mut replacement = property.clone();
+    existing.realizations.clear();
+    replacement.realizations.clear();
+    serde_yaml::to_value(existing).ok() == serde_yaml::to_value(replacement).ok()
 }
 
 fn property_evidence_write_disposition_from_superseded_change(
@@ -85040,7 +85262,6 @@ implementation_commands:
         .find(|binding| binding.public_kind == "command")
         .unwrap();
         let machine_input = binding.machine_inputs.first().unwrap();
-        let public_command = &binding.public_name;
         let backend = root.join("backend/runtime/src/http.rs");
         fs::create_dir_all(backend.parent().unwrap()).unwrap();
         fs::write(&backend, "pub fn prepare_response() {}\n").unwrap();
@@ -85072,7 +85293,7 @@ surfaces:
 
         let prepared = prepare_spec_plan_provider_response(
             &context,
-            "Change only the HTTP runnable surface and preserve every unrelated declaration.",
+            &format!("Change only the runnable surface binding. Declare the callable at ../../backend/runtime/src/http.rs#prepare_response as the HTTP runnable surface. It delegates to the boundary transition command {machine_input}. Preserve every unrelated declaration."),
             &response,
         );
         assert!(
@@ -85091,11 +85312,6 @@ surfaces:
             .normalizations
             .iter()
             .any(|item| item.contains("closed surface kind `http`")));
-        assert!(prepared.normalizations.iter().any(|item| {
-            item.contains(&format!(
-                "mapped surface machine input `{machine_input}` to owning public command `{public_command}`"
-            ))
-        }));
 
         let normalized: SemanticChange = serde_yaml::from_str(&prepared.response).unwrap();
         let commands = normalized.implementation_commands.as_ref().unwrap();
@@ -85116,7 +85332,7 @@ surfaces:
             delegation.symbol.as_deref(),
             Some("src/transition.rs#transition")
         );
-        assert_eq!(delegation.command.as_deref(), Some(public_command.as_str()));
+        assert_eq!(delegation.command.as_deref(), Some(machine_input.as_str()));
         assert_eq!(surface.smoke_command.as_deref(), Some("surface_verify"));
 
         run_spec_apply(&target, None, Some(&prepared.response), None, true).unwrap();
@@ -85166,6 +85382,229 @@ surfaces:
         assert!(repair.contains("every `implementation_commands.set` key and value byte-for-byte"));
         assert!(repair.contains("For `surface.surface`, change only the closed `surface` value"));
         assert!(repair.contains("never replace `verify`"));
+        assert!(repair.contains("Never substitute a similarly named kebab-case public contract"));
+        assert!(repair.contains("never strip its parent segments"));
+    }
+
+    #[test]
+    fn saved_surface_repair_restores_exact_task_callable_and_machine_command() {
+        let root = route_capability_fixture("saved-surface-v2-exact-task");
+        let target = root.join("modules/play-game-domain/module.yaml");
+        let context = load_spec_target(&target).unwrap();
+        let machine_command = get_string_array(
+            &context.implementation.as_ref().unwrap().value,
+            &["architecture", "machine", "commands"],
+        )
+        .into_iter()
+        .next()
+        .unwrap();
+        let backend = root.join("backend/runtime/src/http.rs");
+        fs::create_dir_all(backend.parent().unwrap()).unwrap();
+        fs::write(&backend, "pub fn prepare_response() {}\n").unwrap();
+        let task = format!(
+            "Change only the runnable surface binding. Declare the callable at ../../backend/runtime/src/http.rs#prepare_response as the HTTP runnable surface. It delegates to the boundary transition command {machine_command}. Add an implementation command named surface_verify."
+        );
+        let response = r#"spec: rms/semantic-change/v0.1
+intent: {summary: Change only the runnable surface binding.}
+implementation_commands:
+  set: {surface_verify: "cd ../.. && just rust-runtime-test"}
+surfaces:
+  add:
+    - name: play-game-http
+      kind: runnable-boundary
+      surface: http
+      entrypoint: backend/runtime/src/http.rs#prepare_response
+      delegates_to: {symbol: src/transition.rs#transition, command: play-game}
+      no_effects_justification: The runtime owns effects.
+      usage_document: verification/surfaces/play_game.md
+      smoke_command: surface_verify
+      evidence: [verification/surfaces/play_game.md]
+  set: null
+  remove: []
+evidence:
+  add: [{kind: surface, proves: play-game-http, path: verification/surfaces/play_game.md}]
+  remove: []
+"#;
+
+        let prepared = prepare_spec_plan_provider_response(&context, &task, response);
+        let change: SemanticChange = serde_yaml::from_str(&prepared.response).unwrap();
+        let surface = &change.surfaces.unwrap().add[0];
+        assert_eq!(
+            surface.entrypoint,
+            "../../backend/runtime/src/http.rs#prepare_response"
+        );
+        assert_eq!(
+            surface.delegates_to.as_ref().unwrap().command.as_deref(),
+            Some(machine_command.as_str())
+        );
+        assert!(prepared
+            .normalizations
+            .iter()
+            .any(|item| item
+                .contains("restored the exact task-declared runnable surface entrypoint")));
+        assert!(prepared
+            .normalizations
+            .iter()
+            .any(|item| item.contains("restored the exact task-declared surface command")));
+        assert!(prepared
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.check != "surface.command-not-public"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn saved_implementation_binding_response_reports_both_misplaced_probe_and_trace_producer() {
+        let root = route_capability_fixture("saved-probe-trace-projection");
+        let target = root.join("modules/play-game-domain/module.yaml");
+        let context = load_spec_target(&target).unwrap();
+        let response = r#"spec: rms/semantic-change/v0.1
+intent: {summary: Attach the Rust verification binding.}
+machine:
+  trace_producer: tests/trace_producer.rs#produce_transition_trace
+  probe: tests/machine_probe.rs#probe_machine
+"#;
+
+        let prepared = prepare_spec_plan_provider_response(
+            &context,
+            "Attach the Rust implementation binding.",
+            response,
+        );
+        let diagnostic = prepared
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.check == "semantic-plan.response-invalid")
+            .unwrap();
+        assert!(diagnostic.message.contains("`trace_producer`"));
+        assert!(diagnostic.message.contains("`probe`"));
+        assert!(diagnostic.message.contains("top-level"));
+        let prompt =
+            render_spec_plan_prompt(&context, &root, "Attach verification evidence.").unwrap();
+        assert!(prompt.contains("trace_producers:"));
+        assert!(prompt.contains("stable-trace-producer-id"));
+        assert!(prompt.contains("probe:"));
+        assert!(prompt.contains("protocol: rms/machine-probe/v0.2"));
+        let repair = render_spec_plan_repair_prompt(&prompt, response, &prepared.diagnostics);
+        assert!(repair.contains("Probe and trace-producer projection rule"));
+        assert!(repair.contains("never contains `probe` or `trace_producer`"));
+        assert!(repair.contains("top-level `probe` object"));
+        assert!(repair.contains("top-level plural change"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn property_realization_only_replacement_preserves_concrete_evidence() {
+        let root = route_capability_fixture("property-realization-preserves-evidence");
+        let target = root.join("modules/play-game-domain/module.yaml");
+        let mut seeded_module = load_manifest(&target).unwrap();
+        let seeded_property: YamlValue = serde_yaml::from_str(
+            r#"id: recovery-boundary-malformed-input-stops-before-domain-property
+proves: recovery-boundary-malformed-input-stops-before-domain-law
+kind: fuzz
+input_space: {strategy: generated, generator: malformed-input-generator}
+preconditions: []
+operation: {kind: semantic-function, name: transition-model}
+oracle: [Malformed input stops before the domain transition.]
+evidence: {kind: fuzz, path: verification/fuzz/recovery_malformed_input_fuzz.md}
+counterexamples: {path: verification/counterexamples/recovery_malformed_input_fuzz}
+realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: fuzz
+    generator: src/property_support.rs#generate_property_cases
+    runner: src/property_support.rs#run_property
+    exhaustive: false
+explorations: []
+observations: []
+assumptions: []
+temporal: null
+"#,
+        )
+        .unwrap();
+        set_yaml_sequence_path(
+            &mut seeded_module.value,
+            &["properties"],
+            vec![seeded_property],
+        );
+        fs::write(
+            &target,
+            serde_yaml::to_string(&seeded_module.value).unwrap(),
+        )
+        .unwrap();
+        let context = load_spec_target(&target).unwrap();
+        let module = context.module.as_ref().unwrap();
+        let old_property = get_path(&module.value, &["properties"])
+            .and_then(YamlValue::as_sequence)
+            .and_then(|properties| properties.first())
+            .unwrap();
+        let mut replacement: SemanticPropertyChange =
+            serde_yaml::from_value(old_property.clone()).unwrap();
+        let mut added_realization = replacement.realizations[0].clone();
+        added_realization.profile = "nightly".to_string();
+        added_realization.strategy = "coverage-fuzzer".to_string();
+        added_realization.generator = None;
+        replacement.realizations.push(added_realization);
+        let evidence_path = replacement.evidence.as_ref().unwrap().path.clone();
+        let absolute_evidence = target.parent().unwrap().join(&evidence_path);
+        fs::create_dir_all(absolute_evidence.parent().unwrap()).unwrap();
+        let concrete =
+            "# Concrete property evidence\n\nObserved result: 128 generated cases passed.\n";
+        fs::write(&absolute_evidence, concrete).unwrap();
+        let mut change: SemanticChange = serde_yaml::from_str(
+            "spec: rms/semantic-change/v0.1\nintent: {summary: Add only a coverage-fuzzer realization.}\n",
+        )
+        .unwrap();
+        change.properties = Some(SemanticPropertiesChange {
+            add: Vec::new(),
+            replace: vec![replacement.clone()],
+            remove: Vec::new(),
+        });
+
+        assert_eq!(
+            property_evidence_write_disposition(module, &change, &replacement, true).unwrap(),
+            PropertyEvidenceWriteDisposition::Unchanged
+        );
+        let mut diagnostics = Vec::new();
+        validate_spec_candidate_property_evidence_writes(&context, &change, &mut diagnostics);
+        assert!(diagnostics.iter().all(|diagnostic| {
+            diagnostic.check != "semantic.property-evidence-overwrite-unsafe"
+        }));
+        assert_eq!(fs::read_to_string(&absolute_evidence).unwrap(), concrete);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn contract_only_plan_rejects_scaffold_generic_behavior_bindings() {
+        let root = route_capability_fixture("contract-only-scaffold-binding");
+        let target = root.join("modules/play-game-domain/module.yaml");
+        let context = load_spec_target(&target).unwrap();
+        let task = "Correct accepted-current-generation. Update both the command and capability contracts, laws, properties, and evidence obligations.";
+        let response = r#"spec: rms/semantic-change/v0.1
+intent: {summary: Correct accepted-current-generation.}
+public_behavior_bindings:
+  add:
+    - id: unsafe-scaffold-binding
+      public_kind: command
+      public_name: resolve-move
+      contract: contracts/resolve-move.v1.yaml
+      semantic_function: transition-model
+      machine_inputs: [Accept, Reject]
+      machine_outputs: [Accepted, InvalidCommand]
+      observation_source: {kind: transition-record, command: trace}
+  set: null
+  remove: []
+"#;
+
+        let prepared = prepare_spec_plan_provider_response(&context, task, response);
+        assert!(prepared.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "semantic-plan.unrequested-implementation-change"
+        }));
+        let repair =
+            render_spec_plan_repair_prompt("bounded schema", response, &prepared.diagnostics);
+        assert!(repair.contains("Contract-and-proof-only scope rule"));
+        assert!(repair.contains("`Accept|Reject`"));
+        assert!(repair.contains("later explicit implementation-binding plan"));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -99295,9 +99734,9 @@ machine:
         assert!(repair.contains(
             "`surface` is exactly one of browser|cli|mobile-ui|desktop-ui|http|batch|executable"
         ));
-        assert!(
-            repair.contains("`delegates_to.command` names the exact owning module public command")
-        );
+        assert!(repair.contains(
+            "`delegates_to.command` names the exact task-declared owning public command or declared machine command"
+        ));
         assert!(
             repair.contains("Every risk-bearing law needs at least one complete semantic property")
         );
