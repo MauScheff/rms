@@ -53189,15 +53189,21 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "semantic-plan.composite-export-contract-mismatch"
             || diagnostic.check == "semantic.capability-binding-missing"
             || diagnostic.check == "semantic.public-binding-target-missing"
+            || diagnostic.check == "semantic.public-binding-function-missing"
             || diagnostic.check == "semantic.function-contract-missing"
+            || diagnostic.check == "semantic.function-evidence-missing"
+            || diagnostic.check == "semantic.function-authority-gap"
+            || diagnostic.check == "semantic.law-without-property"
+            || diagnostic.check == "machine-change.state-unreachable"
+            || diagnostic.check == "machine-change.output-path-eliminated"
+            || diagnostic.check == "structure.effect-result-unhandled"
             || matches!(
                 diagnostic.check.as_str(),
                 "semantic.authority-binding-owner-missing"
                     | "semantic.public-binding-owner-missing"
                     | "semantic.dependency-binding-owner-missing"
             )
-            || diagnostic.check == "surface.kind"
-            || diagnostic.check == "surface.surface"
+            || diagnostic.check.starts_with("surface.")
             || diagnostic.check.starts_with("contract.")
             || diagnostic
                 .check
@@ -53344,11 +53350,61 @@ fn render_spec_plan_repair_prompt(
             "\n\nMissing implementation owner repair rule: the bounded target has no `implementation.yaml`. The `rms/semantic-change/v0.1` object has no top-level `implementation` field, and a path string cannot create or select an implementation owner. Keep `semantic_functions`, `implementation_commands`, `machine`, `roles`, `allowed_missing_constructors`, `surfaces`, `binding_dependencies`, `protocol_bindings`, `authority_bindings`, `public_behavior_bindings`, and `dependency_behavior_bindings` null. Preserve the contract, law, property, and evidence changes that the module can own. A later authorized `rms add-binding` creates the implementation manifest before any implementation-owned binding is declared.",
         )
         .unwrap_or_default();
+    let proof_closure_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            matches!(
+                diagnostic.check.as_str(),
+                "semantic.law-without-property"
+                    | "semantic.function-evidence-missing"
+                    | "semantic.function-authority-gap"
+                    | "semantic.public-binding-function-missing"
+            )
+        })
+        .then_some(
+            "\n\nProof closure repair rule: preserve every existing law, property, semantic function, evidence obligation, and public binding that is not named by a diagnostic. Every risk-bearing law needs at least one complete semantic property whose `proves` value is that exact law id. A semantic function evidence entry names the exact `properties.*[].evidence.path`, not a similar property id or a newly invented path. Every law authority has a declared semantic function of the matching authority kind that lists the invariant under `discharges.invariants` and names its concrete property evidence. A public behavior binding references a semantic function declared in the same final candidate. Restore a removed function or point the binding to an already declared function; never invent a function name without its complete declaration. Do not delete other properties, functions, bindings, or evidence to repair one missing link.",
+        )
+        .unwrap_or_default();
+    let machine_closure_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            matches!(
+                diagnostic.check.as_str(),
+                "machine-change.state-unreachable"
+                    | "machine-change.output-path-eliminated"
+                    | "structure.effect-result-unhandled"
+            )
+        })
+        .then_some(
+            "\n\nMachine closure repair rule: `machine.transitions.set` is the complete final transition relation, not the subset related to the latest diagnostic. Preserve every unaffected transition. The final relation must keep every declared state reachable from `initial_state`, consume every declared effect result, and retain at least one path that produces every still-declared event, effect, reply, and rejection. For an asynchronous boundary command, retain the command transition to its waiting state and all accepted, rejected, and failed effect-result transitions to reachable terminal states. Keep terminal-state refusal transitions when they are part of the existing final relation. Do not shorten a complete transition set to repair a contract or surface field.",
+        )
+        .unwrap_or_default();
+    let diagnostic_scope_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            diagnostic.check.starts_with("surface.")
+                || matches!(
+                    diagnostic.check.as_str(),
+                    "semantic-plan.capability-contract-mismatch"
+                        | "semantic-plan.composite-export-contract-mismatch"
+                        | "semantic.law-without-property"
+                        | "semantic.function-evidence-missing"
+                        | "semantic.function-authority-gap"
+                        | "semantic.public-binding-function-missing"
+                        | "machine-change.state-unreachable"
+                        | "machine-change.output-path-eliminated"
+                        | "structure.effect-result-unhandled"
+                )
+        })
+        .then_some(
+            "\n\nDiagnostic-scoped repair rule: this is a patch to the candidate, not a new plan. Change only the smallest fields named by error diagnostics. Warning-only evidence obligations do not authorize deleting or rewriting any section. A `surface.*` diagnostic authorizes only the diagnosed `surfaces` item fields. A capability or composite exact-contract mismatch authorizes only the matching `contracts.set` artifact. Preserve all unrelated top-level sections and every unaffected item in `laws`, `properties`, `semantic_functions`, `machine`, `roles`, `evidence`, `public_behavior_bindings`, and `dependency_behavior_bindings`. Never shorten or empty an unrelated `set` or `add` list. Preserve stable ids, property `proves` links, property evidence paths, semantic-function discharges, and the complete transition relation unless a diagnostic explicitly names that exact item.",
+        )
+        .unwrap_or_default();
     let surface_repair = diagnostics
         .iter()
-        .any(|diagnostic| matches!(diagnostic.check.as_str(), "surface.kind" | "surface.surface"))
+        .any(|diagnostic| diagnostic.check.starts_with("surface."))
         .then_some(
-            "\n\nRunnable surface repair rule: a language public facade, library API, package export, protocol, or reusable capability is not by itself a runnable product surface. Do not emit a `surfaces` change for a Swift public API. Declare the facade through the `public_facade` role and public behavior binding. Only a user- or operator-runnable boundary may use `kind: runnable-boundary`, and its `surface` is exactly one of browser|cli|mobile-ui|desktop-ui|http|batch|executable; language names and phrases such as `Swift public API` are never surface values.",
+            "\n\nRunnable surface repair rule: a language public facade, library API, package export, protocol, or reusable capability is not by itself a runnable product surface. Do not emit a `surfaces` change for a Swift public API. Declare the facade through the `public_facade` role and public behavior binding. Only a user- or operator-runnable boundary may use `kind: runnable-boundary`, and its `surface` is exactly one of browser|cli|mobile-ui|desktop-ui|http|batch|executable; an HTTP method and route belong in `entrypoint`, `usage_document`, or bounded role metadata, never in `surface`. `delegates_to.command` names the exact owning module public command, not a private machine input variant. Language names and phrases such as `Swift public API` are never surface values. Change only the diagnosed surface fields and preserve every unrelated proof and machine declaration.",
         )
         .unwrap_or_default();
     let transition_output_repair = diagnostics
@@ -53408,7 +53464,7 @@ fn render_spec_plan_repair_prompt(
             )
         })
         .then_some(
-            "\n\nExact provider contract repair rule: a module-resolution dependency or composite export must preserve the complete exact provider artifact. Copy the provider's wrapper, version, meaning, observations, clauses, case ids, expressions, and permits unchanged. Do not synthesize consumer- or parent-specific cases, copy a subset, or change a path to hide the mismatch. A composition-only parent removes parent-local behavioral properties and keeps behavioral proof in the runnable child; it never relabels that proof as composition evidence.",
+            "\n\nExact provider contract repair rule: a module-resolution dependency or composite export must preserve the complete exact provider artifact. Copy the provider's wrapper, version, meaning, observations, clauses, case ids, expressions, and permits unchanged. Change only the matching required or exported `contracts.set` item. Preserve every unrelated law, property, function, binding, role, surface, evidence item, and machine transition exactly. Do not synthesize consumer- or parent-specific cases, copy a subset, or change a path to hide the mismatch. A composition-only parent removes parent-local behavioral properties and keeps behavioral proof in the runnable child; it never relabels that proof as composition evidence.",
         )
         .unwrap_or_default();
     let runner_selection_repair = diagnostics
@@ -53419,7 +53475,7 @@ fn render_spec_plan_repair_prompt(
         )
         .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{proof_closure_repair}{machine_closure_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -98085,6 +98141,105 @@ properties:
         ));
         assert!(repair.contains("Never emit `name`, `value`, or `kind: semantic-function`"));
         assert!(repair.len() < 4_000);
+    }
+
+    #[test]
+    fn semantic_plan_boundary_repair_is_diagnostic_scoped_and_preserves_closure() {
+        let path = Path::new("modules/recovery-boundary/implementation.yaml");
+        let diagnostics = vec![
+            error_diagnostic(
+                "surface.surface",
+                path,
+                "unsupported surface `POST /recover`; expected http",
+            ),
+            error_diagnostic(
+                "surface.command-not-public",
+                path,
+                "surface command `Prepare` is not published by the owning module",
+            ),
+            error_diagnostic(
+                "semantic-plan.capability-contract-mismatch",
+                path,
+                "the required capability must preserve the exact provider contract",
+            ),
+            error_diagnostic(
+                "semantic.law-without-property",
+                path,
+                "risk-bearing law `persist-only-accepted` lacks a property",
+            ),
+            error_diagnostic(
+                "semantic.function-evidence-missing",
+                path,
+                "semantic function evidence points to a missing property path",
+            ),
+            error_diagnostic(
+                "semantic.function-authority-gap",
+                path,
+                "the final semantic functions do not discharge the invariant",
+            ),
+            error_diagnostic(
+                "semantic.public-binding-function-missing",
+                path,
+                "the public binding references an undeclared driver",
+            ),
+            error_diagnostic(
+                "machine-change.state-unreachable",
+                path,
+                "Completed and Rejected are unreachable",
+            ),
+            error_diagnostic(
+                "structure.effect-result-unhandled",
+                path,
+                "RecoveryPrepared is unhandled",
+            ),
+            error_diagnostic(
+                "machine-change.output-path-eliminated",
+                path,
+                "the accepted reply has no producing transition",
+            ),
+        ];
+        let candidate = r#"spec: rms/semantic-change/v0.1
+properties:
+  add: [seven-complete-properties]
+semantic_functions:
+  add: [parser, transition, driver, executor]
+machine:
+  transitions:
+    set: [command, malformed, accepted, rejected, failed, completed-refusal, rejected-refusal]
+"#;
+
+        let repair = render_spec_plan_repair_prompt(
+            "bounded schema with provider contract",
+            candidate,
+            &diagnostics,
+        );
+
+        assert!(repair.contains("Diagnostic-scoped repair rule"));
+        assert!(repair.contains("this is a patch to the candidate, not a new plan"));
+        assert!(repair.contains("Never shorten or empty an unrelated `set` or `add` list"));
+        assert!(
+            repair.contains("Change only the matching required or exported `contracts.set` item")
+        );
+        assert!(repair.contains(
+            "`surface` is exactly one of browser|cli|mobile-ui|desktop-ui|http|batch|executable"
+        ));
+        assert!(
+            repair.contains("`delegates_to.command` names the exact owning module public command")
+        );
+        assert!(
+            repair.contains("Every risk-bearing law needs at least one complete semantic property")
+        );
+        assert!(repair.contains(
+            "A semantic function evidence entry names the exact `properties.*[].evidence.path`"
+        ));
+        assert!(repair.contains("A public behavior binding references a semantic function declared in the same final candidate"));
+        assert!(
+            repair.contains("`machine.transitions.set` is the complete final transition relation")
+        );
+        assert!(repair.contains("consume every declared effect result"));
+        assert!(repair.contains("seven-complete-properties"));
+        assert!(repair.contains("accepted, rejected, failed"));
+        assert!(repair.contains("Original bounded schema context"));
     }
 
     #[test]
