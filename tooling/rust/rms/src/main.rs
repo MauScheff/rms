@@ -53182,6 +53182,7 @@ fn render_spec_plan_repair_prompt(
             || diagnostic
                 .check
                 .starts_with("semantic.implementation-command-")
+            || diagnostic.check == "semantic.preservation-destructive-empty-set"
             || diagnostic.check == "property.command-does-not-select-runner"
             || diagnostic.check == "property.composite-behavior-owner-required"
             || diagnostic.check == "property.realization-not-executed"
@@ -53242,6 +53243,13 @@ fn render_spec_plan_repair_prompt(
         })
         .then_some(
             "\n\nImplementation command repair rule: `implementation_commands.set` is a mapping from existing `implementation.yaml` command keys to complete non-empty shell command strings. It may replace only keys already present under the bounded manifest's top-level `commands`. Every omitted command and every unrelated declaration is preserved. It cannot add or remove a command key. Put build, verify, probe, trace, property, fuzz, format, or other proof-command maintenance here; never put these executable bindings under `machine.commands`, which declares semantic machine input variants. Preserve each requested invocation exactly and add only the requested shell cleanup or wrapper behavior. Example: `implementation_commands: {set: {verify: \"cargo test --manifest-path Cargo.toml; status=$?; rm -f Cargo.lock; exit $status\"}}`.",
+        )
+        .unwrap_or_default();
+    let collection_preservation_repair = diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.check == "semantic.preservation-destructive-empty-set")
+        .then_some(
+            "\n\nCollection preservation repair rule: omission and `set: null` are the only no-op forms for total-replacement collections. When the task preserves unrelated declarations, replace every unrelated empty total replacement with `set: null` or omit that section. In particular, never emit `authorities.set: []`, `authority_bindings.set: []`, `protocol_bindings.set: []`, `artifacts.set: []`, or `transformations.set: []` as a placeholder: each deletes every existing item. Keep explicit `set: []` only when the task explicitly removes the complete named collection.",
         )
         .unwrap_or_default();
     let temporal_repair = diagnostics
@@ -53391,7 +53399,7 @@ fn render_spec_plan_repair_prompt(
         )
         .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{implementation_command_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -53681,15 +53689,15 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     }
     writeln!(out, "artifacts:")?;
     writeln!(out, "  add: []")?;
-    writeln!(out, "  set: []")?;
+    writeln!(out, "  set: null")?;
     writeln!(out, "  remove: []")?;
     writeln!(out, "transformations:")?;
     writeln!(out, "  add: []")?;
-    writeln!(out, "  set: []")?;
+    writeln!(out, "  set: null")?;
     writeln!(out, "  remove: []")?;
     writeln!(out, "authorities:")?;
     writeln!(out, "  add: []")?;
-    writeln!(out, "  set: []")?;
+    writeln!(out, "  set: null")?;
     writeln!(out, "  remove: []")?;
     writeln!(out, "properties:")?;
     writeln!(out, "  add: []")?;
@@ -53708,11 +53716,11 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "  set: {{}}")?;
         writeln!(out, "protocol_bindings:")?;
         writeln!(out, "  add: []")?;
-        writeln!(out, "  set: []")?;
+        writeln!(out, "  set: null")?;
         writeln!(out, "  remove: []")?;
         writeln!(out, "authority_bindings:")?;
         writeln!(out, "  add: []")?;
-        writeln!(out, "  set: []")?;
+        writeln!(out, "  set: null")?;
         writeln!(out, "  remove: []")?;
         writeln!(out, "public_behavior_bindings:")?;
         writeln!(out, "  add: []")?;
@@ -55442,6 +55450,11 @@ fn validate_semantic_change(
         }
     }
     validate_semantic_supersedes(context, change, &mut diagnostics);
+    validate_preservation_intent_against_empty_total_replacements(
+        context,
+        change,
+        &mut diagnostics,
+    );
 
     let has_declaration = change
         .declaration
@@ -55577,6 +55590,148 @@ fn validate_semantic_change(
     validate_public_behavior_bindings(context, change, &mut diagnostics);
     validate_dependency_behavior_bindings(context, change, &mut diagnostics);
     diagnostics
+}
+
+fn semantic_change_preserves_unrelated_declarations(change: &SemanticChange) -> bool {
+    let summary = change
+        .intent
+        .as_ref()
+        .and_then(|intent| intent.summary.as_deref())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    [
+        "preserve every other",
+        "preserve all other",
+        "preserve every unrelated",
+        "preserve all unrelated",
+        "preserve unrelated",
+    ]
+    .iter()
+    .any(|marker| summary.contains(marker))
+}
+
+fn semantic_change_intent_explicitly_removes_collection(
+    change: &SemanticChange,
+    aliases: &[&str],
+) -> bool {
+    let summary = change
+        .intent
+        .as_ref()
+        .and_then(|intent| intent.summary.as_deref())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    summary
+        .split(['.', ';', '\n'])
+        .map(str::trim)
+        .filter(|clause| {
+            ["remove", "delete", "clear", "drop"]
+                .iter()
+                .any(|verb| clause.contains(verb))
+                && aliases.iter().any(|alias| clause.contains(alias))
+        })
+        .any(|clause| {
+            !["preserve", "retain", "keep"]
+                .iter()
+                .any(|verb| clause.contains(verb))
+        })
+}
+
+fn validate_preservation_intent_against_empty_total_replacements(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !semantic_change_preserves_unrelated_declarations(change) {
+        return;
+    }
+    let module = context.module.as_ref();
+    let implementation = context.implementation.as_ref();
+    let candidates = [
+        (
+            "artifacts",
+            change
+                .artifacts
+                .as_ref()
+                .and_then(|section| section.replace.as_ref())
+                .is_some_and(Vec::is_empty),
+            module.is_some_and(|manifest| {
+                get_path(&manifest.value, &["artifacts"])
+                    .and_then(YamlValue::as_sequence)
+                    .is_some_and(|items| !items.is_empty())
+            }),
+            &["artifact", "artifacts"][..],
+        ),
+        (
+            "transformations",
+            change
+                .transformations
+                .as_ref()
+                .and_then(|section| section.replace.as_ref())
+                .is_some_and(Vec::is_empty),
+            module.is_some_and(|manifest| {
+                get_path(&manifest.value, &["transformations"])
+                    .and_then(YamlValue::as_sequence)
+                    .is_some_and(|items| !items.is_empty())
+            }),
+            &["transformation", "transformations"][..],
+        ),
+        (
+            "authorities",
+            change
+                .authorities
+                .as_ref()
+                .and_then(|section| section.replace.as_ref())
+                .is_some_and(Vec::is_empty),
+            module.is_some_and(|manifest| {
+                get_path(&manifest.value, &["authorities"])
+                    .and_then(YamlValue::as_sequence)
+                    .is_some_and(|items| !items.is_empty())
+            }),
+            &["authority", "authorities"][..],
+        ),
+        (
+            "protocol_bindings",
+            change
+                .protocol_bindings
+                .as_ref()
+                .and_then(|section| section.replace.as_ref())
+                .is_some_and(Vec::is_empty),
+            implementation.is_some_and(|manifest| {
+                get_path(&manifest.value, &["architecture", "protocol_bindings"])
+                    .and_then(YamlValue::as_sequence)
+                    .is_some_and(|items| !items.is_empty())
+            }),
+            &["protocol binding", "protocol bindings"][..],
+        ),
+        (
+            "authority_bindings",
+            change
+                .authority_bindings
+                .as_ref()
+                .and_then(|section| section.replace.as_ref())
+                .is_some_and(Vec::is_empty),
+            implementation.is_some_and(|manifest| {
+                get_path(&manifest.value, &["architecture", "authority_bindings"])
+                    .and_then(YamlValue::as_sequence)
+                    .is_some_and(|items| !items.is_empty())
+            }),
+            &["authority binding", "authority bindings", "safe-facade"][..],
+        ),
+    ];
+    for (section, empty_total_replacement, has_existing_items, aliases) in candidates {
+        if empty_total_replacement
+            && has_existing_items
+            && !semantic_change_intent_explicitly_removes_collection(change, aliases)
+        {
+            diagnostics.push(error(
+                "semantic.preservation-destructive-empty-set",
+                &context.target,
+                format!(
+                    "intent promises to preserve unrelated declarations, but `{section}.set: []` would remove every existing item; use `set: null` or omit the section"
+                ),
+            ));
+        }
+    }
 }
 
 fn implementation_commands_change_has_operations(change: &ImplementationCommandsChange) -> bool {
@@ -84106,6 +84261,125 @@ implementation_commands:
         let repair = render_spec_plan_repair_prompt("bounded prompt", "candidate", &missing);
         assert!(repair.contains("implementation_commands.set"));
         assert!(repair.contains("may replace only keys already present"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn semantic_plan_and_apply_reject_unrelated_empty_authority_replacements() {
+        let root = route_capability_fixture("preserve-authority-collections");
+        let module_path = root.join("modules/play-game-domain/module.yaml");
+        let implementation_path = root.join("modules/play-game-domain/implementation.yaml");
+        let mut module = load_manifest(&module_path).unwrap();
+        set_yaml_sequence_path(
+            &mut module.value,
+            &["authorities"],
+            vec![serde_yaml::from_str(
+                "{id: game-operator, kind: privileged, capabilities: [run-game], rationale: The operator runs the game.}",
+            )
+            .unwrap()],
+        );
+        fs::write(&module_path, serde_yaml::to_string(&module.value).unwrap()).unwrap();
+        let mut implementation = load_manifest(&implementation_path).unwrap();
+        set_yaml_sequence_path(
+            &mut implementation.value,
+            &["architecture", "authority_bindings"],
+            vec![serde_yaml::from_str(
+                "{authority: game-operator, roles: [transition], safe_facade: src/transition.rs#transition, evidence: [verification/laws/transition_trace.md]}",
+            )
+            .unwrap()],
+        );
+        fs::write(
+            &implementation_path,
+            serde_yaml::to_string(&implementation.value).unwrap(),
+        )
+        .unwrap();
+        let context = load_spec_target(&module_path).unwrap();
+        let change = r#"spec: rms/semantic-change/v0.1
+intent:
+  summary: Add focused hunt exceptions. Preserve every other declaration.
+authorities:
+  set: []
+  add: []
+  remove: []
+authority_bindings:
+  set: []
+  add: []
+  remove: []
+"#;
+        let prepared = prepare_spec_plan_provider_response(
+            &context,
+            "Add focused hunt exceptions. Preserve every other declaration.",
+            change,
+        );
+        let preservation = prepared
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.check == "semantic.preservation-destructive-empty-set")
+            .collect::<Vec<_>>();
+        assert_eq!(preservation.len(), 2, "{:#?}", prepared.diagnostics);
+        assert!(preservation
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("`authorities.set: []`")));
+        assert!(preservation
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("`authority_bindings.set: []`")));
+        let repair =
+            render_spec_plan_repair_prompt("bounded prompt", change, &prepared.diagnostics);
+        assert!(repair.contains("Collection preservation repair rule"));
+        assert!(repair.contains("use `set: null` or omit"));
+
+        let module_before = fs::read(&module_path).unwrap();
+        let implementation_before = fs::read(&implementation_path).unwrap();
+        assert!(run_spec_apply(&module_path, None, Some(change), None, true).is_err());
+        assert!(run_spec_apply(&module_path, None, Some(change), None, false).is_err());
+        assert_eq!(fs::read(&module_path).unwrap(), module_before);
+        assert_eq!(
+            fs::read(&implementation_path).unwrap(),
+            implementation_before
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn semantic_plan_uses_null_for_omitted_total_replacement_collections() {
+        let root = route_capability_fixture("neutral-total-replacement-schema");
+        let target = root.join("modules/play-game-domain/module.yaml");
+        let context = load_spec_target(&target).unwrap();
+        let prompt = render_spec_plan_prompt(
+            &context,
+            &root,
+            "Add focused hunt exceptions. Preserve every other declaration.",
+        )
+        .unwrap();
+        for section in [
+            "artifacts",
+            "transformations",
+            "authorities",
+            "protocol_bindings",
+            "authority_bindings",
+        ] {
+            assert!(
+                prompt.contains(&format!("{section}:\n  add: []\n  set: null\n  remove: []")),
+                "neutral schema for {section} was not rendered"
+            );
+        }
+
+        let explicit_remove: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+intent:
+  summary: Remove all authorities and authority bindings. Preserve every other declaration.
+authorities: {set: [], add: [], remove: []}
+authority_bindings: {set: [], add: [], remove: []}
+"#,
+        )
+        .unwrap();
+        let mut diagnostics = Vec::new();
+        validate_preservation_intent_against_empty_total_replacements(
+            &context,
+            &explicit_remove,
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
         fs::remove_dir_all(&root).unwrap();
     }
 
