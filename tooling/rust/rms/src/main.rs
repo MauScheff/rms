@@ -54402,6 +54402,7 @@ fn run_spec_apply(
     validate_spec_candidate_composite_export_contracts(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_property_realizations(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
+    validate_spec_candidate_property_evidence_writes(&context, &change, &mut diagnostics);
 
     let planned_writes = planned_spec_apply_writes(&context, &change, machine_change.as_ref());
     let final_machine = context
@@ -60101,6 +60102,103 @@ fn apply_allowed_missing_constructor_changes(
     );
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PropertyEvidenceWriteDisposition {
+    Write,
+    Unchanged,
+    Unsafe,
+}
+
+fn property_evidence_write_disposition(
+    module: &LoadedManifest,
+    property: &SemanticPropertyChange,
+    replacing: bool,
+) -> Result<PropertyEvidenceWriteDisposition> {
+    let Some(evidence) = property.evidence.as_ref() else {
+        return Ok(PropertyEvidenceWriteDisposition::Unchanged);
+    };
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    let path = base.join(&evidence.path);
+    if !path.exists() {
+        return Ok(PropertyEvidenceWriteDisposition::Write);
+    }
+    let existing = fs::read_to_string(&path)
+        .with_context(|| format!("failed to inspect property evidence `{}`", path.display()))?;
+    let replacement = render_semantic_property_evidence(property);
+    if existing == replacement {
+        return Ok(PropertyEvidenceWriteDisposition::Unchanged);
+    }
+    if !replacing {
+        return Ok(PropertyEvidenceWriteDisposition::Unsafe);
+    }
+    let old_property = ["properties", "fuzz_targets"]
+        .into_iter()
+        .filter_map(|section| get_path(&module.value, &[section]))
+        .filter_map(YamlValue::as_sequence)
+        .flatten()
+        .find(|item| get_str(item, &["id"]) == Some(property.id.as_str()));
+    let Some(old_property) = old_property else {
+        return Ok(PropertyEvidenceWriteDisposition::Unsafe);
+    };
+    let old_path = get_str(old_property, &["evidence", "path"])
+        .or_else(|| get_str(old_property, &["evidence"]));
+    if old_path != Some(evidence.path.as_str()) {
+        return Ok(PropertyEvidenceWriteDisposition::Unsafe);
+    }
+    Ok(
+        if render_manifest_property_evidence(old_property).as_deref() == Some(existing.as_str()) {
+            PropertyEvidenceWriteDisposition::Write
+        } else {
+            PropertyEvidenceWriteDisposition::Unsafe
+        },
+    )
+}
+
+fn validate_spec_candidate_property_evidence_writes(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let (Some(module), Some(properties)) = (context.module.as_ref(), change.properties.as_ref())
+    else {
+        return;
+    };
+    for (property, replacing) in properties
+        .add
+        .iter()
+        .map(|property| (property, false))
+        .chain(properties.replace.iter().map(|property| (property, true)))
+    {
+        match property_evidence_write_disposition(module, property, replacing) {
+            Ok(PropertyEvidenceWriteDisposition::Unsafe) => {
+                let path = property
+                    .evidence
+                    .as_ref()
+                    .map(|evidence| evidence.path.as_str())
+                    .unwrap_or("<missing>");
+                diagnostics.push(error(
+                    "semantic.property-evidence-overwrite-unsafe",
+                    &context.target,
+                    format!(
+                        "property `{}` evidence `{path}` contains concrete or edited content; `properties.set` may refresh only the unchanged RMS-generated obligation for the same property and path",
+                        property.id
+                    ),
+                ));
+            }
+            Err(error_value) => diagnostics.push(error(
+                "semantic.property-evidence-inspection-failed",
+                &context.target,
+                format!(
+                    "property `{}` evidence could not be inspected safely: {error_value}",
+                    property.id
+                ),
+            )),
+            Ok(PropertyEvidenceWriteDisposition::Write)
+            | Ok(PropertyEvidenceWriteDisposition::Unchanged) => {}
+        }
+    }
+}
+
 fn planned_spec_apply_writes(
     context: &SpecTargetContext,
     change: &SemanticChange,
@@ -60185,8 +60283,16 @@ fn planned_spec_apply_writes(
             }
         }
         if let Some(properties) = &change.properties {
-            for property in properties.add.iter().chain(&properties.replace) {
-                if let Some(evidence) = &property.evidence {
+            for (property, replacing) in properties
+                .add
+                .iter()
+                .map(|property| (property, false))
+                .chain(properties.replace.iter().map(|property| (property, true)))
+            {
+                if let (Some(evidence), Ok(PropertyEvidenceWriteDisposition::Write)) = (
+                    property.evidence.as_ref(),
+                    property_evidence_write_disposition(module, property, replacing),
+                ) {
                     writes.push(
                         module
                             .path
@@ -60402,6 +60508,7 @@ fn apply_semantic_change_inner(
     change: &SemanticChange,
     machine_change: Option<&MachineChange>,
 ) -> Result<()> {
+    let original_module = context.module.clone();
     let implementation_changed =
         semantic_change_modifies_implementation(context, change, machine_change);
     let previous_dependencies = context
@@ -60414,7 +60521,7 @@ fn apply_semantic_change_inner(
     {
         module.value = candidate_module.value.clone();
         write_yaml_manifest(module)?;
-        write_semantic_contracts_and_evidence(module, change)?;
+        write_semantic_contracts_and_evidence(module, original_module.as_ref(), change)?;
         validate_written_module_contract_artifacts(module)?;
     }
     if let (Some(implementation), Some(candidate_implementation)) = (
@@ -61459,6 +61566,7 @@ fn semantic_contract_path_parts(name: &str, version: Option<&str>) -> String {
 
 fn write_semantic_contracts_and_evidence(
     module: &LoadedManifest,
+    original_module: Option<&LoadedManifest>,
     change: &SemanticChange,
 ) -> Result<()> {
     let base = module.path.parent().unwrap_or_else(|| Path::new("."));
@@ -61532,7 +61640,13 @@ fn write_semantic_contracts_and_evidence(
         }
     }
     if let Some(properties) = &change.properties {
-        for property in properties.add.iter().chain(&properties.replace) {
+        let original_module = original_module.unwrap_or(module);
+        for (property, replacing) in properties
+            .add
+            .iter()
+            .map(|property| (property, false))
+            .chain(properties.replace.iter().map(|property| (property, true)))
+        {
             let Some(evidence) = property.evidence.as_ref() else {
                 continue;
             };
@@ -61541,9 +61655,19 @@ fn write_semantic_contracts_and_evidence(
                 fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create `{}`", parent.display()))?;
             }
-            if !path.exists() {
-                fs::write(&path, render_semantic_property_evidence(property))
-                    .with_context(|| format!("failed to write `{}`", path.display()))?;
+            match property_evidence_write_disposition(original_module, property, replacing)? {
+                PropertyEvidenceWriteDisposition::Write => {
+                    fs::write(&path, render_semantic_property_evidence(property))
+                        .with_context(|| format!("failed to write `{}`", path.display()))?;
+                }
+                PropertyEvidenceWriteDisposition::Unchanged => {}
+                PropertyEvidenceWriteDisposition::Unsafe => {
+                    bail!(
+                        "property `{}` evidence `{}` is not the unchanged RMS-generated obligation for the replaced property; preserve concrete or edited evidence and choose a new evidence path",
+                        property.id,
+                        evidence.path
+                    );
+                }
             }
         }
     }
@@ -61771,42 +61895,77 @@ fn render_semantic_evidence(item: &SemanticEvidenceItemChange) -> String {
 }
 
 fn render_semantic_property_evidence(property: &SemanticPropertyChange) -> String {
-    let label = if semantic_property_is_fuzz(property) {
+    render_property_evidence_obligation(
+        semantic_property_is_fuzz(property),
+        &property.id,
+        &property.proves,
+        property.input_space.as_ref(),
+        &property.oracle,
+        property
+            .counterexamples
+            .as_ref()
+            .map(|counterexamples| counterexamples.path.as_str()),
+    )
+}
+
+fn render_manifest_property_evidence(property: &YamlValue) -> Option<String> {
+    let id = get_str(property, &["id"])?;
+    let proves = get_str(property, &["proves"])?;
+    let kind = get_str(property, &["kind"]).unwrap_or_default();
+    let is_fuzz = matches!(
+        kind.trim().to_ascii_lowercase().as_str(),
+        "fuzz" | "fuzzer" | "fuzzing" | "counterexample" | "counterexamples"
+    );
+    let oracle = get_path(property, &["oracle"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(YamlValue::as_str)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    Some(render_property_evidence_obligation(
+        is_fuzz,
+        id,
+        proves,
+        get_path(property, &["input_space"]),
+        &oracle,
+        get_str(property, &["counterexamples", "path"]),
+    ))
+}
+
+fn render_property_evidence_obligation(
+    is_fuzz: bool,
+    id: &str,
+    proves: &str,
+    input_space: Option<&YamlValue>,
+    oracle_items: &[String],
+    counterexamples: Option<&str>,
+) -> String {
+    let label = if is_fuzz {
         "Fuzz Evidence"
     } else {
         "Property Evidence"
     };
-    let kind = if semantic_property_is_fuzz(property) {
-        "Fuzz target"
-    } else {
-        "Property"
-    };
-    let input_space = property
-        .input_space
-        .as_ref()
+    let kind = if is_fuzz { "Fuzz target" } else { "Property" };
+    let input_space = input_space
         .map(yaml_summary)
         .unwrap_or_else(|| "<declared input space>".to_string());
-    let oracle = if property.oracle.is_empty() {
+    let oracle = if oracle_items.is_empty() {
         "- <declared oracle>".to_string()
     } else {
-        property
-            .oracle
+        oracle_items
             .iter()
             .map(|item| format!("- {item}"))
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let counterexamples = property
-        .counterexamples
-        .as_ref()
-        .map(|counterexamples| counterexamples.path.as_str())
-        .unwrap_or("verification/fuzz/counterexamples");
+    let counterexamples = counterexamples.unwrap_or("verification/fuzz/counterexamples");
     format!(
         "# {label} Obligation: {id}\n\nThis file is an evidence obligation, not observed production proof.\n\nPromise:\n\n- {kind} `{id}` proves `{proves}`.\n\nInput space:\n\n```yaml\n{input_space}\n```\n\nOracle:\n\n{oracle}\n\nCommand/tool:\n\n- Record the exact command used to execute the declared realization before a production claim.\n\nObserved result:\n\n- Replace this placeholder with the observed pass/fail result, generated-case count or coverage summary, and any replayable counterexample.\n- Counterexamples belong under `{counterexamples}` with `spec: rms/property-counterexample/v0.1`.\n\nSource revision: recorded by git commit or strict audit provenance before production use.\n",
         label = label,
         kind = kind,
-        id = property.id,
-        proves = property.proves,
+        id = id,
+        proves = proves,
         input_space = input_space.trim(),
         oracle = oracle,
         counterexamples = counterexamples,
@@ -86086,6 +86245,9 @@ properties:
 
         let revised = fs::read_to_string(root.join("module.yaml")).unwrap();
         let revised_implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        let revised_evidence =
+            fs::read_to_string(root.join("verification/properties/values_remain_valid.md"))
+                .unwrap();
         assert_eq!(revised.matches("id: values-remain-valid").count(), 1);
         assert!(revised.contains("strategy: generated-property"));
         assert!(revised.contains("generator: src/property.rs#generate_values"));
@@ -86098,6 +86260,8 @@ properties:
         );
         assert!(revised_implementation.contains("generator: src/property.rs#generate_values"));
         assert!(revised_implementation.contains("runner: src/property.rs#check_generated_values"));
+        assert!(revised_evidence.contains("every generated value is valid"));
+        assert!(!revised_evidence.contains("every value is valid"));
 
         run_spec_apply(
             &root.join("module.yaml"),
@@ -86155,6 +86319,56 @@ properties:
             .and_then(|items| items.first())
             .and_then(|item| get_str(item, &["id"])),
             Some("values-remain-valid")
+        );
+        let fuzz_evidence =
+            fs::read_to_string(root.join("verification/properties/values_remain_valid.md"))
+                .unwrap();
+        assert!(fuzz_evidence.starts_with("# Fuzz Evidence Obligation"));
+
+        let concrete_evidence = "# Observed property proof\n\nCommand/tool: exact runner\n\nObserved result: pass\n\nSource revision: fixture\n";
+        fs::write(
+            root.join("verification/properties/values_remain_valid.md"),
+            concrete_evidence,
+        )
+        .unwrap();
+        let module_before_unsafe_set = fs::read_to_string(root.join("module.yaml")).unwrap();
+        let unsafe_set = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+properties:
+  set:
+    - id: values-remain-valid
+      proves: value-validity
+      kind: fuzz
+      input_space: { values: generated examples }
+      oracle: [every generated value remains valid after revision]
+      evidence:
+        kind: fuzz
+        path: verification/properties/values_remain_valid.md
+      realizations:
+        - profile: ci
+          strategy: generated-property
+          command: properties
+          generator: src/property.rs#generate_values
+          runner: src/property.rs#check_generated_values
+"#;
+        let unsafe_error = run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(unsafe_set),
+            None,
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(unsafe_error.contains("RMS semantic change rejected"));
+        assert_eq!(
+            fs::read_to_string(root.join("module.yaml")).unwrap(),
+            module_before_unsafe_set
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("verification/properties/values_remain_valid.md"))
+                .unwrap(),
+            concrete_evidence
         );
 
         run_spec_apply(
