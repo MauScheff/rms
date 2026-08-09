@@ -53194,6 +53194,7 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "semantic.function-evidence-missing"
             || diagnostic.check == "semantic.function-authority-gap"
             || diagnostic.check == "semantic.law-without-property"
+            || diagnostic.check == "semantic.contract-without-evidence"
             || diagnostic.check == "machine-change.state-unreachable"
             || diagnostic.check == "machine-change.output-path-eliminated"
             || diagnostic.check == "structure.effect-result-unhandled"
@@ -53365,6 +53366,13 @@ fn render_spec_plan_repair_prompt(
             "\n\nProof closure repair rule: preserve every existing law, property, semantic function, evidence obligation, and public binding that is not named by a diagnostic. Every risk-bearing law needs at least one complete semantic property whose `proves` value is that exact law id. A semantic function evidence entry names the exact `properties.*[].evidence.path`, not a similar property id or a newly invented path. Every law authority has a declared semantic function of the matching authority kind that lists the invariant under `discharges.invariants` and names its concrete property evidence. A public behavior binding references a semantic function declared in the same final candidate. Restore a removed function or point the binding to an already declared function; never invent a function name without its complete declaration. Do not delete other properties, functions, bindings, or evidence to repair one missing link.",
         )
         .unwrap_or_default();
+    let contract_evidence_repair = diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.check == "semantic.contract-without-evidence")
+        .then_some(
+            "\n\nContract evidence repair rule: every added or changed provided command, query, event, API, or capability contract needs one `evidence.add[]` item exactly shaped as `{kind: contract, proves: <exact contract name>, path: <unique module-relative verification path>}`. For a provided command, `proves` is the exact command contract name from `contracts.add[]` or `contracts.set[]`; it is not the contract path, public binding id, semantic function id, or an individual clause id. Preserve an existing matching evidence item from the candidate. If it is missing, add it without deleting any law, property, semantic-function, or dependency evidence. The contract evidence path is a proof summary, not an executable runner. Every external property id referenced by a changed contract requirement, guarantee, failure, invariant, or case ensure must also resolve to a complete `properties.add[]` or `properties.set[]` item with a non-empty oracle, property evidence path, counterexample path, and at least one executable realization whose command selects its exact runner. Preserve those executable properties and their semantic-function evidence links during repair. Do not satisfy `semantic.contract-without-evidence` with scaffold prose, an empty evidence file, or an evidence item that proves only one clause.",
+        )
+        .unwrap_or_default();
     let machine_closure_repair = diagnostics
         .iter()
         .any(|diagnostic| {
@@ -53388,6 +53396,7 @@ fn render_spec_plan_repair_prompt(
                     "semantic-plan.capability-contract-mismatch"
                         | "semantic-plan.composite-export-contract-mismatch"
                         | "semantic.law-without-property"
+                        | "semantic.contract-without-evidence"
                         | "semantic.function-evidence-missing"
                         | "semantic.function-authority-gap"
                         | "semantic.public-binding-function-missing"
@@ -53475,7 +53484,7 @@ fn render_spec_plan_repair_prompt(
         )
         .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{proof_closure_repair}{machine_closure_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -98240,6 +98249,49 @@ machine:
         assert!(repair.contains("seven-complete-properties"));
         assert!(repair.contains("accepted, rejected, failed"));
         assert!(repair.contains("Original bounded schema context"));
+    }
+
+    #[test]
+    fn semantic_plan_contract_evidence_repair_preserves_executable_proof_closure() {
+        let diagnostics = vec![error_diagnostic(
+            "semantic.contract-without-evidence",
+            Path::new("modules/recovery-boundary/module.yaml"),
+            "contract `public-recovery` must have evidence that proves it",
+        )];
+        let candidate = r#"spec: rms/semantic-change/v0.1
+contracts:
+  set:
+    - name: public-recovery
+      kind: command
+      direction: provided
+properties:
+  add:
+    - id: recovery-explicit-outcome
+      proves: recovery-explicit-outcome
+      realizations: [complete-executable-realization]
+evidence:
+  add: []
+"#;
+
+        let repair = render_spec_plan_repair_prompt(
+            "bounded schema with exact evidence and property shapes",
+            candidate,
+            &diagnostics,
+        );
+
+        assert!(repair.contains("Contract evidence repair rule"));
+        assert!(repair.contains(
+            "{kind: contract, proves: <exact contract name>, path: <unique module-relative verification path>}"
+        ));
+        assert!(repair.contains("`proves` is the exact command contract name"));
+        assert!(repair.contains("Every external property id referenced by a changed contract"));
+        assert!(repair.contains("at least one executable realization"));
+        assert!(repair
+            .contains("Do not satisfy `semantic.contract-without-evidence` with scaffold prose"));
+        assert!(repair.contains("recovery-explicit-outcome"));
+        assert!(repair.contains("complete-executable-realization"));
+        assert!(repair.contains("Original bounded schema context"));
+        assert!(repair.contains("this is a patch to the candidate, not a new plan"));
     }
 
     #[test]
