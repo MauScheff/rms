@@ -2838,18 +2838,19 @@ impl Engine {
         let mut assembly: ProbeAssembly =
             serde_json::from_value(best.assembly.clone()).context("invalid failure assembly")?;
 
-        let mut index = 0;
-        while assembly.stimuli.len() > 1 && index < assembly.stimuli.len() {
+        // Stimulus order is the assembly's causal-prefix declaration. Minimize only
+        // by removing a suffix so a retained late stimulus keeps every predecessor.
+        while assembly.stimuli.len() > 1 {
             self.ensure_deadline()?;
             let mut candidate = assembly.clone();
-            candidate.stimuli.remove(index);
+            candidate.stimuli.pop();
             if let Some(counterexample) =
                 self.counterexample_for_candidate(candidate.clone(), &expected_failure)?
             {
                 assembly = candidate;
                 best = counterexample;
             } else {
-                index += 1;
+                break;
             }
         }
 
@@ -5306,6 +5307,12 @@ mod tests {
                 }
             }),
         ]);
+        let declared_stimulus_ids = value["stimuli"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|stimulus| stimulus["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
         let run = |value: Value, base_dir: PathBuf| {
             let assembly: ProbeAssembly = serde_json::from_value(value.clone()).unwrap();
             let mut engine =
@@ -5344,6 +5351,16 @@ mod tests {
             .starts_with("/portable/source/"));
 
         for (counterexample, _) in &first.findings {
+            let minimized_stimuli = counterexample.assembly["stimuli"].as_array().unwrap();
+            let minimized_stimulus_ids = minimized_stimuli
+                .iter()
+                .map(|stimulus| stimulus["id"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                minimized_stimulus_ids,
+                declared_stimulus_ids[..minimized_stimuli.len()],
+                "guided minimization must retain the declared causal prefix"
+            );
             let assembly: ProbeAssembly =
                 serde_json::from_value(counterexample.assembly.clone()).unwrap();
             let mut replay = Engine::new(

@@ -102,6 +102,8 @@ Git commits are required evidence, not implied authority. This guidance does not
 
 A v0.2 probe assembly may add `coverage.required_modules` and owned `coverage.fault_families` with an exact stimulus, substitute, or route-fault generator. Direct hunt planning marks the campaign unsupported when a required participant or decision owner is not adopted, is absent from the assembly, or cannot generate the requested family; it never treats partial local exploration as the requested composition campaign.
 
+Probe assembly `stimuli` are an ordered causal prefix for counterexample minimization. Guided minimization can remove only a suffix; it never retains a later stimulus after removing one of its declared predecessors. Use `substitutes` and declared routes when an output causes a later input, and use `at` only for time ordering. A `quiescent` check is unconditional over every permitted completed schedule. When an outcome applies only after a represented precondition, encode that condition in a v0.3 `state-expression` assertion, start from the exact post-prefix state, or use a separate focused assembly.
+
 Detected skill sources are observable evidence only. The CLI cannot inspect the current thread's injected skill catalog, so runtime activation is unknown and precedence is host-defined.
 
 ## Configuration and Providers
