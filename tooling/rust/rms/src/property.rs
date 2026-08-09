@@ -157,6 +157,8 @@ pub(super) struct NormalizedQuantity {
 pub(super) struct ObservationEnvelope {
     spec: String,
     sequence: usize,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    scenario_start: bool,
     #[serde(default)]
     source: ObservationSourceMetadata,
     facts: BTreeMap<String, Value>,
@@ -206,6 +208,7 @@ impl CompiledCoreExpression {
             .collect::<Result<BTreeMap<_, _>>>()?;
         let frame = Frame {
             index: 0,
+            scenario_start: false,
             facts,
             source: ObservationSourceMetadata::default(),
             raw: Value::Null,
@@ -555,6 +558,7 @@ impl Quantity {
 #[derive(Clone, Debug)]
 struct Frame {
     index: usize,
+    scenario_start: bool,
     facts: BTreeMap<String, ObservedValue>,
     source: ObservationSourceMetadata,
     raw: Value,
@@ -1470,6 +1474,7 @@ pub(super) fn evaluate_observation_envelopes(
         .iter()
         .map(|envelope| Frame {
             index: envelope.sequence,
+            scenario_start: envelope.scenario_start,
             facts: envelope
                 .facts
                 .iter()
@@ -1486,6 +1491,7 @@ pub(super) fn evaluate_observation_envelopes(
             raw: serde_json::json!({
                 "spec": OBSERVATION_SPEC,
                 "sequence": envelope.sequence,
+                "scenario_start": envelope.scenario_start,
                 "facts": envelope.facts,
             }),
         })
@@ -1540,6 +1546,7 @@ pub(super) fn normalize_trace(
         .map(|frame| ObservationEnvelope {
             spec: OBSERVATION_SPEC.to_string(),
             sequence: frame.index,
+            scenario_start: frame.scenario_start,
             source: frame.source,
             facts: frame
                 .facts
@@ -1605,6 +1612,10 @@ fn project_trace(property: &CompiledProperty, trace: &Value) -> Result<(Vec<Fram
         }
         frames.push(Frame {
             index,
+            scenario_start: raw
+                .get("scenario_start")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             facts,
             source,
             raw: (*raw).clone(),
@@ -2326,6 +2337,9 @@ fn evaluate_temporal(
             let mut quantities = vec![bound.normalized()];
             let mut last_match = None;
             for frame in frames {
+                if frame.scenario_start {
+                    pending.clear();
+                }
                 let metric_value = frame
                     .facts
                     .get(metric)
@@ -3069,6 +3083,53 @@ mod tests {
             .normalized_quantities
             .iter()
             .any(|quantity| quantity.normalized_numerator == "251000000"));
+    }
+
+    #[test]
+    fn bounded_response_does_not_cross_independent_trace_scenarios() {
+        let compiled = property(json!({
+            "bounded_response": {
+                "trigger": {"occurred": "submitted"},
+                "response": {"occurred": "accepted"},
+                "within": {"metric": "elapsed", "value": 2, "unit": "ms"}
+            }
+        }));
+        let independent_examples = trace(
+            vec![
+                json!({
+                    "scenario_start": true,
+                    "input": {"kind": "command", "name": "Submit"},
+                    "outputs": []
+                }),
+                json!({
+                    "scenario_start": true,
+                    "input": {"kind": "command", "name": "Poll"},
+                    "outputs": []
+                }),
+                json!({
+                    "scenario_start": true,
+                    "input": {"kind": "command", "name": "Poll"},
+                    "outputs": []
+                }),
+                json!({
+                    "scenario_start": true,
+                    "input": {"kind": "command", "name": "Poll"},
+                    "outputs": []
+                }),
+            ],
+            true,
+        );
+
+        let evaluation = evaluate_trace(&compiled, &independent_examples).unwrap();
+        assert_eq!(evaluation.verdict, Verdict::Satisfied);
+        assert_eq!(evaluation.explanation.trigger_observation, None);
+        assert_eq!(evaluation.explanation.pending_obligation, None);
+
+        let envelopes = normalize_trace(&compiled, &independent_examples).unwrap();
+        assert!(envelopes.iter().all(|envelope| envelope.scenario_start));
+        let streamed = evaluate_observation_envelopes(&compiled, &envelopes, true).unwrap();
+        assert_eq!(streamed.verdict, evaluation.verdict);
+        assert_eq!(streamed.explanation.pending_obligation, None);
     }
 
     #[test]
