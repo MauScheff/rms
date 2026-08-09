@@ -52207,6 +52207,9 @@ fn prepare_spec_plan_provider_response(
     let (normalized_yaml, surface_normalizations) =
         normalize_spec_plan_surface_evidence_paths(&normalized_yaml);
     normalizations.extend(surface_normalizations);
+    let (normalized_yaml, authority_normalizations) =
+        normalize_spec_plan_authority_evidence_paths(&normalized_yaml);
+    normalizations.extend(authority_normalizations);
     let (normalized_yaml, evidence_normalizations) =
         normalize_spec_plan_evidence_obligation_fields(&normalized_yaml);
     normalizations.extend(evidence_normalizations);
@@ -52539,6 +52542,59 @@ fn normalize_spec_plan_surface_evidence_paths(response: &str) -> (String, Vec<St
     }
 }
 
+/// An authority binding uses a list because containment can require more than
+/// one proof artifact. A provider often emits the sole path as a scalar. Wrap
+/// that scalar without changing its value so semantic validation can inspect
+/// the complete candidate and return actionable diagnostics.
+fn normalize_spec_plan_authority_evidence_paths(response: &str) -> (String, Vec<String>) {
+    let mut value = match serde_yaml::from_str::<YamlValue>(response) {
+        Ok(value) => value,
+        Err(_) => return (response.to_string(), Vec::new()),
+    };
+    let Some(bindings) = value
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(yaml_key("authority_bindings")))
+        .and_then(YamlValue::as_mapping_mut)
+    else {
+        return (response.to_string(), Vec::new());
+    };
+
+    let mut normalizations = Vec::new();
+    for operation in ["add", "set"] {
+        let Some(items) = bindings
+            .get_mut(yaml_key(operation))
+            .and_then(YamlValue::as_sequence_mut)
+        else {
+            continue;
+        };
+        for item in items {
+            let Some(binding) = item.as_mapping_mut() else {
+                continue;
+            };
+            let Some(evidence) = binding.get_mut(yaml_key("evidence")) else {
+                continue;
+            };
+            let YamlValue::String(path) = evidence else {
+                continue;
+            };
+            let path = path.clone();
+            *evidence = YamlValue::Sequence(vec![YamlValue::String(path)]);
+            let authority = binding
+                .get(yaml_key("authority"))
+                .and_then(YamlValue::as_str)
+                .unwrap_or("<unknown>");
+            normalizations.push(format!(
+                "normalized authority binding `{authority}` evidence path from a scalar to a one-item list"
+            ));
+        }
+    }
+
+    match serde_yaml::to_string(&value) {
+        Ok(response) => (response, normalizations),
+        Err(_) => (response.to_string(), Vec::new()),
+    }
+}
+
 /// `evidence.add` declares only a future evidence obligation. Provider output
 /// occasionally carries legacy execution metadata (`command`, `result`, or
 /// `source_revision`) with that declaration. Those fields cannot be applied:
@@ -52782,6 +52838,11 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "property.composite-behavior-owner-required"
             || diagnostic.check == "property.realization-not-executed"
             || diagnostic.check == "semantic-plan.composite-export-contract-mismatch"
+            || diagnostic.check == "semantic.capability-binding-missing"
+            || diagnostic.check == "semantic.public-binding-target-missing"
+            || diagnostic.check == "semantic.function-contract-missing"
+            || diagnostic.check == "surface.kind"
+            || diagnostic.check == "surface.surface"
             || diagnostic.check.starts_with("contract.")
             || diagnostic
                 .check
@@ -52840,7 +52901,7 @@ fn render_spec_plan_repair_prompt(
         .unwrap_or_default();
     let contract_behavior_repair = contract_behavior_repair
         .then_some(
-            "\n\nContract behavior repair rule: preserve the exact directly referenced contract path, wrapper, version, evaluation strategy, clause ids, case ids, and every unaffected field shown in the exact-contract repair context. A `contracts.set` operation revises that existing artifact in place; it does not create a conventionally named replacement or silently migrate v0.2 to v0.3. Omit an unchanged contract from `contracts.set`. When the task explicitly migrates a contract or diagnostics genuinely apply to an existing v0.3 contract, `semantics.behavior` has exactly `observability`, `observations`, `assumptions`, `requires`, `guarantees`, `failures`, `cases`, `invariants`, and `case_policy`. `observability` is exactly `full|sampled|delayed|partial|none`. Every observation is exactly `{id, source, value}`. Observation sources use these exact closed variants: an input occurrence is `{kind: input, optional input_kind, name}` with `value: occurrence`; an input value is `{kind: input, pointer: /absolute/json/pointer}` with a non-occurrence value type; an output occurrence is `{kind: output, output_kind: reply|event|effect|command|rejection, name}` with `value: occurrence`; an output value is `{kind: output, pointer: /absolute/json/pointer}` with a non-occurrence value type; a transition occurrence is `{kind: transition, case: exact_case_id}` with `value: occurrence`; a state value is `{kind: state, phase: before|after, pointer: /absolute/json/pointer, optional instance}` with a non-occurrence value type; protocol-message and protocol-state occurrences require `{kind, name}` with `value: occurrence`; and trace-metric requires `{kind: trace-metric, name}` with a quantity value. Never put a variant, scalar value type, or product type name where `output_kind`, `phase`, `pointer`, or occurrence is required. A value is `occurrence|boolean|integer|string`, `{variant: [closed, variants]}`, or `{quantity: dimension}`. Every assumption, requirement, guarantee, failure, invariant, and case ensure is a clause with exactly `{id, statement, evaluation}`. A `cases` item is not a clause and never contains `evaluation`: it has exactly `id`, `statement`, `when`, `outcome`, `ensures`, and `permits`. Predicates are only `{constant: bool}`, `{occurred: observation-id}`, `{equals: {left: term, right: term}}`, `{compare: {left: term, operator: lt|lte|eq|gte|gt, right: term}}`, `{not: predicate}`, `{all: [predicate, ...]}`, or `{any: [predicate, ...]}`. `{observation: id}` is a term only inside `equals` or `compare`; it is never a predicate by itself. An outcome has `kind: accepted|rejected` and a predicate `expression`; rejected outcomes also require a stable `category`, while accepted outcomes forbid it. `permits` has exactly `state_changes`, `events`, and `effects`; every state change is an absolute JSON pointer beginning with `/`. `case_policy` is exactly `{coverage: exhaustive, overlap: forbidden|allowed}`. Do not move an external property evaluation onto a case. Construct complete accepted and rejected cases from the bounded contract meaning. Preserve a complete existing protocol unchanged; otherwise omit `protocol` entirely, because `protocol: null` is invalid. Return syntactically complete YAML or JSON with every mapping/object and sequence/array closed.",
+            "\n\nContract behavior repair rule: preserve the exact directly referenced contract path, wrapper, version, evaluation strategy, clause ids, case ids, and every unaffected field shown in the exact-contract repair context. A `contracts.set` operation revises that existing artifact in place; it does not create a conventionally named replacement or silently migrate v0.2 to v0.3. Omit an unchanged contract from `contracts.set`. When the task explicitly migrates a contract or diagnostics genuinely apply to an existing v0.3 contract, `semantics.behavior` has exactly `observability`, `observations`, `assumptions`, `requires`, `guarantees`, `failures`, `cases`, `invariants`, and `case_policy`. `observability` is exactly `full|sampled|delayed|partial|none`. Every observation is exactly `{id, source, value}`. Observation sources use these exact closed variants: an input occurrence is `{kind: input, optional input_kind, name}` with `value: occurrence`; an input value is `{kind: input, pointer: /absolute/json/pointer}` with a non-occurrence value type; an output occurrence is `{kind: output, output_kind: reply|event|effect|command|rejection, name}` with `value: occurrence`; an output value is `{kind: output, pointer: /absolute/json/pointer}` with a non-occurrence value type; a transition occurrence is `{kind: transition, case: exact_case_id}` with `value: occurrence`; a state value is `{kind: state, phase: before|after, pointer: /absolute/json/pointer, optional instance}` with a non-occurrence value type; protocol-message and protocol-state occurrences require `{kind, name}` with `value: occurrence`; and trace-metric requires `{kind: trace-metric, name}` with a quantity value. Never put a variant, scalar value type, or product type name where `output_kind`, `phase`, `pointer`, or occurrence is required. A value is `occurrence|boolean|integer|string`, `{variant: [closed, variants]}`, or `{quantity: dimension}`. Every assumption, requirement, guarantee, failure, invariant, and case ensure is a clause with exactly `{id, statement, evaluation}`. A core evaluation is exactly `{kind: core, expression: <closed predicate>}`; `{kind: core}` without `expression` is invalid. An external evaluation is exactly `{kind: external, property: <exact property id>}`. A `cases` item is not a clause and never contains `evaluation`: it has exactly `id`, `statement`, `when`, `outcome`, `ensures`, and `permits`. Predicates are only `{constant: bool}`, `{occurred: observation-id}`, `{equals: {left: term, right: term}}`, `{compare: {left: term, operator: lt|lte|eq|gte|gt, right: term}}`, `{not: predicate}`, `{all: [predicate, ...]}`, or `{any: [predicate, ...]}`. `{observation: id}` is a term only inside `equals` or `compare`; it is never a predicate by itself. An outcome has `kind: accepted|rejected` and a predicate `expression`; rejected outcomes also require a stable `category`, while accepted outcomes forbid it. `permits` has exactly `state_changes`, `events`, and `effects`; every state change is an absolute JSON pointer beginning with `/`. `case_policy` is exactly `{coverage: exhaustive, overlap: forbidden|allowed}`. Do not move an external property evaluation onto a case. Construct complete accepted and rejected cases from the bounded contract meaning. Preserve a complete existing protocol unchanged; otherwise omit `protocol` entirely, because `protocol: null` is invalid. Return syntactically complete YAML or JSON with every mapping/object and sequence/array closed.",
         )
         .unwrap_or_default();
     let dependency_binding_repair = diagnostics
@@ -52875,6 +52936,29 @@ fn render_spec_plan_repair_prompt(
         })
         .then_some(
             "\n\nAuthority repair rule: every authority is exactly `{id, kind, capabilities, rationale}`. `id` is one unique stable kebab-case id. `kind` is exactly `privileged`, `unsafe`, or `foreign`; resource is not an authority kind. `capabilities` is a non-empty string list naming the guarded operations. `rationale` is a non-empty controlled-language sentence. For example: `{id: apns-provider-client-authority, kind: privileged, capabilities: [execute-apns-provider-request], rationale: Boundary code may use the APNs provider client.}`. Omit an authority completely when no declared function needs it; otherwise add the complete valid item and bind it only through the declared authority-binding shape.",
+        )
+        .unwrap_or_default();
+    let public_capability_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            matches!(
+                diagnostic.check.as_str(),
+                "semantic.capability-binding-missing"
+                    | "semantic.public-binding-target-missing"
+                    | "semantic.public-binding-contract-mismatch"
+                    | "semantic.function-contract-missing"
+                    | "semantic.public-binding-contract-undischarged"
+            )
+        })
+        .then_some(
+            "\n\nPublic capability binding repair rule: a provided capability contract requires one `public_behavior_bindings` item with `public_kind: capability` and `public_name` equal to the exact capability/contract `name`; the binding `id` is only its stable identity and does not select the public target. Its `contract` is the exact module-relative contract path. Every semantic function `discharges.contracts[]` entry is also that exact contract path, never the contract name. The binding semantic function must discharge that same path. Use `public_kind: command` only for an item declared under `provides.commands`, and `public_kind: query` only for an item declared under `provides.queries`.",
+        )
+        .unwrap_or_default();
+    let surface_repair = diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.check.as_str(), "surface.kind" | "surface.surface"))
+        .then_some(
+            "\n\nRunnable surface repair rule: a language public facade, library API, package export, protocol, or reusable capability is not by itself a runnable product surface. Do not emit a `surfaces` change for a Swift public API. Declare the facade through the `public_facade` role and public behavior binding. Only a user- or operator-runnable boundary may use `kind: runnable-boundary`, and its `surface` is exactly one of browser|cli|mobile-ui|desktop-ui|http|batch|executable; language names and phrases such as `Swift public API` are never surface values.",
         )
         .unwrap_or_default();
     let transition_output_repair = diagnostics
@@ -52945,7 +53029,7 @@ fn render_spec_plan_repair_prompt(
         )
         .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -53442,6 +53526,15 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         out,
         "      observation_source: {{kind: transition-record, command: trace}}"
     )?;
+    writeln!(out, "authority_bindings:")?;
+    writeln!(out, "  add:")?;
+    writeln!(out, "    - authority: declared-authority-id")?;
+    writeln!(out, "      roles: [effect_executor]")?;
+    writeln!(out, "      safe_facade: path/to/effect_executor#execute")?;
+    writeln!(
+        out,
+        "      evidence: [verification/authorities/declared_authority.md]"
+    )?;
     writeln!(out, "evidence:")?;
     writeln!(out, "  add:")?;
     writeln!(out, "    - kind: law")?;
@@ -53547,7 +53640,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "For every machine variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "Machine transition items use `from`, `on`, `to`, stable ASCII identifier `case` values such as `valid_example_accepted` (not kebab-case), optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names. Every transition on a declared command also supplies `reply`, `rejection`, or a non-empty `no_reply_justification`; an asynchronous command normally states `effect result is pending` and its effect-result transition supplies the terminal response.")?;
     writeln!(out, "When external observations use a different binding enum from emitted events, set `machine.types.observed_event` to that exact type. Omit it only for an intentional shared event enum; older declarations continue to fall back to `machine.types.event`.")?;
-    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use a scalar implementation identifier `resource` matching `^[A-Za-z_][A-Za-z0-9_]*$`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses the same exact `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings map a declared authority to role names, one exact safe-facade `path#symbol`, and evidence. Role removal items use `kind` and optional `path`. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
+    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. One role kind cannot repeat the same path. If one implementation executes several private backend operations, model one aggregate boundary effect and one executor role, or use distinct declared effects with distinct executor paths. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use a scalar implementation identifier `resource` matching `^[A-Za-z_][A-Za-z0-9_]*$`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses the same exact `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings use exactly `{{authority, roles, safe_facade, evidence}}`. `roles` is a non-empty list of exact declared role kinds such as `effect_executor`, never method names. `safe_facade` is one exact relative `path#symbol`. `evidence` is always a non-empty list of module-relative paths, even when it contains one path. Role removal items use `kind` and optional `path`. A Swift public API or language library facade is a `public_facade` role, not a runnable surface. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically. `set` is a complete replacement. Use `add` only for ids absent from the current complete set. If an existing dependency remains sufficient, leave this section unchanged; do not add it again.")?;
     writeln!(out, "Each `authorities.add[]` or `.set[]` item is exactly `{{id, kind, capabilities, rationale}}`. `id` is a unique stable kebab-case id. `kind` is exactly `privileged`, `unsafe`, or `foreign`; resource is not an authority kind. `capabilities` is a non-empty string list. `rationale` is non-empty. Add an authority only when a declared function needs it; then bind it through the exact authority-binding shape.")?;
     writeln!(out, "`dependency_behavior_bindings.add[]` and `.set[]` use exactly these fields: `id`, `capability`, optional `contract`, `consumer`, `resolution`, optional `provider_module`, optional `provider_contract`, and optional `probe_bridge`. `consumer` is the exact declared implementation `path#symbol`; `resolution` is exactly `module` or `external`. A module resolution requires `provider_module` and `provider_contract`; an external resolution omits them. `probe_bridge` uses the declared `{{request, outcomes}}` shape. Never use legacy fields such as `dependency_kind`, `dependency_name`, `semantic_function`, `machine_inputs`, `machine_outputs`, or `observation_source` in this section. The exact set grammar is:")?;
@@ -53575,6 +53668,8 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out)?;
     writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and structured `semantics` for the retained contract wrapper. New contract artifacts use v0.3 total behavior. A `contracts.set` entry revises the exact directly referenced artifact in place. It preserves a non-conventional path such as `*.behavior.yaml`; it does not create a conventionally named replacement. Existing v0.2 artifacts preserve their v0.2 wrapper and caller-obligation semantics until the task explicitly requests migration. Omit an unchanged contract from `contracts.set`. For command, query, and capability contracts, `contracts.add[].semantics` and `contracts.set[].semantics` must contain an exact `behavior` object; there is no `semantic_profile` field. Event contracts use an exact `event` object and API contracts use an exact `api` object. When setting an existing contract, copy its complete current behavior first, then change only task-owned meaning; preserve its wrapper, version, evaluation strategy (`core` versus `external`), clause ids, case ids, and every unaffected field. Requirements, guarantees, failures, invariants, assumptions, and case `ensures` entries are clauses. Each clause uses exactly one `evaluation.kind: core|external`; an external clause names its exact property. A behavior `cases` item is not a clause and never contains `evaluation`: it requires `id`, `statement`, a closed core `when` predicate, `outcome: {{kind: accepted|rejected, optional category, expression}}`, clause-list `ensures`, and `permits: {{state_changes, events, effects}}`. Every identifier is globally unique across one behavior object's assumptions, requirements, guarantees, failures, invariants, case ensures, and cases; never reuse one id for a clause and a case. Rejected outcomes require a stable `category`; accepted outcomes forbid it. Declare typed `{{id, source, value}}` observations for every observation id used by `when` or `outcome.expression`. In v0.3, declare scalar `observability: full|sampled|delayed|partial|none` and an explicit `assumptions` clause list. Predicates use only the closed contract predicate variants; `{{observation: id}}` is a term inside `equals` or `compare`, never a predicate by itself. Every `permits.state_changes` item is an absolute JSON pointer beginning with `/`. Omit an unchanged or absent protocol; `protocol: null` is invalid. `unresolved` is migration-draft-only and fails strict checks. Legacy `accepts`, `ensures`, and `rejects` inputs produce unresolved drafts and are not completion-ready. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`: only capability contracts may be required. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
     writeln!(out, "Contract observation sources are closed. Use `{{kind: input, name: ExactInput}}` plus `value: occurrence` for an input occurrence, or `{{kind: input, pointer: /absolute/json/pointer}}` plus a non-occurrence value type for an input field. Use `{{kind: output, output_kind: reply, name: ExactReply}}` plus `value: occurrence` for an output occurrence, or `{{kind: output, pointer: /absolute/json/pointer}}` plus a non-occurrence value type for an output field. Use `{{kind: transition, case: exact_case_id}}` plus `value: occurrence` for a transition. Use `{{kind: state, phase: before|after, pointer: /absolute/json/pointer}}` plus a non-occurrence value type for state; `instance` is optional. Protocol-message and protocol-state sources require `name` and `value: occurrence`. Trace-metric sources require `name` and a quantity value. `output_kind`, state `phase`, source `name`, source `case`, and source `pointer` must never be empty.")?;
+    writeln!(out, "Core clause evaluations require both fields: `{{kind: core, expression: <closed predicate>}}`. `{{kind: core}}` is invalid. External clause evaluations are exactly `{{kind: external, property: <exact property id>}}`.")?;
+    writeln!(out, "A provided capability binding uses `public_kind: capability` and `public_name` equal to the exact capability contract `name`. The binding `id` does not select the target. Both `public_behavior_bindings[].contract` and `semantic_functions[].discharges.contracts[]` use the exact module-relative contract path, never only the contract name.")?;
     writeln!(
         out,
         "The exact external command/query/capability contract shape is:"
@@ -95356,6 +95451,13 @@ compatibility: {policy: backward-compatible-within-major}
         assert!(prompt.contains("do not add a synonymous law"));
         assert!(prompt.contains("observation_source: {kind: transition-record, command: trace}"));
         assert!(prompt.contains("it never contains `name` or `value`"));
+        assert!(prompt.contains("evidence: [verification/authorities/declared_authority.md]"));
+        assert!(prompt.contains("`{kind: core}` is invalid"));
+        assert!(prompt.contains("`public_kind: capability`"));
+        assert!(prompt.contains("never only the contract name"));
+        assert!(prompt
+            .contains("A Swift public API or language library facade is a `public_facade` role"));
+        assert!(prompt.contains("One role kind cannot repeat the same path"));
     }
 
     #[test]
@@ -95538,6 +95640,21 @@ contracts:
                 Path::new("implementation.yaml"),
                 "\"apns-provider-client\" does not match \"^[A-Za-z_][A-Za-z0-9_]*$\" at `/architecture/machine/resource_protocols/0/resource`",
             ),
+            error_diagnostic(
+                "semantic.capability-binding-missing",
+                Path::new("module.yaml"),
+                "implemented provided capability requires its public behavior binding",
+            ),
+            error_diagnostic(
+                "semantic.function-contract-missing",
+                Path::new("implementation.yaml"),
+                "semantic function discharges an unknown contract name instead of its path",
+            ),
+            error_diagnostic(
+                "surface.surface",
+                Path::new("implementation.yaml"),
+                "unsupported surface `Swift public API`",
+            ),
         ];
         let repair = render_spec_plan_repair_prompt(
             "bounded schema context",
@@ -95553,6 +95670,12 @@ contracts:
         assert!(repair.contains("canonical transition semantic function is always `kind: transition` and `purity: pure`"));
         assert!(repair.contains("Resource protocol identifier repair rule"));
         assert!(repair.contains("except for `semantic.binding-dependency-add-exists`"));
+        assert!(repair.contains("Public capability binding repair rule"));
+        assert!(repair.contains("`public_kind: capability`"));
+        assert!(repair.contains("exact module-relative contract path"));
+        assert!(repair.contains("Runnable surface repair rule"));
+        assert!(repair.contains("Do not emit a `surfaces` change for a Swift public API"));
+        assert!(repair.contains("Original bounded schema context"));
     }
 
     #[test]
@@ -96437,6 +96560,136 @@ surfaces:
         );
         assert_eq!(normalizations.len(), 1);
         assert!(normalizations[0].contains("from a scalar to a one-item list"));
+    }
+
+    #[test]
+    fn semantic_plan_normalizes_scalar_authority_evidence_before_typed_parse() {
+        let response = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+authority_bindings:
+  add:
+    - authority: keychain-secure-storage
+      roles: [effect_executor]
+      safe_facade: Sources/Store/EffectExecutor.swift#executeEffect
+      evidence: verification/authorities/keychain_secure_storage_binding.md
+  set: []
+  remove: []
+"#;
+
+        let (normalized, normalizations) = normalize_spec_plan_authority_evidence_paths(response);
+        let change: SemanticChange = serde_yaml::from_str(&normalized).unwrap();
+        let binding = &change.authority_bindings.unwrap().add[0];
+
+        assert_eq!(
+            binding.evidence,
+            vec!["verification/authorities/keychain_secure_storage_binding.md"]
+        );
+        assert_eq!(normalizations.len(), 1);
+        assert!(normalizations[0].contains("authority binding `keychain-secure-storage`"));
+        assert!(normalizations[0].contains("from a scalar to a one-item list"));
+    }
+
+    #[test]
+    fn saved_storage_plan_reaches_exact_candidate_diagnostics_after_shape_normalization() {
+        let root = rust_typing_fixture(
+            "semantic-plan-storage-adapter-regression",
+            &["core"],
+            "",
+            "pub fn transition_widget() {}\n",
+        );
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let response = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+contracts:
+  add:
+    - name: secure-media-identity-persistence
+      kind: capability
+      direction: provided
+      version: 1.0.0
+      meaning: Persist secure media identity data.
+      semantics:
+        behavior:
+          observability: full
+          observations: []
+          assumptions: []
+          requires:
+            - id: typed-input
+              statement: Input is typed.
+              evaluation: {kind: core}
+          guarantees: []
+          failures: []
+          cases: []
+          invariants: []
+          case_policy: {coverage: exhaustive, overlap: forbidden}
+  set: []
+  remove: []
+semantic_functions:
+  add:
+    - id: persist-identity
+      symbol: src/lib.rs#persist_identity
+      kind: decision
+      purity: pure
+      discharges: {contracts: [secure-media-identity-persistence], invariants: [], assumptions: []}
+      assumptions: {requires: [], maintains: [], ensures: []}
+      evidence: {properties: [verification/properties/persist_identity.md]}
+      authorities: []
+  set: []
+  remove: []
+public_behavior_bindings:
+  add:
+    - id: secure-media-identity-persistence-binding
+      public_kind: command
+      public_name: secure-media-identity-persistence
+      contract: contracts/secure-media-identity-persistence.v1.yaml
+      semantic_function: persist-identity
+      machine_inputs: []
+      machine_outputs: []
+  set: null
+  remove: []
+authority_bindings:
+  add:
+    - authority: keychain-secure-storage
+      roles: [effect_executor]
+      safe_facade: src/effect.rs#execute
+      evidence: verification/authorities/keychain_secure_storage.md
+  set: []
+  remove: []
+surfaces:
+  set: null
+  add:
+    - name: swift-public-api
+      kind: runnable-boundary
+      surface: Swift public API
+      entrypoint: src/lib.rs#persist_identity
+      delegates_to: {symbol: src/lib.rs#persist_identity, command: Persist}
+      no_effects_justification: The fixture has no effects.
+      usage_document: verification/surfaces/swift_api.md
+      smoke_command: verify
+      evidence: [verification/surfaces/swift_api.md]
+  remove: []
+"#;
+
+        let prepared = prepare_spec_plan_provider_response(
+            &context,
+            "Adopt the existing Swift persistence boundary.",
+            response,
+        );
+        let checks = prepared
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.check.as_str())
+            .collect::<BTreeSet<_>>();
+
+        fs::remove_dir_all(root).unwrap();
+        assert!(!checks.contains("semantic-plan.response-invalid"));
+        assert!(prepared.normalizations.iter().any(|normalization| {
+            normalization.contains("authority binding `keychain-secure-storage`")
+        }));
+        assert!(checks.contains("schema.validate"));
+        assert!(checks.contains("semantic.capability-binding-missing"));
+        assert!(checks.contains("semantic.public-binding-target-missing"));
+        assert!(checks.contains("semantic.function-contract-missing"));
+        assert!(checks.contains("surface.surface"));
     }
 
     #[test]
