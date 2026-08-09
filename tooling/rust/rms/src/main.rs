@@ -52548,6 +52548,12 @@ fn prepare_spec_plan_provider_response(
         &mut change,
     ));
     normalizations.extend(normalize_spec_plan_incomplete_temporal_fields(&mut change));
+    normalizations.extend(normalize_spec_plan_changed_law_evidence(&mut change));
+    normalizations.extend(normalize_spec_plan_machine_variant_identifiers(&mut change));
+    normalizations.extend(normalize_spec_plan_required_existing_roles(
+        context,
+        &mut change,
+    ));
     let change = prepare_semantic_change_for_apply(context, change);
     let response = match serde_yaml::to_string(&change) {
         Ok(response) => response,
@@ -52559,6 +52565,160 @@ fn prepare_spec_plan_provider_response(
         diagnostics,
         normalizations,
     }
+}
+
+fn normalize_spec_plan_changed_law_evidence(change: &mut SemanticChange) -> Vec<String> {
+    let Some(laws) = change.laws.as_ref() else {
+        return Vec::new();
+    };
+    let changed_laws = laws
+        .add
+        .iter()
+        .chain(&laws.replace)
+        .map(|law| law.id.clone())
+        .collect::<Vec<_>>();
+    if changed_laws.is_empty() {
+        return Vec::new();
+    }
+    let evidence = change.evidence.get_or_insert_with(Default::default);
+    let mut normalizations = Vec::new();
+    for law in changed_laws {
+        if evidence.add.iter().any(|item| item.proves == law) {
+            continue;
+        }
+        let stem = law.replace('-', "_");
+        evidence.add.push(SemanticEvidenceItemChange {
+            kind: "law".to_string(),
+            proves: law.clone(),
+            path: format!("verification/laws/{stem}.md"),
+        });
+        normalizations.push(format!(
+            "added the required law evidence obligation for `{law}`"
+        ));
+    }
+    normalizations
+}
+
+fn normalize_spec_plan_machine_variant_identifiers(change: &mut SemanticChange) -> Vec<String> {
+    let Some(machine) = change.machine.as_mut() else {
+        return Vec::new();
+    };
+    let mut replacements = BTreeMap::new();
+    for variants in [
+        &mut machine.states,
+        &mut machine.commands,
+        &mut machine.observed_events,
+        &mut machine.events,
+        &mut machine.effects,
+        &mut machine.effect_results,
+        &mut machine.replies,
+        &mut machine.rejections,
+    ] {
+        for identifier in variants
+            .replace
+            .iter_mut()
+            .flatten()
+            .chain(&mut variants.add)
+        {
+            if is_stable_identifier(identifier) || !is_stable_semantic_id(identifier) {
+                continue;
+            }
+            let original = identifier.clone();
+            let replacement = pascal_case_identifier(&original);
+            if is_stable_identifier(&replacement) {
+                *identifier = replacement.clone();
+                replacements.insert(original, replacement);
+            }
+        }
+    }
+    if let Some(transitions) = machine.transitions.as_mut() {
+        for transition in transitions
+            .replace
+            .iter_mut()
+            .flatten()
+            .chain(&mut transitions.add)
+        {
+            for identifier in [&mut transition.from, &mut transition.on, &mut transition.to] {
+                if let Some(replacement) = replacements.get(identifier) {
+                    *identifier = replacement.clone();
+                }
+            }
+            for identifier in transition
+                .events
+                .iter_mut()
+                .chain(&mut transition.commands)
+                .chain(&mut transition.effects)
+            {
+                if let Some(replacement) = replacements.get(identifier) {
+                    *identifier = replacement.clone();
+                }
+            }
+            for identifier in [&mut transition.reply, &mut transition.rejection]
+                .into_iter()
+                .flatten()
+            {
+                if let Some(replacement) = replacements.get(identifier) {
+                    *identifier = replacement.clone();
+                }
+            }
+        }
+    }
+    replacements
+        .into_iter()
+        .map(|(original, replacement)| {
+            format!(
+                "normalized machine variant `{original}` to implementation identifier `{replacement}`"
+            )
+        })
+        .collect()
+}
+
+fn normalize_spec_plan_required_existing_roles(
+    context: &SpecTargetContext,
+    change: &mut SemanticChange,
+) -> Vec<String> {
+    let Some(roles) = change
+        .roles
+        .as_mut()
+        .filter(|roles| !roles.replace.is_empty())
+    else {
+        return Vec::new();
+    };
+    let Some(implementation) = context.implementation.as_ref() else {
+        return Vec::new();
+    };
+    let explicitly_removed = roles
+        .remove
+        .iter()
+        .map(|role| role.kind.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut normalizations = Vec::new();
+    for kind in ["probe_adapter"] {
+        if explicitly_removed.contains(kind)
+            || roles
+                .replace
+                .iter()
+                .chain(&roles.add)
+                .any(|role| role.kind == kind)
+        {
+            continue;
+        }
+        let paths = get_string_array(&implementation.value, &["architecture", "roles", kind]);
+        for path in paths {
+            roles.replace.push(MachineRoleChange {
+                kind: kind.to_string(),
+                effect: None,
+                binding_hint: None,
+                path: Some(path),
+            });
+        }
+        if roles.replace.iter().any(|role| role.kind == kind) {
+            normalizations.push(format!(
+                "preserved required existing `{kind}` role during total role replacement"
+            ));
+        }
+    }
+    normalizations
 }
 
 fn normalize_spec_plan_json_closing_delimiters(response: &str) -> (String, Vec<String>) {
@@ -53270,7 +53430,11 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "semantic.function-evidence-missing"
             || diagnostic.check == "semantic.function-authority-gap"
             || diagnostic.check == "semantic.law-without-property"
+            || diagnostic.check == "semantic.law-without-evidence"
             || diagnostic.check == "semantic.contract-without-evidence"
+            || diagnostic.check == "machine-change.identifier"
+            || diagnostic.check == "schema.validate"
+                && diagnostic.message.contains("`/architecture/roles`")
             || diagnostic.check == "machine-change.state-unreachable"
             || diagnostic.check == "machine-change.output-path-eliminated"
             || diagnostic.check == "structure.effect-result-unhandled"
@@ -53433,13 +53597,14 @@ fn render_spec_plan_repair_prompt(
             matches!(
                 diagnostic.check.as_str(),
                 "semantic.law-without-property"
+                    | "semantic.law-without-evidence"
                     | "semantic.function-evidence-missing"
                     | "semantic.function-authority-gap"
                     | "semantic.public-binding-function-missing"
             )
         })
         .then_some(
-            "\n\nProof closure repair rule: preserve every existing law, property, semantic function, evidence obligation, and public binding that is not named by a diagnostic. Every risk-bearing law needs at least one complete semantic property whose `proves` value is that exact law id. A semantic function evidence entry names the exact `properties.*[].evidence.path`, not a similar property id or a newly invented path. Every law authority has a declared semantic function of the matching authority kind that lists the invariant under `discharges.invariants` and names its concrete property evidence. A public behavior binding references a semantic function declared in the same final candidate. Restore a removed function or point the binding to an already declared function; never invent a function name without its complete declaration. Do not delete other properties, functions, bindings, or evidence to repair one missing link.",
+            "\n\nProof closure repair rule: preserve every existing law, property, semantic function, evidence obligation, and public binding that is not named by a diagnostic. Every added or changed law needs one `evidence.add[]` item whose `kind` is `law` and whose `proves` value is the exact law id. Every risk-bearing law needs at least one complete semantic property whose `proves` value is that exact law id. A semantic function evidence entry names the exact `properties.*[].evidence.path`, not a similar property id or a newly invented path. Every law authority has a declared semantic function of the matching authority kind that lists the invariant under `discharges.invariants` and names its concrete property evidence. A public behavior binding references a semantic function declared in the same final candidate. Restore a removed function or point the binding to an already declared function; never invent a function name without its complete declaration. Do not delete other properties, functions, bindings, or evidence to repair one missing link.",
         )
         .unwrap_or_default();
     let contract_evidence_repair = diagnostics
@@ -53472,6 +53637,7 @@ fn render_spec_plan_repair_prompt(
                     "semantic-plan.capability-contract-mismatch"
                         | "semantic-plan.composite-export-contract-mismatch"
                         | "semantic.law-without-property"
+                        | "semantic.law-without-evidence"
                         | "semantic.contract-without-evidence"
                         | "semantic.function-evidence-missing"
                         | "semantic.function-authority-gap"
@@ -53482,7 +53648,29 @@ fn render_spec_plan_repair_prompt(
                 )
         })
         .then_some(
-            "\n\nDiagnostic-scoped repair rule: this is a patch to the candidate, not a new plan. Change only the smallest fields named by error diagnostics. Warning-only evidence obligations do not authorize deleting or rewriting any section. A `surface.*` diagnostic authorizes only the diagnosed `surfaces` item fields. A capability or composite exact-contract mismatch authorizes only the matching `contracts.set` artifact. Preserve all unrelated top-level sections and every unaffected item in `laws`, `properties`, `semantic_functions`, `machine`, `roles`, `evidence`, `public_behavior_bindings`, and `dependency_behavior_bindings`. Never shorten or empty an unrelated `set` or `add` list. Preserve stable ids, property `proves` links, property evidence paths, semantic-function discharges, and the complete transition relation unless a diagnostic explicitly names that exact item.",
+            "\n\nDiagnostic-scoped repair rule: this is a patch to the candidate, not a new plan. Change only the smallest fields named by error diagnostics. Warning-only evidence obligations do not authorize deleting or rewriting any section. A `surface.*` diagnostic authorizes only the diagnosed `surfaces` item fields. A capability or composite exact-contract mismatch authorizes only the matching `contracts.set` artifact. Preserve all unrelated top-level sections and every unaffected item in `laws`, `properties`, `semantic_functions`, `machine`, `roles`, `evidence`, `public_behavior_bindings`, and `dependency_behavior_bindings`. Never shorten or empty an unrelated `set` or `add` list. Preserve stable ids, property `proves` links, property evidence paths, semantic-function discharges, and the complete transition relation unless a diagnostic explicitly names that exact item. Preserve every explicit `properties.remove[]` item requested by the task. Removing an obsolete scaffold property is not authority to overwrite its concrete evidence or reintroduce that ID under `properties.set`.",
+        )
+        .unwrap_or_default();
+    let machine_identifier_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            diagnostic.check == "machine-change.identifier"
+                || diagnostic.check == "schema.validate"
+                    && diagnostic.message.contains("/architecture/machine/")
+                    && diagnostic.message.contains("does not match")
+        })
+        .then_some(
+            "\n\nMachine identifier repair rule: every machine state, input command, event, emitted command, effect, effect result, reply, and rejection is an implementation identifier matching `^[A-Za-z_][A-Za-z0-9_]*$`, for example `ResolvePublicPttSecureMediaGenerationRecovery`. A kebab-case semantic capability name remains unchanged only in `contracts`, `dependency_behavior_bindings.capability`, and other semantic dependency fields. Never copy that kebab-case capability name directly into `machine.commands` or a transition output. Declare and use one stable implementation variant for the emitted dependency command, while the dependency behavior binding maps it to the exact semantic capability.",
+        )
+        .unwrap_or_default();
+    let required_role_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            diagnostic.check == "schema.validate"
+                && diagnostic.message.contains("probe_adapter")
+        })
+        .then_some(
+            "\n\nRequired role preservation rule: `roles.set` is a complete replacement. Preserve every required existing role and path, including every existing `probe_adapter`, unless the task explicitly and validly replaces that binding through its own focused operation. For a focused parser addition, prefer `roles.add` and leave existing roles unchanged. Never reduce `roles.set` to only the newly diagnosed role.",
         )
         .unwrap_or_default();
     let surface_repair = diagnostics
@@ -53560,7 +53748,7 @@ fn render_spec_plan_repair_prompt(
         )
         .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{machine_identifier_repair}{required_role_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -99186,6 +99374,143 @@ contracts:
         assert!(repair.contains("pointer: /absolute/json/pointer"));
         assert!(repair.contains("Never put a variant, scalar value type, or product type name"));
         assert!(repair.contains(saved_response_excerpt));
+    }
+
+    #[test]
+    fn semantic_plan_saved_recovery_boundary_repair_closes_bounded_machine_and_proof_shape() {
+        let root = route_capability_fixture("saved-recovery-boundary-plan");
+        let target = root.join("modules/play-game-domain/module.yaml");
+        let context = load_spec_target(&target).unwrap();
+        assert!(!get_string_array(
+            &context.implementation.as_ref().unwrap().value,
+            &["architecture", "roles", "probe_adapter"],
+        )
+        .is_empty());
+        let response = r#"spec: rms/semantic-change/v0.1
+module: modules/play-game-domain/module.yaml
+intent:
+  summary: Add bounded recovery semantics and remove only the obsolete scaffold fuzz property.
+laws:
+  add:
+    - id: recovery-boundary-total-outcome-law
+      statement: Every recovery request returns one typed outcome.
+      kind: structural
+      authority: transition
+      enforced_by: transition-model
+    - id: backend-route-remains-effect-authority-law
+      statement: The backend route remains the effect authority.
+      kind: structural
+      authority: transition
+      enforced_by: transition-model
+  set: []
+  remove: []
+properties:
+  add: []
+  set: []
+  remove: [PlayGameDomain-scaffold-fuzz-property]
+machine:
+  mode: stateful-transition-machine
+  commands:
+    set: [PlayTurn, resolve-public-ptt-secure-media-generation-recovery-capability]
+    add: []
+    remove: []
+roles:
+  set:
+    - kind: parser
+      path: src/parser.rs
+  add: []
+  remove: []
+"#;
+
+        let prepared = prepare_spec_plan_provider_response(
+            &context,
+            "Add recovery semantics. Remove the obsolete scaffold fuzz property and preserve every other declaration.",
+            response,
+        );
+
+        assert!(
+            prepared.diagnostics.iter().all(|diagnostic| {
+                diagnostic.check != "semantic.law-without-evidence"
+                    && diagnostic.check != "machine-change.identifier"
+                    && !(diagnostic.check == "schema.validate"
+                        && (diagnostic.message.contains("probe_adapter")
+                            || diagnostic.message.contains(
+                                "resolve-public-ptt-secure-media-generation-recovery-capability",
+                            )))
+            }),
+            "{:#?}",
+            prepared.diagnostics
+        );
+        assert!(prepared.normalizations.iter().any(|item| item.contains(
+            "added the required law evidence obligation for `recovery-boundary-total-outcome-law`"
+        )));
+        assert!(prepared.normalizations.iter().any(|item| item.contains(
+            "normalized machine variant `resolve-public-ptt-secure-media-generation-recovery-capability`"
+        )));
+        assert!(prepared
+            .normalizations
+            .iter()
+            .any(|item| item.contains("preserved required existing `probe_adapter` role")));
+        let normalized: SemanticChange = serde_yaml::from_str(&prepared.response).unwrap();
+        let evidence = normalized.evidence.unwrap().add;
+        assert!(evidence.iter().any(|item| {
+            item.kind == "law" && item.proves == "recovery-boundary-total-outcome-law"
+        }));
+        assert!(evidence.iter().any(|item| {
+            item.kind == "law" && item.proves == "backend-route-remains-effect-authority-law"
+        }));
+        let machine = normalized.machine.unwrap();
+        assert!(machine
+            .commands
+            .replace
+            .unwrap()
+            .contains(&"ResolvePublicPttSecureMediaGenerationRecoveryCapability".to_string()));
+        let roles = normalized.roles.unwrap();
+        assert!(roles
+            .replace
+            .iter()
+            .any(|role| role.kind == "probe_adapter"));
+        let properties = normalized.properties.unwrap();
+        assert_eq!(
+            properties.remove,
+            vec!["PlayGameDomain-scaffold-fuzz-property".to_string()]
+        );
+        assert!(properties.replace.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn semantic_plan_saved_recovery_boundary_diagnostics_render_scoped_repair_rules() {
+        let diagnostics = vec![
+            error_diagnostic(
+                "semantic.law-without-evidence",
+                Path::new("module.yaml"),
+                "law `recovery-boundary-total-outcome-law` must have evidence that proves it",
+            ),
+            error_diagnostic(
+                "machine-change.identifier",
+                Path::new("implementation.yaml"),
+                "`machine.commands.set` contains invalid identifier `resolve-public-ptt-secure-media-generation-recovery-capability`",
+            ),
+            error_diagnostic(
+                "schema.validate",
+                Path::new("implementation.yaml"),
+                "\"probe_adapter\" is a required property at `/architecture/roles`",
+            ),
+        ];
+        let repair = render_spec_plan_repair_prompt(
+            "Remove the obsolete scaffold fuzz property and preserve every other declaration.",
+            "properties: {remove: [obsolete-scaffold-fuzz-property]}",
+            &diagnostics,
+        );
+
+        assert!(repair.contains("Every added or changed law needs one `evidence.add[]` item"));
+        assert!(repair.contains("Machine identifier repair rule"));
+        assert!(repair.contains("kebab-case semantic capability name remains unchanged only"));
+        assert!(repair.contains("Required role preservation rule"));
+        assert!(repair.contains("including every existing `probe_adapter`"));
+        assert!(repair.contains("Preserve every explicit `properties.remove[]` item"));
+        assert!(repair.contains("not authority to overwrite its concrete evidence"));
     }
 
     #[test]
