@@ -53186,6 +53186,7 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "property.command-does-not-select-runner"
             || diagnostic.check == "property.composite-behavior-owner-required"
             || diagnostic.check == "property.realization-not-executed"
+            || diagnostic.check == "semantic-plan.capability-contract-mismatch"
             || diagnostic.check == "semantic-plan.composite-export-contract-mismatch"
             || diagnostic.check == "semantic.capability-binding-missing"
             || diagnostic.check == "semantic.public-binding-target-missing"
@@ -53473,7 +53474,7 @@ fn render_spec_plan_repair_prompt(
             )
         })
         .then_some(
-            "\n\nExact provider contract repair rule: a module-resolution dependency or composite export must preserve the complete exact provider artifact. Copy the provider's wrapper, version, meaning, observations, clauses, case ids, expressions, and permits unchanged. Change only the matching required or exported `contracts.set` item. Preserve every unrelated law, property, function, binding, role, surface, evidence item, and machine transition exactly. Do not synthesize consumer- or parent-specific cases, copy a subset, or change a path to hide the mismatch. A composition-only parent removes parent-local behavioral properties and keeps behavioral proof in the runnable child; it never relabels that proof as composition evidence.",
+            "\n\nExact provider contract repair rule: a module-resolution dependency or composite export must preserve the complete exact provider artifact. Copy the literal artifact from `Named Provider Contract (exact-copy source)` or `Composite Export Provider Contract (exact-copy source)`, including its wrapper, version, meaning, observations, external property evaluations, clauses, case ids, expressions, and permits unchanged. Change only the matching required or exported `contracts.set` item. Provider external property ids remain exact: the module-resolution dependency binding delegates their executable closure to the provider, so never replace them with unresolved clauses or invent consumer-local substitutes. Preserve every unrelated law, property, function, binding, role, surface, evidence item, and machine transition exactly. Do not synthesize consumer- or parent-specific cases, copy a subset, or change a path to hide the mismatch. A composition-only parent removes parent-local behavioral properties and keeps behavioral proof in the runnable child; it never relabels that proof as composition evidence.",
         )
         .unwrap_or_default();
     let runner_selection_repair = diagnostics
@@ -53491,23 +53492,42 @@ fn render_spec_plan_repair_prompt(
 }
 
 fn extract_spec_plan_contract_context(prompt: &str) -> String {
-    let mut sections = String::new();
+    let mut provider_sections = String::new();
+    let mut direct_sections = String::new();
     let mut capture = false;
+    let mut provider = false;
     for line in prompt.lines() {
-        if line.starts_with("### Direct Public Contract:")
-            || line.starts_with("### Named Provider Contract (exact-copy source):")
-        {
+        if line.starts_with("### Named Provider Contract (exact-copy source):") {
             capture = true;
-            sections.push_str("\n\nExact-contract repair context (preserve complete artifact):\n");
+            provider = true;
+            provider_sections.push_str(
+                "\n\nExact-provider repair context (copy complete artifact unchanged):\n",
+            );
+        } else if line.starts_with("### Direct Public Contract:") {
+            capture = true;
+            provider = false;
+            direct_sections
+                .push_str("\n\nExact-contract repair context (preserve complete artifact):\n");
         } else if capture && (line.starts_with("### ") || line.starts_with("## ")) {
             capture = false;
         }
         if capture {
+            let sections = if provider {
+                &mut provider_sections
+            } else {
+                &mut direct_sections
+            };
             sections.push_str(line);
             sections.push('\n');
         }
     }
-    truncate_for_prompt(&sections, 32_000)
+    let provider_sections = truncate_for_prompt(&provider_sections, 32_000);
+    let remaining = 48_000usize.saturating_sub(provider_sections.len());
+    format!(
+        "{}{}",
+        provider_sections,
+        truncate_for_prompt(&direct_sections, remaining)
+    )
 }
 
 fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str) -> Result<String> {
@@ -53601,12 +53621,12 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
             writeln!(out, "```")?;
         }
     }
+    let mut named_provider_paths = BTreeSet::new();
     // A module-resolution binding is an explicit, bounded cross-module edge.
     // Include only the named provider artifact so an exact-contract task can
     // copy its canonical semantics without giving the provider broad
     // repository access or asking it to reconstruct the contract from prose.
     if let (Some(module), Some(implementation)) = (&context.module, &context.implementation) {
-        let mut provider_paths = BTreeSet::new();
         for binding in typed_yaml_sequence::<DependencyBehaviorBinding>(
             &implementation.value,
             &["architecture", "dependency_behavior_bindings"],
@@ -53630,7 +53650,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
                 .parent()
                 .unwrap_or_else(|| Path::new("."))
                 .join(provider_contract);
-            if !provider_paths.insert(provider_path.clone()) || !provider_path.is_file() {
+            if !named_provider_paths.insert(provider_path.clone()) || !provider_path.is_file() {
                 continue;
             }
             let provider = load_manifest(&provider_path).with_context(|| {
@@ -53649,6 +53669,72 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
                 out,
                 "This artifact is the canonical source for the module-resolution binding. If the task requires the exact provider contract, copy this complete object unchanged, including every wrapper, version, meaning, observation, clause, case, expression, and permits field."
             )?;
+            writeln!(out, "```yaml")?;
+            write!(out, "{}", serde_yaml::to_string(&provider.value)?)?;
+            writeln!(out, "```")?;
+        }
+    }
+    // A freshly scaffolded consumer can declare the provider module and the
+    // required capability before it has an implementation dependency binding.
+    // Resolve only a unique declared provider/capability match and include its
+    // exact artifact. This keeps the provider interaction bounded while making
+    // the first semantic plan capable of replacing the consumer scaffold with
+    // the provider contract instead of reconstructing it from prose.
+    if let Some(module) = &context.module {
+        let required_module_names = get_path(&module.value, &["requires", "modules"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| get_str(item, &["name"]).map(ToString::to_string))
+            .collect::<Vec<_>>();
+        for required in get_path(&module.value, &["requires", "capabilities"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+        {
+            let Some(capability_name) = get_str(required, &["name"]) else {
+                continue;
+            };
+            let mut matches = required_module_names
+                .iter()
+                .filter_map(|provider_name| find_named_provider_module(root, module, provider_name))
+                .filter_map(|provider_module| {
+                    let contract = get_path(&provider_module.value, &["provides", "capabilities"])
+                        .and_then(YamlValue::as_sequence)?
+                        .iter()
+                        .find(|provided| get_str(provided, &["name"]) == Some(capability_name))
+                        .and_then(|provided| get_str(provided, &["contract"]))?
+                        .to_string();
+                    Some((provider_module, contract))
+                })
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                continue;
+            }
+            let Some((provider_module, provider_contract)) = matches.pop() else {
+                continue;
+            };
+            let provider_path = provider_module
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(provider_contract);
+            if !provider_path.is_file() || !named_provider_paths.insert(provider_path.clone()) {
+                continue;
+            }
+            let provider = load_manifest(&provider_path).with_context(|| {
+                format!(
+                    "failed to load declared capability provider contract {} for semantic planning",
+                    provider_path.display()
+                )
+            })?;
+            writeln!(out)?;
+            writeln!(
+                out,
+                "### Named Provider Contract (exact-copy source): {}",
+                provider.path.display()
+            )?;
+            writeln!(out, "This artifact is the unique canonical contract published for declared required capability `{capability_name}` by a declared required module. Copy this complete object unchanged into the matching required `contracts.set` item, including every wrapper, version, meaning, observation, external property evaluation, clause, case, expression, and permits field. The dependency binding delegates the referenced executable property closure to this provider; do not replace provider property ids with consumer-local unresolved clauses.")?;
             writeln!(out, "```yaml")?;
             write!(out, "{}", serde_yaml::to_string(&provider.value)?)?;
             writeln!(out, "```")?;
@@ -96808,6 +96894,74 @@ contracts:
         assert!(prompt.contains("Exact provider decision contract."));
         assert!(prompt.contains("copy this complete object unchanged"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn semantic_plan_scaffold_requirement_includes_provider_contract_and_repair_preserves_closure()
+    {
+        let root = unique_test_dir("semantic-plan-scaffold-provider-contract");
+        fs::create_dir_all(root.join("provider/contracts")).unwrap();
+        fs::create_dir_all(root.join("consumer/contracts")).unwrap();
+        write_compose_module(
+            &root.join("provider/module.yaml"),
+            "provider",
+            "  capabilities:\n    - name: recover-generation\n      contract: contracts/recover-generation.v1.yaml\n",
+            "",
+            "",
+        );
+        write_compose_module(
+            &root.join("consumer/module.yaml"),
+            "consumer",
+            "  capabilities: []\n",
+            "  modules:\n    - name: provider\n",
+            "  capabilities:\n    - name: recover-generation\n      contract: contracts/recover-generation.v1.yaml\n",
+        );
+        fs::write(
+            root.join("consumer/implementation.yaml"),
+            "spec: rms/implementation/v0.1\nmodule: consumer\nbinding: rust\narchitecture: {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("consumer/contracts/recover-generation.v1.yaml"),
+            "spec: rms/contract/v0.3\nname: recover-generation\nversion: '1'\nkind: capability\nmeaning: Scaffold consumer contract.\nsemantics:\n  behavior:\n    observability: none\n    observations: []\n    assumptions: []\n    requires: []\n    guarantees: []\n    failures: []\n    cases: []\n    invariants: []\n    case_policy: {coverage: exhaustive, overlap: forbidden}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("provider/contracts/recover-generation.v1.yaml"),
+            "spec: rms/contract/v0.3\nname: recover-generation\nversion: '1'\nkind: capability\nmeaning: Exact provider recovery contract.\nsemantics:\n  behavior:\n    observability: full\n    observations: []\n    assumptions: []\n    requires:\n      - id: valid-request\n        statement: The request is valid.\n        evaluation: {kind: external, property: provider-valid-request-property}\n    guarantees:\n      - id: explicit-outcome\n        statement: The outcome is explicit.\n        evaluation: {kind: external, property: provider-explicit-outcome-property}\n    failures:\n      - id: rejected-request\n        statement: Rejected requests are explicit.\n        evaluation: {kind: external, property: provider-rejected-request-property}\n    cases: []\n    invariants: []\n    case_policy: {coverage: exhaustive, overlap: forbidden}\n",
+        )
+        .unwrap();
+        let context = load_spec_target(&root.join("consumer/module.yaml")).unwrap();
+        let prompt = render_spec_plan_prompt(
+            &context,
+            &root,
+            "Replace the scaffold with the exact capability contract published by provider.",
+        )
+        .unwrap();
+        let diagnostics = vec![error_diagnostic(
+            "semantic-plan.capability-contract-mismatch",
+            &root.join("consumer/contracts/recover-generation.v1.yaml"),
+            "required capability must preserve the exact provider contract",
+        )];
+        let repair = render_spec_plan_repair_prompt(
+            &prompt,
+            "spec: rms/semantic-change/v0.1\ncontracts:\n  set: []\n",
+            &diagnostics,
+        );
+
+        fs::remove_dir_all(root).unwrap();
+        assert!(prompt.contains("Named Provider Contract (exact-copy source)"));
+        assert!(prompt.contains("Exact provider recovery contract."));
+        assert!(prompt.contains("provider-valid-request-property"));
+        assert!(repair.contains("Exact-provider repair context"));
+        assert!(repair.contains("provider-explicit-outcome-property"));
+        assert!(repair.contains("provider-rejected-request-property"));
+        assert!(repair.contains("Provider external property ids remain exact"));
+        assert!(repair.contains("never replace them with unresolved clauses"));
+        assert!(
+            repair.find("Named Provider Contract (exact-copy source)")
+                < repair.find("Direct Public Contract:")
+        );
     }
 
     #[test]
