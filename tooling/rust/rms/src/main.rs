@@ -51623,12 +51623,12 @@ fn validate_surface_declaration(
             ),
         ));
     }
-    if !is_safe_relative_artifact_path(&declaration.entrypoint) {
+    if !is_safe_surface_entrypoint(manifest, &declaration.entrypoint) {
         diagnostics.push(error(
             "surface.entrypoint",
             &manifest.path,
             format!(
-                "surface entrypoint `{}` must be relative and stay inside the module",
+                "surface entrypoint `{}` must be relative and stay inside the RMS system root",
                 declaration.entrypoint
             ),
         ));
@@ -51814,6 +51814,36 @@ fn is_concrete_callable_symbol(symbol: &str) -> bool {
         && !symbol.ends_with(".mjs")
         && (is_stable_identifier(symbol)
             || symbol.rsplit("::").next().is_some_and(is_stable_identifier))
+}
+
+fn is_safe_surface_entrypoint(manifest: &LoadedManifest, entrypoint: &str) -> bool {
+    if is_safe_relative_artifact_path(entrypoint) {
+        return true;
+    }
+    let path = entrypoint
+        .split_once('#')
+        .map_or(entrypoint, |(path, _)| path);
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return false;
+    }
+    let Some(system_root) = manifest
+        .path
+        .ancestors()
+        .find(|directory| directory.join("system.yaml").is_file())
+    else {
+        return false;
+    };
+    let Some(module_root) = manifest.path.parent() else {
+        return false;
+    };
+    let Ok(system_root) = fs::canonicalize(system_root) else {
+        return false;
+    };
+    let Ok(target) = fs::canonicalize(module_root.join(path)) else {
+        return false;
+    };
+    target.starts_with(system_root)
 }
 
 fn is_supported_surface_binding(surface: &str) -> bool {
@@ -52554,6 +52584,7 @@ fn prepare_spec_plan_provider_response(
         context,
         &mut change,
     ));
+    normalizations.extend(normalize_spec_plan_surface_fields(context, &mut change));
     let change = prepare_semantic_change_for_apply(context, change);
     let response = match serde_yaml::to_string(&change) {
         Ok(response) => response,
@@ -52715,6 +52746,74 @@ fn normalize_spec_plan_required_existing_roles(
         if roles.replace.iter().any(|role| role.kind == kind) {
             normalizations.push(format!(
                 "preserved required existing `{kind}` role during total role replacement"
+            ));
+        }
+    }
+    normalizations
+}
+
+fn normalize_spec_plan_surface_fields(
+    context: &SpecTargetContext,
+    change: &mut SemanticChange,
+) -> Vec<String> {
+    let Some(surfaces) = change.surfaces.as_mut() else {
+        return Vec::new();
+    };
+    let mut machine_input_to_public = BTreeMap::new();
+    if let Some(implementation) = context.implementation.as_ref() {
+        for binding in typed_yaml_sequence::<PublicBehaviorBinding>(
+            &implementation.value,
+            &["architecture", "public_behavior_bindings"],
+        ) {
+            if binding.public_kind == "command" {
+                for input in binding.machine_inputs {
+                    machine_input_to_public.insert(input, binding.public_name.clone());
+                }
+            }
+        }
+    }
+    if let Some(bindings) = change.public_behavior_bindings.as_ref() {
+        for binding in bindings.replace.iter().flatten().chain(&bindings.add) {
+            if binding.public_kind == "command" {
+                for input in &binding.machine_inputs {
+                    machine_input_to_public.insert(input.clone(), binding.public_name.clone());
+                }
+            }
+        }
+    }
+    let mut normalizations = Vec::new();
+    for surface in surfaces
+        .replace
+        .iter_mut()
+        .flatten()
+        .chain(&mut surfaces.add)
+    {
+        if !is_supported_surface_binding(&surface.surface) {
+            let binding = surface
+                .surface
+                .split(|character: char| character.is_ascii_whitespace() || character == ':')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if is_supported_surface_binding(&binding) {
+                normalizations.push(format!(
+                    "normalized runnable surface `{}` to closed surface kind `{binding}`",
+                    surface.surface
+                ));
+                surface.surface = binding;
+            }
+        }
+        let Some(delegation) = surface.delegates_to.as_mut() else {
+            continue;
+        };
+        let Some(command) = delegation.command.as_mut() else {
+            continue;
+        };
+        if let Some(public) = machine_input_to_public.get(command) {
+            let machine_input = command.clone();
+            *command = public.clone();
+            normalizations.push(format!(
+                "mapped surface machine input `{machine_input}` to owning public command `{public}`"
             ));
         }
     }
@@ -53495,7 +53594,7 @@ fn render_spec_plan_repair_prompt(
                     && diagnostic.message.contains("implementation_commands")
         })
         .then_some(
-            "\n\nImplementation command repair rule: `implementation_commands.set` is a mapping from existing `implementation.yaml` command keys to complete non-empty shell command strings. It may replace only keys already present under the bounded manifest's top-level `commands`. Every omitted command and every unrelated declaration is preserved. It cannot add or remove a command key. Put build, verify, probe, trace, property, fuzz, format, or other proof-command maintenance here; never put these executable bindings under `machine.commands`, which declares semantic machine input variants. Preserve each requested invocation exactly and add only the requested shell cleanup or wrapper behavior. Example: `implementation_commands: {set: {verify: \"cargo test --manifest-path Cargo.toml; status=$?; rm -f Cargo.lock; exit $status\"}}`.",
+            "\n\nImplementation command repair rule: `implementation_commands.set` maps command keys to complete non-empty shell command strings. It may replace only keys already present under the bounded manifest's top-level `commands`. It may add one new key only when that exact key is the `smoke_command` of a runnable surface added or replaced in the same change. Every omitted command and every unrelated declaration is preserved. It cannot otherwise add or remove a command key. Put build, verify, probe, trace, property, fuzz, format, or other proof-command maintenance here; never put these executable bindings under `machine.commands`, which declares semantic machine input variants. Preserve each requested key and invocation exactly; never replace `verify` merely because a new surface-specific smoke command needs declaration. Example: `implementation_commands: {set: {surface_verify: \"cd ../.. && just rust-runtime-test\"}}` with the same surface item's `smoke_command: surface_verify`.",
         )
         .unwrap_or_default();
     let collection_preservation_repair = diagnostics
@@ -53677,7 +53776,7 @@ fn render_spec_plan_repair_prompt(
         .iter()
         .any(|diagnostic| diagnostic.check.starts_with("surface."))
         .then_some(
-            "\n\nRunnable surface repair rule: a language public facade, library API, package export, protocol, or reusable capability is not by itself a runnable product surface. Do not emit a `surfaces` change for a Swift public API. Declare the facade through the `public_facade` role and public behavior binding. Only a user- or operator-runnable boundary may use `kind: runnable-boundary`, and its `surface` is exactly one of browser|cli|mobile-ui|desktop-ui|http|batch|executable; an HTTP method and route belong in `entrypoint`, `usage_document`, or bounded role metadata, never in `surface`. `delegates_to.command` names the exact owning module public command, not a private machine input variant. Language names and phrases such as `Swift public API` are never surface values. Change only the diagnosed surface fields and preserve every unrelated proof and machine declaration.",
+            "\n\nRunnable surface repair rule: a language public facade, library API, package export, protocol, or reusable capability is not by itself a runnable product surface. Do not emit a `surfaces` change for a Swift public API. Declare the facade through the `public_facade` role and public behavior binding. Only a user- or operator-runnable boundary may use `kind: runnable-boundary`, and its `surface` is exactly one of browser|cli|mobile-ui|desktop-ui|http|batch|executable; an HTTP method and route does not replace the closed `surface` value. `delegates_to.command` names the exact owning module public command, not a private machine input variant. For `surface.command-not-public`, change only `delegates_to.command`; preserve `delegates_to.symbol`, `entrypoint`, `smoke_command`, and every `implementation_commands.set` key and value byte-for-byte. For `surface.surface`, change only the closed `surface` value. A callable entrypoint may use `../` only when it resolves inside the same RMS system root. Language names and phrases such as `Swift public API` are never surface values. Change only the diagnosed surface fields and preserve every unrelated proof and machine declaration.",
         )
         .unwrap_or_default();
     let transition_output_repair = diagnostics
@@ -54372,7 +54471,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "    exhaustive: true")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `implementation_commands.set` maps existing top-level implementation command keys to complete non-empty shell command strings. It replaces only the named existing keys and preserves every omitted command and unrelated declaration. It cannot add or remove keys. Use it for proof-command binding maintenance; never put executable command strings under `machine.commands`, which declares semantic input variants. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2|v0.3` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `implementation_commands.set` maps top-level implementation command keys to complete non-empty shell command strings. It replaces only the named existing keys and preserves every omitted command and unrelated declaration. It may add one new key only when that exact key is the `smoke_command` of a runnable surface added or replaced in the same change; it cannot otherwise add or remove keys. Use it for proof-command binding maintenance; never put executable command strings under `machine.commands`, which declares semantic input variants. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2|v0.3` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
     writeln!(out, "The exact property exploration shape is:")?;
     writeln!(out, "```yaml")?;
     writeln!(out, "explorations:")?;
@@ -56193,6 +56292,13 @@ fn validate_implementation_commands(
         ));
         return;
     };
+    let surface_smoke_commands = change
+        .surfaces
+        .as_ref()
+        .into_iter()
+        .flat_map(|surfaces| surfaces.replace.iter().flatten().chain(&surfaces.add))
+        .filter_map(|surface| surface.smoke_command.as_deref())
+        .collect::<BTreeSet<_>>();
     for (name, command) in &commands.replace {
         if !is_stable_semantic_id(name) {
             diagnostics.push(error(
@@ -56201,12 +56307,14 @@ fn validate_implementation_commands(
                 format!("implementation command key `{name}` must be a stable identifier"),
             ));
         }
-        if get_str(&implementation.value, &["commands", name]).is_none() {
+        if get_str(&implementation.value, &["commands", name]).is_none()
+            && !surface_smoke_commands.contains(name.as_str())
+        {
             diagnostics.push(error(
                 "semantic.implementation-command-missing",
                 &implementation.path,
                 format!(
-                    "implementation_commands.set may revise only existing command key `{name}`"
+                    "implementation_commands.set may revise only existing command key `{name}` or add the exact smoke command of a surface added in the same change"
                 ),
             ));
         }
@@ -60055,6 +60163,11 @@ fn validate_semantic_surfaces(
             path: implementation.path.clone(),
             value: implementation.value.clone(),
         };
+        if let Some(commands) = change.implementation_commands.as_ref() {
+            for (name, command) in &commands.replace {
+                set_yaml_string_path(&mut snapshot.value, &["commands", name], command);
+            }
+        }
         ensure_declared_smoke_command(&mut snapshot.value, declaration);
         diagnostics.extend(validate_surface_declaration(&snapshot, declaration));
     }
@@ -84912,6 +85025,147 @@ implementation_commands:
         assert!(repair.contains("implementation_commands.set"));
         assert!(repair.contains("may replace only keys already present"));
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn saved_surface_plan_normalizes_only_diagnosed_fields_and_preserves_exact_callable() {
+        let root = route_capability_fixture("saved-surface-plan-scope");
+        let target = root.join("modules/play-game-domain/module.yaml");
+        let context = load_spec_target(&target).unwrap();
+        let binding = typed_yaml_sequence::<PublicBehaviorBinding>(
+            &context.implementation.as_ref().unwrap().value,
+            &["architecture", "public_behavior_bindings"],
+        )
+        .into_iter()
+        .find(|binding| binding.public_kind == "command")
+        .unwrap();
+        let machine_input = binding.machine_inputs.first().unwrap();
+        let public_command = &binding.public_name;
+        let backend = root.join("backend/runtime/src/http.rs");
+        fs::create_dir_all(backend.parent().unwrap()).unwrap();
+        fs::write(&backend, "pub fn prepare_response() {}\n").unwrap();
+        let response = format!(
+            r#"spec: rms/semantic-change/v0.1
+module: modules/play-game-domain/module.yaml
+intent:
+  summary: Change only the HTTP runnable surface and preserve every unrelated declaration.
+implementation_commands:
+  set:
+    surface_verify: cd ../.. && just rust-runtime-test
+surfaces:
+  set: null
+  add:
+    - name: play-game-http-prepare
+      kind: runnable-boundary
+      surface: HTTP POST /v1/games/{{gameId}}/prepare
+      entrypoint: ../../backend/runtime/src/http.rs#prepare_response
+      delegates_to:
+        symbol: src/transition.rs#transition
+        command: {machine_input}
+      no_effects_justification: The runtime owns external effects.
+      usage_document: verification/surfaces/play_game_http_prepare.md
+      smoke_command: surface_verify
+      evidence: [verification/surfaces/play_game_http_prepare.md]
+  remove: []
+"#
+        );
+
+        let prepared = prepare_spec_plan_provider_response(
+            &context,
+            "Change only the HTTP runnable surface and preserve every unrelated declaration.",
+            &response,
+        );
+        assert!(
+            prepared
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != Severity::Error),
+            "{:#?}",
+            prepared.diagnostics
+        );
+        assert!(prepared
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.check != "surface.command-not-public"));
+        assert!(prepared
+            .normalizations
+            .iter()
+            .any(|item| item.contains("closed surface kind `http`")));
+        assert!(prepared.normalizations.iter().any(|item| {
+            item.contains(&format!(
+                "mapped surface machine input `{machine_input}` to owning public command `{public_command}`"
+            ))
+        }));
+
+        let normalized: SemanticChange = serde_yaml::from_str(&prepared.response).unwrap();
+        let commands = normalized.implementation_commands.as_ref().unwrap();
+        assert_eq!(commands.replace.len(), 1);
+        assert_eq!(
+            commands.replace.get("surface_verify").map(String::as_str),
+            Some("cd ../.. && just rust-runtime-test")
+        );
+        assert!(!commands.replace.contains_key("verify"));
+        let surface = &normalized.surfaces.as_ref().unwrap().add[0];
+        assert_eq!(surface.surface, "http");
+        assert_eq!(
+            surface.entrypoint,
+            "../../backend/runtime/src/http.rs#prepare_response"
+        );
+        let delegation = surface.delegates_to.as_ref().unwrap();
+        assert_eq!(
+            delegation.symbol.as_deref(),
+            Some("src/transition.rs#transition")
+        );
+        assert_eq!(delegation.command.as_deref(), Some(public_command.as_str()));
+        assert_eq!(surface.smoke_command.as_deref(), Some("surface_verify"));
+
+        run_spec_apply(&target, None, Some(&prepared.response), None, true).unwrap();
+        run_spec_apply(&target, None, Some(&prepared.response), None, false).unwrap();
+        let applied =
+            load_manifest(&root.join("modules/play-game-domain/implementation.yaml")).unwrap();
+        assert_eq!(
+            get_str(&applied.value, &["commands", "surface_verify"]),
+            Some("cd ../.. && just rust-runtime-test")
+        );
+        assert_eq!(
+            get_str(&applied.value, &["commands", "verify"]),
+            get_str(
+                &context.implementation.as_ref().unwrap().value,
+                &["commands", "verify"]
+            )
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn saved_surface_repair_prompt_is_field_scoped() {
+        let diagnostics = vec![
+            error_diagnostic(
+                "semantic.implementation-command-missing",
+                Path::new("implementation.yaml"),
+                "implementation command `surface_verify` is not yet declared",
+            ),
+            error_diagnostic(
+                "surface.surface",
+                Path::new("implementation.yaml"),
+                "unsupported surface `HTTP POST /prepare`",
+            ),
+            warning(
+                "surface.command-not-public",
+                Path::new("implementation.yaml"),
+                "surface command `RecoverSecureMediaGeneration` is not public",
+            ),
+        ];
+        let repair =
+            render_spec_plan_repair_prompt("bounded surface schema", "candidate", &diagnostics);
+
+        assert!(
+            repair.contains("For `surface.command-not-public`, change only `delegates_to.command`")
+        );
+        assert!(repair.contains("preserve `delegates_to.symbol`, `entrypoint`, `smoke_command`"));
+        assert!(repair.contains("every `implementation_commands.set` key and value byte-for-byte"));
+        assert!(repair.contains("For `surface.surface`, change only the closed `surface` value"));
+        assert!(repair.contains("never replace `verify`"));
     }
 
     #[test]
