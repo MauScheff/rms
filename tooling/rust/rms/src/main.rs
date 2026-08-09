@@ -37503,8 +37503,7 @@ fn environment_check_report_from_diagnosis(root: &Path, diagnosis: DiagnoseRepor
         || codex_blocked
     {
         CheckResult::Fail
-    } else if diagnosis.validation.status == "review-required"
-        || diagnosis.skill_sources.review_required > 0
+    } else if diagnosis.skill_sources.review_required > 0
         || matches!(
             diagnosis.codex_plugin_cache.status.as_str(),
             "stale" | "mixed"
@@ -37520,9 +37519,10 @@ fn environment_check_report_from_diagnosis(root: &Path, diagnosis: DiagnoseRepor
         scope: "environment".to_string(),
         result: result.label().to_string(),
         summary: format!(
-            "{} repository; {} validation error(s), {} skill source(s) need review",
+            "{} repository; {} validation error(s), {} validation warning(s), {} skill source(s) need review",
             diagnosis.repository.kind.label(),
             diagnosis.validation.errors,
+            diagnosis.validation.warnings,
             diagnosis.skill_sources.review_required
         ),
     };
@@ -37568,7 +37568,7 @@ fn environment_check_report_from_diagnosis(root: &Path, diagnosis: DiagnoseRepor
         warnings,
         next_action,
         done_when: vec![
-            "Repository, configuration, configured provider/model, and detected skill-source diagnosis all pass."
+            "Canonical validation has no errors. Repository, configuration, configured provider/model, and detected skill-source diagnosis all pass. Warning-level canonical debt remains visible but does not block environment readiness."
                 .to_string(),
         ],
         components: vec![component],
@@ -93967,6 +93967,48 @@ semantic_functions: []
             build_check_report(&failing_root.join("unreadable-root"), CheckMode::Project).is_err()
         );
         fs::remove_dir_all(&failing_root).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn environment_readiness_keeps_canonical_warnings_visible_without_blocking() {
+        let root = copy_minimal_fixture("environment-warning-readiness");
+        let mut diagnosis = build_diagnose_report(&root).unwrap();
+        diagnosis.config.default_provider = None;
+        diagnosis.config.status = "present".to_string();
+        diagnosis.run_records.status = "present".to_string();
+        diagnosis.skill_sources.review_required = 0;
+        diagnosis.codex_plugin_cache.status = "present".to_string();
+        diagnosis.validation = ValidationReadiness {
+            status: "review-required".to_string(),
+            errors: 0,
+            warnings: 1,
+            diagnostics: vec![warning(
+                "semantic.trace-case-unrepresented",
+                &root.join("module.yaml"),
+                "declared transition case has no active replay bundle",
+            )],
+        };
+
+        let environment = environment_check_report_from_diagnosis(&root, diagnosis);
+
+        assert_eq!(environment.result, CheckResult::Pass);
+        assert_eq!(check_exit_code(environment.result), 0);
+        assert!(environment.components[0]
+            .summary
+            .contains("0 validation error(s), 1 validation warning(s)"));
+        assert!(environment.warnings.iter().any(
+            |warning| warning.contains("declared transition case has no active replay bundle")
+        ));
+        assert_eq!(
+            environment.details["diagnosis"]["validation"]["status"],
+            "review-required"
+        );
+        assert_eq!(
+            environment.details["diagnosis"]["validation"]["warnings"],
+            1
+        );
+
         fs::remove_dir_all(&root).unwrap();
     }
 
