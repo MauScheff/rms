@@ -7082,30 +7082,7 @@ fn release_input_digest(root: &Path, skip_cargo_package: bool) -> Result<String>
     } else {
         b"include-cargo-package".as_slice()
     });
-    let mut files = WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| {
-            entry.depth() == 0
-                || !entry.file_type().is_dir()
-                || !matches!(
-                    entry.file_name().to_str(),
-                    Some(".git")
-                        | Some(".rms")
-                        | Some("target")
-                        | Some(".build")
-                        | Some("build")
-                        | Some("dist")
-                        | Some("node_modules")
-                        | Some("__pycache__")
-                        | Some(".pytest_cache")
-                        | Some(".swiftpm")
-                )
-        })
-        .filter_map(std::result::Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
-        .collect::<Vec<_>>();
+    let mut files = git_release_input_files(root).unwrap_or_else(|| walk_release_input_files(root));
     files.sort();
     for path in files {
         let relative = path.strip_prefix(root).unwrap_or(&path);
@@ -7118,6 +7095,74 @@ fn release_input_digest(root: &Path, skip_cargo_package: bool) -> Result<String>
         digest.update([0]);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+fn git_release_input_files(root: &Path) -> Option<Vec<PathBuf>> {
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(root)
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let paths = String::from_utf8(output.stdout).ok()?;
+    Some(
+        paths
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(Path::new)
+            .filter(|path| !release_input_path_is_excluded(path))
+            .map(|path| root.join(path))
+            .filter(|path| path.is_file())
+            .collect(),
+    )
+}
+
+fn walk_release_input_files(root: &Path) -> Vec<PathBuf> {
+    WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0
+                || !entry.file_type().is_dir()
+                || !release_input_name_is_excluded(entry.file_name().to_str())
+        })
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .collect()
+}
+
+fn release_input_path_is_excluded(path: &Path) -> bool {
+    path.parent().is_some_and(|parent| {
+        parent
+            .components()
+            .any(|component| release_input_name_is_excluded(component.as_os_str().to_str()))
+    })
+}
+
+fn release_input_name_is_excluded(name: Option<&str>) -> bool {
+    matches!(
+        name,
+        Some(".git")
+            | Some(".rms")
+            | Some("target")
+            | Some(".build")
+            | Some("build")
+            | Some("dist")
+            | Some("node_modules")
+            | Some("__pycache__")
+            | Some(".pytest_cache")
+            | Some(".swiftpm")
+    )
 }
 
 fn release_tool_digest(rms_exe: &Path) -> Result<String> {
@@ -7145,6 +7190,16 @@ fn release_tool_digest(rms_exe: &Path) -> Result<String> {
         digest.update([0]);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+fn proof_cache_for_root(project_root: &Path) -> Result<verification::ProofCache> {
+    let input_digest = release_input_digest(project_root, false)?;
+    let executable = std::env::current_exe()?;
+    let tool_digest = release_tool_digest(&executable)?;
+    let seed = std::env::var("RMS_PROPERTY_SEED")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+    verification::ProofCache::new(project_root, &input_digest, &tool_digest, seed)
 }
 
 fn run_release_metadata_check(root: &Path) -> Result<()> {
@@ -16838,6 +16893,24 @@ fn execute_property_realizations_with_batch(
     timeout_seconds: u64,
     batch_evidence: Option<&RustBatchProofEvidence>,
 ) -> Result<PropertyRunReport> {
+    execute_property_realizations_with_batch_and_cache(
+        implementation,
+        profile,
+        dry_run,
+        timeout_seconds,
+        batch_evidence,
+        None,
+    )
+}
+
+fn execute_property_realizations_with_batch_and_cache(
+    implementation: &Path,
+    profile: PropertyProfile,
+    dry_run: bool,
+    timeout_seconds: u64,
+    batch_evidence: Option<&RustBatchProofEvidence>,
+    shared_proof_cache: Option<&verification::ProofCache>,
+) -> Result<PropertyRunReport> {
     let manifest = load_manifest(implementation)?;
     if get_str(&manifest.value, &["spec"]) != Some("rms/implementation/v0.1") {
         bail!(
@@ -16848,23 +16921,13 @@ fn execute_property_realizations_with_batch(
     let mut diagnostics = Vec::new();
     validate_property_implementation(&manifest, &mut diagnostics);
     let mut commands = Vec::new();
-    let proof_cache = if dry_run {
+    let owned_proof_cache = if dry_run || shared_proof_cache.is_some() {
         None
     } else {
         let project_root = rms_root_for(implementation);
-        let input_digest = release_input_digest(&project_root, false)?;
-        let executable = std::env::current_exe()?;
-        let tool_digest = release_tool_digest(&executable)?;
-        let seed = std::env::var("RMS_PROPERTY_SEED")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok());
-        Some(verification::ProofCache::new(
-            &project_root,
-            &input_digest,
-            &tool_digest,
-            seed,
-        )?)
+        Some(proof_cache_for_root(&project_root)?)
     };
+    let proof_cache = shared_proof_cache.or(owned_proof_cache.as_ref());
     let targets = property_targets_from_implementation(
         &manifest,
         &["architecture", "reliability", "properties"],
@@ -17008,14 +17071,13 @@ fn execute_property_realizations_with_batch(
                         progress.suite_started.elapsed()
                     )
                 );
-                if let Some(cache) = &proof_cache {
+                if let Some(cache) = proof_cache {
                     cache.store(&cache_key, &command_report)?;
                 }
                 commands.push(command_report);
                 continue;
             }
             if let Some(cached) = proof_cache
-                .as_ref()
                 .and_then(|cache| cache.load::<PropertyRunCommandReport>(&cache_key))
                 .filter(|cached| cached.status == "pass")
             {
@@ -17088,7 +17150,7 @@ fn execute_property_realizations_with_batch(
                 stderr: output.stderr,
             };
             if command_report.status == "pass" {
-                if let Some(cache) = &proof_cache {
+                if let Some(cache) = proof_cache {
                     cache.store(&cache_key, &command_report)?;
                 }
             }
@@ -23363,11 +23425,55 @@ fn gate_preflight_ignores(check: &AuditCheck) -> bool {
 }
 
 fn run_verify_target_captured(target: &Path) -> Result<String> {
+    run_verify_target_captured_with_cache(target, None)
+}
+
+struct CapturedVerificationCache<'a> {
+    outcomes: std::cell::RefCell<BTreeMap<PathBuf, std::result::Result<String, String>>>,
+    proof_cache: Option<&'a verification::ProofCache>,
+}
+
+impl<'a> CapturedVerificationCache<'a> {
+    fn new(proof_cache: Option<&'a verification::ProofCache>) -> Self {
+        Self {
+            outcomes: std::cell::RefCell::new(BTreeMap::new()),
+            proof_cache,
+        }
+    }
+
+    fn run(&self, target: &Path) -> Result<String> {
+        self.get_or_run(target, || {
+            run_verify_target_captured_with_cache(target, Some(self))
+        })
+    }
+
+    fn get_or_run<F>(&self, target: &Path, execute: F) -> Result<String>
+    where
+        F: FnOnce() -> Result<String>,
+    {
+        if let Some(outcome) = self.outcomes.borrow().get(target).cloned() {
+            return outcome.map_err(|error| anyhow!(error));
+        }
+        let outcome = execute().map_err(|error| error.to_string());
+        self.outcomes
+            .borrow_mut()
+            .insert(target.to_path_buf(), outcome.clone());
+        outcome.map_err(|error| anyhow!(error))
+    }
+}
+
+fn run_verify_target_captured_with_cache(
+    target: &Path,
+    cache: Option<&CapturedVerificationCache<'_>>,
+) -> Result<String> {
     let manifest = load_manifest(target)?;
     match get_str(&manifest.value, &["spec"]) {
-        Some("rms/implementation/v0.1") => run_verify_implementation_captured(target),
+        Some("rms/implementation/v0.1") => run_verify_implementation_captured_with_cache(
+            target,
+            cache.and_then(|cache| cache.proof_cache),
+        ),
         Some("rms/module/v0.1") if is_composite_module(&manifest.value) => {
-            run_verify_composite_module_captured(target, &manifest)
+            run_verify_composite_module_captured_with_cache(target, &manifest, cache)
         }
         Some("rms/module/v0.1") => bail!(
             "module `{}` is not a composite module; verify its implementation binding instead",
@@ -23379,6 +23485,13 @@ fn run_verify_target_captured(target: &Path) -> Result<String> {
 }
 
 fn run_verify_implementation_captured(implementation: &Path) -> Result<String> {
+    run_verify_implementation_captured_with_cache(implementation, None)
+}
+
+fn run_verify_implementation_captured_with_cache(
+    implementation: &Path,
+    proof_cache: Option<&verification::ProofCache>,
+) -> Result<String> {
     let manifest = load_manifest(implementation)?;
     ensure_implementation_manifest_valid_for_verify(&manifest)?;
     let command = get_str(&manifest.value, &["commands", "verify"])
@@ -23401,12 +23514,13 @@ fn run_verify_implementation_captured(implementation: &Path) -> Result<String> {
 
     let probe_summary = verify_probe_handshake(implementation, DEFAULT_PROOF_TIMEOUT_SECONDS)?;
     let trace_reports = verify_declared_trace_bundles(&manifest, root)?;
-    let property_summary = verify_implementation_smoke_properties(
+    let property_summary = verify_implementation_smoke_properties_with_cache(
         implementation,
         &manifest,
         false,
         DEFAULT_PROOF_TIMEOUT_SECONDS,
         batch_evidence.as_ref(),
+        proof_cache,
     )?;
     Ok(format!(
         "verify command passed: {command}{}{}{}",
@@ -23759,9 +23873,10 @@ fn trace_error_suffix(report: &TraceReport) -> String {
         .unwrap_or_default()
 }
 
-fn run_verify_composite_module_captured(
+fn run_verify_composite_module_captured_with_cache(
     module_path: &Path,
     manifest: &LoadedManifest,
+    cache: Option<&CapturedVerificationCache<'_>>,
 ) -> Result<String> {
     let module_name = get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>");
     let root = rms_root_for(module_path);
@@ -23808,7 +23923,11 @@ fn run_verify_composite_module_captured(
             .unwrap_or_else(|| Path::new("."))
             .join("implementation.yaml");
         if implementation.exists() {
-            run_verify_implementation_captured(&implementation).with_context(|| {
+            let result = match cache {
+                Some(cache) => cache.run(&implementation),
+                None => run_verify_implementation_captured(&implementation),
+            };
+            result.with_context(|| {
                 format!(
                     "contained child `{}` failed implementation verification",
                     child.name
@@ -36133,7 +36252,7 @@ fn run_check(
     if module.is_some() && !matches!(mode, CheckMode::Changes | CheckMode::Committed) {
         bail!("--module is supported only with --changes or --committed");
     }
-    let _strict_lock = if mode == CheckMode::Committed {
+    let strict_execution = if mode == CheckMode::Committed {
         let canonical_root = fs::canonicalize(root)
             .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
         let source_revision =
@@ -36151,23 +36270,31 @@ fn run_check(
         );
         let executable = std::env::current_exe()?;
         let tool_digest = release_tool_digest(&executable)?;
+        let seed = std::env::var("RMS_PROPERTY_SEED")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok());
         let session = verification::VerificationSession::acquire(
             &canonical_root,
             "check-committed",
             &source_revision,
             &scoped_digest,
             &tool_digest,
-            std::env::var("RMS_PROPERTY_SEED")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok()),
+            seed,
             1,
         )?;
         eprintln!("verification run identity: {}", session.identity());
-        Some(session)
+        let proof_cache =
+            verification::ProofCache::new(&canonical_root, &repository_digest, &tool_digest, seed)?;
+        Some((session, proof_cache))
     } else {
         None
     };
-    let report = build_check_report_scoped(root, mode, module)?;
+    let report = build_check_report_scoped_with_proof_cache(
+        root,
+        mode,
+        module,
+        strict_execution.as_ref().map(|(_, cache)| cache),
+    )?;
     let surface = project_check_report(&report, include_details);
     if json_output {
         println!("{}", serde_json::to_string_pretty(&surface)?);
@@ -36219,10 +36346,20 @@ fn check_exit_code(result: CheckResult) -> i32 {
     }
 }
 
+#[cfg(test)]
 fn build_check_report_scoped(
     root: &Path,
     mode: CheckMode,
     module: Option<&Path>,
+) -> Result<CheckReport> {
+    build_check_report_scoped_with_proof_cache(root, mode, module, None)
+}
+
+fn build_check_report_scoped_with_proof_cache(
+    root: &Path,
+    mode: CheckMode,
+    module: Option<&Path>,
+    proof_cache: Option<&verification::ProofCache>,
 ) -> Result<CheckReport> {
     let root = fs::canonicalize(root)
         .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
@@ -36230,7 +36367,9 @@ fn build_check_report_scoped(
         CheckMode::Project => build_project_check_report(&root),
         CheckMode::Environment => build_environment_check_report(&root),
         CheckMode::Changes => build_changes_check_report_scoped(&root, module),
-        CheckMode::Committed => build_committed_check_report_scoped(&root, module),
+        CheckMode::Committed => {
+            build_committed_check_report_scoped_with_proof_cache(&root, module, proof_cache)
+        }
     }?;
     if mode != CheckMode::Environment {
         let contract_findings = strict_behavioral_contract_findings(&root)?;
@@ -37001,13 +37140,41 @@ fn build_changes_check_report_scoped(root: &Path, module: Option<&Path>) -> Resu
     }
 }
 
-fn build_committed_check_report_scoped(root: &Path, module: Option<&Path>) -> Result<CheckReport> {
+fn build_committed_check_report_scoped_with_proof_cache(
+    root: &Path,
+    module: Option<&Path>,
+    proof_cache: Option<&verification::ProofCache>,
+) -> Result<CheckReport> {
     match module {
-        Some(module) => build_module_scoped_check_report(root, module, CheckMode::Committed),
-        None if workspace_coverage(root) == WorkspaceCoverage::Progressive => {
-            build_progressive_workspace_check_report(root, CheckMode::Committed)
+        Some(module) => {
+            let verification_cache = CapturedVerificationCache::new(proof_cache);
+            build_module_scoped_check_report_with_audit(
+                root,
+                module,
+                CheckMode::Committed,
+                None,
+                Some(&verification_cache),
+                proof_cache,
+            )
         }
-        None => build_committed_check_report(root),
+        None if workspace_coverage(root) == WorkspaceCoverage::Progressive => {
+            build_progressive_workspace_check_report_with_audit(
+                root,
+                CheckMode::Committed,
+                proof_cache,
+                || {
+                    execute_audit_with_proof_cache(
+                        root,
+                        true,
+                        false,
+                        false,
+                        DEFAULT_PROOF_TIMEOUT_SECONDS,
+                        proof_cache,
+                    )
+                },
+            )
+        }
+        None => build_committed_check_report_with_proof_cache(root, proof_cache),
     }
 }
 
@@ -37020,6 +37187,20 @@ fn workspace_coverage(root: &Path) -> WorkspaceCoverage {
 }
 
 fn build_progressive_workspace_check_report(root: &Path, mode: CheckMode) -> Result<CheckReport> {
+    build_progressive_workspace_check_report_with_audit(root, mode, None, || {
+        execute_audit(root, true, false, false, DEFAULT_PROOF_TIMEOUT_SECONDS)
+    })
+}
+
+fn build_progressive_workspace_check_report_with_audit<F>(
+    root: &Path,
+    mode: CheckMode,
+    proof_cache: Option<&verification::ProofCache>,
+    build_audit: F,
+) -> Result<CheckReport>
+where
+    F: FnOnce() -> Result<AuditReport>,
+{
     let modules = discover_module_index(root)?;
     let contained = composition_children(&modules)
         .into_iter()
@@ -37033,9 +37214,22 @@ fn build_progressive_workspace_check_report(root: &Path, mode: CheckMode) -> Res
     if top_level.is_empty() {
         bail!("progressive coverage discovered no RMS module to certify");
     }
+    let shared_audit = if mode == CheckMode::Committed {
+        Some(build_audit()?)
+    } else {
+        None
+    };
+    let verification_cache = CapturedVerificationCache::new(proof_cache);
     let mut reports = Vec::new();
     for module in top_level {
-        reports.push(build_module_scoped_check_report(root, &module.path, mode)?);
+        reports.push(build_module_scoped_check_report_with_audit(
+            root,
+            &module.path,
+            mode,
+            shared_audit.as_ref(),
+            Some(&verification_cache),
+            proof_cache,
+        )?);
     }
     let result = aggregate_check_results(reports.iter().map(|report| report.result));
     let components = reports
@@ -37080,6 +37274,17 @@ fn build_module_scoped_check_report(
     root: &Path,
     requested: &Path,
     mode: CheckMode,
+) -> Result<CheckReport> {
+    build_module_scoped_check_report_with_audit(root, requested, mode, None, None, None)
+}
+
+fn build_module_scoped_check_report_with_audit(
+    root: &Path,
+    requested: &Path,
+    mode: CheckMode,
+    shared_audit: Option<&AuditReport>,
+    verification_cache: Option<&CapturedVerificationCache<'_>>,
+    proof_cache: Option<&verification::ProofCache>,
 ) -> Result<CheckReport> {
     let modules = discover_module_index(root)?;
     let requested_path = if requested.is_absolute() {
@@ -37157,7 +37362,11 @@ fn build_module_scoped_check_report(
 
     let mut verification = Vec::new();
     for implementation in &implementation_paths {
-        match run_verify_target_captured(implementation) {
+        let result = match verification_cache {
+            Some(cache) => cache.run(implementation),
+            None => run_verify_target_captured(implementation),
+        };
+        match result {
             Ok(output) => verification.push(json!({
                 "target": display_relative(root, implementation),
                 "result": "pass",
@@ -37178,7 +37387,11 @@ fn build_module_scoped_check_report(
     }
     for module in &module_paths {
         if load_manifest(module).is_ok_and(|manifest| is_composite_module(&manifest.value)) {
-            if let Err(error) = run_verify_target_captured(module) {
+            let result = match verification_cache {
+                Some(cache) => cache.run(module),
+                None => run_verify_target_captured(module),
+            };
+            if let Err(error) = result {
                 failures.push(format!(
                     "verify `{}`: {error}",
                     display_relative(root, module)
@@ -37209,7 +37422,17 @@ fn build_module_scoped_check_report(
         ));
     }
     let scoped_audit = if mode == CheckMode::Committed {
-        let audit = execute_audit(root, true, false, false, DEFAULT_PROOF_TIMEOUT_SECONDS)?;
+        let audit = match shared_audit {
+            Some(audit) => audit.clone(),
+            None => execute_audit_with_proof_cache(
+                root,
+                true,
+                false,
+                false,
+                DEFAULT_PROOF_TIMEOUT_SECONDS,
+                proof_cache,
+            )?,
+        };
         let audit = restrict_audit_to_module_closure(root, audit, &closure_roots);
         failures.extend(
             audit
@@ -37645,8 +37868,18 @@ fn changes_check_report_from_gate(root: &Path, gate: GateReport) -> CheckReport 
     }
 }
 
-fn build_committed_check_report(root: &Path) -> Result<CheckReport> {
-    let audit = execute_audit(root, true, false, false, DEFAULT_PROOF_TIMEOUT_SECONDS)?;
+fn build_committed_check_report_with_proof_cache(
+    root: &Path,
+    proof_cache: Option<&verification::ProofCache>,
+) -> Result<CheckReport> {
+    let audit = execute_audit_with_proof_cache(
+        root,
+        true,
+        false,
+        false,
+        DEFAULT_PROOF_TIMEOUT_SECONDS,
+        proof_cache,
+    )?;
     Ok(committed_check_report_from_audit(root, audit))
 }
 
@@ -44229,14 +44462,34 @@ fn execute_audit(
     dry_run: bool,
     proof_timeout_seconds: u64,
 ) -> Result<AuditReport> {
+    execute_audit_with_proof_cache(
+        root,
+        strict,
+        include_examples,
+        dry_run,
+        proof_timeout_seconds,
+        None,
+    )
+}
+
+fn execute_audit_with_proof_cache(
+    root: &Path,
+    strict: bool,
+    include_examples: bool,
+    dry_run: bool,
+    proof_timeout_seconds: u64,
+    proof_cache: Option<&verification::ProofCache>,
+) -> Result<AuditReport> {
     let mut report = build_audit_report_with_scope(root, strict, include_examples)?;
     if strict {
-        append_executable_proof_audit_checks(
+        append_executable_proof_audit_checks_with_cache_builder(
             root,
             include_examples,
             dry_run,
             proof_timeout_seconds,
             &mut report.checks,
+            proof_cache,
+            proof_cache_for_root,
         );
         report.result = audit_result(&report.checks);
     } else if dry_run {
@@ -44252,6 +44505,7 @@ fn execute_audit(
     Ok(report)
 }
 
+#[allow(dead_code)]
 fn append_executable_proof_audit_checks(
     root: &Path,
     include_examples: bool,
@@ -44259,10 +44513,55 @@ fn append_executable_proof_audit_checks(
     timeout_seconds: u64,
     checks: &mut Vec<AuditCheck>,
 ) {
+    append_executable_proof_audit_checks_with_cache_builder(
+        root,
+        include_examples,
+        dry_run,
+        timeout_seconds,
+        checks,
+        None,
+        proof_cache_for_root,
+    );
+}
+
+fn append_executable_proof_audit_checks_with_cache_builder<F>(
+    root: &Path,
+    include_examples: bool,
+    dry_run: bool,
+    timeout_seconds: u64,
+    checks: &mut Vec<AuditCheck>,
+    provided_proof_cache: Option<&verification::ProofCache>,
+    build_proof_cache: F,
+) where
+    F: FnOnce(&Path) -> Result<verification::ProofCache>,
+{
     let root = normalize_empty_path(root.to_path_buf());
     let before = production_file_digests(&root, include_examples).unwrap_or_default();
     let implementations =
         discover_implementation_manifests(&root, include_examples).unwrap_or_default();
+    let owned_proof_cache = if provided_proof_cache.is_none()
+        && !dry_run
+        && implementations
+            .iter()
+            .any(implementation_has_smoke_property)
+    {
+        match build_proof_cache(&root) {
+            Ok(cache) => Some(cache),
+            Err(error) => {
+                checks.push(audit_check(
+                    "proof.cache-identity-failed",
+                    "proof",
+                    "fail",
+                    &root,
+                    format!("could not construct the shared proof cache identity: {error}"),
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let shared_proof_cache = provided_proof_cache.or(owned_proof_cache.as_ref());
     for implementation in &implementations {
         let trace_bundles = implementation_trace_bundle_paths(
             implementation,
@@ -44347,29 +44646,14 @@ fn append_executable_proof_audit_checks(
             }
         }
 
-        let has_smoke_property = property_targets_from_implementation(
-            implementation,
-            &["architecture", "reliability", "properties"],
-            "property",
-        )
-        .into_iter()
-        .chain(property_targets_from_implementation(
-            implementation,
-            &["architecture", "reliability", "fuzz_targets"],
-            "fuzz",
-        ))
-        .any(|target| {
-            target
-                .realizations
-                .iter()
-                .any(|realization| realization.profile == "smoke")
-        });
-        if has_smoke_property {
-            match execute_property_realizations(
+        if implementation_has_smoke_property(implementation) {
+            match execute_property_realizations_with_batch_and_cache(
                 &implementation.path,
                 PropertyProfile::Smoke,
                 dry_run,
                 timeout_seconds,
+                None,
+                shared_proof_cache,
             ) {
                 Ok(report) => {
                     checks.push(audit_check(
@@ -44482,6 +44766,26 @@ fn append_executable_proof_audit_checks(
             ),
         ));
     }
+}
+
+fn implementation_has_smoke_property(implementation: &LoadedManifest) -> bool {
+    property_targets_from_implementation(
+        implementation,
+        &["architecture", "reliability", "properties"],
+        "property",
+    )
+    .into_iter()
+    .chain(property_targets_from_implementation(
+        implementation,
+        &["architecture", "reliability", "fuzz_targets"],
+        "fuzz",
+    ))
+    .any(|target| {
+        target
+            .realizations
+            .iter()
+            .any(|realization| realization.profile == "smoke")
+    })
 }
 
 fn discover_implementation_manifests(
@@ -62018,6 +62322,24 @@ fn verify_implementation_smoke_properties(
     timeout_seconds: u64,
     batch_evidence: Option<&RustBatchProofEvidence>,
 ) -> Result<Option<String>> {
+    verify_implementation_smoke_properties_with_cache(
+        implementation,
+        manifest,
+        dry_run,
+        timeout_seconds,
+        batch_evidence,
+        None,
+    )
+}
+
+fn verify_implementation_smoke_properties_with_cache(
+    implementation: &Path,
+    manifest: &LoadedManifest,
+    dry_run: bool,
+    timeout_seconds: u64,
+    batch_evidence: Option<&RustBatchProofEvidence>,
+    proof_cache: Option<&verification::ProofCache>,
+) -> Result<Option<String>> {
     let targets = property_targets_from_implementation(
         manifest,
         &["architecture", "reliability", "properties"],
@@ -62033,12 +62355,13 @@ fn verify_implementation_smoke_properties(
     if targets.is_empty() {
         return Ok(None);
     }
-    let report = execute_property_realizations_with_batch(
+    let report = execute_property_realizations_with_batch_and_cache(
         implementation,
         PropertyProfile::Smoke,
         dry_run,
         timeout_seconds,
         batch_evidence,
+        proof_cache,
     )?;
     if dry_run {
         for command in &report.commands {
@@ -78818,6 +79141,123 @@ import struct ExternalKit.Widget
     }
 
     #[test]
+    fn progressive_committed_check_executes_one_root_audit_and_projects_each_closure() {
+        let root = unique_test_dir("progressive-single-root-audit");
+        run_init(
+            &root,
+            "progressive-system",
+            "Certify multiple adopted module closures.",
+            "0.1.0",
+            &[],
+        )
+        .unwrap();
+        for name in ["first-owner", "second-owner"] {
+            run_add_module(
+                add_module_request(
+                    &root.join("modules").join(name),
+                    name,
+                    "Own one independent decision boundary.",
+                    "library",
+                    &[],
+                    Some(ScaffoldShape::DomainEngine),
+                    None,
+                ),
+                &no_provider_options(),
+            )
+            .unwrap();
+        }
+        let first = root.join("modules/first-owner/module.yaml");
+        let second = root.join("modules/second-owner/module.yaml");
+        let audit_calls = std::cell::Cell::new(0usize);
+        let audit = AuditReport {
+            result: "pass".to_string(),
+            root: root.display().to_string(),
+            strict: true,
+            source_revision: "git:fixture".to_string(),
+            checks: vec![
+                audit_check(
+                    "provenance.source-revision",
+                    "provenance",
+                    "pass",
+                    &root,
+                    "fixture revision",
+                ),
+                audit_check("first-proof", "proof", "pass", &first, "first closure"),
+                audit_check("second-proof", "proof", "pass", &second, "second closure"),
+            ],
+            verification_targets: vec![first.display().to_string(), second.display().to_string()],
+        };
+
+        let report = build_progressive_workspace_check_report_with_audit(
+            &root,
+            CheckMode::Committed,
+            None,
+            || {
+                audit_calls.set(audit_calls.get() + 1);
+                Ok(audit)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(audit_calls.get(), 1);
+        let module_reports = report.details["module_reports"].as_array().unwrap();
+        assert_eq!(module_reports.len(), 2);
+        for module_report in module_reports {
+            let requested = module_report["requested_module"].as_str().unwrap();
+            let checks = module_report["audit"]["checks"].as_array().unwrap();
+            assert!(checks
+                .iter()
+                .any(|check| check["id"] == "provenance.source-revision"));
+            assert!(checks
+                .iter()
+                .any(|check| check["id"]
+                    == format!("{}-proof", requested.trim_end_matches("-owner"))));
+            assert!(!checks.iter().any(|check| {
+                check["id"]
+                    == if requested == "first-owner" {
+                        "second-proof"
+                    } else {
+                        "first-proof"
+                    }
+            }));
+        }
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn progressive_check_reuses_shared_verification_successes_and_failures() {
+        let cache = CapturedVerificationCache::new(None);
+        let success_calls = std::cell::Cell::new(0usize);
+        let failure_calls = std::cell::Cell::new(0usize);
+        let success = Path::new("shared/implementation.yaml");
+        let failure = Path::new("shared/failing-implementation.yaml");
+
+        for _ in 0..2 {
+            assert_eq!(
+                cache
+                    .get_or_run(success, || {
+                        success_calls.set(success_calls.get() + 1);
+                        Ok("verified once".to_string())
+                    })
+                    .unwrap(),
+                "verified once"
+            );
+            assert!(cache
+                .get_or_run(failure, || {
+                    failure_calls.set(failure_calls.get() + 1);
+                    bail!("failed once")
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("failed once"));
+        }
+
+        assert_eq!(success_calls.get(), 1);
+        assert_eq!(failure_calls.get(), 1);
+    }
+
+    #[test]
     fn module_scoped_committed_proof_ignores_outside_dirt_but_runs_strict_audit() {
         if Command::new("git").arg("--version").output().is_err() {
             return;
@@ -85943,6 +86383,108 @@ architecture:
     }
 
     #[test]
+    fn strict_audit_builds_one_proof_cache_identity_for_all_implementations() {
+        let root = unique_test_dir("shared-proof-cache-identity");
+        for name in ["first", "second"] {
+            let module_root = root.join(name);
+            fs::create_dir_all(module_root.join("scripts")).unwrap();
+            fs::create_dir_all(module_root.join("verification/properties")).unwrap();
+            fs::write(
+                module_root.join("scripts/property.sh"),
+                "#!/bin/sh\nset -eu\nrun_property() { :; }\nrun_property\n",
+            )
+            .unwrap();
+            fs::write(
+                module_root.join("verification/properties/proof.md"),
+                "# Proof\n\nCommand/tool: fixture\n\nObserved result: pass.\n\nSource revision: git:test\n",
+            )
+            .unwrap();
+            fs::write(
+                module_root.join("implementation.yaml"),
+                format!(
+                    r#"spec: rms/implementation/v0.1
+module: {name}
+binding: executable
+source: {{ root: ., public_entrypoint: scripts/property.sh }}
+commands:
+  build: sh -n scripts/property.sh
+  verify: sh -n scripts/property.sh
+  properties: sh scripts/property.sh
+toolchain: {{ runner: shell }}
+architecture:
+  shape: domain-engine
+  reliability:
+    properties:
+      - id: {name}-proof
+        proves: shared-proof-cache-identity
+        input_space: one deterministic fixture
+        oracle: [command exits successfully]
+        evidence: verification/properties/proof.md
+        realizations:
+          - {{ profile: smoke, strategy: deterministic-corpus, command: properties, runner: scripts/property.sh#run_property }}
+  machine: {{}}
+  roles: {{}}
+"#
+                ),
+            )
+            .unwrap();
+        }
+        let cache_builds = std::cell::Cell::new(0usize);
+        let mut checks = Vec::new();
+
+        append_executable_proof_audit_checks_with_cache_builder(
+            &root,
+            false,
+            false,
+            30,
+            &mut checks,
+            None,
+            |project_root| {
+                cache_builds.set(cache_builds.get() + 1);
+                verification::ProofCache::new(project_root, "fixture-source", "fixture-tools", None)
+            },
+        );
+
+        assert_eq!(cache_builds.get(), 1);
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|check| check.id == "property.execution-proof")
+                .count(),
+            2
+        );
+        assert!(!checks.iter().any(|check| check.result == "fail"));
+
+        let provided_cache =
+            verification::ProofCache::new(&root, "fixture-source", "fixture-tools", None).unwrap();
+        let redundant_builds = std::cell::Cell::new(0usize);
+        let mut reused_checks = Vec::new();
+        append_executable_proof_audit_checks_with_cache_builder(
+            &root,
+            false,
+            false,
+            30,
+            &mut reused_checks,
+            Some(&provided_cache),
+            |_| {
+                redundant_builds.set(redundant_builds.get() + 1);
+                bail!("provided proof cache must suppress identity reconstruction")
+            },
+        );
+        assert_eq!(redundant_builds.get(), 0);
+        assert_eq!(
+            reused_checks
+                .iter()
+                .filter(|check| check.id == "property.execution-proof")
+                .count(),
+            2
+        );
+        assert!(!reused_checks.iter().any(|check| check.result == "fail"));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn active_evidence_rejects_removed_qualified_variant() {
         let root = unique_test_dir("stale-evidence-variant");
         run_add_module(
@@ -88240,6 +88782,30 @@ architecture:
         assert!(paths
             .iter()
             .any(|path| { path.status == "??" && path.path == "modules/new/src/lib.rs" }));
+    }
+
+    #[test]
+    fn release_input_digest_uses_tracked_and_visible_untracked_files() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = unique_test_dir("release-input-git-files");
+        fs::create_dir_all(&root).unwrap();
+        run_git(&root, &["init", "--quiet"]).unwrap();
+        fs::write(root.join(".gitignore"), "ignored/\n").unwrap();
+        fs::write(root.join("tracked.txt"), "tracked\n").unwrap();
+        run_git(&root, &["add", ".gitignore", "tracked.txt"]).unwrap();
+        fs::create_dir_all(root.join("ignored")).unwrap();
+        fs::write(root.join("ignored/cache.bin"), "first ignored value\n").unwrap();
+
+        let baseline = release_input_digest(&root, false).unwrap();
+        fs::write(root.join("ignored/cache.bin"), "second ignored value\n").unwrap();
+        assert_eq!(release_input_digest(&root, false).unwrap(), baseline);
+
+        fs::write(root.join("visible-untracked.txt"), "visible input\n").unwrap();
+        assert_ne!(release_input_digest(&root, false).unwrap(), baseline);
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
