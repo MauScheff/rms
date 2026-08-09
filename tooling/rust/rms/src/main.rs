@@ -2461,6 +2461,8 @@ struct SemanticChange {
     #[serde(default)]
     semantic_functions: Option<SemanticFunctionsChange>,
     #[serde(default)]
+    implementation_commands: Option<ImplementationCommandsChange>,
+    #[serde(default)]
     machine: Option<SemanticMachineChange>,
     #[serde(default)]
     roles: Option<MachineRolesChange>,
@@ -2486,6 +2488,13 @@ struct SemanticChange {
     public_behavior_bindings: Option<PublicBehaviorBindingsChange>,
     #[serde(default)]
     dependency_behavior_bindings: Option<DependencyBehaviorBindingsChange>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ImplementationCommandsChange {
+    #[serde(default, rename = "set")]
+    replace: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -52689,6 +52698,8 @@ fn semantic_plan_task_requires_canonical_change(task: &str) -> bool {
         "observation source",
         "semantic-function binding",
         "semantic function binding",
+        "implementation command",
+        "command bindings",
         "evidence obligation",
         "deterministic-corpus",
         "deterministic-exhaustive",
@@ -53040,6 +53051,18 @@ fn validate_prepared_spec_plan_change(
     change: &SemanticChange,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = validate_semantic_change(context, change);
+    if semantic_plan_task_requests_implementation_command_change(context, task)
+        && change
+            .implementation_commands
+            .as_ref()
+            .is_none_or(|commands| !implementation_commands_change_has_operations(commands))
+    {
+        diagnostics.push(error_diagnostic(
+            "semantic-plan.implementation-command-change-missing",
+            &context.target,
+            "the task explicitly changes existing implementation command bindings; emit each requested existing key and its complete replacement command under `implementation_commands.set`",
+        ));
+    }
     if semantic_plan_task_forbids_runnable_surface(task)
         && change
             .surfaces
@@ -53101,6 +53124,23 @@ fn validate_prepared_spec_plan_change(
     diagnostics
 }
 
+fn semantic_plan_task_requests_implementation_command_change(
+    context: &SpecTargetContext,
+    task: &str,
+) -> bool {
+    if context.implementation.is_none() {
+        return false;
+    }
+    let task = task.to_ascii_lowercase();
+    task.contains("implementation command")
+        || task.contains("command bindings")
+            && [
+                "build", "verify", "probe", "trace", "fuzz", "format", "property",
+            ]
+            .iter()
+            .any(|key| task.contains(key))
+}
+
 fn semantic_plan_task_requests_fuzz_target(task: &str) -> bool {
     let task = task.to_ascii_lowercase();
     task.contains("fuzz target") || task.contains("fuzz_target")
@@ -53138,6 +53178,10 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "semantic-plan.canonical-change-required"
             || diagnostic.check == "semantic-plan.canonical-file-hand-edit"
             || diagnostic.check == "semantic-plan.fuzz-target-change-missing"
+            || diagnostic.check == "semantic-plan.implementation-command-change-missing"
+            || diagnostic
+                .check
+                .starts_with("semantic.implementation-command-")
             || diagnostic.check == "property.command-does-not-select-runner"
             || diagnostic.check == "property.composite-behavior-owner-required"
             || diagnostic.check == "property.realization-not-executed"
@@ -53185,6 +53229,20 @@ fn render_spec_plan_repair_prompt(
                 )
         })
         .then_some("\n\nProperty realization repair rule: `realizations` is mandatory and non-empty for every added or changed property. Never delete the list or replace it with `[]` to repair an item. Replace each invalid item with a complete valid realization. Profiles are exactly `smoke|ci|nightly`; `core` is a module profile and is invalid here. Strategies are exactly `deterministic-corpus|deterministic-exhaustive|generated-property|coverage-fuzzer|model-checker|benchmark|static-analyzer|sanitizer|mutation-tester`; `generated` is never a valid strategy. Every realization has a nonblank command and exact `path#symbol` runner. A fuzz target requires `generated-property`, `coverage-fuzzer`, `model-checker`, or a genuinely finite complete `deterministic-exhaustive` realization with `exhaustive: true`; a fixed non-exhaustive `deterministic-corpus` must remain an ordinary property and cannot be relabeled as fuzz proof. `deterministic-exhaustive` additionally has an exact `path#symbol` generator and `exhaustive: true`. A composition-only module may declare only parent topology/export properties with `operation.kind: composition`. Each such realization uses `{profile: smoke, strategy: deterministic-exhaustive, command: composition, generator: scripts/composition_property.sh#generate_property_cases, runner: scripts/composition_property.sh#run_property, exhaustive: true}` and both symbols must exist. Never relabel a behavioral property or test as `composition`. Move behavioral meaning, the property, its executable runner, and concrete evidence to the contained runnable owner; then preserve the exact exported child contract or use a verified proof delegation.")
+        .unwrap_or_default();
+    let implementation_command_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            diagnostic.check == "semantic-plan.implementation-command-change-missing"
+                || diagnostic
+                    .check
+                    .starts_with("semantic.implementation-command-")
+                || diagnostic.check == "semantic-plan.response-invalid"
+                    && diagnostic.message.contains("implementation_commands")
+        })
+        .then_some(
+            "\n\nImplementation command repair rule: `implementation_commands.set` is a mapping from existing `implementation.yaml` command keys to complete non-empty shell command strings. It may replace only keys already present under the bounded manifest's top-level `commands`. Every omitted command and every unrelated declaration is preserved. It cannot add or remove a command key. Put build, verify, probe, trace, property, fuzz, format, or other proof-command maintenance here; never put these executable bindings under `machine.commands`, which declares semantic machine input variants. Preserve each requested invocation exactly and add only the requested shell cleanup or wrapper behavior. Example: `implementation_commands: {set: {verify: \"cargo test --manifest-path Cargo.toml; status=$?; rm -f Cargo.lock; exit $status\"}}`.",
+        )
         .unwrap_or_default();
     let temporal_repair = diagnostics
         .iter()
@@ -53333,7 +53391,7 @@ fn render_spec_plan_repair_prompt(
         )
         .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{implementation_command_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -53646,6 +53704,8 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "  add: []")?;
         writeln!(out, "  set: []")?;
         writeln!(out, "  remove: []")?;
+        writeln!(out, "implementation_commands:")?;
+        writeln!(out, "  set: {{}}")?;
         writeln!(out, "protocol_bindings:")?;
         writeln!(out, "  add: []")?;
         writeln!(out, "  set: []")?;
@@ -53736,6 +53796,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "  remove: []")?;
     } else {
         writeln!(out, "semantic_functions: null")?;
+        writeln!(out, "implementation_commands: null")?;
         writeln!(out, "protocol_bindings: null")?;
         writeln!(out, "authority_bindings: null")?;
         writeln!(out, "public_behavior_bindings: null")?;
@@ -53869,7 +53930,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "    exhaustive: true")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2|v0.3` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `implementation_commands.set` maps existing top-level implementation command keys to complete non-empty shell command strings. It replaces only the named existing keys and preserves every omitted command and unrelated declaration. It cannot add or remove keys. Use it for proof-command binding maintenance; never put executable command strings under `machine.commands`, which declares semantic input variants. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2|v0.3` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
     writeln!(out, "The exact property exploration shape is:")?;
     writeln!(out, "```yaml")?;
     writeln!(out, "explorations:")?;
@@ -55412,6 +55473,10 @@ fn validate_semantic_change(
         .semantic_functions
         .as_ref()
         .is_some_and(semantic_functions_change_has_operations);
+    let has_implementation_commands = change
+        .implementation_commands
+        .as_ref()
+        .is_some_and(implementation_commands_change_has_operations);
     let has_evidence = change
         .evidence
         .as_ref()
@@ -55466,6 +55531,7 @@ fn validate_semantic_change(
         && !has_hunt_exceptions
         && !has_trace_producers
         && !has_semantic_functions
+        && !has_implementation_commands
         && !has_machine
         && !has_allowed_missing_constructors
         && !has_evidence
@@ -55482,7 +55548,7 @@ fn validate_semantic_change(
         diagnostics.push(error(
             "semantic-change.empty",
             &context.target,
-            "semantic change must revise the module declaration, laws, contracts, properties, hunt exceptions, trace producers, semantic functions, machine structure, implementation constructor policy, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, behavior bindings, or evidence obligations",
+            "semantic change must revise the module declaration, laws, contracts, properties, hunt exceptions, trace producers, semantic functions, existing implementation commands, machine structure, implementation constructor policy, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, behavior bindings, or evidence obligations",
         ));
     }
 
@@ -55498,6 +55564,7 @@ fn validate_semantic_change(
     validate_semantic_properties(context, change, evidence_items, &mut diagnostics);
     validate_trace_producers(context, change, &mut diagnostics);
     validate_semantic_functions(context, change, &mut diagnostics);
+    validate_implementation_commands(context, change, &mut diagnostics);
     validate_semantic_evidence(context, change, evidence_items, &mut diagnostics);
     validate_allowed_missing_constructors(context, change, &mut diagnostics);
     validate_semantic_surfaces(context, change, &mut diagnostics);
@@ -55510,6 +55577,57 @@ fn validate_semantic_change(
     validate_public_behavior_bindings(context, change, &mut diagnostics);
     validate_dependency_behavior_bindings(context, change, &mut diagnostics);
     diagnostics
+}
+
+fn implementation_commands_change_has_operations(change: &ImplementationCommandsChange) -> bool {
+    !change.replace.is_empty()
+}
+
+fn validate_implementation_commands(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(commands) = change
+        .implementation_commands
+        .as_ref()
+        .filter(|commands| implementation_commands_change_has_operations(commands))
+    else {
+        return;
+    };
+    let Some(implementation) = context.implementation.as_ref() else {
+        diagnostics.push(error(
+            "semantic.implementation-command-without-implementation",
+            &context.target,
+            "implementation_commands.set requires an existing implementation.yaml",
+        ));
+        return;
+    };
+    for (name, command) in &commands.replace {
+        if !is_stable_semantic_id(name) {
+            diagnostics.push(error(
+                "semantic.implementation-command-name",
+                &implementation.path,
+                format!("implementation command key `{name}` must be a stable identifier"),
+            ));
+        }
+        if get_str(&implementation.value, &["commands", name]).is_none() {
+            diagnostics.push(error(
+                "semantic.implementation-command-missing",
+                &implementation.path,
+                format!(
+                    "implementation_commands.set may revise only existing command key `{name}`"
+                ),
+            ));
+        }
+        if command.trim().is_empty() {
+            diagnostics.push(error(
+                "semantic.implementation-command-empty",
+                &implementation.path,
+                format!("replacement for implementation command `{name}` must be non-empty"),
+            ));
+        }
+    }
 }
 
 fn semantic_module_declaration_change_has_operations(
@@ -59444,6 +59562,18 @@ fn semantic_change_modifies_implementation(
     change: &SemanticChange,
     machine_change: Option<&MachineChange>,
 ) -> bool {
+    change
+        .implementation_commands
+        .as_ref()
+        .is_some_and(implementation_commands_change_has_operations)
+        || semantic_change_modifies_implementation_declarations(context, change, machine_change)
+}
+
+fn semantic_change_modifies_implementation_declarations(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    machine_change: Option<&MachineChange>,
+) -> bool {
     machine_change.is_some()
         || change
             .allowed_missing_constructors
@@ -59499,6 +59629,15 @@ fn spec_apply_candidate_context(
         apply_semantic_change_to_module(&mut module.value, change);
     }
     if let Some(implementation) = candidate.implementation.as_mut() {
+        if let Some(commands) = change
+            .implementation_commands
+            .as_ref()
+            .filter(|commands| implementation_commands_change_has_operations(commands))
+        {
+            for (name, command) in &commands.replace {
+                set_yaml_string_path(&mut implementation.value, &["commands", name], command);
+            }
+        }
         if let Some(machine_change) = machine_change {
             apply_machine_change_to_manifest(&mut implementation.value, machine_change);
         }
@@ -59609,7 +59748,7 @@ fn spec_apply_candidate_context(
                     .collect(),
             );
         }
-        if semantic_change_modifies_implementation(context, change, machine_change) {
+        if semantic_change_modifies_implementation_declarations(context, change, machine_change) {
             prepare_declared_proof_manifest(implementation)?;
         }
     }
@@ -59647,6 +59786,15 @@ fn planned_spec_apply_writes(
             .display()
             .to_string(),
     );
+    if change
+        .implementation_commands
+        .as_ref()
+        .is_some_and(implementation_commands_change_has_operations)
+    {
+        if let Some(implementation) = &context.implementation {
+            writes.push(implementation.path.display().to_string());
+        }
+    }
     if let Some(module) = &context.module {
         writes.push(module.path.display().to_string());
         if let Some(contracts) = &change.contracts {
@@ -83850,6 +83998,115 @@ evidence:
         fs::remove_dir_all(&root).unwrap();
         assert!(file_name.len() <= 138, "{file_name}");
         assert!(file_name.ends_with(".yaml"));
+    }
+
+    #[test]
+    fn semantic_plan_and_spec_apply_replace_only_existing_implementation_commands() {
+        let root = route_capability_fixture("implementation-command-change");
+        let target = root.join("modules/play-game-domain/implementation.yaml");
+        let task = "Change only the build and verify command bindings. Preserve every other command and declaration.";
+        let change = r#"spec: rms/semantic-change/v0.1
+module: modules/play-game-domain/implementation.yaml
+intent:
+  summary: Change only the build and verify command bindings.
+implementation_commands:
+  set:
+    build: "cargo build --manifest-path Cargo.toml; status=$?; rm -f Cargo.lock; exit $status"
+    verify: "cargo test --manifest-path Cargo.toml; status=$?; rm -f Cargo.lock; exit $status"
+"#;
+        let context = load_spec_target(&target).unwrap();
+        let prepared = prepare_spec_plan_provider_response(&context, task, change);
+        assert!(
+            prepared
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != Severity::Error),
+            "{:#?}",
+            prepared.diagnostics
+        );
+        let before = fs::read(&target).unwrap();
+        let mut before_commands = get_path(&context.implementation.unwrap().value, &["commands"])
+            .and_then(YamlValue::as_mapping)
+            .unwrap()
+            .clone();
+        before_commands.remove(yaml_key("build"));
+        before_commands.remove(yaml_key("verify"));
+
+        run_spec_apply(&target, None, Some(change), None, true).unwrap();
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            before,
+            "dry-run wrote the manifest"
+        );
+
+        run_spec_apply(&target, None, Some(change), None, false).unwrap();
+        let applied = load_manifest(&target).unwrap();
+        assert_eq!(
+            get_str(&applied.value, &["commands", "build"]),
+            Some(
+                "cargo build --manifest-path Cargo.toml; status=$?; rm -f Cargo.lock; exit $status"
+            )
+        );
+        assert_eq!(
+            get_str(&applied.value, &["commands", "verify"]),
+            Some(
+                "cargo test --manifest-path Cargo.toml; status=$?; rm -f Cargo.lock; exit $status"
+            )
+        );
+        let mut after_commands = get_path(&applied.value, &["commands"])
+            .and_then(YamlValue::as_mapping)
+            .unwrap()
+            .clone();
+        after_commands.remove(yaml_key("build"));
+        after_commands.remove(yaml_key("verify"));
+        assert_eq!(after_commands, before_commands);
+        let record = get_str(
+            &load_manifest(&root.join("modules/play-game-domain/module.yaml"))
+                .unwrap()
+                .value,
+            &["x-rms", "semantic_revision", "change_record"],
+        )
+        .map(|path| fs::read_to_string(root.join("modules/play-game-domain").join(path)).unwrap())
+        .expect("semantic change record");
+        assert!(record.contains("implementation_commands:"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn implementation_command_change_rejects_new_keys_blank_values_and_noop_repair() {
+        let root = route_capability_fixture("implementation-command-invalid");
+        let target = root.join("modules/play-game-domain/implementation.yaml");
+        let context = load_spec_target(&target).unwrap();
+        let task = "Change only the build and verify command bindings.";
+        let diagnostics = validate_spec_plan_provider_response(
+            &context,
+            task,
+            r#"spec: rms/semantic-change/v0.1
+implementation_commands:
+  set:
+    undeclared: cargo test
+    build: ""
+"#,
+        );
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "semantic.implementation-command-missing" }));
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "semantic.implementation-command-empty" }));
+
+        let missing = validate_spec_plan_provider_response(
+            &context,
+            task,
+            "spec: rms/semantic-change/v0.1\nintent: {summary: preserve commands}\n",
+        );
+        assert!(missing.iter().any(|diagnostic| {
+            diagnostic.check == "semantic-plan.implementation-command-change-missing"
+        }));
+        let repair = render_spec_plan_repair_prompt("bounded prompt", "candidate", &missing);
+        assert!(repair.contains("implementation_commands.set"));
+        assert!(repair.contains("may replace only keys already present"));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
