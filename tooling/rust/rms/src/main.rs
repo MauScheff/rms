@@ -53190,6 +53190,12 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "semantic.capability-binding-missing"
             || diagnostic.check == "semantic.public-binding-target-missing"
             || diagnostic.check == "semantic.function-contract-missing"
+            || matches!(
+                diagnostic.check.as_str(),
+                "semantic.authority-binding-owner-missing"
+                    | "semantic.public-binding-owner-missing"
+                    | "semantic.dependency-binding-owner-missing"
+            )
             || diagnostic.check == "surface.kind"
             || diagnostic.check == "surface.surface"
             || diagnostic.check.starts_with("contract.")
@@ -53324,6 +53330,20 @@ fn render_spec_plan_repair_prompt(
             "\n\nPublic capability binding repair rule: a provided capability contract requires one `public_behavior_bindings` item with `public_kind: capability` and `public_name` equal to the exact capability/contract `name`; the binding `id` is only its stable identity and does not select the public target. Its `contract` is the exact module-relative contract path. Every semantic function `discharges.contracts[]` entry is also that exact contract path, never the contract name. The binding semantic function must discharge that same path. Use `public_kind: command` only for an item declared under `provides.commands`, and `public_kind: query` only for an item declared under `provides.queries`.",
         )
         .unwrap_or_default();
+    let missing_implementation_owner_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            matches!(
+                diagnostic.check.as_str(),
+                "semantic.authority-binding-owner-missing"
+                    | "semantic.public-binding-owner-missing"
+                    | "semantic.dependency-binding-owner-missing"
+            )
+        })
+        .then_some(
+            "\n\nMissing implementation owner repair rule: the bounded target has no `implementation.yaml`. The `rms/semantic-change/v0.1` object has no top-level `implementation` field, and a path string cannot create or select an implementation owner. Keep `semantic_functions`, `implementation_commands`, `machine`, `roles`, `allowed_missing_constructors`, `surfaces`, `binding_dependencies`, `protocol_bindings`, `authority_bindings`, `public_behavior_bindings`, and `dependency_behavior_bindings` null. Preserve the contract, law, property, and evidence changes that the module can own. A later authorized `rms add-binding` creates the implementation manifest before any implementation-owned binding is declared.",
+        )
+        .unwrap_or_default();
     let surface_repair = diagnostics
         .iter()
         .any(|diagnostic| matches!(diagnostic.check.as_str(), "surface.kind" | "surface.surface"))
@@ -53399,7 +53419,7 @@ fn render_spec_plan_repair_prompt(
         )
         .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -54118,7 +54138,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     )?;
     writeln!(out, "```")?;
     if context.implementation.is_none() {
-        writeln!(out, "This target has no implementation binding, so `semantic_functions`, `machine`, `roles`, and `surfaces` are null. Keep them null for contract/law/property-only work. Before requesting implementation bindings, machine roles, or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|python|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
+        writeln!(out, "This target has no implementation binding. The semantic-change object has no top-level `implementation` field. Keep `semantic_functions`, `implementation_commands`, `machine`, `roles`, `allowed_missing_constructors`, `surfaces`, `binding_dependencies`, `protocol_bindings`, `authority_bindings`, `public_behavior_bindings`, and `dependency_behavior_bindings` null for contract/law/property/evidence-only work. Before requesting implementation bindings, machine roles, or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|python|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
     }
     writeln!(out)?;
     writeln!(out, "Surface add entries use `name`, `kind: runnable-boundary`, `surface`, `entrypoint`, `delegates_to.role` or `delegates_to.symbol`, `delegates_to.command`, `effects` or `no_effects_justification`, `usage_document`, `smoke_command`, and `evidence`. `smoke_command` names a key under implementation `commands`, and `rms verify` executes it. A delegated role must exist in `architecture.roles`; effect-emitting surfaces use an exact callable symbol that reaches the declared machine driver.")?;
@@ -97344,6 +97364,57 @@ printf '%s\n' "$response" > "$output"
         )
         .iter()
         .all(|diagnostic| diagnostic.severity != Severity::Error));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn semantic_plan_repair_preserves_unbound_module_owner_boundary() {
+        let root = prompt_fixture("semantic-plan-repair-unbound-module-owner");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        assert!(context.implementation.is_none());
+        let prompt = render_spec_plan_prompt(
+            &context,
+            &root,
+            "replace the existing scaffold decision contracts",
+        )
+        .unwrap();
+        let invalid = serde_json::to_string(&json!({
+            "spec": "rms/semantic-change/v0.1",
+            "module": root.join("module.yaml").display().to_string(),
+            "intent": {"summary": "replace the existing scaffold decision contracts"},
+            "public_behavior_bindings": {
+                "set": [{
+                    "id": "invented-binding",
+                    "public_kind": "command",
+                    "public_name": "invented-command",
+                    "contract": "contracts/invented-command.v1.yaml",
+                    "semantic_function": "invented-decision",
+                    "machine_inputs": ["InventedCommand"],
+                    "machine_outputs": ["InventedReply"],
+                    "observation_source": {"kind": "transition-record", "command": "trace"}
+                }],
+                "add": [],
+                "remove": []
+            }
+        }))
+        .unwrap();
+
+        let diagnostics = validate_spec_plan_provider_response(
+            &context,
+            "replace the existing scaffold decision contracts",
+            &invalid,
+        );
+        assert!(diagnostics
+            .iter()
+            .any(|item| item.check == "semantic.public-binding-owner-missing"));
+
+        let repair = render_spec_plan_repair_prompt(&prompt, &invalid, &diagnostics);
+        assert!(repair.contains("Missing implementation owner repair rule"));
+        assert!(repair.contains("has no top-level `implementation` field"));
+        assert!(repair.contains("`public_behavior_bindings`"));
+        assert!(repair.contains("Original bounded schema context"));
+        assert!(repair.contains("public_behavior_bindings: null"));
+
         fs::remove_dir_all(&root).unwrap();
     }
 
