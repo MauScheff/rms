@@ -52526,6 +52526,9 @@ fn prepare_spec_plan_provider_response(
     let (normalized_yaml, evidence_normalizations) =
         normalize_spec_plan_evidence_obligation_fields(&normalized_yaml);
     normalizations.extend(evidence_normalizations);
+    let (normalized_yaml, contract_normalizations) =
+        normalize_spec_plan_contract_artifact_wrappers(&normalized_yaml);
+    normalizations.extend(contract_normalizations);
     let mut change = match serde_yaml::from_str::<SemanticChange>(&normalized_yaml) {
         Ok(change) => change,
         Err(error) => {
@@ -52953,6 +52956,78 @@ fn normalize_spec_plan_evidence_obligation_fields(response: &str) -> (String, Ve
         }
     }
 
+    match serde_yaml::to_string(&value) {
+        Ok(response) => (response, normalizations),
+        Err(_) => (response.to_string(), Vec::new()),
+    }
+}
+
+/// Exact provider context is a complete `rms/contract` artifact, while a
+/// semantic-change contract item carries only the mutable contract fields.
+/// Project only wrapper fields whose value is already fixed by the mutator.
+/// Unknown specs or compatibility policies remain in place and fail closed.
+fn normalize_spec_plan_contract_artifact_wrappers(response: &str) -> (String, Vec<String>) {
+    let mut value = match serde_yaml::from_str::<YamlValue>(response) {
+        Ok(value) => value,
+        Err(_) => return (response.to_string(), Vec::new()),
+    };
+    let Some(contracts) = value
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(yaml_key("contracts")))
+        .and_then(YamlValue::as_mapping_mut)
+    else {
+        return (response.to_string(), Vec::new());
+    };
+    let mut normalizations = Vec::new();
+    for operation in ["add", "set"] {
+        let Some(items) = contracts
+            .get_mut(yaml_key(operation))
+            .and_then(YamlValue::as_sequence_mut)
+        else {
+            continue;
+        };
+        for item in items {
+            let Some(contract) = item.as_mapping_mut() else {
+                continue;
+            };
+            let name = contract
+                .get(yaml_key("name"))
+                .and_then(YamlValue::as_str)
+                .unwrap_or("<unknown>")
+                .to_string();
+            let recognized_spec = contract
+                .get(yaml_key("spec"))
+                .and_then(YamlValue::as_str)
+                .is_some_and(|spec| {
+                    matches!(
+                        spec,
+                        behavioral_contract::CONTRACT_SPEC_V2 | behavioral_contract::CONTRACT_SPEC
+                    )
+                });
+            if recognized_spec {
+                contract.remove(yaml_key("spec"));
+                normalizations.push(format!(
+                    "projected contract artifact `{name}` by removing its mutator-owned `spec` wrapper"
+                ));
+            }
+            let supported_compatibility = contract
+                .get(yaml_key("compatibility"))
+                .and_then(YamlValue::as_mapping)
+                .is_some_and(|compatibility| {
+                    compatibility.len() == 1
+                        && compatibility
+                            .get(yaml_key("policy"))
+                            .and_then(YamlValue::as_str)
+                            == Some("backward-compatible-within-major")
+                });
+            if supported_compatibility {
+                contract.remove(yaml_key("compatibility"));
+                normalizations.push(format!(
+                    "projected contract artifact `{name}` by removing its mutator-owned backward-compatible-within-major wrapper"
+                ));
+            }
+        }
+    }
     match serde_yaml::to_string(&value) {
         Ok(response) => (response, normalizations),
         Err(_) => (response.to_string(), Vec::new()),
@@ -60111,6 +60186,7 @@ enum PropertyEvidenceWriteDisposition {
 
 fn property_evidence_write_disposition(
     module: &LoadedManifest,
+    change: &SemanticChange,
     property: &SemanticPropertyChange,
     replacing: bool,
 ) -> Result<PropertyEvidenceWriteDisposition> {
@@ -60143,15 +60219,70 @@ fn property_evidence_write_disposition(
     let old_path = get_str(old_property, &["evidence", "path"])
         .or_else(|| get_str(old_property, &["evidence"]));
     if old_path != Some(evidence.path.as_str()) {
-        return Ok(PropertyEvidenceWriteDisposition::Unsafe);
+        return property_evidence_write_disposition_from_superseded_change(
+            module, change, property, &existing,
+        );
     }
-    Ok(
-        if render_manifest_property_evidence(old_property).as_deref() == Some(existing.as_str()) {
-            PropertyEvidenceWriteDisposition::Write
-        } else {
-            PropertyEvidenceWriteDisposition::Unsafe
-        },
-    )
+    if render_manifest_property_evidence(old_property).as_deref() == Some(existing.as_str()) {
+        return Ok(PropertyEvidenceWriteDisposition::Write);
+    }
+    property_evidence_write_disposition_from_superseded_change(module, change, property, &existing)
+}
+
+fn property_evidence_write_disposition_from_superseded_change(
+    module: &LoadedManifest,
+    change: &SemanticChange,
+    property: &SemanticPropertyChange,
+    existing: &str,
+) -> Result<PropertyEvidenceWriteDisposition> {
+    let Some(evidence) = property.evidence.as_ref() else {
+        return Ok(PropertyEvidenceWriteDisposition::Unchanged);
+    };
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    for superseded in &change.supersedes {
+        let relative = Path::new(superseded);
+        if !is_safe_relative_artifact_path(superseded)
+            || !relative.starts_with(Path::new("verification/changes"))
+            || relative
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("yaml")
+        {
+            continue;
+        }
+        let path = base.join(superseded);
+        let contents = fs::read_to_string(&path).with_context(|| {
+            format!(
+                "failed to inspect superseded semantic change `{}`",
+                path.display()
+            )
+        })?;
+        let prior = serde_yaml::from_str::<SemanticChange>(&contents).with_context(|| {
+            format!(
+                "failed to parse superseded semantic change `{}`",
+                path.display()
+            )
+        })?;
+        let prior_property = prior.properties.as_ref().and_then(|properties| {
+            properties
+                .replace
+                .iter()
+                .chain(&properties.add)
+                .find(|candidate| {
+                    candidate.id == property.id
+                        && candidate.evidence.as_ref().map(|item| item.path.as_str())
+                            == Some(evidence.path.as_str())
+                })
+        });
+        if prior_property
+            .map(render_semantic_property_evidence)
+            .as_deref()
+            == Some(existing)
+        {
+            return Ok(PropertyEvidenceWriteDisposition::Write);
+        }
+    }
+    Ok(PropertyEvidenceWriteDisposition::Unsafe)
 }
 
 fn validate_spec_candidate_property_evidence_writes(
@@ -60169,7 +60300,7 @@ fn validate_spec_candidate_property_evidence_writes(
         .map(|property| (property, false))
         .chain(properties.replace.iter().map(|property| (property, true)))
     {
-        match property_evidence_write_disposition(module, property, replacing) {
+        match property_evidence_write_disposition(module, change, property, replacing) {
             Ok(PropertyEvidenceWriteDisposition::Unsafe) => {
                 let path = property
                     .evidence
@@ -60291,7 +60422,7 @@ fn planned_spec_apply_writes(
             {
                 if let (Some(evidence), Ok(PropertyEvidenceWriteDisposition::Write)) = (
                     property.evidence.as_ref(),
-                    property_evidence_write_disposition(module, property, replacing),
+                    property_evidence_write_disposition(module, change, property, replacing),
                 ) {
                     writes.push(
                         module
@@ -61655,7 +61786,8 @@ fn write_semantic_contracts_and_evidence(
                 fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create `{}`", parent.display()))?;
             }
-            match property_evidence_write_disposition(original_module, property, replacing)? {
+            match property_evidence_write_disposition(original_module, change, property, replacing)?
+            {
                 PropertyEvidenceWriteDisposition::Write => {
                     fs::write(&path, render_semantic_property_evidence(property))
                         .with_context(|| format!("failed to write `{}`", path.display()))?;
@@ -86263,6 +86395,72 @@ properties:
         assert!(revised_evidence.contains("every generated value is valid"));
         assert!(!revised_evidence.contains("every value is valid"));
 
+        let first_change = fs::read_dir(root.join("verification/changes"))
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .find(|path| {
+                fs::read_to_string(path)
+                    .is_ok_and(|contents| contents.contains("values: fixed examples"))
+            })
+            .unwrap();
+        let original_property: SemanticPropertyChange = serde_yaml::from_str(
+            r#"id: values-remain-valid
+proves: value-validity
+kind: property
+input_space: { values: fixed examples }
+oracle: [every value is valid]
+evidence: { kind: property, path: verification/properties/values_remain_valid.md }
+realizations:
+  - profile: smoke
+    strategy: deterministic-corpus
+    command: properties
+    runner: run.sh#check_values
+"#,
+        )
+        .unwrap();
+        let stale_obligation = render_semantic_property_evidence(&original_property);
+        fs::write(
+            root.join("verification/properties/values_remain_valid.md"),
+            &stale_obligation,
+        )
+        .unwrap();
+        let replay_change = format!(
+            r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+supersedes: [{}]
+properties:
+  set:
+    - id: values-remain-valid
+      proves: value-validity
+      kind: property
+      input_space: {{ values: generated examples }}
+      oracle: [every generated value is valid]
+      evidence:
+        kind: property
+        path: verification/properties/values_remain_valid.md
+      realizations:
+        - profile: ci
+          strategy: generated-property
+          command: properties
+          generator: src/property.rs#generate_values
+          runner: src/property.rs#check_generated_values
+"#,
+            display_relative(&root, &first_change)
+        );
+        run_spec_apply(
+            &root.join("module.yaml"),
+            None,
+            Some(&replay_change),
+            None,
+            true,
+        )
+        .unwrap();
+        fs::write(
+            root.join("verification/properties/values_remain_valid.md"),
+            &revised_evidence,
+        )
+        .unwrap();
+
         run_spec_apply(
             &root.join("module.yaml"),
             None,
@@ -98172,6 +98370,61 @@ evidence:
         assert_eq!(normalizations.len(), 1);
         assert!(normalizations[0].contains("command, result, source_revision"));
         assert!(!normalized.contains("source_revision"));
+    }
+
+    #[test]
+    fn semantic_plan_projects_saved_provider_contract_artifact_into_change_item() {
+        let response = r#"spec: rms/semantic-change/v0.1
+contracts:
+  set:
+    - spec: rms/contract/v0.3
+      name: resolve-public-ptt-secure-media-generation-recovery-capability
+      version: '1'
+      kind: capability
+      meaning: Resolve one exact recovery request.
+      semantics:
+        behavior:
+          observability: full
+          observations: []
+          assumptions: []
+          requires: []
+          guarantees: []
+          failures: []
+          cases:
+            - id: accepted-current-generation
+              statement: An exact duplicate returns its recorded generation.
+              when: {constant: true}
+              outcome: {kind: accepted, expression: {constant: true}}
+              ensures: []
+              permits: {state_changes: [], events: [], effects: []}
+          invariants: []
+          case_policy: {coverage: exhaustive, overlap: forbidden}
+      compatibility:
+        policy: backward-compatible-within-major
+  remove: []
+"#;
+
+        let (normalized, normalizations) = normalize_spec_plan_contract_artifact_wrappers(response);
+        let change: SemanticChange = serde_yaml::from_str(&normalized).unwrap();
+        let contract = &change.contracts.unwrap().replace[0];
+
+        assert_eq!(
+            contract.name,
+            "resolve-public-ptt-secure-media-generation-recovery-capability"
+        );
+        assert!(serde_yaml::to_string(contract.semantics.as_ref().unwrap())
+            .unwrap()
+            .contains("accepted-current-generation"));
+        assert!(!normalized.contains("compatibility:"));
+        assert!(!normalized.contains("spec: rms/contract/v0.3"));
+        assert_eq!(normalizations.len(), 2);
+
+        let unsupported = response.replace(
+            "backward-compatible-within-major",
+            "breaking-change-requires-new-major",
+        );
+        let (unsupported, _) = normalize_spec_plan_contract_artifact_wrappers(&unsupported);
+        assert!(serde_yaml::from_str::<SemanticChange>(&unsupported).is_err());
     }
 
     #[test]
