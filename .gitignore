@@ -8,3 +8,14 @@ dist/
 **/.rms/hunts/
 *.tmp
 *.bak
+
+# RMS managed ignores: begin
+.DS_Store
+target/
+dist/
+.rms/runs/
+.rms/cache/
+.rms/evidence/
+.rms/hunts/
+.rms/dogfood/
+# RMS managed ignores: end
