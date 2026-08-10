@@ -1857,6 +1857,14 @@ struct PropertyRealization {
     runner: String,
     #[serde(default)]
     exhaustive: bool,
+    #[serde(default)]
+    owner_module: Option<String>,
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    working_directory: Option<String>,
+    #[serde(default)]
+    test_selection: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1904,8 +1912,32 @@ struct PropertyRunCommandReport {
     status: String,
     exit_code: Option<i32>,
     elapsed_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_tests: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receipt: Option<String>,
     stdout: String,
     stderr: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TestExecutionReceipt {
+    spec: String,
+    property: String,
+    strategy: String,
+    owner_module: String,
+    package: String,
+    working_directory: String,
+    runner: String,
+    test_selection: String,
+    command: String,
+    source_revision: String,
+    selected_tests: usize,
+    status: String,
+    exit_code: Option<i32>,
+    elapsed_ms: u128,
+    stdout_digest: String,
+    stderr_digest: String,
 }
 
 #[derive(Clone, Debug)]
@@ -16994,17 +17026,39 @@ fn execute_property_realizations_with_batch_and_cache(
             ));
         }
         for realization in matching {
-            let Some(command) = get_str(&manifest.value, &["commands", &realization.command])
-            else {
-                diagnostics.push(error(
-                    "property.realization-not-executed",
-                    implementation,
-                    format!(
-                        "{} `{}` realization references missing command `{}`",
-                        target.kind, target.id, realization.command
-                    ),
-                ));
-                continue;
+            let integration_test = realization_is_integration_test(realization);
+            let (command, execution_root) = if integration_test {
+                match integration_test_execution(&manifest, realization) {
+                    Ok(execution) => execution,
+                    Err(failure) => {
+                        diagnostics.push(error(
+                            "property.integration-test-invalid",
+                            implementation,
+                            format!("property `{}`: {failure}", target.id),
+                        ));
+                        continue;
+                    }
+                }
+            } else {
+                let Some(command) = get_str(&manifest.value, &["commands", &realization.command])
+                else {
+                    diagnostics.push(error(
+                        "property.realization-not-executed",
+                        implementation,
+                        format!(
+                            "{} `{}` realization references missing command `{}`",
+                            target.kind, target.id, realization.command
+                        ),
+                    ));
+                    continue;
+                };
+                (
+                    command.to_string(),
+                    implementation
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .to_path_buf(),
+                )
             };
             let runner_symbol = binding_reference_symbol(&realization.runner)
                 .unwrap_or(realization.runner.as_str());
@@ -17013,7 +17067,7 @@ fn execute_property_realizations_with_batch_and_cache(
                 .copied()
                 .unwrap_or(0)
                 > 1
-                && !proof_command_selects_runner(command, runner_symbol, "RMS_PROPERTY_RUNNER")
+                && !proof_command_selects_runner(&command, runner_symbol, "RMS_PROPERTY_RUNNER")
             {
                 diagnostics.push(error(
                     "property.command-does-not-select-runner",
@@ -17024,17 +17078,18 @@ fn execute_property_realizations_with_batch_and_cache(
                     ),
                 ));
             }
-            let root = implementation.parent().unwrap_or_else(|| Path::new("."));
             if dry_run {
                 commands.push(PropertyRunCommandReport {
                     kind: format!("{}:{}", target.kind, realization.strategy),
                     property: target.id.clone(),
-                    command: command.to_string(),
+                    command: command.clone(),
                     runner: realization.runner.clone(),
                     generator: realization.generator.clone(),
                     status: "planned".to_string(),
                     exit_code: None,
                     elapsed_ms: 0,
+                    selected_tests: None,
+                    receipt: None,
                     stdout: String::new(),
                     stderr: String::new(),
                 });
@@ -17053,12 +17108,16 @@ fn execute_property_realizations_with_batch_and_cache(
                 implementation.to_string_lossy().as_ref(),
                 profile.label(),
                 target.id.as_str(),
-                command,
+                command.as_str(),
                 realization.runner.as_str(),
                 realization.generator.as_deref().unwrap_or(""),
             ]);
-            if let Some(pass_line) =
-                batch_evidence.and_then(|batch| batch.exact_pass_line(command, &realization.runner))
+            if let Some(pass_line) = (!proof_command_is_test_backed(&command))
+                .then(|| {
+                    batch_evidence
+                        .and_then(|batch| batch.exact_pass_line(&command, &realization.runner))
+                })
+                .flatten()
             {
                 let command_report = PropertyRunCommandReport {
                     kind: format!("{}:{}", target.kind, realization.strategy),
@@ -17069,6 +17128,8 @@ fn execute_property_realizations_with_batch_and_cache(
                     status: "pass".to_string(),
                     exit_code: Some(0),
                     elapsed_ms: 0,
+                    selected_tests: Some(1),
+                    receipt: None,
                     stdout: format!("batched by successful unfiltered Rust suite; {pass_line}"),
                     stderr: String::new(),
                 };
@@ -17092,7 +17153,11 @@ fn execute_property_realizations_with_batch_and_cache(
             }
             if let Some(cached) = proof_cache
                 .and_then(|cache| cache.load::<PropertyRunCommandReport>(&cache_key))
-                .filter(|cached| cached.status == "pass")
+                .filter(|cached| {
+                    cached.status == "pass"
+                        && (!(integration_test || proof_command_is_test_backed(&command))
+                            || cached.selected_tests.is_some_and(|count| count > 0))
+                })
             {
                 eprintln!(
                     "proof [{}/{}] runner={} elapsed={} eta={} state=resume-cache cached={}ms",
@@ -17123,14 +17188,22 @@ fn execute_property_realizations_with_batch_and_cache(
                 )
             );
             let output = execute_proof_command_observed(
-                root,
-                command,
+                &execution_root,
+                &command,
                 &[
                     ("RMS_PROPERTY_ID", target.id.as_str()),
                     ("RMS_PROPERTY_RUNNER", realization.runner.as_str()),
                     (
                         "RMS_PROPERTY_GENERATOR",
                         realization.generator.as_deref().unwrap_or(generator_symbol),
+                    ),
+                    (
+                        "RMS_INTEGRATION_PACKAGE",
+                        realization.package.as_deref().unwrap_or(""),
+                    ),
+                    (
+                        "RMS_INTEGRATION_TEST_SELECTION",
+                        realization.test_selection.as_deref().unwrap_or(""),
                     ),
                 ],
                 timeout_seconds,
@@ -17146,19 +17219,62 @@ fn execute_property_realizations_with_batch_and_cache(
                     ),
                 ));
             }
+            let test_backed = integration_test || proof_command_is_test_backed(&command);
+            let selected_tests = test_backed
+                .then(|| selected_test_count(&output.stdout, &output.stderr))
+                .flatten();
+            if test_backed && selected_tests.is_none() {
+                diagnostics.push(error(
+                    "proof.test-count-unavailable",
+                    implementation,
+                    format!(
+                        "property `{}` test-backed runner `{}` did not report a machine-readable selected-test count",
+                        target.id, realization.runner
+                    ),
+                ));
+            } else if selected_tests == Some(0) {
+                diagnostics.push(error(
+                    "proof.zero-tests-selected",
+                    implementation,
+                    format!(
+                        "property `{}` runner `{}` selected zero tests even though the command exited {}",
+                        target.id,
+                        realization.runner,
+                        output.status.code().unwrap_or(-1)
+                    ),
+                ));
+            }
+            let receipt = if let Some(selected_tests) = selected_tests {
+                Some(persist_test_execution_receipt(
+                    &manifest,
+                    target,
+                    realization,
+                    &command,
+                    &execution_root,
+                    &output,
+                    selected_tests,
+                )?)
+            } else {
+                None
+            };
+            let proof_passed = output.status.success()
+                && !output.timed_out
+                && (!test_backed || selected_tests.is_some_and(|count| count > 0));
             let command_report = PropertyRunCommandReport {
                 kind: format!("{}:{}", target.kind, realization.strategy),
                 property: target.id.clone(),
-                command: command.to_string(),
+                command: command.clone(),
                 runner: realization.runner.clone(),
                 generator: realization.generator.clone(),
-                status: if output.status.success() && !output.timed_out {
+                status: if proof_passed {
                     "pass".to_string()
                 } else {
                     "fail".to_string()
                 },
                 exit_code: output.status.code(),
                 elapsed_ms: output.elapsed_ms,
+                selected_tests,
+                receipt,
                 stdout: output.stdout,
                 stderr: output.stderr,
             };
@@ -17233,6 +17349,8 @@ fn execute_property_realizations_with_batch_and_cache(
                     status: "planned".to_string(),
                     exit_code: None,
                     elapsed_ms: 0,
+                    selected_tests: None,
+                    receipt: None,
                     stdout: String::new(),
                     stderr: String::new(),
                 });
@@ -17272,6 +17390,8 @@ fn execute_property_realizations_with_batch_and_cache(
                 status: if passed { "pass" } else { "fail" }.to_string(),
                 exit_code,
                 elapsed_ms,
+                selected_tests: None,
+                receipt: None,
                 stdout,
                 stderr,
             });
@@ -17440,6 +17560,8 @@ fn execute_module_property_realizations(
                     status: "planned".to_string(),
                     exit_code: None,
                     elapsed_ms: 0,
+                    selected_tests: None,
+                    receipt: None,
                     stdout: String::new(),
                     stderr: String::new(),
                 });
@@ -17584,6 +17706,8 @@ fn execute_module_property_realizations(
                 status: if passed { "pass" } else { "fail" }.to_string(),
                 exit_code: output.as_ref().and_then(|output| output.status.code()),
                 elapsed_ms: output.as_ref().map_or(0, |output| output.elapsed_ms),
+                selected_tests: None,
+                receipt: None,
                 stdout: format!(
                     "{}{}",
                     generator_stdout,
@@ -18935,6 +19059,7 @@ fn validate_hunt_posture(module: &LoadedManifest, diagnostics: &mut Vec<Diagnost
                     | "static-analyzer"
                     | "sanitizer"
                     | "mutation-tester"
+                    | "integration-test"
             )
         })
     {
@@ -19401,6 +19526,7 @@ fn validate_property_target_report(
                 | "static-analyzer"
                 | "sanitizer"
                 | "mutation-tester"
+                | "integration-test"
         ) {
             push_unique_warning(
                 diagnostics,
@@ -19412,18 +19538,52 @@ fn validate_property_target_report(
                 ),
             );
         }
-        if binding_reference_parts_in_workspace(&realization.runner, base, &manifest.path).is_none()
-        {
+        let integration_test = realization_is_integration_test(realization);
+        if !integration_test && binding_reference_parts(&realization.runner).is_none() {
             push_unique_warning(
                 diagnostics,
-                "property.runner-missing",
+                if binding_reference_parts_in_workspace(
+                    &realization.runner,
+                    base,
+                    &manifest.path,
+                )
+                .is_some()
+                {
+                    "property.cross-workspace-runner-requires-integration-test"
+                } else {
+                    "property.runner-missing"
+                },
                 &manifest.path,
                 format!(
-                    "{} `{}` realization `{}` must name an exact relative `path#symbol` runner",
-                    target.kind, target.id, realization.strategy
+                    "{} `{}` realization `{}` must use a module-local runner; cross-workspace tests require strategy `integration-test` with explicit owner, package, working directory, and test selection",
+                    target.kind, target.id, realization.strategy,
                 ),
             );
             continue;
+        }
+        if integration_test {
+            if let Err(failure) = integration_test_execution(manifest, realization) {
+                push_unique_warning(
+                    diagnostics,
+                    "property.integration-test-invalid",
+                    &manifest.path,
+                    format!("{} `{}`: {failure}", target.kind, target.id),
+                );
+            }
+        } else if realization.owner_module.is_some()
+            || realization.package.is_some()
+            || realization.working_directory.is_some()
+            || realization.test_selection.is_some()
+        {
+            push_unique_warning(
+                diagnostics,
+                "property.integration-fields-without-strategy",
+                &manifest.path,
+                format!(
+                    "{} `{}` uses integration-test fields without strategy `integration-test`",
+                    target.kind, target.id
+                ),
+            );
         }
         if property_realization_requires_generator(&realization.strategy) {
             let Some(generator) = realization.generator.as_deref() else {
@@ -19452,7 +19612,16 @@ fn validate_property_target_report(
             }
         }
         if let Some(implementation) = implementation {
-            if !binding_symbol_reference_exists(base, implementation, &realization.runner) {
+            let realization_base = if integration_test {
+                rms_root_for(&implementation.path)
+            } else {
+                base.to_path_buf()
+            };
+            if !binding_symbol_reference_exists(
+                &realization_base,
+                implementation,
+                &realization.runner,
+            ) {
                 push_unique_warning(
                     diagnostics,
                     "property.runner-missing",
@@ -19464,7 +19633,7 @@ fn validate_property_target_report(
                 );
             }
             if let Some(generator) = realization.generator.as_deref() {
-                if !binding_symbol_reference_exists(base, implementation, generator) {
+                if !binding_symbol_reference_exists(&realization_base, implementation, generator) {
                     push_unique_warning(
                         diagnostics,
                         "property.generator-missing",
@@ -19476,7 +19645,7 @@ fn validate_property_target_report(
                     );
                 } else {
                     if !binding_function_references_symbol(
-                        base,
+                        &realization_base,
                         implementation,
                         &realization.runner,
                         binding_reference_symbol(generator).unwrap_or(generator),
@@ -19493,7 +19662,7 @@ fn validate_property_target_report(
                     }
                     if realization.strategy == "generated-property"
                         && property_generator_is_fixed_literal_corpus(
-                            base,
+                            &realization_base,
                             implementation,
                             generator,
                         )
@@ -19511,7 +19680,7 @@ fn validate_property_target_report(
                 }
             }
             if !property_runner_calls_operation(
-                base,
+                &realization_base,
                 implementation,
                 &realization.runner,
                 realization.generator.as_deref(),
@@ -19527,7 +19696,7 @@ fn validate_property_target_report(
                     ),
                 );
             }
-            if !property_runner_has_oracle(base, implementation, &realization.runner) {
+            if !property_runner_has_oracle(&realization_base, implementation, &realization.runner) {
                 push_unique_warning(
                     diagnostics,
                     "property.runner-has-no-oracle",
@@ -20950,6 +21119,9 @@ fn property_blocking_diagnostic(check: &str) -> bool {
                 | "property.runner-has-no-oracle"
                 | "property.command-does-not-select-runner"
                 | "property.realization-not-executed"
+                | "property.integration-test-invalid"
+                | "property.integration-fields-without-strategy"
+                | "property.cross-workspace-runner-requires-integration-test"
         )
 }
 
@@ -21031,13 +21203,22 @@ fn print_property_run_report(report: &PropertyRunReport) {
     }
     for command in &report.commands {
         println!(
-            "  - {} [{}] via {}: {} ({}, {} ms)",
+            "  - {} [{}] via {}: {} ({}, {} ms{}{})",
             command.property,
             command.kind,
             command.runner,
             command.command,
             command.status,
-            command.elapsed_ms
+            command.elapsed_ms,
+            command
+                .selected_tests
+                .map(|count| format!(", selected_tests={count}"))
+                .unwrap_or_default(),
+            command
+                .receipt
+                .as_deref()
+                .map(|receipt| format!(", receipt={receipt}"))
+                .unwrap_or_default(),
         );
     }
     if !report.diagnostics.is_empty() {
@@ -25105,6 +25286,9 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
         "rms/context-map/v0.1" => Some(include_str!("../../../../schemas/context-map.schema.json")),
         "rms/implementation/v0.1" => Some(include_str!(
             "../../../../schemas/implementation.schema.json"
+        )),
+        "rms/test-execution-receipt/v0.1" => Some(include_str!(
+            "../../../../schemas/test-execution-receipt.schema.json"
         )),
         "rms/machine-probe/v0.1" => Some(include_str!(
             "../../../../schemas/machine-probe.schema.json"
@@ -37087,6 +37271,7 @@ fn declared_proof_entries(root: &Path) -> Result<Vec<surface_projection::ProofEn
         "static-analyzer",
         "sanitizer",
         "mutation-tester",
+        "integration-test",
     ];
     let mut entries = Vec::new();
     for module in discover_module_manifests(root)? {
@@ -47623,6 +47808,9 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "property.runner-has-no-oracle"
                 | "property.command-does-not-select-runner"
                 | "property.realization-not-executed"
+                | "property.integration-test-invalid"
+                | "property.integration-fields-without-strategy"
+                | "property.cross-workspace-runner-requires-integration-test"
                 | "trace.producer-missing"
                 | "trace.producer-command-missing"
                 | "trace.producer-runner-missing"
@@ -54095,7 +54283,11 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "evidence.fuzz-realization-mismatch"
             || matches!(
                 diagnostic.check.as_str(),
-                "property.runner-missing" | "property.generator-missing"
+                "property.runner-missing"
+                    | "property.generator-missing"
+                    | "property.integration-test-invalid"
+                    | "property.integration-fields-without-strategy"
+                    | "property.cross-workspace-runner-requires-integration-test"
             )
     }) || contract_behavior_repair;
     let exact_contract_context = if include_schema {
@@ -54121,11 +54313,14 @@ fn render_spec_plan_repair_prompt(
                     diagnostic.check.as_str(),
                     "property.runner-missing"
                         | "property.generator-missing"
+                        | "property.integration-test-invalid"
+                        | "property.integration-fields-without-strategy"
+                        | "property.cross-workspace-runner-requires-integration-test"
                         | "property.composite-behavior-owner-required"
                         | "property.realization-not-executed"
                 )
         })
-        .then_some("\n\nProperty realization repair rule: `realizations` is mandatory and non-empty for every added or changed property. Never delete the list or replace it with `[]` to repair an item. Replace each invalid item with a complete valid realization. Profiles are exactly `smoke|ci|nightly`; `core` is a module profile and is invalid here. Strategies are exactly `deterministic-corpus|deterministic-exhaustive|generated-property|coverage-fuzzer|model-checker|benchmark|static-analyzer|sanitizer|mutation-tester`; `generated` is never a valid strategy. Every realization has a nonblank command and exact `path#symbol` runner. A fuzz target requires `generated-property`, `coverage-fuzzer`, `model-checker`, or a genuinely finite complete `deterministic-exhaustive` realization with `exhaustive: true`; a fixed non-exhaustive `deterministic-corpus` must remain an ordinary property and cannot be relabeled as fuzz proof. `deterministic-exhaustive` additionally has an exact `path#symbol` generator and `exhaustive: true`. A composition-only module may declare only parent topology/export properties with `operation.kind: composition`. Each such realization uses `{profile: smoke, strategy: deterministic-exhaustive, command: composition, generator: scripts/composition_property.sh#generate_property_cases, runner: scripts/composition_property.sh#run_property, exhaustive: true}` and both symbols must exist. Never relabel a behavioral property or test as `composition`. Move behavioral meaning, the property, its executable runner, and concrete evidence to the contained runnable owner; then preserve the exact exported child contract or use a verified proof delegation.")
+        .then_some("\n\nProperty realization repair rule: `realizations` is mandatory and non-empty for every added or changed property. Never delete the list or replace it with `[]` to repair an item. Replace each invalid item with a complete valid realization. Profiles are exactly `smoke|ci|nightly`; `core` is a module profile and is invalid here. Strategies are exactly `deterministic-corpus|deterministic-exhaustive|generated-property|coverage-fuzzer|model-checker|benchmark|static-analyzer|sanitizer|mutation-tester|integration-test`; `generated` is never a valid strategy. Every realization has a nonblank command and exact `path#symbol` runner. `integration-test` additionally requires `owner_module`, `package`, system-root-relative `working_directory`, and exact `test_selection`; its command must select both `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION`, and a zero selected-test count is a failure. A cross-workspace test is never a direct semantic-unit realization. A fuzz target requires `generated-property`, `coverage-fuzzer`, `model-checker`, or a genuinely finite complete `deterministic-exhaustive` realization with `exhaustive: true`; a fixed non-exhaustive `deterministic-corpus` must remain an ordinary property and cannot be relabeled as fuzz proof. `deterministic-exhaustive` additionally has an exact `path#symbol` generator and `exhaustive: true`. A composition-only module may declare only parent topology/export properties with `operation.kind: composition`. Each such realization uses `{profile: smoke, strategy: deterministic-exhaustive, command: composition, generator: scripts/composition_property.sh#generate_property_cases, runner: scripts/composition_property.sh#run_property, exhaustive: true}` and both symbols must exist. Never relabel a behavioral property or test as `composition`. Move behavioral meaning, the property, its executable runner, and concrete evidence to the contained runnable owner; then preserve the exact exported child contract or use a verified proof delegation.")
         .unwrap_or_default();
     let implementation_command_repair = diagnostics
         .iter()
@@ -55070,7 +55265,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "      delete_file: true")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Property realization grammar is closed. `realizations` is mandatory and non-empty for every property in `add` or `set`; never emit `realizations: []`. Profiles are exactly `smoke`, `ci`, or `nightly`; `core` is a module profile and is not a realization profile. Strategies are exactly `deterministic-corpus`, `deterministic-exhaustive`, `generated-property`, `coverage-fuzzer`, `model-checker`, `benchmark`, `static-analyzer`, `sanitizer`, or `mutation-tester`. Every realization declares a nonblank implementation command and an exact relative `path#symbol` runner. `generated-property` and `deterministic-exhaustive` also declare an exact relative `path#symbol` generator. A Rust binding uses exact Rust callables under `src/*.rs#symbol` or `tests/*.rs#symbol`; a path under `verification/properties/` is evidence and is never an executable runner or generator. `property_generator` and `property_oracle` roles likewise name source files, not evidence paths. `deterministic-exhaustive` always declares `exhaustive: true`. A fixed literal generator is `deterministic-corpus`, not `generated-property`. If more than one realization in a profile uses the same command, that command must select `RMS_PROPERTY_RUNNER` or the exact runner symbol; use the bounded context's selector-aware command (often `fuzz`) instead of an unfiltered shared `verify` command.")?;
+    writeln!(out, "Property realization grammar is closed. `realizations` is mandatory and non-empty for every property in `add` or `set`; never emit `realizations: []`. Profiles are exactly `smoke`, `ci`, or `nightly`; `core` is a module profile and is not a realization profile. Strategies are exactly `deterministic-corpus`, `deterministic-exhaustive`, `generated-property`, `coverage-fuzzer`, `model-checker`, `benchmark`, `static-analyzer`, `sanitizer`, `mutation-tester`, or `integration-test`. Every realization declares a nonblank implementation command and an exact relative `path#symbol` runner. `generated-property` and `deterministic-exhaustive` also declare an exact relative `path#symbol` generator. `integration-test` declares `owner_module`, `package`, a system-root-relative `working_directory`, and exact `test_selection`; its command selects both `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION`. RMS requires and records a nonzero selected-test count. Use integration-test only for a test owned by the declaring module; ordinary semantic properties remain module-local and call their declared operation directly. A Rust binding uses exact Rust callables under `src/*.rs#symbol` or `tests/*.rs#symbol`; a path under `verification/properties/` is evidence and is never an executable runner or generator. `property_generator` and `property_oracle` roles likewise name source files, not evidence paths. `deterministic-exhaustive` always declares `exhaustive: true`. A fixed literal generator is `deterministic-corpus`, not `generated-property`. If more than one realization in a profile uses the same command, that command must select `RMS_PROPERTY_RUNNER` or the exact runner symbol; use the bounded context's selector-aware command (often `fuzz`) instead of an unfiltered shared `verify` command.")?;
     writeln!(out, "Fuzz-target grammar uses the same `properties` change section. Set `kind: fuzz` on the complete property item; `rms spec apply` then places it under canonical module `fuzz_targets` and implementation `architecture.reliability.fuzz_targets`. Use `properties.set` when the ID already exists in either properties or fuzz targets, and `properties.add` only for a new ID. There is no top-level `fuzz_targets` semantic-change field.")?;
     writeln!(out, "For a finite composite export/child-backing property, use this exact realization unless the bounded context already declares another exact realization:")?;
     writeln!(out, "```yaml")?;
@@ -59228,6 +59423,7 @@ fn validate_semantic_properties(
                     | "static-analyzer"
                     | "sanitizer"
                     | "mutation-tester"
+                    | "integration-test"
             );
             if !matches!(realization.profile.as_str(), "smoke" | "ci" | "nightly")
                 || !valid_strategy
@@ -59237,7 +59433,7 @@ fn validate_semantic_properties(
                     "evidence.property-realization-invalid",
                     &context.target,
                     format!(
-                        "property `{}` has realization profile `{}`, strategy `{}`, command `{}`; profiles are exactly smoke|ci|nightly, strategies are exactly deterministic-corpus|deterministic-exhaustive|generated-property|coverage-fuzzer|model-checker|benchmark|static-analyzer|sanitizer|mutation-tester, and command must be nonblank",
+                        "property `{}` has realization profile `{}`, strategy `{}`, command `{}`; profiles are exactly smoke|ci|nightly, strategies are exactly deterministic-corpus|deterministic-exhaustive|generated-property|coverage-fuzzer|model-checker|benchmark|static-analyzer|sanitizer|mutation-tester|integration-test, and command must be nonblank",
                         property.id,
                         realization.profile,
                         realization.strategy,
@@ -59255,19 +59451,68 @@ fn validate_semantic_properties(
                     ),
                 ));
             }
-            if binding_reference_parts_in_workspace(
-                &realization.runner,
-                spec_target_base(context),
-                &context.target,
-            )
-            .is_none()
-            {
+            let integration_test = realization_is_integration_test(realization);
+            let valid_runner = if integration_test {
+                binding_reference_parts(&realization.runner).is_some()
+            } else {
+                binding_reference_parts(&realization.runner).is_some()
+            };
+            if !valid_runner {
                 diagnostics.push(error(
-                    "property.runner-missing",
+                    if !integration_test
+                        && binding_reference_parts_in_workspace(
+                            &realization.runner,
+                            spec_target_base(context),
+                            &context.target,
+                        )
+                        .is_some()
+                    {
+                        "property.cross-workspace-runner-requires-integration-test"
+                    } else {
+                        "property.runner-missing"
+                    },
                     &context.target,
                     format!(
-                        "property `{}` realization `{}` must name an exact relative `path#symbol` runner",
+                        "property `{}` realization `{}` must name an exact relative `path#symbol` runner; cross-workspace tests require strategy `integration-test` and a system-root-relative runner",
                         property.id, realization.strategy
+                    ),
+                ));
+            }
+            if integration_test {
+                if realization
+                    .owner_module
+                    .as_deref()
+                    .is_none_or(str::is_empty)
+                    || realization.package.as_deref().is_none_or(str::is_empty)
+                    || realization
+                        .working_directory
+                        .as_deref()
+                        .is_none_or(|path| !is_safe_relative_artifact_path(path))
+                    || realization
+                        .test_selection
+                        .as_deref()
+                        .is_none_or(str::is_empty)
+                {
+                    diagnostics.push(error(
+                        "property.integration-test-invalid",
+                        &context.target,
+                        format!(
+                            "property `{}` integration-test realization requires nonblank owner_module, package, test_selection, and a safe system-root-relative working_directory",
+                            property.id
+                        ),
+                    ));
+                }
+            } else if realization.owner_module.is_some()
+                || realization.package.is_some()
+                || realization.working_directory.is_some()
+                || realization.test_selection.is_some()
+            {
+                diagnostics.push(error(
+                    "property.integration-fields-without-strategy",
+                    &context.target,
+                    format!(
+                        "property `{}` uses integration-test fields without strategy `integration-test`",
+                        property.id
                     ),
                 ));
             }
@@ -59626,6 +59871,231 @@ fn binding_reference_parts_in_workspace<'a>(
     canonical_target
         .starts_with(canonical_root)
         .then_some((path, symbol))
+}
+
+fn realization_is_integration_test(realization: &PropertyRealization) -> bool {
+    realization.strategy == "integration-test"
+}
+
+fn integration_test_execution(
+    implementation: &LoadedManifest,
+    realization: &PropertyRealization,
+) -> Result<(String, PathBuf)> {
+    let owner = realization
+        .owner_module
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow!("integration-test realization is missing `owner_module`"))?;
+    let declared_owner = get_str(&implementation.value, &["module"]).unwrap_or_default();
+    if owner != declared_owner {
+        bail!(
+            "integration-test owner_module `{owner}` does not match declaring implementation `{declared_owner}`"
+        );
+    }
+    let package = realization
+        .package
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow!("integration-test realization is missing `package`"))?;
+    let working_directory = realization
+        .working_directory
+        .as_deref()
+        .filter(|value| is_safe_relative_artifact_path(value))
+        .ok_or_else(|| {
+            anyhow!("integration-test realization requires a safe system-root-relative `working_directory`")
+        })?;
+    let selection = realization
+        .test_selection
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow!("integration-test realization is missing `test_selection`"))?;
+    let command = get_str(
+        &implementation.value,
+        &["commands", realization.command.as_str()],
+    )
+    .ok_or_else(|| {
+        anyhow!(
+            "integration-test realization references missing command `{}`",
+            realization.command
+        )
+    })?;
+    if !command.contains("RMS_INTEGRATION_TEST_SELECTION") && !command.contains(selection) {
+        bail!(
+            "integration-test command `{}` does not select exact test `{selection}` through RMS_INTEGRATION_TEST_SELECTION or a literal selection",
+            realization.command
+        );
+    }
+    if !command.contains("RMS_INTEGRATION_PACKAGE") && !command.contains(package) {
+        bail!(
+            "integration-test command `{}` does not select owning package `{package}` through RMS_INTEGRATION_PACKAGE or a literal package",
+            realization.command
+        );
+    }
+    let system_root = rms_root_for(&implementation.path);
+    let canonical_root = fs::canonicalize(&system_root).with_context(|| {
+        format!(
+            "failed to resolve RMS system root `{}`",
+            system_root.display()
+        )
+    })?;
+    let execution_root =
+        fs::canonicalize(system_root.join(working_directory)).with_context(|| {
+            format!("integration-test working directory `{working_directory}` does not exist")
+        })?;
+    if !execution_root.starts_with(&canonical_root) {
+        bail!("integration-test working directory escapes the RMS system root");
+    }
+    let (runner_path, _) =
+        binding_reference_parts_syntax(&realization.runner).ok_or_else(|| {
+            anyhow!("integration-test runner is not an exact `path#symbol` reference")
+        })?;
+    if !is_safe_relative_artifact_path(runner_path) {
+        bail!("integration-test runner must be system-root-relative and cannot contain `..`");
+    }
+    let runner = fs::canonicalize(system_root.join(runner_path))
+        .with_context(|| format!("integration-test runner `{runner_path}` does not exist"))?;
+    if !runner.starts_with(&execution_root) {
+        bail!(
+            "integration-test runner `{runner_path}` is not owned by working directory `{working_directory}`"
+        );
+    }
+    Ok((command.to_string(), execution_root))
+}
+
+fn proof_command_is_test_backed(command: &str) -> bool {
+    let command = command.to_ascii_lowercase();
+    [
+        "cargo test",
+        "swift test",
+        "xcodebuild",
+        "pytest",
+        "python -m unittest",
+        "node --test",
+        "npm test",
+        "npm run test",
+        "just test",
+        "just device-test",
+    ]
+    .iter()
+    .any(|marker| command.contains(marker))
+}
+
+fn selected_test_count(stdout: &str, stderr: &str) -> Option<usize> {
+    let mut counts = Vec::new();
+    for line in stdout.lines().chain(stderr.lines()) {
+        let line = line.trim();
+        for prefix in ["Executed ", "Test run with ", "Ran "] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                if let Some(count) = leading_usize(rest) {
+                    counts.push(count);
+                }
+            }
+        }
+        if let Some(rest) = line.split("test result: ok.").nth(1) {
+            if let Some(count) = leading_usize(rest.trim()) {
+                counts.push(count);
+            }
+        }
+        let tokens = line.split_whitespace().collect::<Vec<_>>();
+        for pair in tokens.windows(2) {
+            if matches!(
+                pair[1].trim_matches(|c: char| !c.is_ascii_alphabetic()),
+                "passed" | "pass"
+            ) {
+                if let Ok(count) = pair[0]
+                    .trim_matches(|c: char| !c.is_ascii_digit())
+                    .parse::<usize>()
+                {
+                    counts.push(count);
+                }
+            }
+        }
+    }
+    counts.into_iter().max()
+}
+
+fn leading_usize(value: &str) -> Option<usize> {
+    let digits = value
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    (!digits.is_empty())
+        .then(|| digits.parse::<usize>().ok())
+        .flatten()
+}
+
+fn persist_test_execution_receipt(
+    implementation: &LoadedManifest,
+    target: &PropertyTargetReport,
+    realization: &PropertyRealization,
+    command: &str,
+    execution_root: &Path,
+    output: &ProofProcessOutput,
+    selected_tests: usize,
+) -> Result<String> {
+    let system_root = rms_root_for(&implementation.path);
+    let owner_module = realization
+        .owner_module
+        .clone()
+        .or_else(|| get_str(&implementation.value, &["module"]).map(ToString::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    let package = realization
+        .package
+        .clone()
+        .or_else(|| {
+            get_str(&implementation.value, &["toolchain", "package"]).map(ToString::to_string)
+        })
+        .or_else(|| {
+            get_str(&implementation.value, &["toolchain", "target"]).map(ToString::to_string)
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let working_directory = realization
+        .working_directory
+        .clone()
+        .unwrap_or_else(|| execution_root.display().to_string());
+    let test_selection = realization.test_selection.clone().unwrap_or_else(|| {
+        binding_reference_symbol(&realization.runner)
+            .unwrap_or(realization.runner.as_str())
+            .to_string()
+    });
+    let receipt = TestExecutionReceipt {
+        spec: "rms/test-execution-receipt/v0.1".to_string(),
+        property: target.id.clone(),
+        strategy: realization.strategy.clone(),
+        owner_module,
+        package,
+        working_directory,
+        runner: realization.runner.clone(),
+        test_selection,
+        command: command.to_string(),
+        source_revision: source_revision(&system_root).unwrap_or_else(|| "uncommitted".to_string()),
+        selected_tests,
+        status: if output.status.success() && !output.timed_out && selected_tests > 0 {
+            "pass"
+        } else {
+            "fail"
+        }
+        .to_string(),
+        exit_code: output.status.code(),
+        elapsed_ms: output.elapsed_ms,
+        stdout_digest: sha256_bytes(output.stdout.as_bytes()),
+        stderr_digest: sha256_bytes(output.stderr.as_bytes()),
+    };
+    let implementation_path = implementation.path.display().to_string();
+    let key = verification::ProofCache::key(&[
+        implementation_path.as_str(),
+        target.id.as_str(),
+        realization.runner.as_str(),
+        command,
+        receipt.source_revision.as_str(),
+    ]);
+    let relative = PathBuf::from(".rms/evidence/integration").join(format!("{key}.json"));
+    let path = system_root.join(&relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, serde_json::to_vec_pretty(&receipt)?)?;
+    Ok(relative.display().to_string())
 }
 
 fn validate_semantic_evidence(
@@ -62700,6 +63170,16 @@ fn property_realization_yaml(realization: &PropertyRealization) -> YamlValue {
     );
     if realization.exhaustive {
         mapping.insert(yaml_key("exhaustive"), YamlValue::Bool(true));
+    }
+    for (key, value) in [
+        ("owner_module", realization.owner_module.as_ref()),
+        ("package", realization.package.as_ref()),
+        ("working_directory", realization.working_directory.as_ref()),
+        ("test_selection", realization.test_selection.as_ref()),
+    ] {
+        if let Some(value) = value {
+            mapping.insert(yaml_key(key), YamlValue::String(value.clone()));
+        }
     }
     YamlValue::Mapping(mapping)
 }
@@ -85926,6 +86406,53 @@ surfaces:
     }
 
     #[test]
+    fn ordinary_property_rejects_workspace_contained_cross_module_runner() {
+        let root = unique_test_dir("property-cross-workspace-requires-integration");
+        let module = root.join("modules/leave-boundary");
+        let tests = root.join("client/ios/TurboTests");
+        fs::create_dir_all(&module).unwrap();
+        fs::create_dir_all(&tests).unwrap();
+        write_test_file(&root.join("system.yaml"), "spec: rms/system/v0.1\n");
+        write_test_file(
+            &tests.join("ConnectionTests.swift"),
+            "func exactIntegrationTest() { assert(true) }\n",
+        );
+        let manifest = LoadedManifest {
+            path: module.join("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"spec: rms/implementation/v0.1
+module: leave-boundary
+binding: swift
+commands: {property: "true"}
+architecture:
+  reliability:
+    properties:
+      - id: app-integration
+        proves: app-integration-law
+        input_space: one app test
+        operation: {symbol: transition}
+        oracle: [the app integration remains valid]
+        evidence: verification/properties/app-integration.md
+        realizations:
+          - profile: smoke
+            strategy: deterministic-corpus
+            command: property
+            runner: ../../client/ios/TurboTests/ConnectionTests.swift#exactIntegrationTest
+"#,
+            )
+            .unwrap(),
+        };
+        let mut diagnostics = Vec::new();
+
+        validate_property_implementation(&manifest, &mut diagnostics);
+
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "property.cross-workspace-runner-requires-integration-test"
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn runnable_surface_role_resolves_parent_path_to_private_rust_impl_method() {
         let root = unique_test_dir("surface-role-private-rust-method");
         let module = root.join("modules/recovery-boundary");
@@ -88808,6 +89335,132 @@ architecture:
         assert!(first_log.contains("second-property|scripts/properties.sh#second_runner"));
         assert_eq!(resumed_log.lines().count(), 2);
         assert_eq!(changed_log.lines().count(), 4);
+    }
+
+    #[test]
+    fn selected_test_count_rejects_zero_and_parses_supported_runners() {
+        assert!(proof_command_is_test_backed(
+            "swift test --package-path . --filter exact"
+        ));
+        assert!(proof_command_is_test_backed(
+            "xcodebuild test -only-testing:AppTests/Exact"
+        ));
+        assert!(!proof_command_is_test_backed("sh scripts/property.sh"));
+        assert_eq!(
+            selected_test_count(
+                "Test Suite 'Selected tests' passed\n\t Executed 0 tests, with 0 failures\n",
+                "warning: No matching test cases were run\n",
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            selected_test_count("test result: ok. 3 passed; 0 failed\n", "",),
+            Some(3)
+        );
+        assert_eq!(selected_test_count("", "Ran 2 tests in 0.1s\n"), Some(2));
+        assert_eq!(selected_test_count("4 passed in 0.2s\n", ""), Some(4));
+    }
+
+    #[test]
+    fn integration_test_realization_requires_nonzero_selection_and_writes_receipt() {
+        let root = unique_test_dir("integration-test-receipt");
+        fs::create_dir_all(root.join("app/Tests")).unwrap();
+        fs::create_dir_all(root.join("verification/properties")).unwrap();
+        write_test_file(&root.join("system.yaml"), "spec: rms/system/v0.1\n");
+        write_test_file(
+            &root.join("app/Tests/IntegrationTests.swift"),
+            "func exactIntegrationTest() { assert(true) }\nfunc zeroIntegrationTest() { assert(true) }\n",
+        );
+        write_test_file(
+            &root.join("verification/properties/integration.md"),
+            "# Integration proof\n\nCommand/tool: RMS integration fixture.\n\nObserved result: selected tests are recorded.\n\nSource revision: git:test\n",
+        );
+        write_test_file(
+            &root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: app-integration
+binding: executable
+source: {root: app, public_entrypoint: app/Tests/IntegrationTests.swift}
+commands:
+  verify: "true"
+  integration-one: "printf '%s|%s|%s\\nTest run with 1 tests in 1 suites passed\\n' \"$RMS_INTEGRATION_PACKAGE\" \"$RMS_INTEGRATION_TEST_SELECTION\" \"$RMS_PROPERTY_RUNNER\""
+  integration-zero: "printf '%s|%s|%s\\nExecuted 0 tests, with 0 failures\\n' \"$RMS_INTEGRATION_PACKAGE\" \"$RMS_INTEGRATION_TEST_SELECTION\" \"$RMS_PROPERTY_RUNNER\""
+toolchain: {runner: shell}
+architecture:
+  shape: integration-adapter
+  reliability:
+    properties:
+      - id: integration-pass
+        proves: integration-pass-law
+        input_space: one selected integration test
+        oracle: [the selected integration test passes]
+        evidence: verification/properties/integration.md
+        realizations:
+          - profile: smoke
+            strategy: integration-test
+            command: integration-one
+            runner: app/Tests/IntegrationTests.swift#exactIntegrationTest
+            owner_module: app-integration
+            package: AppTests
+            working_directory: app
+            test_selection: AppTests/IntegrationTests/exactIntegrationTest
+      - id: integration-zero
+        proves: integration-zero-law
+        input_space: one selected integration test
+        oracle: [the selected integration test passes]
+        evidence: verification/properties/integration.md
+        realizations:
+          - profile: smoke
+            strategy: integration-test
+            command: integration-zero
+            runner: app/Tests/IntegrationTests.swift#zeroIntegrationTest
+            owner_module: app-integration
+            package: AppTests
+            working_directory: app
+            test_selection: AppTests/IntegrationTests/zeroIntegrationTest
+  machine: {}
+  roles: {}
+"#,
+        );
+
+        let report = execute_property_realizations(
+            &root.join("implementation.yaml"),
+            PropertyProfile::Smoke,
+            false,
+            30,
+        )
+        .unwrap();
+        let passing = report
+            .commands
+            .iter()
+            .find(|command| command.property == "integration-pass")
+            .unwrap();
+        let zero = report
+            .commands
+            .iter()
+            .find(|command| command.property == "integration-zero")
+            .unwrap();
+
+        assert_eq!(report.result, "fail");
+        assert_eq!(passing.status, "pass");
+        assert_eq!(passing.selected_tests, Some(1));
+        assert_eq!(zero.status, "fail");
+        assert_eq!(zero.selected_tests, Some(0));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "proof.zero-tests-selected"));
+        for command in [passing, zero] {
+            let receipt = command.receipt.as_deref().unwrap();
+            let value: JsonValue =
+                serde_json::from_slice(&fs::read(root.join(receipt)).unwrap()).unwrap();
+            assert_eq!(value["spec"], "rms/test-execution-receipt/v0.1");
+            assert_eq!(
+                value["selected_tests"].as_u64(),
+                command.selected_tests.map(|count| count as u64)
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -105055,6 +105708,10 @@ temporal:
                 generator: None,
                 runner: "src/main.rs#eventually_done".to_string(),
                 exhaustive: false,
+                owner_module: None,
+                package: None,
+                working_directory: None,
+                test_selection: None,
             }],
             observations: get_path(&definition, &["observations"])
                 .and_then(YamlValue::as_sequence)
@@ -105110,6 +105767,10 @@ temporal:
                 generator: Some("src/main.rs#generate_cases".to_string()),
                 runner: "src/main.rs#eventually_done".to_string(),
                 exhaustive,
+                owner_module: None,
+                package: None,
+                working_directory: None,
+                test_selection: None,
             }],
             observations: get_path(&definition, &["observations"])
                 .and_then(YamlValue::as_sequence)

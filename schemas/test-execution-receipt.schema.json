@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reliable-modular-systems.dev/schemas/test-execution-receipt.schema.json",
+  "title": "RMS Test Execution Receipt v0.1",
+  "type": "object",
+  "required": [
+    "spec",
+    "property",
+    "strategy",
+    "owner_module",
+    "package",
+    "working_directory",
+    "runner",
+    "test_selection",
+    "command",
+    "source_revision",
+    "selected_tests",
+    "status",
+    "exit_code",
+    "elapsed_ms",
+    "stdout_digest",
+    "stderr_digest"
+  ],
+  "properties": {
+    "spec": { "const": "rms/test-execution-receipt/v0.1" },
+    "property": { "type": "string", "minLength": 1 },
+    "strategy": { "type": "string", "minLength": 1 },
+    "owner_module": { "type": "string", "minLength": 1 },
+    "package": { "type": "string", "minLength": 1 },
+    "working_directory": { "type": "string", "minLength": 1 },
+    "runner": { "type": "string", "pattern": "^[^#]+#[^#]+$" },
+    "test_selection": { "type": "string", "minLength": 1 },
+    "command": { "type": "string", "minLength": 1 },
+    "source_revision": { "type": "string", "minLength": 1 },
+    "selected_tests": { "type": "integer", "minimum": 0 },
+    "status": { "enum": ["pass", "fail"] },
+    "exit_code": { "type": ["integer", "null"] },
+    "elapsed_ms": { "type": "integer", "minimum": 0 },
+    "stdout_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "stderr_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  },
+  "additionalProperties": false
+}
