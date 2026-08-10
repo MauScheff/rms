@@ -2497,6 +2497,8 @@ struct SemanticChange {
     #[serde(default)]
     hunt_exceptions: Option<SemanticHuntExceptionsChange>,
     #[serde(default)]
+    proof_delegations: Option<SemanticProofDelegationsChange>,
+    #[serde(default)]
     trace_producers: Option<TraceProducersChange>,
     #[serde(default)]
     probe: Option<MachineProbeChange>,
@@ -3367,6 +3369,28 @@ struct SemanticHuntExceptionsChange {
 struct SemanticHuntException {
     obligation: String,
     reason: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticProofDelegationsChange {
+    #[serde(default, rename = "set")]
+    replace: Option<Vec<SemanticProofDelegation>>,
+    #[serde(default)]
+    add: Vec<SemanticProofDelegation>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticProofDelegation {
+    proves: String,
+    provider_module: String,
+    provider_law: String,
+    provider_property: String,
+    through_export: String,
+    evidence: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -36927,6 +36951,11 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
         &executable_properties_by_module,
         &mut owners,
     );
+    extend_delegated_composite_export_contract_owners(
+        &modules,
+        &executable_properties_by_module,
+        &mut owners,
+    );
     extend_exact_module_dependency_contract_owners(
         &modules,
         &executable_properties_by_module,
@@ -36974,7 +37003,7 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
                             path.to_path_buf(),
                             "contract.external-property-unresolved".to_string(),
                             format!(
-                                "external property `{property}` is not an executable property of a module, binding, or exact exported provider child that owns this contract"
+                                "external property `{property}` is not an executable property of a module, binding, exact exported provider child, or verified composite proof delegation that owns this contract"
                             ),
                         ));
                     }
@@ -37024,6 +37053,124 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
         }
     }
     Ok(findings)
+}
+
+fn extend_delegated_composite_export_contract_owners(
+    modules: &[LoadedManifest],
+    executable_properties_by_module: &BTreeMap<String, BTreeSet<String>>,
+    owners: &mut BTreeMap<PathBuf, BTreeSet<String>>,
+) {
+    for parent in modules {
+        let parent_base = parent.path.parent().unwrap_or_else(|| Path::new("."));
+        let parent_laws = get_path(&parent.value, &["invariants"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter_map(|law| get_str(law, &["id"]))
+            .collect::<BTreeSet<_>>();
+        let delegations = get_path(&parent.value, &["verification", "delegations"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten();
+        for delegation in delegations {
+            let (
+                Some(promise),
+                Some(provider_name),
+                Some(provider_law),
+                Some(provider_property),
+                Some(export_name),
+                Some(evidence),
+            ) = (
+                get_str(delegation, &["proves"]),
+                get_str(delegation, &["provider_module"]),
+                get_str(delegation, &["provider_law"]),
+                get_str(delegation, &["provider_property"]),
+                get_str(delegation, &["through_export"]),
+                get_str(delegation, &["evidence"]),
+            )
+            else {
+                continue;
+            };
+            if !parent_laws.contains(promise)
+                || !is_safe_relative_artifact_path(evidence)
+                || !concrete_evidence_path_exists(&parent_base.join(evidence))
+            {
+                continue;
+            }
+            let Some(export) = get_path(&parent.value, &["composition", "exports"])
+                .and_then(YamlValue::as_sequence)
+                .into_iter()
+                .flatten()
+                .find(|item| {
+                    get_str(item, &["name"]) == Some(export_name)
+                        && get_str(item, &["from"]) == Some(provider_name)
+                })
+            else {
+                continue;
+            };
+            let Some(group) = get_str(export, &["group"]) else {
+                continue;
+            };
+            let Some(provider) = contained_provider_module(parent, modules, provider_name) else {
+                continue;
+            };
+            let provider_has_law = get_path(&provider.value, &["invariants"])
+                .and_then(YamlValue::as_sequence)
+                .is_some_and(|laws| {
+                    laws.iter()
+                        .any(|law| get_str(law, &["id"]) == Some(provider_law))
+                });
+            let provider_has_property = property_targets_from_module(provider, "property")
+                .into_iter()
+                .chain(fuzz_targets_from_module(provider))
+                .any(|property| {
+                    property.id == provider_property
+                        && property.proves.as_deref() == Some(provider_law)
+                });
+            if !provider_has_law
+                || !provider_has_property
+                || !executable_properties_by_module
+                    .get(provider_name)
+                    .is_some_and(|items| items.contains(provider_property))
+            {
+                continue;
+            }
+            let (Some(parent_reference), Some(provider_reference)) = (
+                provided_contract_reference(&parent.value, group, export_name),
+                provided_contract_reference(&provider.value, group, export_name),
+            ) else {
+                continue;
+            };
+            let parent_path = parent_base.join(parent_reference);
+            let provider_path = provider
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(provider_reference);
+            let (Ok(parent_contract), Ok(provider_contract)) =
+                (load_manifest(&parent_path), load_manifest(&provider_path))
+            else {
+                continue;
+            };
+            let Ok(parent_json) = serde_json::to_value(&parent_contract.value) else {
+                continue;
+            };
+            let Ok(provider_json) = serde_json::to_value(&provider_contract.value) else {
+                continue;
+            };
+            if !behavioral_contract::external_property_ids(&parent_json).contains(provider_property)
+                || !behavioral_contract::external_property_ids(&provider_json)
+                    .contains(provider_property)
+            {
+                continue;
+            }
+            let identity = fs::canonicalize(&parent_path).unwrap_or(parent_path);
+            owners
+                .entry(identity)
+                .or_default()
+                .insert(provider_property.to_string());
+        }
+    }
 }
 
 fn extend_exact_composite_export_contract_owners(
@@ -54621,6 +54768,7 @@ fn validate_prepared_spec_plan_change(
                 change,
                 &mut diagnostics,
             );
+            validate_spec_candidate_proof_delegations(&candidate, change, &mut diagnostics);
             validate_spec_candidate_property_realizations(&candidate, change, &mut diagnostics);
             validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
             validate_removed_implementation_command_references(
@@ -55175,7 +55323,7 @@ fn render_spec_plan_repair_prompt(
             )
         })
         .then_some(
-            "\n\nProof closure repair rule: preserve every existing law, property, semantic function, evidence obligation, and public binding that is not named by a diagnostic. Every added or changed law needs one `evidence.add[]` item whose `kind` is `law` and whose `proves` value is the exact law id. Every risk-bearing law needs at least one complete semantic property whose `proves` value is that exact law id. A semantic function evidence entry names the exact `properties.*[].evidence.path`, not a similar property id or a newly invented path. Every law authority has a declared semantic function of the matching authority kind that lists the invariant under `discharges.invariants` and names its concrete property evidence. A public behavior binding references a semantic function declared in the same final candidate. Restore a removed function or point the binding to an already declared function; never invent a function name without its complete declaration. Do not delete other properties, functions, bindings, or evidence to repair one missing link.",
+            "\n\nProof closure repair rule: preserve every existing law, property, semantic function, evidence obligation, and public binding that is not named by a diagnostic. Every added or changed law needs one `evidence.add[]` item whose `kind` is `law` and whose `proves` value is the exact law id, except that a composite law can use a `proof_delegations` item with existing concrete parent evidence. Every risk-bearing law needs at least one complete semantic property whose `proves` value is that exact law id. A semantic function evidence entry names the exact `properties.*[].evidence.path`, not a similar property id or a newly invented path. Every law authority has a declared semantic function of the matching authority kind that lists the invariant under `discharges.invariants` and names its concrete property evidence. A public behavior binding references a semantic function declared in the same final candidate. Restore a removed function or point the binding to an already declared function; never invent a function name without its complete declaration. Do not delete other properties, functions, bindings, or evidence to repair one missing link.",
         )
         .unwrap_or_default();
     let contract_evidence_repair = diagnostics
@@ -55719,6 +55867,10 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         .is_some_and(|module| get_str(&module.value, &["module", "kind"]) == Some("composite"))
     {
         writeln!(out, "composition_exports: null")?;
+        writeln!(out, "proof_delegations:")?;
+        writeln!(out, "  set: null")?;
+        writeln!(out, "  add: []")?;
+        writeln!(out, "  remove: []")?;
     }
     writeln!(out, "artifacts:")?;
     writeln!(out, "  add: []")?;
@@ -56076,6 +56228,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Closed trace metrics are `elapsed` with `value: {{quantity: time}}`, `transition-count` with `value: {{quantity: transition}}`, `attempt-count` with `value: {{quantity: attempt}}`, and `message-count` with `value: {{quantity: message}}`. Quantity dimensions are scalar strings under `value.quantity`; units belong on predicate comparison values and temporal bounds, not in the observation type.")?;
     writeln!(out, "`properties.remove[]` contains existing property ids. Binding-native realizations name a `path#symbol` runner and an exact generator. Protocol observations reference a public protocol automaton. `semantic_functions.add[]` and `semantic_functions.set[]` use the rendered function shape; `semantic_functions.remove[]` contains existing function ids. `public_behavior_bindings.add[]` and `.set[]` use the exact rendered binding shape. Their optional `observation_source` is exactly `{{kind: transition-record|invocation-record, command: existing-command-key}}`; it never contains `name` or `value`, and its `kind` is never `semantic-function`.")?;
     writeln!(out, "`hunt_exceptions.set` replaces the complete list, `add` replaces an existing item with the same obligation, and `remove` contains obligation names. Obligations are exactly `generated-input`, `boundary-fuzz`, `finite-state-exploration`, `schedule-fault-exploration`, `unsafe-code-analysis`, `oracle-mutation`, and `temporal-violation-search`; every exception needs a focused reason and is valid only when that lane is genuinely inapplicable.")?;
+    writeln!(out, "For a composite parent that repeats a contained child's exported promise, use `proof_delegations.add` with `proves`, `provider_module`, `provider_law`, `provider_property`, `through_export`, and concrete parent `evidence`. The parent law, contained provider law, executable provider property, and named public export must all exist. Delegation resolves only the same external property named by both the parent and provider exported contracts; it never relaxes contract compatibility or exact-export checks. `set: null` preserves existing delegations; `remove` contains parent law ids.")?;
     writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module. A new path creates only a declared evidence obligation and reports `semantic.evidence-obligation-only`; it is not observed proof. Bind behavioral promises to executable property runners and replace the obligation with the exact command, observed result, and source revision before strict completion. Never present generated scaffold text as completed evidence. `evidence.remove[]` uses exact scalar `kind`, exact relative `path`, and `delete_file: true|false`; deletion is allowed only after the final declaration no longer references that path.")?;
     writeln!(out, "`allowed_missing_constructors` uses set/remove/add semantics for public result/read-model structs intentionally produced only by a declared machine, query, or projector; do not use it to excuse an actually missing validated constructor.")?;
     writeln!(out, "`rms spec apply` automatically adds every currently active semantic revision to `supersedes` and hash-seals the exact new record. Use explicit `supersedes` only for additional branches that are not locally discoverable. Applied records are append-only: never edit or delete them.")?;
@@ -56301,6 +56454,7 @@ fn run_spec_apply(
     validate_unchanged_candidate_contract_artifacts(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_capability_contracts(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_composite_export_contracts(&candidate, &change, &mut diagnostics);
+    validate_spec_candidate_proof_delegations(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_property_realizations(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
     validate_removed_implementation_command_references(&candidate, &change, &mut diagnostics);
@@ -57559,6 +57713,14 @@ fn validate_semantic_change(
     let has_hunt_exceptions = change.hunt_exceptions.as_ref().is_some_and(|exceptions| {
         exceptions.replace.is_some() || !exceptions.add.is_empty() || !exceptions.remove.is_empty()
     });
+    let has_proof_delegations = change
+        .proof_delegations
+        .as_ref()
+        .is_some_and(|delegations| {
+            delegations.replace.is_some()
+                || !delegations.add.is_empty()
+                || !delegations.remove.is_empty()
+        });
     let has_trace_producers = change
         .trace_producers
         .as_ref()
@@ -57623,6 +57785,7 @@ fn validate_semantic_change(
         && !has_composition_exports
         && !has_properties
         && !has_hunt_exceptions
+        && !has_proof_delegations
         && !has_trace_producers
         && !has_semantic_functions
         && !has_implementation_commands
@@ -57642,7 +57805,7 @@ fn validate_semantic_change(
         diagnostics.push(error(
             "semantic-change.empty",
             &context.target,
-            "semantic change must revise the module declaration, laws, contracts, properties, hunt exceptions, trace producers, semantic functions, existing implementation commands, machine structure, implementation constructor policy, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, behavior bindings, or evidence obligations",
+            "semantic change must revise the module declaration, laws, contracts, properties, proof delegations, hunt exceptions, trace producers, semantic functions, existing implementation commands, machine structure, implementation constructor policy, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, behavior bindings, or evidence obligations",
         ));
     }
 
@@ -57655,6 +57818,7 @@ fn validate_semantic_change(
     validate_semantic_laws(context, change, evidence_items, &mut diagnostics);
     validate_semantic_contracts(context, change, evidence_items, &mut diagnostics);
     validate_semantic_composition_exports(context, change, &mut diagnostics);
+    validate_semantic_proof_delegations(context, change, &mut diagnostics);
     validate_semantic_properties(context, change, evidence_items, &mut diagnostics);
     validate_trace_producers(context, change, &mut diagnostics);
     if change.probe.is_some() && context.implementation.is_none() {
@@ -57776,6 +57940,25 @@ fn validate_preservation_intent_against_empty_total_replacements(
                     .is_some_and(|items| !items.is_empty())
             }),
             &["authority", "authorities"][..],
+        ),
+        (
+            "proof_delegations",
+            change
+                .proof_delegations
+                .as_ref()
+                .and_then(|section| section.replace.as_ref())
+                .is_some_and(Vec::is_empty),
+            module.is_some_and(|manifest| {
+                get_path(&manifest.value, &["verification", "delegations"])
+                    .and_then(YamlValue::as_sequence)
+                    .is_some_and(|items| !items.is_empty())
+            }),
+            &[
+                "proof delegation",
+                "proof delegations",
+                "delegation",
+                "delegations",
+            ][..],
         ),
         (
             "protocol_bindings",
@@ -59245,9 +59428,30 @@ fn validate_semantic_laws(
                 ),
             ));
         }
+        let delegated_evidence = context.module.as_ref().is_some_and(|module| {
+            change
+                .proof_delegations
+                .as_ref()
+                .is_some_and(|delegations| {
+                    final_semantic_proof_delegations(&module.value, delegations)
+                        .into_iter()
+                        .any(|delegation| {
+                            delegation.proves == law.id
+                                && is_safe_relative_artifact_path(&delegation.evidence)
+                                && concrete_evidence_path_exists(
+                                    &module
+                                        .path
+                                        .parent()
+                                        .unwrap_or_else(|| Path::new("."))
+                                        .join(delegation.evidence),
+                                )
+                        })
+                })
+        });
         if !evidence_items
             .iter()
             .any(|evidence| evidence.proves == law.id)
+            && !delegated_evidence
         {
             diagnostics.push(error(
                 "semantic.law-without-evidence",
@@ -59994,6 +60198,49 @@ fn validate_spec_candidate_composite_export_contracts(
     }
 }
 
+fn validate_spec_candidate_proof_delegations(
+    candidate: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if change.proof_delegations.as_ref().is_none_or(|request| {
+        request.replace.is_none() && request.add.is_empty() && request.remove.is_empty()
+    }) {
+        return;
+    }
+    let Some(module) = candidate.module.as_ref() else {
+        return;
+    };
+    let Some(parent_name) = get_str(&module.value, &["module", "name"]) else {
+        return;
+    };
+    let root = rms_root_for(&module.path);
+    let Ok(mut modules) = load_module_index(&root) else {
+        return;
+    };
+    modules.insert(
+        parent_name.to_string(),
+        ModuleIndexEntry {
+            name: parent_name.to_string(),
+            path: module.path.clone(),
+            value: module.value.clone(),
+        },
+    );
+    let mut findings = Vec::new();
+    compose_proof_delegations(&modules, &mut findings);
+    for finding in findings.into_iter().filter(|finding| {
+        finding.consumer.as_deref() == Some(parent_name)
+            && finding.check == "composition.proof-delegation"
+            && finding.status != ComposeStatus::Satisfied
+    }) {
+        diagnostics.push(error_diagnostic(
+            "semantic.proof-delegation-unresolved",
+            &module.path,
+            finding.message,
+        ));
+    }
+}
+
 fn candidate_contract_manifest(
     context: &SpecTargetContext,
     path: &Path,
@@ -60569,6 +60816,114 @@ fn validate_semantic_properties(
                 "semantic.property-remove-missing",
                 &context.target,
                 format!("property `{property}` does not exist"),
+            ));
+        }
+    }
+}
+
+fn validate_semantic_proof_delegations(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(request) = &change.proof_delegations else {
+        return;
+    };
+    let Some(module) = context.module.as_ref() else {
+        diagnostics.push(error(
+            "semantic.proof-delegation-without-module",
+            &context.target,
+            "proof delegation changes require a module manifest",
+        ));
+        return;
+    };
+    if !is_composite_module(&module.value) {
+        diagnostics.push(error(
+            "semantic.proof-delegation-non-composite",
+            &context.target,
+            "only a composite module can delegate a parent proof to a contained provider",
+        ));
+    }
+    let existing = get_path(&module.value, &["verification", "delegations"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| get_str(item, &["proves"]).map(ToString::to_string))
+        .collect::<BTreeSet<_>>();
+    let replacements = request
+        .replace
+        .as_ref()
+        .map(|items| items.iter().map(|item| item.proves.clone()).collect());
+    validate_change_keys(
+        &context.target,
+        "proof-delegation",
+        &existing,
+        replacements,
+        &request
+            .add
+            .iter()
+            .map(|item| item.proves.clone())
+            .collect::<Vec<_>>(),
+        &request.remove,
+        diagnostics,
+    );
+    let mut final_value = module.value.clone();
+    if let Some(laws) = &change.laws {
+        apply_semantic_law_changes_to_module(&mut final_value, laws);
+    }
+    apply_semantic_proof_delegations(&mut final_value, request);
+    let laws = get_path(&final_value, &["invariants"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| get_str(item, &["id"]))
+        .collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    for item in final_semantic_proof_delegations(&module.value, request) {
+        if !seen.insert(item.proves.clone()) {
+            diagnostics.push(error(
+                "semantic.duplicate-proof-delegation",
+                &context.target,
+                format!(
+                    "parent law `{}` has more than one proof delegation",
+                    item.proves
+                ),
+            ));
+        }
+        for (field, value) in [
+            ("proves", item.proves.as_str()),
+            ("provider_module", item.provider_module.as_str()),
+            ("provider_law", item.provider_law.as_str()),
+            ("provider_property", item.provider_property.as_str()),
+            ("through_export", item.through_export.as_str()),
+        ] {
+            if !is_stable_semantic_id(value) {
+                diagnostics.push(error("semantic.proof-delegation-identifier", &context.target, format!("proof delegation field `{field}` must be a stable semantic id, got `{value}`")));
+            }
+        }
+        if !laws.contains(item.proves.as_str()) {
+            diagnostics.push(error(
+                "semantic.proof-delegation-law-missing",
+                &context.target,
+                format!("proof delegation names absent parent law `{}`", item.proves),
+            ));
+        }
+        if !is_safe_relative_artifact_path(&item.evidence)
+            || !concrete_evidence_path_exists(
+                &module
+                    .path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(&item.evidence),
+            )
+        {
+            diagnostics.push(error(
+                "semantic.proof-delegation-evidence-missing",
+                &context.target,
+                format!(
+                    "proof delegation for `{}` requires existing concrete parent evidence `{}`",
+                    item.proves, item.evidence
+                ),
             ));
         }
     }
@@ -63523,6 +63878,9 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
     if let Some(exceptions) = &change.hunt_exceptions {
         apply_semantic_hunt_exceptions(value, exceptions);
     }
+    if let Some(delegations) = &change.proof_delegations {
+        apply_semantic_proof_delegations(value, delegations);
+    }
     if let Some(artifacts) = change
         .artifacts
         .as_ref()
@@ -63716,6 +64074,38 @@ fn apply_semantic_hunt_exceptions(value: &mut YamlValue, change: &SemanticHuntEx
             .filter_map(|item| serde_yaml::to_value(item).ok())
             .collect(),
     );
+}
+
+fn final_semantic_proof_delegations(
+    value: &YamlValue,
+    change: &SemanticProofDelegationsChange,
+) -> Vec<SemanticProofDelegation> {
+    let mut items = change.replace.clone().unwrap_or_else(|| {
+        get_path(value, &["verification", "delegations"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| serde_yaml::from_value(item.clone()).ok())
+            .collect()
+    });
+    items.retain(|item| !change.remove.contains(&item.proves));
+    for addition in &change.add {
+        items.retain(|item| item.proves != addition.proves);
+        items.push(addition.clone());
+    }
+    items.sort_by(|left, right| left.proves.cmp(&right.proves));
+    items
+}
+
+fn apply_semantic_proof_delegations(
+    value: &mut YamlValue,
+    change: &SemanticProofDelegationsChange,
+) {
+    let items = final_semantic_proof_delegations(value, change)
+        .into_iter()
+        .filter_map(|item| serde_yaml::to_value(item).ok())
+        .collect();
+    set_yaml_sequence_path(value, &["verification", "delegations"], items);
 }
 
 fn apply_semantic_property_changes_to_module(
@@ -110531,6 +110921,54 @@ architecture:
     }
 
     #[test]
+    fn semantic_change_adds_and_preserves_composite_proof_delegations() {
+        let mut module: YamlValue = serde_yaml::from_str(
+            r#"spec: rms/module/v0.1
+module: { name: parent, version: 0.1.0, kind: composite, purpose: Delegate proof. }
+invariants:
+  - { id: existing-law, statement: Existing promise. }
+  - { id: exported-law, statement: Exported promise. }
+verification:
+  delegations:
+    - proves: existing-law
+      provider_module: existing-child
+      provider_law: existing-child-law
+      provider_property: existing-child-property
+      through_export: existing-export
+      evidence: verification/contracts/existing.md
+"#,
+        )
+        .unwrap();
+        let change: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+proof_delegations:
+  set: null
+  add:
+    - proves: exported-law
+      provider_module: child
+      provider_law: child-law
+      provider_property: child-property
+      through_export: deploy
+      evidence: verification/contracts/deploy.md
+  remove: []
+"#,
+        )
+        .unwrap();
+        apply_semantic_change_to_module(&mut module, &change);
+        let items = get_path(&module, &["verification", "delegations"])
+            .and_then(YamlValue::as_sequence)
+            .unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(items
+            .iter()
+            .any(|item| get_str(item, &["proves"]) == Some("existing-law")));
+        assert!(items.iter().any(|item| {
+            get_str(item, &["proves"]) == Some("exported-law")
+                && get_str(item, &["provider_property"]) == Some("child-property")
+        }));
+    }
+
+    #[test]
     fn strict_contract_resolution_follows_only_an_exact_composite_export() {
         let root = unique_test_dir("strict-contract-exact-composite-export");
         fs::create_dir_all(root.join("parent/contracts")).unwrap();
@@ -110571,7 +111009,10 @@ requires: { modules: [], capabilities: [] }
 composition:
   contains: [{ name: child, visibility: internal, path: ../child/module.yaml }]
   exports: [{ group: commands, name: deploy, from: child, contract: contracts/deploy.v1.yaml }]
-invariants: []
+invariants:
+  - id: parent-deploy-law
+    statement: The parent deployment promise is proved by the contained child.
+    kind: composition
 effects: []
 compatibility: { policy: backward-compatible-within-major }
 verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
@@ -110590,10 +111031,13 @@ provides:
   events: []
   capabilities: []
 requires: { modules: [], capabilities: [] }
-invariants: []
+invariants:
+  - id: child-deploy-law
+    statement: The child validates deployment.
+    kind: safety
 properties:
   - id: deployment-contract-property
-    proves: deploy
+    proves: child-deploy-law
     kind: property
     input_space: { cases: [valid-release] }
     operation: validate deployment
@@ -110618,6 +111062,37 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
             contract.replace(
                 "The release is valid.",
                 "The release has a different parent-only meaning.",
+            ),
+        )
+        .unwrap();
+        let findings = strict_behavioral_contract_findings(&root).unwrap();
+        assert!(findings.iter().any(|(path, check, _)| {
+            path.ends_with("parent/contracts/deploy.v1.yaml")
+                && check == "contract.external-property-unresolved"
+        }));
+
+        fs::create_dir_all(root.join("parent/verification/contracts")).unwrap();
+        fs::write(
+            root.join("parent/verification/contracts/deploy-delegation.md"),
+            "# Deployment delegation\n\nCommand/tool: rms compose.\n\nObserved result: child deployment property backs the public parent export.\n\nSource revision: fixture.\n",
+        ).unwrap();
+        let parent_path = root.join("parent/module.yaml");
+        let delegated = fs::read_to_string(&parent_path).unwrap().replace(
+            "verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }",
+            "verification:\n  laws: []\n  contracts: []\n  scenarios: []\n  boundaries: []\n  delegations:\n    - proves: parent-deploy-law\n      provider_module: child\n      provider_law: child-deploy-law\n      provider_property: deployment-contract-property\n      through_export: deploy\n      evidence: verification/contracts/deploy-delegation.md",
+        );
+        fs::write(&parent_path, delegated).unwrap();
+        let findings = strict_behavioral_contract_findings(&root).unwrap();
+        assert!(!findings.iter().any(|(path, check, _)| {
+            path == &root.join("parent/contracts/deploy.v1.yaml")
+                && check == "contract.external-property-unresolved"
+        }));
+
+        fs::write(
+            root.join("child/contracts/deploy.v1.yaml"),
+            contract.replace(
+                "deployment-contract-property",
+                "different-provider-property",
             ),
         )
         .unwrap();
