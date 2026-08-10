@@ -36584,6 +36584,11 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
         &executable_properties_by_module,
         &mut owners,
     );
+    extend_exact_module_dependency_contract_owners(
+        &modules,
+        &executable_properties_by_module,
+        &mut owners,
+    );
 
     let mut findings = Vec::new();
     for entry in WalkDir::new(root)
@@ -36732,6 +36737,85 @@ fn extend_exact_composite_export_contract_owners(
                 continue;
             };
             let identity = fs::canonicalize(&parent_path).unwrap_or(parent_path);
+            owners
+                .entry(identity)
+                .or_default()
+                .extend(provider_properties.iter().cloned());
+        }
+    }
+}
+
+fn extend_exact_module_dependency_contract_owners(
+    modules: &[LoadedManifest],
+    executable_properties_by_module: &BTreeMap<String, BTreeSet<String>>,
+    owners: &mut BTreeMap<PathBuf, BTreeSet<String>>,
+) {
+    for consumer in modules {
+        let consumer_base = consumer.path.parent().unwrap_or_else(|| Path::new("."));
+        let Ok(implementation) = load_manifest(&consumer_base.join("implementation.yaml")) else {
+            continue;
+        };
+        let required = declared_required_capabilities(&consumer.value);
+        for binding in typed_yaml_sequence::<DependencyBehaviorBinding>(
+            &implementation.value,
+            &["architecture", "dependency_behavior_bindings"],
+        ) {
+            if binding.resolution != "module"
+                || !binding_symbol_reference_exists(
+                    consumer_base,
+                    &implementation,
+                    &binding.consumer,
+                )
+            {
+                continue;
+            }
+            let Some(consumer_contract) =
+                required.get(&binding.capability).and_then(Option::as_deref)
+            else {
+                continue;
+            };
+            if binding
+                .contract
+                .as_deref()
+                .is_some_and(|contract| contract != consumer_contract)
+            {
+                continue;
+            }
+            let (Some(provider_name), Some(provider_contract)) = (
+                binding.provider_module.as_deref(),
+                binding.provider_contract.as_deref(),
+            ) else {
+                continue;
+            };
+            let mut providers = modules.iter().filter(|module| {
+                get_str(&module.value, &["module", "name"]) == Some(provider_name)
+            });
+            let Some(provider) = providers.next() else {
+                continue;
+            };
+            if providers.next().is_some()
+                || provided_contract_reference(&provider.value, "capabilities", &binding.capability)
+                    != Some(provider_contract)
+            {
+                continue;
+            }
+
+            let consumer_path = consumer_base.join(consumer_contract);
+            let provider_base = provider.path.parent().unwrap_or_else(|| Path::new("."));
+            let provider_path = provider_base.join(provider_contract);
+            let (Ok(consumer_bytes), Ok(provider_bytes)) =
+                (fs::read(&consumer_path), fs::read(&provider_path))
+            else {
+                continue;
+            };
+            if consumer_bytes != provider_bytes {
+                continue;
+            }
+            let Some(provider_properties) = executable_properties_by_module.get(provider_name)
+            else {
+                continue;
+            };
+            let identity = fs::canonicalize(&consumer_path).unwrap_or(consumer_path);
             owners
                 .entry(identity)
                 .or_default()
@@ -107646,6 +107730,140 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
             path.ends_with("parent/contracts/deploy.v1.yaml")
                 && check == "contract.external-property-unresolved"
         }));
+    }
+
+    #[test]
+    fn strict_contract_resolution_follows_only_an_exact_module_dependency_binding() {
+        let root = unique_test_dir("strict-contract-exact-module-dependency");
+        let consumer = root.join("consumer");
+        let provider = root.join("provider");
+        fs::create_dir_all(consumer.join("contracts")).unwrap();
+        fs::create_dir_all(consumer.join("src")).unwrap();
+        fs::create_dir_all(provider.join("contracts")).unwrap();
+        let contract = r#"spec: rms/contract/v0.2
+name: resolve-deployment
+version: 1.0.0
+kind: capability
+meaning: Resolve deployment through the selected provider.
+semantics:
+  behavior:
+    observations: []
+    requires:
+      - id: request-is-valid
+        statement: The request is valid.
+        evaluation: { kind: external, property: deployment-provider-property }
+    guarantees: []
+    failures: []
+    cases: []
+    invariants: []
+    case_policy: { coverage: exhaustive, overlap: forbidden }
+compatibility: { policy: backward-compatible-within-major }
+"#;
+        let consumer_contract = consumer.join("contracts/resolve-deployment.v1.yaml");
+        let provider_contract = provider.join("contracts/resolve-deployment.v1.yaml");
+        fs::write(&consumer_contract, contract).unwrap();
+        fs::write(&provider_contract, contract).unwrap();
+        fs::write(
+            consumer.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: consumer, version: 0.1.0, kind: library, purpose: Consume deployment resolution. }
+profiles: [core]
+owns: { concepts: [request], data: [], decisions: [] }
+provides: { commands: [], queries: [], events: [], capabilities: [] }
+requires:
+  modules: [{ name: provider }]
+  capabilities:
+    - name: resolve-deployment
+      contract: contracts/resolve-deployment.v1.yaml
+invariants: []
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            consumer.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: consumer
+binding: rust
+source: { root: ., public_entrypoint: src/lib.rs }
+commands: { build: "true", verify: "true" }
+architecture:
+  dependency_behavior_bindings:
+    - id: deployment-provider-binding
+      capability: resolve-deployment
+      contract: contracts/resolve-deployment.v1.yaml
+      consumer: src/lib.rs#resolve_deployment
+      resolution: module
+      provider_module: provider
+      provider_contract: contracts/resolve-deployment.v1.yaml
+"#,
+        )
+        .unwrap();
+        fs::write(consumer.join("src/lib.rs"), "fn resolve_deployment() {}\n").unwrap();
+        fs::write(
+            provider.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: provider, version: 0.1.0, kind: library, purpose: Provide deployment resolution. }
+profiles: [core]
+owns: { concepts: [deployment], data: [], decisions: [resolution] }
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities:
+    - name: resolve-deployment
+      contract: contracts/resolve-deployment.v1.yaml
+requires: { modules: [], capabilities: [] }
+invariants: []
+properties:
+  - id: deployment-provider-property
+    proves: resolve-deployment
+    kind: property
+    input_space: { cases: [valid-request] }
+    operation: resolve deployment
+    oracle: [the deployment resolution is returned]
+    evidence: { path: verification/properties/deployment.md }
+    realizations: [{ profile: smoke, strategy: deterministic-corpus, command: verify }]
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+
+        let unresolved = |findings: &[(PathBuf, String, String)]| {
+            findings.iter().any(|(path, check, _)| {
+                path == &consumer_contract && check == "contract.external-property-unresolved"
+            })
+        };
+        assert!(!unresolved(
+            &strict_behavioral_contract_findings(&root).unwrap()
+        ));
+
+        fs::write(
+            &consumer_contract,
+            contract.replace(
+                "Resolve deployment through the selected provider.",
+                "Resolve deployment with consumer-specific behavior.",
+            ),
+        )
+        .unwrap();
+        assert!(unresolved(
+            &strict_behavioral_contract_findings(&root).unwrap()
+        ));
+
+        fs::write(&consumer_contract, contract).unwrap();
+        let implementation_path = consumer.join("implementation.yaml");
+        let non_module = fs::read_to_string(&implementation_path)
+            .unwrap()
+            .replace("resolution: module", "resolution: external");
+        fs::write(&implementation_path, non_module).unwrap();
+        assert!(unresolved(
+            &strict_behavioral_contract_findings(&root).unwrap()
+        ));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
