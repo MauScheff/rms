@@ -3,7 +3,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -502,6 +502,7 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
         started_at_unix_ms,
         finished_at_unix_ms: None,
     };
+    normalize_report_findings(&mut report);
     write_report(&run_root.join("checkpoint.yaml"), &report)?;
     if request.dry_run {
         normalize_report_findings(&mut report);
@@ -606,7 +607,25 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
                         match lane_result {
                             Ok((lane_report, findings)) => {
                                 lanes[index].report = lane_report;
+                                let known_findings = report
+                                    .findings
+                                    .iter()
+                                    .map(|finding| finding.id.clone())
+                                    .collect::<BTreeSet<_>>();
                                 report.findings.extend(findings);
+                                report.lanes =
+                                    lanes.iter().map(|lane| lane.report.clone()).collect();
+                                normalize_report_findings(&mut report);
+                                write_report(&run_root.join("checkpoint.yaml"), &report)?;
+                                if !request.json {
+                                    for announcement in serious_finding_announcements(
+                                        &report,
+                                        &known_findings,
+                                        &run_root.join("checkpoint.yaml"),
+                                    ) {
+                                        eprintln!("{announcement}");
+                                    }
+                                }
                             }
                             Err(error) => {
                                 let deadline_exhausted = Instant::now() >= hunt_deadline
@@ -2070,6 +2089,29 @@ fn normalize_report_findings(report: &mut HuntReport) {
     });
 }
 
+fn serious_finding_announcements(
+    report: &HuntReport,
+    known_findings: &BTreeSet<String>,
+    checkpoint: &Path,
+) -> Vec<String> {
+    report
+        .findings
+        .iter()
+        .filter(|finding| {
+            behavioral_finding(&finding.kind) && !known_findings.contains(&finding.id)
+        })
+        .map(|finding| {
+            format!(
+                "hunt: serious finding {} in {}: {} (checkpoint {})",
+                finding.id,
+                finding.module,
+                finding.summary,
+                checkpoint.display()
+            )
+        })
+        .collect()
+}
+
 fn finding_replay_cost(finding: &HuntFinding) -> usize {
     let Some(path) = finding.artifact.as_deref() else {
         return usize::MAX;
@@ -3173,6 +3215,13 @@ architecture:
         assert!(report.findings[0]
             .id
             .starts_with("orders/never-lose-order/"));
+        let checkpoint = root.join("checkpoint.yaml");
+        let announcements = serious_finding_announcements(&report, &BTreeSet::new(), &checkpoint);
+        assert_eq!(announcements.len(), 1);
+        assert!(announcements[0].contains("hunt: serious finding"));
+        assert!(announcements[0].contains(&checkpoint.display().to_string()));
+        let known = BTreeSet::from([report.findings[0].id.clone()]);
+        assert!(serious_finding_announcements(&report, &known, &checkpoint).is_empty());
         validate_schema(
             &serde_yaml::to_value(&report).unwrap(),
             include_str!("../../../../schemas/hunt-report-v0.2.schema.json"),

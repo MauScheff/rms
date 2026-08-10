@@ -19080,6 +19080,7 @@ fn validate_hunt_posture(module: &LoadedManifest, diagnostics: &mut Vec<Diagnost
         obligations.push((
             "generated-input",
             "declare generated, exhaustive, coverage-guided, model, analyzer, sanitizer, or mutation evidence",
+            "add a property realization with an exact command and runner; use generated-property, deterministic-exhaustive, coverage-fuzzer, model-checker, static-analyzer, sanitizer, mutation-tester, or integration-test",
         ));
     }
     let shape = get_str(&implementation.value, &["architecture", "shape"]).unwrap_or("");
@@ -19090,6 +19091,7 @@ fn validate_hunt_posture(module: &LoadedManifest, diagnostics: &mut Vec<Diagnost
         obligations.push((
             "boundary-fuzz",
             "boundary modules require a coverage-fuzzer realization",
+            "add a nightly coverage-fuzzer realization to the boundary parser property with exact command, runner, generator, evidence, and counterexample paths",
         ));
     }
     if profiles
@@ -19103,12 +19105,14 @@ fn validate_hunt_posture(module: &LoadedManifest, diagnostics: &mut Vec<Diagnost
         obligations.push((
             "finite-state-exploration",
             "stateful/workflow modules require exhaustive, model, or probe exploration",
+            "add deterministic-exhaustive or model-checker evidence, or add property.explorations with an owned probe assembly, goal, and positive max_steps, max_schedules, and max_states bounds",
         ));
     }
     if profiles.iter().any(|profile| profile == "distributed") && !has_fault_exploration {
         obligations.push((
             "schedule-fault-exploration",
             "distributed modules require declared schedule/fault probe exploration",
+            "add property.explorations that reference a probe assembly with adopted participants, explicit decision owners, declared faults, a goal, and positive schedule/state bounds",
         ));
     }
     let has_unsafe_authority = get_path(&module.value, &["authorities"])
@@ -19129,6 +19133,7 @@ fn validate_hunt_posture(module: &LoadedManifest, diagnostics: &mut Vec<Diagnost
         obligations.push((
             "unsafe-code-analysis",
             "unsafe, foreign, or privileged authority requires analyzer or sanitizer evidence",
+            "add a nightly static-analyzer or sanitizer realization with an exact command, runner, evidence path, and retained artifacts",
         ));
     }
     let reusable = get_bool(&implementation.value, &["distribution", "reusable"]) == Some(true);
@@ -19136,6 +19141,7 @@ fn validate_hunt_posture(module: &LoadedManifest, diagnostics: &mut Vec<Diagnost
         obligations.push((
             "oracle-mutation",
             "reusable modules require mutation evidence for important semantic oracles",
+            "add a nightly mutation-tester realization for the owning semantic property with an exact command, runner, evidence path, and retained mutant report",
         ));
     }
     let has_temporal = targets.iter().any(|target| target.temporal.is_some());
@@ -19150,9 +19156,10 @@ fn validate_hunt_posture(module: &LoadedManifest, diagnostics: &mut Vec<Diagnost
         obligations.push((
             "temporal-violation-search",
             "temporal properties require violation search or proof-capable finite realization",
+            "declare a trace producer and add goal: violate probe exploration, deterministic-exhaustive evidence, or model-checker evidence with explicit finite bounds",
         ));
     }
-    for (obligation, requirement) in obligations {
+    for (obligation, requirement, scaffold) in obligations {
         if exceptions.contains(obligation) {
             continue;
         }
@@ -19161,7 +19168,8 @@ fn validate_hunt_posture(module: &LoadedManifest, diagnostics: &mut Vec<Diagnost
             "structure.hunt-lane-missing",
             &module.path,
             format!(
-                "risk-derived hunt obligation `{obligation}` is unmet: {requirement}; declare the lane or a focused verification.hunt_exceptions entry"
+                "risk-derived hunt obligation `{obligation}` is unmet: {requirement}; canonical plan scaffold for `{}`: {scaffold}; alternatively add a focused verification.hunt_exceptions entry with the closed obligation and reason",
+                implementation_path.display()
             ),
         );
     }
@@ -20731,6 +20739,8 @@ fn property_runner_has_oracle(base: &Path, implementation: &LoadedManifest, runn
                 }
                 Some("swift") => swift_function_source(&source, symbol).is_some_and(|function| {
                     function.contains("XCTAssert")
+                        || function.contains("#expect(")
+                        || function.contains("#require(")
                         || function.contains("precondition(")
                         || function.contains("assert(")
                 }),
@@ -60043,8 +60053,8 @@ fn selected_test_count(stdout: &str, stderr: &str) -> Option<usize> {
     let mut counts = Vec::new();
     for line in stdout.lines().chain(stderr.lines()) {
         let line = line.trim();
-        for prefix in ["Executed ", "Test run with ", "Ran "] {
-            if let Some(rest) = line.strip_prefix(prefix) {
+        for marker in ["Executed ", "Test run with ", "Ran "] {
+            if let Some((_, rest)) = line.split_once(marker) {
                 if let Some(count) = leading_usize(rest) {
                     counts.push(count);
                 }
@@ -81934,6 +81944,20 @@ import struct ExternalKit.Widget
         assert!(add_module.contains("In a brand-new directory, run `rms init"));
         assert!(add_module.contains("After initialization and its authorized bootstrap commit"));
         assert!(add_module.contains(BOOTSTRAP_PENDING_AUTHORIZED_COMMIT));
+
+        let hunt = fs::read_to_string(canonical_root.join("hunt-bugs/SKILL.md")).unwrap();
+        assert!(hunt.contains("Preserve and surface each serious behavioral finding immediately"));
+        assert!(hunt.contains("Continue other distinct lanes within the recorded budget"));
+        for contradictory in [
+            "stop on first serious fuzz failure",
+            "stop after the first finding",
+            "stop on the first finding",
+        ] {
+            assert!(
+                !hunt.to_ascii_lowercase().contains(contradictory),
+                "hunt guidance contains contradictory instruction: {contradictory}"
+            );
+        }
     }
 
     #[test]
@@ -89419,6 +89443,42 @@ architecture:
         );
         assert_eq!(selected_test_count("", "Ran 2 tests in 0.1s\n"), Some(2));
         assert_eq!(selected_test_count("4 passed in 0.2s\n", ""), Some(4));
+        assert_eq!(
+            selected_test_count(
+                "Test Suite 'Selected tests' passed\nExecuted 0 tests, with 0 failures\n✔ Test acceptedOutgoingBeepBackendJoinPromotesPendingOriginBeforeProjection() passed after 0.001 seconds.\n✔ Test run with 1 test in 1 suite passed after 0.001 seconds.\n",
+                "",
+            ),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn swift_testing_expect_and_require_are_property_oracles() {
+        let root = unique_test_dir("swift-testing-oracle");
+        fs::create_dir_all(root.join("Tests/AppTests")).unwrap();
+        write_test_file(
+            &root.join("Tests/AppTests/AppTests.swift"),
+            r#"import Testing
+@Test func exactExpectation() { #expect(true) }
+@Test func exactRequirement() throws { try #require(true) }
+"#,
+        );
+        write_test_file(
+            &root.join("implementation.yaml"),
+            "spec: rms/implementation/v0.1\nmodule: app\nbinding: swift\nsource: { root: Sources/App, public_entrypoint: Sources/App/App.swift }\ncommands: { properties: 'true' }\narchitecture: { machine: {}, roles: {} }\n",
+        );
+        let implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        assert!(property_runner_has_oracle(
+            &root,
+            &implementation,
+            "Tests/AppTests/AppTests.swift#exactExpectation"
+        ));
+        assert!(property_runner_has_oracle(
+            &root,
+            &implementation,
+            "Tests/AppTests/AppTests.swift#exactRequirement"
+        ));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -107492,6 +107552,9 @@ architecture:
                 diagnostics.iter().any(|diagnostic| {
                     diagnostic.check == "structure.hunt-lane-missing"
                         && diagnostic.message.contains(obligation)
+                        && diagnostic.message.contains("canonical plan scaffold")
+                        && diagnostic.message.contains("implementation.yaml")
+                        && diagnostic.message.contains("hunt_exceptions")
                 }),
                 "{label} did not derive {obligation}: {diagnostics:#?}"
             );
