@@ -101304,7 +101304,7 @@ printf '%s\n' '{}' > "$output"
         fs::set_permissions(&program, permissions).unwrap();
         let mut options = no_provider_options();
         options.provider = Provider::Codex;
-        options.provider_timeout_seconds = 5;
+        options.provider_timeout_seconds = 15;
 
         thread::scope(|scope| {
             let execution = scope.spawn(|| {
@@ -101319,16 +101319,22 @@ printf '%s\n' '{}' > "$output"
                     &options,
                 )
             });
-            for _ in 0..100 {
+            let mut observed_live_output = false;
+            for _ in 0..500 {
                 if started_marker.is_file()
                     && fs::read_to_string(run_dir.join("provider.stderr.log"))
                         .unwrap_or_default()
                         .contains("provider-dispatch-started")
                 {
+                    observed_live_output = true;
                     break;
                 }
                 thread::sleep(Duration::from_millis(20));
             }
+            assert!(
+                observed_live_output,
+                "provider start marker and streamed stderr were not both visible before the test deadline"
+            );
             let status: JsonValue =
                 serde_json::from_str(&fs::read_to_string(run_dir.join("provider.json")).unwrap())
                     .unwrap();
