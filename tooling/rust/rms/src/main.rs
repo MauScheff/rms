@@ -19412,7 +19412,8 @@ fn validate_property_target_report(
                 ),
             );
         }
-        if binding_reference_parts(&realization.runner).is_none() {
+        if binding_reference_parts_in_workspace(&realization.runner, base, &manifest.path).is_none()
+        {
             push_unique_warning(
                 diagnostics,
                 "property.runner-missing",
@@ -19437,7 +19438,7 @@ fn validate_property_target_report(
                 );
                 continue;
             };
-            if binding_reference_parts(generator).is_none() {
+            if binding_reference_parts_in_workspace(generator, base, &manifest.path).is_none() {
                 push_unique_warning(
                     diagnostics,
                     "property.generator-missing",
@@ -19984,7 +19985,9 @@ fn binding_symbol_reference_exists(
     implementation: &LoadedManifest,
     reference: &str,
 ) -> bool {
-    let Some((path, symbol)) = binding_reference_parts(reference) else {
+    let Some((path, symbol)) =
+        binding_reference_parts_in_workspace(reference, base, &implementation.path)
+    else {
         return false;
     };
     binding_symbol_reference_parts_exist(base, implementation, path, symbol)
@@ -20083,7 +20086,9 @@ fn binding_function_references_symbol(
     function_reference: &str,
     target_symbol: &str,
 ) -> bool {
-    let Some((path, function_symbol)) = binding_reference_parts(function_reference) else {
+    let Some((path, function_symbol)) =
+        binding_reference_parts_in_workspace(function_reference, base, &implementation.path)
+    else {
         return false;
     };
     let full_path = base.join(path);
@@ -20500,7 +20505,9 @@ fn property_runner_has_oracle(base: &Path, implementation: &LoadedManifest, runn
     if get_str(&implementation.value, &["binding"]) == Some("executable") {
         return true;
     }
-    let Some((path, symbol)) = binding_reference_parts(runner) else {
+    let Some((path, symbol)) =
+        binding_reference_parts_in_workspace(runner, base, &implementation.path)
+    else {
         return false;
     };
     let full_path = base.join(path);
@@ -59248,7 +59255,13 @@ fn validate_semantic_properties(
                     ),
                 ));
             }
-            if binding_reference_parts(&realization.runner).is_none() {
+            if binding_reference_parts_in_workspace(
+                &realization.runner,
+                spec_target_base(context),
+                &context.target,
+            )
+            .is_none()
+            {
                 diagnostics.push(error(
                     "property.runner-missing",
                     &context.target,
@@ -59262,7 +59275,13 @@ fn validate_semantic_properties(
                 && realization
                     .generator
                     .as_deref()
-                    .and_then(binding_reference_parts)
+                    .and_then(|generator| {
+                        binding_reference_parts_in_workspace(
+                            generator,
+                            spec_target_base(context),
+                            &context.target,
+                        )
+                    })
                     .is_none()
             {
                 diagnostics.push(error(
@@ -59577,12 +59596,36 @@ fn validate_temporal_property(
 }
 
 fn binding_reference_parts(reference: &str) -> Option<(&str, &str)> {
+    let (path, symbol) = binding_reference_parts_syntax(reference)?;
+    is_safe_relative_artifact_path(path).then_some((path, symbol))
+}
+
+fn binding_reference_parts_syntax(reference: &str) -> Option<(&str, &str)> {
     let (path, symbol) = reference.trim().rsplit_once('#')?;
-    (!path.trim().is_empty()
-        && is_safe_relative_artifact_path(path.trim())
-        && !symbol.trim().is_empty()
-        && symbol.trim().split('.').all(is_stable_identifier))
-    .then_some((path.trim(), symbol.trim()))
+    let path = path.trim();
+    let symbol = symbol.trim();
+    (!path.is_empty()
+        && !Path::new(path).is_absolute()
+        && !symbol.is_empty()
+        && symbol.split('.').all(is_stable_identifier))
+    .then_some((path, symbol))
+}
+
+fn binding_reference_parts_in_workspace<'a>(
+    reference: &'a str,
+    module_base: &Path,
+    manifest_path: &Path,
+) -> Option<(&'a str, &'a str)> {
+    let (path, symbol) = binding_reference_parts_syntax(reference)?;
+    if is_safe_relative_artifact_path(path) {
+        return Some((path, symbol));
+    }
+    let system_root = rms_root_for(manifest_path);
+    let canonical_root = fs::canonicalize(system_root).ok()?;
+    let canonical_target = fs::canonicalize(module_base.join(path)).ok()?;
+    canonical_target
+        .starts_with(canonical_root)
+        .then_some((path, symbol))
 }
 
 fn validate_semantic_evidence(
@@ -85845,6 +85888,41 @@ surfaces:
             &manifest,
             "../../../../tooling/rust/rms/src/main.rs#main"
         ));
+    }
+
+    #[test]
+    fn property_runner_resolves_parent_path_only_inside_system_root() {
+        let root = unique_test_dir("property-runner-parent-path");
+        let module = root.join("modules/leave-boundary");
+        let tests = root.join("client/ios/TurboTests");
+        fs::create_dir_all(&module).unwrap();
+        fs::create_dir_all(&tests).unwrap();
+        write_test_file(&root.join("system.yaml"), "spec: rms/system/v0.1\n");
+        write_test_file(
+            &tests.join("ConnectionTests.swift"),
+            "func devicePTTDidLeaveClearsExactObligationAfterProjectionReset() {}\n",
+        );
+        let manifest_path = module.join("implementation.yaml");
+        write_test_file(&manifest_path, "spec: rms/implementation/v0.1\n");
+
+        assert_eq!(
+            binding_reference_parts_in_workspace(
+                "../../client/ios/TurboTests/ConnectionTests.swift#devicePTTDidLeaveClearsExactObligationAfterProjectionReset",
+                &module,
+                &manifest_path,
+            ),
+            Some((
+                "../../client/ios/TurboTests/ConnectionTests.swift",
+                "devicePTTDidLeaveClearsExactObligationAfterProjectionReset",
+            ))
+        );
+        assert!(binding_reference_parts_in_workspace(
+            "../../../../etc/passwd#devicePTTDidLeaveClearsExactObligationAfterProjectionReset",
+            &module,
+            &manifest_path,
+        )
+        .is_none());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
