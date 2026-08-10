@@ -62401,7 +62401,7 @@ fn property_evidence_write_disposition(
             module, change, property, &existing,
         );
     }
-    if manifest_property_matches_except_realizations(old_property, property) {
+    if manifest_property_matches_except_executable_bindings(old_property, property) {
         return Ok(PropertyEvidenceWriteDisposition::Unchanged);
     }
     if render_manifest_property_evidence(old_property).as_deref() == Some(existing.as_str()) {
@@ -62410,14 +62410,16 @@ fn property_evidence_write_disposition(
     property_evidence_write_disposition_from_superseded_change(module, change, property, &existing)
 }
 
-fn manifest_property_matches_except_realizations(
+fn manifest_property_matches_except_executable_bindings(
     old_property: &YamlValue,
     property: &SemanticPropertyChange,
 ) -> bool {
     let mut existing = old_property.clone();
     let mut replacement = semantic_property_yaml(property);
-    remove_yaml_path(&mut existing, &["realizations"]);
-    remove_yaml_path(&mut replacement, &["realizations"]);
+    for path in [&["realizations"][..], &["input_space", "generator"][..]] {
+        remove_yaml_path(&mut existing, path);
+        remove_yaml_path(&mut replacement, path);
+    }
     existing == replacement
 }
 
@@ -87428,7 +87430,7 @@ machine:
     }
 
     #[test]
-    fn property_realization_only_replacement_preserves_concrete_evidence() {
+    fn property_executable_binding_replacement_preserves_concrete_evidence() {
         let root = route_capability_fixture("property-realization-preserves-evidence");
         let target = root.join("modules/play-game-domain/module.yaml");
         let mut seeded_module = load_manifest(&target).unwrap();
@@ -87436,7 +87438,7 @@ machine:
             r#"id: recovery-boundary-malformed-input-stops-before-domain-property
 proves: recovery-boundary-malformed-input-stops-before-domain-law
 kind: fuzz
-input_space: {strategy: generated, generator: malformed-input-generator}
+input_space: {strategy: generated, generator: verification/generators/malformed_inputs#generate}
 operation: {kind: semantic-function, name: transition-model}
 oracle: [Malformed input stops before the domain transition.]
 evidence: {path: verification/fuzz/recovery_malformed_input_fuzz.md}
@@ -87520,6 +87522,14 @@ temporal: null
             diagnostic.check != "semantic.property-evidence-overwrite-unsafe"
         }));
         assert_eq!(fs::read_to_string(&absolute_evidence).unwrap(), concrete);
+
+        let mut semantic_replacement = replacement;
+        semantic_replacement.oracle = vec!["A different semantic promise.".to_string()];
+        assert_eq!(
+            property_evidence_write_disposition(module, &change, &semantic_replacement, true)
+                .unwrap(),
+            PropertyEvidenceWriteDisposition::Unsafe
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
