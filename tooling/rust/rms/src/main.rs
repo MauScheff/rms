@@ -52972,6 +52972,7 @@ fn execute_spec_plan_provider_with_program(
     let mut prompt_for_attempt = prompt.to_string();
     let mut last_response = String::new();
     let mut last_normalizations = Vec::new();
+    let mut original_candidate = None;
 
     for attempt in 1..=2 {
         if attempt > 1 {
@@ -53062,7 +53063,17 @@ fn execute_spec_plan_provider_with_program(
             }
         };
         let response = fs::read_to_string(&metadata.response_path)?;
-        let candidate = prepare_spec_plan_provider_response(context, task, &response);
+        let mut candidate = prepare_spec_plan_provider_response(context, task, &response);
+        if attempt == 2 {
+            if let Some(original_candidate) = original_candidate.as_deref() {
+                candidate = reconcile_spec_plan_repair_response(
+                    context,
+                    task,
+                    original_candidate,
+                    candidate,
+                );
+            }
+        }
         last_response = candidate.response.clone();
         last_normalizations = candidate.normalizations.clone();
         let diagnostics = candidate.diagnostics;
@@ -53091,6 +53102,7 @@ fn execute_spec_plan_provider_with_program(
             return Ok(());
         }
         if attempt == 1 {
+            original_candidate = Some(last_response.clone());
             prompt_for_attempt =
                 render_spec_plan_repair_prompt(prompt, &last_response, &diagnostics);
         }
@@ -53129,6 +53141,126 @@ struct PreparedSpecPlanProviderResponse {
     response: String,
     diagnostics: Vec<Diagnostic>,
     normalizations: Vec<String>,
+}
+
+fn reconcile_spec_plan_repair_response(
+    context: &SpecTargetContext,
+    task: &str,
+    original_response: &str,
+    repair: PreparedSpecPlanProviderResponse,
+) -> PreparedSpecPlanProviderResponse {
+    let Ok(original) = serde_yaml::from_str::<YamlValue>(original_response) else {
+        return repair;
+    };
+    let Ok(repaired) = serde_yaml::from_str::<YamlValue>(&repair.response) else {
+        return repair;
+    };
+    let missing_sections = semantic_change_material_sections(&original)
+        .difference(&semantic_change_material_sections(&repaired))
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing_sections.is_empty() {
+        return repair;
+    }
+
+    let merged = merge_semantic_plan_repair_patch(original, repaired);
+    let Ok(merged_response) = serde_yaml::to_string(&merged) else {
+        return repair;
+    };
+    let mut reconciled = prepare_spec_plan_provider_response(context, task, &merged_response);
+    let mut normalizations = repair.normalizations;
+    normalizations.push(format!(
+        "reconciled diagnostic-scoped repair with original candidate sections: {}",
+        missing_sections.join(", ")
+    ));
+    normalizations.extend(reconciled.normalizations);
+    reconciled.normalizations = normalizations;
+    reconciled
+}
+
+fn semantic_change_material_sections(value: &YamlValue) -> BTreeSet<String> {
+    let metadata = BTreeSet::from(["spec", "module", "supersedes"]);
+    value
+        .as_mapping()
+        .into_iter()
+        .flat_map(|mapping| mapping.iter())
+        .filter_map(|(key, value)| {
+            let key = key.as_str()?;
+            (!metadata.contains(key) && !value.is_null()).then(|| key.to_string())
+        })
+        .collect()
+}
+
+fn merge_semantic_plan_repair_patch(original: YamlValue, repaired: YamlValue) -> YamlValue {
+    match (original, repaired) {
+        (original, YamlValue::Null) => original,
+        (YamlValue::Mapping(mut original), YamlValue::Mapping(repaired)) => {
+            for (key, repaired_value) in repaired {
+                let merged = match original.remove(&key) {
+                    Some(original_value) => {
+                        merge_semantic_plan_repair_patch(original_value, repaired_value)
+                    }
+                    None => repaired_value,
+                };
+                original.insert(key, merged);
+            }
+            YamlValue::Mapping(original)
+        }
+        (YamlValue::Sequence(original), YamlValue::Sequence(repaired)) => {
+            merge_semantic_plan_repair_sequences(original, repaired)
+        }
+        (_, repaired) => repaired,
+    }
+}
+
+fn merge_semantic_plan_repair_sequences(
+    original: Vec<YamlValue>,
+    repaired: Vec<YamlValue>,
+) -> YamlValue {
+    if repaired.is_empty() && !original.is_empty() {
+        return YamlValue::Sequence(original);
+    }
+    let original_identities = original
+        .iter()
+        .map(semantic_plan_item_identity)
+        .collect::<Option<Vec<_>>>();
+    let repaired_identities = repaired
+        .iter()
+        .map(semantic_plan_item_identity)
+        .collect::<Option<Vec<_>>>();
+    let (Some(original_identities), Some(repaired_identities)) =
+        (original_identities, repaired_identities)
+    else {
+        return YamlValue::Sequence(repaired);
+    };
+
+    let mut repaired_by_identity = repaired_identities
+        .into_iter()
+        .zip(repaired)
+        .collect::<BTreeMap<_, _>>();
+    let mut merged = Vec::new();
+    for (identity, original_item) in original_identities.into_iter().zip(original) {
+        if let Some(repaired_item) = repaired_by_identity.remove(&identity) {
+            merged.push(merge_semantic_plan_repair_patch(
+                original_item,
+                repaired_item,
+            ));
+        } else {
+            merged.push(original_item);
+        }
+    }
+    merged.extend(repaired_by_identity.into_values());
+    YamlValue::Sequence(merged)
+}
+
+fn semantic_plan_item_identity(value: &YamlValue) -> Option<String> {
+    let mapping = value.as_mapping()?;
+    for key in ["id", "name", "case", "path"] {
+        if let Some(value) = mapping.get(&yaml_key(key)).and_then(YamlValue::as_str) {
+            return Some(format!("{key}:{value}"));
+        }
+    }
+    None
 }
 
 fn prepare_spec_plan_provider_response(
@@ -54134,6 +54266,7 @@ fn validate_prepared_spec_plan_change(
 ) -> Vec<Diagnostic> {
     let mut diagnostics = validate_semantic_change(context, change);
     validate_pure_scaffold_replacement_plan(context, task, change, &mut diagnostics);
+    validate_task_preserved_machine_input_coverage(context, task, change, &mut diagnostics);
     if semantic_plan_task_is_contract_proof_only(task) {
         let machine_change =
             semantic_machine_change_requests_change(change, context.implementation.as_ref());
@@ -54243,6 +54376,142 @@ fn validate_prepared_spec_plan_change(
         )),
     }
     diagnostics
+}
+
+fn validate_task_preserved_machine_input_coverage(
+    context: &SpecTargetContext,
+    task: &str,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(implementation) = context.implementation.as_ref() else {
+        return;
+    };
+    let Some(machine) = change.machine.as_ref() else {
+        return;
+    };
+    let existing_states = get_string_array(
+        &implementation.value,
+        &["architecture", "machine", "states"],
+    )
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    let mut final_states = machine
+        .states
+        .replace
+        .clone()
+        .unwrap_or_else(|| existing_states.iter().cloned().collect());
+    final_states.retain(|state| !machine.states.remove.contains(state));
+    final_states.extend(machine.states.add.iter().cloned());
+    let new_live_states = final_states
+        .into_iter()
+        .filter(|state| !existing_states.contains(state))
+        .filter(|state| !semantic_plan_terminal_state_name(state))
+        .collect::<Vec<_>>();
+    if new_live_states.is_empty() {
+        return;
+    }
+
+    let task = task.to_ascii_lowercase();
+    if !task.contains("preserv") {
+        return;
+    }
+    let existing_commands = get_string_array(
+        &implementation.value,
+        &["architecture", "machine", "commands"],
+    );
+    let existing_effect_results = get_string_array(
+        &implementation.value,
+        &["architecture", "machine", "effect_results"],
+    );
+    let mut preserved_inputs = BTreeSet::new();
+    if task.contains("timeout") {
+        preserved_inputs.extend(
+            existing_commands
+                .iter()
+                .filter(|input| {
+                    let input = input.to_ascii_lowercase();
+                    input.contains("timeout") || input.contains("timedout")
+                })
+                .cloned(),
+        );
+        preserved_inputs.extend(
+            existing_effect_results
+                .iter()
+                .filter(|input| {
+                    let input = input.to_ascii_lowercase();
+                    input.contains("timeout") || input.contains("timedout")
+                })
+                .cloned(),
+        );
+    }
+    if task.contains("retry")
+        || task.contains("existing recovery semantics")
+        || task.contains("standalone")
+    {
+        preserved_inputs.extend(
+            existing_commands
+                .iter()
+                .filter(|input| input.to_ascii_lowercase().contains("retry"))
+                .cloned(),
+        );
+    }
+    if task.contains("callback") {
+        preserved_inputs.extend(
+            existing_commands
+                .iter()
+                .filter(|input| input.to_ascii_lowercase().contains("callback"))
+                .cloned(),
+        );
+    }
+    if task.contains("effect-result") || task.contains("effect result") {
+        preserved_inputs.extend(existing_effect_results);
+    }
+    for command in &existing_commands {
+        if task.contains(&command.to_ascii_lowercase()) {
+            preserved_inputs.insert(command.clone());
+        }
+    }
+    if preserved_inputs.is_empty() {
+        return;
+    }
+
+    let Some(machine_change) =
+        semantic_machine_change_to_machine_change(change, Some(implementation))
+    else {
+        return;
+    };
+    let final_transitions =
+        final_machine_transitions_without_diagnostics(implementation, &machine_change);
+    for state in new_live_states {
+        let classified = final_transitions
+            .iter()
+            .filter(|transition| transition.from == state)
+            .map(|transition| transition.on.as_str())
+            .collect::<BTreeSet<_>>();
+        let missing = preserved_inputs
+            .iter()
+            .filter(|input| !classified.contains(input.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            diagnostics.push(error_diagnostic(
+                "semantic-plan.preserved-input-unclassified",
+                &context.target,
+                format!(
+                    "new live state `{state}` does not classify task-preserved input(s): {}; add explicit accepted, rejected, or inert transitions without changing the preserved behavior",
+                    missing.join(", ")
+                ),
+            ));
+        }
+    }
+}
+
+fn semantic_plan_terminal_state_name(state: &str) -> bool {
+    let state = state.to_ascii_lowercase();
+    ["completed", "rejected", "failed", "cancelled", "terminal"]
+        .iter()
+        .any(|marker| state.contains(marker))
 }
 
 fn validate_pure_scaffold_replacement_plan(
@@ -54449,6 +54718,7 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "machine-change.state-unreachable"
             || diagnostic.check == "machine-change.output-path-eliminated"
             || diagnostic.check == "structure.effect-result-unhandled"
+            || diagnostic.check == "semantic-plan.preserved-input-unclassified"
             || diagnostic.check == "semantic-plan.pure-machine-retains-effect-driver"
             || diagnostic.check == "semantic-plan.rejection-terminal-incoherent"
             || diagnostic
@@ -54663,10 +54933,11 @@ fn render_spec_plan_repair_prompt(
                 "machine-change.state-unreachable"
                     | "machine-change.output-path-eliminated"
                     | "structure.effect-result-unhandled"
+                    | "semantic-plan.preserved-input-unclassified"
             )
         })
         .then_some(
-            "\n\nMachine closure repair rule: `machine.transitions.set` is the complete final transition relation, not the subset related to the latest diagnostic. Preserve every unaffected transition. The final relation must keep every declared state reachable from `initial_state`, consume every declared effect result, and retain at least one path that produces every still-declared event, effect, reply, and rejection. For an asynchronous boundary command, retain the command transition to its waiting state and all accepted, rejected, and failed effect-result transitions to reachable terminal states. Keep terminal-state refusal transitions when they are part of the existing final relation. Do not shorten a complete transition set to repair a contract or surface field.",
+            "\n\nMachine closure repair rule: `machine.transitions.set` is the complete final transition relation, not the subset related to the latest diagnostic. Preserve every unaffected transition. The final relation must keep every declared state reachable from `initial_state`, consume every declared effect result, and retain at least one path that produces every still-declared event, effect, reply, and rejection. When the task explicitly preserves existing timeout, retry, callback, or effect-result behavior while adding live states, every new live state must classify each named preserved input with an explicit accepted, rejected, or inert transition. For an asynchronous boundary command, retain the command transition to its waiting state and all accepted, rejected, and failed effect-result transitions to reachable terminal states. Keep terminal-state refusal transitions when they are part of the existing final relation. Do not shorten a complete transition set to repair a contract or surface field.",
         )
         .unwrap_or_default();
     let diagnostic_scope_repair = diagnostics
@@ -54686,6 +54957,7 @@ fn render_spec_plan_repair_prompt(
                         | "machine-change.state-unreachable"
                         | "machine-change.output-path-eliminated"
                         | "structure.effect-result-unhandled"
+                        | "semantic-plan.preserved-input-unclassified"
                         | "semantic-plan.pure-machine-retains-effect-driver"
                         | "semantic-plan.rejection-terminal-incoherent"
                         | "semantic-plan.property-executable-not-rust-source"
@@ -101467,6 +101739,239 @@ machine:
         assert!(repair.contains("seven-complete-properties"));
         assert!(repair.contains("accepted, rejected, failed"));
         assert!(repair.contains("Original bounded schema context"));
+    }
+
+    #[test]
+    fn semantic_plan_repair_patch_preserves_original_sections_and_property_items() {
+        let original: YamlValue = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+module: implementation.yaml
+intent: {summary: Add an explicit conversation leave lifecycle.}
+laws:
+  add: [{id: two-exact-proofs, statement: Two exact proofs are required., kind: safety, authority: transition, enforced_by: transition-model}]
+  set: []
+  remove: []
+properties:
+  add: [{id: existing-order-property, proves: either-order}]
+  set: []
+  remove: [obsolete-scaffold-property]
+machine:
+  mode: boundary-machine
+  states: {set: null, add: [ConversationPending], remove: []}
+  transitions:
+    set: null
+    add: [{from: AwaitingInput, on: StartConversationLeave, to: ConversationPending, case: start_conversation_leave}]
+    remove: []
+"#,
+        )
+        .unwrap();
+        let repair: YamlValue = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+module: implementation.yaml
+intent: null
+laws: null
+properties:
+  add: [{id: two-exact-proofs-property, proves: two-exact-proofs}]
+  set: []
+  remove: []
+machine: null
+"#,
+        )
+        .unwrap();
+
+        let merged = merge_semantic_plan_repair_patch(original, repair);
+        assert_eq!(
+            get_str(&merged, &["intent", "summary"]),
+            Some("Add an explicit conversation leave lifecycle.")
+        );
+        assert_eq!(
+            get_string_array(&merged, &["properties", "remove"]),
+            vec!["obsolete-scaffold-property".to_string()]
+        );
+        let property_ids = get_path(&merged, &["properties", "add"])
+            .and_then(YamlValue::as_sequence)
+            .unwrap()
+            .iter()
+            .filter_map(|item| get_str(item, &["id"]))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            property_ids,
+            BTreeSet::from(["existing-order-property", "two-exact-proofs-property"])
+        );
+        assert!(get_path(&merged, &["laws"]).is_some());
+        assert!(get_path(&merged, &["machine", "transitions"]).is_some());
+    }
+
+    #[test]
+    fn semantic_plan_reconciliation_revalidates_the_complete_original_candidate() {
+        let root = prompt_fixture("semantic-plan-complete-repair-reconciliation");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let original = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent: {summary: Add an explicit conversation leave lifecycle.}
+laws:
+  add: [{id: two-exact-proofs, statement: Two exact proofs are required., kind: safety, authority: transition, enforced_by: transition-model}]
+  set: []
+  remove: []
+properties:
+  add: [{id: existing-order-property, proves: either-order}]
+  set: []
+  remove: [obsolete-scaffold-property]
+machine:
+  mode: stateful-transition-machine
+  states: {set: null, add: [ConversationPending], remove: []}
+  transitions:
+    set: null
+    add: [{from: Ready, on: StartConversationLeave, to: ConversationPending, case: start_conversation_leave}]
+    remove: []
+"#;
+        let repair = PreparedSpecPlanProviderResponse {
+            response: r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent: null
+laws: null
+properties:
+  add: [{id: two-exact-proofs-property, proves: two-exact-proofs}]
+  set: []
+  remove: []
+machine: null
+"#
+            .to_string(),
+            diagnostics: Vec::new(),
+            normalizations: Vec::new(),
+        };
+
+        let reconciled =
+            reconcile_spec_plan_repair_response(&context, "add lifecycle", original, repair);
+        let change: SemanticChange = serde_yaml::from_str(&reconciled.response).unwrap();
+        assert!(change.intent.is_some());
+        assert!(change.laws.is_some());
+        assert!(change.machine.is_some());
+        assert_eq!(
+            change
+                .properties
+                .as_ref()
+                .unwrap()
+                .add
+                .iter()
+                .map(|property| property.id.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["existing-order-property", "two-exact-proofs-property"])
+        );
+        assert_eq!(
+            change.properties.as_ref().unwrap().remove,
+            vec!["obsolete-scaffold-property".to_string()]
+        );
+        assert!(reconciled
+            .normalizations
+            .iter()
+            .any(|item| item.contains("reconciled diagnostic-scoped repair")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn semantic_plan_preservation_task_requires_preserved_inputs_in_new_live_states() {
+        let implementation = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"spec: rms/implementation/v0.1
+module: leave-boundary
+binding: swift
+source: {root: Sources/LeaveBoundary, public_entrypoint: Sources/LeaveBoundary/LeaveBoundary.swift}
+commands: {verify: "true"}
+architecture:
+  machine:
+    name: LeaveBoundaryMachine
+    mode: boundary-machine
+    initial_state: AwaitingInput
+    transition_signature: state-and-input
+    states: [AwaitingInput, Completed]
+    commands: [CurrentLeaveTimedOut, StaleLeaveTimedOut, RetryLeave, ExactDidLeaveCallback, ExactFailedToLeaveCallback]
+    observed_events: []
+    events: []
+    effects: [ExecuteLeave]
+    effect_results: [AppleDevicePttLeaveTimedOut, AppleDevicePttLeaveExecutionRejected]
+    replies: [Accepted]
+    rejections: []
+    effect_protocols: []
+    transitions: []
+  roles: {}
+"#,
+            )
+            .unwrap(),
+        };
+        let context = SpecTargetContext {
+            target: implementation.path.clone(),
+            module: None,
+            implementation: Some(implementation),
+        };
+        let task = "Preserve every existing ValidStartLeaveObligation and exact Apple callback transition unchanged for standalone Device PTT leave. Preserve all existing timeout and effect-result transitions while adding the explicit Conversation leave states.";
+        let mut change: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+machine:
+  mode: boundary-machine
+  states: {set: null, add: [ConversationPending, ConversationCompleted], remove: []}
+  transitions:
+    set: null
+    add:
+      - {from: AwaitingInput, on: StartConversationLeave, to: ConversationPending, case: start_conversation_leave}
+    remove: []
+"#,
+        )
+        .unwrap();
+
+        let mut diagnostics = Vec::new();
+        validate_task_preserved_machine_input_coverage(&context, task, &change, &mut diagnostics);
+        let finding = diagnostics
+            .iter()
+            .find(|item| item.check == "semantic-plan.preserved-input-unclassified")
+            .unwrap();
+        for input in [
+            "CurrentLeaveTimedOut",
+            "StaleLeaveTimedOut",
+            "RetryLeave",
+            "ExactDidLeaveCallback",
+            "ExactFailedToLeaveCallback",
+            "AppleDevicePttLeaveTimedOut",
+            "AppleDevicePttLeaveExecutionRejected",
+        ] {
+            assert!(finding.message.contains(input), "{input}");
+        }
+        assert!(!finding.message.contains("ConversationCompleted"));
+        let repair = render_spec_plan_repair_prompt("bounded schema", "candidate", &diagnostics);
+        assert!(repair.contains("every new live state must classify each named preserved input"));
+
+        let transitions = change
+            .machine
+            .as_mut()
+            .unwrap()
+            .transitions
+            .as_mut()
+            .unwrap();
+        for input in [
+            "CurrentLeaveTimedOut",
+            "StaleLeaveTimedOut",
+            "RetryLeave",
+            "ExactDidLeaveCallback",
+            "ExactFailedToLeaveCallback",
+            "AppleDevicePttLeaveTimedOut",
+            "AppleDevicePttLeaveExecutionRejected",
+        ] {
+            transitions.add.push(MachineTransitionChange {
+                from: "ConversationPending".to_string(),
+                on: input.to_string(),
+                to: "ConversationPending".to_string(),
+                case: Some(format!(
+                    "conversation_pending_{}",
+                    semantic_id_segment(input)
+                )),
+                reply: Some("Accepted".to_string()),
+                ..MachineTransitionChange::default()
+            });
+        }
+        diagnostics.clear();
+        validate_task_preserved_machine_input_coverage(&context, task, &change, &mut diagnostics);
+        assert!(diagnostics.is_empty());
     }
 
     #[test]

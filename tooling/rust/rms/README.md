@@ -112,6 +112,8 @@ Detected skill sources are observable evidence only. The CLI cannot inspect the 
 
 Local workbench configuration remains operational input, not project semantics. Provider execution is always explicit and specialist-only. It may produce advisory prompts or recorded runs, but it cannot make canonical changes valid without deterministic apply and checks.
 
+A semantic-plan repair is a diagnostic-scoped patch to the first candidate. RMS reconciles omitted or null sections and stable-id mutation items with that candidate, then validates the complete result. A small repair cannot replace the plan or discard requested laws, properties, machine changes, removals, or bindings. When a task explicitly preserves existing timeout, retry, callback, or effect-result behavior while it adds live states, each new live state must classify those preserved inputs.
+
 Use `rms help --all` for configuration, prompt, run-record, semantic apply, machine, surface, trace, property, package, agent-distribution, and compatibility commands.
 
 ## Maintainer Release Gate
