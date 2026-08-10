@@ -19950,6 +19950,15 @@ fn binding_symbol_reference_exists(
     let Some((path, symbol)) = binding_reference_parts(reference) else {
         return false;
     };
+    binding_symbol_reference_parts_exist(base, implementation, path, symbol)
+}
+
+fn binding_symbol_reference_parts_exist(
+    base: &Path,
+    implementation: &LoadedManifest,
+    path: &str,
+    symbol: &str,
+) -> bool {
     let full_path = base.join(path);
     if !full_path.is_file() {
         return false;
@@ -20633,8 +20642,13 @@ fn quote_path(expression: &syn::Expr) -> String {
 }
 
 fn rust_items_have_function(items: &[Item], symbol: &str) -> bool {
+    let symbol = symbol.rsplit("::").next().unwrap_or(symbol);
     items.iter().any(|item| match item {
         Item::Fn(function) => function.sig.ident == symbol,
+        Item::Impl(item_impl) => item_impl
+            .items
+            .iter()
+            .any(|item| matches!(item, ImplItem::Fn(function) if function.sig.ident == symbol)),
         Item::Mod(module) => module
             .content
             .as_ref()
@@ -27890,10 +27904,40 @@ fn validate_structure_role_paths(manifest: &LoadedManifest, diagnostics: &mut Ve
                 &path,
                 "structure role references an artifact that does not exist",
             );
+            if runnable_surface_role_names().contains(&role) {
+                validate_runnable_surface_role_symbol(manifest, diagnostics, role, &path);
+            }
             if is_evidence_role(role) {
                 check_evidence_quality(manifest, diagnostics, &path);
             }
         }
+    }
+}
+
+fn validate_runnable_surface_role_symbol(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    role: &str,
+    reference: &str,
+) {
+    let Some((path, symbol)) = reference.rsplit_once('#') else {
+        return;
+    };
+    if path.trim().is_empty() || symbol.trim().is_empty() {
+        return;
+    }
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    if !base.join(path.trim()).is_file() {
+        return;
+    }
+    if !binding_symbol_reference_parts_exist(base, manifest, path.trim(), symbol.trim()) {
+        diagnostics.push(error(
+            format!("references.structure.role.{role}.symbol"),
+            &manifest.path,
+            format!(
+                "runnable surface role references a callable that does not exist: `{reference}`"
+            ),
+        ));
     }
 }
 
@@ -35301,7 +35345,10 @@ fn check_relative_ref(
     }
 
     let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
-    let full_path = base.join(reference);
+    let artifact = reference
+        .rsplit_once('#')
+        .map_or(reference, |(artifact, _)| artifact);
+    let full_path = base.join(artifact);
     if !full_path.exists() {
         diagnostics.push(error(
             check,
@@ -85632,6 +85679,62 @@ surfaces:
             &manifest,
             "../../../../tooling/rust/rms/src/main.rs#main"
         ));
+    }
+
+    #[test]
+    fn runnable_surface_role_resolves_parent_path_to_private_rust_impl_method() {
+        let root = unique_test_dir("surface-role-private-rust-method");
+        let module = root.join("modules/recovery-boundary");
+        let runtime = root.join("backend/runtime/src");
+        fs::create_dir_all(&module).unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        write_test_file(&root.join("system.yaml"), "spec: rms/system/v0.1\n");
+        write_test_file(
+            &runtime.join("http.rs"),
+            r#"
+struct Runtime;
+
+impl Runtime {
+    fn prepare_secure_media_ptt_response(&mut self) {}
+}
+"#,
+        );
+        let manifest_path = module.join("implementation.yaml");
+        write_test_file(
+            &manifest_path,
+            r#"spec: rms/implementation/v0.1
+module: recovery-boundary
+binding: rust
+architecture:
+  roles:
+    runnable_surface:
+      - ../../backend/runtime/src/http.rs#prepare_secure_media_ptt_response
+"#,
+        );
+        let manifest = load_manifest(&manifest_path).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_structure_role_paths(&manifest, &mut diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "parent-relative private impl method should resolve: {diagnostics:#?}"
+        );
+
+        let mut missing = manifest.clone();
+        ensure_yaml_mapping_path(&mut missing.value, &["architecture", "roles"]).insert(
+            yaml_key("runnable_surface"),
+            serde_yaml::from_str(
+                "[../../backend/runtime/src/http.rs#missing_prepare_secure_media_ptt_response]",
+            )
+            .unwrap(),
+        );
+        validate_structure_role_paths(&missing, &mut diagnostics);
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "references.structure.role.runnable_surface.symbol"
+        }));
+        assert!(diagnostics.iter().all(|diagnostic| {
+            diagnostic.check != "references.structure.role.runnable_surface"
+        }));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
