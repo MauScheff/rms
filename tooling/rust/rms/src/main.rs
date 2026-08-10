@@ -53883,50 +53883,57 @@ fn validate_pure_scaffold_replacement_plan(
         }
     }
 
-    if let Some(properties) = change.properties.as_ref() {
-        for property in properties.add.iter().chain(&properties.replace) {
-            for realization in &property.realizations {
-                for (kind, reference) in [
-                    ("runner", Some(realization.runner.as_str())),
-                    ("generator", realization.generator.as_deref()),
-                ] {
-                    let Some(reference) = reference else {
-                        continue;
-                    };
-                    if binding_reference_parts(reference).is_some_and(|(path, _)| {
-                        !path.ends_with(".rs")
-                            || !(path.starts_with("src/") || path.starts_with("tests/"))
-                    }) {
-                        diagnostics.push(error_diagnostic(
-                            "semantic-plan.property-executable-not-rust-source",
-                            &context.target,
-                            format!(
-                                "property `{}` {kind} `{reference}` is not an exact Rust source symbol; bind executable generators and runners to `src/*.rs#symbol` or `tests/*.rs#symbol`, and keep Markdown paths only as property evidence",
-                                property.id
-                            ),
-                        ));
+    let requires_rust_property_sources = context
+        .implementation
+        .as_ref()
+        .and_then(|implementation| get_str(&implementation.value, &["binding"]))
+        == Some("rust");
+    if requires_rust_property_sources {
+        if let Some(properties) = change.properties.as_ref() {
+            for property in properties.add.iter().chain(&properties.replace) {
+                for realization in &property.realizations {
+                    for (kind, reference) in [
+                        ("runner", Some(realization.runner.as_str())),
+                        ("generator", realization.generator.as_deref()),
+                    ] {
+                        let Some(reference) = reference else {
+                            continue;
+                        };
+                        if binding_reference_parts(reference).is_some_and(|(path, _)| {
+                            !path.ends_with(".rs")
+                                || !(path.starts_with("src/") || path.starts_with("tests/"))
+                        }) {
+                            diagnostics.push(error_diagnostic(
+                                "semantic-plan.property-executable-not-rust-source",
+                                &context.target,
+                                format!(
+                                    "property `{}` {kind} `{reference}` is not an exact Rust source symbol; bind executable generators and runners to `src/*.rs#symbol` or `tests/*.rs#symbol`, and keep Markdown paths only as property evidence",
+                                    property.id
+                                ),
+                            ));
+                        }
                     }
                 }
             }
         }
-    }
-    if let Some(roles) = change.roles.as_ref() {
-        for role in roles.replace.iter().chain(&roles.add) {
-            if matches!(role.kind.as_str(), "property_generator" | "property_oracle")
-                && role.path.as_deref().is_some_and(|path| {
-                    !path.ends_with(".rs")
-                        || !(path.starts_with("src/") || path.starts_with("tests/"))
-                })
-            {
-                diagnostics.push(error_diagnostic(
-                    "semantic-plan.property-role-not-rust-source",
-                    &context.target,
-                    format!(
-                        "role `{}` path `{}` is not a Rust source file; point executable property roles to `src/*.rs` or `tests/*.rs` and keep `verification/properties/*` paths as evidence only",
-                        role.kind,
-                        role.path.as_deref().unwrap_or("<missing>")
-                    ),
-                ));
+        if let Some(roles) = change.roles.as_ref() {
+            for role in roles.replace.iter().chain(&roles.add) {
+                if matches!(role.kind.as_str(), "property_generator" | "property_oracle")
+                    && role.path.as_deref().is_some_and(|path| {
+                        !path.ends_with(".rs")
+                            || !(path.starts_with("src/") || path.starts_with("tests/"))
+                    })
+                {
+                    diagnostics.push(error_diagnostic(
+                        "semantic-plan.property-role-not-rust-source",
+                        &context.target,
+                        format!(
+                            "role `{}` path `{}` is not a Rust source file; point executable property roles to `src/*.rs` or `tests/*.rs` and keep `verification/properties/*` paths as evidence only",
+                            role.kind,
+                            role.path.as_deref().unwrap_or("<missing>")
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -100552,6 +100559,113 @@ roles:
         assert!(repair.contains("Pure scaffold replacement repair rule"));
         assert!(repair.contains("`src/*.rs#symbol` or `tests/*.rs#symbol`"));
         assert!(repair.contains("never emit a rejection while preserving `Completed`"));
+    }
+
+    #[test]
+    fn semantic_plan_pure_swift_scaffold_replacement_preserves_swift_property_sources() {
+        let implementation = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"spec: rms/implementation/v0.1
+module: leave-obligation-decisions
+binding: swift
+source:
+  root: Sources/LeaveObligationDecisions
+  public_entrypoint: Sources/LeaveObligationDecisions/LeaveObligationDecisions.swift
+commands:
+  properties: 'swift test --package-path . --filter "${RMS_PROPERTY_RUNNER##*#}"'
+architecture:
+  shape: workflow
+  machine:
+    name: LeaveObligationWorkflowMachine
+    mode: workflow-effect-machine
+    transition_signature: state-and-input
+    driver_function: driveMachine
+    transition_record_function: transitionRecord
+    states: [NotStarted, Completed]
+    commands: [Accept]
+    observed_events: []
+    events: []
+    effects: [Execute]
+    effect_results: [Succeeded]
+    replies: [Accepted]
+    rejections: [IllegalTransition]
+    effect_protocols: []
+    transitions: []
+  roles:
+    machine_driver: [Sources/LeaveObligationDecisions/MachineDriver.swift]
+    effect_executor: [Sources/LeaveObligationDecisions/EffectExecutor.swift]
+"#,
+            )
+            .unwrap(),
+        };
+        let context = SpecTargetContext {
+            target: PathBuf::from("implementation.yaml"),
+            module: None,
+            implementation: Some(implementation),
+        };
+        let task = "Replace the generic workflow-effect scaffold with a pure stateful Swift decision machine. The decision child has no external effects, no effect executor, and no machine driver.";
+        let response = r#"spec: rms/semantic-change/v0.1
+properties:
+  add:
+    - id: exact-callback-property
+      proves: exact-callback-law
+      kind: semantic
+      input_space: {strategy: generated, generator: exact-callback-cases}
+      operation: {kind: semantic-function, name: transition-model}
+      oracle: [an exact callback clears only the current obligation]
+      evidence: {kind: property, path: verification/properties/exact_callback.md}
+      counterexamples: {path: verification/counterexamples/exact_callback}
+      realizations:
+        - profile: smoke
+          strategy: generated-property
+          command: properties
+          generator: Sources/LeaveObligationDecisions/Transition.swift#generateExactCallbackCases
+          runner: Tests/LeaveObligationDecisionsTests/LeaveObligationDecisionsTests.swift#testExactCallbackClears
+          exhaustive: false
+machine:
+  mode: stateful-transition-machine
+  driver_function: null
+  transition_record_function: transitionRecord
+  states: {set: [NoCurrentObligation, CurrentObligation], add: [], remove: []}
+  commands: {set: [RecordObligation], add: [], remove: []}
+  effects: {set: [], add: [], remove: []}
+  effect_results: {set: [], add: [], remove: []}
+  effect_protocols: {set: [], add: [], remove: []}
+  transitions:
+    set:
+      - {from: NoCurrentObligation, on: RecordObligation, to: CurrentObligation, case: record_obligation, reply: Accepted}
+    add: []
+    remove: []
+roles:
+  set:
+    - {kind: property_generator, path: Sources/LeaveObligationDecisions/Transition.swift}
+    - {kind: property_oracle, path: Tests/LeaveObligationDecisionsTests/LeaveObligationDecisionsTests.swift}
+  add: []
+  remove:
+    - {kind: machine_driver, path: Sources/LeaveObligationDecisions/MachineDriver.swift}
+    - {kind: effect_executor, path: Sources/LeaveObligationDecisions/EffectExecutor.swift}
+"#;
+
+        let prepared = prepare_spec_plan_provider_response(&context, task, response);
+
+        for check in [
+            "semantic-plan.property-executable-not-rust-source",
+            "semantic-plan.property-role-not-rust-source",
+        ] {
+            assert!(prepared
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.check != check));
+        }
+        assert!(prepared.response.contains(
+            "Sources/LeaveObligationDecisions/Transition.swift#generateExactCallbackCases"
+        ));
+        assert!(prepared.response.contains(
+            "Tests/LeaveObligationDecisionsTests/LeaveObligationDecisionsTests.swift#testExactCallbackClears"
+        ));
+        assert!(!prepared.response.contains("src/transition.rs"));
+        assert!(!prepared.response.contains("tests/leave_obligation"));
     }
 
     #[test]
