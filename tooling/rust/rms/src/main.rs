@@ -40156,6 +40156,51 @@ fn resolve_next_owner_for_task(
             ));
         }
 
+        let export_reconciliation_modules =
+            explicit_composite_export_reconciliation_modules(task, modules);
+        if export_reconciliation_modules.len() == 1 {
+            let selected = export_reconciliation_modules[0];
+            let summary = route_module_summary(selected, None);
+            return Ok(OwnerResolution::selected(
+                "task explicitly reconciles a composite export contract".to_string(),
+                summary.clone(),
+                vec![RouteCandidate {
+                    module: summary,
+                    score: 1,
+                    reasons: vec![format!(
+                        "task asks composite module `{}` to reconcile its exported contract with the named child provider",
+                        selected.name
+                    )],
+                }],
+                vec![selected.path.display().to_string()],
+                Vec::new(),
+            ));
+        }
+        if export_reconciliation_modules.len() > 1 {
+            let candidates = export_reconciliation_modules
+                .into_iter()
+                .map(|module| RouteCandidate {
+                    module: route_module_summary(module, None),
+                    score: 1,
+                    reasons: vec![format!(
+                        "task names an exported contract reconciliation owned by composite module `{}`",
+                        module.name
+                    )],
+                })
+                .collect();
+            return Ok(OwnerResolution::unresolved(
+                UnselectedOwnerStatus::Ambiguous,
+                "task matches exported contract reconciliation in multiple composite modules"
+                    .to_string(),
+                candidates,
+                Vec::new(),
+                vec![
+                    "Name the exact composite module whose copied export contract must change"
+                        .to_string(),
+                ],
+            ));
+        }
+
         let exact_task_modules = longest_exact_task_module_mentions(task, modules);
         if exact_task_modules.len() == 1 {
             let selected = exact_task_modules[0];
@@ -40511,6 +40556,45 @@ fn longest_exact_task_module_mentions<'a>(
         return Vec::new();
     };
     matches.retain(|module| semantic_id_segment(&module.name).split('-').count() == longest);
+    matches.sort_by(|left, right| left.path.cmp(&right.path));
+    matches
+}
+
+fn explicit_composite_export_reconciliation_modules<'a>(
+    task: &str,
+    modules: &'a BTreeMap<String, ModuleIndexEntry>,
+) -> Vec<&'a ModuleIndexEntry> {
+    let task_lower = task.to_ascii_lowercase();
+    let names_export_contract = task_lower.contains("export") && task_lower.contains("contract");
+    let names_reconciliation = [
+        "align",
+        "copy",
+        "match",
+        "reconcile",
+        "replace",
+        "sync",
+        "synchronize",
+        "update",
+    ]
+    .iter()
+    .any(|verb| task_mentions_token(&task_lower, verb));
+    if !names_export_contract || !names_reconciliation {
+        return Vec::new();
+    }
+
+    let exports = composition_exports(modules);
+    let mut matches = modules
+        .values()
+        .filter(|module| {
+            get_str(&module.value, &["module", "kind"]) == Some("composite")
+                && task_mentions_token(&task_lower, &module.name)
+                && exports.iter().any(|export| {
+                    export.parent == module.name
+                        && task_mentions_token(&task_lower, &export.name)
+                        && task_mentions_token(&task_lower, &export.from)
+                })
+        })
+        .collect::<Vec<_>>();
     matches.sort_by(|left, right| left.path.cmp(&right.path));
     matches
 }
@@ -97963,6 +98047,31 @@ semantic_functions: []
             "task exactly names canonical module"
         );
         assert_eq!(humanized_child.route.len(), 1);
+
+        let composite_export_reconciliation = resolve_next_owner_for_task(
+            &recursive,
+            None,
+            "In composite module play-game, update the exported play-game command contract to exactly match the current provided contract of its exported play-game-boundary child; preserve composition, ownership, and runtime.",
+            "play-game play-game-boundary",
+            &recursive_profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            composite_export_reconciliation.status(),
+            OwnerStatus::Selected
+        );
+        assert_eq!(
+            composite_export_reconciliation
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("play-game")
+        );
+        assert_eq!(
+            composite_export_reconciliation.reason,
+            "task explicitly reconciles a composite export contract"
+        );
+        assert_eq!(composite_export_reconciliation.route.len(), 1);
 
         let exact_parent_path = resolve_next_owner_for_task(
             &recursive,
