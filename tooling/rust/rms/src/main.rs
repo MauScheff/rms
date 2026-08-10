@@ -46830,7 +46830,7 @@ fn machine_transition_matches_audit_removal(
 }
 
 fn is_production_claim_path(path: &str) -> bool {
-    if path.starts_with(".rms/runs/") || path.starts_with(".rms/cache/") {
+    if is_generated_rms_artifact_path(path) {
         return false;
     }
     path.ends_with("module.yaml")
@@ -46856,6 +46856,17 @@ fn is_production_claim_path(path: &str) -> bool {
         || path.ends_with("AGENTS.md")
         || path.ends_with("CLAUDE.md")
         || path.starts_with(".rms/")
+}
+
+fn is_generated_rms_artifact_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let components = normalized
+        .trim_start_matches("./")
+        .split('/')
+        .collect::<Vec<_>>();
+    components.windows(2).any(|pair| {
+        pair[0] == ".rms" && matches!(pair[1], "runs" | "cache" | "evidence" | "hunts" | "dogfood")
+    })
 }
 
 fn audit_path_in_scope(root: &Path, path: &Path, include_examples: bool) -> bool {
@@ -90253,6 +90264,7 @@ architecture:
 "#,
         );
 
+        let production_before = production_file_digests(&root, false).unwrap();
         let report = execute_property_realizations(
             &root.join("implementation.yaml"),
             PropertyProfile::Smoke,
@@ -90260,6 +90272,8 @@ architecture:
             30,
         )
         .unwrap();
+        let production_after = production_file_digests(&root, false).unwrap();
+        assert_eq!(production_after, production_before);
         let structure = build_structure_report(&root.join("implementation.yaml")).unwrap();
         assert!(!structure.diagnostics.iter().any(|diagnostic| {
             diagnostic.check == "property.integration-test-invalid"
@@ -90304,6 +90318,27 @@ architecture:
             );
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn generated_rms_proof_artifacts_are_not_production_claim_paths() {
+        for path in [
+            ".rms/evidence/integration/receipt.json",
+            ".rms/hunts/run/report.json",
+            ".rms/runs/plan/request.yaml",
+            ".rms/cache/proofs/result.json",
+            ".rms/dogfood/run/report.json",
+            "systems/app/.rms/evidence/integration/receipt.json",
+        ] {
+            assert!(!is_production_claim_path(path), "{path}");
+        }
+        for path in [
+            ".rms/config.yaml",
+            "src/product.rs",
+            "modules/app/verification/traces/replay.yaml",
+        ] {
+            assert!(is_production_claim_path(path), "{path}");
+        }
     }
 
     #[test]
