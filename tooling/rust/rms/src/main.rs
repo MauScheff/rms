@@ -3487,6 +3487,8 @@ struct SemanticMachineChange {
     #[serde(default, deserialize_with = "deserialize_nullable_string_default")]
     mode: String,
     #[serde(default)]
+    initial_state: Option<String>,
+    #[serde(default)]
     justification: Option<String>,
     #[serde(default)]
     transition_signature: Option<String>,
@@ -54822,6 +54824,16 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         });
         writeln!(out, "machine:")?;
         writeln!(out, "  mode: {mode}")?;
+        writeln!(
+            out,
+            "  initial_state: {}",
+            get_str(
+                &implementation.value,
+                &["architecture", "machine", "initial_state"],
+            )
+            .map(yaml_quote)
+            .unwrap_or_else(|| "null".to_string())
+        )?;
         writeln!(out, "  transition_signature: {signature}")?;
         let driver_function = get_str(
             &implementation.value,
@@ -55107,7 +55119,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "`rms spec apply` automatically adds every currently active semantic revision to `supersedes` and hash-seals the exact new record. Use explicit `supersedes` only for additional branches that are not locally discoverable. Applied records are append-only: never edit or delete them.")?;
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
     writeln!(out, "Use `semantic_functions.add`, `set`, and `remove` whenever a law's authority owner, public semantic callable, parser, projector, adapter, transformation, or executor binding changes. Do not edit `implementation.yaml.semantic_functions` directly. Function kinds are `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, `interpreter`, `transformation`, or `effect-executor`; purity is `pure`, `effectful`, or `boundary`. A canonical `transition` function is always pure. A boundary driver is a distinct `adapter` with `purity: boundary`, and an external effect executor is distinct with `purity: effectful`. Privileged, unsafe, or foreign functions list their declared authority ids.")?;
-    writeln!(out, "For every machine variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
+    writeln!(out, "For every machine variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change. `machine.initial_state` names one final declared state. Set it explicitly when replacing the state set. If it is omitted and the replacement removes the previous initial state, RMS deterministically uses the first final declared state.")?;
     writeln!(out, "Machine transition items use `from`, `on`, `to`, stable ASCII identifier `case` values such as `valid_example_accepted` (not kebab-case), optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names. Every transition on a declared command also supplies `reply`, `rejection`, or a non-empty `no_reply_justification`; an asynchronous command normally states `effect result is pending` and its effect-result transition supplies the terminal response.")?;
     writeln!(out, "When external observations use a different binding enum from emitted events, set `machine.types.observed_event` to that exact type. Omit it only for an intentional shared event enum; older declarations continue to fall back to `machine.types.event`.")?;
     writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. One role kind cannot repeat the same path. If one implementation executes several private backend operations, model one aggregate boundary effect and one executor role, or use distinct declared effects with distinct executor paths. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. An explicitly effect-free replacement uses `stateful-transition-machine` when lifecycle state remains and omits the driver function and role. A rejection transition must follow one coherent terminal policy; it cannot preserve a declared success terminal while claiming movement to a separate rejection terminal. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use a scalar implementation identifier `resource` matching `^[A-Za-z_][A-Za-z0-9_]*$`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses the same exact `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings use exactly `{{authority, roles, safe_facade, evidence}}`. `roles` is a non-empty list of exact declared role kinds such as `effect_executor`, never method names. `safe_facade` is one exact relative `path#symbol`. `evidence` is always a non-empty list of module-relative paths, even when it contains one path. Role removal items use `kind` and optional `path`. A Swift public API or language library facade is a `public_facade` role, not a runnable surface. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
@@ -57894,6 +57906,18 @@ fn semantic_machine_change_requests_change(
     let Some(implementation) = implementation else {
         return false;
     };
+    if machine
+        .initial_state
+        .as_deref()
+        .is_some_and(|initial_state| {
+            get_str(
+                &implementation.value,
+                &["architecture", "machine", "initial_state"],
+            ) != Some(initial_state)
+        })
+    {
+        return true;
+    }
     if !machine.mode.trim().is_empty()
         && get_str(&implementation.value, &["architecture", "machine", "mode"])
             != Some(machine.mode.as_str())
@@ -57952,18 +57976,21 @@ fn semantic_machine_change_requests_change(
 }
 
 fn semantic_machine_change_has_structural_operations(machine: &SemanticMachineChange) -> bool {
-    [
-        &machine.states,
-        &machine.commands,
-        &machine.observed_events,
-        &machine.events,
-        &machine.effects,
-        &machine.effect_results,
-        &machine.replies,
-        &machine.rejections,
-    ]
-    .into_iter()
-    .any(|change| change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty())
+    machine.initial_state.is_some()
+        || [
+            &machine.states,
+            &machine.commands,
+            &machine.observed_events,
+            &machine.events,
+            &machine.effects,
+            &machine.effect_results,
+            &machine.replies,
+            &machine.rejections,
+        ]
+        .into_iter()
+        .any(|change| {
+            change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty()
+        })
         || machine.effect_protocols.replace.is_some()
         || !machine.effect_protocols.add.is_empty()
         || !machine.effect_protocols.remove.is_empty()
@@ -60826,6 +60853,19 @@ fn semantic_machine_change_to_machine_change(
     } else {
         machine.mode.clone()
     };
+    let initial_state = machine.initial_state.clone().or_else(|| {
+        let implementation = implementation?;
+        let final_states =
+            final_machine_variant_values(implementation, "states", &machine.states, true);
+        let current_initial = get_str(
+            &implementation.value,
+            &["architecture", "machine", "initial_state"],
+        );
+        (!final_states.is_empty()
+            && current_initial
+                .is_none_or(|initial| !final_states.iter().any(|state| state == initial)))
+        .then(|| final_states[0].clone())
+    });
     Some(MachineChange {
         spec: "rms/machine-change/v0.1".to_string(),
         module: implementation
@@ -60845,7 +60885,7 @@ fn semantic_machine_change_to_machine_change(
         }),
         machine: MachineChangeMachine {
             mode,
-            initial_state: None,
+            initial_state,
             justification: machine.justification.clone(),
             transition_signature: machine.transition_signature.clone(),
             driver_function: machine.driver_function.clone(),
@@ -101069,6 +101109,83 @@ evidence:
             diagnostic.check != "surface.implementation-missing"
                 && diagnostic.check != "semantic.machine-change-empty"
         }));
+    }
+
+    #[test]
+    fn semantic_state_replacement_updates_removed_initial_state() {
+        let implementation = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"spec: rms/implementation/v0.1
+module: direct-quic-runtime-repair-decisions
+binding: swift
+architecture:
+  shape: workflow
+  machine:
+    mode: workflow-effect-machine
+    initial_state: NotStarted
+    states: [NotStarted, WaitingForEffect, Completed, Failed]
+"#,
+            )
+            .unwrap(),
+        };
+        let implicit: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+machine:
+  mode: stateful-transition-machine
+  states:
+    set: [TrackingController, RetainingPttGesture]
+    add: []
+    remove: []
+"#,
+        )
+        .unwrap();
+
+        let projected = semantic_machine_change_to_machine_change(&implicit, Some(&implementation))
+            .expect("semantic machine projection");
+        assert_eq!(
+            projected.machine.initial_state.as_deref(),
+            Some("TrackingController")
+        );
+        let mut applied = implementation.value.clone();
+        apply_machine_change_to_manifest(&mut applied, &projected);
+        assert_eq!(
+            get_str(&applied, &["architecture", "machine", "initial_state"]),
+            Some("TrackingController")
+        );
+
+        let explicit: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+machine:
+  mode: stateful-transition-machine
+  initial_state: RetainingPttGesture
+  states:
+    set: [TrackingController, RetainingPttGesture]
+    add: []
+    remove: []
+"#,
+        )
+        .unwrap();
+        let projected = semantic_machine_change_to_machine_change(&explicit, Some(&implementation))
+            .expect("semantic machine projection");
+        assert_eq!(
+            projected.machine.initial_state.as_deref(),
+            Some("RetainingPttGesture")
+        );
+    }
+
+    #[test]
+    fn semantic_plan_prompt_exposes_initial_state_mutation() {
+        let root = route_capability_fixture("semantic-initial-state-prompt");
+        let context = load_spec_target(&root.join("modules/play-game-domain/module.yaml")).unwrap();
+
+        let prompt =
+            render_spec_plan_prompt(&context, &root, "replace the machine states").unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(prompt.contains("machine:\n  mode:"));
+        assert!(prompt.contains("  initial_state:"));
+        assert!(prompt.contains("Set it explicitly when replacing the state set"));
     }
 
     #[test]
