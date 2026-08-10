@@ -37652,10 +37652,10 @@ where
     if top_level.is_empty() {
         bail!("progressive coverage discovered no RMS module to certify");
     }
-    let shared_audit = if mode == CheckMode::Committed {
-        Some(build_audit()?)
-    } else {
-        None
+    let shared_audit = match mode {
+        CheckMode::Committed => Some(build_audit()?),
+        CheckMode::Changes => Some(build_audit_report_with_scope(root, true, false)?),
+        CheckMode::Project | CheckMode::Environment => None,
     };
     let verification_cache = CapturedVerificationCache::new(proof_cache);
     let mut reports = Vec::new();
@@ -37859,10 +37859,10 @@ fn build_module_scoped_check_report_with_audit(
             in_scope_changed.join(", ")
         ));
     }
-    let scoped_audit = if mode == CheckMode::Committed {
-        let audit = match shared_audit {
-            Some(audit) => audit.clone(),
-            None => execute_audit_with_proof_cache(
+    let scoped_audit = if matches!(mode, CheckMode::Changes | CheckMode::Committed) {
+        let audit = match (mode, shared_audit) {
+            (_, Some(audit)) => audit.clone(),
+            (CheckMode::Committed, None) => execute_audit_with_proof_cache(
                 root,
                 true,
                 false,
@@ -37870,6 +37870,8 @@ fn build_module_scoped_check_report_with_audit(
                 DEFAULT_PROOF_TIMEOUT_SECONDS,
                 proof_cache,
             )?,
+            (CheckMode::Changes, None) => build_audit_report_with_scope(root, true, false)?,
+            _ => unreachable!("only changes and committed modes build a scoped audit"),
         };
         let audit = restrict_audit_to_module_closure(root, audit, &closure_roots);
         failures.extend(
@@ -53384,6 +53386,9 @@ fn prepare_spec_plan_provider_response(
     let (normalized_yaml, contract_normalizations) =
         normalize_spec_plan_contract_artifact_wrappers(&normalized_yaml);
     normalizations.extend(contract_normalizations);
+    let (normalized_yaml, role_normalizations) =
+        normalize_spec_plan_legacy_role_items(&normalized_yaml);
+    normalizations.extend(role_normalizations);
     if let Some(diagnostic) =
         diagnose_misplaced_semantic_machine_evidence(context, &normalized_yaml)
     {
@@ -53911,6 +53916,86 @@ fn normalize_spec_plan_freeform_yaml(response: &str) -> (String, Vec<String>) {
         normalizations.push(format!("quoted freeform YAML scalar `{key}` safely"));
     }
     (rendered.join("\n"), normalizations)
+}
+
+fn normalize_spec_plan_legacy_role_items(response: &str) -> (String, Vec<String>) {
+    let mut value = match serde_yaml::from_str::<YamlValue>(response) {
+        Ok(value) => value,
+        Err(_) => return (response.to_string(), Vec::new()),
+    };
+    let Some(roles) = value
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(yaml_key("roles")))
+        .and_then(YamlValue::as_mapping_mut)
+    else {
+        return (response.to_string(), Vec::new());
+    };
+
+    let mut normalizations = Vec::new();
+    for operation in ["add", "set"] {
+        let Some(items) = roles
+            .get_mut(yaml_key(operation))
+            .and_then(YamlValue::as_sequence_mut)
+        else {
+            continue;
+        };
+        let mut normalized_items = Vec::with_capacity(items.len());
+        for item in std::mem::take(items) {
+            let Some(mapping) = item.as_mapping() else {
+                normalized_items.push(item);
+                continue;
+            };
+            if mapping.contains_key(yaml_key("kind")) || mapping.contains_key(yaml_key("path")) {
+                normalized_items.push(item);
+                continue;
+            }
+            let Some(kind) = mapping.get(yaml_key("role")).and_then(YamlValue::as_str) else {
+                normalized_items.push(item);
+                continue;
+            };
+            let Some(paths) = mapping
+                .get(yaml_key("files"))
+                .and_then(YamlValue::as_sequence)
+                .filter(|paths| !paths.is_empty())
+            else {
+                normalized_items.push(item);
+                continue;
+            };
+            let Some(paths) = paths
+                .iter()
+                .map(YamlValue::as_str)
+                .collect::<Option<Vec<_>>>()
+            else {
+                normalized_items.push(item);
+                continue;
+            };
+
+            for path in &paths {
+                let mut normalized = serde_yaml::Mapping::new();
+                normalized.insert(yaml_key("kind"), YamlValue::String(kind.to_string()));
+                normalized.insert(yaml_key("path"), YamlValue::String((*path).to_string()));
+                for optional in ["effect", "binding_hint"] {
+                    if let Some(value) = mapping.get(yaml_key(optional)) {
+                        normalized.insert(yaml_key(optional), value.clone());
+                    }
+                }
+                normalized_items.push(YamlValue::Mapping(normalized));
+            }
+            normalizations.push(format!(
+                "normalized legacy roles.{operation} item `{kind}` from role/files to {} kind/path item(s)",
+                paths.len()
+            ));
+        }
+        *items = normalized_items;
+    }
+
+    if normalizations.is_empty() {
+        return (response.to_string(), normalizations);
+    }
+    match serde_yaml::to_string(&value) {
+        Ok(response) => (response, normalizations),
+        Err(_) => (response.to_string(), Vec::new()),
+    }
 }
 
 fn semantic_plan_task_requires_canonical_change(task: &str) -> bool {
@@ -82084,6 +82169,78 @@ import struct ExternalKit.Widget
     }
 
     #[test]
+    fn changes_check_rejects_static_proof_debt_before_the_candidate_commit() {
+        let root = unique_test_dir("changes-static-proof-debt");
+        run_init(
+            &root,
+            "candidate-proof-system",
+            "Reject unresolved candidate evidence before commit.",
+            "0.1.0",
+            &[],
+        )
+        .unwrap();
+        let module_root = root.join("modules/candidate-owner");
+        run_add_module(
+            add_module_request(
+                &module_root,
+                "candidate-owner",
+                "Own one candidate decision.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("rust"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+
+        let module_path = module_root.join("module.yaml");
+        let mut module = load_manifest(&module_path).unwrap().value;
+        let unresolved_property: YamlValue = serde_yaml::from_str(
+            r#"id: candidate-proof-property
+proves: transition-trace
+kind: semantic
+input_space:
+  strategy: generated
+  generator: verification/generators/missing#generate
+operation: {kind: semantic-function, name: transition-model}
+oracle: [the transition remains valid]
+evidence: {path: verification/properties/candidate-proof.md}
+counterexamples: {path: verification/counterexamples/candidate-proof}
+realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: properties
+    generator: verification/generators/missing#generate
+    runner: verification/properties/missing#run_property
+"#,
+        )
+        .unwrap();
+        module
+            .as_mapping_mut()
+            .expect("generated module mapping")
+            .insert(
+                yaml_key("properties"),
+                YamlValue::Sequence(vec![unresolved_property]),
+            );
+        fs::write(&module_path, serde_yaml::to_string(&module).unwrap()).unwrap();
+
+        let report =
+            build_module_scoped_check_report(&root, &module_path, CheckMode::Changes).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, CheckResult::Fail);
+        assert!(report.reasons.iter().any(|reason| {
+            reason.contains("property.runner-missing")
+                && reason.contains("candidate-proof-property")
+        }));
+        assert!(report.reasons.iter().any(|reason| {
+            reason.contains("property.generator-missing")
+                && reason.contains("candidate-proof-property")
+        }));
+    }
+
+    #[test]
     fn progressive_check_reuses_shared_verification_successes_and_failures() {
         let cache = CapturedVerificationCache::new(None);
         let success_calls = std::cell::Cell::new(0usize);
@@ -101320,6 +101477,45 @@ properties:
         assert!(normalizations
             .iter()
             .any(|item| item.contains("from `missing` to `fuzz`")));
+    }
+
+    #[test]
+    fn semantic_plan_normalizes_legacy_role_files_before_typed_parse() {
+        let response = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+roles:
+  set: []
+  add:
+    - role: machine_driver
+      files:
+        - src/deployment_validation_decisions/transition.py
+        - src/deployment_validation_decisions/driver.py
+      binding_hint: python
+  remove: []
+"#;
+
+        let (normalized, normalizations) = normalize_spec_plan_legacy_role_items(response);
+        let change: SemanticChange = serde_yaml::from_str(&normalized).unwrap();
+        let roles = change.roles.unwrap();
+
+        assert_eq!(roles.add.len(), 2);
+        assert!(roles.add.iter().all(|role| role.kind == "machine_driver"));
+        assert_eq!(
+            roles.add[0].path.as_deref(),
+            Some("src/deployment_validation_decisions/transition.py")
+        );
+        assert_eq!(
+            roles.add[1].path.as_deref(),
+            Some("src/deployment_validation_decisions/driver.py")
+        );
+        assert!(roles
+            .add
+            .iter()
+            .all(|role| role.binding_hint.as_deref() == Some("python")));
+        assert_eq!(normalizations.len(), 1);
+        assert!(normalizations[0].contains("role/files"));
+        assert!(!normalized.contains("role: machine_driver"));
+        assert!(!normalized.contains("files:"));
     }
 
     #[test]
