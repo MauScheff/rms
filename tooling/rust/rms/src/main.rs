@@ -49906,13 +49906,21 @@ fn validate_machine_effect_protocols(
             ));
         }
     }
-    let driver_function = change.machine.driver_function.as_deref().or_else(|| {
-        get_str(
-            &manifest.value,
-            &["architecture", "machine", "driver_function"],
-        )
-    });
+    let driver_function = final_machine_driver_function(manifest, change);
     let transition_record_function = final_transition_record_function(manifest, change);
+    let driver_role_missing = driver_function
+        .as_ref()
+        .is_some_and(|driver| !driver.trim().is_empty())
+        && final_roles
+            .get("machine_driver")
+            .is_none_or(|paths| paths.is_empty());
+    if driver_role_missing {
+        diagnostics.push(error(
+            "structure.machine-driver-role-missing",
+            &manifest.path,
+            "a declared machine driver function requires a machine_driver role file",
+        ));
+    }
     if is_stateful_machine_mode(&change.machine.mode)
         && !final_machine_variants(manifest, "effects", &change.machine.effects, false).is_empty()
     {
@@ -49928,16 +49936,6 @@ fn validate_machine_effect_protocols(
                 "structure.machine-transition-record-function-missing",
                 &manifest.path,
                 "effectful stateful machines must name `machine.transition_record_function`",
-            ));
-        }
-        if final_roles
-            .get("machine_driver")
-            .is_none_or(|paths| paths.is_empty())
-        {
-            diagnostics.push(error(
-                "structure.machine-driver-role-missing",
-                &manifest.path,
-                "effectful stateful machines must declare a machine_driver role file",
             ));
         }
     }
@@ -50699,6 +50697,21 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
         path: PathBuf::from("implementation.yaml"),
         value: value.clone(),
     };
+    if change.machine.driver_function.is_none()
+        && matches!(
+            change.machine.mode.as_str(),
+            "stateless-decision-machine" | "stateful-transition-machine" | "projection-machine"
+        )
+        && final_machine_variant_values(
+            &manifest_snapshot,
+            "effects",
+            &change.machine.effects,
+            false,
+        )
+        .is_empty()
+    {
+        remove_yaml_path(value, &["architecture", "machine", "driver_function"]);
+    }
     for (field, variant_change) in machine_change_variant_groups(change) {
         let values = final_machine_variant_values(&manifest_snapshot, field, variant_change, false);
         set_yaml_string_sequence_path(value, &["architecture", "machine", field], &values);
@@ -51053,13 +51066,7 @@ fn machine_final_state_report(
                 }
             },
         )),
-        driver_function: change.machine.driver_function.clone().or_else(|| {
-            get_str(
-                &manifest.value,
-                &["architecture", "machine", "driver_function"],
-            )
-            .map(str::to_string)
-        }),
+        driver_function: final_machine_driver_function(manifest, change),
         transition_record_function: Some(
             final_transition_record_function(manifest, change).to_string(),
         ),
@@ -51113,6 +51120,34 @@ fn machine_final_state_report(
             .collect(),
         roles,
     }
+}
+
+fn final_machine_driver_function(
+    manifest: &LoadedManifest,
+    change: &MachineChange,
+) -> Option<String> {
+    if let Some(driver) = change
+        .machine
+        .driver_function
+        .as_ref()
+        .filter(|driver| !driver.trim().is_empty())
+    {
+        return Some(driver.clone());
+    }
+    let effect_free_pure_mode =
+        matches!(
+            change.machine.mode.as_str(),
+            "stateless-decision-machine" | "stateful-transition-machine" | "projection-machine"
+        ) && final_machine_variant_values(manifest, "effects", &change.machine.effects, false)
+            .is_empty();
+    if effect_free_pure_mode {
+        return None;
+    }
+    get_str(
+        &manifest.value,
+        &["architecture", "machine", "driver_function"],
+    )
+    .map(str::to_string)
 }
 
 fn ensure_traceable_machine_defaults(value: &mut YamlValue) {
@@ -51844,14 +51879,20 @@ fn is_safe_surface_entrypoint(manifest: &LoadedManifest, entrypoint: &str) -> bo
     if path.is_absolute() {
         return false;
     }
-    let Some(system_root) = manifest
-        .path
-        .ancestors()
-        .find(|directory| directory.join("system.yaml").is_file())
-    else {
-        return false;
+    let manifest_path = if manifest.path.is_absolute() {
+        manifest.path.clone()
+    } else {
+        let Ok(current) = std::env::current_dir() else {
+            return false;
+        };
+        current.join(&manifest.path)
     };
-    let Some(module_root) = manifest.path.parent() else {
+    let system_root = rms_root_for(&manifest_path);
+    if !system_root.join("system.yaml").is_file() && !system_root.join("context-map.yaml").is_file()
+    {
+        return false;
+    }
+    let Some(module_root) = manifest_path.parent() else {
         return false;
     };
     let Ok(system_root) = fs::canonicalize(system_root) else {
@@ -52610,6 +52651,11 @@ fn prepare_spec_plan_provider_response(
         context,
         &mut change,
     ));
+    normalizations.extend(normalize_spec_plan_pure_scaffold_replacement(
+        context,
+        task,
+        &mut change,
+    ));
     normalizations.extend(normalize_spec_plan_surface_fields(
         context,
         task,
@@ -52626,6 +52672,85 @@ fn prepare_spec_plan_provider_response(
         diagnostics,
         normalizations,
     }
+}
+
+fn semantic_plan_task_replaces_effect_scaffold_with_pure_machine(task: &str) -> bool {
+    let task = task.to_ascii_lowercase();
+    task.contains("replace")
+        && task.contains("generic")
+        && task.contains("scaffold")
+        && task.contains("pure")
+        && task.contains("machine driver")
+}
+
+fn normalize_spec_plan_pure_scaffold_replacement(
+    context: &SpecTargetContext,
+    task: &str,
+    change: &mut SemanticChange,
+) -> Vec<String> {
+    if !semantic_plan_task_replaces_effect_scaffold_with_pure_machine(task) {
+        return Vec::new();
+    }
+    let Some(machine) = change.machine.as_mut() else {
+        return Vec::new();
+    };
+    let explicitly_effect_free = machine.effects.replace.as_ref().is_some_and(Vec::is_empty)
+        && machine
+            .effect_results
+            .replace
+            .as_ref()
+            .is_some_and(Vec::is_empty)
+        && machine
+            .effect_protocols
+            .replace
+            .as_ref()
+            .is_some_and(Vec::is_empty);
+    if !explicitly_effect_free {
+        return Vec::new();
+    }
+    let mut normalizations = Vec::new();
+    if machine.mode == "workflow-effect-machine" {
+        machine.mode = "stateful-transition-machine".to_string();
+        normalizations.push(
+            "reclassified the explicitly effect-free scaffold replacement as a stateful transition machine"
+                .to_string(),
+        );
+    }
+    if machine.driver_function.take().is_some() {
+        normalizations.push(
+            "removed the obsolete machine driver from the explicitly effect-free scaffold replacement"
+                .to_string(),
+        );
+    }
+    if let Some(implementation) = context.implementation.as_ref() {
+        let functions = change
+            .semantic_functions
+            .get_or_insert_with(Default::default);
+        let replaced = functions
+            .replace
+            .iter()
+            .map(|function| function.id.clone())
+            .collect::<BTreeSet<_>>();
+        let stale_scaffold_functions = existing_semantic_function_declarations(implementation)
+            .into_iter()
+            .filter_map(|function| {
+                let id = get_str(&function, &["id"])?;
+                let symbol = get_str(&function, &["symbol"])?;
+                (id == "representation-constructors"
+                    && symbol.contains("WorkflowLabel::new")
+                    && !replaced.contains(id)
+                    && !functions.remove.iter().any(|removed| removed == id))
+                .then_some(id.to_string())
+            })
+            .collect::<Vec<_>>();
+        for id in stale_scaffold_functions {
+            functions.remove.push(id.clone());
+            normalizations.push(format!(
+                "removed stale generated scaffold semantic function `{id}` from the pure replacement"
+            ));
+        }
+    }
+    normalizations
 }
 
 fn diagnose_misplaced_semantic_machine_evidence(
@@ -53457,6 +53582,7 @@ fn validate_prepared_spec_plan_change(
     change: &SemanticChange,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = validate_semantic_change(context, change);
+    validate_pure_scaffold_replacement_plan(context, task, change, &mut diagnostics);
     if semantic_plan_task_is_contract_proof_only(task) {
         let machine_change =
             semantic_machine_change_requests_change(change, context.implementation.as_ref());
@@ -53568,6 +53694,113 @@ fn validate_prepared_spec_plan_change(
     diagnostics
 }
 
+fn validate_pure_scaffold_replacement_plan(
+    context: &SpecTargetContext,
+    task: &str,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !semantic_plan_task_replaces_effect_scaffold_with_pure_machine(task) {
+        return;
+    }
+    if let Some(machine) = change.machine.as_ref() {
+        if machine.mode == "workflow-effect-machine" || machine.driver_function.is_some() {
+            diagnostics.push(error_diagnostic(
+                "semantic-plan.pure-machine-retains-effect-driver",
+                &context.target,
+                "the task replaces an effect workflow with a pure decision, but the final machine still has an effect-workflow mode or driver; use `stateful-transition-machine` with no driver when lifecycle state remains and the final effect set is empty",
+            ));
+        }
+        let states = machine
+            .states
+            .replace
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .chain(&machine.states.add)
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        if states.contains("Rejected") {
+            let incoherent = machine
+                .transitions
+                .as_ref()
+                .into_iter()
+                .flat_map(|transitions| {
+                    transitions
+                        .replace
+                        .as_ref()
+                        .into_iter()
+                        .flatten()
+                        .chain(&transitions.add)
+                })
+                .find(|transition| {
+                    transition.rejection.is_some()
+                        && transition.from == "Completed"
+                        && transition.to == "Completed"
+                });
+            if let Some(transition) = incoherent {
+                diagnostics.push(error_diagnostic(
+                    "semantic-plan.rejection-terminal-incoherent",
+                    &context.target,
+                    format!(
+                        "transition case `{}` emits rejection `{}` but preserves the success terminal `Completed` even though the pure decision declares `Rejected`; route the rejected case to `Rejected` or remove the contradictory terminal transition under one explicit terminal policy",
+                        transition.case.as_deref().unwrap_or("<missing>"),
+                        transition.rejection.as_deref().unwrap_or("<missing>")
+                    ),
+                ));
+            }
+        }
+    }
+
+    if let Some(properties) = change.properties.as_ref() {
+        for property in properties.add.iter().chain(&properties.replace) {
+            for realization in &property.realizations {
+                for (kind, reference) in [
+                    ("runner", Some(realization.runner.as_str())),
+                    ("generator", realization.generator.as_deref()),
+                ] {
+                    let Some(reference) = reference else {
+                        continue;
+                    };
+                    if binding_reference_parts(reference).is_some_and(|(path, _)| {
+                        !path.ends_with(".rs")
+                            || !(path.starts_with("src/") || path.starts_with("tests/"))
+                    }) {
+                        diagnostics.push(error_diagnostic(
+                            "semantic-plan.property-executable-not-rust-source",
+                            &context.target,
+                            format!(
+                                "property `{}` {kind} `{reference}` is not an exact Rust source symbol; bind executable generators and runners to `src/*.rs#symbol` or `tests/*.rs#symbol`, and keep Markdown paths only as property evidence",
+                                property.id
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(roles) = change.roles.as_ref() {
+        for role in roles.replace.iter().chain(&roles.add) {
+            if matches!(role.kind.as_str(), "property_generator" | "property_oracle")
+                && role.path.as_deref().is_some_and(|path| {
+                    !path.ends_with(".rs")
+                        || !(path.starts_with("src/") || path.starts_with("tests/"))
+                })
+            {
+                diagnostics.push(error_diagnostic(
+                    "semantic-plan.property-role-not-rust-source",
+                    &context.target,
+                    format!(
+                        "role `{}` path `{}` is not a Rust source file; point executable property roles to `src/*.rs` or `tests/*.rs` and keep `verification/properties/*` paths as evidence only",
+                        role.kind,
+                        role.path.as_deref().unwrap_or("<missing>")
+                    ),
+                ));
+            }
+        }
+    }
+}
+
 fn semantic_plan_task_is_contract_proof_only(task: &str) -> bool {
     let task = task.to_ascii_lowercase();
     (task.contains("update both the command and capability contracts, laws, properties, and evidence obligations")
@@ -53658,6 +53891,12 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "machine-change.state-unreachable"
             || diagnostic.check == "machine-change.output-path-eliminated"
             || diagnostic.check == "structure.effect-result-unhandled"
+            || diagnostic.check == "semantic-plan.pure-machine-retains-effect-driver"
+            || diagnostic.check == "semantic-plan.rejection-terminal-incoherent"
+            || diagnostic
+                .check
+                .starts_with("semantic-plan.property-executable-")
+            || diagnostic.check == "semantic-plan.property-role-not-rust-source"
             || matches!(
                 diagnostic.check.as_str(),
                 "semantic.authority-binding-owner-missing"
@@ -53880,6 +54119,10 @@ fn render_spec_plan_repair_prompt(
                         | "machine-change.state-unreachable"
                         | "machine-change.output-path-eliminated"
                         | "structure.effect-result-unhandled"
+                        | "semantic-plan.pure-machine-retains-effect-driver"
+                        | "semantic-plan.rejection-terminal-incoherent"
+                        | "semantic-plan.property-executable-not-rust-source"
+                        | "semantic-plan.property-role-not-rust-source"
                 )
         })
         .then_some(
@@ -53903,6 +54146,21 @@ fn render_spec_plan_repair_prompt(
         })
         .then_some(
             "\n\nMachine identifier repair rule: every machine state, input command, event, emitted command, effect, effect result, reply, and rejection is an implementation identifier matching `^[A-Za-z_][A-Za-z0-9_]*$`, for example `ResolvePublicPttSecureMediaGenerationRecovery`. A kebab-case semantic capability name remains unchanged only in `contracts`, `dependency_behavior_bindings.capability`, and other semantic dependency fields. Never copy that kebab-case capability name directly into `machine.commands` or a transition output. Declare and use one stable implementation variant for the emitted dependency command, while the dependency behavior binding maps it to the exact semantic capability.",
+        )
+        .unwrap_or_default();
+    let pure_scaffold_replacement_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            matches!(
+                diagnostic.check.as_str(),
+                "semantic-plan.pure-machine-retains-effect-driver"
+                    | "semantic-plan.rejection-terminal-incoherent"
+                    | "semantic-plan.property-executable-not-rust-source"
+                    | "semantic-plan.property-role-not-rust-source"
+            )
+        })
+        .then_some(
+            "\n\nPure scaffold replacement repair rule: when the task replaces a generic effect workflow with a pure decision and the final `effects`, `effect_results`, and `effect_protocols` sets are empty, use `machine.mode: stateful-transition-machine` when lifecycle states remain and omit `driver_function`; remove the `machine_driver` and `effect_executor` roles without retaining their callables. Every property realization runner and required generator is an exact Rust callable under `src/*.rs#symbol` or `tests/*.rs#symbol`. Every `property_generator` and `property_oracle` role points to the corresponding Rust source file. Paths under `verification/properties/` are evidence obligations, not executable code or symbols. Keep accepted transitions in the success terminal and route rejection transitions to the declared rejection terminal; never emit a rejection while preserving `Completed` when `Rejected` is the declared rejection state. Preserve the task's exact semantic function, contracts, variants, probe, trace producer, and unrelated declarations.",
         )
         .unwrap_or_default();
     let required_role_repair = diagnostics
@@ -53990,7 +54248,7 @@ fn render_spec_plan_repair_prompt(
         )
         .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{contract_proof_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{probe_trace_projection_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{machine_identifier_repair}{required_role_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{contract_proof_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{probe_trace_projection_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{machine_identifier_repair}{pure_scaffold_replacement_repair}{required_role_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -54620,7 +54878,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "      delete_file: true")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Property realization grammar is closed. `realizations` is mandatory and non-empty for every property in `add` or `set`; never emit `realizations: []`. Profiles are exactly `smoke`, `ci`, or `nightly`; `core` is a module profile and is not a realization profile. Strategies are exactly `deterministic-corpus`, `deterministic-exhaustive`, `generated-property`, `coverage-fuzzer`, `model-checker`, `benchmark`, `static-analyzer`, `sanitizer`, or `mutation-tester`. Every realization declares a nonblank implementation command and an exact relative `path#symbol` runner. `generated-property` and `deterministic-exhaustive` also declare an exact relative `path#symbol` generator. `deterministic-exhaustive` always declares `exhaustive: true`. A fixed literal generator is `deterministic-corpus`, not `generated-property`. If more than one realization in a profile uses the same command, that command must select `RMS_PROPERTY_RUNNER` or the exact runner symbol; use the bounded context's selector-aware command (often `fuzz`) instead of an unfiltered shared `verify` command.")?;
+    writeln!(out, "Property realization grammar is closed. `realizations` is mandatory and non-empty for every property in `add` or `set`; never emit `realizations: []`. Profiles are exactly `smoke`, `ci`, or `nightly`; `core` is a module profile and is not a realization profile. Strategies are exactly `deterministic-corpus`, `deterministic-exhaustive`, `generated-property`, `coverage-fuzzer`, `model-checker`, `benchmark`, `static-analyzer`, `sanitizer`, or `mutation-tester`. Every realization declares a nonblank implementation command and an exact relative `path#symbol` runner. `generated-property` and `deterministic-exhaustive` also declare an exact relative `path#symbol` generator. A Rust binding uses exact Rust callables under `src/*.rs#symbol` or `tests/*.rs#symbol`; a path under `verification/properties/` is evidence and is never an executable runner or generator. `property_generator` and `property_oracle` roles likewise name source files, not evidence paths. `deterministic-exhaustive` always declares `exhaustive: true`. A fixed literal generator is `deterministic-corpus`, not `generated-property`. If more than one realization in a profile uses the same command, that command must select `RMS_PROPERTY_RUNNER` or the exact runner symbol; use the bounded context's selector-aware command (often `fuzz`) instead of an unfiltered shared `verify` command.")?;
     writeln!(out, "Fuzz-target grammar uses the same `properties` change section. Set `kind: fuzz` on the complete property item; `rms spec apply` then places it under canonical module `fuzz_targets` and implementation `architecture.reliability.fuzz_targets`. Use `properties.set` when the ID already exists in either properties or fuzz targets, and `properties.add` only for a new ID. There is no top-level `fuzz_targets` semantic-change field.")?;
     writeln!(out, "For a finite composite export/child-backing property, use this exact realization unless the bounded context already declares another exact realization:")?;
     writeln!(out, "```yaml")?;
@@ -54714,7 +54972,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "For every machine variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "Machine transition items use `from`, `on`, `to`, stable ASCII identifier `case` values such as `valid_example_accepted` (not kebab-case), optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names. Every transition on a declared command also supplies `reply`, `rejection`, or a non-empty `no_reply_justification`; an asynchronous command normally states `effect result is pending` and its effect-result transition supplies the terminal response.")?;
     writeln!(out, "When external observations use a different binding enum from emitted events, set `machine.types.observed_event` to that exact type. Omit it only for an intentional shared event enum; older declarations continue to fall back to `machine.types.event`.")?;
-    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. One role kind cannot repeat the same path. If one implementation executes several private backend operations, model one aggregate boundary effect and one executor role, or use distinct declared effects with distinct executor paths. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use a scalar implementation identifier `resource` matching `^[A-Za-z_][A-Za-z0-9_]*$`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses the same exact `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings use exactly `{{authority, roles, safe_facade, evidence}}`. `roles` is a non-empty list of exact declared role kinds such as `effect_executor`, never method names. `safe_facade` is one exact relative `path#symbol`. `evidence` is always a non-empty list of module-relative paths, even when it contains one path. Role removal items use `kind` and optional `path`. A Swift public API or language library facade is a `public_facade` role, not a runnable surface. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
+    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. One role kind cannot repeat the same path. If one implementation executes several private backend operations, model one aggregate boundary effect and one executor role, or use distinct declared effects with distinct executor paths. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. An explicitly effect-free replacement uses `stateful-transition-machine` when lifecycle state remains and omits the driver function and role. A rejection transition must follow one coherent terminal policy; it cannot preserve a declared success terminal while claiming movement to a separate rejection terminal. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use a scalar implementation identifier `resource` matching `^[A-Za-z_][A-Za-z0-9_]*$`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses the same exact `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings use exactly `{{authority, roles, safe_facade, evidence}}`. `roles` is a non-empty list of exact declared role kinds such as `effect_executor`, never method names. `safe_facade` is one exact relative `path#symbol`. `evidence` is always a non-empty list of module-relative paths, even when it contains one path. Role removal items use `kind` and optional `path`. A Swift public API or language library facade is a `public_facade` role, not a runnable surface. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically. `set` is a complete replacement. Use `add` only for ids absent from the current complete set. If an existing dependency remains sufficient, leave this section unchanged; do not add it again.")?;
     writeln!(out, "Each `authorities.add[]` or `.set[]` item is exactly `{{id, kind, capabilities, rationale}}`. `id` is a unique stable kebab-case id. `kind` is exactly `privileged`, `unsafe`, or `foreign`; resource is not an authority kind. `capabilities` is a non-empty string list. `rationale` is non-empty. Add an authority only when a declared function needs it; then bind it through the exact authority-binding shape.")?;
     writeln!(out, "`dependency_behavior_bindings.add[]` and `.set[]` use exactly these fields: `id`, `capability`, optional `contract`, `consumer`, `resolution`, optional `provider_module`, optional `provider_contract`, and optional `probe_bridge`. `consumer` is the exact declared implementation `path#symbol`; `resolution` is exactly `module` or `external`. A module resolution requires `provider_module` and `provider_contract`; an external resolution omits them. `probe_bridge` uses the declared `{{request, outcomes}}` shape. Never use legacy fields such as `dependency_kind`, `dependency_name`, `semantic_function`, `machine_inputs`, `machine_outputs`, or `observation_source` in this section. The exact set grammar is:")?;
@@ -55143,6 +55401,13 @@ fn prepare_semantic_change_for_apply(
         .is_some_and(|exports| !semantic_composition_exports_change_has_operations(exports))
     {
         change.composition_exports = None;
+    }
+    if let Some(summary) = change
+        .intent
+        .as_ref()
+        .and_then(|intent| intent.summary.clone())
+    {
+        let _ = normalize_spec_plan_pure_scaffold_replacement(context, &summary, &mut change);
     }
     normalize_semantic_contract_directions(context, &mut change);
     let base = spec_target_base(context);
@@ -60742,14 +61007,11 @@ fn manifest_property_matches_except_realizations(
     old_property: &YamlValue,
     property: &SemanticPropertyChange,
 ) -> bool {
-    let Ok(mut existing) = serde_yaml::from_value::<SemanticPropertyChange>(old_property.clone())
-    else {
-        return false;
-    };
-    let mut replacement = property.clone();
-    existing.realizations.clear();
-    replacement.realizations.clear();
-    serde_yaml::to_value(existing).ok() == serde_yaml::to_value(replacement).ok()
+    let mut existing = old_property.clone();
+    let mut replacement = semantic_property_yaml(property);
+    remove_yaml_path(&mut existing, &["realizations"]);
+    remove_yaml_path(&mut replacement, &["realizations"]);
+    existing == replacement
 }
 
 fn property_evidence_write_disposition_from_superseded_change(
@@ -85354,6 +85616,25 @@ surfaces:
     }
 
     #[test]
+    fn surface_entrypoint_resolves_relative_manifest_from_module_to_system_root() {
+        let manifest = LoadedManifest {
+            path: PathBuf::from(
+                "../../../examples/tic-tac-toe/modules/tic-tac-toe-cli/implementation.yaml",
+            ),
+            value: YamlValue::Null,
+        };
+
+        assert!(is_safe_surface_entrypoint(
+            &manifest,
+            "../../modules/tic-tac-toe-rules/src/lib.rs#apply_move"
+        ));
+        assert!(!is_safe_surface_entrypoint(
+            &manifest,
+            "../../../../tooling/rust/rms/src/main.rs#main"
+        ));
+    }
+
+    #[test]
     fn saved_surface_repair_prompt_is_field_scoped() {
         let diagnostics = vec![
             error_diagnostic(
@@ -85502,10 +85783,9 @@ machine:
 proves: recovery-boundary-malformed-input-stops-before-domain-law
 kind: fuzz
 input_space: {strategy: generated, generator: malformed-input-generator}
-preconditions: []
 operation: {kind: semantic-function, name: transition-model}
 oracle: [Malformed input stops before the domain transition.]
-evidence: {kind: fuzz, path: verification/fuzz/recovery_malformed_input_fuzz.md}
+evidence: {path: verification/fuzz/recovery_malformed_input_fuzz.md}
 counterexamples: {path: verification/counterexamples/recovery_malformed_input_fuzz}
 realizations:
   - profile: smoke
@@ -85513,11 +85793,6 @@ realizations:
     command: fuzz
     generator: src/property_support.rs#generate_property_cases
     runner: src/property_support.rs#run_property
-    exhaustive: false
-explorations: []
-observations: []
-assumptions: []
-temporal: null
 "#,
         )
         .unwrap();
@@ -85533,17 +85808,38 @@ temporal: null
         .unwrap();
         let context = load_spec_target(&target).unwrap();
         let module = context.module.as_ref().unwrap();
-        let old_property = get_path(&module.value, &["properties"])
-            .and_then(YamlValue::as_sequence)
-            .and_then(|properties| properties.first())
-            .unwrap();
-        let mut replacement: SemanticPropertyChange =
-            serde_yaml::from_value(old_property.clone()).unwrap();
-        let mut added_realization = replacement.realizations[0].clone();
-        added_realization.profile = "nightly".to_string();
-        added_realization.strategy = "coverage-fuzzer".to_string();
-        added_realization.generator = None;
-        replacement.realizations.push(added_realization);
+        let replacement: SemanticPropertyChange = serde_yaml::from_str(
+            r#"id: recovery-boundary-malformed-input-stops-before-domain-property
+proves: recovery-boundary-malformed-input-stops-before-domain-law
+kind: fuzz
+subject: null
+input_space: {strategy: generated, generator: malformed-input-generator}
+preconditions: []
+operation: {kind: semantic-function, name: transition-model}
+oracle: [Malformed input stops before the domain transition.]
+evidence: {kind: fuzz, path: verification/fuzz/recovery_malformed_input_fuzz.md}
+counterexamples: {path: verification/counterexamples/recovery_malformed_input_fuzz}
+realizations:
+  - profile: smoke
+    strategy: generated-property
+    command: fuzz
+    generator: src/property_support.rs#generate_property_cases
+    runner: src/property_support.rs#run_property
+    exhaustive: false
+  - profile: smoke
+    strategy: coverage-fuzzer
+    command: fuzz
+    generator: src/property_support.rs#coverage_seed_corpus
+    runner: src/property_support.rs#run_coverage_fuzzer
+    exhaustive: false
+explorations: []
+observations: []
+observability: null
+assumptions: []
+temporal: null
+"#,
+        )
+        .unwrap();
         let evidence_path = replacement.evidence.as_ref().unwrap().path.clone();
         let absolute_evidence = target.parent().unwrap().join(&evidence_path);
         fs::create_dir_all(absolute_evidence.parent().unwrap()).unwrap();
@@ -99942,6 +100238,174 @@ properties:
         assert!(repair.contains("command: composition"));
         assert!(repair.contains("scripts/composition_property.sh#run_property"));
         assert!(repair.contains(candidate));
+    }
+
+    #[test]
+    fn semantic_plan_pure_scaffold_replacement_closes_machine_properties_and_terminals() {
+        let implementation = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"spec: rms/implementation/v0.1
+module: recovery-decisions
+binding: rust
+source: {root: ., public_entrypoint: src/lib.rs}
+commands: {properties: 'cargo test "${RMS_PROPERTY_RUNNER##*#}"'}
+architecture:
+  shape: workflow
+  machine:
+    name: RecoveryMachine
+    mode: workflow-effect-machine
+    transition_signature: state-and-input
+    driver_function: drive_machine
+    transition_record_function: transition_record
+    states: [NotStarted, WaitingForEffect, Completed, Failed]
+    commands: [Accept, Reject]
+    observed_events: []
+    events: [EffectRequested]
+    effects: [Execute]
+    effect_results: [Succeeded, Failed]
+    replies: [Accepted]
+    rejections: [IllegalTransition]
+    effect_protocols: []
+    transitions: []
+  roles:
+    machine_driver: [src/machine_driver.rs]
+    effect_executor: [src/effect_executor.rs]
+semantic_functions:
+  - id: representation-constructors
+    symbol: RecoveryWorkflowLabel::new
+    kind: constructor
+    purity: pure
+    evidence: {properties: [verification/properties/transition_properties.md]}
+"#,
+            )
+            .unwrap(),
+        };
+        let context = SpecTargetContext {
+            target: PathBuf::from("implementation.yaml"),
+            module: None,
+            implementation: Some(implementation),
+        };
+        let task = "Replace the generated generic workflow scaffold with the executable pure Rust recovery decision. Bind all existing properties to exact Rust generators and runners. Model the decision with no effects. Remove the effect executor and machine driver scaffold semantics.";
+        let response = r#"spec: rms/semantic-change/v0.1
+properties:
+  set:
+    - id: recovery-current-generation-property
+      proves: recovery-current-generation-law
+      input_space: {strategy: generated}
+      operation: {kind: semantic-function, name: resolve-recovery}
+      oracle: [the current generation does not change]
+      evidence: {kind: property, path: verification/properties/recovery_current_generation_property}
+      realizations:
+        - profile: smoke
+          strategy: generated-property
+          command: properties
+          generator: verification/properties/recovery_current_generation_property#generate
+          runner: verification/properties/recovery_current_generation_property#run
+machine:
+  mode: workflow-effect-machine
+  driver_function: drive_machine
+  transition_record_function: transition_record
+  states: {set: [NotStarted, Completed, Rejected], add: [], remove: []}
+  commands: {set: [ResolveRecovery], add: [], remove: []}
+  effects: {set: [], add: [], remove: []}
+  effect_results: {set: [], add: [], remove: []}
+  effect_protocols: {set: [], add: [], remove: []}
+  transitions:
+    set:
+      - {from: NotStarted, on: ResolveRecovery, to: Completed, case: accepted, reply: Accepted}
+      - {from: Completed, on: ResolveRecovery, to: Completed, case: illegal_after_completed, rejection: IllegalTransition}
+    add: []
+    remove: []
+roles:
+  set:
+    - {kind: property_generator, path: verification/properties/recovery_current_generation_property}
+    - {kind: property_oracle, path: verification/properties/recovery_current_generation_property}
+  add: []
+  remove:
+    - {kind: machine_driver, path: src/machine_driver.rs}
+    - {kind: effect_executor, path: src/effect_executor.rs}
+"#;
+
+        let prepared = prepare_spec_plan_provider_response(&context, task, response);
+        let normalized: SemanticChange = serde_yaml::from_str(&prepared.response).unwrap();
+        let machine = normalized.machine.as_ref().unwrap();
+        assert_eq!(machine.mode, "stateful-transition-machine");
+        assert!(machine.driver_function.is_none());
+        assert!(normalized
+            .semantic_functions
+            .as_ref()
+            .is_some_and(|functions| functions
+                .remove
+                .contains(&"representation-constructors".to_string())));
+        assert!(prepared
+            .normalizations
+            .iter()
+            .any(|item| item
+                .contains("reclassified the explicitly effect-free scaffold replacement")));
+        for check in [
+            "semantic-plan.property-executable-not-rust-source",
+            "semantic-plan.property-role-not-rust-source",
+            "semantic-plan.rejection-terminal-incoherent",
+        ] {
+            assert!(prepared
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.check == check));
+        }
+        assert!(prepared.diagnostics.iter().all(|diagnostic| {
+            diagnostic.check != "semantic-plan.pure-machine-retains-effect-driver"
+        }));
+
+        let repair = render_spec_plan_repair_prompt(
+            "bounded schema",
+            &prepared.response,
+            &prepared.diagnostics,
+        );
+        assert!(repair.contains("Pure scaffold replacement repair rule"));
+        assert!(repair.contains("`src/*.rs#symbol` or `tests/*.rs#symbol`"));
+        assert!(repair.contains("never emit a rejection while preserving `Completed`"));
+    }
+
+    #[test]
+    fn pure_machine_apply_removes_obsolete_driver_field() {
+        let mut value: YamlValue = serde_yaml::from_str(
+            r#"spec: rms/implementation/v0.1
+module: recovery-decisions
+binding: rust
+architecture:
+  shape: workflow
+  machine:
+    mode: workflow-effect-machine
+    driver_function: drive_machine
+    states: [NotStarted, Completed]
+    commands: [ResolveRecovery]
+    effects: [Execute]
+    effect_results: [Succeeded]
+    replies: [Accepted]
+    rejections: [IllegalTransition]
+    transitions: []
+  roles: {}
+"#,
+        )
+        .unwrap();
+        let change: MachineChange = serde_yaml::from_str(
+            r#"spec: rms/machine-change/v0.1
+machine:
+  mode: stateful-transition-machine
+  effects: {set: [], add: [], remove: []}
+  effect_results: {set: [], add: [], remove: []}
+"#,
+        )
+        .unwrap();
+
+        apply_machine_change_to_manifest(&mut value, &change);
+
+        assert_eq!(
+            get_str(&value, &["architecture", "machine", "mode"]),
+            Some("stateful-transition-machine")
+        );
+        assert!(get_path(&value, &["architecture", "machine", "driver_function"]).is_none());
     }
 
     #[test]
