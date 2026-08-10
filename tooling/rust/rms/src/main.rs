@@ -53941,50 +53941,77 @@ fn normalize_spec_plan_legacy_role_items(response: &str) -> (String, Vec<String>
         };
         let mut normalized_items = Vec::with_capacity(items.len());
         for item in std::mem::take(items) {
-            let Some(mapping) = item.as_mapping() else {
+            let Some(mapping) = item.as_mapping().cloned() else {
                 normalized_items.push(item);
                 continue;
             };
-            if mapping.contains_key(yaml_key("kind")) || mapping.contains_key(yaml_key("path")) {
+            if mapping.contains_key(yaml_key("kind")) {
                 normalized_items.push(item);
                 continue;
             }
-            let Some(kind) = mapping.get(yaml_key("role")).and_then(YamlValue::as_str) else {
-                normalized_items.push(item);
-                continue;
-            };
-            let Some(paths) = mapping
-                .get(yaml_key("files"))
-                .and_then(YamlValue::as_sequence)
-                .filter(|paths| !paths.is_empty())
+            let Some(kind) = mapping
+                .get(yaml_key("role"))
+                .and_then(YamlValue::as_str)
+                .map(str::to_string)
             else {
                 normalized_items.push(item);
                 continue;
             };
-            let Some(paths) = paths
-                .iter()
-                .map(YamlValue::as_str)
-                .collect::<Option<Vec<_>>>()
-            else {
+            let allowed_keys = ["role", "path", "files", "effect", "binding_hint"];
+            if !mapping
+                .keys()
+                .all(|key| key.as_str().is_some_and(|key| allowed_keys.contains(&key)))
+            {
                 normalized_items.push(item);
                 continue;
-            };
+            }
 
-            for path in &paths {
-                let mut normalized = serde_yaml::Mapping::new();
-                normalized.insert(yaml_key("kind"), YamlValue::String(kind.to_string()));
-                normalized.insert(yaml_key("path"), YamlValue::String((*path).to_string()));
-                for optional in ["effect", "binding_hint"] {
-                    if let Some(value) = mapping.get(yaml_key(optional)) {
-                        normalized.insert(yaml_key(optional), value.clone());
-                    }
+            let path = mapping.get(yaml_key("path"));
+            let files = mapping.get(yaml_key("files"));
+            match (path, files) {
+                (Some(path), None) if path.as_str().is_some() => {
+                    let mut normalized = mapping;
+                    normalized.remove(yaml_key("role"));
+                    normalized.insert(yaml_key("kind"), YamlValue::String(kind.clone()));
+                    normalized_items.push(YamlValue::Mapping(normalized));
+                    normalizations.push(format!(
+                        "normalized legacy roles.{operation} item `{kind}` from role/path to kind/path"
+                    ));
+                    continue;
                 }
-                normalized_items.push(YamlValue::Mapping(normalized));
+                (None, Some(files)) => {
+                    let Some(paths) = files
+                        .as_sequence()
+                        .filter(|paths| !paths.is_empty())
+                        .and_then(|paths| {
+                            paths
+                                .iter()
+                                .map(YamlValue::as_str)
+                                .collect::<Option<Vec<_>>>()
+                        })
+                    else {
+                        normalized_items.push(item);
+                        continue;
+                    };
+
+                    for path in &paths {
+                        let mut normalized = serde_yaml::Mapping::new();
+                        normalized.insert(yaml_key("kind"), YamlValue::String(kind.clone()));
+                        normalized.insert(yaml_key("path"), YamlValue::String((*path).to_string()));
+                        for optional in ["effect", "binding_hint"] {
+                            if let Some(value) = mapping.get(yaml_key(optional)) {
+                                normalized.insert(yaml_key(optional), value.clone());
+                            }
+                        }
+                        normalized_items.push(YamlValue::Mapping(normalized));
+                    }
+                    normalizations.push(format!(
+                        "normalized legacy roles.{operation} item `{kind}` from role/files to {} kind/path item(s)",
+                        paths.len()
+                    ));
+                }
+                _ => normalized_items.push(item),
             }
-            normalizations.push(format!(
-                "normalized legacy roles.{operation} item `{kind}` from role/files to {} kind/path item(s)",
-                paths.len()
-            ));
         }
         *items = normalized_items;
     }
@@ -101522,6 +101549,61 @@ roles:
         assert!(normalizations[0].contains("role/files"));
         assert!(!normalized.contains("role: machine_driver"));
         assert!(!normalized.contains("files:"));
+    }
+
+    #[test]
+    fn semantic_plan_normalizes_saved_legacy_role_path_before_typed_parse() {
+        let response = r#"spec: rms/semantic-change/v0.1
+module: modules/deployment-validation-decisions/implementation.yaml
+roles:
+  set: []
+  add:
+    - path: tests/test_binding.py
+      role: machine_driver
+  remove: []
+"#;
+
+        let (normalized, normalizations) = normalize_spec_plan_legacy_role_items(response);
+        let change: SemanticChange = serde_yaml::from_str(&normalized).unwrap();
+        let role = &change.roles.unwrap().add[0];
+
+        assert_eq!(role.kind, "machine_driver");
+        assert_eq!(role.path.as_deref(), Some("tests/test_binding.py"));
+        assert_eq!(normalizations.len(), 1);
+        assert!(normalizations[0].contains("role/path to kind/path"));
+        assert!(!normalized.contains("role: machine_driver"));
+    }
+
+    #[test]
+    fn semantic_plan_role_normalization_preserves_current_shape_and_rejects_ambiguity() {
+        let current = r#"spec: rms/semantic-change/v0.1
+roles:
+  add: [{kind: machine_driver, path: tests/test_binding.py}]
+"#;
+        let (normalized, normalizations) = normalize_spec_plan_legacy_role_items(current);
+        assert_eq!(normalized, current);
+        assert!(normalizations.is_empty());
+        assert!(serde_yaml::from_str::<SemanticChange>(&normalized).is_ok());
+
+        for ambiguous in [
+            r#"spec: rms/semantic-change/v0.1
+roles:
+  add: [{kind: parser, role: machine_driver, path: tests/test_binding.py}]
+"#,
+            r#"spec: rms/semantic-change/v0.1
+roles:
+  add: [{role: machine_driver, path: tests/test_binding.py, files: [src/driver.py]}]
+"#,
+            r#"spec: rms/semantic-change/v0.1
+roles:
+  add: [{role: machine_driver, path: tests/test_binding.py, unexpected: true}]
+"#,
+        ] {
+            let (normalized, normalizations) = normalize_spec_plan_legacy_role_items(ambiguous);
+            assert_eq!(normalized, ambiguous);
+            assert!(normalizations.is_empty());
+            assert!(serde_yaml::from_str::<SemanticChange>(&normalized).is_err());
+        }
     }
 
     #[test]
