@@ -5,6 +5,8 @@ use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
 use std::collections::BTreeMap;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -23,6 +25,8 @@ pub(super) struct HuntRequest {
     budget: Option<String>,
     seed: Option<u64>,
     jobs: Option<usize>,
+    profiles: Vec<String>,
+    lanes: Vec<String>,
     resume: Option<String>,
     out: Option<PathBuf>,
     dry_run: bool,
@@ -38,6 +42,8 @@ impl HuntRequest {
         budget: Option<String>,
         seed: Option<u64>,
         jobs: Option<usize>,
+        profiles: Vec<String>,
+        lanes: Vec<String>,
         resume: Option<String>,
         out: Option<PathBuf>,
         dry_run: bool,
@@ -50,6 +56,8 @@ impl HuntRequest {
             budget,
             seed,
             jobs,
+            profiles,
+            lanes,
             resume,
             out,
             dry_run,
@@ -75,7 +83,19 @@ struct HuntConfiguration {
     assembly: Option<String>,
     #[serde(default)]
     output: Option<String>,
+    #[serde(default)]
+    profiles: Vec<String>,
+    #[serde(default)]
+    lanes: Vec<String>,
     tools: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct HuntLaneExclusion {
+    id: String,
+    module: String,
+    profile: String,
+    reason: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,6 +105,8 @@ struct HuntLaneReport {
     property: Option<String>,
     kind: String,
     strategy: String,
+    #[serde(default)]
+    profile: String,
     status: String,
     budget_seconds: u64,
     elapsed_ms: u64,
@@ -162,6 +184,8 @@ struct HuntReport {
     source: HuntSource,
     configuration: HuntConfiguration,
     lanes: Vec<HuntLaneReport>,
+    #[serde(default)]
+    exclusions: Vec<HuntLaneExclusion>,
     findings: Vec<HuntFinding>,
     proof_scope: HuntProofScope,
     #[serde(default)]
@@ -302,6 +326,25 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
             .unwrap_or(1),
     );
 
+    let requested_profiles = normalize_selectors(&request.profiles, "profile")?;
+    let profiles = match (requested_profiles.is_empty(), prior_report) {
+        (false, Some(previous)) if requested_profiles != previous.configuration.profiles => {
+            bail!("hunt resume rejected profile selection drift")
+        }
+        (false, _) => requested_profiles,
+        (true, Some(previous)) => previous.configuration.profiles.clone(),
+        (true, None) => Vec::new(),
+    };
+    let requested_lanes = normalize_selectors(&request.lanes, "lane")?;
+    let lane_selectors = match (requested_lanes.is_empty(), prior_report) {
+        (false, Some(previous)) if requested_lanes != previous.configuration.lanes => {
+            bail!("hunt resume rejected lane selection drift")
+        }
+        (false, _) => requested_lanes,
+        (true, Some(previous)) => previous.configuration.lanes.clone(),
+        (true, None) => Vec::new(),
+    };
+
     let requested_output = request
         .out
         .as_deref()
@@ -352,7 +395,7 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
         .unwrap_or_else(now_ms);
     let worktree = run_root.join("checkout");
     prepare_isolated_checkout(&root, &worktree, &revision)?;
-    let mut lanes = if let Some(assembly) = relative_assembly.as_deref() {
+    let discovered_lanes = if let Some(assembly) = relative_assembly.as_deref() {
         vec![discover_direct_assembly_lane(
             &worktree,
             &root,
@@ -368,6 +411,7 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
             &run_root,
         )?
     };
+    let (mut lanes, exclusions) = select_lanes(discovered_lanes, &profiles, &lane_selectors);
     let tools = tool_identities(&mut lanes);
     if let Some(previous) = &prior {
         ensure_resume_tool_identities(previous, &tools)?;
@@ -443,9 +487,12 @@ pub(super) fn run(request: HuntRequest) -> Result<()> {
                 .as_ref()
                 .map(|path| path.display().to_string()),
             output: output.as_ref().map(|path| path.display().to_string()),
+            profiles: profiles.clone(),
+            lanes: lane_selectors.clone(),
             tools,
         },
         lanes: lanes.iter().map(|lane| lane.report.clone()).collect(),
+        exclusions,
         findings: prior
             .take()
             .map(|report| report.findings)
@@ -959,9 +1006,6 @@ fn discover_lanes(
                 else {
                     continue;
                 };
-                if realization.profile != "nightly" {
-                    continue;
-                }
                 let Some(command) = get_str(&value, &["commands", &realization.command]) else {
                     continue;
                 };
@@ -972,17 +1016,19 @@ fn discover_lanes(
                 let output = run_root
                     .join("lanes")
                     .join(format!("{}.yaml", sanitize_segment(&lane_id)));
+                let mut report = lane_report(
+                    lane_id,
+                    &module,
+                    Some(property_id.clone()),
+                    "declared-realization",
+                    &realization.strategy,
+                    budget_seconds,
+                    command.to_string(),
+                    Some(realization.runner.clone()),
+                );
+                report.profile = realization.profile.clone();
                 lanes.push(HuntLane {
-                    report: lane_report(
-                        lane_id,
-                        &module,
-                        Some(property_id.clone()),
-                        "declared-realization",
-                        &realization.strategy,
-                        budget_seconds,
-                        command.to_string(),
-                        Some(realization.runner.clone()),
-                    ),
+                    report,
                     execution: LaneExecution::Project {
                         root: implementation.parent().unwrap_or(checkout).to_path_buf(),
                         command: command.to_string(),
@@ -1279,7 +1325,7 @@ fn selected_module_closure(
         let Some(name) = get_str(&value, &["module", "name"]) else {
             continue;
         };
-        let required = get_path(&value, &["requires", "modules"])
+        let mut required = get_path(&value, &["requires", "modules"])
             .and_then(YamlValue::as_sequence)
             .into_iter()
             .flatten()
@@ -1289,6 +1335,19 @@ fn selected_module_closure(
                     .map(ToString::to_string)
             })
             .collect::<Vec<_>>();
+        required.extend(
+            get_path(&value, &["composition", "contains"])
+                .and_then(YamlValue::as_sequence)
+                .into_iter()
+                .flatten()
+                .filter_map(|item| {
+                    item.as_str()
+                        .or_else(|| get_str(item, &["name"]))
+                        .map(ToString::to_string)
+                }),
+        );
+        required.sort();
+        required.dedup();
         dependencies.insert(name.to_string(), required);
     }
     let mut closure = std::collections::BTreeSet::from([selected_name]);
@@ -1301,6 +1360,88 @@ fn selected_module_closure(
         }
     }
     Ok(closure)
+}
+
+fn normalize_selectors(values: &[String], kind: &str) -> Result<Vec<String>> {
+    let mut normalized = values
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    if normalized.iter().any(String::is_empty) {
+        bail!("hunt {kind} selectors must not be blank");
+    }
+    normalized.sort();
+    normalized.dedup();
+    Ok(normalized)
+}
+
+fn select_lanes(
+    lanes: Vec<HuntLane>,
+    profiles: &[String],
+    selectors: &[String],
+) -> (Vec<HuntLane>, Vec<HuntLaneExclusion>) {
+    let mut selected = Vec::new();
+    let mut exclusions = Vec::new();
+    for lane in lanes {
+        let profile_selected = if profiles.is_empty() {
+            lane.report.kind != "declared-realization" || lane.report.profile == "nightly"
+        } else {
+            profiles
+                .iter()
+                .any(|profile| profile == &lane.report.profile)
+        };
+        let lane_selected = selectors.is_empty()
+            || selectors
+                .iter()
+                .any(|selector| hunt_lane_matches(&lane.report, selector));
+        if profile_selected && lane_selected {
+            selected.push(lane);
+        } else {
+            let reason = match (profile_selected, lane_selected) {
+                (false, false) => "profile and lane selectors excluded this lane",
+                (false, true) if profiles.is_empty() => {
+                    "default hunt excludes non-nightly declared realizations"
+                }
+                (false, true) => "profile selection excluded this lane",
+                (true, false) => "lane selection excluded this lane",
+                (true, true) => unreachable!(),
+            };
+            exclusions.push(HuntLaneExclusion {
+                id: lane.report.id,
+                module: lane.report.module,
+                profile: lane.report.profile,
+                reason: reason.to_string(),
+            });
+        }
+    }
+    (selected, exclusions)
+}
+
+fn hunt_lane_matches(lane: &HuntLaneReport, selector: &str) -> bool {
+    let normalized = selector.replace('_', "-");
+    let fields = [
+        lane.id.as_str(),
+        lane.kind.as_str(),
+        lane.strategy.as_str(),
+        lane.property.as_deref().unwrap_or(""),
+    ];
+    if fields.iter().any(|field| {
+        field
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .contains(&normalized)
+    }) {
+        return true;
+    }
+    match normalized.as_str() {
+        "fuzz" => fields.iter().any(|field| {
+            let field = field.to_ascii_lowercase();
+            field.contains("fuzz") || field.contains("coverage")
+        }),
+        "exhaustive" => lane.strategy == "deterministic-exhaustive",
+        "static-analysis" => matches!(lane.strategy.as_str(), "static-analyzer" | "sanitizer"),
+        _ => false,
+    }
 }
 
 fn tool_identities(lanes: &mut [HuntLane]) -> BTreeMap<String, String> {
@@ -1494,6 +1635,67 @@ fn execute_lane(
             .insert("executed".to_string(), JsonValue::Bool(true));
         return Ok((report, Vec::new()));
     }
+    if report.kind == "declared-realization"
+        && !lane_output.is_file()
+        && super::proof_command_is_test_backed(&report.command)
+    {
+        let selected_tests = super::selected_test_count(&output.stdout, &output.stderr);
+        report
+            .metrics
+            .insert("automatic_test_receipt".to_string(), JsonValue::Bool(true));
+        if let Some(count) = selected_tests {
+            report.metrics.insert(
+                "selected_tests".to_string(),
+                JsonValue::Number(count.into()),
+            );
+        }
+        if output.status.success() && selected_tests.is_some_and(|count| count > 0) {
+            write_automatic_test_lane_result(&lane_output, "pass", selected_tests, None, None)?;
+        } else if output.status.success() {
+            report.status = "invalid".to_string();
+            report.diagnostic = Some(if selected_tests == Some(0) {
+                "test-backed hunt lane selected zero tests".to_string()
+            } else {
+                "test-backed hunt lane did not report a selected-test count".to_string()
+            });
+            write_automatic_test_lane_result(
+                &lane_output,
+                "invalid",
+                selected_tests,
+                report.diagnostic.as_deref(),
+                None,
+            )?;
+            report.artifacts.push(lane_output.display().to_string());
+            return Ok((report, Vec::new()));
+        } else {
+            let summary = "an exact test-backed hunt lane failed".to_string();
+            let replay = format!("! ( {} )", report.command);
+            write_automatic_test_lane_result(
+                &lane_output,
+                "finding",
+                selected_tests,
+                Some(&summary),
+                Some(&replay),
+            )?;
+            report.status = "finding".to_string();
+            report.diagnostic = Some(trim_output(&output.stderr, &output.stdout));
+            report.artifacts.push(lane_output.display().to_string());
+            report
+                .metrics
+                .insert("executed".to_string(), JsonValue::Bool(true));
+            let lane_id = report.id.clone();
+            return Ok((
+                report,
+                vec![HuntFinding::raw(
+                    lane_id,
+                    "behavioral-counterexample".to_string(),
+                    summary,
+                    Some(lane_output.display().to_string()),
+                    Some(replay),
+                )],
+            ));
+        }
+    }
     let mut findings = Vec::new();
     if !output.status.success() {
         report.status = if matches!(report.kind.as_str(), "baseline" | "historical-replay") {
@@ -1564,6 +1766,13 @@ fn execute_lane(
             .filter_map(YamlValue::as_str)
             .map(ToString::to_string)
             .collect();
+        if report
+            .metrics
+            .get("automatic_test_receipt")
+            .is_some_and(|value| value == &JsonValue::Bool(true))
+        {
+            report.artifacts.push(lane_output.display().to_string());
+        }
         for finding in get_path(&value, &["findings"])
             .and_then(YamlValue::as_sequence)
             .into_iter()
@@ -2061,6 +2270,12 @@ fn print_report(report: &HuntReport, json_output: bool) -> Result<()> {
         println!("RMS hunt: {}", report.result);
         println!("run: {}", report.run_id);
         println!("source: {}", report.source.revision);
+        if !report.configuration.profiles.is_empty() {
+            println!("profiles: {}", report.configuration.profiles.join(", "));
+        }
+        if !report.configuration.lanes.is_empty() {
+            println!("lane selectors: {}", report.configuration.lanes.join(", "));
+        }
         if report.lanes.iter().all(|lane| lane.status == "planned") {
             let strategies = report
                 .lanes
@@ -2122,6 +2337,15 @@ fn print_report(report: &HuntReport, json_output: bool) -> Result<()> {
             }
         }
         println!("lanes: {}", report.lanes.len());
+        if !report.exclusions.is_empty() {
+            println!("excluded lanes: {}", report.exclusions.len());
+            for exclusion in &report.exclusions {
+                println!(
+                    "  - {} [{}]: {}",
+                    exclusion.id, exclusion.profile, exclusion.reason
+                );
+            }
+        }
         println!("claim: {}", report.proof_scope.claim);
     }
     Ok(())
@@ -2177,7 +2401,17 @@ fn generate_seed() -> u64 {
 }
 
 fn new_run_id(revision: &str) -> String {
-    format!("{}-{}", now_ms(), &revision[..revision.len().min(12)])
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!(
+        "{}-{}-{}-{}",
+        now_ms(),
+        std::process::id(),
+        nonce,
+        &revision[..revision.len().min(12)]
+    )
 }
 
 fn ensure_resume_tool_identities(
@@ -2267,8 +2501,9 @@ fn declaration_digest(
 }
 
 fn prepare_isolated_checkout(root: &Path, worktree: &Path, revision: &str) -> Result<()> {
+    let _lock = acquire_worktree_admin_lock(root)?;
     if worktree.exists() {
-        remove_isolated_checkout(root, worktree);
+        remove_isolated_checkout_unlocked(root, worktree);
     }
     let output = Command::new("git")
         .current_dir(root)
@@ -2286,12 +2521,83 @@ fn prepare_isolated_checkout(root: &Path, worktree: &Path, revision: &str) -> Re
 }
 
 fn remove_isolated_checkout(root: &Path, worktree: &Path) {
+    let Ok(_lock) = acquire_worktree_admin_lock(root) else {
+        eprintln!("hunt cleanup deferred: could not acquire the Git worktree administration lock");
+        return;
+    };
+    remove_isolated_checkout_unlocked(root, worktree);
+}
+
+fn remove_isolated_checkout_unlocked(root: &Path, worktree: &Path) {
     if worktree.exists() {
         let _ = Command::new("git")
             .current_dir(root)
             .args(["worktree", "remove", "--force"])
             .arg(worktree)
             .output();
+    }
+}
+
+struct WorktreeAdminLock {
+    path: PathBuf,
+}
+
+impl Drop for WorktreeAdminLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_worktree_admin_lock(root: &Path) -> Result<WorktreeAdminLock> {
+    let path = root.join(".rms/hunts/.worktree-admin.lock");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    for _ in 0..200 {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                writeln!(file, "{}", std::process::id())?;
+                file.sync_all()?;
+                return Ok(WorktreeAdminLock { path });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let stale = fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|value| value.trim().parse::<u32>().ok())
+                    .is_none_or(|pid| !hunt_process_is_alive(pid));
+                if stale {
+                    let _ = fs::remove_file(&path);
+                    continue;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to acquire Git worktree administration lock `{}`",
+                        path.display()
+                    )
+                })
+            }
+        }
+    }
+    bail!(
+        "another RMS hunt is administering Git worktrees; retry after it completes checkout setup"
+    )
+}
+
+fn hunt_process_is_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
     }
 }
 
@@ -2391,6 +2697,14 @@ fn lane_report(
         property,
         kind: kind.to_string(),
         strategy: strategy.to_string(),
+        profile: match kind {
+            "baseline" | "trace-regeneration" | "trace-evaluation" => "smoke",
+            "declared-realization" => "nightly",
+            "probe-exploration" | "relationship-analysis" => "guided",
+            "historical-replay" => "replay",
+            _ => "unspecified",
+        }
+        .to_string(),
         status: "planned".to_string(),
         budget_seconds: budget_seconds.max(1),
         elapsed_ms: 0,
@@ -2400,6 +2714,48 @@ fn lane_report(
         artifacts: Vec::new(),
         diagnostic: None,
     }
+}
+
+fn write_automatic_test_lane_result(
+    path: &Path,
+    status: &str,
+    selected_tests: Option<usize>,
+    summary: Option<&str>,
+    replay: Option<&str>,
+) -> Result<()> {
+    let mut metrics =
+        serde_json::Map::from_iter([("automatic_test_receipt".to_string(), JsonValue::Bool(true))]);
+    if let Some(count) = selected_tests {
+        metrics.insert(
+            "selected_tests".to_string(),
+            JsonValue::Number(count.into()),
+        );
+    }
+    let findings = match (summary, replay) {
+        (Some(summary), Some(replay)) if status == "finding" => vec![serde_json::json!({
+            "kind": "behavioral-counterexample",
+            "summary": summary,
+            "replay": replay,
+        })],
+        _ => Vec::new(),
+    };
+    let value = serde_json::json!({
+        "spec": LANE_RESULT_SPEC,
+        "status": status,
+        "metrics": metrics,
+        "findings": findings,
+        "artifacts": [],
+    });
+    validate_schema(
+        &serde_yaml::to_value(&value)?,
+        include_str!("../../../../schemas/hunt-lane-result.schema.json"),
+        "automatic test-backed hunt lane result",
+    )?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_yaml::to_string(&value)?)?;
+    Ok(())
 }
 
 fn write_report(path: &Path, report: &HuntReport) -> Result<()> {
@@ -2652,6 +3008,8 @@ architecture:
                 module: None,
                 assembly: None,
                 output: None,
+                profiles: Vec::new(),
+                lanes: Vec::new(),
                 tools: BTreeMap::new(),
             },
             lanes: vec![lane_report(
@@ -2664,6 +3022,7 @@ architecture:
                 "true".to_string(),
                 None,
             )],
+            exclusions: Vec::new(),
             findings: Vec::new(),
             proof_scope: empty_scope(),
             elapsed_ms: 0,
@@ -2795,9 +3154,12 @@ architecture:
                 module: None,
                 assembly: None,
                 output: None,
+                profiles: Vec::new(),
+                lanes: Vec::new(),
                 tools: BTreeMap::new(),
             },
             lanes: vec![lane, second_lane],
+            exclusions: Vec::new(),
             findings: vec![first, second],
             proof_scope: empty_scope(),
             elapsed_ms: 0,
@@ -2927,9 +3289,12 @@ finished_at_unix_ms: null
                 module: None,
                 assembly: None,
                 output: None,
+                profiles: Vec::new(),
+                lanes: Vec::new(),
                 tools: tools.clone(),
             },
             lanes: Vec::new(),
+            exclusions: Vec::new(),
             findings: Vec::new(),
             proof_scope: empty_scope(),
             elapsed_ms: 0,
@@ -3015,9 +3380,12 @@ finished_at_unix_ms: null
                 module: None,
                 assembly: None,
                 output: None,
+                profiles: Vec::new(),
+                lanes: Vec::new(),
                 tools: BTreeMap::new(),
             },
             lanes: vec![running],
+            exclusions: Vec::new(),
             findings: vec![HuntFinding::raw(
                 "module:guided-1".to_string(),
                 "behavioral-counterexample".to_string(),
@@ -3160,6 +3528,224 @@ sleep 10
             !marker.exists(),
             "timed-out probe left a descendant process alive"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn composite_hunt_closure_inherits_children_and_their_providers() {
+        let root = std::env::temp_dir().join(format!(
+            "rms-hunt-composite-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        for module in ["parent", "child", "provider"] {
+            fs::create_dir_all(root.join("modules").join(module)).unwrap();
+        }
+        fs::write(
+            root.join("modules/parent/module.yaml"),
+            "spec: rms/module/v0.1\nmodule: {name: parent}\ncomposition:\n  contains:\n    - {name: child, path: ../child/module.yaml}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("modules/child/module.yaml"),
+            "spec: rms/module/v0.1\nmodule: {name: child}\nrequires:\n  modules: [provider]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("modules/provider/module.yaml"),
+            "spec: rms/module/v0.1\nmodule: {name: provider}\n",
+        )
+        .unwrap();
+
+        let closure =
+            selected_module_closure(&root, Path::new("modules/parent/module.yaml")).unwrap();
+        assert_eq!(
+            closure,
+            std::collections::BTreeSet::from([
+                "child".to_string(),
+                "parent".to_string(),
+                "provider".to_string(),
+            ])
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hunt_profile_and_lane_filters_explain_every_exclusion() {
+        let lane = |id: &str, profile: &str, strategy: &str| {
+            let mut report = lane_report(
+                id.to_string(),
+                "module",
+                Some(id.to_string()),
+                "declared-realization",
+                strategy,
+                10,
+                "true".to_string(),
+                None,
+            );
+            report.profile = profile.to_string();
+            HuntLane {
+                report,
+                execution: LaneExecution::Rms {
+                    root: PathBuf::from("."),
+                    arguments: Vec::new(),
+                },
+            }
+        };
+        let lanes = vec![
+            lane("nightly-fuzz", "nightly", "coverage-fuzzer"),
+            lane("nightly-static", "nightly", "static-analyzer"),
+            lane("ci-fuzz", "ci", "coverage-fuzzer"),
+        ];
+        let (selected, exclusions) =
+            select_lanes(lanes, &["nightly".to_string()], &["fuzz".to_string()]);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].report.id, "nightly-fuzz");
+        assert_eq!(exclusions.len(), 2);
+        assert!(exclusions
+            .iter()
+            .any(|excluded| excluded.id == "nightly-static" && excluded.reason.contains("lane")));
+        assert!(exclusions
+            .iter()
+            .any(|excluded| excluded.id == "ci-fuzz" && excluded.reason.contains("profile")));
+    }
+
+    #[test]
+    fn automatic_test_lane_receipt_records_nonzero_selection() {
+        let root = std::env::temp_dir().join(format!(
+            "rms-hunt-test-receipt-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let path = root.join("lane.yaml");
+        write_automatic_test_lane_result(&path, "pass", Some(3), None, None).unwrap();
+        let value = load_yaml_or_json(&path).unwrap();
+        assert_eq!(get_str(&value, &["spec"]), Some(LANE_RESULT_SPEC));
+        assert_eq!(get_str(&value, &["status"]), Some("pass"));
+        assert_eq!(
+            get_path(&value, &["metrics", "selected_tests"]).and_then(YamlValue::as_u64),
+            Some(3)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ordinary_test_hunt_lane_is_wrapped_and_zero_selection_is_invalid() {
+        let root = std::env::temp_dir().join(format!(
+            "rms-hunt-test-wrapper-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let run_root = root.join("run");
+        prepare_run_storage(&run_root).unwrap();
+        let lane = |id: &str, count: usize| HuntLane {
+            report: lane_report(
+                id.to_string(),
+                "module",
+                Some("property".to_string()),
+                "declared-realization",
+                "deterministic-corpus",
+                10,
+                format!("printf 'Executed {count} tests, with 0 failures\\n' # swift test"),
+                Some("Tests.swift#exactTest".to_string()),
+            ),
+            execution: LaneExecution::Project {
+                root: root.clone(),
+                command: format!(
+                    "printf 'Executed {count} tests, with 0 failures\\n' # swift test"
+                ),
+                property: "property".to_string(),
+                runner: "Tests.swift#exactTest".to_string(),
+                generator: None,
+            },
+        };
+
+        let (pass, findings) = execute_lane(
+            &lane("selected", 1),
+            "run",
+            1,
+            &run_root,
+            Instant::now() + Duration::from_secs(10),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert_eq!(pass.status, "pass");
+        assert!(findings.is_empty());
+        assert_eq!(
+            pass.metrics.get("selected_tests"),
+            Some(&JsonValue::from(1))
+        );
+        assert!(pass.artifacts.iter().any(|path| path.ends_with(".yaml")));
+
+        let (invalid, findings) = execute_lane(
+            &lane("zero", 0),
+            "run",
+            1,
+            &run_root,
+            Instant::now() + Duration::from_secs(10),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert_eq!(invalid.status, "invalid");
+        assert!(invalid
+            .diagnostic
+            .as_deref()
+            .is_some_and(|value| value.contains("zero tests")));
+        assert!(findings.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_hunt_checkouts_serialize_git_worktree_administration() {
+        let root = std::env::temp_dir().join(format!(
+            "rms-hunt-worktree-lock-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(".gitignore"), ".rms/\n").unwrap();
+        fs::write(root.join("README.md"), "fixture\n").unwrap();
+        for arguments in [
+            vec!["init"],
+            vec!["config", "user.email", "rms@example.test"],
+            vec!["config", "user.name", "RMS Test"],
+            vec!["add", "."],
+            vec!["commit", "-m", "baseline"],
+        ] {
+            let output = Command::new("git")
+                .current_dir(&root)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                trim_output(
+                    &String::from_utf8_lossy(&output.stderr),
+                    &String::from_utf8_lossy(&output.stdout)
+                )
+            );
+        }
+        let revision = git_output(&root, &["rev-parse", "HEAD"]).unwrap();
+        let handles = (0..4)
+            .map(|index| {
+                let root = root.clone();
+                let revision = revision.clone();
+                std::thread::spawn(move || {
+                    let checkout = root.join(format!(".rms/hunts/run-{index}/checkout"));
+                    prepare_isolated_checkout(&root, &checkout, &revision)?;
+                    assert!(checkout.join("README.md").is_file());
+                    remove_isolated_checkout(&root, &checkout);
+                    Result::<()>::Ok(())
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        let worktrees = git_output(&root, &["worktree", "list", "--porcelain"]).unwrap();
+        assert_eq!(worktrees.matches("worktree ").count(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 }

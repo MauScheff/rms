@@ -939,6 +939,14 @@ enum Commands {
         #[arg(long)]
         jobs: Option<usize>,
 
+        /// Run only lanes declared for these realization profiles. Repeat to select more than one profile.
+        #[arg(long = "profile")]
+        profiles: Vec<String>,
+
+        /// Run only lanes whose id, kind, or strategy contains this selector. Repeat to select more than one lane family.
+        #[arg(long = "lane")]
+        lanes: Vec<String>,
+
         /// Resume a checkpointed run by id or use `latest`.
         #[arg(long)]
         resume: Option<String>,
@@ -9971,12 +9979,14 @@ fn run_main() -> Result<()> {
             budget,
             seed,
             jobs,
+            profiles,
+            lanes,
             resume,
             out,
             dry_run,
             json,
         } => hunt::run(hunt::HuntRequest::from_cli(
-            root, module, assembly, budget, seed, jobs, resume, out, dry_run, json,
+            root, module, assembly, budget, seed, jobs, profiles, lanes, resume, out, dry_run, json,
         )),
         Commands::Machine { command } => match command {
             MachineCommands::Plan {
@@ -18943,8 +18953,12 @@ fn validate_property_module(module: &LoadedManifest, diagnostics: &mut Vec<Diagn
         }
     }
     let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    let implementation = {
+        let path = base.join("implementation.yaml");
+        path.is_file().then(|| load_manifest(&path).ok()).flatten()
+    };
     for target in properties.iter().chain(fuzz_targets.iter()) {
-        validate_property_target_report(module, base, target, None, diagnostics);
+        validate_property_target_report(module, base, target, implementation.as_ref(), diagnostics);
     }
 
     let profiles = get_string_array(&module.value, &["profiles"]);
@@ -19562,7 +19576,9 @@ fn validate_property_target_report(
             continue;
         }
         if integration_test {
-            if let Err(failure) = integration_test_execution(manifest, realization) {
+            let declaring_implementation = implementation.unwrap_or(manifest);
+            if let Err(failure) = integration_test_execution(declaring_implementation, realization)
+            {
                 push_unique_warning(
                     diagnostics,
                     "property.integration-test-invalid",
@@ -19709,13 +19725,29 @@ fn validate_property_target_report(
             }
         }
         if let Some(implementation) = implementation {
-            if get_str(&implementation.value, &["commands", &realization.command]).is_none() {
+            let command = get_str(&implementation.value, &["commands", &realization.command]);
+            if command.is_none() {
                 push_unique_warning(
                     diagnostics,
                     "structure.property-target-missing",
                     &implementation.path,
                     format!(
                         "{} `{}` realization references missing command `{}`",
+                        target.kind, target.id, realization.command
+                    ),
+                );
+            } else if realization.profile == "nightly"
+                && !command_can_produce_hunt_lane_result(
+                    implementation.path.parent().unwrap_or(base),
+                    command.unwrap_or_default(),
+                )
+            {
+                push_unique_warning(
+                    diagnostics,
+                    "hunt.nightly-runner-result-missing",
+                    &implementation.path,
+                    format!(
+                        "{} `{}` nightly command `{}` is neither an exact test command that RMS can wrap nor a custom runner that writes rms/hunt-lane-result/v0.1 to RMS_HUNT_OUTPUT",
                         target.kind, target.id, realization.command
                     ),
                 );
@@ -21122,6 +21154,7 @@ fn property_blocking_diagnostic(check: &str) -> bool {
                 | "property.integration-test-invalid"
                 | "property.integration-fields-without-strategy"
                 | "property.cross-workspace-runner-requires-integration-test"
+                | "hunt.nightly-runner-result-missing"
         )
 }
 
@@ -47811,6 +47844,7 @@ fn audit_blocking_diagnostic(check: &str) -> bool {
                 | "property.integration-test-invalid"
                 | "property.integration-fields-without-strategy"
                 | "property.cross-workspace-runner-requires-integration-test"
+                | "hunt.nightly-runner-result-missing"
                 | "trace.producer-missing"
                 | "trace.producer-command-missing"
                 | "trace.producer-runner-missing"
@@ -54288,6 +54322,7 @@ fn render_spec_plan_repair_prompt(
                     | "property.integration-test-invalid"
                     | "property.integration-fields-without-strategy"
                     | "property.cross-workspace-runner-requires-integration-test"
+                    | "hunt.nightly-runner-result-missing"
             )
     }) || contract_behavior_repair;
     let exact_contract_context = if include_schema {
@@ -54318,9 +54353,10 @@ fn render_spec_plan_repair_prompt(
                         | "property.cross-workspace-runner-requires-integration-test"
                         | "property.composite-behavior-owner-required"
                         | "property.realization-not-executed"
+                        | "hunt.nightly-runner-result-missing"
                 )
         })
-        .then_some("\n\nProperty realization repair rule: `realizations` is mandatory and non-empty for every added or changed property. Never delete the list or replace it with `[]` to repair an item. Replace each invalid item with a complete valid realization. Profiles are exactly `smoke|ci|nightly`; `core` is a module profile and is invalid here. Strategies are exactly `deterministic-corpus|deterministic-exhaustive|generated-property|coverage-fuzzer|model-checker|benchmark|static-analyzer|sanitizer|mutation-tester|integration-test`; `generated` is never a valid strategy. Every realization has a nonblank command and exact `path#symbol` runner. `integration-test` additionally requires `owner_module`, `package`, system-root-relative `working_directory`, and exact `test_selection`; its command must select both `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION`, and a zero selected-test count is a failure. A cross-workspace test is never a direct semantic-unit realization. A fuzz target requires `generated-property`, `coverage-fuzzer`, `model-checker`, or a genuinely finite complete `deterministic-exhaustive` realization with `exhaustive: true`; a fixed non-exhaustive `deterministic-corpus` must remain an ordinary property and cannot be relabeled as fuzz proof. `deterministic-exhaustive` additionally has an exact `path#symbol` generator and `exhaustive: true`. A composition-only module may declare only parent topology/export properties with `operation.kind: composition`. Each such realization uses `{profile: smoke, strategy: deterministic-exhaustive, command: composition, generator: scripts/composition_property.sh#generate_property_cases, runner: scripts/composition_property.sh#run_property, exhaustive: true}` and both symbols must exist. Never relabel a behavioral property or test as `composition`. Move behavioral meaning, the property, its executable runner, and concrete evidence to the contained runnable owner; then preserve the exact exported child contract or use a verified proof delegation.")
+        .then_some("\n\nProperty realization repair rule: `realizations` is mandatory and non-empty for every added or changed property. Never delete the list or replace it with `[]` to repair an item. Replace each invalid item with a complete valid realization. Profiles are exactly `smoke|ci|nightly`; `core` is a module profile and is invalid here. Strategies are exactly `deterministic-corpus|deterministic-exhaustive|generated-property|coverage-fuzzer|model-checker|benchmark|static-analyzer|sanitizer|mutation-tester|integration-test`; `generated` is never a valid strategy. Every realization has a nonblank command and exact `path#symbol` runner. `integration-test` additionally requires `owner_module`, `package`, system-root-relative `working_directory`, and exact `test_selection`; its command must select both `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION`, and a zero selected-test count is a failure. A cross-workspace test is never a direct semantic-unit realization. A nightly exact test command can use the automatic nonzero-test hunt receipt. Any other nightly command must write rms/hunt-lane-result/v0.1 to RMS_HUNT_OUTPUT. A fuzz target requires `generated-property`, `coverage-fuzzer`, `model-checker`, or a genuinely finite complete `deterministic-exhaustive` realization with `exhaustive: true`; a fixed non-exhaustive `deterministic-corpus` must remain an ordinary property and cannot be relabeled as fuzz proof. `deterministic-exhaustive` additionally has an exact `path#symbol` generator and `exhaustive: true`. A composition-only module may declare only parent topology/export properties with `operation.kind: composition`. Each such realization uses `{profile: smoke, strategy: deterministic-exhaustive, command: composition, generator: scripts/composition_property.sh#generate_property_cases, runner: scripts/composition_property.sh#run_property, exhaustive: true}` and both symbols must exist. Never relabel a behavioral property or test as `composition`. Move behavioral meaning, the property, its executable runner, and concrete evidence to the contained runnable owner; then preserve the exact exported child contract or use a verified proof delegation.")
         .unwrap_or_default();
     let implementation_command_repair = diagnostics
         .iter()
@@ -55266,6 +55302,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "```")?;
     writeln!(out)?;
     writeln!(out, "Property realization grammar is closed. `realizations` is mandatory and non-empty for every property in `add` or `set`; never emit `realizations: []`. Profiles are exactly `smoke`, `ci`, or `nightly`; `core` is a module profile and is not a realization profile. Strategies are exactly `deterministic-corpus`, `deterministic-exhaustive`, `generated-property`, `coverage-fuzzer`, `model-checker`, `benchmark`, `static-analyzer`, `sanitizer`, `mutation-tester`, or `integration-test`. Every realization declares a nonblank implementation command and an exact relative `path#symbol` runner. `generated-property` and `deterministic-exhaustive` also declare an exact relative `path#symbol` generator. `integration-test` declares `owner_module`, `package`, a system-root-relative `working_directory`, and exact `test_selection`; its command selects both `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION`. RMS requires and records a nonzero selected-test count. Use integration-test only for a test owned by the declaring module; ordinary semantic properties remain module-local and call their declared operation directly. A Rust binding uses exact Rust callables under `src/*.rs#symbol` or `tests/*.rs#symbol`; a path under `verification/properties/` is evidence and is never an executable runner or generator. `property_generator` and `property_oracle` roles likewise name source files, not evidence paths. `deterministic-exhaustive` always declares `exhaustive: true`. A fixed literal generator is `deterministic-corpus`, not `generated-property`. If more than one realization in a profile uses the same command, that command must select `RMS_PROPERTY_RUNNER` or the exact runner symbol; use the bounded context's selector-aware command (often `fuzz`) instead of an unfiltered shared `verify` command.")?;
+    writeln!(out, "Nightly hunt result contract: an exact test command can use RMS automatic wrapping only when the runner output proves that it selected at least one test. Every other nightly command writes `rms/hunt-lane-result/v0.1` to `RMS_HUNT_OUTPUT`; custom results can add metrics, findings, and artifacts.")?;
     writeln!(out, "Fuzz-target grammar uses the same `properties` change section. Set `kind: fuzz` on the complete property item; `rms spec apply` then places it under canonical module `fuzz_targets` and implementation `architecture.reliability.fuzz_targets`. Use `properties.set` when the ID already exists in either properties or fuzz targets, and `properties.add` only for a new ID. There is no top-level `fuzz_targets` semantic-change field.")?;
     writeln!(out, "For a finite composite export/child-backing property, use this exact realization unless the bounded context already declares another exact realization:")?;
     writeln!(out, "```yaml")?;
@@ -59978,6 +60015,28 @@ fn proof_command_is_test_backed(command: &str) -> bool {
     ]
     .iter()
     .any(|marker| command.contains(marker))
+}
+
+fn command_can_produce_hunt_lane_result(base: &Path, command: &str) -> bool {
+    if proof_command_is_test_backed(command)
+        || (command.contains("RMS_HUNT_OUTPUT") && command.contains("hunt-lane-result"))
+    {
+        return true;
+    }
+    let mut candidates = command
+        .split_whitespace()
+        .map(|token| token.trim_matches(|character| matches!(character, '\'' | '"')))
+        .filter(|token| !token.starts_with('-'))
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty() && !path.is_absolute())
+        .map(|path| base.join(path))
+        .collect::<Vec<_>>();
+    candidates.extend([base.join("Justfile"), base.join("Makefile")]);
+    candidates.into_iter().any(|path| {
+        fs::read_to_string(path).is_ok_and(|source| {
+            source.contains("RMS_HUNT_OUTPUT") && source.contains("rms/hunt-lane-result/v0.1")
+        })
+    })
 }
 
 fn selected_test_count(stdout: &str, stderr: &str) -> Option<usize> {
@@ -89369,6 +89428,10 @@ architecture:
         fs::create_dir_all(root.join("verification/properties")).unwrap();
         write_test_file(&root.join("system.yaml"), "spec: rms/system/v0.1\n");
         write_test_file(
+            &root.join("module.yaml"),
+            "spec: rms/module/v0.1\nmodule: {name: app-integration, kind: adapter}\npurpose: Execute owned app integration proof.\n",
+        );
+        write_test_file(
             &root.join("app/Tests/IntegrationTests.swift"),
             "func exactIntegrationTest() { assert(true) }\nfunc zeroIntegrationTest() { assert(true) }\n",
         );
@@ -89403,7 +89466,7 @@ architecture:
             runner: app/Tests/IntegrationTests.swift#exactIntegrationTest
             owner_module: app-integration
             package: AppTests
-            working_directory: app
+            working_directory: .
             test_selection: AppTests/IntegrationTests/exactIntegrationTest
       - id: integration-zero
         proves: integration-zero-law
@@ -89417,7 +89480,7 @@ architecture:
             runner: app/Tests/IntegrationTests.swift#zeroIntegrationTest
             owner_module: app-integration
             package: AppTests
-            working_directory: app
+            working_directory: .
             test_selection: AppTests/IntegrationTests/zeroIntegrationTest
   machine: {}
   roles: {}
@@ -89431,6 +89494,19 @@ architecture:
             30,
         )
         .unwrap();
+        let structure = build_structure_report(&root.join("implementation.yaml")).unwrap();
+        assert!(!structure.diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "property.integration-test-invalid"
+                && diagnostic.message.contains("declaring implementation ``")
+        }));
+        let module_property_report =
+            build_property_check_report(&root.join("module.yaml")).unwrap();
+        assert!(
+            !module_property_report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.check == "property.integration-test-invalid"
+                    && diagnostic.message.contains("declaring implementation ``")
+            })
+        );
         let passing = report
             .commands
             .iter()
@@ -89461,6 +89537,60 @@ architecture:
                 command.selected_tests.map(|count| count as u64)
             );
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nightly_custom_runner_requires_a_lane_result_contract() {
+        let root = unique_test_dir("nightly-lane-result-contract");
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::create_dir_all(root.join("verification/properties")).unwrap();
+        write_test_file(&root.join("system.yaml"), "spec: rms/system/v0.1\n");
+        write_test_file(
+            &root.join("verification/properties/nightly.md"),
+            "# Nightly proof\n\nCommand/tool: fixture.\n\nObserved result: recorded by RMS.\n\nSource revision: git:test\n",
+        );
+        write_test_file(
+            &root.join("scripts/nightly.sh"),
+            "#!/bin/sh\nrun_property() { test -n \"$RMS_PROPERTY_ID\"; }\nrun_property\n",
+        );
+        write_test_file(
+            &root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: nightly-contract
+binding: executable
+source: {root: ., public_entrypoint: scripts/nightly.sh}
+commands: {nightly: "sh scripts/nightly.sh"}
+architecture:
+  reliability:
+    properties:
+      - id: nightly-property
+        proves: nightly-law
+        input_space: bounded generated cases
+        operation: {kind: semantic-function, id: run_property}
+        oracle: [the runner succeeds]
+        evidence: verification/properties/nightly.md
+        realizations:
+          - {profile: nightly, strategy: deterministic-corpus, command: nightly, runner: scripts/nightly.sh#run_property}
+  machine: {}
+  roles: {}
+"#,
+        );
+        let report = build_property_check_report(&root.join("implementation.yaml")).unwrap();
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "hunt.nightly-runner-result-missing"));
+
+        write_test_file(
+            &root.join("scripts/nightly.sh"),
+            "#!/bin/sh\nrun_property() { test -n \"$RMS_PROPERTY_ID\"; }\nrun_property\nprintf 'spec: rms/hunt-lane-result/v0.1\\nstatus: pass\\n' > \"$RMS_HUNT_OUTPUT\"\n",
+        );
+        let report = build_property_check_report(&root.join("implementation.yaml")).unwrap();
+        assert!(!report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.check == "hunt.nightly-runner-result-missing"));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -214,6 +214,10 @@ architecture:
             strategy: mutation-tester
             command: nightly
             runner: runner.sh#run
+          - profile: ci
+            strategy: static-analyzer
+            command: nightly
+            runner: runner.sh#run
 "#,
     )
     .expect("write implementation");
@@ -253,6 +257,40 @@ printf '%s\n' \
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    let selected_plan = Command::new(env!("CARGO_BIN_EXE_rms"))
+        .current_dir(&root)
+        .args([
+            "hunt",
+            "--root",
+            ".",
+            "--budget",
+            "10s",
+            "--seed",
+            "17",
+            "--profile",
+            "nightly",
+            "--lane",
+            "mutation",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .expect("plan selected hunt lanes");
+    assert!(
+        selected_plan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected_plan.stderr)
+    );
+    let selected_plan: Value =
+        serde_json::from_slice(&selected_plan.stdout).expect("selected hunt plan JSON");
+    assert_eq!(selected_plan["configuration"]["profiles"][0], "nightly");
+    assert_eq!(selected_plan["configuration"]["lanes"][0], "mutation");
+    assert_eq!(selected_plan["lanes"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        selected_plan["exclusions"].as_array().map(Vec::len),
+        Some(1)
+    );
 
     let first = Command::new(env!("CARGO_BIN_EXE_rms"))
         .current_dir(&root)
@@ -345,5 +383,103 @@ printf '%s\n' \
         "hunt mutated the committed source checkout"
     );
 
+    fs::remove_dir_all(root).expect("remove hunt fixture");
+}
+
+#[test]
+fn concurrent_multi_module_hunt_dry_runs_do_not_race_git_worktrees() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("rms-hunt-concurrent-cli-{unique}"));
+    fs::create_dir_all(&root).expect("create hunt fixture");
+    fs::write(root.join(".gitignore"), ".rms/\n").expect("write ignore file");
+    for index in 0..4 {
+        let module = root.join(format!("modules/module-{index}"));
+        fs::create_dir_all(&module).expect("create module");
+        fs::write(
+            module.join("module.yaml"),
+            format!(
+                "spec: rms/module/v0.1\nmodule: {{name: module-{index}}}\npurpose: Hunt fixture.\n"
+            ),
+        )
+        .expect("write module");
+        fs::write(
+            module.join("implementation.yaml"),
+            format!(
+                "spec: rms/implementation/v0.1\nmodule: module-{index}\nbinding: executable\narchitecture:\n  reliability:\n    properties: []\n    fuzz_targets: []\n"
+            ),
+        )
+        .expect("write implementation");
+    }
+    for arguments in [
+        ["init"].as_slice(),
+        ["config", "user.email", "rms@example.test"].as_slice(),
+        ["config", "user.name", "RMS Test"].as_slice(),
+        ["add", "."].as_slice(),
+        ["commit", "-m", "baseline"].as_slice(),
+    ] {
+        let output = Command::new("git")
+            .current_dir(&root)
+            .args(arguments)
+            .output()
+            .expect("prepare hunt git fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let handles = (0..4)
+        .map(|index| {
+            let root = root.clone();
+            std::thread::spawn(move || {
+                Command::new(env!("CARGO_BIN_EXE_rms"))
+                    .current_dir(&root)
+                    .args([
+                        "hunt",
+                        "--root",
+                        ".",
+                        "--module",
+                        &format!("modules/module-{index}/module.yaml"),
+                        "--budget",
+                        "2s",
+                        "--dry-run",
+                        "--json",
+                    ])
+                    .output()
+                    .expect("run concurrent hunt dry-run")
+            })
+        })
+        .collect::<Vec<_>>();
+    for handle in handles {
+        let output = handle.join().expect("join hunt dry-run");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).expect("hunt JSON");
+        assert_eq!(report["spec"], "rms/hunt-report/v0.2");
+    }
+    let runs = fs::read_dir(root.join(".rms/hunts"))
+        .expect("read hunt runs")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .count();
+    assert_eq!(runs, 4);
+    let worktrees = Command::new("git")
+        .current_dir(&root)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .expect("list worktrees");
+    assert_eq!(
+        String::from_utf8_lossy(&worktrees.stdout)
+            .matches("worktree ")
+            .count(),
+        1
+    );
     fs::remove_dir_all(root).expect("remove hunt fixture");
 }

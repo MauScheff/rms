@@ -28,6 +28,8 @@
         "module": { "type": ["string", "null"] },
         "assembly": { "type": ["string", "null"] },
         "output": { "type": ["string", "null"] },
+        "profiles": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "lanes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
         "tools": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } }
       },
       "additionalProperties": false
@@ -43,6 +45,7 @@
           "property": { "type": ["string", "null"] },
           "kind": { "enum": ["historical-replay", "baseline", "trace-regeneration", "trace-evaluation", "declared-realization", "probe-exploration", "relationship-analysis"] },
           "strategy": { "type": "string", "minLength": 1 },
+          "profile": { "type": "string", "minLength": 1 },
           "status": { "enum": ["planned", "running", "pass", "finding", "inconclusive", "invalid", "unsupported"] },
           "budget_seconds": { "type": "integer", "minimum": 1 },
           "elapsed_ms": { "type": "integer", "minimum": 0 },
@@ -51,6 +54,20 @@
           "metrics": { "type": "object" },
           "artifacts": { "type": "array", "items": { "type": "string" } },
           "diagnostic": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "exclusions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "module", "profile", "reason"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "module": { "type": "string", "minLength": 1 },
+          "profile": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
         },
         "additionalProperties": false
       }
