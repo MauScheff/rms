@@ -2537,6 +2537,10 @@ struct SemanticChange {
 struct ImplementationCommandsChange {
     #[serde(default, rename = "set")]
     replace: BTreeMap<String, String>,
+    #[serde(default)]
+    add: BTreeMap<String, String>,
+    #[serde(default)]
+    remove: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -17060,6 +17064,17 @@ fn execute_property_realizations_with_batch_and_cache(
             ));
         }
         for realization in matching {
+            if !is_stable_semantic_id(&realization.command) {
+                diagnostics.push(error(
+                    "property.realization-command-invalid",
+                    implementation,
+                    format!(
+                        "{} `{}` realization command `{}` must be a stable implementation command key, not a shell command",
+                        target.kind, target.id, realization.command
+                    ),
+                ));
+                continue;
+            }
             let integration_test = realization_is_integration_test(realization);
             let (command, execution_root) = if integration_test {
                 match integration_test_execution(&manifest, realization) {
@@ -19550,6 +19565,18 @@ fn validate_property_target_report(
         }
     }
     for realization in &target.realizations {
+        if !is_stable_semantic_id(&realization.command) {
+            push_unique_warning(
+                diagnostics,
+                "property.realization-command-invalid",
+                &manifest.path,
+                format!(
+                    "{} `{}` realization command `{}` must be a stable implementation command key, not a shell command",
+                    target.kind, target.id, realization.command
+                ),
+            );
+            continue;
+        }
         if !matches!(realization.profile.as_str(), "smoke" | "ci" | "nightly") {
             push_unique_warning(
                 diagnostics,
@@ -19978,6 +20005,17 @@ fn validate_spec_candidate_property_realizations(
         .unwrap_or_else(|| Path::new("."));
     for target in targets {
         for realization in target.realizations {
+            if !is_stable_semantic_id(&realization.command) {
+                diagnostics.push(error_diagnostic(
+                    "property.realization-command-invalid",
+                    &implementation.path,
+                    format!(
+                        "{} `{}` realization command `{}` must be a stable implementation command key, not a shell command",
+                        target.kind, target.id, realization.command
+                    ),
+                ));
+                continue;
+            }
             let Some(command) = get_str(&implementation.value, &["commands", &realization.command])
             else {
                 diagnostics.push(error_diagnostic(
@@ -19990,6 +20028,16 @@ fn validate_spec_candidate_property_realizations(
                 ));
                 continue;
             };
+            if realization_is_integration_test(&realization) {
+                if let Err(failure) = integration_test_execution(implementation, &realization) {
+                    diagnostics.push(error_diagnostic(
+                        "property.integration-test-invalid",
+                        &implementation.path,
+                        format!("property `{}`: {failure}", target.id),
+                    ));
+                    continue;
+                }
+            }
             let runner_symbol = binding_reference_symbol(&realization.runner)
                 .unwrap_or(realization.runner.as_str());
             if command_frequencies
@@ -54575,6 +54623,11 @@ fn validate_prepared_spec_plan_change(
             );
             validate_spec_candidate_property_realizations(&candidate, change, &mut diagnostics);
             validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
+            validate_removed_implementation_command_references(
+                &candidate,
+                change,
+                &mut diagnostics,
+            );
         }
         Err(error) => diagnostics.push(error_diagnostic(
             "semantic-plan.candidate-invalid",
@@ -55000,7 +55053,7 @@ fn render_spec_plan_repair_prompt(
                     && diagnostic.message.contains("implementation_commands")
         })
         .then_some(
-            "\n\nImplementation command repair rule: `implementation_commands.set` maps command keys to complete non-empty shell command strings. It may replace only keys already present under the bounded manifest's top-level `commands`. It may add one new key only when that exact key is the `smoke_command` of a runnable surface added or replaced in the same change. Every omitted command and every unrelated declaration is preserved. It cannot otherwise add or remove a command key. Put build, verify, probe, trace, property, fuzz, format, or other proof-command maintenance here; never put these executable bindings under `machine.commands`, which declares semantic machine input variants. Preserve each requested key and invocation exactly; never replace `verify` merely because a new surface-specific smoke command needs declaration. Example: `implementation_commands: {set: {surface_verify: \"cd ../.. && just rust-runtime-test\"}}` with the same surface item's `smoke_command: surface_verify`.",
+            "\n\nImplementation command repair rule: `implementation_commands.set` replaces existing stable command keys, `add` creates a stable key used by an integration-test realization, runnable surface smoke command, or probe in the same change, and `remove` deletes exact obsolete keys. Values are complete non-empty shell command strings. Every omitted command and every unrelated declaration is preserved. An integration-test realization `command` is only the stable key; never put a shell command in that field. Its added binding must select the exact package and test through `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION` (or exact literals). Put build, verify, probe, trace, property, fuzz, format, or other proof-command maintenance here; never put executable bindings under `machine.commands`, which declares semantic machine input variants. Preserve each requested key and invocation exactly. Example: `implementation_commands: {add: {app_integration: \"just test-package \\\"$RMS_INTEGRATION_PACKAGE\\\" \\\"$RMS_INTEGRATION_TEST_SELECTION\\\"\"}, set: {}, remove: []}` with an integration-test realization whose `command` is `app_integration`.",
         )
         .unwrap_or_default();
     let collection_preservation_repair = diagnostics
@@ -55223,7 +55276,7 @@ fn render_spec_plan_repair_prompt(
         .iter()
         .any(|diagnostic| diagnostic.check.starts_with("surface."))
         .then_some(
-            "\n\nRunnable surface repair rule: a language public facade, library API, package export, protocol, or reusable capability is not by itself a runnable product surface. Do not emit a `surfaces` change for a Swift public API. Declare the facade through the `public_facade` role and public behavior binding. Only a user- or operator-runnable boundary may use `kind: runnable-boundary`, and its `surface` is exactly one of browser|cli|mobile-ui|desktop-ui|http|batch|executable; an HTTP method and route does not replace the closed `surface` value. `delegates_to.command` names the exact task-declared owning public command or declared machine command. Never substitute a similarly named kebab-case public contract when the task explicitly names a machine command. For `surface.command-not-public`, change only `delegates_to.command`; preserve `delegates_to.symbol`, `entrypoint`, `smoke_command`, and every `implementation_commands.set` key and value byte-for-byte. For `surface.surface`, change only the closed `surface` value. Preserve an exact task-declared `../` entrypoint byte-for-byte when it resolves inside the same RMS system root; never strip its parent segments or reinterpret it relative to the workspace root. Language names and phrases such as `Swift public API` are never surface values. Change only the diagnosed surface fields and preserve every unrelated proof and machine declaration.",
+            "\n\nRunnable surface repair rule: a language public facade, library API, package export, protocol, or reusable capability is not by itself a runnable product surface. Do not emit a `surfaces` change for a Swift public API. Declare the facade through the `public_facade` role and public behavior binding. Only a user- or operator-runnable boundary may use `kind: runnable-boundary`, and its `surface` is exactly one of browser|cli|mobile-ui|desktop-ui|http|batch|executable; an HTTP method and route does not replace the closed `surface` value. `delegates_to.command` names the exact task-declared owning public command or declared machine command. Never substitute a similarly named kebab-case public contract when the task explicitly names a machine command. For `surface.command-not-public`, change only `delegates_to.command`; preserve `delegates_to.symbol`, `entrypoint`, `smoke_command`, and every `implementation_commands.set`, `.add`, and `.remove` item byte-for-byte; never replace `verify` because a surface-specific smoke command needs declaration. For `surface.surface`, change only the closed `surface` value. Preserve an exact task-declared `../` entrypoint byte-for-byte when it resolves inside the same RMS system root; never strip its parent segments or reinterpret it relative to the workspace root. Language names and phrases such as `Swift public API` are never surface values. Change only the diagnosed surface fields and preserve every unrelated proof and machine declaration.",
         )
         .unwrap_or_default();
     let transition_output_repair = diagnostics
@@ -55699,6 +55752,8 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "  remove: []")?;
         writeln!(out, "implementation_commands:")?;
         writeln!(out, "  set: {{}}")?;
+        writeln!(out, "  add: {{}}")?;
+        writeln!(out, "  remove: []")?;
         writeln!(out, "protocol_bindings:")?;
         writeln!(out, "  add: []")?;
         writeln!(out, "  set: null")?;
@@ -55954,7 +56009,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "    exhaustive: true")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `implementation_commands.set` maps top-level implementation command keys to complete non-empty shell command strings. It replaces only the named existing keys and preserves every omitted command and unrelated declaration. It may add one new key only when that exact key is the `smoke_command` of a runnable surface added or replaced in the same change; it cannot otherwise add or remove keys. Use it for proof-command binding maintenance; never put executable command strings under `machine.commands`, which declares semantic input variants. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2|v0.3` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `implementation_commands.set` replaces named existing stable command keys. `implementation_commands.add` creates a stable key only when an integration-test realization, runnable surface smoke command, or probe in the same change references it. `implementation_commands.remove` deletes exact obsolete keys, including invalid legacy keys created by older RMS versions. All set/add values are complete non-empty shell commands. Omitted keys and unrelated declarations are preserved. A realization `command` is always a stable key, never shell text. Integration command bindings must select the declared package and exact test through `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION` or exact literals. Never put executable command strings under `machine.commands`, which declares semantic input variants. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2|v0.3` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
     writeln!(out, "The exact property exploration shape is:")?;
     writeln!(out, "```yaml")?;
     writeln!(out, "explorations:")?;
@@ -56248,6 +56303,7 @@ fn run_spec_apply(
     validate_spec_candidate_composite_export_contracts(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_property_realizations(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
+    validate_removed_implementation_command_references(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_property_evidence_writes(&context, &change, &mut diagnostics);
 
     let planned_writes = planned_spec_apply_writes(&context, &change, machine_change.as_ref());
@@ -57767,7 +57823,22 @@ fn validate_preservation_intent_against_empty_total_replacements(
 }
 
 fn implementation_commands_change_has_operations(change: &ImplementationCommandsChange) -> bool {
-    !change.replace.is_empty()
+    !change.replace.is_empty() || !change.add.is_empty() || !change.remove.is_empty()
+}
+
+fn apply_implementation_command_changes(
+    value: &mut YamlValue,
+    change: &ImplementationCommandsChange,
+) {
+    for name in &change.remove {
+        remove_yaml_path(value, &["commands", name]);
+    }
+    for (name, command) in &change.replace {
+        set_yaml_string_path(value, &["commands", name], command);
+    }
+    for (name, command) in &change.add {
+        set_yaml_string_path(value, &["commands", name], command);
+    }
 }
 
 fn implementation_with_semantic_commands(
@@ -57776,9 +57847,7 @@ fn implementation_with_semantic_commands(
 ) -> LoadedManifest {
     let mut snapshot = implementation.clone();
     if let Some(commands) = change.implementation_commands.as_ref() {
-        for (name, command) in &commands.replace {
-            set_yaml_string_path(&mut snapshot.value, &["commands", name], command);
-        }
+        apply_implementation_command_changes(&mut snapshot.value, commands);
     }
     snapshot
 }
@@ -57799,7 +57868,7 @@ fn validate_implementation_commands(
         diagnostics.push(error(
             "semantic.implementation-command-without-implementation",
             &context.target,
-            "implementation_commands.set requires an existing implementation.yaml",
+            "implementation_commands requires an existing implementation.yaml",
         ));
         return;
     };
@@ -57811,7 +57880,29 @@ fn validate_implementation_commands(
         .filter_map(|surface| surface.smoke_command.as_deref())
         .collect::<BTreeSet<_>>();
     let probe_command = change.probe.as_ref().map(|probe| probe.command.as_str());
+    let integration_commands = change
+        .properties
+        .as_ref()
+        .into_iter()
+        .flat_map(|properties| properties.add.iter().chain(&properties.replace))
+        .flat_map(|property| &property.realizations)
+        .filter(|realization| realization_is_integration_test(realization))
+        .map(|realization| realization.command.as_str())
+        .collect::<BTreeSet<_>>();
+    let existing_commands =
+        get_path(&implementation.value, &["commands"]).and_then(YamlValue::as_mapping);
+    let existing_has = |name: &str| {
+        existing_commands.is_some_and(|commands| commands.contains_key(yaml_key(name)))
+    };
+    let mut modified = BTreeSet::new();
     for (name, command) in &commands.replace {
+        if !modified.insert(name.as_str()) {
+            diagnostics.push(error(
+                "semantic.implementation-command-conflict",
+                &implementation.path,
+                format!("implementation command `{name}` is modified more than once"),
+            ));
+        }
         if !is_stable_semantic_id(name) {
             diagnostics.push(error(
                 "semantic.implementation-command-name",
@@ -57819,7 +57910,7 @@ fn validate_implementation_commands(
                 format!("implementation command key `{name}` must be a stable identifier"),
             ));
         }
-        if get_str(&implementation.value, &["commands", name]).is_none()
+        if !existing_has(name)
             && !surface_smoke_commands.contains(name.as_str())
             && probe_command != Some(name.as_str())
         {
@@ -57827,7 +57918,7 @@ fn validate_implementation_commands(
                 "semantic.implementation-command-missing",
                 &implementation.path,
                 format!(
-                    "implementation_commands.set may revise only existing command key `{name}`, add the exact smoke command of a surface added in the same change, or add the exact command key of a probe declared in the same change"
+                    "implementation_commands.set may revise only existing command key `{name}`; use implementation_commands.add for a new integration-test, surface smoke, or probe command"
                 ),
             ));
         }
@@ -57836,6 +57927,154 @@ fn validate_implementation_commands(
                 "semantic.implementation-command-empty",
                 &implementation.path,
                 format!("replacement for implementation command `{name}` must be non-empty"),
+            ));
+        }
+    }
+    for (name, command) in &commands.add {
+        if !modified.insert(name.as_str()) {
+            diagnostics.push(error(
+                "semantic.implementation-command-conflict",
+                &implementation.path,
+                format!("implementation command `{name}` is modified more than once"),
+            ));
+        }
+        if !is_stable_semantic_id(name) {
+            diagnostics.push(error(
+                "semantic.implementation-command-name",
+                &implementation.path,
+                format!("implementation command key `{name}` must be a stable identifier"),
+            ));
+        }
+        if existing_has(name) {
+            diagnostics.push(error(
+                "semantic.implementation-command-add-exists",
+                &implementation.path,
+                format!(
+                    "implementation command `{name}` already exists; revise it through implementation_commands.set"
+                ),
+            ));
+        }
+        if !integration_commands.contains(name.as_str())
+            && !surface_smoke_commands.contains(name.as_str())
+            && probe_command != Some(name.as_str())
+        {
+            diagnostics.push(error(
+                "semantic.implementation-command-add-unowned",
+                &implementation.path,
+                format!(
+                    "new implementation command `{name}` must be referenced by an integration-test realization, runnable surface smoke command, or probe declared in the same change"
+                ),
+            ));
+        }
+        if command.trim().is_empty() {
+            diagnostics.push(error(
+                "semantic.implementation-command-empty",
+                &implementation.path,
+                format!("new implementation command `{name}` must be non-empty"),
+            ));
+        }
+    }
+    for name in &commands.remove {
+        if !modified.insert(name.as_str()) {
+            diagnostics.push(error(
+                "semantic.implementation-command-conflict",
+                &implementation.path,
+                format!("implementation command `{name}` is modified more than once"),
+            ));
+        }
+        if name.trim().is_empty() {
+            diagnostics.push(error(
+                "semantic.implementation-command-remove-empty",
+                &implementation.path,
+                "implementation_commands.remove entries must be non-empty exact command keys",
+            ));
+        } else if !existing_has(name) {
+            diagnostics.push(error(
+                "semantic.implementation-command-remove-missing",
+                &implementation.path,
+                format!("implementation command `{name}` does not exist"),
+            ));
+        }
+    }
+}
+
+fn validate_removed_implementation_command_references(
+    candidate: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(removals) = change
+        .implementation_commands
+        .as_ref()
+        .map(|commands| commands.remove.as_slice())
+        .filter(|removals| !removals.is_empty())
+    else {
+        return;
+    };
+    let Some(implementation) = candidate.implementation.as_ref() else {
+        return;
+    };
+    let properties = property_targets_from_implementation(
+        implementation,
+        &["architecture", "reliability", "properties"],
+        "property",
+    )
+    .into_iter()
+    .chain(property_targets_from_implementation(
+        implementation,
+        &["architecture", "reliability", "fuzz_targets"],
+        "fuzz",
+    ))
+    .collect::<Vec<_>>();
+    let traces = trace_producers_from_implementation(implementation);
+    let surfaces = architecture_surface_declarations(implementation);
+    let public_bindings = typed_yaml_sequence::<PublicBehaviorBinding>(
+        &implementation.value,
+        &["architecture", "public_behavior_bindings"],
+    );
+    for name in removals {
+        let mut owners = properties
+            .iter()
+            .flat_map(|property| {
+                property
+                    .realizations
+                    .iter()
+                    .filter(move |realization| realization.command == *name)
+                    .map(move |_| format!("property `{}`", property.id))
+            })
+            .collect::<Vec<_>>();
+        owners.extend(
+            traces
+                .iter()
+                .filter(|producer| producer.command == *name)
+                .map(|producer| format!("trace producer `{}`", producer.id)),
+        );
+        owners.extend(
+            surfaces
+                .iter()
+                .filter(|surface| surface.smoke_command.as_deref() == Some(name.as_str()))
+                .map(|surface| format!("surface `{}`", surface.name)),
+        );
+        owners.extend(public_bindings.iter().filter_map(|binding| {
+            binding
+                .observation_source
+                .as_ref()
+                .filter(|source| source.command == *name)
+                .map(|_| format!("public behavior binding `{}`", binding.id))
+        }));
+        if get_str(&implementation.value, &["architecture", "probe", "command"])
+            == Some(name.as_str())
+        {
+            owners.push("machine probe".to_string());
+        }
+        if !owners.is_empty() {
+            diagnostics.push(error(
+                "semantic.implementation-command-remove-referenced",
+                &implementation.path,
+                format!(
+                    "implementation command `{name}` remains referenced by {}; update or remove those declarations in the same semantic change",
+                    owners.join(", ")
+                ),
             ));
         }
     }
@@ -60111,6 +60350,16 @@ fn validate_semantic_properties(
                     ),
                 ));
             }
+            if !is_stable_semantic_id(&realization.command) {
+                diagnostics.push(error(
+                    "property.realization-command-invalid",
+                    &context.target,
+                    format!(
+                        "property `{}` realization command `{}` must be a stable implementation command key, not a shell command",
+                        property.id, realization.command
+                    ),
+                ));
+            }
             if realization.strategy == "deterministic-exhaustive" && !realization.exhaustive {
                 diagnostics.push(error(
                     "evidence.property-realization-not-exhaustive",
@@ -62028,9 +62277,7 @@ fn validate_semantic_surfaces(
             value: implementation.value.clone(),
         };
         if let Some(commands) = change.implementation_commands.as_ref() {
-            for (name, command) in &commands.replace {
-                set_yaml_string_path(&mut snapshot.value, &["commands", name], command);
-            }
+            apply_implementation_command_changes(&mut snapshot.value, commands);
         }
         ensure_declared_smoke_command(&mut snapshot.value, declaration);
         diagnostics.extend(validate_surface_declaration(&snapshot, declaration));
@@ -62225,9 +62472,7 @@ fn spec_apply_candidate_context(
             .as_ref()
             .filter(|commands| implementation_commands_change_has_operations(commands))
         {
-            for (name, command) in &commands.replace {
-                set_yaml_string_path(&mut implementation.value, &["commands", name], command);
-            }
+            apply_implementation_command_changes(&mut implementation.value, commands);
         }
         if let Some(machine_change) = machine_change {
             apply_machine_change_to_manifest(&mut implementation.value, machine_change);
@@ -87026,6 +87271,15 @@ implementation_commands:
             .iter()
             .any(|diagnostic| { diagnostic.check == "semantic.implementation-command-empty" }));
 
+        let referenced = validate_spec_plan_provider_response(
+            &context,
+            "Remove one obsolete implementation command.",
+            "spec: rms/semantic-change/v0.1\nimplementation_commands:\n  remove: [properties]\n",
+        );
+        assert!(referenced.iter().any(|diagnostic| {
+            diagnostic.check == "semantic.implementation-command-remove-referenced"
+        }));
+
         let missing = validate_spec_plan_provider_response(
             &context,
             task,
@@ -87036,8 +87290,214 @@ implementation_commands:
         }));
         let repair = render_spec_plan_repair_prompt("bounded prompt", "candidate", &missing);
         assert!(repair.contains("implementation_commands.set"));
-        assert!(repair.contains("may replace only keys already present"));
+        assert!(repair.contains("`add` creates a stable key"));
+        assert!(repair.contains("`remove` deletes exact obsolete keys"));
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn semantic_apply_atomically_repairs_legacy_integration_command_keys() {
+        let root = route_capability_fixture("integration-command-repair");
+        let target = root.join("modules/play-game-domain/implementation.yaml");
+        let bad_one = "test \"$RMS_INTEGRATION_PACKAGE\" = \"AppTests\" && run \"$RMS_INTEGRATION_TEST_SELECTION\"";
+        let bad_two = "test '${RMS_INTEGRATION_PACKAGE}' = 'AppTests' && run '${RMS_INTEGRATION_TEST_SELECTION}'";
+        let mut implementation = load_manifest(&target).unwrap();
+        let preserved_verify = get_str(&implementation.value, &["commands", "verify"])
+            .unwrap()
+            .to_string();
+        let copied_fuzz = preserved_verify.clone();
+        ensure_yaml_mapping_path(&mut implementation.value, &["commands"])
+            .insert(yaml_key(bad_one), YamlValue::String(copied_fuzz.clone()));
+        ensure_yaml_mapping_path(&mut implementation.value, &["commands"])
+            .insert(yaml_key(bad_two), YamlValue::String(copied_fuzz));
+        write_yaml_manifest(&implementation).unwrap();
+
+        let runner = root.join("app/Tests/IntegrationTests.swift");
+        fs::create_dir_all(runner.parent().unwrap()).unwrap();
+        write_test_file(
+            &runner,
+            "func exactReceiverReadinessIntegration() { assert(true) }\n",
+        );
+        let implementation = load_manifest(&target).unwrap();
+        let mut property_value = get_path(
+            &implementation.value,
+            &["architecture", "reliability", "properties"],
+        )
+        .and_then(YamlValue::as_sequence)
+        .and_then(|properties| properties.first())
+        .unwrap()
+        .clone();
+        property_value
+            .as_mapping_mut()
+            .unwrap()
+            .remove(yaml_key("command"));
+        if let Some(path) = get_str(&property_value, &["evidence"]).map(ToString::to_string) {
+            property_value.as_mapping_mut().unwrap().insert(
+                yaml_key("evidence"),
+                serde_yaml::to_value(SemanticPropertyEvidenceRef {
+                    kind: "property".to_string(),
+                    path,
+                })
+                .unwrap(),
+            );
+        }
+        if let Some(path) = get_str(&property_value, &["counterexamples"]).map(ToString::to_string)
+        {
+            property_value.as_mapping_mut().unwrap().insert(
+                yaml_key("counterexamples"),
+                serde_yaml::to_value(SemanticPropertyCounterexamplesRef { path }).unwrap(),
+            );
+        }
+        let mut property: SemanticPropertyChange = serde_yaml::from_value(property_value).unwrap();
+        property.id = "receiver-readiness-integration-property".to_string();
+        property.evidence = Some(SemanticPropertyEvidenceRef {
+            kind: "property".to_string(),
+            path: "verification/properties/receiver_readiness_integration.md".to_string(),
+        });
+        property.counterexamples = Some(SemanticPropertyCounterexamplesRef {
+            path: "verification/fuzz/counterexamples/receiver-readiness-integration".to_string(),
+        });
+        property.realizations = vec![PropertyRealization {
+            profile: "smoke".to_string(),
+            strategy: "integration-test".to_string(),
+            command: "app_integration".to_string(),
+            generator: None,
+            runner: "app/Tests/IntegrationTests.swift#exactReceiverReadinessIntegration"
+                .to_string(),
+            exhaustive: false,
+            owner_module: Some("play-game-domain".to_string()),
+            package: Some("AppTests".to_string()),
+            working_directory: Some(".".to_string()),
+            test_selection: Some("exactReceiverReadinessIntegration".to_string()),
+        }];
+        let property_list = serde_yaml::to_string(&vec![property]).unwrap();
+        let property_list = property_list
+            .lines()
+            .map(|line| format!("    {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let command = r#"printf 'Test run with 1 test in 1 suite passed\n%s|%s\n' "$RMS_INTEGRATION_PACKAGE" "$RMS_INTEGRATION_TEST_SELECTION""#;
+        let change = format!(
+            "spec: rms/semantic-change/v0.1\nmodule: modules/play-game-domain/implementation.yaml\nintent:\n  summary: Repair integration command bindings and preserve unrelated commands.\nimplementation_commands:\n  set: {{}}\n  add:\n    app_integration: {command:?}\n  remove:\n    - {bad_one:?}\n    - {bad_two:?}\nproperties:\n  add:\n{property_list}\n  set: []\n  remove: []\n"
+        );
+
+        let context = load_spec_target(&target).unwrap();
+        let prepared = prepare_spec_plan_provider_response(
+            &context,
+            "Repair the existing integration-test command binding only. Preserve every unrelated command and declaration.",
+            &change,
+        );
+        assert!(
+            prepared
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != Severity::Error),
+            "{:#?}",
+            prepared.diagnostics
+        );
+        run_spec_apply(&target, None, Some(&prepared.response), None, true).unwrap();
+        run_spec_apply(&target, None, Some(&prepared.response), None, false).unwrap();
+
+        let applied = load_manifest(&target).unwrap();
+        assert_eq!(
+            get_str(&applied.value, &["commands", "app_integration"]),
+            Some(command)
+        );
+        assert_eq!(
+            get_str(&applied.value, &["commands", "verify"]),
+            Some(preserved_verify.as_str())
+        );
+        assert!(get_str(&applied.value, &["commands", bad_one]).is_none());
+        assert!(get_str(&applied.value, &["commands", bad_two]).is_none());
+        let property_check =
+            build_property_check_report(&root.join("modules/play-game-domain/module.yaml"))
+                .unwrap();
+        assert!(!property_check.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.check.as_str(),
+                "property.realization-command-invalid"
+                    | "property.integration-test-invalid"
+                    | "property.realization-not-executed"
+            )
+        }));
+
+        let report =
+            execute_property_realizations(&target, PropertyProfile::Smoke, false, 30).unwrap();
+        let integration = report
+            .commands
+            .iter()
+            .find(|execution| execution.command == command)
+            .unwrap();
+        assert_eq!(integration.status, "pass");
+        assert_eq!(integration.selected_tests, Some(1));
+        let receipt = integration.receipt.as_deref().unwrap();
+        let receipt: JsonValue =
+            serde_json::from_slice(&fs::read(root.join(receipt)).unwrap()).unwrap();
+        assert_eq!(receipt["selected_tests"], 1);
+        assert_eq!(receipt["package"], "AppTests");
+        assert_eq!(
+            receipt["test_selection"],
+            "exactReceiverReadinessIntegration"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn semantic_plan_rejects_shell_text_as_realization_command() {
+        let root = route_capability_fixture("integration-command-key-invalid");
+        let target = root.join("modules/play-game-domain/implementation.yaml");
+        let context = load_spec_target(&target).unwrap();
+        let mut property_value = get_path(
+            &context.implementation.as_ref().unwrap().value,
+            &["architecture", "reliability", "properties"],
+        )
+        .and_then(YamlValue::as_sequence)
+        .and_then(|properties| properties.first())
+        .unwrap()
+        .clone();
+        property_value
+            .as_mapping_mut()
+            .unwrap()
+            .remove(yaml_key("command"));
+        if let Some(path) = get_str(&property_value, &["evidence"]).map(ToString::to_string) {
+            property_value.as_mapping_mut().unwrap().insert(
+                yaml_key("evidence"),
+                serde_yaml::to_value(SemanticPropertyEvidenceRef {
+                    kind: "property".to_string(),
+                    path,
+                })
+                .unwrap(),
+            );
+        }
+        if let Some(path) = get_str(&property_value, &["counterexamples"]).map(ToString::to_string)
+        {
+            property_value.as_mapping_mut().unwrap().insert(
+                yaml_key("counterexamples"),
+                serde_yaml::to_value(SemanticPropertyCounterexamplesRef { path }).unwrap(),
+            );
+        }
+        let mut property: SemanticPropertyChange = serde_yaml::from_value(property_value).unwrap();
+        property.realizations[0].command =
+            "test \"$RMS_INTEGRATION_PACKAGE\" && run \"$RMS_INTEGRATION_TEST_SELECTION\""
+                .to_string();
+        let property_list = serde_yaml::to_string(&vec![property]).unwrap();
+        let property_list = property_list
+            .lines()
+            .map(|line| format!("    {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let response = format!(
+            "spec: rms/semantic-change/v0.1\nproperties:\n  add: []\n  set:\n{property_list}\n  remove: []\n"
+        );
+        let diagnostics = validate_spec_plan_provider_response(
+            &context,
+            "Change one property realization only.",
+            &response,
+        );
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "property.realization-command-invalid" }));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -87327,7 +87787,9 @@ architecture:
             repair.contains("For `surface.command-not-public`, change only `delegates_to.command`")
         );
         assert!(repair.contains("preserve `delegates_to.symbol`, `entrypoint`, `smoke_command`"));
-        assert!(repair.contains("every `implementation_commands.set` key and value byte-for-byte"));
+        assert!(repair.contains(
+            "every `implementation_commands.set`, `.add`, and `.remove` item byte-for-byte"
+        ));
         assert!(repair.contains("For `surface.surface`, change only the closed `surface` value"));
         assert!(repair.contains("never replace `verify`"));
         assert!(repair.contains("Never substitute a similarly named kebab-case public contract"));
