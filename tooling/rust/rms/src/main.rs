@@ -5808,11 +5808,35 @@ fn run_agent_sync(root: &Path, target: AgentTarget) -> Result<()> {
     fs::create_dir_all(root)
         .with_context(|| format!("failed to create agent root `{}`", root.display()))?;
     write_agent_guidance(root, target, true, false)?;
+    sync_rms_gitignore(root)?;
     println!(
         "synced {} agent guidance at {}",
         target.label(),
         root.display()
     );
+    Ok(())
+}
+
+fn sync_rms_gitignore(root: &Path) -> Result<()> {
+    let path = root.join(".gitignore");
+    if !path.exists() {
+        return Ok(());
+    }
+    let existing = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read `{}`", path.display()))?;
+    if existing == INIT_GITIGNORE {
+        return Ok(());
+    }
+    let merged = merge_managed_section(
+        &existing,
+        RMS_MANAGED_GITIGNORE_START,
+        RMS_MANAGED_GITIGNORE_END,
+        INIT_ADOPTED_GITIGNORE_BLOCK,
+    )?;
+    if merged != existing {
+        fs::write(&path, merged)
+            .with_context(|| format!("failed to update `{}`", path.display()))?;
+    }
     Ok(())
 }
 
@@ -40218,6 +40242,36 @@ fn resolve_next_owner_for_task(
             ));
         }
 
+        let declared_owners = declared_ownership_candidates(task, modules);
+        if let Some(top) = declared_owners.first() {
+            let tied = declared_owners
+                .iter()
+                .take_while(|candidate| candidate.score == top.score)
+                .cloned()
+                .collect::<Vec<_>>();
+            if tied.len() == 1 {
+                let selected = top.module.clone();
+                return Ok(OwnerResolution::selected(
+                    "task uniquely evolves an exact declared ownership phrase".to_string(),
+                    selected.clone(),
+                    declared_owners,
+                    vec![selected.path.clone()],
+                    Vec::new(),
+                ));
+            }
+            return Ok(OwnerResolution::unresolved(
+                UnselectedOwnerStatus::Ambiguous,
+                "task evolves an ownership phrase declared by multiple equally strong owners"
+                    .to_string(),
+                tied,
+                Vec::new(),
+                vec![
+                    "RMS will not choose between duplicate or overlapping declared ownership; name the canonical module or resolve the ownership overlap"
+                        .to_string(),
+                ],
+            ));
+        }
+
         if let Some(direct) = modules
             .values()
             .find(|module| module.path == root.join("module.yaml"))
@@ -40296,6 +40350,96 @@ fn resolve_next_owner_for_task(
     }
 
     route_next_owner(root, subject_route, initial_path, reason, candidates)
+}
+
+fn declared_ownership_candidates(
+    task: &str,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+) -> Vec<RouteCandidate> {
+    let clauses = task
+        .split(['.', ';', '\n'])
+        .map(semantic_id_segment)
+        .collect::<Vec<_>>();
+    let evolution_verbs = BTreeSet::from([
+        "amend", "change", "evolve", "extend", "fix", "repair", "replace", "revise", "update",
+    ]);
+    let ownership_stop_words = BTreeSet::from([
+        "behavior",
+        "capability",
+        "command",
+        "contract",
+        "decision",
+        "decisions",
+        "domain",
+        "eligibility",
+        "event",
+        "lifecycle",
+        "module",
+        "outcome",
+        "owner",
+        "ownership",
+        "policy",
+        "private",
+        "public",
+        "query",
+        "rule",
+        "rules",
+        "transition",
+    ]);
+    let mut candidates = Vec::new();
+    for module in modules.values() {
+        let mut matched = Vec::new();
+        let mut score = 0i32;
+        for path in [
+            &["owns", "concepts"][..],
+            &["owns", "data"][..],
+            &["owns", "decisions"][..],
+        ] {
+            for phrase in get_string_array(&module.value, path) {
+                let core = semantic_id_segment(&phrase)
+                    .split('-')
+                    .filter(|word| word.len() > 2 && !ownership_stop_words.contains(*word))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                if core.len() < 2 {
+                    continue;
+                }
+                let matching_clause = clauses.iter().find(|clause| {
+                    let words = clause.split('-').collect::<BTreeSet<_>>();
+                    core.iter().all(|word| words.contains(word.as_str()))
+                        && words.iter().any(|word| evolution_verbs.contains(*word))
+                });
+                if matching_clause.is_none() {
+                    continue;
+                }
+                let core_phrase = core.join("-");
+                let contiguous =
+                    matching_clause.is_some_and(|clause| task_mentions_token(clause, &core_phrase));
+                let phrase_score = (core.len() as i32 * 4) + if contiguous { 2 } else { 0 };
+                score = score.max(phrase_score);
+                matched.push(phrase);
+            }
+        }
+        if score > 0 {
+            matched.sort();
+            matched.dedup();
+            candidates.push(RouteCandidate {
+                module: route_module_summary(module, None),
+                score,
+                reasons: vec![format!(
+                    "task explicitly evolves declared ownership phrase(s): {}",
+                    matched.join(", ")
+                )],
+            });
+        }
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.module.name.cmp(&right.module.name))
+    });
+    candidates
 }
 
 fn exact_task_canonical_artifact_modules<'a>(
@@ -77658,7 +77802,7 @@ fn write_file_if_missing(path: &Path, contents: &str) -> Result<()> {
 }
 
 const INIT_GITIGNORE: &str =
-    ".DS_Store\ntarget/\ndist/\n.rms/runs/\n.rms/cache/\n.rms/evidence/integration/\n.rms/hunts/\n.rms/dogfood/\n";
+    ".DS_Store\ntarget/\ndist/\n.rms/runs/\n.rms/cache/\n.rms/evidence/\n.rms/hunts/\n.rms/dogfood/\n";
 const RMS_MANAGED_AGENTS_START: &str = "<!-- RMS managed guidance: begin -->";
 const RMS_MANAGED_AGENTS_END: &str = "<!-- RMS managed guidance: end -->";
 const INIT_ADOPTED_AGENTS_BLOCK: &str = include_str!("../assets/guidance/agents-adopted-block.md");
@@ -77670,7 +77814,7 @@ target/
 dist/
 .rms/runs/
 .rms/cache/
-.rms/evidence/integration/
+.rms/evidence/
 .rms/hunts/
 .rms/dogfood/
 # RMS managed ignores: end
@@ -81248,6 +81392,7 @@ import struct ExternalKit.Widget
         assert!(agents.contains("rms check --committed --root ."));
         assert!(gitignore.contains(".rms/runs/"));
         assert!(gitignore.contains(".rms/cache/"));
+        assert!(gitignore.contains(".rms/evidence/"));
         assert!(gitignore.contains(".rms/hunts/"));
         assert!(gitignore.contains(".rms/dogfood/"));
         assert!(config_text.contains("# write_scope: module"));
@@ -81407,6 +81552,7 @@ import struct ExternalKit.Widget
             1
         );
         assert!(String::from_utf8_lossy(&adopted_gitignore).contains(".rms/hunts/"));
+        assert!(String::from_utf8_lossy(&adopted_gitignore).contains(".rms/evidence/"));
         assert!(root.join("system.yaml").is_file());
         assert!(root.join("context-map.yaml").is_file());
         assert!(root.join(".rms/config.yaml").is_file());
@@ -82215,6 +82361,11 @@ import struct ExternalKit.Widget
     fn agent_sync_preserves_adopted_content_and_unrelated_skills() {
         let root = unique_test_dir("agent-sync-preservation");
         fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join(".gitignore"),
+            "project-only/\n\n# RMS managed ignores: begin\n.rms/runs/\n.rms/dogfood/\n# RMS managed ignores: end\n",
+        )
+        .unwrap();
         let prefix = "# Project Guidance\n\nKeep this prefix byte-for-byte.\n\n";
         let suffix = "\n\nKeep this suffix byte-for-byte.\n";
         let stale_block = INIT_ADOPTED_AGENTS_BLOCK
@@ -82252,6 +82403,11 @@ import struct ExternalKit.Widget
             .extra
             .iter()
             .any(|path| path == "project-only/SKILL.md"));
+        let gitignore = fs::read_to_string(root.join(".gitignore")).unwrap();
+        assert!(gitignore.starts_with("project-only/"));
+        assert_eq!(gitignore.matches(RMS_MANAGED_GITIGNORE_START).count(), 1);
+        assert!(gitignore.contains(".rms/evidence/"));
+        assert!(!gitignore.contains(".rms/evidence/integration/"));
 
         run_agent_sync(&root, AgentTarget::Codex).unwrap();
         let second = snapshot_test_tree(&root);
@@ -97599,6 +97755,79 @@ semantic_functions: []
         fs::remove_dir_all(&cycle_root).unwrap();
         assert_eq!(cycle.status(), OwnerStatus::Ambiguous);
         assert_eq!(cycle.route.len(), 1);
+    }
+
+    #[test]
+    fn next_selects_unique_leaf_declared_owner_and_reports_duplicate_ownership() {
+        let root = route_capability_fixture("next-declared-leaf-owner");
+        let domain_path = root.join("modules/play-game-domain/module.yaml");
+        let boundary_path = root.join("modules/play-game-boundary/module.yaml");
+        let mut domain = load_manifest(&domain_path).unwrap();
+        set_yaml_sequence_path(
+            &mut domain.value,
+            &["owns", "decisions"],
+            vec![
+                YamlValue::String("retained ptt gesture lifecycle".to_string()),
+                YamlValue::String("receiver readiness retry eligibility".to_string()),
+            ],
+        );
+        write_yaml_manifest(&domain).unwrap();
+
+        let task = "Reuse and extend the existing retained PTT gesture contract. Retain exactly one PTT hold for at most 1000 ms when secure-media preparation matches the contact and conversation.";
+        let profile = build_repository_profile(&root).unwrap();
+        let selected = resolve_next_owner_for_task(
+            &root,
+            None,
+            task,
+            "retained-ptt-gesture-contract secure-media-preparation",
+            &profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(selected.status(), OwnerStatus::Selected);
+        assert_eq!(
+            selected
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("play-game-domain")
+        );
+        assert_eq!(
+            selected.reason,
+            "task uniquely evolves an exact declared ownership phrase"
+        );
+        assert!(declared_ownership_candidates(
+            "Preserve the existing retained PTT gesture contract unchanged.",
+            &profile.modules
+        )
+        .is_empty());
+
+        let mut boundary = load_manifest(&boundary_path).unwrap();
+        set_yaml_sequence_path(
+            &mut boundary.value,
+            &["owns", "decisions"],
+            vec![YamlValue::String(
+                "retained ptt gesture lifecycle".to_string(),
+            )],
+        );
+        write_yaml_manifest(&boundary).unwrap();
+        let duplicate_profile = build_repository_profile(&root).unwrap();
+        let ambiguous = resolve_next_owner_for_task(
+            &root,
+            None,
+            task,
+            "retained-ptt-gesture-contract secure-media-preparation",
+            &duplicate_profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(ambiguous.status(), OwnerStatus::Ambiguous);
+        assert!(ambiguous.selected_module().is_none());
+        assert_eq!(ambiguous.candidates.len(), 2);
+        assert!(ambiguous
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("duplicate or overlapping declared ownership")));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
