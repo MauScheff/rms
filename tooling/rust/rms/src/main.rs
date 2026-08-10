@@ -19231,6 +19231,8 @@ fn validate_property_implementation(
         &["architecture", "reliability", "fuzz_targets"],
         "fuzz",
     );
+    let has_parser_property =
+        implementation_has_executable_parser_property(implementation, &properties);
     for target in properties.iter().chain(fuzz_targets.iter()) {
         validate_property_target_report(
             implementation,
@@ -19245,11 +19247,12 @@ fn validate_property_implementation(
     let shape = get_str(&implementation.value, &["architecture", "shape"]).unwrap_or("");
     if parser_expected_for_shape(shape)
         && fuzz_targets.is_empty()
+        && !has_parser_property
         && get_string_array(&implementation.value, &["architecture", "roles", "parser"]).is_empty()
     {
         return;
     }
-    if parser_expected_for_shape(shape) && fuzz_targets.is_empty() {
+    if parser_expected_for_shape(shape) && fuzz_targets.is_empty() && !has_parser_property {
         push_unique_warning(
             diagnostics,
             "structure.boundary-parser-without-fuzz-property",
@@ -19273,6 +19276,38 @@ fn validate_property_implementation(
             "transition-shaped implementations should declare at least one semantic property or justify trace-only evidence",
         );
     }
+}
+
+fn implementation_has_executable_parser_property(
+    implementation: &LoadedManifest,
+    properties: &[PropertyTargetReport],
+) -> bool {
+    let mut parser_function_ids = BTreeSet::new();
+    let mut parser_promises = BTreeSet::new();
+    if let Some(functions) =
+        get_path(&implementation.value, &["semantic_functions"]).and_then(YamlValue::as_sequence)
+    {
+        for function in functions {
+            if get_str(function, &["kind"]) != Some("parser") {
+                continue;
+            }
+            if let Some(id) = get_str(function, &["id"]) {
+                parser_function_ids.insert(id);
+            }
+            for category in ["contracts", "invariants", "properties"] {
+                parser_promises.extend(get_string_array(function, &["discharges", category]));
+            }
+        }
+    }
+    properties.iter().any(|property| {
+        !property.realizations.is_empty()
+            && (property
+                .proves
+                .as_deref()
+                .is_some_and(|promise| parser_promises.contains(promise))
+                || get_str(&property.definition, &["operation", "name"])
+                    .is_some_and(|operation| parser_function_ids.contains(operation)))
+    })
 }
 
 fn validate_property_target_report(
@@ -101186,6 +101221,70 @@ machine:
         assert!(prompt.contains("machine:\n  mode:"));
         assert!(prompt.contains("  initial_state:"));
         assert!(prompt.contains("Set it explicitly when replacing the state set"));
+    }
+
+    #[test]
+    fn boundary_parser_invariant_accepts_matching_executable_property() {
+        let matching = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"spec: rms/implementation/v0.1
+module: direct-quic-runtime-repair-boundary
+binding: swift
+architecture:
+  shape: boundary-adapter
+  reliability:
+    fuzz_targets: []
+    properties:
+      - id: direct-quic-runtime-repair-boundary-parser-property
+        proves: boundary-parses-runtime-repair-input
+        kind: semantic
+        input_space: {strategy: generated, generator: boundary-cases}
+        operation: {kind: semantic-function, name: transition-model}
+        oracle: [malformed input is rejected before delegation]
+        evidence: {path: verification/properties/boundary_parser.md}
+        realizations:
+          - profile: smoke
+            strategy: generated-property
+            command: fuzz
+            generator: Sources/Boundary/Transition.swift#generateBoundaryCases
+            runner: Tests/BoundaryTests/BoundaryTests.swift#testBoundaryParserIsTotal
+            exhaustive: false
+  roles:
+    parser: [Sources/Boundary/Transition.swift]
+semantic_functions:
+  - id: runtime-repair-boundary-parser
+    symbol: Sources/Boundary/Transition.swift#parseRuntimeRepairInput
+    kind: parser
+    purity: pure
+    discharges:
+      contracts: []
+      invariants: [boundary-parses-runtime-repair-input]
+      properties: []
+"#,
+            )
+            .unwrap(),
+        };
+        let mut matching_diagnostics = Vec::new();
+        validate_property_implementation(&matching, &mut matching_diagnostics);
+        assert!(matching_diagnostics.iter().all(|diagnostic| {
+            diagnostic.check != "structure.boundary-parser-without-fuzz-property"
+        }));
+
+        let mut unrelated = matching.clone();
+        let property = get_path_mut(
+            &mut unrelated.value,
+            &["architecture", "reliability", "properties"],
+        )
+        .and_then(YamlValue::as_sequence_mut)
+        .and_then(|properties| properties.first_mut())
+        .expect("first property");
+        set_yaml_string_path(property, &["proves"], "unrelated-transition-law");
+        let mut unrelated_diagnostics = Vec::new();
+        validate_property_implementation(&unrelated, &mut unrelated_diagnostics);
+        assert!(unrelated_diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "structure.boundary-parser-without-fuzz-property"
+        }));
     }
 
     #[test]
