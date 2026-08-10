@@ -77589,7 +77589,7 @@ fn write_file_if_missing(path: &Path, contents: &str) -> Result<()> {
 }
 
 const INIT_GITIGNORE: &str =
-    ".DS_Store\ntarget/\ndist/\n.rms/runs/\n.rms/cache/\n.rms/hunts/\n.rms/dogfood/\n";
+    ".DS_Store\ntarget/\ndist/\n.rms/runs/\n.rms/cache/\n.rms/evidence/integration/\n.rms/hunts/\n.rms/dogfood/\n";
 const RMS_MANAGED_AGENTS_START: &str = "<!-- RMS managed guidance: begin -->";
 const RMS_MANAGED_AGENTS_END: &str = "<!-- RMS managed guidance: end -->";
 const INIT_ADOPTED_AGENTS_BLOCK: &str = include_str!("../assets/guidance/agents-adopted-block.md");
@@ -77601,6 +77601,7 @@ target/
 dist/
 .rms/runs/
 .rms/cache/
+.rms/evidence/integration/
 .rms/hunts/
 .rms/dogfood/
 # RMS managed ignores: end

@@ -4,6 +4,7 @@ target/
 dist/
 **/.rms/runs/
 **/.rms/cache/
+**/.rms/evidence/integration/
 **/.rms/hunts/
 *.tmp
 *.bak
