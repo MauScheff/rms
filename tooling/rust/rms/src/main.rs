@@ -17054,6 +17054,7 @@ fn execute_property_realizations_with_batch_and_cache(
                 .realizations
                 .iter()
                 .filter(|realization| realization.profile == profile.label())
+                .filter(|realization| !realization_is_integration_test(realization))
         })
         .fold(
             BTreeMap::<String, usize>::new(),
@@ -17135,11 +17136,12 @@ fn execute_property_realizations_with_batch_and_cache(
             };
             let runner_symbol = binding_reference_symbol(&realization.runner)
                 .unwrap_or(realization.runner.as_str());
-            if command_frequencies
-                .get(&realization.command)
-                .copied()
-                .unwrap_or(0)
-                > 1
+            if !integration_test
+                && command_frequencies
+                    .get(&realization.command)
+                    .copied()
+                    .unwrap_or(0)
+                    > 1
                 && !proof_command_selects_runner(&command, runner_symbol, "RMS_PROPERTY_RUNNER")
             {
                 diagnostics.push(error(
@@ -20013,7 +20015,12 @@ fn validate_spec_candidate_property_realizations(
     .collect::<Vec<_>>();
     let command_frequencies = targets
         .iter()
-        .flat_map(|target| target.realizations.iter())
+        .flat_map(|target| {
+            target
+                .realizations
+                .iter()
+                .filter(|realization| !realization_is_integration_test(realization))
+        })
         .fold(
             BTreeMap::<(String, String), usize>::new(),
             |mut counts, realization| {
@@ -20052,7 +20059,8 @@ fn validate_spec_candidate_property_realizations(
                 ));
                 continue;
             };
-            if realization_is_integration_test(&realization) {
+            let integration_test = realization_is_integration_test(&realization);
+            if integration_test {
                 if let Err(failure) = integration_test_execution(implementation, &realization) {
                     diagnostics.push(error_diagnostic(
                         "property.integration-test-invalid",
@@ -20064,11 +20072,12 @@ fn validate_spec_candidate_property_realizations(
             }
             let runner_symbol = binding_reference_symbol(&realization.runner)
                 .unwrap_or(realization.runner.as_str());
-            if command_frequencies
-                .get(&(realization.profile.clone(), realization.command.clone()))
-                .copied()
-                .unwrap_or(0)
-                > 1
+            if !integration_test
+                && command_frequencies
+                    .get(&(realization.profile.clone(), realization.command.clone()))
+                    .copied()
+                    .unwrap_or(0)
+                    > 1
                 && !proof_command_selects_runner(command, runner_symbol, "RMS_PROPERTY_RUNNER")
             {
                 diagnostics.push(error_diagnostic(
@@ -55491,7 +55500,7 @@ fn render_spec_plan_repair_prompt(
         .iter()
         .any(|diagnostic| diagnostic.check == "property.command-does-not-select-runner")
         .then_some(
-            "\n\nProperty command repair rule: when more than one realization uses the same command in a profile, that declared command must select the exact `RMS_PROPERTY_RUNNER` value (or the exact runner symbol) for each invocation. Choose a selector-aware declared command such as the bounded context's `fuzz` command, or change the command through the semantic plan; never rely on an unfiltered shared `verify` command.",
+            "\n\nProperty command repair rule: when more than one non-integration realization uses the same command in a profile, that declared command must select the exact `RMS_PROPERTY_RUNNER` value (or the exact runner symbol) for each invocation. Integration-test realizations instead select the exact owning package and test through `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION`; several integration realizations may share one command that selects those two values. Choose a selector-aware declared command such as the bounded context's `fuzz` command, or change the command through the semantic plan; never rely on an unfiltered shared `verify` command.",
         )
         .unwrap_or_default();
     format!(
@@ -56141,7 +56150,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "      delete_file: true")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Property realization grammar is closed. `realizations` is mandatory and non-empty for every property in `add` or `set`; never emit `realizations: []`. Profiles are exactly `smoke`, `ci`, or `nightly`; `core` is a module profile and is not a realization profile. Strategies are exactly `deterministic-corpus`, `deterministic-exhaustive`, `generated-property`, `coverage-fuzzer`, `model-checker`, `benchmark`, `static-analyzer`, `sanitizer`, `mutation-tester`, or `integration-test`. Every realization declares a nonblank implementation command and an exact relative `path#symbol` runner. `generated-property` and `deterministic-exhaustive` also declare an exact relative `path#symbol` generator. `integration-test` declares `owner_module`, `package`, a system-root-relative `working_directory`, and exact `test_selection`; its command selects both `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION`. RMS requires and records a nonzero selected-test count. Use integration-test only for a test owned by the declaring module; ordinary semantic properties remain module-local and call their declared operation directly. A Rust binding uses exact Rust callables under `src/*.rs#symbol` or `tests/*.rs#symbol`; a path under `verification/properties/` is evidence and is never an executable runner or generator. `property_generator` and `property_oracle` roles likewise name source files, not evidence paths. `deterministic-exhaustive` always declares `exhaustive: true`. A fixed literal generator is `deterministic-corpus`, not `generated-property`. If more than one realization in a profile uses the same command, that command must select `RMS_PROPERTY_RUNNER` or the exact runner symbol; use the bounded context's selector-aware command (often `fuzz`) instead of an unfiltered shared `verify` command.")?;
+    writeln!(out, "Property realization grammar is closed. `realizations` is mandatory and non-empty for every property in `add` or `set`; never emit `realizations: []`. Profiles are exactly `smoke`, `ci`, or `nightly`; `core` is a module profile and is not a realization profile. Strategies are exactly `deterministic-corpus`, `deterministic-exhaustive`, `generated-property`, `coverage-fuzzer`, `model-checker`, `benchmark`, `static-analyzer`, `sanitizer`, `mutation-tester`, or `integration-test`. Every realization declares a nonblank implementation command and an exact relative `path#symbol` runner. `generated-property` and `deterministic-exhaustive` also declare an exact relative `path#symbol` generator. `integration-test` declares `owner_module`, `package`, a system-root-relative `working_directory`, and exact `test_selection`; its command selects both `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION`. Several integration-test realizations may share one such selector command. RMS requires and records a nonzero selected-test count. Use integration-test only for a test owned by the declaring module; ordinary semantic properties remain module-local and call their declared operation directly. A Rust binding uses exact Rust callables under `src/*.rs#symbol` or `tests/*.rs#symbol`; a path under `verification/properties/` is evidence and is never an executable runner or generator. `property_generator` and `property_oracle` roles likewise name source files, not evidence paths. `deterministic-exhaustive` always declares `exhaustive: true`. A fixed literal generator is `deterministic-corpus`, not `generated-property`. If more than one non-integration realization in a profile uses the same command, that command must select `RMS_PROPERTY_RUNNER` or the exact runner symbol; use the bounded context's selector-aware command (often `fuzz`) instead of an unfiltered shared `verify` command.")?;
     writeln!(out, "Nightly hunt result contract: an exact test command can use RMS automatic wrapping only when the runner output proves that it selected at least one test. Every other nightly command writes `rms/hunt-lane-result/v0.1` to `RMS_HUNT_OUTPUT`; custom results can add metrics, findings, and artifacts.")?;
     writeln!(out, "Fuzz-target grammar uses the same `properties` change section. Set `kind: fuzz` on the complete property item; `rms spec apply` then places it under canonical module `fuzz_targets` and implementation `architecture.reliability.fuzz_targets`. Use `properties.set` when the ID already exists in either properties or fuzz targets, and `properties.add` only for a new ID. There is no top-level `fuzz_targets` semantic-change field.")?;
     writeln!(out, "For a finite composite export/child-backing property, use this exact realization unless the bounded context already declares another exact realization:")?;
@@ -91168,6 +91177,99 @@ architecture:
                 value["selected_tests"].as_u64(),
                 command.selected_tests.map(|count| count as u64)
             );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shared_integration_command_selects_each_exact_test_without_property_runner() {
+        let root = unique_test_dir("shared-integration-selector");
+        fs::create_dir_all(root.join("app/Tests")).unwrap();
+        fs::create_dir_all(root.join("verification/properties")).unwrap();
+        write_test_file(&root.join("system.yaml"), "spec: rms/system/v0.1\n");
+        write_test_file(
+            &root.join("module.yaml"),
+            "spec: rms/module/v0.1\nmodule: {name: shared-integration, kind: adapter}\npurpose: Execute selected integration proofs.\n",
+        );
+        write_test_file(
+            &root.join("app/Tests/IntegrationTests.swift"),
+            "func existingIntegration() {}\nfunc addedIntegrationOne() {}\nfunc addedIntegrationTwo() {}\n",
+        );
+        write_test_file(
+            &root.join("verification/properties/integration.md"),
+            "# Integration proof\n\nCommand/tool: RMS integration fixture.\n\nObserved result: each exact selected test passed.\n\nSource revision: git:test\n",
+        );
+        write_test_file(
+            &root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: shared-integration
+binding: executable
+source: {root: app, public_entrypoint: app/Tests/IntegrationTests.swift}
+commands:
+  verify: "true"
+  app-integration: "printf '%s|%s\nTest run with 1 test in 1 suite passed\n' \"$RMS_INTEGRATION_PACKAGE\" \"$RMS_INTEGRATION_TEST_SELECTION\""
+toolchain: {runner: shell}
+architecture:
+  shape: integration-adapter
+  reliability:
+    properties:
+      - id: existing-integration-property
+        proves: existing-integration-law
+        input_space: one selected integration test
+        oracle: [the selected integration test passes]
+        evidence: verification/properties/integration.md
+        realizations:
+          - {profile: smoke, strategy: integration-test, command: app-integration, runner: app/Tests/IntegrationTests.swift#existingIntegration, owner_module: shared-integration, package: AppTests, working_directory: ., test_selection: existingIntegration}
+      - id: extended-integration-property
+        proves: extended-integration-law
+        input_space: two selected integration tests
+        oracle: [each selected integration test passes]
+        evidence: verification/properties/integration.md
+        realizations:
+          - {profile: smoke, strategy: integration-test, command: app-integration, runner: app/Tests/IntegrationTests.swift#addedIntegrationOne, owner_module: shared-integration, package: AppTests, working_directory: ., test_selection: addedIntegrationOne}
+          - {profile: smoke, strategy: integration-test, command: app-integration, runner: app/Tests/IntegrationTests.swift#addedIntegrationTwo, owner_module: shared-integration, package: AppTests, working_directory: ., test_selection: addedIntegrationTwo}
+  machine: {}
+  roles: {}
+"#,
+        );
+
+        let context = load_spec_target(&root.join("implementation.yaml")).unwrap();
+        let change: SemanticChange = serde_yaml::from_str(
+            "spec: rms/semantic-change/v0.1\nproperties: {add: [], set: [], remove: [unused]}\n",
+        )
+        .unwrap();
+        let mut diagnostics = Vec::new();
+        validate_spec_candidate_property_realizations(&context, &change, &mut diagnostics);
+        assert!(!diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.check.as_str(),
+                "property.command-does-not-select-runner" | "property.integration-test-invalid"
+            )
+        }));
+
+        let report = execute_property_realizations(
+            &root.join("implementation.yaml"),
+            PropertyProfile::Smoke,
+            false,
+            30,
+        )
+        .unwrap();
+        assert_eq!(report.result, "pass");
+        assert_eq!(report.commands.len(), 3);
+        assert!(report.commands.iter().all(|command| {
+            command.status == "pass"
+                && command.selected_tests == Some(1)
+                && command.receipt.is_some()
+        }));
+        for selection in [
+            "existingIntegration",
+            "addedIntegrationOne",
+            "addedIntegrationTwo",
+        ] {
+            assert!(report
+                .commands
+                .iter()
+                .any(|command| command.stdout.contains(selection)));
         }
         fs::remove_dir_all(root).unwrap();
     }
