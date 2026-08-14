@@ -80215,8 +80215,25 @@ fn validate_spec_change_route_receipt(
     change_yaml: Option<&str>,
     change_file: Option<&Path>,
 ) -> Result<RouteReceipt> {
-    if let Ok(receipt) = validate_route_receipt(root, reference, "spec-apply", target, None) {
-        return Ok(receipt);
+    let spec_apply_error = match validate_route_receipt(root, reference, "spec-apply", target, None)
+    {
+        Ok(receipt) => return Ok(receipt),
+        Err(error) => error,
+    };
+    let repair_family_declared = fs::canonicalize(root)
+        .ok()
+        .and_then(|root| resolve_route_receipt_path(&root, reference).ok())
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|source| serde_json::from_str::<RouteReceipt>(&source).ok())
+        .is_some_and(|receipt| {
+            receipt
+                .payload
+                .allowed_action_families
+                .iter()
+                .any(|family| family == "spec-repair-apply")
+        });
+    if !repair_family_declared {
+        return Err(spec_apply_error);
     }
     let receipt = validate_route_receipt(root, reference, "spec-repair-apply", target, None)?;
     let expected = receipt
@@ -108621,6 +108638,236 @@ records:
         assert!(
             validate_route_receipt(&root, &receipt, "spec-apply", &implementation, None,).is_err()
         );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn normal_spec_receipt_preserves_the_primary_validation_error() {
+        let root = copy_minimal_fixture("normal-spec-receipt-primary-error");
+        initialize_test_git_repository(&root);
+        let report = build_next_report(&root, None, "change the example contract").unwrap();
+        assert_eq!(report.result, NextResult::Ready);
+        let receipt = PathBuf::from(&report.receipt_path);
+        let implementation = root.join("implementation.yaml");
+
+        let commit = Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "advance head"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+
+        let error =
+            validate_spec_change_route_receipt(&root, &receipt, &implementation, None, None, None)
+                .unwrap_err();
+        let message = format!("{error:#}");
+        fs::remove_dir_all(&root).unwrap();
+
+        assert!(
+            message.contains("route receipt Git HEAD is stale"),
+            "{message}"
+        );
+        assert!(!message.contains("spec-repair-apply"), "{message}");
+    }
+
+    #[test]
+    fn normal_spec_receipt_authorizes_exact_required_provider_contract_sync() {
+        let root = unique_test_dir("required-provider-contract-sync-receipt");
+        for relative in [
+            "provider/contracts",
+            "consumer/contracts",
+            "consumer/verification/contracts",
+        ] {
+            fs::create_dir_all(root.join(relative)).unwrap();
+        }
+        write_compose_module(
+            &root.join("provider/module.yaml"),
+            "provider",
+            "  capabilities:\n    - name: resolve-epoch\n      contract: contracts/resolve-epoch.v1.yaml\n",
+            "  modules: []\n",
+            "  capabilities: []\n",
+        );
+        write_compose_module(
+            &root.join("consumer/module.yaml"),
+            "consumer",
+            "  capabilities: []\n",
+            "  modules:\n    - name: provider\n",
+            "  capabilities:\n    - name: resolve-epoch\n      contract: contracts/resolve-epoch.v1.yaml\n",
+        );
+        let consumer_module = root.join("consumer/module.yaml");
+        let module = fs::read_to_string(&consumer_module).unwrap().replace(
+            "  contracts: []",
+            "  contracts:\n    - verification/contracts/resolve_epoch.md",
+        );
+        fs::write(&consumer_module, module).unwrap();
+        fs::write(
+            root.join("consumer/verification/contracts/resolve_epoch.md"),
+            "# Required provider contract evidence\n",
+        )
+        .unwrap();
+        let contract = |decision: &str, meaning: &str| {
+            format!(
+                r#"spec: rms/contract/v0.3
+name: resolve-epoch
+version: '1'
+kind: capability
+meaning: {meaning}
+semantics:
+  behavior:
+    observability: full
+    observations:
+      - id: decision-kind
+        source: {{kind: output, pointer: /kind}}
+        value: {{variant: [{decision}]}}
+    assumptions: []
+    requires: []
+    guarantees: []
+    failures: []
+    cases:
+      - id: {decision}
+        statement: The provider returns its exact current decision.
+        when: {{equals: {{left: {{observation: decision-kind}}, right: {{literal: {decision}}}}}}}
+        outcome:
+          kind: accepted
+          expression: {{equals: {{left: {{observation: decision-kind}}, right: {{literal: {decision}}}}}}}
+        ensures: []
+        permits: {{state_changes: [], events: [], effects: []}}
+    invariants: []
+    case_policy: {{coverage: exhaustive, overlap: forbidden}}
+compatibility: {{policy: backward-compatible-within-major}}
+"#
+            )
+        };
+        let provider_contract = contract("current-provider-decision", "Resolve the current epoch.");
+        fs::write(
+            root.join("provider/contracts/resolve-epoch.v1.yaml"),
+            &provider_contract,
+        )
+        .unwrap();
+        let stale_consumer_contract = contract(
+            "current-provider-decision",
+            "Resolve a stale epoch.",
+        )
+        .replace(
+            "          kind: accepted\n          expression:",
+            "          kind: rejected\n          category: stale-consumer-decision\n          expression:",
+        );
+        fs::write(
+            root.join("consumer/contracts/resolve-epoch.v1.yaml"),
+            stale_consumer_contract,
+        )
+        .unwrap();
+        let mismatch = compose_system(&root).unwrap();
+        assert_eq!(
+            mismatch.result,
+            ComposeResult::Fail,
+            "{:#?}",
+            mismatch.findings
+        );
+        assert!(mismatch.findings.iter().any(|finding| {
+            finding.check == "composition.capability-contract-mismatch"
+                && finding.consumer.as_deref() == Some("consumer")
+        }));
+
+        initialize_test_git_repository(&root);
+        let task =
+            "Change the required resolve-epoch capability contract to the exact provider contract.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [resolve-epoch]
+facts:
+  domain_decisions: {disposition: required, basis: explicit, source_quote: exact provider contract}
+  lifecycle: {disposition: absent, basis: inferred, rationale: no lifecycle change}
+  effects: {disposition: absent, basis: inferred, rationale: no effect change}
+  runnable_surface: {disposition: absent, basis: inferred, rationale: no surface change}
+  reuse: {disposition: required, basis: explicit, source_quote: required resolve-epoch capability}
+responsibilities:
+  - {id: resolve-epoch-contract-sync, kind: decision, summary: Preserve the provider contract identity.}
+surface_kinds: []
+binding_preferences: []
+open_questions: []
+"#;
+        let report = build_next_report_with_intent(
+            &root,
+            Some(&consumer_module),
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.result, NextResult::Ready, "{report:#?}");
+        let receipt = PathBuf::from(&report.receipt_path);
+        let change = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent:
+  summary: Synchronize the required capability contract with its declared provider.
+contracts:
+  set:
+    - name: resolve-epoch
+      kind: capability
+      direction: required
+      version: '1'
+      meaning: Resolve the current epoch.
+      semantics:
+        behavior:
+          observability: full
+          observations:
+            - id: decision-kind
+              source: {kind: output, pointer: /kind}
+              value: {variant: [current-provider-decision]}
+          assumptions: []
+          requires: []
+          guarantees: []
+          failures: []
+          cases:
+            - id: current-provider-decision
+              statement: The provider returns its exact current decision.
+              when: {equals: {left: {observation: decision-kind}, right: {literal: current-provider-decision}}}
+              outcome:
+                kind: accepted
+                expression: {equals: {left: {observation: decision-kind}, right: {literal: current-provider-decision}}}
+              ensures: []
+              permits: {state_changes: [], events: [], effects: []}
+          invariants: []
+          case_policy: {coverage: exhaustive, overlap: forbidden}
+evidence:
+  add:
+    - kind: contract
+      proves: resolve-epoch
+      path: verification/contracts/resolve_epoch.md
+"#;
+
+        validate_spec_change_route_receipt(
+            &root,
+            &receipt,
+            &consumer_module,
+            None,
+            Some(change),
+            None,
+        )
+        .unwrap();
+        run_spec_apply(&consumer_module, None, Some(change), None, false).unwrap();
+
+        let synchronized = compose_system(&root).unwrap();
+        assert_eq!(
+            synchronized.result,
+            ComposeResult::Pass,
+            "{:#?}",
+            synchronized.findings
+        );
+        assert_eq!(
+            load_manifest(&root.join("consumer/contracts/resolve-epoch.v1.yaml"))
+                .unwrap()
+                .value,
+            load_manifest(&root.join("provider/contracts/resolve-epoch.v1.yaml"))
+                .unwrap()
+                .value
+        );
+        assert!(!root.join("consumer/implementation.yaml").exists());
         fs::remove_dir_all(&root).unwrap();
     }
 
