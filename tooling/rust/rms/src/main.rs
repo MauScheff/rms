@@ -12324,6 +12324,7 @@ fn run_design(
         run_dir.join("intent-diagnostics.json"),
         serde_json::to_string_pretty(&diagnostics)?,
     )?;
+    write_route_checks(&run_dir, &diagnostics)?;
     let ready = result == "ready";
     let scaffold = ready
         .then(|| decision.as_ref().map(|value| value.scaffold.clone()))
@@ -12452,6 +12453,17 @@ fn resolve_intent_model(
     input: &RawIntentInput,
     options: Option<&PromptRunOptions>,
 ) -> Result<(Option<IntentModel>, Vec<Diagnostic>, Option<PathBuf>)> {
+    resolve_intent_model_with_optional_program(root, command, task, input, options, None)
+}
+
+fn resolve_intent_model_with_optional_program(
+    root: &Path,
+    command: &str,
+    task: &str,
+    input: &RawIntentInput,
+    options: Option<&PromptRunOptions>,
+    provider_program: Option<&Path>,
+) -> Result<(Option<IntentModel>, Vec<Diagnostic>, Option<PathBuf>)> {
     let supplied = usize::from(input.json.is_some())
         + usize::from(input.yaml.is_some())
         + usize::from(input.file.is_some())
@@ -12487,7 +12499,17 @@ fn resolve_intent_model(
         if options.sandbox != CodexSandbox::ReadOnly {
             bail!("intent extraction providers must use the read-only sandbox");
         }
-        let extraction = extract_provider_intent(root, command, task, options, input.refresh)?;
+        let extraction = match provider_program {
+            Some(program) => extract_provider_intent_with_program(
+                root,
+                command,
+                task,
+                options,
+                input.refresh,
+                program,
+            )?,
+            None => extract_provider_intent(root, command, task, options, input.refresh)?,
+        };
         run_dir = Some(extraction.run_dir);
         serde_json::to_string(&extraction.intent)?
     };
@@ -12824,6 +12846,7 @@ fn finalize_provider_operational_failure(
         run_dir.join("intent-diagnostics.json"),
         serde_json::to_string_pretty(&diagnostics)?,
     )?;
+    write_route_checks(run_dir, &diagnostics)?;
     fs::write(
         run_dir.join("provider.json"),
         serde_json::to_string_pretty(&json!({
@@ -38743,6 +38766,36 @@ fn build_next_report_with_intent(
     input: RawIntentInput,
     options: Option<&PromptRunOptions>,
 ) -> Result<NextReport> {
+    build_next_report_with_optional_program(root, explicit_module, task, input, options, None)
+}
+
+#[cfg(test)]
+fn build_next_report_with_intent_program(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    task: &str,
+    input: RawIntentInput,
+    options: Option<&PromptRunOptions>,
+    provider_program: &Path,
+) -> Result<NextReport> {
+    build_next_report_with_optional_program(
+        root,
+        explicit_module,
+        task,
+        input,
+        options,
+        Some(provider_program),
+    )
+}
+
+fn build_next_report_with_optional_program(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    task: &str,
+    input: RawIntentInput,
+    options: Option<&PromptRunOptions>,
+    provider_program: Option<&Path>,
+) -> Result<NextReport> {
     let task = task.trim();
     if task.is_empty() {
         bail!("task intent must contain a nonblank prospective intent");
@@ -38751,7 +38804,14 @@ fn build_next_report_with_intent(
         .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
     let provider_extraction = input.ai;
     let (mut intent, mut intent_diagnostics, existing_run_dir) =
-        resolve_intent_model(&root, "next", task, &input, options)?;
+        resolve_intent_model_with_optional_program(
+            &root,
+            "next",
+            task,
+            &input,
+            options,
+            provider_program,
+        )?;
     if let Some(model) = intent.as_mut() {
         if normalize_provider_next_intent(&root, explicit_module, task, provider_extraction, model)
         {
@@ -39016,6 +39076,7 @@ fn build_next_report_with_intent(
         run_dir.join("intent-diagnostics.json"),
         serde_json::to_string_pretty(&extraction_diagnostics)?,
     )?;
+    write_route_checks(&run_dir, &validation.diagnostics)?;
     let mut allowed_actions = Vec::new();
     if spec_repair.is_some() {
         allowed_actions.push("spec-repair-apply");
@@ -79904,6 +79965,50 @@ fn prepare_route_run_record(
     Ok(run_dir)
 }
 
+fn write_route_checks(run_dir: &Path, diagnostics: &[Diagnostic]) -> Result<()> {
+    let checks = json!({
+        "validator": VALIDATOR_NAME,
+        "validator_version": VALIDATOR_VERSION,
+        "validation": diagnostics,
+    });
+    fs::write(
+        run_dir.join("checks.json"),
+        serde_json::to_string_pretty(&checks)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write route checks `{}`",
+            run_dir.join("checks.json").display()
+        )
+    })
+}
+
+fn ensure_route_checks(run_dir: &Path) -> Result<()> {
+    if run_dir.join("checks.json").is_file() {
+        return Ok(());
+    }
+    let diagnostics = if run_dir.join("intent-diagnostics.json").is_file() {
+        serde_json::from_slice::<JsonValue>(&fs::read(run_dir.join("intent-diagnostics.json"))?)?
+    } else {
+        json!([])
+    };
+    let checks = json!({
+        "validator": VALIDATOR_NAME,
+        "validator_version": VALIDATOR_VERSION,
+        "validation": diagnostics,
+    });
+    fs::write(
+        run_dir.join("checks.json"),
+        serde_json::to_string_pretty(&checks)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write route checks `{}`",
+            run_dir.join("checks.json").display()
+        )
+    })
+}
+
 fn issue_route_receipt(
     root: &Path,
     run_dir: &Path,
@@ -79918,6 +80023,7 @@ fn issue_route_receipt(
     scaffold: Option<ArchitectureAction>,
     repair_authority: Option<SpecRepairAuthority>,
 ) -> Result<RouteRunArtifacts> {
+    ensure_route_checks(run_dir)?;
     let run_id = run_dir
         .file_name()
         .and_then(|value| value.to_str())
@@ -109183,6 +109289,7 @@ properties:
         let counter = root.join("provider-count.txt");
         let invocation = root.join("provider-invocation.txt");
         let valid = r#"{"spec":"rms/intent-model/v0.1","operation":"implementation-change","change_scope":"existing-module","subjects":["cache-task"],"facts":{"domain_decisions":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"lifecycle":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"effects":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"runnable_surface":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"reuse":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"}},"responsibilities":[],"surface_kinds":[],"binding_preferences":[],"open_questions":[]}"#;
+        let semantic = r#"{"spec":"rms/intent-model/v0.1","operation":"semantic-change","change_scope":"existing-module","subjects":["voice-media-playout-liveness"],"facts":{"domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"queued audible frames"},"lifecycle":{"disposition":"required","basis":"explicit","source_quote":"releases within 750 milliseconds"},"effects":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"no new effect"},"runnable_surface":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"no surface"},"reuse":{"disposition":"required","basis":"explicit","source_quote":"exported capability"}},"responsibilities":[{"id":"preserve-audible-frames","kind":"decision","summary":"Preserve queued audible frames through Talk Turn End."}],"surface_kinds":[],"binding_preferences":[],"open_questions":[]}"#;
         let script = format!(
             r#"#!/bin/sh
 set -eu
@@ -109212,6 +109319,7 @@ case '{}' in
   quota) printf '%s\n' "ERROR: You've hit your usage limit. Visit settings to purchase more credits or try again tomorrow." >&2; exit 1 ;;
   readonly-state) printf '%s\n' 'failed to open state db: attempt to write a readonly database' >&2; exit 1 ;;
   invalid) response='{{"invalid":true}}' ;;
+  semantic) response='{}' ;;
   repair) if [ "$count" -eq 1 ]; then response='{{"invalid":true}}'; else response='{}'; fi ;;
   slow) sleep 1; response='{}' ;;
   *) response='{}' ;;
@@ -109221,6 +109329,7 @@ printf '%s\n' "$response" > "$output"
             invocation.display(),
             counter.display(),
             mode,
+            semantic,
             valid,
             valid,
             valid,
@@ -109230,6 +109339,60 @@ printf '%s\n' "$response" > "$output"
         permissions.set_mode(0o755);
         fs::set_permissions(&program, permissions).unwrap();
         (program, counter, invocation)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ai_extracted_explicit_owner_route_writes_checks_and_ready_receipt() {
+        let root = prompt_fixture("provider-explicit-owner-route");
+        let module = root.join("module.yaml");
+        let (program, counter, _) = write_fake_codex(&root, "semantic");
+        initialize_test_git_repository(&root);
+        let mut options = no_provider_options();
+        options.provider = Provider::Codex;
+        options.run_root = PathBuf::from(".rms/runs");
+        options.provider_timeout_seconds = 5;
+        let task = "Change the exported capability voice-media-playout-liveness so queued audible frames remain through Talk Turn End while receive ownership releases within 750 milliseconds.";
+
+        let report = build_next_report_with_intent_program(
+            &root,
+            Some(&module),
+            task,
+            RawIntentInput {
+                ai: true,
+                ..RawIntentInput::default()
+            },
+            Some(&options),
+            &program,
+        )
+        .unwrap();
+        let run_dir = PathBuf::from(&report.receipt_path)
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let checks: JsonValue =
+            serde_json::from_slice(&fs::read(run_dir.join("checks.json")).unwrap()).unwrap();
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(run_dir.join("route-receipt.json")).unwrap()).unwrap();
+
+        assert_eq!(report.result, NextResult::Ready, "{:#?}", report.blockers);
+        assert_eq!(fs::read_to_string(counter).unwrap().trim(), "1");
+        assert_eq!(checks["validator"], VALIDATOR_NAME);
+        assert_eq!(checks["validator_version"], VALIDATOR_VERSION);
+        assert!(checks["validation"].is_array());
+        assert_eq!(receipt.payload.route_result, "ready");
+        assert_eq!(
+            receipt.payload.owner_module,
+            Some(fs::canonicalize(module).unwrap().display().to_string())
+        );
+        assert!(receipt
+            .payload
+            .allowed_action_families
+            .contains(&"spec-apply".to_string()));
+        assert!(run_dir.join("route.json").is_file());
+        assert!(run_dir.join("normalized-intent.json").is_file());
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
