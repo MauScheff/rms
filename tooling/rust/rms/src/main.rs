@@ -27,10 +27,15 @@ use tree_sitter::{Node as TreeSitterNode, Parser as TreeSitterParser};
 use walkdir::WalkDir;
 
 mod behavioral_contract;
+mod binding_migration;
+mod composition_model;
+mod effect_analysis;
 mod effect_executor;
 mod hunt;
 mod probe;
+mod proof_certificate;
 mod property;
+mod schema_generator;
 mod semantic_graph;
 mod verification;
 mod viewer;
@@ -81,6 +86,8 @@ const BOOTSTRAP_PENDING_AUTHORIZED_COMMIT: &str =
     "bootstrap prepared; provenance baseline pending authorized commit";
 const CANDIDATE_PENDING_AUTHORIZED_COMMIT: &str =
     "candidate prepared; strict audit pending authorized commit";
+const IMPLEMENTATION_V1_SPEC: &str = "rms/implementation/v0.1";
+const IMPLEMENTATION_V2_SPEC: &str = "rms/implementation/v0.2";
 const RMS_FULL_GUIDANCE_SIGNATURE: &str = "<!-- RMS generated full guidance -->";
 const RMS_CLAUDE_GUIDANCE_SIGNATURE: &str = "<!-- RMS generated Claude guidance -->";
 const RMS_MANAGED_CLAUDE_START: &str = "<!-- RMS managed Claude guidance: begin -->";
@@ -139,6 +146,10 @@ const INIT_AGENT_SKILLS: &[(&str, &str)] = &[
         include_str!("../assets/skills/hunt-bugs/SKILL.md"),
     ),
 ];
+
+fn is_implementation_spec(spec: Option<&str>) -> bool {
+    matches!(spec, Some(IMPLEMENTATION_V1_SPEC | IMPLEMENTATION_V2_SPEC))
+}
 
 struct CachedRustFile {
     digest: String,
@@ -1143,6 +1154,26 @@ enum Commands {
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
+
+        /// Write a derived composition model and executable probe assembly to this directory.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Deterministic generator seed. Defaults to a digest of the composition inputs.
+        #[arg(long, requires = "output")]
+        seed: Option<u64>,
+
+        /// Maximum generated cases for each described machine input.
+        #[arg(long, default_value_t = schema_generator::DEFAULT_CASES_PER_INPUT, requires = "output")]
+        cases_per_input: usize,
+
+        /// Validate and describe generated outputs without writing them.
+        #[arg(long, requires = "output")]
+        dry_run: bool,
+
+        /// Replace an existing derived output directory.
+        #[arg(long, requires = "output")]
+        force: bool,
     },
 
     /// Verify an implementation binding or composite module rollup.
@@ -1307,6 +1338,12 @@ enum Commands {
         route_receipt: PathBuf,
     },
 
+    /// Inspect or migrate implementation binding schema versions.
+    Binding {
+        #[command(subcommand)]
+        command: BindingCommands,
+    },
+
     /// Scaffold a recursive RMS capability tree: composite parent, domain child, and boundary child.
     #[command(name = "add-capability-tree")]
     AddCapabilityTree {
@@ -1404,6 +1441,27 @@ enum AdoptionCommands {
         coverage: WorkspaceCoverage,
 
         /// Validate and report without updating configuration.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum BindingCommands {
+    /// Deterministically migrate implementation metadata to a newer schema.
+    Migrate {
+        /// Path to implementation.yaml.
+        implementation: PathBuf,
+
+        /// Target implementation schema version. This release supports v0.2.
+        #[arg(long)]
+        to: String,
+
+        /// Ready route receipt authorizing this implementation metadata mutation.
+        #[arg(long = "route-receipt")]
+        route_receipt: PathBuf,
+
+        /// Print the migrated candidate without writing it.
         #[arg(long)]
         dry_run: bool,
     },
@@ -1751,6 +1809,8 @@ struct StructureReport {
     public_behavior_bindings: Vec<PublicBehaviorBinding>,
     dependency_behavior_bindings: Vec<DependencyBehaviorBinding>,
     roles: Vec<StructureRoleReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effect_analysis: Option<effect_analysis::EffectAnalysis>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -3418,6 +3478,8 @@ struct SemanticFunctionChange {
     symbol: String,
     kind: String,
     purity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trust: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "SemanticFunctionDischargesChange::is_empty"
@@ -4197,6 +4259,28 @@ enum PropertyCommands {
         /// Maximum duration for each property realization command.
         #[arg(long, default_value_t = DEFAULT_PROOF_TIMEOUT_SECONDS)]
         timeout_seconds: u64,
+    },
+
+    /// Derive a deterministic executable probe assembly from probe JSON Schemas.
+    Generate {
+        /// Path to implementation.yaml.
+        implementation: PathBuf,
+
+        /// Output path for rms/probe-assembly/v0.3 YAML.
+        #[arg(long)]
+        out: PathBuf,
+
+        /// Optional semantic property id recorded in the generated checks.
+        #[arg(long)]
+        property: Option<String>,
+
+        /// Deterministic seed. Defaults to a digest of the implementation.
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Maximum generated cases for each described input.
+        #[arg(long, default_value_t = schema_generator::DEFAULT_CASES_PER_INPUT)]
+        cases_per_input: usize,
     },
 
     /// Evaluate executable properties over a real RMS trace.
@@ -9281,6 +9365,7 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
         "Declare",
         &[
             "spec",
+            "binding",
             "machine",
             "surface",
             "add-module",
@@ -9937,6 +10022,19 @@ fn run_main() -> Result<()> {
                 dry_run,
                 timeout_seconds,
             } => run_property_run(&implementation, profile, dry_run, json, timeout_seconds),
+            PropertyCommands::Generate {
+                implementation,
+                out,
+                property,
+                seed,
+                cases_per_input,
+            } => run_property_generate(
+                &implementation,
+                &out,
+                property.as_deref(),
+                seed,
+                cases_per_input,
+            ),
             PropertyCommands::Evaluate {
                 target,
                 trace,
@@ -10345,7 +10443,23 @@ fn run_main() -> Result<()> {
             proof_timeout_seconds,
         ),
         Commands::CheckCompat { old, new, json } => run_check_compat(&old, &new, json),
-        Commands::Compose { root, json } => run_compose(&root, json),
+        Commands::Compose {
+            root,
+            json,
+            output,
+            seed,
+            cases_per_input,
+            dry_run,
+            force,
+        } => run_compose(
+            &root,
+            json,
+            output.as_deref(),
+            seed,
+            cases_per_input,
+            dry_run,
+            force,
+        ),
         Commands::Verify { target, dry_run } => run_verify(&target, dry_run),
         Commands::Structure {
             implementation,
@@ -10431,6 +10545,26 @@ fn run_main() -> Result<()> {
             println!("route receipt: {}", receipt.receipt_id);
             Ok(())
         }
+        Commands::Binding { command } => match command {
+            BindingCommands::Migrate {
+                implementation,
+                to,
+                route_receipt,
+                dry_run,
+            } => {
+                let root = repository_root_for_target(&implementation)?;
+                let receipt = require_route_receipt(
+                    &root,
+                    &route_receipt,
+                    "binding-migrate",
+                    &implementation,
+                    None,
+                );
+                run_binding_migrate(&implementation, &to, dry_run)?;
+                println!("route receipt: {}", receipt.receipt_id);
+                Ok(())
+            }
+        },
         Commands::AddCapabilityTree {
             path,
             name,
@@ -10617,7 +10751,7 @@ fn build_repository_profile(root: &Path) -> Result<BuiltRepositoryProfile> {
         } else if file_name == "context-map.yaml" {
             Some("rms/context-map/v0.1")
         } else if file_name == "implementation.yaml" {
-            Some("rms/implementation/v0.1")
+            Some("rms/implementation/v0.1|v0.2")
         } else if path
             .parent()
             .and_then(Path::file_name)
@@ -10642,6 +10776,8 @@ fn build_repository_profile(root: &Path) -> Result<BuiltRepositoryProfile> {
                 let actual = get_str(&manifest.value, &["spec"]);
                 if if *expected_spec == "rms/contract/v0.2|v0.3" {
                     !behavioral_contract::is_contract_spec(actual)
+                } else if *expected_spec == "rms/implementation/v0.1|v0.2" {
+                    !is_implementation_spec(actual)
                 } else {
                     actual != Some(*expected_spec)
                 } {
@@ -11460,7 +11596,7 @@ fn build_explain_report(
                 ));
             }
         };
-        if get_str(&implementation.value, &["spec"]) != Some("rms/implementation/v0.1") {
+        if !is_implementation_spec(get_str(&implementation.value, &["spec"])) {
             return Ok(blocked_explain_report(
                 &module_path,
                 format!(
@@ -12324,6 +12460,7 @@ fn run_design(
         run_dir.join("intent-diagnostics.json"),
         serde_json::to_string_pretty(&diagnostics)?,
     )?;
+    write_route_checks(&run_dir, &diagnostics)?;
     let ready = result == "ready";
     let scaffold = ready
         .then(|| decision.as_ref().map(|value| value.scaffold.clone()))
@@ -12452,6 +12589,17 @@ fn resolve_intent_model(
     input: &RawIntentInput,
     options: Option<&PromptRunOptions>,
 ) -> Result<(Option<IntentModel>, Vec<Diagnostic>, Option<PathBuf>)> {
+    resolve_intent_model_with_optional_program(root, command, task, input, options, None)
+}
+
+fn resolve_intent_model_with_optional_program(
+    root: &Path,
+    command: &str,
+    task: &str,
+    input: &RawIntentInput,
+    options: Option<&PromptRunOptions>,
+    provider_program: Option<&Path>,
+) -> Result<(Option<IntentModel>, Vec<Diagnostic>, Option<PathBuf>)> {
     let supplied = usize::from(input.json.is_some())
         + usize::from(input.yaml.is_some())
         + usize::from(input.file.is_some())
@@ -12487,7 +12635,17 @@ fn resolve_intent_model(
         if options.sandbox != CodexSandbox::ReadOnly {
             bail!("intent extraction providers must use the read-only sandbox");
         }
-        let extraction = extract_provider_intent(root, command, task, options, input.refresh)?;
+        let extraction = match provider_program {
+            Some(program) => extract_provider_intent_with_program(
+                root,
+                command,
+                task,
+                options,
+                input.refresh,
+                program,
+            )?,
+            None => extract_provider_intent(root, command, task, options, input.refresh)?,
+        };
         run_dir = Some(extraction.run_dir);
         serde_json::to_string(&extraction.intent)?
     };
@@ -12824,6 +12982,7 @@ fn finalize_provider_operational_failure(
         run_dir.join("intent-diagnostics.json"),
         serde_json::to_string_pretty(&diagnostics)?,
     )?;
+    write_route_checks(run_dir, &diagnostics)?;
     fs::write(
         run_dir.join("provider.json"),
         serde_json::to_string_pretty(&json!({
@@ -15377,7 +15536,7 @@ fn resolve_probe_implementation(explicit: Option<&Path>) -> Result<PathBuf> {
 
 fn load_probe_binding(path: &Path) -> Result<ProbeBinding> {
     let implementation = load_manifest(path)?;
-    if get_str(&implementation.value, &["spec"]) != Some("rms/implementation/v0.1") {
+    if !is_implementation_spec(get_str(&implementation.value, &["spec"])) {
         bail!("`{}` is not an RMS implementation binding", path.display());
     }
     let binding = get_str(&implementation.value, &["binding"]).unwrap_or("");
@@ -16193,7 +16352,7 @@ fn execute_trace_producers(
     timeout_seconds: u64,
 ) -> Result<TraceRunReport> {
     let manifest = load_manifest(implementation)?;
-    if get_str(&manifest.value, &["spec"]) != Some("rms/implementation/v0.1") {
+    if !is_implementation_spec(get_str(&manifest.value, &["spec"])) {
         bail!(
             "`{}` is not an RMS implementation binding",
             implementation.display()
@@ -16959,6 +17118,205 @@ fn run_property_check(target: &Path, strict: bool, json_output: bool) -> Result<
     Ok(())
 }
 
+fn run_property_generate(
+    implementation: &Path,
+    out: &Path,
+    property: Option<&str>,
+    seed: Option<u64>,
+    cases_per_input: usize,
+) -> Result<()> {
+    if cases_per_input == 0 {
+        bail!("--cases-per-input must be greater than zero");
+    }
+    let binding = load_probe_binding(implementation)?;
+    if binding.protocol != "rms/machine-probe/v0.2" {
+        bail!("property generation requires machine-probe v0.2 describe data");
+    }
+    let selected_property = property
+        .map(|id| select_generated_property(&binding.implementation, id))
+        .transpose()?;
+    let implementation_digest = sha256_file(implementation)?;
+    let seed = seed.unwrap_or_else(|| seed_from_digest(&implementation_digest));
+    let assembly_implementation = fs::canonicalize(implementation).with_context(|| {
+        format!(
+            "failed to resolve implementation binding `{}`",
+            implementation.display()
+        )
+    })?;
+    let temp_root = unique_runtime_temp_dir("property-generate")?;
+    let result = (|| {
+        let request = serde_yaml::to_value(json!({
+            "spec": binding.protocol,
+            "operation": "describe"
+        }))?;
+        let description = execute_machine_probe_request(
+            &binding,
+            &request,
+            &temp_root,
+            "describe",
+            DEFAULT_PROOF_TIMEOUT_SECONDS,
+        )?;
+        validate_probe_description(&description, &binding.implementation)?;
+
+        let mut states = get_path(&description, &["states"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .flat_map(|state| {
+                get_path(state, &["examples"])
+                    .and_then(YamlValue::as_sequence)
+                    .into_iter()
+                    .flatten()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        states.sort_by_key(|state| serde_yaml::to_string(state).unwrap_or_default());
+        if states.is_empty() {
+            bail!("machine-probe v0.2 describe returned no concrete starting states");
+        }
+
+        let public_inputs = get_path(
+            &binding.implementation.value,
+            &["architecture", "public_behavior_bindings"],
+        )
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .flat_map(|binding| get_string_array(binding, &["machine_inputs"]))
+        .collect::<BTreeSet<_>>();
+        let mut instances = Vec::new();
+        let mut stimuli = Vec::new();
+        let inputs = get_path(&description, &["inputs"])
+            .and_then(YamlValue::as_sequence)
+            .ok_or_else(|| anyhow!("probe description has no inputs"))?;
+        for (input_index, input) in inputs.iter().enumerate() {
+            let kind =
+                get_str(input, &["kind"]).ok_or_else(|| anyhow!("described input has no kind"))?;
+            let name =
+                get_str(input, &["name"]).ok_or_else(|| anyhow!("described input has no name"))?;
+            if !public_inputs.contains(name) {
+                continue;
+            }
+            let schema = serde_json::to_value(
+                get_path(input, &["data_schema"])
+                    .ok_or_else(|| anyhow!("described input has no data_schema"))?,
+            )?;
+            let generated = schema_generator::generate_cases(
+                &schema,
+                seed ^ (input_index as u64 + 1),
+                cases_per_input,
+            )?;
+            for (state_index, _) in states.iter().enumerate() {
+                for (case_index, data) in generated.cases.iter().enumerate() {
+                    for repetition in 0..2 {
+                        let instance_id = format!(
+                            "subject-state-{state_index}-input-{input_index}-case-{case_index}-repeat-{repetition}"
+                        );
+                        instances.push(json!({
+                            "id": instance_id,
+                            "implementation": assembly_implementation.display().to_string(),
+                            "start": serde_json::to_value(&states[state_index])?
+                        }));
+                        stimuli.push(json!({
+                            "id": format!("input-{input_index}-state-{state_index}-case-{case_index}-repeat-{repetition}"),
+                            "target": instance_id,
+                            "input": {
+                                "kind": kind,
+                                "name": name,
+                                "data": data
+                            }
+                        }));
+                    }
+                }
+            }
+        }
+        if stimuli.is_empty() {
+            bail!("probe description has no schema for a public machine input");
+        }
+        let checks = selected_property
+            .as_ref()
+            .map(|target| {
+                let realization = target.realizations.first().ok_or_else(|| {
+                    anyhow!("property `{}` has no executable realization", target.id)
+                })?;
+                if realization.runner.matches('#').count() != 1 {
+                    bail!(
+                        "property `{}` realization runner must use exact path#symbol syntax",
+                        target.id
+                    );
+                }
+                Ok(vec![json!({
+                    "id": target.id,
+                    "when": "quiescent",
+                    "assert": {
+                        "kind": "oracle",
+                        "command": realization.command,
+                        "runner": realization.runner
+                    }
+                })])
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let assembly = json!({
+            "spec": "rms/probe-assembly/v0.3",
+            "instances": instances,
+            "stimuli": stimuli,
+            "routing": [],
+            "substitutes": [],
+            "checks": checks,
+            "exploration": {
+                "max_steps": 30,
+                "max_schedules": 100,
+                "max_states": 10000
+            },
+            "faults": []
+        });
+        validate_json_against_schema(
+            &assembly,
+            include_str!("../../../../schemas/probe-assembly-v0.3.schema.json"),
+            "probe assembly",
+        )?;
+        if out.exists() {
+            bail!("property assembly `{}` already exists", out.display());
+        }
+        let rendered = serde_yaml::to_string(&assembly)?;
+        write_new_file(out, &rendered)?;
+        println!(
+            "generated {} deterministic stimuli from seed {} at {}",
+            assembly["stimuli"].as_array().map_or(0, Vec::len),
+            seed,
+            out.display()
+        );
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&temp_root);
+    result
+}
+
+fn select_generated_property(
+    implementation: &LoadedManifest,
+    id: &str,
+) -> Result<PropertyTargetReport> {
+    property_targets_from_implementation(
+        implementation,
+        &["architecture", "reliability", "properties"],
+        "property",
+    )
+    .into_iter()
+    .chain(property_targets_from_implementation(
+        implementation,
+        &["architecture", "reliability", "fuzz_targets"],
+        "fuzz",
+    ))
+    .find(|target| target.id == id)
+    .ok_or_else(|| {
+        anyhow!(
+            "property `{id}` is not declared by `{}`",
+            implementation.path.display()
+        )
+    })
+}
+
 fn run_property_run(
     implementation: &Path,
     profile: PropertyProfile,
@@ -17019,7 +17377,7 @@ fn execute_property_realizations_with_batch_and_cache(
     shared_proof_cache: Option<&verification::ProofCache>,
 ) -> Result<PropertyRunReport> {
     let manifest = load_manifest(implementation)?;
-    if get_str(&manifest.value, &["spec"]) != Some("rms/implementation/v0.1") {
+    if !is_implementation_spec(get_str(&manifest.value, &["spec"])) {
         bail!(
             "`{}` is not an RMS implementation binding",
             implementation.display()
@@ -18324,7 +18682,103 @@ fn run_property_search(
         }
     });
     write_property_analysis(out, &analysis)?;
+    if exploration.exhausted()
+        && goal == PropertySearchGoal::Violate
+        && result == "exhaustively-satisfied"
+    {
+        write_exhaustive_proof_certificate(out, target, &target_property, &analysis)?;
+    }
     print_property_analysis(&analysis, json_output)
+}
+
+fn write_exhaustive_proof_certificate(
+    out: Option<&Path>,
+    target: &Path,
+    property: &PropertyTargetReport,
+    analysis: &JsonValue,
+) -> Result<()> {
+    let Some(out) = out else {
+        return Ok(());
+    };
+    let context = load_spec_target(target)?;
+    let implementation = context
+        .implementation
+        .as_ref()
+        .ok_or_else(|| anyhow!("proof certificates require an implementation binding"))?;
+    let module = context
+        .module
+        .as_ref()
+        .and_then(|module| get_str(&module.value, &["module", "name"]))
+        .or_else(|| get_str(&implementation.value, &["module"]))
+        .ok_or_else(|| anyhow!("proof certificate subject has no module identity"))?;
+    let source_digest = build_effect_analysis(implementation)?.source_digest;
+    let evidence_digest = format!("sha256:{}", sha256_bytes(&serde_json::to_vec(analysis)?));
+    let contract = get_str(&property.definition, &["contract"])
+        .or_else(|| get_str(&property.definition, &["operation", "contract"]))
+        .map(str::to_string);
+    let contract_digest = contract
+        .as_deref()
+        .map(|reference| {
+            let base = target.parent().unwrap_or_else(|| Path::new("."));
+            sha256_file(&base.join(reference)).map(|digest| format!("sha256:{digest}"))
+        })
+        .transpose()?;
+    let certificate = proof_certificate::ProofCertificate {
+        spec: proof_certificate::PROOF_CERTIFICATE_SPEC.to_string(),
+        subject: proof_certificate::ProofSubject {
+            module: module.to_string(),
+            contract,
+            property: property.id.clone(),
+        },
+        digests: proof_certificate::ProofDigests {
+            contract: contract_digest,
+            implementation: format!("sha256:{}", sha256_file(&implementation.path)?),
+            source: source_digest,
+            tool: property_proof_tool_digest(),
+            evidence: evidence_digest,
+        },
+        strategy: proof_certificate::ProofStrategy::DeterministicExhaustive { exhausted: true },
+        assumptions: property_proof_assumptions(property),
+        result: proof_certificate::ProofResult::Satisfied,
+    };
+    let value = serde_json::to_value(&certificate)?;
+    validate_json_against_schema(
+        &value,
+        include_str!("../../../../schemas/proof-certificate.schema.json"),
+        "proof certificate",
+    )?;
+    let path = proof_certificate_path(out);
+    atomic_replace_file(&path, &serde_json::to_vec_pretty(&certificate)?)
+        .with_context(|| format!("failed to write proof certificate `{}`", path.display()))?;
+    Ok(())
+}
+
+fn proof_certificate_path(evidence: &Path) -> PathBuf {
+    let mut name = evidence.as_os_str().to_os_string();
+    name.push(".proof-certificate.json");
+    PathBuf::from(name)
+}
+
+fn property_proof_tool_digest() -> String {
+    format!(
+        "sha256:{}",
+        sha256_bytes(format!("{RMS_LONG_VERSION}:property-proof-v1").as_bytes())
+    )
+}
+
+fn property_proof_assumptions(property: &PropertyTargetReport) -> BTreeMap<String, String> {
+    get_path(&property.definition, &["assumptions"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(index, assumption)| {
+            let id = get_str(assumption, &["id"])
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("assumption-{index}"));
+            (id, serde_yaml::to_string(assumption).unwrap_or_default())
+        })
+        .collect()
 }
 
 fn property_trace_len(trace: &JsonValue) -> usize {
@@ -19529,6 +19983,7 @@ fn validate_property_target_report(
     implementation: Option<&LoadedManifest>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    validate_algebraic_property(manifest, target, diagnostics);
     if target.proves.as_deref().is_none_or(str::is_empty) {
         push_unique_warning(
             diagnostics,
@@ -19859,6 +20314,72 @@ fn validate_property_target_report(
     }
     validate_property_explorations(manifest, base, target, diagnostics);
     validate_temporal_target_report(manifest, target, diagnostics);
+}
+
+fn validate_algebraic_property(
+    manifest: &LoadedManifest,
+    target: &PropertyTargetReport,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !matches!(
+        target.kind.as_str(),
+        "idempotent" | "commutative" | "associative" | "monotonic"
+    ) {
+        return;
+    }
+    let mut missing = Vec::new();
+    if get_str(&target.definition, &["subject"]).is_none_or(str::is_empty) {
+        missing.push("subject");
+    }
+    let operation = get_path(&target.definition, &["operation"]);
+    let owns_behavior = operation.is_some_and(|operation| {
+        operation.as_str().is_some_and(|value| !value.is_empty())
+            || get_str(operation, &["public_behavior"]).is_some()
+            || get_str(operation, &["semantic_function"]).is_some()
+            || get_str(operation, &["symbol"]).is_some()
+    });
+    if !owns_behavior {
+        missing.push("operation.public_behavior|semantic_function|symbol");
+    }
+    let relation = if target.kind == "monotonic" {
+        "order_relation"
+    } else {
+        "equality_projection"
+    };
+    if get_path(&target.definition, &[relation]).is_none() {
+        missing.push(relation);
+    }
+    if get_path(&target.definition, &["input_space"]).is_none() {
+        missing.push("input_space");
+    }
+    if get_str(&target.definition, &["proof_property"]) != Some(target.id.as_str()) {
+        missing.push("proof_property matching id");
+    }
+    if !missing.is_empty() {
+        diagnostics.push(error(
+            "semantic.algebraic-property-incomplete",
+            &manifest.path,
+            format!(
+                "algebraic property `{}` ({}) is missing {}",
+                target.id,
+                target.kind,
+                missing.join(", ")
+            ),
+        ));
+    }
+    if !target.realizations.iter().any(|realization| {
+        (realization.strategy == "deterministic-exhaustive" && realization.exhaustive)
+            || realization.strategy == "model-checker"
+    }) {
+        diagnostics.push(error(
+            "semantic.algebraic-property-proof-insufficient",
+            &manifest.path,
+            format!(
+                "algebraic property `{}` requires deterministic-exhaustive or model-checker proof",
+                target.id
+            ),
+        ));
+    }
 }
 
 fn validate_property_explorations(
@@ -20692,6 +21213,9 @@ fn property_runner_calls_operation(
     if get_str(&implementation.value, &["binding"]) == Some("executable") {
         return true;
     }
+    if get_str(&implementation.value, &["binding"]) == Some("fixture") {
+        return binding_symbol_reference_exists(base, implementation, runner);
+    }
     let mut symbols = get_path(&implementation.value, &["semantic_functions"])
         .and_then(YamlValue::as_sequence)
         .into_iter()
@@ -20818,6 +21342,9 @@ impl<'ast> Visit<'ast> for RustCalledSymbolVisitor {
 fn property_runner_has_oracle(base: &Path, implementation: &LoadedManifest, runner: &str) -> bool {
     if get_str(&implementation.value, &["binding"]) == Some("executable") {
         return true;
+    }
+    if get_str(&implementation.value, &["binding"]) == Some("fixture") {
+        return binding_symbol_reference_exists(base, implementation, runner);
     }
     let Some((path, symbol)) =
         binding_reference_parts_in_workspace(runner, base, &implementation.path)
@@ -23866,10 +24393,12 @@ fn run_verify_target_captured_with_cache(
 ) -> Result<String> {
     let manifest = load_manifest(target)?;
     match get_str(&manifest.value, &["spec"]) {
-        Some("rms/implementation/v0.1") => run_verify_implementation_captured_with_cache(
-            target,
-            cache.and_then(|cache| cache.proof_cache),
-        ),
+        Some(IMPLEMENTATION_V1_SPEC | IMPLEMENTATION_V2_SPEC) => {
+            run_verify_implementation_captured_with_cache(
+                target,
+                cache.and_then(|cache| cache.proof_cache),
+            )
+        }
         Some("rms/module/v0.1") if is_composite_module(&manifest.value) => {
             run_verify_composite_module_captured_with_cache(target, &manifest, cache)
         }
@@ -24777,7 +25306,9 @@ fn discover_impact_modules(root: &Path) -> Result<Vec<ImpactModuleMetadata>> {
         let manifest = load_manifest(&target)?;
         match get_str(&manifest.value, &["spec"]) {
             Some("rms/module/v0.1") => module_manifests.push(manifest),
-            Some("rms/implementation/v0.1") => implementation_manifests.push(manifest),
+            Some(IMPLEMENTATION_V1_SPEC | IMPLEMENTATION_V2_SPEC) => {
+                implementation_manifests.push(manifest)
+            }
             _ => {}
         }
     }
@@ -25310,6 +25841,7 @@ fn is_supported_yaml_manifest(path: &Path) -> bool {
                 | "spec: rms/contract/v0.3"
                 | "spec: rms/context-map/v0.1"
                 | "spec: rms/implementation/v0.1"
+                | "spec: rms/implementation/v0.2"
         )
     })
 }
@@ -25336,7 +25868,9 @@ fn validate_loaded_manifest(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
             validate_behavioral_contract(manifest, diagnostics, false)
         }
         Some("rms/context-map/v0.1") => validate_context_map(manifest, diagnostics),
-        Some("rms/implementation/v0.1") => validate_implementation(manifest, diagnostics),
+        Some(IMPLEMENTATION_V1_SPEC | IMPLEMENTATION_V2_SPEC) => {
+            validate_implementation(manifest, diagnostics)
+        }
         Some("rms/conformance/v0.1") => {}
         Some(other) => diagnostics.push(error(
             "manifest.spec",
@@ -25434,6 +25968,18 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
         "rms/context-map/v0.1" => Some(include_str!("../../../../schemas/context-map.schema.json")),
         "rms/implementation/v0.1" => Some(include_str!(
             "../../../../schemas/implementation.schema.json"
+        )),
+        "rms/implementation/v0.2" => Some(include_str!(
+            "../../../../schemas/implementation-v0.2.schema.json"
+        )),
+        "rms/effect-analysis/v0.1" => Some(include_str!(
+            "../../../../schemas/effect-analysis.schema.json"
+        )),
+        "rms/composition-model/v0.1" => Some(include_str!(
+            "../../../../schemas/composition-model.schema.json"
+        )),
+        "rms/proof-certificate/v0.1" => Some(include_str!(
+            "../../../../schemas/proof-certificate.schema.json"
         )),
         "rms/test-execution-receipt/v0.1" => Some(include_str!(
             "../../../../schemas/test-execution-receipt.schema.json"
@@ -25942,6 +26488,160 @@ fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diag
         },
         _ => {}
     }
+    if get_str(&manifest.value, &["spec"]) == Some(IMPLEMENTATION_V2_SPEC) {
+        validate_effect_analysis(manifest, diagnostics);
+    }
+}
+
+fn validate_effect_analysis(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    if get_str(&manifest.value, &["architecture", "static_inspection"]) == Some("opaque") {
+        for function in semantic_function_items(manifest).into_iter().flatten() {
+            if get_str(function, &["purity"]) == Some("pure") {
+                diagnostics.push(error(
+                    "effects.opaque-pure-forbidden",
+                    &manifest.path,
+                    format!(
+                        "opaque semantic function `{}` cannot claim verified purity",
+                        get_str(function, &["id"]).unwrap_or("<unnamed>")
+                    ),
+                ));
+            }
+        }
+        return;
+    }
+    let Ok(analysis) = build_effect_analysis(manifest) else {
+        diagnostics.push(error(
+            "effects.analysis-unavailable",
+            &manifest.path,
+            "implementation v0.2 effect analysis could not be constructed",
+        ));
+        return;
+    };
+    match analysis.result {
+        effect_analysis::AnalysisResult::Pass => {}
+        effect_analysis::AnalysisResult::Unsupported => diagnostics.push(error(
+            "effects.binding-unsupported",
+            &manifest.path,
+            "implementation v0.2 requires a supported strict effect analyzer",
+        )),
+        effect_analysis::AnalysisResult::Fail => {
+            for function in analysis
+                .functions
+                .iter()
+                .filter(|function| function.verdict == effect_analysis::FunctionVerdict::Fail)
+            {
+                diagnostics.push(error(
+                    "effects.transitive-purity",
+                    &manifest.path,
+                    format!(
+                        "semantic function `{}` failed effect analysis: {}",
+                        function.id,
+                        function.reasons.join("; ")
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::EffectAnalysis> {
+    let binding = get_str(&manifest.value, &["binding"])
+        .unwrap_or_default()
+        .to_string();
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let source_root = get_str(&manifest.value, &["source", "root"])
+        .map(|root| base.join(root))
+        .unwrap_or_else(|| base.to_path_buf());
+    let extensions: &[&str] = match binding.as_str() {
+        "rust" => &["rs"],
+        "swift" => &["swift"],
+        "python" => &["py"],
+        "js" | "javascript" => &["js", "mjs", "cjs", "ts", "tsx"],
+        _ => &[],
+    };
+    let mut sources = BTreeMap::new();
+    if source_root.is_file() {
+        if let Ok(source) = fs::read_to_string(&source_root) {
+            sources.insert(display_relative(base, &source_root), source);
+        }
+    } else if source_root.is_dir() {
+        for entry in WalkDir::new(&source_root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| {
+                !entry.file_type().is_dir()
+                    || !matches!(
+                        entry.file_name().to_string_lossy().as_ref(),
+                        "target" | ".build" | "node_modules" | "dist"
+                    )
+            })
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+        {
+            if !entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extensions.contains(&extension))
+            {
+                continue;
+            }
+            if let Ok(source) = fs::read_to_string(entry.path()) {
+                sources.insert(display_relative(base, entry.path()), source);
+            }
+        }
+    }
+    let digest_input = sources
+        .iter()
+        .flat_map(|(path, source)| [path.as_bytes(), b"\0", source.as_bytes(), b"\0"])
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
+    let semantic_functions = semantic_function_items(manifest)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|function| {
+            Some(effect_analysis::SemanticFunctionExpectation {
+                id: get_str(function, &["id"])?.to_string(),
+                symbol: get_str(function, &["symbol"])?.to_string(),
+                purity: match get_str(function, &["purity"]).unwrap_or("effectful") {
+                    "boundary" => "effectful".to_string(),
+                    purity => purity.to_string(),
+                },
+                authorities: get_string_array(function, &["authorities"])
+                    .into_iter()
+                    .collect(),
+            })
+        })
+        .collect();
+    let authority_facades = typed_yaml_sequence::<AuthorityBinding>(
+        &manifest.value,
+        &["architecture", "authority_bindings"],
+    )
+    .into_iter()
+    .map(|binding| effect_analysis::AuthorityFacade {
+        authority: binding.authority,
+        symbol: binding.safe_facade,
+    })
+    .collect();
+    Ok(effect_analysis::analyze(effect_analysis::AnalysisInput {
+        binding,
+        source_digest: format!("sha256:{}", sha256_bytes(&digest_input)),
+        tool_digest: format!(
+            "sha256:{}",
+            sha256_bytes(
+                format!(
+                    "{RMS_LONG_VERSION}:effect-analysis-v1:{}:{}",
+                    effect_analysis::PURE_ALLOWLIST_VERSION,
+                    effect_analysis::AUTHORITY_ROOT_VERSION
+                )
+                .as_bytes()
+            )
+        ),
+        sources,
+        semantic_functions,
+        authority_facades,
+    }))
 }
 
 fn validate_machine_probe_binding(
@@ -29209,6 +29909,9 @@ fn source_mentions_path_or_stem(source: &str, reference: &str) -> bool {
 }
 
 fn inspect_pure_role_effect_markers(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    if get_str(&manifest.value, &["spec"]) == Some(IMPLEMENTATION_V2_SPEC) {
+        return;
+    }
     let mut pure_references = pure_semantic_function_source_paths(manifest);
     if pure_references.is_empty()
         && get_str(&manifest.value, &["architecture", "shape"]) == Some("domain-engine")
@@ -38743,6 +39446,36 @@ fn build_next_report_with_intent(
     input: RawIntentInput,
     options: Option<&PromptRunOptions>,
 ) -> Result<NextReport> {
+    build_next_report_with_optional_program(root, explicit_module, task, input, options, None)
+}
+
+#[cfg(test)]
+fn build_next_report_with_intent_program(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    task: &str,
+    input: RawIntentInput,
+    options: Option<&PromptRunOptions>,
+    provider_program: &Path,
+) -> Result<NextReport> {
+    build_next_report_with_optional_program(
+        root,
+        explicit_module,
+        task,
+        input,
+        options,
+        Some(provider_program),
+    )
+}
+
+fn build_next_report_with_optional_program(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    task: &str,
+    input: RawIntentInput,
+    options: Option<&PromptRunOptions>,
+    provider_program: Option<&Path>,
+) -> Result<NextReport> {
     let task = task.trim();
     if task.is_empty() {
         bail!("task intent must contain a nonblank prospective intent");
@@ -38751,7 +39484,14 @@ fn build_next_report_with_intent(
         .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
     let provider_extraction = input.ai;
     let (mut intent, mut intent_diagnostics, existing_run_dir) =
-        resolve_intent_model(&root, "next", task, &input, options)?;
+        resolve_intent_model_with_optional_program(
+            &root,
+            "next",
+            task,
+            &input,
+            options,
+            provider_program,
+        )?;
     if let Some(model) = intent.as_mut() {
         if normalize_provider_next_intent(&root, explicit_module, task, provider_extraction, model)
         {
@@ -39016,11 +39756,12 @@ fn build_next_report_with_intent(
         run_dir.join("intent-diagnostics.json"),
         serde_json::to_string_pretty(&extraction_diagnostics)?,
     )?;
+    write_route_checks(&run_dir, &validation.diagnostics)?;
     let mut allowed_actions = Vec::new();
     if spec_repair.is_some() {
         allowed_actions.push("spec-repair-apply");
     } else if machine_repair.is_some() {
-        allowed_actions.push("machine-apply");
+        allowed_actions.extend(["machine-apply", "binding-migrate"]);
     } else if result == NextResult::Ready {
         match classification.lane {
             TaskLane::Semantic => {
@@ -39032,6 +39773,9 @@ fn build_next_report_with_intent(
             }
             TaskLane::ImplementationCandidate => allowed_actions.push("add-binding"),
             _ => {}
+        }
+        if context.implementation.is_some() {
+            allowed_actions.push("binding-migrate");
         }
     }
     let owner_path = owner
@@ -45648,7 +46392,7 @@ fn discover_implementation_manifests(
         let Ok(manifest) = load_manifest(&target) else {
             continue;
         };
-        if get_str(&manifest.value, &["spec"]) == Some("rms/implementation/v0.1") {
+        if is_implementation_spec(get_str(&manifest.value, &["spec"])) {
             implementations.push(manifest);
         }
     }
@@ -47127,6 +47871,17 @@ fn append_validation_audit_checks(
     include_examples: bool,
     checks: &mut Vec<AuditCheck>,
 ) -> Result<()> {
+    for implementation in discover_implementation_manifests(root, include_examples)? {
+        if get_str(&implementation.value, &["spec"]) == Some(IMPLEMENTATION_V1_SPEC) {
+            checks.push(audit_check(
+                "implementation.v0.2-required",
+                "validation",
+                if strict { "fail" } else { "review-required" },
+                &implementation.path,
+                "production checks require rms/implementation/v0.2; migrate this readable v0.1 binding with `rms binding migrate`",
+            ));
+        }
+    }
     let diagnostics =
         collect_validation_diagnostics(root, vec![], vec![], vec![], vec![], vec![], vec![])?
             .into_iter()
@@ -47286,7 +48041,7 @@ fn append_implementation_audit_checks(
         let Ok(manifest) = load_manifest(&target) else {
             continue;
         };
-        if get_str(&manifest.value, &["spec"]) == Some("rms/implementation/v0.1") {
+        if is_implementation_spec(get_str(&manifest.value, &["spec"])) {
             if !audit_path_in_scope(root, &target, include_examples) {
                 continue;
             }
@@ -48530,13 +49285,14 @@ fn run_structure(implementation: &Path, json_output: bool) -> Result<()> {
 
 fn build_structure_report(implementation: &Path) -> Result<StructureReport> {
     let manifest = load_manifest(implementation)?;
-    if get_str(&manifest.value, &["spec"]) != Some("rms/implementation/v0.1") {
+    if !is_implementation_spec(get_str(&manifest.value, &["spec"])) {
         bail!(
             "`{}` is not an RMS implementation binding",
             implementation.display()
         );
     }
 
+    let effect_analysis = build_effect_analysis(&manifest).ok();
     let mut diagnostics = Vec::new();
     validate_loaded_manifest(&manifest, &mut diagnostics);
     let focused_diagnostics = diagnostics
@@ -48585,6 +49341,7 @@ fn build_structure_report(implementation: &Path) -> Result<StructureReport> {
             &["architecture", "dependency_behavior_bindings"],
         ),
         roles: structure_role_report(&manifest.value),
+        effect_analysis,
         diagnostics: focused_diagnostics,
     })
 }
@@ -48909,6 +49666,18 @@ fn print_structure_report(report: &StructureReport) {
             println!("  {}: {}", role.role, role.paths.join(", "));
         }
     }
+    if let Some(analysis) = &report.effect_analysis {
+        println!("effect_analysis: {:?}", analysis.result);
+        for function in &analysis.functions {
+            println!(
+                "  {}: {:?}; authorities [{}]; unresolved [{}]",
+                function.id,
+                function.verdict,
+                function.transitive_authorities.join(", "),
+                function.unresolved_calls.join(", ")
+            );
+        }
+    }
     if !report.diagnostics.is_empty() {
         println!("findings:");
         for diagnostic in &report.diagnostics {
@@ -48938,7 +49707,7 @@ fn run_machine_plan(
     options: &PromptRunOptions,
 ) -> Result<()> {
     let manifest = load_manifest(implementation)?;
-    if get_str(&manifest.value, &["spec"]) != Some("rms/implementation/v0.1") {
+    if !is_implementation_spec(get_str(&manifest.value, &["spec"])) {
         bail!(
             "`{}` is not an RMS implementation binding",
             implementation.display()
@@ -49451,7 +50220,7 @@ fn run_machine_apply_change(
     dry_run: bool,
 ) -> Result<()> {
     let mut manifest = load_manifest(implementation)?;
-    if get_str(&manifest.value, &["spec"]) != Some("rms/implementation/v0.1") {
+    if !is_implementation_spec(get_str(&manifest.value, &["spec"])) {
         bail!(
             "`{}` is not an RMS implementation binding",
             implementation.display()
@@ -52341,7 +53110,7 @@ fn print_machine_final_state(final_machine: &MachineFinalStateReport) {
 
 fn run_surface_apply(request: SurfaceApplyRequest) -> Result<()> {
     let mut manifest = load_manifest(&request.implementation)?;
-    if get_str(&manifest.value, &["spec"]) != Some("rms/implementation/v0.1") {
+    if !is_implementation_spec(get_str(&manifest.value, &["spec"])) {
         bail!(
             "`{}` is not an RMS implementation binding",
             request.implementation.display()
@@ -56083,6 +56852,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "      symbol: path/to/source#callable")?;
     writeln!(out, "      kind: transition")?;
     writeln!(out, "      purity: pure")?;
+    writeln!(out, "      trust: internal")?;
     writeln!(
         out,
         "      discharges: {{contracts: [], invariants: [stable-law-id], assumptions: []}}"
@@ -56242,7 +57012,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "`allowed_missing_constructors` uses set/remove/add semantics for public result/read-model structs intentionally produced only by a declared machine, query, or projector; do not use it to excuse an actually missing validated constructor.")?;
     writeln!(out, "`rms spec apply` automatically adds every currently active semantic revision to `supersedes` and hash-seals the exact new record. Use explicit `supersedes` only for additional branches that are not locally discoverable. Applied records are append-only: never edit or delete them.")?;
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
-    writeln!(out, "Use `semantic_functions.add`, `set`, and `remove` whenever a law's authority owner, public semantic callable, parser, projector, adapter, transformation, or executor binding changes. Do not edit `implementation.yaml.semantic_functions` directly. Function kinds are `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, `interpreter`, `transformation`, or `effect-executor`; purity is `pure`, `effectful`, or `boundary`. A canonical `transition` function is always pure. A boundary driver is a distinct `adapter` with `purity: boundary`, and an external effect executor is distinct with `purity: effectful`. Privileged, unsafe, or foreign functions list their declared authority ids.")?;
+    writeln!(out, "Use `semantic_functions.add`, `set`, and `remove` whenever a law's authority owner, public semantic callable, parser, projector, adapter, transformation, or executor binding changes. Do not edit `implementation.yaml.semantic_functions` directly. Function kinds are `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, `interpreter`, `transformation`, or `effect-executor`. Purity is `pure` or `effectful`. Trust is `internal` or `boundary`. Every function declares its complete `authorities` row, including an empty row. A canonical `transition` function is pure unless it executes a declared boundary capability. A boundary driver is a distinct `adapter` with `purity: effectful` and `trust: boundary`. An external effect executor uses `purity: effectful`. Privileged, unsafe, or foreign functions list their declared authority ids.")?;
     writeln!(out, "For every machine variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change. `machine.initial_state` names one final declared state. Set it explicitly when replacing the state set. If it is omitted and the replacement removes the previous initial state, RMS deterministically uses the first final declared state.")?;
     writeln!(out, "Machine transition items use `from`, `on`, `to`, stable ASCII identifier `case` values such as `valid_example_accepted` (not kebab-case), optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names. Every transition on a declared command also supplies `reply`, `rejection`, or a non-empty `no_reply_justification`; an asynchronous command normally states `effect result is pending` and its effect-result transition supplies the terminal response.")?;
     writeln!(out, "When external observations use a different binding enum from emitted events, set `machine.types.observed_event` to that exact type. Omit it only for an intentional shared event enum; older declarations continue to fall back to `machine.types.event`.")?;
@@ -57617,7 +58387,7 @@ fn load_spec_target(target: &Path) -> Result<SpecTargetContext> {
                 implementation,
             })
         }
-        Some("rms/implementation/v0.1") => {
+        Some(IMPLEMENTATION_V1_SPEC | IMPLEMENTATION_V2_SPEC) => {
             let module_path = target
                 .parent()
                 .unwrap_or_else(|| Path::new("."))
@@ -58536,10 +59306,20 @@ fn semantic_function_change_yaml(function: &SemanticFunctionChange) -> YamlValue
         YamlValue::String(function.symbol.clone()),
     );
     mapping.insert(yaml_key("kind"), YamlValue::String(function.kind.clone()));
-    mapping.insert(
-        yaml_key("purity"),
-        YamlValue::String(function.purity.clone()),
-    );
+    let purity = if function.purity == "boundary" {
+        "effectful"
+    } else {
+        function.purity.as_str()
+    };
+    mapping.insert(yaml_key("purity"), YamlValue::String(purity.to_string()));
+    let trust = function.trust.as_deref().unwrap_or_else(|| {
+        if function.purity == "boundary" || matches!(function.kind.as_str(), "parser" | "adapter") {
+            "boundary"
+        } else {
+            "internal"
+        }
+    });
+    mapping.insert(yaml_key("trust"), YamlValue::String(trust.to_string()));
     if !function.discharges.is_empty() {
         let mut discharges = serde_yaml::Mapping::new();
         if !function.discharges.contracts.is_empty() {
@@ -58592,12 +59372,10 @@ fn semantic_function_change_yaml(function: &SemanticFunctionChange) -> YamlValue
             .collect::<serde_yaml::Mapping>();
         mapping.insert(yaml_key("evidence"), YamlValue::Mapping(evidence));
     }
-    if !function.authorities.is_empty() {
-        mapping.insert(
-            yaml_key("authorities"),
-            yaml_string_sequence(&function.authorities),
-        );
-    }
+    mapping.insert(
+        yaml_key("authorities"),
+        yaml_string_sequence(&function.authorities),
+    );
     YamlValue::Mapping(mapping)
 }
 
@@ -58725,6 +59503,21 @@ fn validate_semantic_functions(
                 format!(
                     "semantic function `{}` has unsupported purity `{}`",
                     function.id, function.purity
+                ),
+            ));
+        }
+        if function
+            .trust
+            .as_deref()
+            .is_some_and(|trust| !matches!(trust, "internal" | "boundary"))
+        {
+            diagnostics.push(error(
+                "semantic.function-trust",
+                &context.target,
+                format!(
+                    "semantic function `{}` has unsupported trust `{}`",
+                    function.id,
+                    function.trust.as_deref().unwrap_or_default()
                 ),
             ));
         }
@@ -65776,7 +66569,9 @@ fn run_verify(target: &Path, dry_run: bool) -> Result<()> {
 fn run_verify_unlocked(target: &Path, dry_run: bool) -> Result<()> {
     let manifest = load_manifest(target)?;
     match get_str(&manifest.value, &["spec"]) {
-        Some("rms/implementation/v0.1") => run_verify_implementation(target, dry_run),
+        Some(IMPLEMENTATION_V1_SPEC | IMPLEMENTATION_V2_SPEC) => {
+            run_verify_implementation(target, dry_run)
+        }
         Some("rms/module/v0.1") if is_composite_module(&manifest.value) => {
             run_verify_composite_module(target, &manifest, dry_run)
         }
@@ -67484,7 +68279,7 @@ fn validate_package_embedded_manifest(
     manifest: &LoadedManifest,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if get_str(&manifest.value, &["spec"]) == Some("rms/implementation/v0.1") {
+    if is_implementation_spec(get_str(&manifest.value, &["spec"])) {
         validate_against_embedded_schema(manifest, diagnostics);
         scan_for_secret_like_keys(&manifest.value, &manifest.path, diagnostics);
     } else {
@@ -67689,12 +68484,20 @@ fn run_check_compat(old: &Path, new: &Path, json_output: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_compose(root: &Path, json_output: bool) -> Result<()> {
+fn run_compose(
+    root: &Path,
+    json_output: bool,
+    output: Option<&Path>,
+    seed: Option<u64>,
+    cases_per_input: usize,
+    dry_run: bool,
+    force: bool,
+) -> Result<()> {
     let report = compose_system(root)?;
 
-    if json_output {
+    if output.is_none() && json_output {
         println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
+    } else if output.is_none() {
         print_compose_report(&report);
     }
 
@@ -67702,7 +68505,468 @@ fn run_compose(root: &Path, json_output: bool) -> Result<()> {
         bail!("RMS composition check failed");
     }
 
+    let Some(output) = output else {
+        return Ok(());
+    };
+    if cases_per_input == 0 {
+        bail!("--cases-per-input must be greater than zero");
+    }
+    let planned = plan_executable_composition(root, &report, seed, cases_per_input)?;
+    let model_json = serde_json::to_value(&planned.model)?;
+    validate_json_against_schema(
+        &model_json,
+        include_str!("../../../../schemas/composition-model.schema.json"),
+        "composition model",
+    )?;
+    validate_json_against_schema(
+        &planned.assembly,
+        include_str!("../../../../schemas/probe-assembly-v0.3.schema.json"),
+        "probe assembly",
+    )?;
+    validate_generated_probe_assembly(&planned.assembly)?;
+    if dry_run {
+        println!("{}", serde_json::to_string_pretty(&model_json)?);
+        println!("---");
+        println!("{}", serde_yaml::to_string(&planned.assembly)?);
+        return Ok(());
+    }
+    write_composition_artifacts_atomically(output, &planned, force)?;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&model_json)?);
+    } else {
+        println!(
+            "generated composition model and probe assembly at {}",
+            output.display()
+        );
+    }
+
     Ok(())
+}
+
+fn plan_executable_composition(
+    root: &Path,
+    report: &ComposeReport,
+    seed: Option<u64>,
+    cases_per_input: usize,
+) -> Result<composition_model::PlannedComposition> {
+    if report.result != ComposeResult::Pass {
+        bail!("executable composition requires every static obligation to pass");
+    }
+    let root = fs::canonicalize(root)
+        .with_context(|| format!("failed to resolve composition root `{}`", root.display()))?;
+    let targets = discover_targets(&root, vec![], vec![], vec![], vec![], vec![], vec![])?;
+    let mut implementations = Vec::new();
+    for target in targets {
+        let Ok(manifest) = load_manifest(&target) else {
+            continue;
+        };
+        if !is_implementation_spec(get_str(&manifest.value, &["spec"])) {
+            continue;
+        }
+        implementations.push(manifest);
+    }
+    implementations.sort_by(|left, right| left.path.cmp(&right.path));
+    if implementations.is_empty() {
+        bail!("executable composition requires at least one implementation binding");
+    }
+
+    let temp_root = unique_runtime_temp_dir("compose")?;
+    let result = (|| {
+        let mut participants = Vec::new();
+        let mut effects = BTreeSet::new();
+        let mut authorities = BTreeSet::new();
+        for (index, implementation) in implementations.iter().enumerate() {
+            let binding = load_probe_binding(&implementation.path).with_context(|| {
+                format!(
+                    "composition participant `{}` has no executable probe",
+                    implementation.path.display()
+                )
+            })?;
+            if binding.protocol != "rms/machine-probe/v0.2" {
+                bail!(
+                    "composition participant `{}` must use machine-probe v0.2",
+                    implementation.path.display()
+                );
+            }
+            let request = serde_yaml::to_value(json!({
+                "spec": binding.protocol,
+                "operation": "describe"
+            }))?;
+            let description = execute_machine_probe_request(
+                &binding,
+                &request,
+                &temp_root,
+                &format!("describe-{index}"),
+                DEFAULT_PROOF_TIMEOUT_SECONDS,
+            )?;
+            validate_probe_description(&description, implementation)?;
+            let public_inputs = get_path(
+                &implementation.value,
+                &["architecture", "public_behavior_bindings"],
+            )
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .flat_map(|binding| get_string_array(binding, &["machine_inputs"]))
+            .collect::<BTreeSet<_>>();
+            let inputs = get_path(&description, &["inputs"])
+                .and_then(YamlValue::as_sequence)
+                .into_iter()
+                .flatten()
+                .map(|input| {
+                    let name = get_str(input, &["name"])
+                        .ok_or_else(|| anyhow!("described input has no name"))?
+                        .to_string();
+                    Ok(composition_model::GeneratedInput {
+                        kind: get_str(input, &["kind"])
+                            .ok_or_else(|| anyhow!("described input has no kind"))?
+                            .to_string(),
+                        public: public_inputs.contains(&name),
+                        name,
+                        schema: serde_json::to_value(
+                            get_path(input, &["data_schema"])
+                                .ok_or_else(|| anyhow!("described input has no data_schema"))?,
+                        )?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            effects.extend(get_string_array(
+                &implementation.value,
+                &["architecture", "machine", "effects"],
+            ));
+            for function in semantic_function_items(implementation).unwrap_or_default() {
+                authorities.extend(get_string_array(function, &["authorities"]));
+            }
+            participants.push(composition_model::ParticipantInput {
+                id: get_str(&implementation.value, &["module"])
+                    .ok_or_else(|| anyhow!("implementation has no module"))?
+                    .to_string(),
+                implementation: implementation.path.display().to_string(),
+                implementation_digest: format!("sha256:{}", sha256_file(&implementation.path)?),
+                initial_state: serde_json::to_value(
+                    get_path(&description, &["initial_state"])
+                        .ok_or_else(|| anyhow!("probe description has no initial_state"))?,
+                )?,
+                inputs,
+            });
+        }
+
+        let wiring = implementations
+            .iter()
+            .flat_map(|implementation| {
+                let consumer = get_str(&implementation.value, &["module"])
+                    .unwrap_or_default()
+                    .to_string();
+                typed_yaml_sequence::<DependencyBehaviorBinding>(
+                    &implementation.value,
+                    &["architecture", "dependency_behavior_bindings"],
+                )
+                .into_iter()
+                .filter(|binding| binding.resolution == "module" && binding.probe_bridge.is_some())
+                .filter_map(move |binding| {
+                    Some(composition_model::Wiring {
+                        consumer: consumer.clone(),
+                        binding: binding.id,
+                        provider: binding.provider_module?,
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        let protocol_routes = report
+            .findings
+            .iter()
+            .filter(|finding| {
+                finding.status == ComposeStatus::Satisfied
+                    && finding.check == "composition.protocol-message-route"
+            })
+            .map(|finding| composition_model::ProtocolRoute {
+                protocol: "declared-protocol".to_string(),
+                message: finding.requirement.clone().unwrap_or_default(),
+                sender: finding.provider.clone().unwrap_or_default(),
+                receiver: finding.consumer.clone().unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        let obligations = report
+            .findings
+            .iter()
+            .enumerate()
+            .map(
+                |(index, finding)| composition_model::CompositionObligation {
+                    id: format!("{}-{index}", finding.check),
+                    status: match finding.status {
+                        ComposeStatus::Satisfied => "satisfied",
+                        ComposeStatus::NotApplicable => "not-applicable",
+                        ComposeStatus::ReviewRequired => "review-required",
+                        ComposeStatus::Unresolved => "unresolved",
+                        ComposeStatus::Incompatible => "incompatible",
+                    }
+                    .to_string(),
+                    detail: finding.message.clone(),
+                },
+            )
+            .collect();
+        let (reusable_proofs, algebraic_laws) =
+            discover_reusable_composition_proofs(&root, &implementations)?;
+        let source = source_revision(&root).unwrap_or_else(|| "uncommitted".to_string());
+        let derived_seed =
+            seed.unwrap_or_else(|| seed_from_digest(&sha256_bytes(source.as_bytes())));
+        composition_model::plan(composition_model::CompositionInput {
+            source_revision: source,
+            tool_digest: format!(
+                "sha256:{}",
+                sha256_bytes(format!("{RMS_LONG_VERSION}:composition-v1").as_bytes())
+            ),
+            seed: derived_seed,
+            cases_per_input,
+            participants,
+            wiring,
+            protocol_routes,
+            effects,
+            authorities,
+            obligations,
+            reusable_proofs,
+            algebraic_laws,
+        })
+    })();
+    let _ = fs::remove_dir_all(&temp_root);
+    result
+}
+
+fn discover_reusable_composition_proofs(
+    root: &Path,
+    implementations: &[LoadedManifest],
+) -> Result<(
+    Vec<composition_model::ReusableProof>,
+    Vec<composition_model::AlgebraicLaw>,
+)> {
+    let mut reused = Vec::new();
+    let mut laws = Vec::new();
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            !entry.file_type().is_dir()
+                || !matches!(
+                    entry.file_name().to_string_lossy().as_ref(),
+                    ".git" | "target" | "node_modules" | ".build"
+                )
+        })
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let path = entry.path();
+        let Some(path_text) = path.to_str() else {
+            continue;
+        };
+        let Some(evidence_text) = path_text.strip_suffix(".proof-certificate.json") else {
+            continue;
+        };
+        let certificate: proof_certificate::ProofCertificate =
+            match serde_json::from_slice(&fs::read(path)?) {
+                Ok(certificate) => certificate,
+                Err(_) => continue,
+            };
+        let Some(implementation) = implementations.iter().find(|implementation| {
+            get_str(&implementation.value, &["module"]) == Some(certificate.subject.module.as_str())
+        }) else {
+            continue;
+        };
+        let Some(property) = property_targets_from_implementation(
+            implementation,
+            &["architecture", "reliability", "properties"],
+            "property",
+        )
+        .into_iter()
+        .chain(property_targets_from_implementation(
+            implementation,
+            &["architecture", "reliability", "fuzz_targets"],
+            "fuzz",
+        ))
+        .find(|property| property.id == certificate.subject.property) else {
+            continue;
+        };
+        let evidence_path = Path::new(evidence_text);
+        if !evidence_path.is_file() {
+            continue;
+        }
+        let evidence = load_json_yaml_value(evidence_path)?;
+        let contract = get_str(&property.definition, &["contract"])
+            .or_else(|| get_str(&property.definition, &["operation", "contract"]))
+            .map(str::to_string);
+        let contract_digest = contract
+            .as_deref()
+            .map(|reference| {
+                sha256_file(
+                    &implementation
+                        .path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(reference),
+                )
+                .map(|digest| format!("sha256:{digest}"))
+            })
+            .transpose()?;
+        let requirement = proof_certificate::ProofRequirement {
+            subject: proof_certificate::ProofSubject {
+                module: get_str(&implementation.value, &["module"])
+                    .unwrap_or_default()
+                    .to_string(),
+                contract,
+                property: property.id.clone(),
+            },
+            digests: proof_certificate::ProofDigests {
+                contract: contract_digest,
+                implementation: format!("sha256:{}", sha256_file(&implementation.path)?),
+                source: build_effect_analysis(implementation)?.source_digest,
+                tool: property_proof_tool_digest(),
+                evidence: format!("sha256:{}", sha256_bytes(&serde_json::to_vec(&evidence)?)),
+            },
+            assumptions: property_proof_assumptions(&property),
+            universal: true,
+        };
+        let decision = proof_certificate::decide_reuse(&certificate, &requirement);
+        if !decision.reusable {
+            continue;
+        }
+        let certificate_digest = format!("sha256:{}", sha256_file(path)?);
+        reused.push(composition_model::ReusableProof {
+            subject: property.id.clone(),
+            certificate_digest: certificate_digest.clone(),
+        });
+        let kind = match property.kind.as_str() {
+            "idempotent" => Some(composition_model::AlgebraicLawKind::Idempotent),
+            "commutative" => Some(composition_model::AlgebraicLawKind::Commutative),
+            "associative" => Some(composition_model::AlgebraicLawKind::Associative),
+            "monotonic" => Some(composition_model::AlgebraicLawKind::Monotonic),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            laws.push(composition_model::AlgebraicLaw {
+                id: property.id.clone(),
+                kind,
+                subject: get_str(&property.definition, &["subject"])
+                    .unwrap_or(&property.id)
+                    .to_string(),
+                certificate_digest,
+            });
+        }
+    }
+    reused.sort_by(|left, right| left.subject.cmp(&right.subject));
+    laws.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok((reused, laws))
+}
+
+fn validate_generated_probe_assembly(assembly: &JsonValue) -> Result<()> {
+    let temp_root = unique_runtime_temp_dir("composition-validation")?;
+    let path = temp_root.join("probe-assembly.yaml");
+    let result = (|| {
+        fs::write(&path, serde_yaml::to_string(assembly)?)?;
+        probe::validate_assembly_declaration(&path, DEFAULT_PROOF_TIMEOUT_SECONDS)
+            .context("generated composition probe assembly is not executable")
+    })();
+    let _ = fs::remove_dir_all(temp_root);
+    result
+}
+
+fn write_composition_artifacts_atomically(
+    output: &Path,
+    planned: &composition_model::PlannedComposition,
+    force: bool,
+) -> Result<()> {
+    if output.exists() && !force {
+        bail!(
+            "composition output `{}` already exists; pass --force to replace it",
+            output.display()
+        );
+    }
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let stage = parent.join(format!(
+        ".rms-composition-stage-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir(&stage)?;
+    let backup = parent.join(format!(
+        ".rms-composition-backup-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let result = (|| {
+        fs::write(
+            stage.join("composition.json"),
+            serde_json::to_vec_pretty(&planned.model)?,
+        )?;
+        fs::write(
+            stage.join("probe-assembly.yaml"),
+            serde_yaml::to_string(&planned.assembly)?,
+        )?;
+        if output.exists() {
+            fs::rename(output, &backup).with_context(|| {
+                format!(
+                    "failed to stage replacement of composition output `{}`",
+                    output.display()
+                )
+            })?;
+        }
+        if let Err(error) = fs::rename(&stage, output) {
+            if backup.exists() {
+                let _ = fs::rename(&backup, output);
+            }
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to install composition output `{}`",
+                    output.display()
+                )
+            });
+        }
+        if backup.exists() {
+            fs::remove_dir_all(&backup)?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&stage);
+    }
+    result
+}
+
+fn validate_json_against_schema(instance: &JsonValue, source: &str, label: &str) -> Result<()> {
+    let schema: JsonValue = serde_json::from_str(source)
+        .with_context(|| format!("embedded {label} schema is invalid"))?;
+    let validator = jsonschema::validator_for(&schema)
+        .with_context(|| format!("embedded {label} schema did not compile"))?;
+    let errors = validator
+        .iter_errors(instance)
+        .map(|error| format!("{error} at `{}`", error.instance_path()))
+        .collect::<Vec<_>>();
+    if !errors.is_empty() {
+        bail!("generated {label} is invalid: {}", errors.join("; "));
+    }
+    Ok(())
+}
+
+fn seed_from_digest(digest: &str) -> u64 {
+    u64::from_str_radix(&digest.chars().take(16).collect::<String>(), 16).unwrap_or(0)
+}
+
+fn unique_runtime_temp_dir(label: &str) -> Result<PathBuf> {
+    let path = std::env::temp_dir().join(format!(
+        "rms-{label}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir(&path).with_context(|| format!("failed to create `{}`", path.display()))?;
+    Ok(path)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -67829,7 +69093,7 @@ fn compose_system(root: &Path) -> Result<ComposeReport> {
             }
             Some("rms/system/v0.1") => systems.push(manifest),
             Some("rms/context-map/v0.1") => context_maps.push(manifest),
-            Some("rms/implementation/v0.1") => {
+            Some(IMPLEMENTATION_V1_SPEC | IMPLEMENTATION_V2_SPEC) => {
                 let module = get_str(&manifest.value, &["module"])
                     .unwrap_or("<unknown>")
                     .to_string();
@@ -70848,6 +72112,71 @@ fn run_add_binding(request: AddBindingRequest) -> Result<()> {
     Ok(())
 }
 
+fn run_binding_migrate(implementation: &Path, target: &str, dry_run: bool) -> Result<()> {
+    let manifest = load_manifest(implementation)?;
+    if !is_implementation_spec(get_str(&manifest.value, &["spec"])) {
+        bail!(
+            "`{}` is not an RMS implementation binding",
+            implementation.display()
+        );
+    }
+    let analysis = build_effect_analysis(&manifest)?;
+    let plan = binding_migration::plan(&manifest.value, &analysis, target)?;
+    let candidate = LoadedManifest {
+        path: manifest.path.clone(),
+        value: plan.candidate.clone(),
+    };
+    let mut diagnostics = Vec::new();
+    validate_loaded_manifest(&candidate, &mut diagnostics);
+    let errors = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .map(|diagnostic| format!("[{}] {}", diagnostic.check, diagnostic.message))
+        .collect::<Vec<_>>();
+    if !errors.is_empty() {
+        bail!("migrated binding is invalid: {}", errors.join("; "));
+    }
+    let rendered = serde_yaml::to_string(&plan.candidate)?;
+    if dry_run {
+        print!("{rendered}");
+    } else if plan.changed {
+        atomic_replace_file(implementation, rendered.as_bytes())?;
+        println!(
+            "migrated {} to rms/implementation/v0.2",
+            implementation.display()
+        );
+    } else {
+        println!(
+            "{} already uses rms/implementation/v0.2",
+            implementation.display()
+        );
+    }
+    for diagnostic in plan.diagnostics {
+        eprintln!("{}: {}", diagnostic.code, diagnostic.message);
+    }
+    Ok(())
+}
+
+fn atomic_replace_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stage = parent.join(format!(
+        ".rms-write-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::write(&stage, bytes).with_context(|| format!("failed to stage `{}`", path.display()))?;
+    match fs::rename(&stage, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(&stage);
+            Err(error).with_context(|| format!("failed to replace `{}`", path.display()))
+        }
+    }
+}
+
 fn scaffold_binding_transactionally(
     module_dir: &Path,
     binding: &str,
@@ -72956,6 +74285,14 @@ fn render_module_yaml(
         _ => String::new(),
     };
     let verification_traces = String::new();
+    let authorities = match shape {
+        Some(
+            ScaffoldShape::BoundaryAdapter
+            | ScaffoldShape::StorageAdapter
+            | ScaffoldShape::IntegrationAdapter,
+        ) => "\nauthorities:\n- id: dynamic-dispatch\n  kind: privileged\n  capabilities: [invoke-bound-port]\n  rationale: The boundary adapter invokes a caller-supplied port through its declared safe facade.\n".to_string(),
+        _ => "\nauthorities: []\n".to_string(),
+    };
     let composition = shape
         .filter(|shape| *shape == ScaffoldShape::Composite)
         .map(|_| "\ncomposition:\n  contains: []\n  exports: []\n".to_string())
@@ -72977,12 +74314,13 @@ fn render_module_yaml(
         })
         .unwrap_or_default();
     format!(
-        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n{}{}{}{}{}{}{}{}{}",
+        "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: {}\n  purpose: {}\n\nprofiles:\n{}\n\nowns:\n  concepts: []\n  data: []\n  decisions: []\n\nprovides:\n  commands: []\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules: []\n  capabilities: []\n\ninvariants: []\n\neffects: []\n{}{}{}compatibility:\n  policy: backward-compatible-within-major\n\nverification:\n{}{}{}{}{}{}{}{}{}",
         yaml_quote(name),
         yaml_quote(kind),
         yaml_quote(purpose),
         yaml_string_list(profiles, 2),
         render_profile_sections(profiles),
+        authorities,
         composition,
         verification_laws,
         verification_contracts,
@@ -73080,7 +74418,7 @@ fn render_capability_boundary_module_yaml(
     domain_command: &str,
 ) -> String {
     let domain_capability = domain_capability_name(domain_command);
-    strip_unrecorded_trace_evidence(format!(
+    let rendered = strip_unrecorded_trace_evidence(format!(
         "spec: rms/module/v0.1\n\nmodule:\n  name: {}\n  version: 0.1.0\n  kind: \"adapter\"\n  purpose: \"Adapt untrusted input and effects to the pure domain child.\"\n\nprofiles:\n  - \"boundary\"\n  - \"core\"\n\nowns:\n  concepts:\n    - boundary input\n    - parsed domain command\n    - domain child port\n  data: []\n  decisions:\n    - boundary input parsing\n    - malformed input rejection\n    - domain command delegation\n\nprovides:\n  commands:\n    - name: {}\n      contract: contracts/{}.v1.yaml\n  queries: []\n  events: []\n  capabilities: []\n\nrequires:\n  modules:\n    - name: {}\n  capabilities:\n    - name: {}\n      contract: contracts/{}-capability.v1.yaml\n\ninvariants: []\n\neffects:\n  - name: local-boundary-io\n    kind: local-ui\n\nboundary:\n  trust_boundary: generated-boundary-adapter\n  inputs: []\n  outputs: []\n  validation:\n    - Reject malformed input before domain delegation.\n\ncompatibility:\n  policy: backward-compatible-within-major\n\nverification:\n  laws: []\n  contracts:\n    - verification/contracts/{}.md\n    - verification/contracts/{}-dependency.md\n    - verification/contracts/parser_to_domain_command.md\n  scenarios: []\n  boundaries:\n    - verification/boundaries/malformed_input.md\n  traces:\n    - verification/traces/boundary_parse.yaml\n    - verification/traces/malformed_input_trace.yaml\n  fuzz:\n    - verification/fuzz/malformed_input_fuzz.md\n\nx-scaffold:\n  shape: \"boundary-adapter\"\n  roles:\n{}\n",
         yaml_quote(name),
         yaml_quote(public_command),
@@ -73098,7 +74436,11 @@ fn render_capability_boundary_module_yaml(
                 .collect::<Vec<_>>(),
             4,
         )
-    ))
+    ));
+    rendered.replace(
+        "\neffects:\n  - name: local-boundary-io\n    kind: local-ui\n\nboundary:",
+        "\neffects:\n  - name: local-boundary-io\n    kind: local-ui\n\nauthorities:\n  - id: dynamic-dispatch\n    kind: privileged\n    capabilities: [invoke-bound-port]\n    rationale: The boundary adapter invokes a caller-supplied port through its declared safe facade.\n\nboundary:",
+    )
 }
 
 fn strip_unrecorded_trace_evidence(rendered: String) -> String {
@@ -73726,7 +75068,7 @@ fn render_effect_executor_semantic_function_yaml(
         "execute_effect"
     };
     format!(
-        "  - id: execute-effect\n    symbol: {symbol}\n    kind: effect-executor\n    purity: effectful\n"
+        "  - id: execute-effect\n    symbol: {symbol}\n    kind: effect-executor\n    purity: effectful\n    trust: internal\n    authorities: []\n"
     )
 }
 
@@ -74018,7 +75360,7 @@ fn render_rust_implementation_yaml(
     let machine_yaml = render_machine_architecture_yaml(model, "rust");
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n{}  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules: []\n{}{}{}  roles:\n{}{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    evidence:\n{}{}",
+        "spec: rms/implementation/v0.2\n\nmodule: {}\nbinding: rust\n\nsource:\n  root: .\n  public_entrypoint: src/lib.rs\n\ncommands:\n  build: cargo build --manifest-path Cargo.toml\n  verify: cargo test --manifest-path Cargo.toml\n{}  format: cargo fmt --manifest-path Cargo.toml --check\n\ntoolchain:\n  cargo_manifest: Cargo.toml\n  package: {}\n\ndependencies:\n  allowed_external_crates: []\n\narchitecture:\n  shape: {}\n  public_modules: []\n{}{}{}  roles:\n{}{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: {}::new\n    kind: constructor\n    purity: pure\n    trust: internal\n    authorities: []\n    evidence:\n{}  - id: transition-model\n    symbol: transition\n    kind: transition\n    purity: pure\n    trust: internal\n    authorities: []\n    evidence:\n{}{}",
         yaml_quote(module_name),
         render_property_commands_yaml(shape, "rust"),
         yaml_quote(package_name),
@@ -75067,7 +76409,7 @@ fn render_swift_implementation_yaml(
     let machine_yaml = render_machine_architecture_yaml(model, "swift");
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n{}\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}{}{}  roles:\n{}{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    evidence:\n{}  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    evidence:\n{}{}",
+        "spec: rms/implementation/v0.2\n\nmodule: {}\nbinding: swift\n\nsource:\n  root: {}\n  public_entrypoint: {}\n\ncommands:\n  build: swift build --package-path .\n  verify: swift test --package-path .\n{}\ntoolchain:\n  package_manifest: Package.swift\n  package: {}\n  target: {}\n\ndependencies:\n  allowed_external_modules: []\n\narchitecture:\n  shape: {}\n  public_modules:\n    - {}\n    - Sources/{}/Representation.swift\n    - Sources/{}/Transition.swift\n{}{}{}  roles:\n{}{}  representation:\n    closed_variants:\n{}    validated_values:\n      - {}\n    transition_functions:\n      - transition\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: Sources/{}/Representation.swift#{}.init\n    kind: constructor\n    purity: pure\n    trust: internal\n    authorities: []\n    evidence:\n{}  - id: transition-model\n    symbol: Sources/{}/Transition.swift#transition\n    kind: transition\n    purity: pure\n    trust: internal\n    authorities: []\n    evidence:\n{}{}",
         yaml_quote(module_name),
         yaml_quote(&source_root),
         yaml_quote(&public_entrypoint),
@@ -76214,6 +77556,12 @@ fn render_python_implementation_yaml(model: &BindingScaffoldModel) -> Result<Str
                 _ => {}
             }
         }
+        if let Some(boundary_transition) = functions
+            .iter_mut()
+            .find(|function| get_str(function, &["id"]) == Some("boundary-transition"))
+        {
+            set_yaml_string_sequence_path(boundary_transition, &["authorities"], &[]);
+        }
     }
     if model.shape == ScaffoldShape::DomainEngine {
         set_yaml_string_path(
@@ -77332,19 +78680,24 @@ fn render_js_implementation_yaml(module_name: &str, model: &BindingScaffoldModel
         render_traceable_roles_yaml(shape, "src/representation.mjs", "src/transition.mjs")
     };
     let transition_semantic_function = if boundary_shape {
-        "  - id: transition-model\n    symbol: src/transition.mjs#transition\n    kind: transition\n    purity: pure\n    evidence:\n      boundaries:\n        - verification/boundaries/malformed_input.md\n"
+        "  - id: transition-model\n    symbol: src/transition.mjs#transition\n    kind: transition\n    purity: pure\n    trust: internal\n    authorities: []\n    evidence:\n      boundaries:\n        - verification/boundaries/malformed_input.md\n"
     } else {
-        "  - id: transition-model\n    symbol: src/transition.mjs#transition\n    kind: transition\n    purity: pure\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n"
+        "  - id: transition-model\n    symbol: src/transition.mjs#transition\n    kind: transition\n    purity: pure\n    trust: internal\n    authorities: []\n    evidence:\n      laws:\n        - verification/laws/transition_trace.md\n"
     };
     let boundary_semantic_function = if boundary_shape {
-        "  - id: boundary-parser\n    symbol: src/parser.mjs#parseCommand\n    kind: parser\n    purity: pure\n    evidence:\n      boundaries:\n        - verification/boundaries/malformed_input.md\n  - id: boundary-transition\n    symbol: src/adapter.mjs#handleBoundaryTransition\n    kind: transition\n    purity: boundary\n    evidence:\n      contracts:\n        - verification/contracts/parser_to_domain_command.md\n  - id: boundary-adapter\n    symbol: src/adapter.mjs#handleBoundaryInput\n    kind: adapter\n    purity: boundary\n    evidence:\n      contracts:\n        - verification/contracts/parser_to_domain_command.md\n"
+        "  - id: boundary-parser\n    symbol: src/parser.mjs#parseCommand\n    kind: parser\n    purity: pure\n    trust: boundary\n    authorities: []\n    evidence:\n      boundaries:\n        - verification/boundaries/malformed_input.md\n  - id: boundary-transition\n    symbol: src/adapter.mjs#handleBoundaryTransition\n    kind: transition\n    purity: effectful\n    trust: boundary\n    authorities: [dynamic-dispatch]\n    evidence:\n      contracts:\n        - verification/contracts/parser_to_domain_command.md\n  - id: boundary-adapter\n    symbol: src/adapter.mjs#handleBoundaryInput\n    kind: adapter\n    purity: effectful\n    trust: boundary\n    authorities: [dynamic-dispatch]\n    evidence:\n      contracts:\n        - verification/contracts/parser_to_domain_command.md\n"
     } else {
         ""
     };
     let machine_yaml = render_machine_architecture_yaml(model, "js");
+    let authority_bindings = if boundary_shape {
+        "  authority_bindings:\n    - authority: dynamic-dispatch\n      roles: [adapter]\n      safe_facade: src/adapter.mjs#handleBoundaryTransition\n      evidence: [verification/contracts/parser_to_domain_command.md]\n"
+    } else {
+        ""
+    };
     let closed_variants_yaml = render_closed_variants_yaml(model);
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n{}\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\n{}architecture:\n  shape: {}\n  public_modules:\n{}\n{}{}{}  roles:\n{}{}  representation:\n    closed_variants:\n{}    validated_values:\n      - make{}\n    transition_functions:\n      - {}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    evidence:\n{}{}{}{}",
+        "spec: rms/implementation/v0.2\n\nmodule: {}\nbinding: js\n\nsource:\n  root: .\n  public_entrypoint: {}\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n{}\ntoolchain:\n  runner: node\n\ndependencies:\n  allowed_processes:\n    - sh\n    - node\n\n{}architecture:\n  shape: {}\n  public_modules:\n{}\n{}{}{}{}  roles:\n{}{}  representation:\n    closed_variants:\n{}    validated_values:\n      - make{}\n    transition_functions:\n      - {}\n\nsemantic_functions:\n  - id: representation-constructors\n    symbol: src/representation.mjs#make{}\n    kind: constructor\n    purity: pure\n    trust: internal\n    authorities: []\n    evidence:\n{}{}{}{}",
         yaml_quote(module_name),
         yaml_quote(public_entrypoint),
         render_property_commands_yaml(shape, "js"),
@@ -77354,6 +78707,7 @@ fn render_js_implementation_yaml(module_name: &str, model: &BindingScaffoldModel
         render_traceable_architecture_yaml(names, shape, "src/transition.mjs"),
         render_probe_architecture_yaml("js", None),
         machine_yaml,
+        authority_bindings,
         roles,
         render_probe_role_yaml("tests/machine-probe.mjs"),
         closed_variants_yaml,
@@ -78566,7 +79920,7 @@ fn render_executable_implementation_yaml(model: &BindingScaffoldModel) -> String
         render_traceable_architecture_yaml(&model.names, shape, "scripts/smoke.sh");
     let trace_roles = render_traceable_roles_yaml(shape, "implementation.yaml", "scripts/smoke.sh");
     format!(
-        "spec: rms/implementation/v0.1\n\nmodule: {}\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n{}\ntoolchain:\n  runner: shell\n\ndependencies:\n  allowed_processes:\n    - sh\n\narchitecture:\n  shape: {}\n  verification_mode: executable-command\n  static_inspection: opaque\n  public_entrypoints:\n    - scripts/smoke.sh\n{}{}  roles:\n{}    adapter:\n      - scripts/smoke.sh\n  boundary_inputs: []\n  observable_outputs: []\n  declared_assets: []\n\nsemantic_functions:\n  - id: executable-semantic-smoke\n    symbol: scripts/smoke.sh\n    kind: adapter\n    purity: boundary\n    assumptions:\n      ensures:\n        - command-backed implementation can be invoked through the declared verify command\n        - semantic roles are declared canonically and proved through commands and traces\n        - RMS does not infer internal domain semantics from opaque executable assets\n    evidence:\n      boundaries:\n        - verification/boundaries/executable_smoke.md\n",
+        "spec: rms/implementation/v0.2\n\nmodule: {}\nbinding: executable\n\nsource:\n  root: .\n  public_entrypoint: scripts/smoke.sh\n\ncommands:\n  build: sh scripts/build.sh\n  verify: sh scripts/smoke.sh\n{}\ntoolchain:\n  runner: shell\n\ndependencies:\n  allowed_processes:\n    - sh\n\narchitecture:\n  shape: {}\n  verification_mode: executable-command\n  static_inspection: opaque\n  public_entrypoints:\n    - scripts/smoke.sh\n{}{}  roles:\n{}    adapter:\n      - scripts/smoke.sh\n  boundary_inputs: []\n  observable_outputs: []\n  declared_assets: []\n\nsemantic_functions:\n  - id: executable-semantic-smoke\n    symbol: scripts/smoke.sh\n    kind: adapter\n    purity: effectful\n    trust: boundary\n    authorities: []\n    assumptions:\n      ensures:\n        - command-backed implementation can be invoked through the declared verify command\n        - semantic roles are declared canonically and proved through commands and traces\n        - RMS does not infer internal domain semantics from opaque executable assets\n    evidence:\n      boundaries:\n        - verification/boundaries/executable_smoke.md\n",
         yaml_quote(module_name),
         proof_commands,
         yaml_quote(shape.as_str()),
@@ -79904,6 +81258,50 @@ fn prepare_route_run_record(
     Ok(run_dir)
 }
 
+fn write_route_checks(run_dir: &Path, diagnostics: &[Diagnostic]) -> Result<()> {
+    let checks = json!({
+        "validator": VALIDATOR_NAME,
+        "validator_version": VALIDATOR_VERSION,
+        "validation": diagnostics,
+    });
+    fs::write(
+        run_dir.join("checks.json"),
+        serde_json::to_string_pretty(&checks)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write route checks `{}`",
+            run_dir.join("checks.json").display()
+        )
+    })
+}
+
+fn ensure_route_checks(run_dir: &Path) -> Result<()> {
+    if run_dir.join("checks.json").is_file() {
+        return Ok(());
+    }
+    let diagnostics = if run_dir.join("intent-diagnostics.json").is_file() {
+        serde_json::from_slice::<JsonValue>(&fs::read(run_dir.join("intent-diagnostics.json"))?)?
+    } else {
+        json!([])
+    };
+    let checks = json!({
+        "validator": VALIDATOR_NAME,
+        "validator_version": VALIDATOR_VERSION,
+        "validation": diagnostics,
+    });
+    fs::write(
+        run_dir.join("checks.json"),
+        serde_json::to_string_pretty(&checks)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write route checks `{}`",
+            run_dir.join("checks.json").display()
+        )
+    })
+}
+
 fn issue_route_receipt(
     root: &Path,
     run_dir: &Path,
@@ -79918,6 +81316,7 @@ fn issue_route_receipt(
     scaffold: Option<ArchitectureAction>,
     repair_authority: Option<SpecRepairAuthority>,
 ) -> Result<RouteRunArtifacts> {
+    ensure_route_checks(run_dir)?;
     let run_id = run_dir
         .file_name()
         .and_then(|value| value.to_str())
@@ -80109,8 +81508,25 @@ fn validate_spec_change_route_receipt(
     change_yaml: Option<&str>,
     change_file: Option<&Path>,
 ) -> Result<RouteReceipt> {
-    if let Ok(receipt) = validate_route_receipt(root, reference, "spec-apply", target, None) {
-        return Ok(receipt);
+    let spec_apply_error = match validate_route_receipt(root, reference, "spec-apply", target, None)
+    {
+        Ok(receipt) => return Ok(receipt),
+        Err(error) => error,
+    };
+    let repair_family_declared = fs::canonicalize(root)
+        .ok()
+        .and_then(|root| resolve_route_receipt_path(&root, reference).ok())
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|source| serde_json::from_str::<RouteReceipt>(&source).ok())
+        .is_some_and(|receipt| {
+            receipt
+                .payload
+                .allowed_action_families
+                .iter()
+                .any(|family| family == "spec-repair-apply")
+        });
+    if !repair_family_declared {
+        return Err(spec_apply_error);
     }
     let receipt = validate_route_receipt(root, reference, "spec-repair-apply", target, None)?;
     let expected = receipt
@@ -94605,6 +96021,67 @@ topology: composite
     }
 
     #[test]
+    fn functional_core_release_cli_surfaces_parse() {
+        assert!(Cli::try_parse_from([
+            "rms",
+            "binding",
+            "migrate",
+            "implementation.yaml",
+            "--to",
+            "v0.2",
+            "--route-receipt",
+            "receipt.json",
+            "--dry-run",
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "rms",
+            "property",
+            "generate",
+            "implementation.yaml",
+            "--out",
+            "assembly.yaml",
+            "--seed",
+            "7",
+            "--cases-per-input",
+            "64",
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "rms",
+            "compose",
+            "--root",
+            ".",
+            "--output",
+            "derived",
+            "--seed",
+            "7",
+            "--cases-per-input",
+            "64",
+            "--dry-run",
+            "--force",
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn discovery_includes_v02_implementation_bindings() {
+        let root = unique_test_dir("discover-v02-implementation");
+        fs::create_dir_all(&root).unwrap();
+        let implementation = root.join("implementation.yaml");
+        fs::write(
+            &implementation,
+            "spec: rms/implementation/v0.2\nmodule: discovery-fixture\n",
+        )
+        .unwrap();
+
+        let targets =
+            discover_targets(&root, vec![], vec![], vec![], vec![], vec![], vec![]).unwrap();
+        assert_eq!(targets, vec![implementation]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn probe_cli_accepts_each_mode_and_rejects_conflicts() {
         assert!(Cli::try_parse_from(["rms", "probe", "--describe"]).is_ok());
         assert!(Cli::try_parse_from([
@@ -99953,6 +101430,15 @@ semantic_functions: []
         let module = root.join("module.yaml");
         let implementation_path = root.join("implementation.yaml");
         let mut implementation = load_manifest(&implementation_path).unwrap();
+        set_yaml_string_path(&mut implementation.value, &["spec"], IMPLEMENTATION_V1_SPEC);
+        if let Some(functions) = get_path_mut(&mut implementation.value, &["semantic_functions"])
+            .and_then(YamlValue::as_sequence_mut)
+        {
+            for function in functions {
+                remove_yaml_path(function, &["trust"]);
+                remove_yaml_path(function, &["authorities"]);
+            }
+        }
         remove_yaml_path(&mut implementation.value, &["commands", "probe"]);
         remove_yaml_path(&mut implementation.value, &["architecture", "probe"]);
         remove_yaml_path(
@@ -100118,10 +101604,6 @@ semantic_functions: []
         assert_eq!(repair.result, NextResult::Ready);
         assert_eq!(repair.owner.status(), OwnerStatus::Selected);
         assert!(repair.blockers.is_empty());
-        assert!(repair
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("owner-local machine-binding")));
         assert!(validate_route_receipt(
             &root,
             Path::new(&repair.receipt_path),
@@ -100130,14 +101612,6 @@ semantic_functions: []
             None,
         )
         .is_ok());
-        assert!(validate_route_receipt(
-            &root,
-            Path::new(&repair.receipt_path),
-            "spec-apply",
-            &implementation,
-            None,
-        )
-        .is_err());
         let mode = get_str(&before.value, &["architecture", "machine", "mode"])
             .unwrap()
             .to_string();
@@ -108519,6 +109993,236 @@ records:
     }
 
     #[test]
+    fn normal_spec_receipt_preserves_the_primary_validation_error() {
+        let root = copy_minimal_fixture("normal-spec-receipt-primary-error");
+        initialize_test_git_repository(&root);
+        let report = build_next_report(&root, None, "change the example contract").unwrap();
+        assert_eq!(report.result, NextResult::Ready);
+        let receipt = PathBuf::from(&report.receipt_path);
+        let implementation = root.join("implementation.yaml");
+
+        let commit = Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "advance head"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+
+        let error =
+            validate_spec_change_route_receipt(&root, &receipt, &implementation, None, None, None)
+                .unwrap_err();
+        let message = format!("{error:#}");
+        fs::remove_dir_all(&root).unwrap();
+
+        assert!(
+            message.contains("route receipt Git HEAD is stale"),
+            "{message}"
+        );
+        assert!(!message.contains("spec-repair-apply"), "{message}");
+    }
+
+    #[test]
+    fn normal_spec_receipt_authorizes_exact_required_provider_contract_sync() {
+        let root = unique_test_dir("required-provider-contract-sync-receipt");
+        for relative in [
+            "provider/contracts",
+            "consumer/contracts",
+            "consumer/verification/contracts",
+        ] {
+            fs::create_dir_all(root.join(relative)).unwrap();
+        }
+        write_compose_module(
+            &root.join("provider/module.yaml"),
+            "provider",
+            "  capabilities:\n    - name: resolve-epoch\n      contract: contracts/resolve-epoch.v1.yaml\n",
+            "  modules: []\n",
+            "  capabilities: []\n",
+        );
+        write_compose_module(
+            &root.join("consumer/module.yaml"),
+            "consumer",
+            "  capabilities: []\n",
+            "  modules:\n    - name: provider\n",
+            "  capabilities:\n    - name: resolve-epoch\n      contract: contracts/resolve-epoch.v1.yaml\n",
+        );
+        let consumer_module = root.join("consumer/module.yaml");
+        let module = fs::read_to_string(&consumer_module).unwrap().replace(
+            "  contracts: []",
+            "  contracts:\n    - verification/contracts/resolve_epoch.md",
+        );
+        fs::write(&consumer_module, module).unwrap();
+        fs::write(
+            root.join("consumer/verification/contracts/resolve_epoch.md"),
+            "# Required provider contract evidence\n",
+        )
+        .unwrap();
+        let contract = |decision: &str, meaning: &str| {
+            format!(
+                r#"spec: rms/contract/v0.3
+name: resolve-epoch
+version: '1'
+kind: capability
+meaning: {meaning}
+semantics:
+  behavior:
+    observability: full
+    observations:
+      - id: decision-kind
+        source: {{kind: output, pointer: /kind}}
+        value: {{variant: [{decision}]}}
+    assumptions: []
+    requires: []
+    guarantees: []
+    failures: []
+    cases:
+      - id: {decision}
+        statement: The provider returns its exact current decision.
+        when: {{equals: {{left: {{observation: decision-kind}}, right: {{literal: {decision}}}}}}}
+        outcome:
+          kind: accepted
+          expression: {{equals: {{left: {{observation: decision-kind}}, right: {{literal: {decision}}}}}}}
+        ensures: []
+        permits: {{state_changes: [], events: [], effects: []}}
+    invariants: []
+    case_policy: {{coverage: exhaustive, overlap: forbidden}}
+compatibility: {{policy: backward-compatible-within-major}}
+"#
+            )
+        };
+        let provider_contract = contract("current-provider-decision", "Resolve the current epoch.");
+        fs::write(
+            root.join("provider/contracts/resolve-epoch.v1.yaml"),
+            &provider_contract,
+        )
+        .unwrap();
+        let stale_consumer_contract = contract(
+            "current-provider-decision",
+            "Resolve a stale epoch.",
+        )
+        .replace(
+            "          kind: accepted\n          expression:",
+            "          kind: rejected\n          category: stale-consumer-decision\n          expression:",
+        );
+        fs::write(
+            root.join("consumer/contracts/resolve-epoch.v1.yaml"),
+            stale_consumer_contract,
+        )
+        .unwrap();
+        let mismatch = compose_system(&root).unwrap();
+        assert_eq!(
+            mismatch.result,
+            ComposeResult::Fail,
+            "{:#?}",
+            mismatch.findings
+        );
+        assert!(mismatch.findings.iter().any(|finding| {
+            finding.check == "composition.capability-contract-mismatch"
+                && finding.consumer.as_deref() == Some("consumer")
+        }));
+
+        initialize_test_git_repository(&root);
+        let task =
+            "Change the required resolve-epoch capability contract to the exact provider contract.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [resolve-epoch]
+facts:
+  domain_decisions: {disposition: required, basis: explicit, source_quote: exact provider contract}
+  lifecycle: {disposition: absent, basis: inferred, rationale: no lifecycle change}
+  effects: {disposition: absent, basis: inferred, rationale: no effect change}
+  runnable_surface: {disposition: absent, basis: inferred, rationale: no surface change}
+  reuse: {disposition: required, basis: explicit, source_quote: required resolve-epoch capability}
+responsibilities:
+  - {id: resolve-epoch-contract-sync, kind: decision, summary: Preserve the provider contract identity.}
+surface_kinds: []
+binding_preferences: []
+open_questions: []
+"#;
+        let report = build_next_report_with_intent(
+            &root,
+            Some(&consumer_module),
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.result, NextResult::Ready, "{report:#?}");
+        let receipt = PathBuf::from(&report.receipt_path);
+        let change = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent:
+  summary: Synchronize the required capability contract with its declared provider.
+contracts:
+  set:
+    - name: resolve-epoch
+      kind: capability
+      direction: required
+      version: '1'
+      meaning: Resolve the current epoch.
+      semantics:
+        behavior:
+          observability: full
+          observations:
+            - id: decision-kind
+              source: {kind: output, pointer: /kind}
+              value: {variant: [current-provider-decision]}
+          assumptions: []
+          requires: []
+          guarantees: []
+          failures: []
+          cases:
+            - id: current-provider-decision
+              statement: The provider returns its exact current decision.
+              when: {equals: {left: {observation: decision-kind}, right: {literal: current-provider-decision}}}
+              outcome:
+                kind: accepted
+                expression: {equals: {left: {observation: decision-kind}, right: {literal: current-provider-decision}}}
+              ensures: []
+              permits: {state_changes: [], events: [], effects: []}
+          invariants: []
+          case_policy: {coverage: exhaustive, overlap: forbidden}
+evidence:
+  add:
+    - kind: contract
+      proves: resolve-epoch
+      path: verification/contracts/resolve_epoch.md
+"#;
+
+        validate_spec_change_route_receipt(
+            &root,
+            &receipt,
+            &consumer_module,
+            None,
+            Some(change),
+            None,
+        )
+        .unwrap();
+        run_spec_apply(&consumer_module, None, Some(change), None, false).unwrap();
+
+        let synchronized = compose_system(&root).unwrap();
+        assert_eq!(
+            synchronized.result,
+            ComposeResult::Pass,
+            "{:#?}",
+            synchronized.findings
+        );
+        assert_eq!(
+            load_manifest(&root.join("consumer/contracts/resolve-epoch.v1.yaml"))
+                .unwrap()
+                .value,
+            load_manifest(&root.join("provider/contracts/resolve-epoch.v1.yaml"))
+                .unwrap()
+                .value
+        );
+        assert!(!root.join("consumer/implementation.yaml").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn machine_apply_receipt_binds_explicit_reviewed_transition_intent() {
         let root = unique_test_dir("machine-receipt-intent-anchors");
         fs::create_dir_all(&root).unwrap();
@@ -109183,6 +110887,7 @@ properties:
         let counter = root.join("provider-count.txt");
         let invocation = root.join("provider-invocation.txt");
         let valid = r#"{"spec":"rms/intent-model/v0.1","operation":"implementation-change","change_scope":"existing-module","subjects":["cache-task"],"facts":{"domain_decisions":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"lifecycle":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"effects":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"runnable_surface":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"},"reuse":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"not requested"}},"responsibilities":[],"surface_kinds":[],"binding_preferences":[],"open_questions":[]}"#;
+        let semantic = r#"{"spec":"rms/intent-model/v0.1","operation":"semantic-change","change_scope":"existing-module","subjects":["voice-media-playout-liveness"],"facts":{"domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"queued audible frames"},"lifecycle":{"disposition":"required","basis":"explicit","source_quote":"releases within 750 milliseconds"},"effects":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"no new effect"},"runnable_surface":{"disposition":"absent","basis":"inferred","source_quote":null,"rationale":"no surface"},"reuse":{"disposition":"required","basis":"explicit","source_quote":"exported capability"}},"responsibilities":[{"id":"preserve-audible-frames","kind":"decision","summary":"Preserve queued audible frames through Talk Turn End."}],"surface_kinds":[],"binding_preferences":[],"open_questions":[]}"#;
         let script = format!(
             r#"#!/bin/sh
 set -eu
@@ -109212,6 +110917,7 @@ case '{}' in
   quota) printf '%s\n' "ERROR: You've hit your usage limit. Visit settings to purchase more credits or try again tomorrow." >&2; exit 1 ;;
   readonly-state) printf '%s\n' 'failed to open state db: attempt to write a readonly database' >&2; exit 1 ;;
   invalid) response='{{"invalid":true}}' ;;
+  semantic) response='{}' ;;
   repair) if [ "$count" -eq 1 ]; then response='{{"invalid":true}}'; else response='{}'; fi ;;
   slow) sleep 1; response='{}' ;;
   *) response='{}' ;;
@@ -109221,6 +110927,7 @@ printf '%s\n' "$response" > "$output"
             invocation.display(),
             counter.display(),
             mode,
+            semantic,
             valid,
             valid,
             valid,
@@ -109230,6 +110937,60 @@ printf '%s\n' "$response" > "$output"
         permissions.set_mode(0o755);
         fs::set_permissions(&program, permissions).unwrap();
         (program, counter, invocation)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ai_extracted_explicit_owner_route_writes_checks_and_ready_receipt() {
+        let root = prompt_fixture("provider-explicit-owner-route");
+        let module = root.join("module.yaml");
+        let (program, counter, _) = write_fake_codex(&root, "semantic");
+        initialize_test_git_repository(&root);
+        let mut options = no_provider_options();
+        options.provider = Provider::Codex;
+        options.run_root = PathBuf::from(".rms/runs");
+        options.provider_timeout_seconds = 5;
+        let task = "Change the exported capability voice-media-playout-liveness so queued audible frames remain through Talk Turn End while receive ownership releases within 750 milliseconds.";
+
+        let report = build_next_report_with_intent_program(
+            &root,
+            Some(&module),
+            task,
+            RawIntentInput {
+                ai: true,
+                ..RawIntentInput::default()
+            },
+            Some(&options),
+            &program,
+        )
+        .unwrap();
+        let run_dir = PathBuf::from(&report.receipt_path)
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let checks: JsonValue =
+            serde_json::from_slice(&fs::read(run_dir.join("checks.json")).unwrap()).unwrap();
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(run_dir.join("route-receipt.json")).unwrap()).unwrap();
+
+        assert_eq!(report.result, NextResult::Ready, "{:#?}", report.blockers);
+        assert_eq!(fs::read_to_string(counter).unwrap().trim(), "1");
+        assert_eq!(checks["validator"], VALIDATOR_NAME);
+        assert_eq!(checks["validator_version"], VALIDATOR_VERSION);
+        assert!(checks["validation"].is_array());
+        assert_eq!(receipt.payload.route_result, "ready");
+        assert_eq!(
+            receipt.payload.owner_module,
+            Some(fs::canonicalize(module).unwrap().display().to_string())
+        );
+        assert!(receipt
+            .payload
+            .allowed_action_families
+            .contains(&"spec-apply".to_string()));
+        assert!(run_dir.join("route.json").is_file());
+        assert!(run_dir.join("normalized-intent.json").is_file());
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]

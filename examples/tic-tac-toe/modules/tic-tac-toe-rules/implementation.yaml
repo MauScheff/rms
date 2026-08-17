@@ -1,4 +1,4 @@
-spec: rms/implementation/v0.1
+spec: rms/implementation/v0.2
 module: tic-tac-toe-rules
 binding: rust
 source:
@@ -8,6 +8,7 @@ commands:
   build: cargo build --manifest-path Cargo.toml
   verify: cargo test --manifest-path Cargo.toml
   format: cargo fmt --manifest-path Cargo.toml --check
+  properties: cargo test --manifest-path Cargo.toml "${RMS_PROPERTY_RUNNER##*#}"
   trace: cargo test --manifest-path Cargo.toml "${RMS_TRACE_RUNNER##*#}"
   probe: cargo test --manifest-path Cargo.toml "${RMS_PROBE_RUNNER##*#}" -- --nocapture
 toolchain:
@@ -35,6 +36,11 @@ architecture:
       - terminal games reject further moves
       command: verify
       evidence: verification/laws/transition_trace.md
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: properties
+        runner: src/transition.rs#accepts_first_move_as_x_and_advances_to_o
     - id: apply-move-refines-cli-requirement
       proves: marks-never-overwrite
       kind: property
@@ -45,6 +51,13 @@ architecture:
       - all accepted successor states remain in the exhaustively explored finite closure
       command: verify
       evidence: verification/properties/apply_move_refinement.md
+      realizations:
+      - profile: smoke
+        strategy: deterministic-exhaustive
+        command: properties
+        generator: src/transition.rs#generate_reachable_state_cell_cases
+        runner: src/transition.rs#apply_move_refines_cli_requirement
+        exhaustive: true
   allowed_public_field_structs:
   - TicTacToeTransition
   - TicTacToeTransitionRecord
@@ -232,6 +245,8 @@ semantic_functions:
   symbol: Cell::new
   kind: constructor
   purity: pure
+  trust: internal
+  authorities: []
   evidence:
     laws:
     - verification/laws/transition_trace.md
@@ -239,6 +254,8 @@ semantic_functions:
   symbol: transition
   kind: transition
   purity: pure
+  trust: internal
+  authorities: []
   discharges:
     contracts:
     - contracts/apply-move.v1.yaml
@@ -259,6 +276,8 @@ semantic_functions:
   symbol: replay
   kind: interpreter
   purity: pure
+  trust: boundary
+  authorities: []
   evidence:
     laws:
     - verification/laws/transition_trace.md

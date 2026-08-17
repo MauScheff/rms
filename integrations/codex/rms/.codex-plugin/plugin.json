@@ -1,6 +1,6 @@
 {
   "name": "rms",
-  "version": "0.1.0-rc.8",
+  "version": "0.1.0-rc.9",
   "description": "Codex adapter for Reliable Modular Systems skills and workflows.",
   "author": {
     "name": "Reliable Modular Systems",
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Reliable Modular Systems",
     "shortDescription": "Build software through explicit module contracts.",
-    "longDescription": "RMS gives Codex bounded workflows for inspecting modules, implementing changes, pruning semantic residue, evolving contracts, composing modules, verifying conformance, and running replayable proof-first bug hunts against canonical manifests.",
+    "longDescription": "RMS gives Codex bounded workflows for inspecting modules, implementing changes, pruning semantic residue, evolving contracts, proving transitive purity, deriving schema-valid properties, generating executable symbolic compositions, reusing digest-bound proofs, and running replayable proof-first bug hunts against canonical manifests.",
     "developerName": "Reliable Modular Systems",
     "category": "Developer Tools",
     "capabilities": [
@@ -33,6 +33,7 @@
       "Implement this change within the owning module.",
       "Prune semantic residue from this module without changing public behavior.",
       "Verify this module against its RMS contracts.",
+      "Choose the correct RMS purity, property-generation, composition, or proof-reuse tool for this change.",
       "Find and replay bugs with the risk-derived RMS hunt lanes."
     ],
     "brandColor": "#2563EB"

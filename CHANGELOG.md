@@ -26,6 +26,15 @@
 - Published `probe-machine.v2` with Python support while retaining v1 unchanged.
 - Made composite export mutations preservation-safe: null, omitted, and inert collection changes preserve existing exports, while an explicit `composition_exports.set: []` remains the intentional delete-all operation.
 
+## 0.1.0-rc.9
+
+- Add transitive AST-based purity and authority analysis for Rust, Swift, Python, and JavaScript.
+- Add strict `rms/implementation/v0.2` bindings and receipt-bound v0.1 migration.
+- Add seeded JSON Schema property generation and semantic shrinking.
+- Add executable symbolic composition models, probe assemblies, algebraic reductions, and digest-bound proof certificates.
+- Extract effect analysis, generation, composition, migration, and proof reuse into pure functional cores.
+- Add one operational tool-selection guide and update production guidance, schema documentation, canonical skills, and the Codex plugin for the new mechanisms.
+
 ## 0.1.0-rc.8
 
 - Added first-class `rms probe` support for pure, ephemeral command/event/effect-result sequences through Rust, Swift, JavaScript, and Python transition-record adapters, including discovery, protocol/schema validation, expectations, trace output, scaffold generation, verification handshakes, and maintained dogfood examples.

@@ -1,7 +1,7 @@
 spec: rms/module/v0.1
 module:
   name: rms-cli
-  version: 0.1.0-rc.8
+  version: 0.1.0-rc.9
   kind: tool
   purpose: Provide the canonical command-line workbench for inspecting, validating, packaging, explaining, structuring, and verifying RMS modules.
 profiles:
@@ -912,12 +912,12 @@ x-rms:
     scope: rms-self-development
     semantic_revision_authority: repository maintainer seal
     evidence: verification/laws/rms_self_application_boundary.md
-  last_semantic_intent: Add an optional one-run Codex CLI profile for structured intent extraction, classify quota exhaustion and read-only provider state truthfully, and preserve deterministic ownerless recovery through caller-authored typed intent.
+  last_semantic_intent: Ship RMS 0.1.0-rc.9 with transitive purity analysis, schema-derived properties, executable symbolic composition, digest-bound proof reuse, and pure decision cores behind thin effectful adapters.
   semantic_revision:
-    digest: sha256:3955abfdb184f72b08560d36a925e257e260b2b6b8c4b025583e7b71489c549b
-    change_record: verification/changes/add-one-run-codex-profile-and-fail-closed-provider-recovery.yaml
+    digest: sha256:0fbb18594581f7865602e18f0ab1307d26d0518f9d6786c5b3429dcbc92fb0e6
+    change_record: verification/changes/ship-the-rms-functional-core-and-composition-release-rc9.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:b9f32ecb2f1da212ba677be7de9be6afd3f47cc0327b1752b51b3ea69378acce
+    change_record_digest: sha256:7f9e634f01aa342fbc6055d2e0fbf4d30f34771c9db965a95e7abe4e596ae661
 properties:
 - id: probe-product-state-expression-concurrency-corpus
   proves: probe-product-state-expressions-are-closed-and-replayable
@@ -1868,4 +1868,36 @@ fuzz_targets:
     runner: src/main.rs#schema_validation_reports_shape_errors
 artifacts: []
 transformations: []
-authorities: []
+authorities:
+- id: clock
+  kind: privileged
+  capabilities: [read-system-time]
+  rationale: RMS uses time only to identify runs and measure bounded work.
+- id: dynamic-dispatch
+  kind: privileged
+  capabilities: [invoke-runtime-selected-operation]
+  rationale: RMS contains runtime-selected provider and command adapters.
+- id: environment
+  kind: privileged
+  capabilities: [read-process-environment]
+  rationale: RMS reads declared environment configuration at boundary adapters.
+- id: filesystem
+  kind: privileged
+  capabilities: [read-write-project-files]
+  rationale: RMS validates and writes project artifacts through filesystem adapters.
+- id: git
+  kind: privileged
+  capabilities: [inspect-repository-state]
+  rationale: RMS binds proof and route receipts to repository state.
+- id: network
+  kind: privileged
+  capabilities: [serve-local-system-view]
+  rationale: RMS can serve the local system viewer through an explicit adapter.
+- id: process
+  kind: privileged
+  capabilities: [execute-declared-commands]
+  rationale: RMS executes declared proof and provider commands through boundary adapters.
+- id: provider
+  kind: privileged
+  capabilities: [invoke-configured-provider]
+  rationale: RMS can invoke an explicitly configured AI provider through one adapter.

@@ -1,4 +1,4 @@
-spec: rms/implementation/v0.1
+spec: rms/implementation/v0.2
 module: rust-example
 binding: rust
 source:
@@ -34,6 +34,11 @@ architecture:
       - rejected empty names remain explicit
       command: verify
       evidence: verification/laws/accepted_widget_has_name
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+        runner: src/widget.rs#accepts_non_empty_name
   allowed_public_field_structs:
   - RustExampleTransition
   - RustExampleTransitionRecord
@@ -178,6 +183,8 @@ semantic_functions:
   symbol: Widget::new
   kind: constructor
   purity: pure
+  trust: internal
+  authorities: []
   discharges:
     invariants:
     - accepted-widget-has-name
@@ -193,6 +200,8 @@ semantic_functions:
   symbol: describe_widget
   kind: projector
   purity: pure
+  trust: internal
+  authorities: []
   discharges:
     contracts:
     - contracts/describe-widget.v1.yaml
@@ -210,6 +219,8 @@ semantic_functions:
   symbol: transition
   kind: transition
   purity: pure
+  trust: internal
+  authorities: []
 x-rms:
   semantic_revision:
     digest: sha256:2996f574c1891820803e73ed1b29e0224023010a040a015265fd688bc429555a

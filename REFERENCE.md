@@ -363,10 +363,24 @@ Focused proof is selected from the promises affected by the change:
 
 ### Executable property loop
 
+Choose the specialist command by scope:
+
+| Scope | Command | Boundary |
+| --- | --- | --- |
+| Legacy implementation metadata | `binding migrate` | Produces no candidate when trust or authority inference is ambiguous. Requires a matching ready route receipt in dry-run and write modes. |
+| One implementation's call/effect closure | `structure` | Runs transitive purity and authority analysis. It does not execute effects. |
+| One implementation's probe schemas | `property generate` | Writes a deterministic probe assembly. It does not replace raw-parser fuzzing. |
+| One focused transition | `probe` | Ephemeral diagnostic execution through the real transition-record path. |
+| System contract closure | `compose --root` | Read-only. It does not execute probes or write artifacts. |
+| Symbolic system exploration | `compose --output` | Executes probe `describe` only, validates the generated assembly, and writes derived artifacts atomically. |
+| Universal finite proof | `property search --goal violate --out` | Emits a proof certificate only when the declared finite model is exhausted without a violation. |
+| Open-ended discovery | `hunt` | Produces bounded evidence and replayable findings, never a universal claim. |
+
 RMS behavioral contracts and temporal guarantees share one compiled reference evaluator. A v0.2 contract retains caller-obligation semantics. A v0.3 contract separates external assumptions from boundary-validatable requirements and is total under satisfied assumptions: invalid input must receive a typed, empty-frame rejection. An external clause names one exact executable module property. Canonical selections use IDs such as `contract:start-checkout#accepted-case`.
 
 ```text
 rms property check TARGET
+rms property generate IMPLEMENTATION --out ASSEMBLY [--property ID] [--seed N] [--cases-per-input N]
 rms property evaluate TARGET --trace TRACE [--property ID] [--out ANALYSIS]
 rms property search TARGET --assembly ASSEMBLY --goal satisfy|violate [--property ID]
 rms property analyze TARGET [--assembly ASSEMBLY]
@@ -374,7 +388,15 @@ rms property monitor TARGET --input TRACE|- [--property ID]
 rms property replay ANALYSIS
 rms check-compat OLD_CONTRACT NEW_CONTRACT
 rms spec migrate-contract INPUT [--out OUTPUT]
+rms binding migrate IMPLEMENTATION --to v0.2 --route-receipt RECEIPT [--dry-run]
+rms compose --root ROOT [--output DIR] [--seed N] [--cases-per-input N] [--dry-run] [--force]
 ```
+
+`property generate` derives deterministic schema-valid workloads from a machine-probe v0.2 `describe` response. Equal implementation, schema, generator version, seed, and case count produce equal workloads. Unsupported schema keywords return an explicit unsupported result and require a manual generator.
+
+`compose` stays read-only without `--output`. Output mode executes only `describe` operations and atomically writes `composition.json` plus `probe-assembly.yaml`. `--dry-run` validates without writing; existing output requires `--force`. Missing or ambiguous providers, incompatible contracts, non-dual protocol endpoints, unauthorized effects, unresolved mappings, dependency cycles, and lifecycle-result bypass prevent generation.
+
+An exhaustive `property search --goal violate --out ANALYSIS` that finds no violation writes `ANALYSIS.proof-certificate.json`. Composition reuses it only when subject, contract, implementation, source, tool, strategy, assumptions, and evidence digests match exactly. These generated artifacts are evidence projections, not semantic authority. The complete operational guide is [Functional Core and Composition](FUNCTIONAL_CORE.md).
 
 `evaluate` reports satisfaction only for supplied invocation or transition records. For v0.3, false or missing assumptions are inconclusive without blame; invalid acceptance, missing typed rejection, and mutation during invalid rejection assign provider blame. Postconditions, frames, and invariants also assign provider blame. v0.2 requirements retain caller blame. Malformed or incomplete evidence assigns binding/evidence blame.
 
@@ -468,6 +490,7 @@ Specialist commands remain directly callable. Their absence from default help is
 | [FIRST_BUG_HUNT.md](FIRST_BUG_HUNT.md) | Runnable finding-and-replay tutorial plus a visual Snake dogfood exercise |
 | [EXPLAINED.md](EXPLAINED.md) | Conceptual model and motivation |
 | [UNDERSTANDABILITY.md](UNDERSTANDABILITY.md) | Understandability laws, state-space review, and future self-hosting foundations |
+| [FUNCTIONAL_CORE.md](FUNCTIONAL_CORE.md) | Tool selection for purity, schema generation, symbolic composition, and proof reuse |
 | [PRODUCTION.md](PRODUCTION.md) | Production-pilot requirements and completion policy |
 | [TOOLING.md](TOOLING.md) | Narrow-waist CLI and deterministic tooling model |
 | [SPEC.md](SPEC.md) | Normative RMS semantic specification |
@@ -479,4 +502,4 @@ Specialist commands remain directly callable. Their absence from default help is
 
 ## Version and Status
 
-This repository is the RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use. The Rust reference implementation is `0.1.0-rc.8`; the public presentation is intentionally narrow while the specialist engines remain available.
+This repository is the RMS 0.1 Canonical Draft. The semantic core is frozen for pilot use. The Rust reference implementation is `0.1.0-rc.9`; the public presentation is intentionally narrow while the specialist engines remain available.

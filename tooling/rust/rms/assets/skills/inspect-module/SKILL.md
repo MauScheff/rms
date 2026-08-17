@@ -9,6 +9,8 @@ description: Inspect an RMS module before planning or changing it; use when owne
 2. Run `rms explain --module <module>` for a human-readable module doorway. If there is a specific uncertainty, pass it as the optional question; add `--details` only when the compact answer is insufficient.
 3. Run `rms inspect <module>` or `rms context <module> --task "<task>"` before planning a change.
    - When the implementation is machine-shaped, run `rms probe <implementation.yaml> --describe` to discover its exact normalized states and inputs. For a focused diagnostic poke, copy one described example into `rms probe <implementation.yaml> --input '<JSON>'`; probing is pure, ephemeral, and does not replace verification evidence.
+   - When the implementation uses `rms/implementation/v0.2`, run `rms structure <implementation.yaml>` to inspect the transitive call/effect graph. Treat unresolved calls, unresolved dynamic dispatch, pure functions with authority, and declared/inferred authority differences as blockers.
+   - When the implementation still uses v0.1, report migration as a separate receipt-gated change. Do not infer or edit v0.2 trust and authority fields during read-only inspection.
 4. Identify the system, bounded context, and target module.
 5. Read, in order:
    - the system manifest and context map;
@@ -41,6 +43,8 @@ description: Inspect an RMS module before planning or changing it; use when owne
    - resource protocols and terminal-path closure;
    - privileged, unsafe, or foreign authority bindings and exact safe facades;
    - executable temporal properties, their observation schemas and assumptions, dimensional validity, and whether trace/search evidence can prove the declared scope.
+   - whether schema-derived property generation is supported, explicitly unsupported, or still requires a manual domain generator;
+   - whether existing proof certificates still match their exact subject, implementation, source, tool, strategy, assumptions, and evidence digests.
 8. For a proposed task, identify the owning module and the smallest affected contract surface.
 9. Identify whether the task should use:
    - an ADT, sealed variant, or enum for closed alternatives;

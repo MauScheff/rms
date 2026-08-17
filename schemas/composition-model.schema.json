@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:composition-model:v0.1",
+  "title": "RMS Derived Composition Model v0.1",
+  "type": "object",
+  "required": ["spec", "source_revision", "tool_digest", "seed", "cases_per_input", "state", "participants", "wiring", "protocol_routes", "effects", "authorities", "obligations", "reusable_proofs", "reductions"],
+  "properties": {
+    "spec": { "const": "rms/composition-model/v0.1" },
+    "source_revision": { "type": "string", "minLength": 1 },
+    "tool_digest": { "type": "string", "minLength": 1 },
+    "seed": { "type": "integer", "minimum": 0 },
+    "cases_per_input": { "type": "integer", "minimum": 1 },
+    "state": { "$ref": "#/$defs/state" },
+    "participants": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/participant" } },
+    "wiring": { "type": "array", "items": { "$ref": "#/$defs/wiring" } },
+    "protocol_routes": { "type": "array", "items": { "$ref": "#/$defs/protocolRoute" } },
+    "effects": { "$ref": "#/$defs/strings" },
+    "authorities": { "$ref": "#/$defs/strings" },
+    "obligations": { "type": "array", "items": { "$ref": "#/$defs/obligation" } },
+    "reusable_proofs": { "type": "array", "items": { "$ref": "#/$defs/reusableProof" } },
+    "reductions": { "type": "array", "items": { "$ref": "#/$defs/reduction" } }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "strings": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "state": {
+      "type": "object",
+      "required": ["representation", "components"],
+      "properties": {
+        "representation": { "const": "ordered-participant-vector" },
+        "components": { "$ref": "#/$defs/strings" }
+      },
+      "additionalProperties": false
+    },
+    "participant": {
+      "type": "object",
+      "required": ["id", "implementation", "implementation_digest"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "implementation": { "type": "string", "minLength": 1 },
+        "implementation_digest": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "wiring": {
+      "type": "object",
+      "required": ["consumer", "binding", "provider"],
+      "properties": {
+        "consumer": { "type": "string", "minLength": 1 },
+        "binding": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "protocolRoute": {
+      "type": "object",
+      "required": ["protocol", "message", "sender", "receiver"],
+      "properties": {
+        "protocol": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "sender": { "type": "string", "minLength": 1 },
+        "receiver": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "obligation": {
+      "type": "object",
+      "required": ["id", "status", "detail"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["satisfied", "not-applicable", "review-required", "unresolved", "incompatible"] },
+        "detail": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "reusableProof": {
+      "type": "object",
+      "required": ["subject", "certificate_digest"],
+      "properties": {
+        "subject": { "type": "string", "minLength": 1 },
+        "certificate_digest": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "reduction": {
+      "type": "object",
+      "required": ["law", "kind", "action"],
+      "properties": {
+        "law": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["idempotent", "commutative", "associative", "monotonic"] },
+        "action": { "enum": ["collapse-duplicate-delivery", "partial-order-reduction", "regroup-identical-contracts", "prune-dominated-state"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}

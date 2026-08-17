@@ -34,6 +34,21 @@ RMS records schema-constrained fact extraction without accepting provider topolo
 
 Use `rms explain ["<question>"]` when the compact prescription needs clarification and `rms help --all` for specialist commands. Load the catalog skill selected by the task lane; detailed machine, surface, property, trace, and completion rules live in selected skills and rendered RMS context.
 
+## Specialist Tool Selection
+
+| Need | Use | Do not substitute |
+| --- | --- | --- |
+| Migrate `rms/implementation/v0.1` | `rms binding migrate ... --to v0.2 --route-receipt ... --dry-run`, then write mode | Direct YAML edits or guessed trust/authority rows |
+| Prove purity or authority closure | `rms structure <implementation.yaml>` | A lexical search for IO names |
+| Generate valid inputs for one machine | `rms property generate <implementation.yaml> --out <assembly>` | Hand-copied probe examples |
+| Debug one real transition | `rms probe ... --describe`, then one input | Property proof or production effect execution |
+| Check system closure without writes | `rms compose --root <root>` | Generated runtime wiring |
+| Generate a symbolic composed probe | `rms compose --root <root> --output <dir> --dry-run`, then write mode | An eager Cartesian state product |
+| Search a declared finite model | `rms property search ... --assembly ... --goal satisfy|violate` | Fuzzing presented as universal proof |
+| Discover bugs under a budget | `rms hunt --dry-run`, then a clean-commit hunt | The fast change or committed gate |
+
+`property generate` is for one implementation. `compose --output` is for multiple wired implementations. Proof certificates appear only beside an output analysis after an exhausted violation search finds no violation. Composition reuses only an exact digest match.
+
 ## Executable Property Loop
 
 Behavioral contracts and temporal promises use typed observations, explicit assumptions, closed expressions, and dimensionally valid quantities. Use `property check` to type-check, `evaluate` for real invocation or transition records, `search` for a witness or counterexample, `analyze` for finite or solver-backed obligations, `monitor` for a fail-open streaming prefix, and `replay` for recorded `rms/property-analysis/v0.2` evidence. A bounded or open run is inconclusive, never proof.

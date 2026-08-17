@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:effect-analysis:v0.1",
+  "title": "RMS Effect Analysis v0.1",
+  "type": "object",
+  "required": ["spec", "binding", "source_digest", "tool_digest", "result", "functions"],
+  "properties": {
+    "spec": { "const": "rms/effect-analysis/v0.1" },
+    "binding": { "enum": ["rust", "swift", "python", "js", "javascript"] },
+    "source_digest": { "$ref": "#/$defs/digest" },
+    "tool_digest": { "$ref": "#/$defs/digest" },
+    "result": { "enum": ["pass", "fail", "unsupported"] },
+    "functions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "symbol", "declared_purity", "declared_authorities", "direct_calls", "resolved_callees", "direct_authorities", "transitive_authorities", "unresolved_calls", "verdict", "reasons"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "symbol": { "type": "string", "minLength": 1 },
+          "declared_purity": { "enum": ["pure", "effectful"] },
+          "declared_authorities": { "$ref": "#/$defs/strings" },
+          "direct_calls": { "$ref": "#/$defs/strings" },
+          "resolved_callees": { "$ref": "#/$defs/strings" },
+          "direct_authorities": { "$ref": "#/$defs/strings" },
+          "transitive_authorities": { "$ref": "#/$defs/strings" },
+          "unresolved_calls": { "$ref": "#/$defs/strings" },
+          "verdict": { "enum": ["pass", "fail", "unsupported"] },
+          "reasons": { "$ref": "#/$defs/strings" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "strings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    }
+  }
+}

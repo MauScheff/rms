@@ -1,4 +1,4 @@
-spec: rms/implementation/v0.1
+spec: rms/implementation/v0.2
 module: example-python
 binding: python
 source:
@@ -15,6 +15,8 @@ semantic_functions:
   symbol: src/example_python/representation.py#make_label
   kind: constructor
   purity: pure
+  trust: internal
+  authorities: []
   evidence:
     laws:
     - verification/laws/transition_trace.md
@@ -24,6 +26,8 @@ semantic_functions:
   symbol: src/example_python/transition.py#transition
   kind: transition
   purity: pure
+  trust: internal
+  authorities: []
   evidence:
     laws:
     - verification/laws/transition_trace.md

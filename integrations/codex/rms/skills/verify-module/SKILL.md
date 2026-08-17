@@ -9,6 +9,9 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
 2. Read the target manifest and implementation binding.
 3. Run `rms validate --root <root>` or validate the explicit target manifests.
 4. Run `rms review <module>` when verifying an active diff. Run `rms spec check <module.yaml|implementation.yaml>`, `rms machine check <implementation.yaml>` when an implementation binding exists, and `rms property check <module.yaml|implementation.yaml>` when laws, parsers, numeric bounds, reusable modules, generated input spaces, fuzz targets, or counterexamples are involved. Run `rms verify <implementation.yaml>` when the implementation binding declares `commands.verify`, or `rms verify <composite-module.yaml>` for composite rollups. Then require `rms check --changes --root <root>` to exit zero, request the candidate commit only when authorized, and require `rms check --committed --root <root>` to exit zero before claiming production-ready RMS software. A failed check is a failure, not a manual note.
+   - Production checks require `rms/implementation/v0.2`. Run `rms structure <implementation.yaml>` and require transitive effect analysis to pass. A pure function has no authority and no unresolved call. An effectful function declares exactly its inferred authority row.
+   - Use `rms property generate <implementation.yaml> --out <assembly>` to verify deterministic schema-derived inputs for a probe v0.2 machine. Equal digest, seed, generator version, and case count must produce equal output. An unsupported schema result requires a manual generator; it is not a skip.
+   - Run `rms compose --root <root>` for read-only closure. When executable composition is part of the claim, dry-run `--output`, write the artifacts, and execute the generated assembly through the declared probe/property lane.
 5. Confirm manifest validity and referenced-file existence.
 6. Check ownership and dependency boundaries:
    - no undeclared imports or calls;
@@ -28,6 +31,8 @@ description: Verify that an RMS module and its changes satisfy declared laws, co
    - executable trace verdicts, finite witnesses/counterexamples or relationship analyses as applicable, and recorded results with `rms property replay <analysis.yaml>`.
    - local trace bundles with `rms trace check`, `rms trace show`, or `rms trace diagnose` when transition evidence is recorded as JSON or YAML.
    - `rms probe <implementation.yaml> --describe` followed by one described smoke input when the binding is inspectable. Probe failures block verification, but successful probes remain ephemeral diagnostics rather than evidence.
+   - generated composition artifacts only after regeneration and digest comparison when canonical evidence references them;
+   - proof certificates only when every subject, contract, implementation, source, tool, strategy, assumption, and evidence digest matches. Reject every stale or partial certificate.
    - `rms hunt --root <root> --dry-run` when auditing reliability posture, to report the risk-derived nightly lanes, tools, and unsupported obligations without running the expensive campaign. Run a budgeted hunt only when requested or scheduled.
 8. Check domain representation evidence:
    - closed domain alternatives use ADTs, sealed variants, enums, or an equivalent explicit representation;

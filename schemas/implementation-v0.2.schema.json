@@ -1,0 +1,765 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:implementation:v0.1",
+  "title": "RMS Implementation Binding v0.1",
+  "type": "object",
+  "required": [
+    "spec",
+    "module",
+    "binding",
+    "source",
+    "commands",
+    "architecture"
+  ],
+  "properties": {
+    "spec": {
+      "const": "rms/implementation/v0.2"
+    },
+    "module": {
+      "type": "string",
+      "minLength": 1
+    },
+    "binding": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "root",
+        "public_entrypoint"
+      ],
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "public_entrypoint": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "commands": {
+      "type": "object",
+      "required": [
+        "build",
+        "verify"
+      ],
+      "properties": {
+        "build": {
+          "type": "string"
+        },
+        "verify": {
+          "type": "string"
+        },
+        "probe": {
+          "type": "string",
+          "minLength": 1
+        },
+        "format": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "architecture": {
+      "$ref": "#/$defs/architecture"
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "distribution": {
+      "type": "object",
+      "properties": {
+        "reusable": {
+          "type": "boolean"
+        },
+        "public_facade": {
+          "type": "string"
+        },
+        "semantic_package": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "native_package": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "semantic_functions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/semanticFunction"
+      }
+    },
+    "generated": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "patternProperties": {
+    "^x-": {}
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "binding": {
+            "enum": [
+              "rust",
+              "swift",
+              "js",
+            "javascript",
+            "python"
+            ]
+          }
+        },
+        "required": [
+          "binding"
+        ]
+      },
+      "then": {
+        "properties": {
+          "commands": {
+            "required": [
+              "probe"
+            ]
+          },
+          "architecture": {
+            "required": [
+              "probe"
+            ],
+            "properties": {
+              "machine": {
+                "required": [
+                  "initial_state"
+                ]
+              },
+              "roles": {
+                "required": [
+                  "probe_adapter"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "architecture": {
+      "type": "object",
+      "required": [
+        "shape",
+        "machine",
+        "roles"
+      ],
+      "properties": {
+        "shape": {
+          "type": "string"
+        },
+        "machine": {
+          "$ref": "#/$defs/machine"
+        },
+        "probe": {
+          "$ref": "#/$defs/probe"
+        },
+        "protocol_bindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/protocolBinding" },
+          "uniqueItems": true
+        },
+        "authority_bindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/authorityBinding" },
+          "uniqueItems": true
+        },
+        "public_behavior_bindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/publicBehaviorBinding" },
+          "uniqueItems": true
+        },
+        "dependency_behavior_bindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyBehaviorBinding" },
+          "uniqueItems": true
+        },
+        "state_type": false,
+        "transition_function": false
+      },
+      "additionalProperties": true
+    },
+    "machine": {
+      "type": "object",
+      "required": [
+        "name",
+        "mode",
+        "transition_signature",
+        "types",
+        "states",
+        "commands",
+        "observed_events",
+        "events",
+        "effects",
+        "effect_results",
+        "replies",
+        "rejections",
+        "effect_protocols",
+        "transition_function",
+        "transitions"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "enum": [
+            "stateless-decision-machine",
+            "stateful-transition-machine",
+            "workflow-effect-machine",
+            "boundary-machine",
+            "storage-machine",
+            "integration-machine",
+            "projection-machine"
+          ]
+        },
+        "transition_signature": {
+          "enum": [
+            "input-only",
+            "state-and-input"
+          ]
+        },
+        "driver_function": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transition_record_function": {
+          "type": "string",
+          "minLength": 1
+        },
+        "initial_state": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "types": {
+          "$ref": "#/$defs/machineTypes"
+        },
+        "states": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "commands": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "observed_events": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "events": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "effects": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "effect_results": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "replies": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "rejections": {
+          "$ref": "#/$defs/identifierList"
+        },
+        "effect_protocols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/effectProtocol"
+          }
+        },
+        "resource_protocols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resourceProtocol"
+          },
+          "uniqueItems": true
+        },
+        "transition_function": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transitions": {
+          "type": "array"
+        },
+        "stateless_justification": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lifecycle_justification": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "probe": {
+      "type": "object",
+      "required": [
+        "protocol",
+        "command",
+        "runner"
+      ],
+      "properties": {
+        "protocol": {
+          "enum": ["rms/machine-probe/v0.1", "rms/machine-probe/v0.2"]
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "initial_state_function": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mappers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "command", "runner"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "command": { "type": "string", "minLength": 1 },
+              "runner": { "type": "string", "pattern": "^[^#]+#[^#]+$" }
+            },
+            "additionalProperties": false
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "machineTypes": {
+      "type": "object",
+      "required": [
+        "state",
+        "command",
+        "event",
+        "reply",
+        "rejection",
+        "transition",
+        "transition_record"
+      ],
+      "properties": {
+        "state": { "type": "string" },
+        "input": { "type": "string" },
+        "command": { "type": "string" },
+        "command_envelope": { "type": "string" },
+        "observed_event": { "type": "string" },
+        "event": { "type": "string" },
+        "event_envelope": { "type": "string" },
+        "effect": { "type": "string" },
+        "effect_envelope": { "type": "string" },
+        "effect_result": { "type": "string" },
+        "effect_result_envelope": { "type": "string" },
+        "reply": { "type": "string" },
+        "rejection": { "type": "string" },
+        "transition": { "type": "string" },
+        "transition_record": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "identifierList": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "uniqueItems": true
+    },
+    "effectProtocol": {
+      "type": "object",
+      "required": [
+        "effect",
+        "results",
+        "atomicity"
+      ],
+      "properties": {
+        "effect": { "type": "string" },
+        "results": { "$ref": "#/$defs/identifierList" },
+        "executor_role": { "type": "string" },
+        "executor_symbol": { "type": "string", "minLength": 1 },
+        "atomicity": {
+          "enum": [
+            "one-request-one-result",
+            "aggregate"
+          ]
+        },
+        "aggregate_justification": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "resourceProtocol": {
+      "type": "object",
+      "required": ["resource", "ownership", "states", "initial_state", "terminal_states", "transitions"],
+      "properties": {
+        "resource": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "ownership": { "enum": ["exclusive", "shared", "borrowed"] },
+        "states": { "$ref": "#/$defs/identifierList" },
+        "initial_state": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "terminal_states": { "$ref": "#/$defs/identifierList" },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "on", "trigger_kind", "operation", "to"],
+            "properties": {
+              "from": { "type": "string" },
+              "on": { "type": "string" },
+              "trigger_kind": { "enum": ["command", "observed-event", "event", "effect", "effect-result"] },
+              "operation": { "enum": ["acquire", "use", "release", "transfer"] },
+              "to": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "protocolBinding": {
+      "type": "object",
+      "required": ["name", "contract", "participant", "mappings"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$" },
+        "contract": { "type": "string", "minLength": 1 },
+        "participant": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$" },
+        "mappings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["machine_case", "message", "direction"],
+            "properties": {
+              "machine_case": { "type": "string" },
+              "message": { "type": "string" },
+              "direction": { "enum": ["send", "receive"] },
+              "mapper": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "authorityBinding": {
+      "type": "object",
+      "required": ["authority", "roles", "safe_facade", "evidence"],
+      "properties": {
+        "authority": { "type": "string", "minLength": 1 },
+        "roles": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "safe_facade": {
+          "type": "string",
+          "pattern": "^[^#]+#[^#]+$"
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "publicBehaviorBinding": {
+      "type": "object",
+      "required": [
+        "id",
+        "public_kind",
+        "public_name",
+        "contract",
+        "semantic_function",
+        "machine_inputs",
+        "machine_outputs"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "public_kind": { "enum": ["command", "query", "capability"] },
+        "public_name": { "type": "string", "minLength": 1 },
+        "contract": { "type": "string", "minLength": 1 },
+        "semantic_function": { "type": "string", "minLength": 1 },
+        "machine_inputs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "machine_outputs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "observation_source": {
+          "type": "object",
+          "required": ["kind", "command"],
+          "properties": {
+            "kind": { "enum": ["transition-record", "invocation-record"] },
+            "command": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "dependencyBehaviorBinding": {
+      "type": "object",
+      "required": ["id", "capability", "consumer", "resolution"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "capability": { "type": "string", "minLength": 1 },
+        "contract": { "type": "string", "minLength": 1 },
+        "consumer": {
+          "type": "string",
+          "pattern": "^[^#]+#[^#]+$"
+        },
+        "resolution": { "enum": ["module", "external"] },
+        "provider_module": { "type": "string", "minLength": 1 },
+        "provider_contract": { "type": "string", "minLength": 1 },
+        "probe_bridge": { "$ref": "#/$defs/probeBridge" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "resolution": { "const": "module" } },
+            "required": ["resolution"]
+          },
+          "then": { "required": ["provider_module", "provider_contract"] },
+          "else": {
+            "not": {
+              "anyOf": [
+                { "required": ["provider_module"] },
+                { "required": ["provider_contract"] }
+              ]
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "probeBridge": {
+      "type": "object",
+      "required": ["request", "outcomes"],
+      "properties": {
+        "request": { "$ref": "#/$defs/probeBridgeLeg" },
+        "outcomes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/probeBridgeLeg" },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "probeBridgeLeg": {
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "$ref": "#/$defs/probeNamedKind" },
+        "to": { "$ref": "#/$defs/probeNamedKind" },
+        "mapper": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "probeNamedKind": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "command",
+            "observed-event",
+            "effect-result",
+            "event",
+            "effect",
+            "reply",
+            "rejection"
+          ]
+        },
+        "name": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "semanticFunction": {
+      "type": "object",
+      "required": [
+        "id",
+        "symbol",
+        "kind",
+        "purity",
+        "trust",
+        "authorities"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "constructor",
+            "parser",
+            "decision",
+            "transition",
+            "projector",
+            "adapter",
+            "interpreter",
+            "effect-executor",
+            "transformation"
+          ]
+        },
+        "purity": {
+          "enum": [
+            "pure",
+            "effectful"
+          ]
+        },
+        "trust": {
+          "enum": [
+            "internal",
+            "boundary"
+          ]
+        },
+        "discharges": {
+          "type": "object",
+          "properties": {
+            "contracts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "invariants": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "assumptions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "assumptions": {
+          "type": "object",
+          "properties": {
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "maintains": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "ensures": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "evidence": {
+          "type": "object",
+          "properties": {
+            "laws": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "contracts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "scenarios": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "boundaries": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "properties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "fuzz": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "authorities": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+          "additionalProperties": true
+        },
+        "authorities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+  }
+}
