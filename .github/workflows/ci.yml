@@ -35,7 +35,17 @@ jobs:
           set -euo pipefail
           provider_test="tests::provider_pipeline_repairs_caches_refreshes_and_deduplicates"
           RUST_TEST_THREADS=1 cargo test -p rms --locked "$provider_test" -- --exact
-          RUST_TEST_THREADS=1 cargo test -p rms --locked -- --skip "$provider_test"
+          # Many RMS tests create nested toolchains and subprocess trees. Run
+          # every discovered test in a short-lived process so the hosted runner
+          # releases per-test resources instead of accumulating them for an hour.
+          cargo test -p rms --locked -- --list \
+            | sed -n 's/: test$//p' \
+            | while IFS= read -r rms_test; do
+                case "$rms_test" in
+                  "$provider_test"|behavioral_contract::tests::cvc5_reference_solver_conformance) continue ;;
+                esac
+                cargo test -p rms --locked "$rms_test" -- --exact --nocapture
+              done
           cargo fmt --all --check
           cargo build -p rms --locked
       - name: RMS strict committed audit
