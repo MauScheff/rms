@@ -1,4 +1,4 @@
-spec: rms/implementation/v0.1
+spec: rms/implementation/v0.2
 
 module: example
 binding: fixture
@@ -24,6 +24,11 @@ architecture:
           - the declared fixture evidence exists
         command: verify
         evidence: verification/laws/example_is_valid
+        realizations:
+          - profile: smoke
+            strategy: deterministic-corpus
+            command: verify
+            runner: src/example.txt#placeholder
   static_inspection: opaque
   dependency_checker: manual-fixture-review
   machine:

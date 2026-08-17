@@ -1,8 +1,8 @@
 use super::{
     apply_probe_trace_conformance, execute_proof_command, get_path, get_str, load_manifest,
     load_probe_binding, load_yaml_value, probe_conformance_diagnostic_summary, property,
-    sha256_bytes, trace_has_errors, validate_probe_description, validate_probe_trace_shape,
-    ProbeBinding,
+    schema_generator, sha256_bytes, trace_has_errors, validate_probe_description,
+    validate_probe_trace_shape, ProbeBinding,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use jsonschema::validator_for;
@@ -2894,7 +2894,7 @@ impl Engine {
                 .get("data")
                 .cloned()
                 .unwrap_or(Value::Null);
-            for smaller in shrink_json(&data) {
+            for smaller in schema_generator::structural_shrinks(&data) {
                 self.ensure_deadline()?;
                 let mut candidate = assembly.clone();
                 if let Some(input) = candidate.stimuli[stimulus_index].input.as_object_mut() {
@@ -4614,48 +4614,6 @@ fn shrink_u64(value: u64) -> Vec<u64> {
         .into_iter()
         .filter(|candidate| *candidate < value)
         .collect()
-}
-
-fn shrink_json(value: &Value) -> Vec<Value> {
-    let mut candidates = Vec::new();
-    match value {
-        Value::Object(object) => {
-            for key in object.keys() {
-                let mut smaller = object.clone();
-                smaller.remove(key);
-                candidates.push(Value::Object(smaller));
-            }
-            for (key, nested) in object {
-                for shrunk in shrink_json(nested) {
-                    let mut smaller = object.clone();
-                    smaller.insert(key.clone(), shrunk);
-                    candidates.push(Value::Object(smaller));
-                }
-            }
-        }
-        Value::Array(items) if !items.is_empty() => {
-            candidates.push(Value::Array(Vec::new()));
-            candidates.push(Value::Array(items[..items.len() / 2].to_vec()));
-        }
-        Value::String(value) if !value.is_empty() => {
-            candidates.push(Value::String(String::new()));
-            candidates.push(Value::String(
-                value.chars().take(value.chars().count() / 2).collect(),
-            ));
-        }
-        Value::Number(number) if number.as_i64() != Some(0) => {
-            candidates.push(json!(0));
-        }
-        Value::Bool(true) => candidates.push(Value::Bool(false)),
-        _ => {}
-    }
-    candidates.sort_by(|left, right| {
-        serde_json::to_string(left)
-            .unwrap_or_default()
-            .cmp(&serde_json::to_string(right).unwrap_or_default())
-    });
-    candidates.dedup();
-    candidates
 }
 
 fn input_name(input: &Value) -> String {

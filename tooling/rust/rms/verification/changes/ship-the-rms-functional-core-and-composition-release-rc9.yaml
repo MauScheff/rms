@@ -1,0 +1,13 @@
+spec: rms/semantic-change/v0.1
+module: tooling/rust/rms/module.yaml
+supersedes:
+- verification/changes/add-one-run-codex-profile-and-fail-closed-provider-recovery.yaml
+intent:
+  summary: Ship RMS 0.1.0-rc.9 with transitive purity analysis, schema-derived properties, executable symbolic composition, digest-bound proof reuse, and pure decision cores behind thin effectful adapters.
+laws: null
+contracts: null
+properties: null
+machine: null
+roles: null
+evidence: null
+surfaces: null

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rms:schema:proof-certificate:v0.1",
+  "title": "RMS Proof Certificate v0.1",
+  "type": "object",
+  "required": ["spec", "subject", "digests", "strategy", "assumptions", "result"],
+  "properties": {
+    "spec": { "const": "rms/proof-certificate/v0.1" },
+    "subject": {
+      "type": "object",
+      "required": ["module", "property"],
+      "properties": {
+        "module": { "type": "string", "minLength": 1 },
+        "contract": { "type": "string", "minLength": 1 },
+        "property": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "digests": {
+      "type": "object",
+      "required": ["implementation", "source", "tool", "evidence"],
+      "properties": {
+        "contract": { "$ref": "#/$defs/digest" },
+        "implementation": { "$ref": "#/$defs/digest" },
+        "source": { "$ref": "#/$defs/digest" },
+        "tool": { "$ref": "#/$defs/digest" },
+        "evidence": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "strategy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "exhausted"],
+          "properties": {
+            "kind": { "const": "deterministic-exhaustive" },
+            "exhausted": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "solver", "solver_digest", "result"],
+          "properties": {
+            "kind": { "const": "solver" },
+            "solver": { "type": "string", "minLength": 1 },
+            "solver_digest": { "$ref": "#/$defs/digest" },
+            "result": { "enum": ["proved", "unsat", "sat", "unknown", "timeout"] }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "seed", "cases"],
+          "properties": {
+            "kind": { "const": "generated" },
+            "seed": { "type": "integer", "minimum": 0 },
+            "cases": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "seed", "budget_seconds"],
+          "properties": {
+            "kind": { "const": "fuzz" },
+            "seed": { "type": "integer", "minimum": 0 },
+            "budget_seconds": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "properties": { "kind": { "const": "sampled-trace" } },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "assumptions": { "type": "object", "additionalProperties": { "type": "string" } },
+    "result": { "enum": ["satisfied", "violated", "inconclusive"] }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

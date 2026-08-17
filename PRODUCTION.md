@@ -123,6 +123,21 @@ Completion is binary. Failed checks are blockers, not manual notes. Without Git 
 
 If RMS cannot express a required declaration, report an RMS product gap instead of editing canonical artifacts directly.
 
+## Functional Analysis and Generated Evidence
+
+Use the smallest tool that matches the question:
+
+| Question | Tool |
+| --- | --- |
+| Does one declared function stay pure through every reachable call? | `rms structure <implementation.yaml>` |
+| Does a v0.1 binding have one safe v0.2 interpretation? | `rms binding migrate ... --dry-run --route-receipt <receipt>` |
+| Can probe schemas supply deterministic valid machine inputs? | `rms property generate <implementation.yaml> --out <assembly>` |
+| Do all modules close through exact providers, mappings, effects, and protocols? | `rms compose --root .` |
+| Can that composition be explored as one symbolic machine? | `rms compose --root . --output <dir> --dry-run`, then write mode |
+| Can an exact finite universal result be reused? | Exhaustive `rms property search ... --goal violate --out <analysis>` and its digest-bound certificate |
+
+Production bindings use `rms/implementation/v0.2`. Pure functions require an empty inferred authority row and no unresolved calls. Effectful functions require an exact declared authority row. Generated composition and property artifacts are evidence projections; strict proof regenerates any projection referenced as canonical evidence. See [Functional Core and Composition](FUNCTIONAL_CORE.md) for command boundaries, artifacts, and failure rules.
+
 ## Evidence Rules
 
 Evidence names:

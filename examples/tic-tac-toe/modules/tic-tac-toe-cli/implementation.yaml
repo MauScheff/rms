@@ -1,4 +1,4 @@
-spec: rms/implementation/v0.1
+spec: rms/implementation/v0.2
 module: tic-tac-toe-cli
 binding: js
 source:
@@ -306,6 +306,8 @@ semantic_functions:
   symbol: src/representation.mjs#makeCell
   kind: constructor
   purity: pure
+  trust: internal
+  authorities: []
   evidence:
     boundaries:
     - verification/boundaries/cli_input.md
@@ -313,6 +315,8 @@ semantic_functions:
   symbol: src/parser.mjs#parseMoveText
   kind: parser
   purity: pure
+  trust: boundary
+  authorities: []
   discharges:
     contracts:
     - contracts/play-tic-tac-toe.v1.yaml
@@ -327,6 +331,8 @@ semantic_functions:
   symbol: src/transition.mjs#transition
   kind: transition
   purity: pure
+  trust: internal
+  authorities: []
   discharges:
     contracts:
     - contracts/play-tic-tac-toe.v1.yaml
@@ -340,7 +346,9 @@ semantic_functions:
 - id: rules-port-adapter-reply
   symbol: src/adapter.mjs#handleBoundaryInput
   kind: adapter
-  purity: boundary
+  purity: effectful
+  trust: boundary
+  authorities: []
   discharges:
     contracts:
     - contracts/play-tic-tac-toe.v1.yaml
@@ -353,6 +361,8 @@ semantic_functions:
   symbol: src/ports.mjs#createRulesEffectExecutor
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: []
   discharges:
     contracts:
     - contracts/play-tic-tac-toe.v1.yaml
@@ -363,6 +373,8 @@ semantic_functions:
   symbol: executeRulesBridge
   kind: effect-executor
   purity: effectful
+  trust: boundary
+  authorities: []
 x-rms:
   semantic_revision:
     digest: sha256:8a3f74dca0121a552eed16a0143c35f64670f59c8bd7c89349cece92a695a901

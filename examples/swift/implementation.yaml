@@ -1,4 +1,4 @@
-spec: rms/implementation/v0.1
+spec: rms/implementation/v0.2
 module: swift-example
 binding: swift
 source:
@@ -32,6 +32,11 @@ architecture:
       - rejected empty names remain explicit
       command: verify
       evidence: verification/scenarios/accept_non_empty_widget
+      realizations:
+      - profile: smoke
+        strategy: deterministic-corpus
+        command: verify
+        runner: Tests/RmsSwiftExampleTests/RmsSwiftExampleTests.swift#testMachineDescribesWidgetName
   allowed_public_field_structs:
   - SwiftExampleTransition
   - SwiftExampleTransitionRecord
@@ -181,10 +186,14 @@ semantic_functions:
   symbol: transition
   kind: transition
   purity: pure
+  trust: internal
+  authorities: []
 - id: swift-widget-constructor
   symbol: SwiftWidget.init
   kind: constructor
   purity: pure
+  trust: internal
+  authorities: []
   discharges:
     invariants:
     - accepted-swift-widget-has-name
@@ -195,6 +204,8 @@ semantic_functions:
   symbol: describeWidget
   kind: projector
   purity: pure
+  trust: internal
+  authorities: []
   discharges:
     contracts:
     - contracts/describe-swift-widget.v1.yaml

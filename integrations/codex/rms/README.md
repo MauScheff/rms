@@ -30,6 +30,19 @@ Use native project tools for read-only investigation, explanation, review, statu
 
 Use `rms help --all` for specialist commands. The plugin must not carry a second RMS workflow.
 
+Specialist selection is narrow:
+
+| Need | Command |
+| --- | --- |
+| Migrate one legacy binding | `rms binding migrate ... --to v0.2 --route-receipt ... --dry-run` |
+| Prove transitive purity and authority | `rms structure <implementation.yaml>` |
+| Generate inputs for one described machine | `rms property generate <implementation.yaml> --out <assembly>` |
+| Check composition without writes | `rms compose --root <root>` |
+| Generate a symbolic composed probe | `rms compose --root <root> --output <dir> --dry-run`, then write mode |
+| Run bounded discovery | `rms hunt --dry-run`, then a clean-commit hunt |
+
+Generated analyses, assemblies, models, and proof certificates are evidence. They never authorize semantic edits. The packaged `inspect-module`, `implement-change`, `compose-modules`, `verify-module`, and `hunt-bugs` skills contain the detailed decision rules.
+
 Machine-facing doorway reports use `rms.surface/v2`. Detected skill files do not prove runtime activation; `rms diagnose` reports that distinction. Git commits are required evidence, not implied authority, and production proof completes only through the committed RMS check.
 
 ## Refresh Skills

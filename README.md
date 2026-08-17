@@ -95,6 +95,7 @@ For unattended reliability work, the specialist command `rms hunt --root . --bud
 | Run a replayable bug hunt, then try it on a visual game | [Your First RMS Bug Hunt](FIRST_BUG_HUNT.md) |
 | Understand the model | [RMS, Explained](EXPLAINED.md) |
 | Understand RMS design and future self-hosting foundations | [Designing RMS for Understandability](UNDERSTANDABILITY.md) |
+| Choose purity, generation, composition, and proof-reuse tools | [Functional Core and Composition](FUNCTIONAL_CORE.md) |
 | Look up commands, results, artifacts, and proof rules | [Reference](REFERENCE.md) |
 | Operate RMS in a production-intended project | [Production Pilot Guide](PRODUCTION.md) |
 | Understand the CLI and JSON model | [Tooling Model](TOOLING.md) |

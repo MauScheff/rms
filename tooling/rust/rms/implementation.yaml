@@ -1,8 +1,8 @@
-spec: rms/implementation/v0.1
+spec: rms/implementation/v0.2
 module: rms-cli
 binding: rust
 source:
-  root: .
+  root: src
   public_entrypoint: src/main.rs
 commands:
   build: cargo build --manifest-path Cargo.toml
@@ -28,7 +28,9 @@ dependencies:
   - syn
   - toml
   - tree-sitter
+  - tree-sitter-javascript
   - tree-sitter-python
+  - tree-sitter-swift
   - walkdir
 architecture:
   shape: boundary-adapter
@@ -1931,12 +1933,46 @@ architecture:
     consumer: src/main.rs#source_revision
     resolution: external
   protocol_bindings: []
-  authority_bindings: []
+  authority_bindings:
+  - authority: clock
+    roles: [adapter]
+    safe_facade: src/main.rs#run_id
+    evidence: [verification/boundaries/runnable_surface_routes_through_boundary.md]
+  - authority: dynamic-dispatch
+    roles: [adapter]
+    safe_facade: src/main.rs#execute_proof_command
+    evidence: [verification/boundaries/runnable_surface_routes_through_boundary.md]
+  - authority: environment
+    roles: [adapter]
+    safe_facade: src/main.rs#resolve_prompt_run_options
+    evidence: [verification/boundaries/runnable_surface_routes_through_boundary.md]
+  - authority: filesystem
+    roles: [adapter, effect_executor]
+    safe_facade: src/main.rs#load_manifest
+    evidence: [verification/boundaries/runnable_surface_routes_through_boundary.md]
+  - authority: git
+    roles: [adapter]
+    safe_facade: src/main.rs#source_revision
+    evidence: [verification/boundaries/runnable_surface_routes_through_boundary.md]
+  - authority: network
+    roles: [adapter]
+    safe_facade: src/viewer.rs#run_view
+    evidence: [verification/boundaries/runnable_surface_routes_through_boundary.md]
+  - authority: process
+    roles: [adapter]
+    safe_facade: src/main.rs#execute_proof_command
+    evidence: [verification/boundaries/runnable_surface_routes_through_boundary.md]
+  - authority: provider
+    roles: [adapter]
+    safe_facade: src/main.rs#execute_codex_provider
+    evidence: [verification/boundaries/runnable_surface_routes_through_boundary.md]
 semantic_functions:
 - id: validate-rms-artifacts-command
   symbol: run_validate
   kind: parser
   purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/validate-rms-artifacts.v1.yaml
@@ -1956,6 +1992,8 @@ semantic_functions:
   symbol: run_explain
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, environment, filesystem, process]
   discharges:
     contracts:
     - contracts/explain-module.v2.yaml
@@ -1977,6 +2015,8 @@ semantic_functions:
   symbol: run_diagnose
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/diagnose-rms-environment.v1.yaml
@@ -1998,6 +2038,8 @@ semantic_functions:
   symbol: resolve_prompt_run_options
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [filesystem, provider]
   discharges:
     contracts:
     - contracts/render-workbench-prompt.v1.yaml
@@ -2020,6 +2062,8 @@ semantic_functions:
   symbol: run_config_init
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [filesystem]
   discharges:
     contracts:
     - contracts/init-workbench-config.v1.yaml
@@ -2036,6 +2080,8 @@ semantic_functions:
   symbol: run_agent_init
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [filesystem]
   discharges:
     contracts:
     - contracts/configure-agent-integration.v3.yaml
@@ -2049,6 +2095,8 @@ semantic_functions:
   symbol: run_agent_plugin_install
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, environment, filesystem, process, provider]
   discharges:
     contracts:
     - contracts/configure-agent-integration.v3.yaml
@@ -2062,6 +2110,8 @@ semantic_functions:
   symbol: run_init_with_adopt
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, environment, filesystem, process]
   discharges:
     contracts:
     - contracts/init-rms-system.v1.yaml
@@ -2085,6 +2135,8 @@ semantic_functions:
   symbol: run_add_module
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/add-rms-module.v2.yaml
@@ -2101,6 +2153,8 @@ semantic_functions:
   symbol: run_add_binding
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, filesystem]
   discharges:
     contracts:
     - contracts/add-rms-binding.v2.yaml
@@ -2117,6 +2171,8 @@ semantic_functions:
   symbol: run_release_check
   kind: interpreter
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/release-check.v1.yaml
@@ -2137,6 +2193,8 @@ semantic_functions:
   symbol: validate_codex_plugin_sync
   kind: parser
   purity: effectful
+  trust: boundary
+  authorities: [filesystem]
   discharges:
     contracts:
     - contracts/release-check.v1.yaml
@@ -2152,6 +2210,8 @@ semantic_functions:
   symbol: run_prompt
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/render-workbench-prompt.v1.yaml
@@ -2171,6 +2231,8 @@ semantic_functions:
   symbol: write_prompt_run_record
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/render-workbench-prompt.v1.yaml
@@ -2187,6 +2249,8 @@ semantic_functions:
   symbol: run_design
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [clock, dynamic-dispatch, filesystem, process, provider]
   discharges:
     contracts:
     - contracts/design-rms-system.v2.yaml
@@ -2205,6 +2269,8 @@ semantic_functions:
   symbol: run_compose
   kind: interpreter
   purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/compose-rms-system.v1.yaml
@@ -2223,6 +2289,8 @@ semantic_functions:
   symbol: run_route
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [filesystem, process]
   discharges:
     contracts:
     - contracts/route-rms-work.v1.yaml
@@ -2241,6 +2309,8 @@ semantic_functions:
   symbol: execute_codex_provider
   kind: interpreter
   purity: effectful
+  trust: boundary
+  authorities: [provider]
   discharges:
     contracts:
     - contracts/render-workbench-prompt.v1.yaml
@@ -2258,6 +2328,8 @@ semantic_functions:
   symbol: run_list_runs
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [filesystem]
   discharges:
     contracts:
     - contracts/list-workbench-runs.v1.yaml
@@ -2273,6 +2345,8 @@ semantic_functions:
   symbol: run_inspect_run
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [filesystem]
   discharges:
     contracts:
     - contracts/inspect-workbench-run.v1.yaml
@@ -2288,6 +2362,8 @@ semantic_functions:
   symbol: run_latest_run
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [filesystem]
   discharges:
     contracts:
     - contracts/latest-workbench-run.v1.yaml
@@ -2303,6 +2379,8 @@ semantic_functions:
   symbol: render_workbench_prompt
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, environment, filesystem, git, process]
   discharges:
     contracts:
     - contracts/explain-module.v1.yaml
@@ -2337,6 +2415,8 @@ semantic_functions:
   symbol: run_impact
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, filesystem, git, process]
   discharges:
     contracts:
     - contracts/analyze-git-impact.v1.yaml
@@ -2354,6 +2434,8 @@ semantic_functions:
   symbol: run_gate
   kind: interpreter
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, network, process, provider]
   discharges:
     contracts:
     - contracts/gate-rms-change.v1.yaml
@@ -2374,6 +2456,8 @@ semantic_functions:
   symbol: run_audit
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/audit-rms-project.v1.yaml
@@ -2397,6 +2481,8 @@ semantic_functions:
   symbol: print_context_packet
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, filesystem, process]
   discharges:
     contracts:
     - contracts/build-context-packet.v1.yaml
@@ -2413,6 +2499,8 @@ semantic_functions:
   symbol: run_atlas
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, environment, filesystem, git, process]
   discharges:
     contracts:
     - contracts/build-module-atlas.v1.yaml
@@ -2431,6 +2519,8 @@ semantic_functions:
   symbol: run_structure
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, environment, filesystem, process]
   discharges:
     contracts:
     - contracts/inspect-implementation-structure.v1.yaml
@@ -2455,6 +2545,8 @@ semantic_functions:
   symbol: run_trace_check
   kind: parser
   purity: effectful
+  trust: boundary
+  authorities: [filesystem]
   discharges:
     contracts:
     - contracts/inspect-trace-bundle.v1.yaml
@@ -2473,6 +2565,8 @@ semantic_functions:
   symbol: run_probe
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, network, process]
   discharges:
     contracts:
     - contracts/probe-machine.v3.yaml
@@ -2498,7 +2592,9 @@ semantic_functions:
 - id: probe-machine-validator
   symbol: validate_machine_probe_binding
   kind: parser
-  purity: pure
+  purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, filesystem]
   discharges:
     invariants:
     - machine-probes-are-pure-and-ephemeral
@@ -2515,6 +2611,8 @@ semantic_functions:
   symbol: run_trace_show
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [filesystem]
   discharges:
     contracts:
     - contracts/inspect-trace-bundle.v1.yaml
@@ -2530,6 +2628,8 @@ semantic_functions:
   symbol: run_trace_diagnose
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, filesystem, process]
   discharges:
     contracts:
     - contracts/inspect-trace-bundle.v1.yaml
@@ -2545,6 +2645,8 @@ semantic_functions:
   symbol: run_surface_apply
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [environment, filesystem]
   discharges:
     contracts:
     - contracts/apply-runnable-surface.v2.yaml
@@ -2561,6 +2663,8 @@ semantic_functions:
   symbol: run_surface_check
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, environment, filesystem, process]
   discharges:
     contracts:
     - contracts/check-runnable-surface.v1.yaml
@@ -2584,6 +2688,8 @@ semantic_functions:
   symbol: run_package
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/package-module.v1.yaml
@@ -2599,6 +2705,8 @@ semantic_functions:
   symbol: run_verify
   kind: interpreter
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, network, process, provider]
   discharges:
     contracts:
     - contracts/verify-implementation.v1.yaml
@@ -2618,6 +2726,8 @@ semantic_functions:
   symbol: transition
   kind: transition
   purity: pure
+  trust: internal
+  authorities: []
   evidence:
     traces:
     - verification/traces/semantic_change_record.yaml
@@ -2625,6 +2735,8 @@ semantic_functions:
   symbol: run_machine_plan
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/plan-machine-change.v1.yaml
@@ -2635,6 +2747,8 @@ semantic_functions:
   symbol: run_machine_apply
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [filesystem]
   discharges:
     contracts:
     - contracts/apply-machine-change.v2.yaml
@@ -2649,6 +2763,8 @@ semantic_functions:
   symbol: run_machine_check
   kind: parser
   purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, environment, filesystem, process]
   discharges:
     contracts:
     - contracts/check-machine-structure.v1.yaml
@@ -2659,6 +2775,8 @@ semantic_functions:
   symbol: run_machine_diff
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, filesystem, git, process]
   discharges:
     contracts:
     - contracts/diff-machine-structure.v1.yaml
@@ -2669,6 +2787,8 @@ semantic_functions:
   symbol: run_spec_plan
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/plan-semantic-change.v1.yaml
@@ -2683,6 +2803,8 @@ semantic_functions:
   symbol: semantic_machine_change_requests_change
   kind: parser
   purity: pure
+  trust: boundary
+  authorities: []
   discharges:
     invariants:
     - empty-semantic-change-sections-are-inert
@@ -2693,6 +2815,8 @@ semantic_functions:
   symbol: run_spec_apply
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, environment, filesystem, process, provider]
   discharges:
     contracts:
     - contracts/apply-semantic-change.v2.yaml
@@ -2709,9 +2833,11 @@ semantic_functions:
     traces:
     - verification/traces/semantic_change_record.yaml
 - id: semantic-change-record-writer
-  symbol: effect_executor::write_if_changed
+  symbol: src/effect_executor.rs#write_if_changed
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [filesystem]
   evidence:
     traces:
     - verification/traces/semantic_change_record.yaml
@@ -2719,6 +2845,8 @@ semantic_functions:
   symbol: run_spec_check
   kind: parser
   purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, environment, filesystem, process]
   discharges:
     contracts:
     - contracts/check-semantic-change.v1.yaml
@@ -2729,6 +2857,8 @@ semantic_functions:
   symbol: run_spec_diff
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, filesystem, git, process]
   discharges:
     contracts:
     - contracts/diff-semantic-change.v1.yaml
@@ -2739,6 +2869,8 @@ semantic_functions:
   symbol: run_property_check
   kind: parser
   purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, environment, filesystem, process]
   discharges:
     contracts:
     - contracts/check-semantic-properties.v1.yaml
@@ -2759,6 +2891,8 @@ semantic_functions:
   symbol: run_property_run
   kind: interpreter
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/run-semantic-properties.v1.yaml
@@ -2769,6 +2903,8 @@ semantic_functions:
   symbol: run_property_evaluate
   kind: interpreter
   purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, filesystem]
   discharges:
     contracts:
     - contracts/evaluate-semantic-properties.v1.yaml
@@ -2779,6 +2915,8 @@ semantic_functions:
   symbol: run_property_search
   kind: interpreter
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, network, process]
   discharges:
     contracts:
     - contracts/search-semantic-properties.v2.yaml
@@ -2789,6 +2927,8 @@ semantic_functions:
   symbol: run_property_analyze
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, network, process]
   discharges:
     contracts:
     - contracts/analyze-semantic-properties.v1.yaml
@@ -2799,6 +2939,8 @@ semantic_functions:
   symbol: run_property_monitor
   kind: interpreter
   purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, filesystem, process]
   discharges:
     contracts:
     - contracts/monitor-semantic-properties.v1.yaml
@@ -2809,6 +2951,8 @@ semantic_functions:
   symbol: run_property_replay
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, filesystem, process]
   discharges:
     contracts:
     - contracts/replay-property-analysis.v1.yaml
@@ -2819,6 +2963,8 @@ semantic_functions:
   symbol: run_property_replay
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, filesystem, process]
   discharges:
     contracts:
     - contracts/replay-property-counterexample.v1.yaml
@@ -2829,6 +2975,8 @@ semantic_functions:
   symbol: src/hunt.rs#run
   kind: interpreter
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, network, process]
   discharges:
     contracts:
     - contracts/hunt-rms-system.v1.yaml
@@ -2856,10 +3004,14 @@ semantic_functions:
   symbol: execute_rms_workbench_effect
   kind: effect-executor
   purity: effectful
+  trust: boundary
+  authorities: [filesystem]
 - id: compose-protocol-contracts
   symbol: compose_protocol_contracts
   kind: decision
   purity: effectful
+  trust: internal
+  authorities: [filesystem]
   discharges:
     contracts:
     - contracts/compose-rms-system.v1.yaml
@@ -2877,6 +3029,8 @@ semantic_functions:
   symbol: compose_artifact_contracts
   kind: decision
   purity: effectful
+  trust: internal
+  authorities: [filesystem, provider]
   discharges:
     contracts:
     - contracts/compose-rms-system.v1.yaml
@@ -2893,7 +3047,9 @@ semantic_functions:
 - id: validate-resource-protocols
   symbol: validate_machine_resource_protocols
   kind: decision
-  purity: pure
+  purity: effectful
+  trust: internal
+  authorities: []
   discharges:
     contracts:
     - contracts/check-machine-structure.v1.yaml
@@ -2911,6 +3067,8 @@ semantic_functions:
   symbol: inspect_privileged_source_containment
   kind: parser
   purity: effectful
+  trust: boundary
+  authorities: [filesystem]
   discharges:
     contracts:
     - contracts/check-machine-structure.v1.yaml
@@ -2927,7 +3085,9 @@ semantic_functions:
 - id: validate-temporal-properties
   symbol: validate_temporal_target_report
   kind: decision
-  purity: pure
+  purity: effectful
+  trust: internal
+  authorities: []
   discharges:
     contracts:
     - contracts/check-semantic-properties.v1.yaml
@@ -2945,6 +3105,8 @@ semantic_functions:
   symbol: build_system_trace_report
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, filesystem]
   discharges:
     contracts:
     - contracts/inspect-trace-bundle.v1.yaml
@@ -2962,6 +3124,8 @@ semantic_functions:
   symbol: execute_trace_producers
   kind: effect-executor
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, process, provider]
   discharges:
     contracts:
     - contracts/run-trace-producers.v1.yaml
@@ -2976,6 +3140,8 @@ semantic_functions:
   symbol: execute_property_realizations
   kind: effect-executor
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/run-semantic-properties.v1.yaml
@@ -2990,6 +3156,8 @@ semantic_functions:
   symbol: append_executable_proof_audit_checks
   kind: effect-executor
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/audit-rms-project.v1.yaml
@@ -3003,7 +3171,9 @@ semantic_functions:
 - id: active-evidence-reference-validator
   symbol: validate_active_evidence_semantic_references
   kind: parser
-  purity: pure
+  purity: effectful
+  trust: boundary
+  authorities: [filesystem]
   discharges:
     invariants:
     - active-evidence-references-current-semantics
@@ -3013,7 +3183,9 @@ semantic_functions:
 - id: semantic-change-final-candidate-validator
   symbol: validate_semantic_change
   kind: parser
-  purity: pure
+  purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, environment, filesystem, process]
   discharges:
     invariants:
     - semantic-apply-validates-final-candidate
@@ -3024,6 +3196,8 @@ semantic_functions:
   symbol: src/viewer_request.rs#parse_view_request
   kind: parser
   purity: pure
+  trust: boundary
+  authorities: []
   discharges:
     invariants:
     - system-viewer-is-derived-and-read-only
@@ -3037,6 +3211,8 @@ semantic_functions:
   symbol: src/viewer.rs#run_view
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, environment, filesystem, git, network, process, provider]
   discharges:
     contracts:
     - contracts/view-rms-system.v1.yaml
@@ -3062,7 +3238,9 @@ semantic_functions:
 - id: effect-protocol-binding-check
   symbol: validate_machine_effect_protocols
   kind: parser
-  purity: pure
+  purity: effectful
+  trust: boundary
+  authorities: []
   discharges:
     invariants:
     - effect-protocols-bind-exact-executors
@@ -3073,6 +3251,8 @@ semantic_functions:
   symbol: src/main.rs#print_module_brief
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [process]
   discharges:
     contracts:
     - contracts/inspect-module.v1.yaml
@@ -3085,6 +3265,8 @@ semantic_functions:
   symbol: run_next
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, process, provider]
   discharges:
     contracts:
     - contracts/recommend-next-rms-work.v4.yaml
@@ -3105,6 +3287,8 @@ semantic_functions:
   symbol: run_check
   kind: interpreter
   purity: effectful
+  trust: boundary
+  authorities: [clock, dynamic-dispatch, environment, filesystem, git, network, process, provider]
   discharges:
     contracts:
     - contracts/check-rms-project.v2.yaml
@@ -3121,6 +3305,8 @@ semantic_functions:
   symbol: run_help
   kind: projector
   purity: effectful
+  trust: internal
+  authorities: []
   discharges:
     contracts:
     - contracts/describe-rms-command-surface.v1.yaml
@@ -3138,6 +3324,8 @@ semantic_functions:
   symbol: run_add_capability_tree
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, filesystem, provider]
   discharges:
     contracts:
     - contracts/add-rms-capability-tree.v2.yaml
@@ -3156,6 +3344,8 @@ semantic_functions:
   symbol: run_adoption_command
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [filesystem, process]
   discharges:
     contracts:
     - contracts/manage-rms-adoption.v2.yaml
@@ -3170,7 +3360,9 @@ semantic_functions:
 - id: route-receipt-issuer
   symbol: issue_route_receipt
   kind: decision
-  purity: pure
+  purity: effectful
+  trust: internal
+  authorities: [dynamic-dispatch, filesystem, process]
   discharges:
     invariants:
     - canonical-mutations-require-route-receipts
@@ -3182,7 +3374,9 @@ semantic_functions:
 - id: route-receipt-validator
   symbol: validate_route_receipt
   kind: parser
-  purity: pure
+  purity: effectful
+  trust: boundary
+  authorities: [dynamic-dispatch, filesystem, process]
   discharges:
     invariants:
     - canonical-mutations-require-route-receipts
@@ -3195,6 +3389,8 @@ semantic_functions:
   symbol: extract_provider_intent
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [provider]
   discharges:
     invariants:
     - structured-intent-precedes-architecture
@@ -3206,7 +3402,9 @@ semantic_functions:
 - id: check-proof-projector
   symbol: project_check_proof
   kind: projector
-  purity: pure
+  purity: effectful
+  trust: internal
+  authorities: [filesystem]
   discharges:
     invariants:
     - check-projections-distinguish-declared-and-observed-proof
@@ -3219,6 +3417,8 @@ semantic_functions:
   symbol: run_release_prepare
   kind: adapter
   purity: effectful
+  trust: boundary
+  authorities: [filesystem]
   discharges:
     contracts:
     - contracts/prepare-rms-release.v1.yaml
@@ -3233,9 +3433,45 @@ semantic_functions:
     - verification/contracts/prepare_rms_release.md
     laws:
     - verification/laws/canonical_mutations_require_route_receipts.md
+- id: transitive-effect-analysis-core
+  symbol: src/effect_analysis.rs#analyze
+  kind: decision
+  purity: pure
+  trust: internal
+  authorities: []
+- id: derived-schema-generator-core
+  symbol: src/schema_generator.rs#generate_cases
+  kind: decision
+  purity: pure
+  trust: internal
+  authorities: []
+- id: semantic-shrinker-core
+  symbol: src/schema_generator.rs#shrink_same_failure
+  kind: decision
+  purity: pure
+  trust: internal
+  authorities: []
+- id: executable-composition-planner-core
+  symbol: src/composition_model.rs#plan
+  kind: decision
+  purity: pure
+  trust: internal
+  authorities: []
+- id: binding-migration-planner-core
+  symbol: src/binding_migration.rs#plan
+  kind: transformation
+  purity: pure
+  trust: internal
+  authorities: []
+- id: proof-certificate-reuse-core
+  symbol: src/proof_certificate.rs#decide_reuse
+  kind: decision
+  purity: pure
+  trust: internal
+  authorities: []
 x-rms:
   semantic_revision:
-    digest: sha256:3955abfdb184f72b08560d36a925e257e260b2b6b8c4b025583e7b71489c549b
-    change_record: verification/changes/add-one-run-codex-profile-and-fail-closed-provider-recovery.yaml
+    digest: sha256:0fbb18594581f7865602e18f0ab1307d26d0518f9d6786c5b3429dcbc92fb0e6
+    change_record: verification/changes/ship-the-rms-functional-core-and-composition-release-rc9.yaml
     applied_by: repository maintainer seal
-    change_record_digest: sha256:b9f32ecb2f1da212ba677be7de9be6afd3f47cc0327b1752b51b3ea69378acce
+    change_record_digest: sha256:7f9e634f01aa342fbc6055d2e0fbf4d30f34771c9db965a95e7abe4e596ae661

@@ -306,52 +306,70 @@ mod tests {
         assert_eq!(Cell::from_index(9), None);
     }
 
-    #[test]
-    fn apply_move_refines_cli_requirement() {
+    fn generate_reachable_state_cell_cases() -> Vec<(Game, Cell)> {
         let mut reachable = vec![Game::new()];
         let mut seen = BTreeSet::from([format!("{:?}", Game::new())]);
+        let mut cases = Vec::new();
         let mut cursor = 0;
-        let mut accepted = 0usize;
-        let mut rejected = 0usize;
 
         while let Some(state) = reachable.get(cursor).copied() {
             cursor += 1;
             for index in 0..9 {
+                let candidate = cell(index);
+                cases.push((state, candidate));
                 let record = transition_record(
                     state,
-                    TicTacToeInput::Command(Command::PlaceMark { cell: cell(index) }),
+                    TicTacToeInput::Command(Command::PlaceMark { cell: candidate }),
                 );
-                assert_eq!(record.state_before, state);
-                assert_eq!(record.state_after, record.output.next_state);
-                assert!(record.output.commands.is_empty());
-                assert!(record.output.effects.is_empty());
-
-                match (record.output.reply, record.output.rejection) {
-                    (Some(TransitionOutcome::Accepted { state: next }), None) => {
-                        accepted += 1;
-                        assert_eq!(record.output.events, vec![TicTacToeEvent::MarkPlaced]);
-                        assert_eq!(record.state_after, next);
-                        if seen.insert(format!("{next:?}")) {
-                            reachable.push(next);
-                        }
-                    }
-                    (None, Some(reason)) => {
-                        rejected += 1;
-                        assert!(matches!(
-                            reason,
-                            MoveRejection::CellOccupied | MoveRejection::GameAlreadyTerminal
-                        ));
-                        assert_eq!(record.output.events, vec![TicTacToeEvent::MoveRejected]);
-                        assert_eq!(record.state_after, state);
-                    }
-                    outcome => {
-                        panic!("transition escaped the consumer outcome contract: {outcome:?}")
+                if let Some(TransitionOutcome::Accepted { state: next }) = record.output.reply {
+                    if seen.insert(format!("{next:?}")) {
+                        reachable.push(next);
                     }
                 }
             }
         }
 
-        assert!(reachable.len() > 1);
+        cases
+    }
+
+    #[test]
+    fn apply_move_refines_cli_requirement() {
+        let cases = generate_reachable_state_cell_cases();
+        let mut accepted = 0usize;
+        let mut rejected = 0usize;
+
+        for (state, candidate) in &cases {
+            let record = transition_record(
+                *state,
+                TicTacToeInput::Command(Command::PlaceMark { cell: *candidate }),
+            );
+            assert_eq!(record.state_before, *state);
+            assert_eq!(record.state_after, record.output.next_state);
+            assert!(record.output.commands.is_empty());
+            assert!(record.output.effects.is_empty());
+
+            match (record.output.reply, record.output.rejection) {
+                (Some(TransitionOutcome::Accepted { state: next }), None) => {
+                    accepted += 1;
+                    assert_eq!(record.output.events, vec![TicTacToeEvent::MarkPlaced]);
+                    assert_eq!(record.state_after, next);
+                }
+                (None, Some(reason)) => {
+                    rejected += 1;
+                    assert!(matches!(
+                        reason,
+                        MoveRejection::CellOccupied | MoveRejection::GameAlreadyTerminal
+                    ));
+                    assert_eq!(record.output.events, vec![TicTacToeEvent::MoveRejected]);
+                    assert_eq!(record.state_after, *state);
+                }
+                outcome => {
+                    panic!("transition escaped the consumer outcome contract: {outcome:?}")
+                }
+            }
+        }
+
+        assert!(cases.len() > 9);
         assert!(accepted > 0);
         assert!(rejected > 0);
     }
