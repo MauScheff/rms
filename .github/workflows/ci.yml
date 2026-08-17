@@ -9,6 +9,10 @@ on:
 jobs:
   release-check:
     runs-on: ubuntu-latest
+    env:
+      # RMS tests create nested Cargo fixtures. Bound both layers so the hosted
+      # runner cannot lose its agent under concurrent compiler pressure.
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -31,7 +35,7 @@ jobs:
           set -euo pipefail
           provider_test="tests::provider_pipeline_repairs_caches_refreshes_and_deduplicates"
           RUST_TEST_THREADS=1 cargo test -p rms --locked "$provider_test" -- --exact
-          cargo test -p rms --locked -- --skip "$provider_test"
+          RUST_TEST_THREADS=1 cargo test -p rms --locked -- --skip "$provider_test"
           cargo fmt --all --check
           cargo build -p rms --locked
       - name: RMS strict committed audit
