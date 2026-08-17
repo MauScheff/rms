@@ -14706,7 +14706,10 @@ fn wait_child_with_timeout_observed(
             {
                 let process_group = format!("-{}", child.id());
                 let _ = Command::new("kill")
-                    .args(["-KILL", process_group.as_str()])
+                    // `--` is required by GNU kill. Without it, a negative
+                    // process-group ID can be parsed as another option and
+                    // descendants keep the captured pipes open after timeout.
+                    .args(["-KILL", "--", process_group.as_str()])
                     .status();
             }
             if let Err(error) = child.kill() {

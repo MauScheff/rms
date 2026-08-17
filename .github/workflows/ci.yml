@@ -7,8 +7,55 @@ on:
     branches: [main]
 
 jobs:
-  release-check:
+  native-release-proofs:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     runs-on: ubuntu-latest
+    env:
+      # RMS tests create nested Cargo fixtures. Bound both layers so the hosted
+      # runner cannot lose its agent under concurrent compiler pressure.
+      CARGO_BUILD_JOBS: "2"
+      RMS_TEST_SHARD_COUNT: "4"
+      RMS_TEST_SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: RMS native release proofs (shard ${{ matrix.shard }})
+        run: |
+          set -euo pipefail
+          provider_test="tests::provider_pipeline_repairs_caches_refreshes_and_deduplicates"
+          if [ "$RMS_TEST_SHARD" = "0" ]; then
+            RUST_TEST_THREADS=1 cargo test -p rms --locked "$provider_test" -- --exact
+          fi
+          # Many RMS tests create nested toolchains and subprocess trees. Run
+          # each test in a short-lived process and split the ordered inventory
+          # across runners. This bounds both per-process resources and runner
+          # lifetime while preserving exact coverage of the discovered suite.
+          test_index=0
+          cargo test -p rms --locked -- --list \
+            | sed -n 's/: test$//p' \
+            | while IFS= read -r rms_test; do
+                case "$rms_test" in
+                  "$provider_test"|behavioral_contract::tests::cvc5_reference_solver_conformance) continue ;;
+                esac
+                selected_shard=$((test_index % RMS_TEST_SHARD_COUNT))
+                test_index=$((test_index + 1))
+                if [ "$selected_shard" -ne "$RMS_TEST_SHARD" ]; then
+                  continue
+                fi
+                cargo test -p rms --locked "$rms_test" -- --exact --nocapture
+              done
+
+  release-check:
+    needs: native-release-proofs
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -26,12 +73,8 @@ jobs:
           echo "$RUNNER_TEMP/cvc5/cvc5-Linux-x86_64-static/bin" >> "$GITHUB_PATH"
       - name: cvc5 behavioral-contract conformance
         run: cargo test -p rms --locked behavioral_contract::tests::cvc5_reference_solver_conformance -- --ignored --exact
-      - name: RMS native release proofs
+      - name: Build release audit binary
         run: |
-          set -euo pipefail
-          provider_test="tests::provider_pipeline_repairs_caches_refreshes_and_deduplicates"
-          RUST_TEST_THREADS=1 cargo test -p rms --locked "$provider_test" -- --exact
-          cargo test -p rms --locked -- --skip "$provider_test"
           cargo fmt --all --check
           cargo build -p rms --locked
       - name: RMS strict committed audit
