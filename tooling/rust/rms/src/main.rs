@@ -37512,7 +37512,11 @@ fn build_check_report_scoped_with_proof_cache(
         }
     }?;
     if mode != CheckMode::Environment {
-        let contract_findings = strict_behavioral_contract_findings(&root)?;
+        let contract_findings = restrict_behavioral_contract_findings_to_module_closure(
+            &root,
+            module,
+            strict_behavioral_contract_findings(&root)?,
+        )?;
         if !contract_findings.is_empty() {
             report.result = CheckResult::Fail;
             report.summary = format!(
@@ -37768,6 +37772,41 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
         }
     }
     Ok(findings)
+}
+
+fn restrict_behavioral_contract_findings_to_module_closure(
+    root: &Path,
+    requested: Option<&Path>,
+    findings: Vec<(PathBuf, String, String)>,
+) -> Result<Vec<(PathBuf, String, String)>> {
+    let Some(requested) = requested else {
+        return Ok(findings);
+    };
+    let modules = discover_module_index(root)?;
+    let requested_path = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.join(requested)
+    };
+    let requested_path = fs::canonicalize(&requested_path).with_context(|| {
+        format!(
+            "failed to resolve scoped module `{}`",
+            requested_path.display()
+        )
+    })?;
+    let requested_manifest = load_manifest(&requested_path)?;
+    let requested_name = get_str(&requested_manifest.value, &["module", "name"])
+        .ok_or_else(|| anyhow!("scoped module is missing module.name"))?;
+    let (closure, _) = module_dependency_closure(requested_name, &modules);
+    let closure_roots = closure
+        .iter()
+        .filter_map(|name| modules.get(name))
+        .filter_map(|module| module.path.parent().map(Path::to_path_buf))
+        .collect::<Vec<_>>();
+    Ok(findings
+        .into_iter()
+        .filter(|(path, _, _)| closure_roots.iter().any(|base| path.starts_with(base)))
+        .collect())
 }
 
 fn extend_delegated_composite_export_contract_owners(
@@ -110746,6 +110785,39 @@ properties:
         assert!(coverage
             .certification
             .starts_with("All selected RMS closures passed"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn explicit_module_check_excludes_unrelated_behavioral_contract_findings() {
+        let root = unique_test_dir("scoped-contract-findings");
+        let selected = root.join("modules/selected/module.yaml");
+        write_profile_manifest(&selected, "rms/module/v0.1", Some("selected"));
+        write_profile_manifest(
+            &root.join("modules/unrelated/module.yaml"),
+            "rms/module/v0.1",
+            Some("unrelated"),
+        );
+        let findings = vec![
+            (
+                root.join("modules/selected/contracts/selected.yaml"),
+                "selected-check".to_string(),
+                "selected finding".to_string(),
+            ),
+            (
+                root.join("modules/unrelated/contracts/unrelated.yaml"),
+                "unrelated-check".to_string(),
+                "unrelated finding".to_string(),
+            ),
+        ];
+        let scoped = restrict_behavioral_contract_findings_to_module_closure(
+            &root,
+            Some(&selected),
+            findings,
+        )
+        .unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].1, "selected-check");
         fs::remove_dir_all(&root).unwrap();
     }
 
