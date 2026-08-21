@@ -83,6 +83,7 @@ struct FunctionNode {
     qualified_name: String,
     calls: BTreeSet<String>,
     direct_authorities: BTreeSet<String>,
+    swift_standard_value_names: BTreeSet<String>,
 }
 
 pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
@@ -117,12 +118,17 @@ pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
         };
     }
 
+    let swift_global_names = if input.binding == "swift" {
+        swift_global_standard_names(&input.sources)
+    } else {
+        SwiftStandardNames::default()
+    };
     let mut nodes = Vec::new();
     for (path, source) in &input.sources {
         let mut extracted = if input.binding == "rust" {
             extract_rust_functions(path, source)
         } else {
-            extract_tree_sitter_functions(&input.binding, path, source)
+            extract_tree_sitter_functions(&input.binding, path, source, &swift_global_names)
         };
         nodes.append(&mut extracted);
     }
@@ -316,7 +322,9 @@ fn collect_closure(
             authorities.insert(authority);
             continue;
         }
-        if known_pure_call(call) {
+        if known_pure_call(call)
+            || swift_standard_value_method(call, &node.swift_standard_value_names)
+        {
             continue;
         }
         let candidates = resolve_local_call(index, call, nodes);
@@ -449,8 +457,6 @@ fn authority_for_call(call: &str) -> Option<String> {
         "write_file",
         "readfile",
         "writefile",
-        "fs.",
-        "fs::",
         "pathlib.",
         "walkdir",
         "canonicalize",
@@ -469,6 +475,7 @@ fn authority_for_call(call: &str) -> Option<String> {
     ]
     .iter()
     .any(|marker| lower.contains(marker))
+        || path_contains_segment(&lower, "fs")
     {
         "filesystem"
     } else if [
@@ -818,6 +825,29 @@ fn known_pure_call(call: &str) -> bool {
         || call.starts_with("sha256_")
 }
 
+fn path_contains_segment(call: &str, expected: &str) -> bool {
+    call.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .any(|segment| segment == expected)
+}
+
+fn swift_standard_value_method(call: &str, standard_value_names: &BTreeSet<String>) -> bool {
+    let method = symbol_name(call);
+    if !matches!(
+        method,
+        "firstIndex" | "flatMap" | "formUnion" | "removeAll" | "removeValue"
+    ) {
+        return false;
+    }
+    let Some((receiver, _)) = call.rsplit_once('.') else {
+        return false;
+    };
+    let receiver = receiver
+        .rsplit(['.', ':'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(receiver);
+    standard_value_names.contains(receiver)
+}
+
 fn call_is_constructor(call: &str) -> bool {
     call.starts_with('.')
         || call
@@ -1085,6 +1115,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             name,
             calls: calls.calls,
             direct_authorities: calls.authorities,
+            swift_standard_value_names: BTreeSet::new(),
         });
     }
 
@@ -1104,6 +1135,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             name,
             calls: calls.calls,
             direct_authorities: calls.authorities,
+            swift_standard_value_names: BTreeSet::new(),
         });
     }
 
@@ -1228,7 +1260,18 @@ fn resolve_call_alias(call: &str, aliases: &BTreeMap<String, String>) -> String 
     call.replacen(leaf, target, 1)
 }
 
-fn extract_tree_sitter_functions(binding: &str, path: &str, source: &str) -> Vec<FunctionNode> {
+#[derive(Default)]
+struct SwiftStandardNames {
+    subscript: BTreeSet<String>,
+    value: BTreeSet<String>,
+}
+
+fn extract_tree_sitter_functions(
+    binding: &str,
+    path: &str,
+    source: &str,
+    swift_global_names: &SwiftStandardNames,
+) -> Vec<FunctionNode> {
     if path.contains("/tests/") || path.contains(".test.") {
         return Vec::new();
     }
@@ -1250,8 +1293,34 @@ fn extract_tree_sitter_functions(binding: &str, path: &str, source: &str) -> Vec
         .filter_map(|node| {
             let name = function_node_name(node, source)?;
             let qualified_name = tree_sitter_qualified_name(node, source, &name);
+            let swift_collection_names = if binding == "swift" {
+                let mut names = swift_standard_collection_names(tree.root_node(), node, source);
+                names.extend(swift_global_names.subscript.iter().cloned());
+                names
+            } else {
+                BTreeSet::new()
+            };
+            let swift_standard_value_names = if binding == "swift" {
+                let mut names = swift_standard_value_names(
+                    tree.root_node(),
+                    node,
+                    source,
+                    &swift_collection_names,
+                );
+                names.extend(swift_global_names.value.iter().cloned());
+                names
+            } else {
+                BTreeSet::new()
+            };
             let mut calls = BTreeSet::new();
-            collect_call_nodes(node, source, &mut calls, true);
+            collect_call_nodes(
+                binding,
+                node,
+                source,
+                &swift_collection_names,
+                &mut calls,
+                true,
+            );
             let calls = calls
                 .into_iter()
                 .map(|call| resolve_call_alias(&call, &aliases))
@@ -1266,9 +1335,57 @@ fn extract_tree_sitter_functions(binding: &str, path: &str, source: &str) -> Vec
                 qualified_name,
                 calls,
                 direct_authorities,
+                swift_standard_value_names,
             })
         })
         .collect()
+}
+
+fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStandardNames {
+    let language: Language = tree_sitter_swift::LANGUAGE.into();
+    let mut subscript_classifications = BTreeMap::<String, bool>::new();
+    let mut value_classifications = BTreeMap::<String, bool>::new();
+    for source in sources.values() {
+        let mut parser = Parser::new();
+        if parser.set_language(&language).is_err() {
+            continue;
+        }
+        let Some(tree) = parser.parse(source, None) else {
+            continue;
+        };
+        let mut declarations = Vec::new();
+        collect_nodes_of_kind(tree.root_node(), "property_declaration", &mut declarations);
+        for declaration in declarations {
+            if nearest_function_ancestor(declaration).is_some() || !has_explicit_type(declaration) {
+                continue;
+            }
+            let Some(name_node) = declaration.child_by_field_name("name") else {
+                continue;
+            };
+            let Some(name) = first_simple_identifier(name_node, source) else {
+                continue;
+            };
+            let is_subscript = has_standard_collection_type(declaration, source);
+            let prior_subscript = subscript_classifications
+                .get(&name)
+                .copied()
+                .unwrap_or(true);
+            subscript_classifications.insert(name.clone(), prior_subscript && is_subscript);
+            let is_value = has_standard_value_type(declaration, source);
+            let prior_value = value_classifications.get(&name).copied().unwrap_or(true);
+            value_classifications.insert(name, prior_value && is_value);
+        }
+    }
+    SwiftStandardNames {
+        subscript: subscript_classifications
+            .into_iter()
+            .filter_map(|(name, standard)| standard.then_some(name))
+            .collect(),
+        value: value_classifications
+            .into_iter()
+            .filter_map(|(name, standard)| standard.then_some(name))
+            .collect(),
+    }
 }
 
 fn tree_sitter_import_aliases(
@@ -1451,7 +1568,14 @@ fn tree_sitter_qualified_name(node: Node<'_>, source: &str, name: &str) -> Strin
     }
 }
 
-fn collect_call_nodes(node: Node<'_>, source: &str, calls: &mut BTreeSet<String>, root: bool) {
+fn collect_call_nodes(
+    binding: &str,
+    node: Node<'_>,
+    source: &str,
+    swift_collection_names: &BTreeSet<String>,
+    calls: &mut BTreeSet<String>,
+    root: bool,
+) {
     if !root
         && matches!(
             node.kind(),
@@ -1465,10 +1589,25 @@ fn collect_call_nodes(node: Node<'_>, source: &str, calls: &mut BTreeSet<String>
             .child_by_field_name("function")
             .or_else(|| node.child_by_field_name("name"))
             .or_else(|| node.named_child(0));
-        if let Some(call) = callee
+        let call = callee
             .and_then(|callee| callee.utf8_text(source.as_bytes()).ok())
-            .map(normalize_call)
+            .map(normalize_call);
+        if binding == "swift" && swift_call_is_immediate_closure(callee, source) {
+            // The closure body is traversed below. Its calls and authorities
+            // remain visible, so invoking this statically present closure does
+            // not require dynamic-dispatch authority.
+        } else if binding == "swift"
+            && swift_call_is_standard_collection_subscript(
+                node,
+                callee,
+                source,
+                swift_collection_names,
+            )
         {
+            // Swift's grammar represents subscripting as a call expression. A
+            // subscript on a statically visible standard collection is a value
+            // operation, not an unresolved function or dynamic authority.
+        } else if let Some(call) = call {
             calls.insert(call);
         } else {
             calls.insert("<dynamic-call>".to_string());
@@ -1476,12 +1615,252 @@ fn collect_call_nodes(node: Node<'_>, source: &str, calls: &mut BTreeSet<String>
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_call_nodes(child, source, calls, false);
+        collect_call_nodes(binding, child, source, swift_collection_names, calls, false);
     }
 }
 
+fn swift_call_is_standard_collection_subscript(
+    node: Node<'_>,
+    callee: Option<Node<'_>>,
+    source: &str,
+    standard_collection_names: &BTreeSet<String>,
+) -> bool {
+    let Some(callee) = callee else { return false };
+    let Ok(call_text) = node.utf8_text(source.as_bytes()) else {
+        return false;
+    };
+    let Ok(callee_text) = callee.utf8_text(source.as_bytes()) else {
+        return false;
+    };
+    let Some(suffix) = call_text.get(callee_text.len()..) else {
+        return false;
+    };
+    if !suffix.trim_start().starts_with('[') {
+        return false;
+    }
+    let Some(base) = last_simple_identifier(callee, source) else {
+        return false;
+    };
+    standard_collection_names.contains(&base)
+}
+
+fn swift_call_is_immediate_closure(callee: Option<Node<'_>>, source: &str) -> bool {
+    let Some(callee) = callee else { return false };
+    if callee.kind().contains("closure") {
+        return true;
+    }
+    callee
+        .utf8_text(source.as_bytes())
+        .ok()
+        .map(str::trim)
+        .is_some_and(|text| text.starts_with('{') && text.ends_with('}'))
+}
+
+fn swift_standard_collection_names(
+    root: Node<'_>,
+    function: Node<'_>,
+    source: &str,
+) -> BTreeSet<String> {
+    let mut classifications = BTreeMap::<String, bool>::new();
+    let mut declarations = Vec::new();
+    collect_nodes_of_kind(root, "property_declaration", &mut declarations);
+    for declaration in declarations {
+        let enclosing_function = nearest_function_ancestor(declaration);
+        if enclosing_function.is_some_and(|candidate| candidate != function) {
+            continue;
+        }
+        let Some(name_node) = declaration.child_by_field_name("name") else {
+            continue;
+        };
+        let Some(name) = first_simple_identifier(name_node, source) else {
+            continue;
+        };
+        if has_explicit_type(declaration) {
+            let is_standard = has_standard_collection_type(declaration, source);
+            let prior = classifications.get(&name).copied().unwrap_or(true);
+            classifications.insert(name, prior && is_standard);
+        }
+    }
+
+    let mut parameters = Vec::new();
+    collect_nodes_of_kind(function, "parameter", &mut parameters);
+    for parameter in parameters {
+        let Some(name_node) = parameter.child_by_field_name("name") else {
+            continue;
+        };
+        let Some(name) = first_simple_identifier(name_node, source) else {
+            continue;
+        };
+        if has_standard_collection_type(parameter, source) {
+            classifications.insert(name, true);
+        }
+    }
+
+    let mut standard = classifications
+        .iter()
+        .filter(|(_, is_standard)| **is_standard)
+        .map(|(name, _)| name.clone())
+        .collect::<BTreeSet<_>>();
+
+    let mut aliases = Vec::new();
+    let mut local_declarations = Vec::new();
+    collect_nodes_of_kind(function, "property_declaration", &mut local_declarations);
+    for declaration in local_declarations {
+        if has_explicit_type(declaration) {
+            continue;
+        }
+        let Some(name_node) = declaration.child_by_field_name("name") else {
+            continue;
+        };
+        let Some(name) = first_simple_identifier(name_node, source) else {
+            continue;
+        };
+        let Some(value) = declaration.child_by_field_name("value") else {
+            continue;
+        };
+        if let Some(source_name) = last_simple_identifier(value, source) {
+            aliases.push((name, source_name));
+        }
+    }
+    loop {
+        let mut changed = false;
+        for (alias, source_name) in &aliases {
+            if standard.contains(source_name) {
+                changed |= standard.insert(alias.clone());
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    standard
+}
+
+fn swift_standard_value_names(
+    root: Node<'_>,
+    function: Node<'_>,
+    source: &str,
+    collection_names: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut standard = collection_names.clone();
+    let mut declarations = Vec::new();
+    collect_nodes_of_kind(root, "property_declaration", &mut declarations);
+    for declaration in declarations {
+        let enclosing_function = nearest_function_ancestor(declaration);
+        if enclosing_function.is_some_and(|candidate| candidate != function) {
+            continue;
+        }
+        let Some(name_node) = declaration.child_by_field_name("name") else {
+            continue;
+        };
+        let Some(name) = first_simple_identifier(name_node, source) else {
+            continue;
+        };
+        if has_standard_value_type(declaration, source) {
+            standard.insert(name);
+        }
+    }
+    let mut parameters = Vec::new();
+    collect_nodes_of_kind(function, "parameter", &mut parameters);
+    for parameter in parameters {
+        let Some(name_node) = parameter.child_by_field_name("name") else {
+            continue;
+        };
+        let Some(name) = first_simple_identifier(name_node, source) else {
+            continue;
+        };
+        if has_standard_value_type(parameter, source) {
+            standard.insert(name);
+        }
+    }
+    standard
+}
+
+fn nearest_function_ancestor(node: Node<'_>) -> Option<Node<'_>> {
+    let mut parent = node.parent();
+    while let Some(candidate) = parent {
+        if matches!(
+            candidate.kind(),
+            "function_definition" | "function_declaration" | "method_definition"
+        ) {
+            return Some(candidate);
+        }
+        parent = candidate.parent();
+    }
+    None
+}
+
+fn has_explicit_type(node: Node<'_>) -> bool {
+    node.child_by_field_name("type").is_some()
+        || node.child_by_field_name("type_annotation").is_some()
+        || node_has_kind(node, "type_annotation")
+}
+
+fn has_standard_collection_type(node: Node<'_>, source: &str) -> bool {
+    if node_has_kind(node, "array_type") || node_has_kind(node, "dictionary_type") {
+        return true;
+    }
+    let Ok(text) = node.utf8_text(source.as_bytes()) else {
+        return false;
+    };
+    text.contains("Array<") || text.contains("Dictionary<")
+}
+
+fn has_standard_value_type(node: Node<'_>, source: &str) -> bool {
+    if has_standard_collection_type(node, source) || node_has_kind(node, "optional_type") {
+        return true;
+    }
+    let Ok(text) = node.utf8_text(source.as_bytes()) else {
+        return false;
+    };
+    text.contains("Set<") || text.contains("Optional<")
+}
+
+fn node_has_kind(node: Node<'_>, kind: &str) -> bool {
+    if node.kind() == kind {
+        return true;
+    }
+    let mut cursor = node.walk();
+    let found = node
+        .children(&mut cursor)
+        .any(|child| node_has_kind(child, kind));
+    found
+}
+
+fn first_simple_identifier(node: Node<'_>, source: &str) -> Option<String> {
+    if matches!(node.kind(), "identifier" | "simple_identifier") {
+        return node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(str::trim)
+            .map(str::to_string);
+    }
+    let mut cursor = node.walk();
+    let identifier = node
+        .named_children(&mut cursor)
+        .find_map(|child| first_simple_identifier(child, source));
+    identifier
+}
+
+fn last_simple_identifier(node: Node<'_>, source: &str) -> Option<String> {
+    if matches!(node.kind(), "identifier" | "simple_identifier") {
+        return node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(str::trim)
+            .map(str::to_string);
+    }
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .filter_map(|child| last_simple_identifier(child, source))
+        .last()
+}
+
 fn normalize_call(call: &str) -> String {
-    call.split_whitespace().collect::<String>()
+    call.split_whitespace()
+        .collect::<String>()
+        .trim_start_matches('!')
+        .to_string()
 }
 
 #[cfg(test)]
@@ -1574,6 +1953,158 @@ mod tests {
             "Sources/App.swift",
             "func helper(_ value: Int) -> Int { value + 1 }\nfunc decide(_ value: Int) -> Int { helper(value) }",
             expectation("Sources/App.swift#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+    }
+
+    #[test]
+    fn swift_standard_collection_subscripts_stay_pure() {
+        let source = r#"
+            let retryDelays: [UInt64] = [1_000, 2_000]
+
+            struct Context {
+                var inFlight: [String: Int]
+            }
+
+            func decide(
+                _ input: [Int],
+                context: Context,
+                index: Int
+            ) -> Int {
+                var ordered = input
+                var byLane: [String: Int] = [:]
+                byLane["direct"] = ordered[index]
+                return byLane["direct"]
+                    ?? context.inFlight["direct"]
+                    ?? Int(retryDelays[index])
+            }
+        "#;
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            source,
+            expectation("Sources/App.swift#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+    }
+
+    #[test]
+    fn swift_unknown_subscripts_fail_closed() {
+        let source = r#"
+            struct Lookup {
+                subscript(index: Int) -> Int { index }
+            }
+
+            func decide(_ lookup: Lookup, index: Int) -> Int {
+                lookup[index]
+            }
+        "#;
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            source,
+            expectation("Sources/App.swift#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+        assert_eq!(result.functions[0].unresolved_calls, vec!["lookup"]);
+    }
+
+    #[test]
+    fn swift_standard_value_methods_stay_pure_without_filesystem_false_positives() {
+        let source = r#"
+            struct Context {
+                var proofs: [Int]
+                var failedLanes: Set<String>
+                var candidate: Int?
+
+                mutating func decide() -> Int? {
+                    proofs.removeAll { $0 < 0 }
+                    failedLanes.formUnion(["direct"])
+                    return candidate.flatMap { value in
+                        proofs.firstIndex(of: value)
+                    }
+                }
+            }
+        "#;
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            source,
+            expectation("Sources/App.swift#Context::decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].transitive_authorities.is_empty());
+    }
+
+    #[test]
+    fn swift_unknown_value_methods_fail_closed() {
+        let source = r#"
+            func decide(_ store: inout CustomStore) {
+                store.removeAll()
+            }
+        "#;
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            source,
+            expectation("Sources/App.swift#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+        assert_eq!(
+            result.functions[0].transitive_authorities,
+            vec!["dynamic-dispatch"]
+        );
+    }
+
+    #[test]
+    fn swift_unary_local_calls_and_immediate_closures_stay_pure() {
+        let source = r#"
+            func isEligible(_ value: Int) -> Bool { value > 0 }
+
+            func decide(_ value: Int) -> Bool {
+                let closureResult: Bool = {
+                    !isEligible(value)
+                }()
+                return closureResult
+            }
+        "#;
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            source,
+            expectation("Sources/App.swift#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert_eq!(result.functions[0].resolved_callees, vec!["isEligible"]);
+    }
+
+    #[test]
+    fn swift_immediate_closure_effects_remain_visible() {
+        let source = r#"
+            func decide(_ url: URL) -> Bool {
+                {
+                    URLSession.shared.dataTask(with: url)
+                    return true
+                }()
+            }
+        "#;
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            source,
+            expectation("Sources/App.swift#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+        assert_eq!(result.functions[0].transitive_authorities, vec!["network"]);
+    }
+
+    #[test]
+    fn javascript_fs_namespace_remains_filesystem_authority() {
+        let result = report(
+            "javascript",
+            "src/app.js",
+            "function decide(path) { return fs.readFile(path); }",
+            expectation("src/app.js#decide", "effectful", &["filesystem"]),
         );
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
     }
