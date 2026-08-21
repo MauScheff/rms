@@ -22630,9 +22630,11 @@ fn trace_record_summary(index: usize, record: &YamlValue) -> TraceRecordSummary 
         transition_case: get_str(record, &["source", "branch"]).map(str::to_string),
         reply: output
             .and_then(|value| yaml_mapping_get(value, "reply"))
+            .filter(|value| !value.is_null())
             .map(trace_value_summary),
         rejection: output
             .and_then(|value| yaml_mapping_get(value, "rejection"))
+            .filter(|value| !value.is_null())
             .map(trace_value_summary),
         events: output
             .map(|value| yaml_sequence_len(value, "events"))
@@ -107198,6 +107200,76 @@ records:
             diagnostic.check == "trace.canonical-transition-mismatch"
                 && diagnostic.message.contains("Accept")
         }));
+    }
+
+    #[test]
+    fn trace_bundle_accepts_null_reply_and_rejection_for_canonical_no_reply_case() {
+        let root = unique_test_dir("trace-canonical-no-reply");
+        fs::create_dir_all(root.join("verification/traces")).unwrap();
+        fs::write(
+            root.join("implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: trace-canonical-no-reply
+binding: rust
+source: { root: ., public_entrypoint: src/lib.rs }
+commands: { build: "true", verify: "true" }
+architecture:
+  shape: domain-engine
+  machine:
+    name: TraceCanonicalMachine
+    mode: stateful-transition-machine
+    transition_signature: state-and-input
+    initial_state: Frozen
+    states: [Frozen]
+    commands: []
+    observed_events: [LaneFailed]
+    events: []
+    effects: []
+    effect_results: []
+    replies: []
+    rejections: []
+    effect_protocols: []
+    transition_record_function: transition_record
+    transitions:
+      - from: Frozen
+        on: LaneFailed
+        to: Frozen
+        case: IgnoreStaleRelayFailure
+        no_reply_justification: The stale failure is inert.
+  roles:
+    transition: [src/lib.rs]
+    transition_record: [src/lib.rs]
+    replay_bundle: [verification/traces/trace.yaml]
+"#,
+        )
+        .unwrap();
+        let bundle = root.join("verification/traces/trace.yaml");
+        fs::write(
+            &bundle,
+            r#"spec: rms/trace-bundle/v0.1
+machine: TraceCanonicalMachine
+records:
+  - scenario_start: true
+    state_before: Frozen
+    input: LaneFailed
+    output:
+      next_state: Frozen
+      events: []
+      commands: []
+      effects: []
+      reply: null
+      rejection: null
+    state_after: Frozen
+    source: { file: src/lib.rs, function: transition_record, branch: IgnoreStaleRelayFailure }
+"#,
+        )
+        .unwrap();
+
+        let report = build_trace_report(&bundle).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, "pass", "{:#?}", report.diagnostics);
+        assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     }
 
     #[test]
