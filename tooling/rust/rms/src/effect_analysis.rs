@@ -78,6 +78,7 @@ pub(crate) enum FunctionVerdict {
 
 #[derive(Clone, Debug, Default)]
 struct FunctionNode {
+    binding: String,
     path: String,
     name: String,
     qualified_name: String,
@@ -316,8 +317,8 @@ fn collect_closure(
     let node = &nodes[index];
     authorities.extend(authorities_for_node(node, facades));
     for call in &node.calls {
-        if let Some(authority) =
-            authority_for_call(call).or_else(|| facades.get(symbol_name(call)).cloned())
+        if let Some(authority) = authority_for_call(&node.binding, call)
+            .or_else(|| facades.get(symbol_name(call)).cloned())
         {
             authorities.insert(authority);
             continue;
@@ -438,8 +439,8 @@ fn authorities_for_node(
 ) -> BTreeSet<String> {
     let mut authorities = node.direct_authorities.clone();
     for call in &node.calls {
-        if let Some(authority) =
-            authority_for_call(call).or_else(|| facades.get(symbol_name(call)).cloned())
+        if let Some(authority) = authority_for_call(&node.binding, call)
+            .or_else(|| facades.get(symbol_name(call)).cloned())
         {
             authorities.insert(authority);
         }
@@ -447,7 +448,7 @@ fn authorities_for_node(
     authorities
 }
 
-fn authority_for_call(call: &str) -> Option<String> {
+fn authority_for_call(binding: &str, call: &str) -> Option<String> {
     let compact = call.replace(' ', "");
     let lower = compact.to_ascii_lowercase();
     let authority = if [
@@ -551,10 +552,7 @@ fn authority_for_call(call: &str) -> Option<String> {
         .any(|marker| lower.contains(marker))
     {
         "git"
-    } else if ["provider", "codex"]
-        .iter()
-        .any(|marker| lower.contains(marker))
-    {
+    } else if binding != "swift" && (lower.contains("provider") || lower.contains("codex")) {
         "provider"
     } else {
         return None;
@@ -916,7 +914,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 visit::visit_expr_call(self, node);
                 return;
             }
-            if let Some(authority) = authority_for_call(&call) {
+            if let Some(authority) = authority_for_call("rust", &call) {
                 self.authorities.insert(authority);
             }
             self.calls.insert(call);
@@ -941,7 +939,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             visit::visit_expr_method_call(self, node);
             return;
         }
-        if let Some(authority) = authority_for_call(&call) {
+        if let Some(authority) = authority_for_call("rust", &call) {
             self.authorities.insert(authority);
         }
         self.calls.insert(call);
@@ -1110,6 +1108,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
         calls.visit_block(&node.block);
         let name = node.sig.ident.to_string();
         self.nodes.push(FunctionNode {
+            binding: "rust".to_string(),
             path: self.path.clone(),
             qualified_name: qualified_rust_name(&self.owner, &name),
             name,
@@ -1130,6 +1129,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
         calls.visit_block(&node.block);
         let name = node.sig.ident.to_string();
         self.nodes.push(FunctionNode {
+            binding: "rust".to_string(),
             path: self.path.clone(),
             qualified_name: qualified_rust_name(&self.owner, &name),
             name,
@@ -1327,9 +1327,10 @@ fn extract_tree_sitter_functions(
                 .collect::<BTreeSet<_>>();
             let direct_authorities = calls
                 .iter()
-                .filter_map(|call| authority_for_call(call))
+                .filter_map(|call| authority_for_call(binding, call))
                 .collect();
             Some(FunctionNode {
+                binding: binding.to_string(),
                 path: path.to_string(),
                 name,
                 qualified_name,
@@ -1955,6 +1956,42 @@ mod tests {
             expectation("Sources/App.swift#decide", "pure", &[]),
         );
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+    }
+
+    #[test]
+    fn swift_provider_named_helpers_do_not_imply_provider_authority() {
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            "func providerCommand() -> Int { 1 }\nfunc providerBranch() -> Int { providerCommand() }\nfunc decide() -> Int { providerBranch() }",
+            expectation("Sources/App.swift#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].transitive_authorities.is_empty());
+    }
+
+    #[test]
+    fn declared_provider_facade_still_implies_provider_authority() {
+        let result = analyze(AnalysisInput {
+            binding: "js".to_string(),
+            source_digest: "source".to_string(),
+            tool_digest: "tool".to_string(),
+            sources: BTreeMap::from([(
+                "src/index.js".to_string(),
+                "export function decide() { return provider.complete(); }".to_string(),
+            )]),
+            semantic_functions: vec![expectation(
+                "src/index.js#decide",
+                "effectful",
+                &["provider"],
+            )],
+            authority_facades: vec![AuthorityFacade {
+                authority: "provider".to_string(),
+                symbol: "complete".to_string(),
+            }],
+        });
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert_eq!(result.functions[0].transitive_authorities, vec!["provider"]);
     }
 
     #[test]
