@@ -593,14 +593,6 @@ fn authority_for_call(binding: &str, call: &str) -> Option<String> {
     let authority = if [
         "std::fs",
         "file::open",
-        ".open",
-        ".read_bytes",
-        ".read_text",
-        ".read",
-        ".write_bytes",
-        ".write_text",
-        ".mkdir",
-        ".resolve",
         "read_to_string",
         "write_file",
         "readfile",
@@ -624,6 +616,18 @@ fn authority_for_call(binding: &str, call: &str) -> Option<String> {
     ]
     .iter()
     .any(|marker| lower.contains(marker))
+        || (binding == "python"
+            && matches!(
+                call_leaf(&lower),
+                "open"
+                    | "read"
+                    | "read_bytes"
+                    | "read_text"
+                    | "write_bytes"
+                    | "write_text"
+                    | "mkdir"
+                    | "resolve"
+            ))
         || path_contains_segment(&lower, "fs")
     {
         "filesystem"
@@ -743,6 +747,13 @@ fn authority_for_call(binding: &str, call: &str) -> Option<String> {
         return None;
     };
     Some(authority.to_string())
+}
+
+fn call_leaf(call: &str) -> &str {
+    call.trim_end_matches("()")
+        .rsplit(['.', ':'])
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(call)
 }
 
 fn known_pure_call(call: &str) -> bool {
@@ -2430,6 +2441,48 @@ mod tests {
         );
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         assert!(result.functions[0].transitive_authorities.is_empty());
+    }
+
+    #[test]
+    fn swift_readiness_and_resolve_domain_calls_do_not_imply_filesystem_authority() {
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            r#"
+                enum Event {
+                    case readinessProjected(Int)
+                }
+
+                enum Machine {
+                    static func resolve(_ value: Int) -> Int { value }
+                }
+
+                func decide(_ value: Int) -> (Event, Int) {
+                    (.readinessProjected(value), Machine.resolve(value))
+                }
+            "#,
+            expectation("Sources/App.swift#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].transitive_authorities.is_empty());
+    }
+
+    #[test]
+    fn python_file_methods_remain_filesystem_authority() {
+        for method in ["open", "read", "read_text", "resolve"] {
+            let source = format!("def decide(path):\n    return path.{method}()\n");
+            let result = report(
+                "python",
+                "src/app.py",
+                &source,
+                expectation("src/app.py#decide", "effectful", &["filesystem"]),
+            );
+            assert_eq!(result.result, AnalysisResult::Pass, "{method}: {result:#?}");
+            assert_eq!(
+                result.functions[0].transitive_authorities,
+                vec!["filesystem"]
+            );
+        }
     }
 
     #[test]
