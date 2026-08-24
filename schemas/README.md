@@ -38,7 +38,7 @@ Schema validation is necessary but not sufficient. Semantic conformance also req
 | Schema | Producer | Meaning |
 | --- | --- | --- |
 | `implementation-v0.2.schema.json` | Canonical authoring or `rms binding migrate` | Declares `pure|effectful`, `internal|boundary`, exact authority rows, and exact safe facades. Production checks require this version. |
-| `effect-analysis.schema.json` | `rms structure`, verification, audit, and checks | Records source/tool digests, direct and resolved calls, inferred direct/transitive authorities, unresolved calls, and function verdicts. It is derived evidence. |
+| `effect-analysis.schema.json` | `rms structure`, verification, audit, and checks | Records source/tool digests, direct and resolved calls, inferred direct/transitive authorities, unresolved calls, and function verdicts. It covers native language bindings and inspectable mixed executable bindings. It is derived evidence. |
 | `composition-model.schema.json` | `rms compose --output` | Records participant digests, symbolic vector state, wiring, protocol routes, effect/authority unions, generators, obligations, algebraic reductions, and reused proofs. It is derived evidence. |
 | `proof-certificate.schema.json` | Exhausted `rms property search --goal violate --out` | Binds a satisfied universal finite result to exact subject, implementation, source, tool, strategy, assumptions, and evidence digests. |
 

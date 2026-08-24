@@ -10560,7 +10560,7 @@ fn run_main() -> Result<()> {
                     &implementation,
                     None,
                 );
-                run_binding_migrate(&implementation, &to, dry_run)?;
+                run_binding_migrate(&implementation, &to, dry_run, &receipt.receipt_id)?;
                 println!("route receipt: {}", receipt.receipt_id);
                 Ok(())
             }
@@ -26562,6 +26562,9 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
         "swift" => &["swift"],
         "python" => &["py"],
         "js" | "javascript" => &["js", "mjs", "cjs", "ts", "tsx"],
+        "executable" => &[
+            "rs", "swift", "py", "js", "mjs", "cjs", "ts", "tsx", "sh", "bash",
+        ],
         _ => &[],
     };
     let mut sources = BTreeMap::new();
@@ -26577,7 +26580,13 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
                 !entry.file_type().is_dir()
                     || !matches!(
                         entry.file_name().to_string_lossy().as_ref(),
-                        "target" | ".build" | "node_modules" | "dist"
+                        ".git"
+                            | ".venv"
+                            | "__pycache__"
+                            | "target"
+                            | ".build"
+                            | "node_modules"
+                            | "dist"
                     )
             })
             .filter_map(Result::ok)
@@ -26636,7 +26645,7 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
             "sha256:{}",
             sha256_bytes(
                 format!(
-                    "{RMS_LONG_VERSION}:effect-analysis-v1:{}:{}",
+                    "{RMS_LONG_VERSION}:effect-analysis-v2:{}:{}",
                     effect_analysis::PURE_ALLOWLIST_VERSION,
                     effect_analysis::AUTHORITY_ROOT_VERSION
                 )
@@ -48329,15 +48338,28 @@ fn append_semantic_revision_artifacts_audit_check(
                 revision_authority.label()
             ),
         )),
-        Ok(current) => checks.push(audit_check(
-            "semantic.revision-drift",
-            "semantic",
-            if strict { "fail" } else { "review-required" },
-            evidence_path,
-            format!(
-                "canonical semantics changed after sealing: declared `{digest}`, current `sha256:{current}`; authorize and seal a new semantic change instead of editing manifests directly"
-            ),
-        )),
+        Ok(current) => match binding_migration_semantic_integrity(implementation, digest) {
+            Ok(Some(note)) => checks.push(audit_check(
+                "semantic.revision-integrity",
+                "semantic",
+                "pass",
+                evidence_path,
+                note,
+            )),
+            migration => checks.push(audit_check(
+                "semantic.revision-drift",
+                "semantic",
+                if strict { "fail" } else { "review-required" },
+                evidence_path,
+                format!(
+                    "canonical semantics changed after sealing: declared `{digest}`, current `sha256:{current}`; authorize and seal a new semantic change instead of editing manifests directly{}",
+                    match migration {
+                        Err(reason) => format!("; binding migration seal is invalid: {reason}"),
+                        _ => String::new(),
+                    }
+                ),
+            )),
+        },
         Err(error) => checks.push(audit_check(
             "semantic.revision-unverifiable",
             "semantic",
@@ -48346,6 +48368,72 @@ fn append_semantic_revision_artifacts_audit_check(
             format!("semantic revision could not be recomputed: {error}"),
         )),
     }
+}
+
+fn binding_migration_semantic_integrity(
+    implementation: Option<&LoadedManifest>,
+    declared_semantic_revision: &str,
+) -> Result<Option<String>, String> {
+    let Some(implementation) = implementation else {
+        return Ok(None);
+    };
+    let base = &["x-rms", "binding_migration"];
+    if get_path(&implementation.value, base).is_none() {
+        return Ok(None);
+    }
+    let field = |name: &str| {
+        get_str(&implementation.value, &["x-rms", "binding_migration", name])
+            .ok_or_else(|| format!("missing `{name}`"))
+    };
+    if field("spec")? != "rms/binding-migration/v0.1"
+        || field("from")? != IMPLEMENTATION_V1_SPEC
+        || field("to")? != IMPLEMENTATION_V2_SPEC
+        || field("migrated_by")? != "rms binding migrate"
+    {
+        return Err("migration identity is not the canonical v0.1 to v0.2 path".to_string());
+    }
+    if get_str(&implementation.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC) {
+        return Err("implementation does not use the sealed target schema".to_string());
+    }
+    if field("source_semantic_revision")? != declared_semantic_revision {
+        return Err("source semantic revision does not match the active seal".to_string());
+    }
+    for name in ["source_digest", "candidate_digest"] {
+        if !is_sha256_label(field(name)?) {
+            return Err(format!("`{name}` is not a sha256 digest"));
+        }
+    }
+    let receipt_id = field("route_receipt_id")?;
+    if receipt_id.len() != 64
+        || !receipt_id
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err("route receipt id is not a canonical digest".to_string());
+    }
+    if field("rms_version")?.trim().is_empty() {
+        return Err("migration does not name its RMS version".to_string());
+    }
+    let actual = binding_migration_projection_digest(&implementation.value)
+        .map_err(|error| error.to_string())?;
+    let expected = field("candidate_digest")?;
+    if expected != format!("sha256:{actual}") {
+        return Err(format!(
+            "candidate digest changed after migration: declared `{expected}`, current `sha256:{actual}`"
+        ));
+    }
+    Ok(Some(format!(
+        "canonical semantics remain bound to the prior authorized revision through receipt-gated rms/implementation/v0.1 to v0.2 migration `{}`",
+        &receipt_id[..12]
+    )))
+}
+
+fn is_sha256_label(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
 }
 
 fn validate_repository_maintainer_seal_declaration(
@@ -72156,7 +72244,12 @@ fn run_add_binding(request: AddBindingRequest) -> Result<()> {
     Ok(())
 }
 
-fn run_binding_migrate(implementation: &Path, target: &str, dry_run: bool) -> Result<()> {
+fn run_binding_migrate(
+    implementation: &Path,
+    target: &str,
+    dry_run: bool,
+    route_receipt_id: &str,
+) -> Result<()> {
     let manifest = load_manifest(implementation)?;
     if !is_implementation_spec(get_str(&manifest.value, &["spec"])) {
         bail!(
@@ -72165,7 +72258,10 @@ fn run_binding_migrate(implementation: &Path, target: &str, dry_run: bool) -> Re
         );
     }
     let analysis = build_effect_analysis(&manifest)?;
-    let plan = binding_migration::plan(&manifest.value, &analysis, target)?;
+    let mut plan = binding_migration::plan(&manifest.value, &analysis, target)?;
+    if plan.changed {
+        attach_binding_migration_seal(&manifest.value, &mut plan.candidate, route_receipt_id)?;
+    }
     let candidate = LoadedManifest {
         path: manifest.path.clone(),
         value: plan.candidate.clone(),
@@ -72199,6 +72295,47 @@ fn run_binding_migrate(implementation: &Path, target: &str, dry_run: bool) -> Re
         eprintln!("{}: {}", diagnostic.code, diagnostic.message);
     }
     Ok(())
+}
+
+fn attach_binding_migration_seal(
+    source: &YamlValue,
+    candidate: &mut YamlValue,
+    route_receipt_id: &str,
+) -> Result<()> {
+    let source_digest = binding_migration_projection_digest(source)?;
+    let candidate_digest = binding_migration_projection_digest(candidate)?;
+    let source_semantic_revision = get_str(source, &["x-rms", "semantic_revision", "digest"])
+        .unwrap_or("unsealed")
+        .to_string();
+    for (field, value) in [
+        ("spec", "rms/binding-migration/v0.1".to_string()),
+        ("from", IMPLEMENTATION_V1_SPEC.to_string()),
+        ("to", IMPLEMENTATION_V2_SPEC.to_string()),
+        ("source_digest", format!("sha256:{source_digest}")),
+        ("candidate_digest", format!("sha256:{candidate_digest}")),
+        ("source_semantic_revision", source_semantic_revision),
+        ("route_receipt_id", route_receipt_id.to_string()),
+        ("rms_version", VALIDATOR_VERSION.to_string()),
+        ("migrated_by", "rms binding migrate".to_string()),
+    ] {
+        set_yaml_string_path(candidate, &["x-rms", "binding_migration", field], &value);
+    }
+    Ok(())
+}
+
+fn binding_migration_projection_digest(value: &YamlValue) -> Result<String> {
+    let mut projection = value.clone();
+    remove_yaml_path(&mut projection, &["x-rms", "semantic_revision"]);
+    remove_yaml_path(&mut projection, &["x-rms", "binding_migration"]);
+    if get_path(&projection, &["x-rms"])
+        .and_then(YamlValue::as_mapping)
+        .is_some_and(serde_yaml::Mapping::is_empty)
+    {
+        remove_yaml_path(&mut projection, &["x-rms"]);
+    }
+    Ok(sha256_bytes(&serde_json::to_vec(
+        &canonical_json_from_yaml(&projection)?,
+    )?))
 }
 
 fn atomic_replace_file(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -93774,6 +93911,50 @@ architecture:
         assert!(checks
             .iter()
             .any(|check| check.id == "semantic.revision-drift" && check.result == "fail"));
+    }
+
+    #[test]
+    fn binding_migration_seal_preserves_revision_and_detects_later_drift() {
+        let mut source: YamlValue = serde_yaml::from_str(
+            r#"spec: rms/implementation/v0.1
+module: example
+binding: executable
+x-rms:
+  semantic_revision:
+    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"#,
+        )
+        .unwrap();
+        let mut candidate = source.clone();
+        set_yaml_string_path(&mut candidate, &["spec"], IMPLEMENTATION_V2_SPEC);
+        attach_binding_migration_seal(
+            &source,
+            &mut candidate,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        )
+        .unwrap();
+        let implementation = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: candidate,
+        };
+        assert!(binding_migration_semantic_integrity(
+            Some(&implementation),
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        )
+        .unwrap()
+        .is_some());
+
+        source = implementation.value.clone();
+        set_yaml_string_path(&mut source, &["binding"], "python");
+        let drifted = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: source,
+        };
+        assert!(binding_migration_semantic_integrity(
+            Some(&drifted),
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        )
+        .is_err());
     }
 
     #[test]

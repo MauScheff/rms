@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Let receipt-gated implementation v0.2 migration inspect mixed executable bindings through exact `path#symbol` language selection. Add strict shell call-graph analysis, closed Python dispatch-table expansion, safe-facade authority closure, and a migration candidate seal that preserves the prior semantic revision while detecting later drift. Unknown, dynamic, or ambiguous shell calls still block migration.
 - Add a signed, owner-local `spec-repair-apply` recovery route for malformed v0.2 behavior cases that block normal routing. Its receipt binds the Git revision, recognized diagnostic fingerprint, directly referenced contract source digests and paths, and preserved case IDs; apply permits only complete case-schema repair while preserving all contract meaning, clauses, metadata, and existing evidence.
 - Validate every semantic-plan contract through the full v0.2 schema using its exact rendered artifact; `rms spec apply --dry-run` now rejects any invalid contract in the final referenced module state, and real apply revalidates written contracts before it seals a change. Planner and repair prompts now distinguish executable behavior cases from externally evaluated clauses.
 - Preserve typed capability-tree child names and the recommended `domain-engine|workflow` child shape in the signed design action, generated scaffold, and composite routing; semantic-plan normalization now safely defers orphaned temporal fields, while temporal repair prompts teach the exact closed observation, assumption, expression, scope, and deferral grammar.

@@ -71,11 +71,9 @@ pub(crate) fn plan(
         if report.verdict == FunctionVerdict::Unsupported {
             bail!("semantic function `{id}` has no supported effect analysis");
         }
-        if report
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("resolved to"))
-        {
+        if report.reasons.iter().any(|reason| {
+            reason.contains("resolved to") || reason.contains("multiple authority facades")
+        }) {
             bail!(
                 "semantic function `{id}` cannot be migrated: {}",
                 report.reasons.join("; ")
@@ -132,6 +130,20 @@ pub(crate) fn plan(
                 "migrated `{id}` as {purity}/{trust} with {} authority binding(s)",
                 report.transitive_authorities.len()
             ),
+        ));
+    }
+
+    if string_at(candidate, &["binding"]) == Some("executable")
+        && string_at(candidate, &["architecture", "static_inspection"]) == Some("opaque")
+    {
+        set_string(
+            &mut output,
+            &["architecture", "static_inspection"],
+            "transitive-effects",
+        )?;
+        diagnostics.push(diagnostic(
+            "migration.static-inspection",
+            "enabled transitive effect inspection for path-qualified executable semantic functions",
         ));
     }
 
@@ -282,6 +294,23 @@ semantic_functions:
         .unwrap()
     }
 
+    fn legacy_executable() -> Value {
+        serde_yaml::from_str(
+            r#"spec: rms/implementation/v0.1
+binding: executable
+architecture:
+  static_inspection: opaque
+  authority_bindings: []
+semantic_functions:
+  - id: read
+    symbol: scripts/read.py#read
+    kind: adapter
+    purity: pure
+"#,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn migration_is_deterministic_and_idempotent() {
         let migrated = plan(&legacy(), &analysis(&["filesystem"], &[]), "v0.2").unwrap();
@@ -309,5 +338,18 @@ semantic_functions:
             .unwrap()[&key("authority_bindings")] = Value::Sequence(Vec::new());
         let error = plan(&input, &analysis(&["filesystem"], &[]), "v0.2").unwrap_err();
         assert!(error.to_string().contains("safe facade"));
+    }
+
+    #[test]
+    fn executable_migration_enables_transitive_effect_inspection() {
+        let migrated = plan(&legacy_executable(), &analysis(&[], &[]), "v0.2").unwrap();
+        assert_eq!(
+            string_at(&migrated.candidate, &["architecture", "static_inspection"]),
+            Some("transitive-effects")
+        );
+        assert!(migrated
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "migration.static-inspection"));
     }
 }

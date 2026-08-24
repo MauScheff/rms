@@ -88,10 +88,12 @@ struct FunctionNode {
 }
 
 pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
-    let supported = matches!(
-        input.binding.as_str(),
-        "rust" | "swift" | "python" | "js" | "javascript"
-    );
+    let supported = binding_is_supported(&input.binding)
+        || (input.binding == "executable"
+            && input
+                .semantic_functions
+                .iter()
+                .all(|function| symbol_source_binding(&function.symbol).is_some()));
     if !supported {
         return EffectAnalysis {
             spec: EFFECT_ANALYSIS_SPEC,
@@ -119,17 +121,27 @@ pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
         };
     }
 
-    let swift_global_names = if input.binding == "swift" {
-        swift_global_standard_names(&input.sources)
-    } else {
-        SwiftStandardNames::default()
-    };
+    let swift_sources = input
+        .sources
+        .iter()
+        .filter(|(path, _)| {
+            input.binding == "swift"
+                || (input.binding == "executable" && source_binding(path) == Some("swift"))
+        })
+        .map(|(path, source)| (path.clone(), source.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let swift_global_names = swift_global_standard_names(&swift_sources);
     let mut nodes = Vec::new();
     for (path, source) in &input.sources {
-        let mut extracted = if input.binding == "rust" {
+        let source_binding = if input.binding == "executable" {
+            source_binding(path).unwrap_or("")
+        } else {
+            input.binding.as_str()
+        };
+        let mut extracted = if source_binding == "rust" {
             extract_rust_functions(path, source)
         } else {
-            extract_tree_sitter_functions(&input.binding, path, source, &swift_global_names)
+            extract_tree_sitter_functions(source_binding, path, source, &swift_global_names)
         };
         nodes.append(&mut extracted);
     }
@@ -143,9 +155,15 @@ pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
             )
         })
         .collect::<BTreeMap<_, _>>();
+    let authority_memberships = authority_memberships(&nodes, &input.authority_facades);
     let mut functions = Vec::new();
     for expectation in input.semantic_functions {
-        functions.push(analyze_function(&expectation, &nodes, &facades));
+        functions.push(analyze_function(
+            &expectation,
+            &nodes,
+            &facades,
+            &authority_memberships,
+        ));
     }
     functions.sort_by(|left, right| left.id.cmp(&right.id));
     let result = if functions
@@ -171,34 +189,38 @@ pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
     }
 }
 
+fn binding_is_supported(binding: &str) -> bool {
+    matches!(
+        binding,
+        "rust" | "swift" | "python" | "js" | "javascript" | "shell"
+    )
+}
+
+fn symbol_source_binding(symbol: &str) -> Option<&'static str> {
+    source_binding(symbol_path(symbol)?)
+}
+
+fn source_binding(path: &str) -> Option<&'static str> {
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())?;
+    match extension {
+        "rs" => Some("rust"),
+        "swift" => Some("swift"),
+        "py" => Some("python"),
+        "js" | "mjs" | "cjs" | "ts" | "tsx" => Some("js"),
+        "sh" | "bash" => Some("shell"),
+        _ => None,
+    }
+}
+
 fn analyze_function(
     expectation: &SemanticFunctionExpectation,
     nodes: &[FunctionNode],
     facades: &BTreeMap<String, String>,
+    authority_memberships: &BTreeMap<usize, BTreeSet<String>>,
 ) -> FunctionAnalysis {
-    let expected_name = symbol_name(&expectation.symbol);
-    let expected_qualified = symbol_qualified_name(&expectation.symbol);
-    let expected_path = symbol_path(&expectation.symbol);
-    let mut candidates = nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, node)| {
-            node.name == expected_name
-                && expected_path.is_none_or(|path| normalized_path_matches(&node.path, path))
-                && (!expected_qualified.contains("::") || node.qualified_name == expected_qualified)
-        })
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    if !expected_qualified.contains("::") {
-        let free = candidates
-            .iter()
-            .copied()
-            .filter(|index| nodes[*index].qualified_name == nodes[*index].name)
-            .collect::<Vec<_>>();
-        if free.len() == 1 {
-            candidates = free;
-        }
-    }
+    let candidates = symbol_candidates(&expectation.symbol, nodes);
     if candidates.len() != 1 {
         return FunctionAnalysis {
             id: expectation.id.clone(),
@@ -220,7 +242,7 @@ fn analyze_function(
 
     let root = candidates[0];
     let direct_calls = nodes[root].calls.iter().cloned().collect::<Vec<_>>();
-    let direct_authorities = authorities_for_node(&nodes[root], facades);
+    let mut direct_authorities = authorities_for_node(root, nodes, facades);
     let mut transitive_authorities = BTreeSet::new();
     let mut resolved = BTreeSet::new();
     let mut unresolved = BTreeSet::new();
@@ -234,8 +256,23 @@ fn analyze_function(
         &mut unresolved,
         &mut transitive_authorities,
     );
+    let memberships = authority_memberships
+        .get(&root)
+        .cloned()
+        .unwrap_or_default();
+    if memberships.len() == 1 {
+        let authority = memberships.iter().next().cloned().unwrap_or_default();
+        direct_authorities = bind_ambient_authorities(direct_authorities, &authority);
+        transitive_authorities = bind_ambient_authorities(transitive_authorities, &authority);
+    }
 
     let mut reasons = Vec::new();
+    if memberships.len() > 1 {
+        reasons.push(format!(
+            "semantic function is contained by multiple authority facades [{}]",
+            memberships.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
     if expectation.purity == "pure" {
         if !transitive_authorities.is_empty() {
             reasons.push(format!(
@@ -301,6 +338,84 @@ fn analyze_function(
     }
 }
 
+fn symbol_candidates(symbol: &str, nodes: &[FunctionNode]) -> Vec<usize> {
+    let expected_name = symbol_name(symbol);
+    let expected_qualified = symbol_qualified_name(symbol);
+    let expected_path = symbol_path(symbol);
+    let mut candidates = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| {
+            node.name == expected_name
+                && expected_path.is_none_or(|path| normalized_path_matches(&node.path, path))
+                && (!expected_qualified.contains("::") || node.qualified_name == expected_qualified)
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if !expected_qualified.contains("::") {
+        let free = candidates
+            .iter()
+            .copied()
+            .filter(|index| nodes[*index].qualified_name == nodes[*index].name)
+            .collect::<Vec<_>>();
+        if free.len() == 1 {
+            candidates = free;
+        }
+    }
+    candidates
+}
+
+fn authority_memberships(
+    nodes: &[FunctionNode],
+    facades: &[AuthorityFacade],
+) -> BTreeMap<usize, BTreeSet<String>> {
+    let mut memberships = BTreeMap::<usize, BTreeSet<String>>::new();
+    for facade in facades {
+        let roots = symbol_candidates(&facade.symbol, nodes);
+        if roots.len() != 1 {
+            continue;
+        }
+        let mut closure = BTreeSet::new();
+        collect_local_members(roots[0], nodes, &mut closure);
+        for index in closure {
+            memberships
+                .entry(index)
+                .or_default()
+                .insert(facade.authority.clone());
+        }
+    }
+    memberships
+}
+
+fn collect_local_members(index: usize, nodes: &[FunctionNode], members: &mut BTreeSet<usize>) {
+    if !members.insert(index) {
+        return;
+    }
+    for call in &nodes[index].calls {
+        let candidates = resolve_local_call(index, call, nodes);
+        if candidates.len() == 1 {
+            collect_local_members(candidates[0], nodes, members);
+        }
+    }
+}
+
+fn bind_ambient_authorities(
+    authorities: BTreeSet<String>,
+    facade_authority: &str,
+) -> BTreeSet<String> {
+    let has_ambient = authorities
+        .iter()
+        .any(|authority| authority != "dynamic-dispatch");
+    let mut bound = authorities
+        .into_iter()
+        .filter(|authority| authority == "dynamic-dispatch")
+        .collect::<BTreeSet<_>>();
+    if has_ambient {
+        bound.insert(facade_authority.to_string());
+    }
+    bound
+}
+
 #[allow(clippy::too_many_arguments)]
 fn collect_closure(
     index: usize,
@@ -315,8 +430,22 @@ fn collect_closure(
         return;
     }
     let node = &nodes[index];
-    authorities.extend(authorities_for_node(node, facades));
+    authorities.extend(authorities_for_node(index, nodes, facades));
     for call in &node.calls {
+        let candidates = resolve_local_call(index, call, nodes);
+        if node.binding == "shell" && candidates.len() == 1 {
+            resolved.insert(nodes[candidates[0]].qualified_name.clone());
+            collect_closure(
+                candidates[0],
+                nodes,
+                facades,
+                visited,
+                resolved,
+                unresolved,
+                authorities,
+            );
+            continue;
+        }
         if let Some(authority) = authority_for_call(&node.binding, call)
             .or_else(|| facades.get(symbol_name(call)).cloned())
         {
@@ -328,7 +457,6 @@ fn collect_closure(
         {
             continue;
         }
-        let candidates = resolve_local_call(index, call, nodes);
         if candidates.len() == 1 {
             resolved.insert(nodes[candidates[0]].qualified_name.clone());
             collect_closure(
@@ -342,6 +470,8 @@ fn collect_closure(
             );
         } else if call_is_constructor(call) {
             continue;
+        } else if node.binding == "shell" {
+            unresolved.insert(call.clone());
         } else if call == "<dynamic-call>" || call.contains('.') {
             authorities.insert("dynamic-dispatch".to_string());
             resolved.insert(call.clone());
@@ -434,11 +564,20 @@ fn rust_source_module_name(path: &str) -> Option<&str> {
 }
 
 fn authorities_for_node(
-    node: &FunctionNode,
+    index: usize,
+    nodes: &[FunctionNode],
     facades: &BTreeMap<String, String>,
 ) -> BTreeSet<String> {
-    let mut authorities = node.direct_authorities.clone();
+    let node = &nodes[index];
+    let mut authorities = if node.binding == "shell" {
+        BTreeSet::new()
+    } else {
+        node.direct_authorities.clone()
+    };
     for call in &node.calls {
+        if node.binding == "shell" && resolve_local_call(index, call, nodes).len() == 1 {
+            continue;
+        }
         if let Some(authority) = authority_for_call(&node.binding, call)
             .or_else(|| facades.get(symbol_name(call)).cloned())
         {
@@ -454,6 +593,14 @@ fn authority_for_call(binding: &str, call: &str) -> Option<String> {
     let authority = if [
         "std::fs",
         "file::open",
+        ".open",
+        ".read_bytes",
+        ".read_text",
+        ".read",
+        ".write_bytes",
+        ".write_text",
+        ".mkdir",
+        ".resolve",
         "read_to_string",
         "write_file",
         "readfile",
@@ -473,6 +620,7 @@ fn authority_for_call(binding: &str, call: &str) -> Option<String> {
         "write_all",
         "sync_all",
         "make_executable",
+        "shell.file_redirect",
     ]
     .iter()
     .any(|marker| lower.contains(marker))
@@ -485,6 +633,7 @@ fn authority_for_call(binding: &str, call: &str) -> Option<String> {
         "subprocess",
         "os.system",
         "process.",
+        "shutil.which",
         "spawn",
         "exec(",
         "child.",
@@ -552,6 +701,42 @@ fn authority_for_call(binding: &str, call: &str) -> Option<String> {
         .any(|marker| lower.contains(marker))
     {
         "git"
+    } else if binding == "shell"
+        && matches!(
+            lower.as_str(),
+            "awk"
+                | "bash"
+                | "cat"
+                | "cp"
+                | "curl"
+                | "cut"
+                | "date"
+                | "dd"
+                | "find"
+                | "git"
+                | "grep"
+                | "head"
+                | "ln"
+                | "mkdir"
+                | "mktemp"
+                | "mv"
+                | "perl"
+                | "python"
+                | "python3"
+                | "rm"
+                | "sed"
+                | "sh"
+                | "sort"
+                | "tail"
+                | "tee"
+                | "touch"
+                | "tr"
+                | "uniq"
+                | "wget"
+                | "xargs"
+        )
+    {
+        "process"
     } else if binding != "swift" && (lower.contains("provider") || lower.contains("codex")) {
         "provider"
     } else {
@@ -564,7 +749,8 @@ fn known_pure_call(call: &str) -> bool {
     let name = symbol_name(call).trim_end_matches('!');
     matches!(
         name,
-        "all"
+        "add"
+            | "all"
             | "and_then"
             | "any"
             | "append"
@@ -586,6 +772,7 @@ fn known_pure_call(call: &str) -> bool {
             | "as_str"
             | "as_u64"
             | "at"
+            | "bool"
             | "borrow"
             | "borrow_mut"
             | "byte_range"
@@ -613,6 +800,7 @@ fn known_pure_call(call: &str) -> bool {
             | "count"
             | "dedup"
             | "dedup_by"
+            | "decode"
             | "default"
             | "dict"
             | "display"
@@ -620,6 +808,7 @@ fn known_pure_call(call: &str) -> bool {
             | "drop"
             | "emit"
             | "ends_with"
+            | "endswith"
             | "enumerate"
             | "eq"
             | "entry"
@@ -648,17 +837,23 @@ fn known_pure_call(call: &str) -> bool {
             | "from_str_radix"
             | "from_utf8"
             | "from_utf8_lossy"
+            | "fullmatch"
             | "get"
             | "get_mut"
             | "get_or_init"
             | "get_or_insert"
+            | "group"
+            | "hexdigest"
+            | "ip_address"
             | "insert"
+            | "int"
             | "inspect"
             | "into"
             | "into_iter"
             | "into_bytes"
             | "into_keys"
             | "into_path"
+            | "items"
             | "is_absolute"
             | "is_alphanumeric"
             | "is_ascii_alphabetic"
@@ -703,6 +898,9 @@ fn known_pure_call(call: &str) -> bool {
             | "len_utf8"
             | "lines"
             | "list"
+            | "loads"
+            | "dumps"
+            | "lower"
             | "map"
             | "map_err"
             | "map_or"
@@ -735,6 +933,7 @@ fn known_pure_call(call: &str) -> bool {
             | "pop"
             | "pop_front"
             | "position"
+            | "printf"
             | "push"
             | "push_back"
             | "push_str"
@@ -742,18 +941,23 @@ fn known_pure_call(call: &str) -> bool {
             | "remove"
             | "replace"
             | "replacen"
+            | "rpartition"
             | "rev"
             | "reverse"
             | "reversed"
             | "retain"
+            | "return"
             | "root_node"
             | "rsplit"
             | "rsplit_once"
             | "saturating_add"
             | "saturating_mul"
             | "saturating_sub"
+            | "search"
             | "set"
             | "set_language"
+            | "sha256"
+            | "shift"
             | "sort"
             | "sort_by"
             | "sort_by_key"
@@ -762,16 +966,20 @@ fn known_pure_call(call: &str) -> bool {
             | "split_at"
             | "split_last"
             | "split_once"
+            | "splitlines"
             | "split_whitespace"
             | "skip"
             | "starts_with"
+            | "startswith"
             | "strip"
             | "strip_prefix"
             | "strip_suffix"
             | "strings"
+            | "str"
             | "structural_types"
             | "take"
             | "take_while"
+            | "test"
             | "then"
             | "then_some"
             | "then_with"
@@ -796,10 +1004,13 @@ fn known_pure_call(call: &str) -> bool {
             | "transpose"
             | "tuple"
             | "union"
+            | "unset"
+            | "update"
             | "unwrap_or"
             | "unwrap_or_default"
             | "unwrap_or_else"
             | "utf8_text"
+            | "urlsafe_b64decode"
             | "values"
             | "vec"
             | "visit_block"
@@ -1286,6 +1497,11 @@ fn extract_tree_sitter_functions(
         return Vec::new();
     };
     let aliases = tree_sitter_import_aliases(binding, path, tree.root_node(), source);
+    let static_dispatches = if binding == "python" {
+        python_static_dispatches(tree.root_node(), source, &aliases)
+    } else {
+        BTreeMap::new()
+    };
     let mut function_nodes = Vec::new();
     collect_function_nodes(tree.root_node(), &mut function_nodes);
     function_nodes
@@ -1313,17 +1529,27 @@ fn extract_tree_sitter_functions(
                 BTreeSet::new()
             };
             let mut calls = BTreeSet::new();
-            collect_call_nodes(
-                binding,
-                node,
-                source,
-                &swift_collection_names,
-                &mut calls,
-                true,
-            );
+            if binding == "shell" {
+                collect_shell_call_nodes(node, source, &mut calls, true);
+            } else {
+                collect_call_nodes(
+                    binding,
+                    node,
+                    source,
+                    &swift_collection_names,
+                    &mut calls,
+                    true,
+                );
+            }
             let calls = calls
                 .into_iter()
-                .map(|call| resolve_call_alias(&call, &aliases))
+                .flat_map(|call| {
+                    let dispatch_name = call.split_once('[').map(|(name, _)| name);
+                    static_dispatches
+                        .get(dispatch_name.unwrap_or_default())
+                        .cloned()
+                        .unwrap_or_else(|| vec![resolve_call_alias(&call, &aliases)])
+                })
                 .collect::<BTreeSet<_>>();
             let direct_authorities = calls
                 .iter()
@@ -1340,6 +1566,59 @@ fn extract_tree_sitter_functions(
             })
         })
         .collect()
+}
+
+fn python_static_dispatches(
+    root: Node<'_>,
+    source: &str,
+    aliases: &BTreeMap<String, String>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut assignments = Vec::new();
+    collect_nodes_of_kind(root, "assignment", &mut assignments);
+    let mut dispatches = BTreeMap::new();
+    for assignment in assignments {
+        if nearest_function_ancestor(assignment).is_some() {
+            continue;
+        }
+        let Some(name) = assignment
+            .child_by_field_name("left")
+            .and_then(|left| left.utf8_text(source.as_bytes()).ok())
+            .map(str::trim)
+            .filter(|name| is_simple_identifier(name))
+        else {
+            continue;
+        };
+        let Some(dictionary) = assignment
+            .child_by_field_name("right")
+            .filter(|right| right.kind() == "dictionary")
+        else {
+            continue;
+        };
+        let mut pairs = Vec::new();
+        collect_nodes_of_kind(dictionary, "pair", &mut pairs);
+        let mut targets = pairs
+            .into_iter()
+            .filter_map(|pair| pair.child_by_field_name("value"))
+            .filter_map(|value| value.utf8_text(source.as_bytes()).ok())
+            .map(str::trim)
+            .filter(|target| is_simple_identifier(target))
+            .map(|target| resolve_call_alias(target, aliases))
+            .collect::<Vec<_>>();
+        targets.sort();
+        targets.dedup();
+        if !targets.is_empty() {
+            dispatches.insert(name.to_string(), targets);
+        }
+    }
+    dispatches
+}
+
+fn is_simple_identifier(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
 fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStandardNames {
@@ -1504,6 +1783,7 @@ fn tree_sitter_language(binding: &str) -> Option<Language> {
     match binding {
         "python" => Some(tree_sitter_python::LANGUAGE.into()),
         "js" | "javascript" => Some(tree_sitter_javascript::LANGUAGE.into()),
+        "shell" => Some(tree_sitter_bash::LANGUAGE.into()),
         "swift" => Some(tree_sitter_swift::LANGUAGE.into()),
         _ => None,
     }
@@ -1617,6 +1897,45 @@ fn collect_call_nodes(
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         collect_call_nodes(binding, child, source, swift_collection_names, calls, false);
+    }
+}
+
+fn collect_shell_call_nodes(
+    node: Node<'_>,
+    source: &str,
+    calls: &mut BTreeSet<String>,
+    root: bool,
+) {
+    if !root && node.kind() == "function_definition" {
+        return;
+    }
+    if node.kind() == "command" {
+        let call = node
+            .child_by_field_name("name")
+            .and_then(|name| name.utf8_text(source.as_bytes()).ok())
+            .map(str::trim)
+            .filter(|name| {
+                !name.is_empty()
+                    && name.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || "_./-".contains(character)
+                    })
+            })
+            .map(str::to_string)
+            .unwrap_or_else(|| "<dynamic-call>".to_string());
+        calls.insert(call);
+    }
+    if node.kind() == "file_redirect" {
+        let redirect = node
+            .utf8_text(source.as_bytes())
+            .unwrap_or_default()
+            .replace(' ', "");
+        if !redirect.ends_with("/dev/null") {
+            calls.insert("shell.file_redirect".to_string());
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_shell_call_nodes(child, source, calls, false);
     }
 }
 
@@ -1945,6 +2264,149 @@ mod tests {
         );
         assert_eq!(result.result, AnalysisResult::Fail);
         assert_eq!(result.functions[0].unresolved_calls, vec!["callback"]);
+    }
+
+    #[test]
+    fn shell_local_call_closure_stays_pure() {
+        let result = report(
+            "shell",
+            "scripts/domain.sh",
+            "helper() { printf '%s\\n' \"$1\"; }\ndecide() { helper \"$1\"; }\n",
+            expectation("scripts/domain.sh#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert_eq!(result.functions[0].resolved_callees, vec!["helper"]);
+    }
+
+    #[test]
+    fn shell_unknown_and_dynamic_commands_fail_closed() {
+        for source in [
+            "decide() { unknown_tool \"$1\"; }\n",
+            "decide() { \"$CALLBACK\" \"$1\"; }\n",
+        ] {
+            let result = report(
+                "shell",
+                "scripts/domain.sh",
+                source,
+                expectation("scripts/domain.sh#decide", "pure", &[]),
+            );
+            assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+            assert!(!result.functions[0].unresolved_calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn shell_file_redirection_is_an_effect_but_dev_null_is_not() {
+        let effectful = report(
+            "shell",
+            "scripts/domain.sh",
+            "decide() { printf '%s\\n' accepted > result.txt; }\n",
+            expectation("scripts/domain.sh#decide", "pure", &[]),
+        );
+        assert_eq!(effectful.result, AnalysisResult::Fail, "{effectful:#?}");
+        assert_eq!(
+            effectful.functions[0].transitive_authorities,
+            vec!["filesystem"]
+        );
+
+        let discarded = report(
+            "shell",
+            "scripts/domain.sh",
+            "decide() { printf '%s\\n' accepted 2>/dev/null; }\n",
+            expectation("scripts/domain.sh#decide", "pure", &[]),
+        );
+        assert_eq!(discarded.result, AnalysisResult::Pass, "{discarded:#?}");
+    }
+
+    #[test]
+    fn shell_local_function_shadows_external_command_name() {
+        let result = report(
+            "shell",
+            "scripts/domain.sh",
+            "git() { printf '%s\\n' local; }\ndecide() { git; }\n",
+            expectation("scripts/domain.sh#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert_eq!(result.functions[0].resolved_callees, vec!["git"]);
+    }
+
+    #[test]
+    fn executable_binding_selects_analyzer_from_each_symbol_path() {
+        let result = analyze(AnalysisInput {
+            binding: "executable".to_string(),
+            source_digest: "source".to_string(),
+            tool_digest: "tool".to_string(),
+            sources: BTreeMap::from([
+                (
+                    "scripts/domain.sh".to_string(),
+                    "decide() { printf '%s\\n' accepted; }\n".to_string(),
+                ),
+                (
+                    "scripts/parser.py".to_string(),
+                    "def parse(value):\n    return value.strip()\n".to_string(),
+                ),
+            ]),
+            semantic_functions: vec![
+                expectation("scripts/domain.sh#decide", "pure", &[]),
+                SemanticFunctionExpectation {
+                    id: "parser".to_string(),
+                    symbol: "scripts/parser.py#parse".to_string(),
+                    purity: "pure".to_string(),
+                    authorities: BTreeSet::new(),
+                },
+            ],
+            authority_facades: Vec::new(),
+        });
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert_eq!(result.functions.len(), 2);
+    }
+
+    #[test]
+    fn static_python_dispatch_preserves_exact_authority_facade() {
+        let result = analyze(AnalysisInput {
+            binding: "executable".to_string(),
+            source_digest: "source".to_string(),
+            tool_digest: "tool".to_string(),
+            sources: BTreeMap::from([
+                (
+                    "scripts/driver.py".to_string(),
+                    "from effect import execute as read_effect\nEXECUTORS = {'Read': read_effect}\ndef parse(value):\n    return value.strip()\ndef drive(value):\n    parsed = parse(value)\n    return EXECUTORS['Read'](parsed)\n".to_string(),
+                ),
+                (
+                    "scripts/effect.py".to_string(),
+                    "from pathlib import Path\ndef execute(path):\n    return Path(path).read_text()\n".to_string(),
+                ),
+            ]),
+            semantic_functions: vec![
+                SemanticFunctionExpectation {
+                    id: "driver".to_string(),
+                    symbol: "scripts/driver.py#drive".to_string(),
+                    purity: "effectful".to_string(),
+                    authorities: BTreeSet::from(["operator".to_string()]),
+                },
+                SemanticFunctionExpectation {
+                    id: "effect".to_string(),
+                    symbol: "scripts/effect.py#execute".to_string(),
+                    purity: "effectful".to_string(),
+                    authorities: BTreeSet::from(["operator".to_string()]),
+                },
+                SemanticFunctionExpectation {
+                    id: "parser".to_string(),
+                    symbol: "scripts/driver.py#parse".to_string(),
+                    purity: "pure".to_string(),
+                    authorities: BTreeSet::new(),
+                },
+            ],
+            authority_facades: vec![AuthorityFacade {
+                authority: "operator".to_string(),
+                symbol: "scripts/driver.py#drive".to_string(),
+            }],
+        });
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result
+            .functions
+            .iter()
+            .all(|function| function.unresolved_calls.is_empty()));
     }
 
     #[test]

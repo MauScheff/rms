@@ -367,7 +367,7 @@ Choose the specialist command by scope:
 
 | Scope | Command | Boundary |
 | --- | --- | --- |
-| Legacy implementation metadata | `binding migrate` | Produces no candidate when trust or authority inference is ambiguous. Requires a matching ready route receipt in dry-run and write modes. |
+| Legacy implementation metadata | `binding migrate` | Selects strict analyzers from exact `path#symbol` references, including Python and shell functions in an executable binding. Produces no candidate when trust, call, or authority inference is ambiguous. Requires a matching ready route receipt in dry-run and write modes. |
 | One implementation's call/effect closure | `structure` | Runs transitive purity and authority analysis. It does not execute effects. |
 | One implementation's probe schemas | `property generate` | Writes a deterministic probe assembly. It does not replace raw-parser fuzzing. |
 | One focused transition | `probe` | Ephemeral diagnostic execution through the real transition-record path. |

@@ -6,7 +6,7 @@
   "required": ["spec", "binding", "source_digest", "tool_digest", "result", "functions"],
   "properties": {
     "spec": { "const": "rms/effect-analysis/v0.1" },
-    "binding": { "enum": ["rust", "swift", "python", "js", "javascript"] },
+    "binding": { "enum": ["rust", "swift", "python", "js", "javascript", "shell", "executable"] },
     "source_digest": { "$ref": "#/$defs/digest" },
     "tool_digest": { "$ref": "#/$defs/digest" },
     "result": { "enum": ["pass", "fail", "unsupported"] },
