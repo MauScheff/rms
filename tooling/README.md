@@ -10,7 +10,7 @@ The Rust reference CLI exposes five primary commands:
 rms init [OPTIONS] [PATH]
 rms next "<intent>" [--root PATH] [--module MODULE] [--json] [--details]
 rms explain ["<question>"] [--root PATH] [--module MODULE] [--json] [--details]
-rms check [--environment | --changes | --committed] [--root PATH] [--json] [--details]
+rms check [--environment | --changes | --committed | --all] [--root PATH] [--json] [--details]
 rms view [OPTIONS]
 ```
 
@@ -26,7 +26,10 @@ Environment checks report skill sources detected on disk. Detection is not proof
 init → authorized bootstrap commit
 → next → explain when needed → follow the prescribed work
 → check --changes → authorized candidate commit → check --committed
+→ check --all for exhaustive release or CI certification
 ```
+
+The two local delta modes select affected RMS owners and actual public-behavior consumers. They separate candidate regressions from unchanged baseline debt and return native or outside-coverage handoffs without RMS certification. Use `rms check --all --root .` for strict full-repository proof.
 
 The expanded bootstrap path still runs deterministic `design` before either the standalone-module or recursive-capability scaffold prescribed by `next`.
 

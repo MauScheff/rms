@@ -25,7 +25,7 @@ rms view --root .
 
 Claude extracts typed facts without topology; recorded read-only `--ai` extraction is the alternative. Use the compact result first, `--details` for complete canonical evidence, `--json` for the typed `rms.surface/v2` envelope, and `rms help --all` only when a selected skill prescribes specialist work. Read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change use native tools without `next`; if they reveal a proposed change, Claude stops before editing and routes that exact change task.
 
-Finish through focused proof → `rms check --changes` → authorized candidate commit → `rms check --committed`. Git commits are required evidence, not implied authority; a manual `host-required` action in JSON does not authorize Claude to execute Git.
+Finish local work through focused proof → coverage-aware `rms check --changes` → authorized candidate commit → coverage-aware `rms check --committed`. Report selected closures, candidate regressions, unchanged baseline debt, native handoffs, outside-coverage gaps, and coverage status. Do not call native paths RMS-certified. Use `rms check --all` for exhaustive release or CI certification and strict full-repository provenance evidence. Git commits are required evidence, not implied authority; a manual `host-required` action in JSON does not authorize Claude to execute Git.
 
 ## Skills
 

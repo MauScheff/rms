@@ -333,22 +333,26 @@ enum Commands {
     #[command(display_order = 3)]
     Check {
         /// Diagnose repository, tool, guidance, and detected skill readiness.
-        #[arg(long, conflicts_with_all = ["changes", "committed"])]
+        #[arg(long, conflicts_with_all = ["changes", "committed", "all"])]
         environment: bool,
 
-        /// Run the pre-commit RMS change gate.
-        #[arg(long, conflicts_with_all = ["environment", "committed"])]
+        /// Check the affected worktree delta against its baseline.
+        #[arg(long, conflicts_with_all = ["environment", "committed", "all"])]
         changes: bool,
 
-        /// Run strict audit against the committed candidate.
-        #[arg(long, conflicts_with_all = ["environment", "changes"])]
+        /// Check the affected clean committed delta against its first parent.
+        #[arg(long, conflicts_with_all = ["environment", "changes", "all"])]
         committed: bool,
+
+        /// Run the exhaustive strict release/CI audit across the complete discovered repository.
+        #[arg(long, conflicts_with_all = ["environment", "changes", "committed"])]
+        all: bool,
 
         /// Repository or system root to check.
         #[arg(long, default_value = ".")]
         root: PathBuf,
 
-        /// Restrict changes or committed proof to one module and its declared dependency closure.
+        /// Restrict changes or committed proof to one explicit module and its dependency closure.
         #[arg(long)]
         module: Option<PathBuf>,
 
@@ -5226,6 +5230,24 @@ struct RunsConfig {
 #[serde(default, deny_unknown_fields)]
 struct WorkspaceConfig {
     coverage: WorkspaceCoverage,
+    native_workflows: Vec<NativeWorkflowConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct NativeWorkflowConfig {
+    id: String,
+    paths: Vec<String>,
+    consumes: Vec<String>,
+    proof: NativeProofConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct NativeProofConfig {
+    local: Vec<String>,
+    release: Vec<String>,
+    hardware: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -9131,6 +9153,7 @@ fn validate_guidance_and_documentation_distribution(root: &Path) -> Result<()> {
             "rms check --changes --root .",
             "authorized candidate commit",
             "rms check --committed --root .",
+            "rms check --all --root .",
         ],
     )?;
     for document in [
@@ -9146,6 +9169,7 @@ fn validate_guidance_and_documentation_distribution(root: &Path) -> Result<()> {
         if !contents.contains("rms next \"")
             || !contents.contains("rms explain")
             || !contents.contains("rms check")
+            || !contents.contains("rms check --all")
             || !contents.contains("rms help --all")
             || !contents.contains("rms.surface/v2")
             || !(contents.contains("runtime activation") || contents.contains("runtime_activation"))
@@ -9622,13 +9646,14 @@ fn run_main() -> Result<()> {
             environment,
             changes,
             committed,
+            all,
             root,
             module,
             json,
             details,
         } => run_check(
             &root,
-            CheckMode::from_flags(environment, changes, committed),
+            CheckMode::from_flags(environment, changes, committed, all),
             module.as_deref(),
             json,
             details,
@@ -11049,7 +11074,8 @@ fn build_diagnose_report(root: &Path) -> Result<DiagnoseReport> {
             root.display()
         ),
         format!(
-            "Use `rms check --changes --root {}` before an authorized candidate commit, then `rms check --committed --root {}` against that clean commit.",
+            "Use coverage-aware `rms check --changes --root {}` before an authorized candidate commit, then coverage-aware `rms check --committed --root {}` against that clean commit. Run `rms check --all --root {}` for exhaustive release or CI certification.",
+            root.display(),
             root.display(),
             root.display()
         ),
@@ -23627,7 +23653,7 @@ fn append_evidence_guidance_prompt(
     )?;
     writeln!(
         out,
-        "- `rms check --committed --root <root>` should pass before claiming production-ready RMS software."
+        "- `rms check --committed --root <root>` should pass for the affected committed delta, and `rms check --all --root <root>` should pass before claiming exhaustive production readiness."
     )?;
     writeln!(
         out,
@@ -24375,7 +24401,7 @@ fn run_gate_action(root: &Path, action: &GateCheckAction) -> Result<String> {
             .map(|revision| format!("source revision resolved to `{revision}`"))
             .ok_or_else(|| {
                 anyhow!(
-                    "source revision is missing; initialize Git if needed, create the authorized candidate commit, then run `rms check --changes --root .` and `rms check --committed --root .`"
+                    "source revision is missing; initialize Git if needed, create the authorized candidate commit, then run `rms check --committed --root .` for the affected delta and `rms check --all --root .` for exhaustive strict proof"
                 )
             }),
     }
@@ -24390,7 +24416,7 @@ fn run_gate_structural_preflight(root: &Path) -> Result<String> {
         .collect::<Vec<_>>();
     if blockers.is_empty() {
         return Ok(
-            "no strict semantic or structural blockers; final clean-commit provenance remains for `rms check --committed`"
+            "no strict semantic or structural blockers; final exhaustive clean-commit provenance remains for `rms check --all`"
                 .to_string(),
         );
     }
@@ -24409,7 +24435,7 @@ fn run_gate_structural_preflight(root: &Path) -> Result<String> {
         format!(", plus {hidden} more")
     };
     bail!(
-        "{} strict semantic or structural blocker(s): {}{}; run `rms check --committed --root . --details` for the full report",
+        "{} strict semantic or structural blocker(s): {}{}; run `rms check --all --root . --details` for the full report",
         blockers.len(),
         labels.join(", "),
         suffix
@@ -25258,6 +25284,9 @@ fn insert_changed_path(
     path: &str,
 ) {
     let path = display_path(&root_relative_path(root, Path::new(path)));
+    if path == ".rms/cache" || path.starts_with(".rms/cache/") {
+        return;
+    }
     paths
         .entry(path.clone())
         .and_modify(|existing| {
@@ -37267,6 +37296,7 @@ mod surface_projection {
         pub mode: String,
         pub components: Vec<CheckComponent>,
         pub coverage: CoverageProjection,
+        pub delta: ChangeDeltaProjection,
         pub proof: ProofProjection,
     }
 
@@ -37295,6 +37325,34 @@ mod surface_projection {
         pub path: String,
         pub members: Vec<String>,
         pub result: String,
+    }
+
+    #[derive(Clone, Debug, Default, Serialize)]
+    pub struct ChangeDeltaProjection {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub selection_receipt: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub receipt_path: Option<String>,
+        pub coverage_status: String,
+        pub rms_owned_changed_paths: Vec<String>,
+        pub native_changed_paths: Vec<String>,
+        pub outside_coverage_changed_paths: Vec<String>,
+        pub candidate_regressions: Vec<String>,
+        pub unchanged_baseline_debt: Vec<String>,
+        pub native_handoffs: Vec<NativeWorkflowHandoff>,
+        pub skipped_rms_closures: Vec<String>,
+        pub reused_proofs: Vec<String>,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    pub struct NativeWorkflowHandoff {
+        pub id: String,
+        pub reason: String,
+        pub changed_paths: Vec<String>,
+        pub consumes: Vec<String>,
+        pub local_proof: Vec<String>,
+        pub release_gates: Vec<String>,
+        pub hardware_gates: Vec<String>,
     }
 
     #[derive(Clone, Debug, Default, Serialize)]
@@ -37402,14 +37460,16 @@ enum CheckMode {
     Environment,
     Changes,
     Committed,
+    All,
 }
 
 impl CheckMode {
-    fn from_flags(environment: bool, changes: bool, committed: bool) -> Self {
-        match (environment, changes, committed) {
-            (true, false, false) => Self::Environment,
-            (false, true, false) => Self::Changes,
-            (false, false, true) => Self::Committed,
+    fn from_flags(environment: bool, changes: bool, committed: bool, all: bool) -> Self {
+        match (environment, changes, committed, all) {
+            (true, false, false, false) => Self::Environment,
+            (false, true, false, false) => Self::Changes,
+            (false, false, true, false) => Self::Committed,
+            (false, false, false, true) => Self::All,
             _ => Self::Project,
         }
     }
@@ -37420,6 +37480,7 @@ impl CheckMode {
             Self::Environment => "environment",
             Self::Changes => "changes",
             Self::Committed => "committed",
+            Self::All => "all",
         }
     }
 
@@ -37429,6 +37490,7 @@ impl CheckMode {
             Self::Environment => Some("--environment"),
             Self::Changes => Some("--changes"),
             Self::Committed => Some("--committed"),
+            Self::All => Some("--all"),
         }
     }
 }
@@ -37461,8 +37523,64 @@ struct CheckReport {
     done_when: Vec<String>,
     components: Vec<surface_projection::CheckComponent>,
     coverage: surface_projection::CoverageProjection,
+    delta: surface_projection::ChangeDeltaProjection,
     proof: surface_projection::ProofProjection,
     details: JsonValue,
+}
+
+const CHECK_SELECTION_SPEC: &str = "rms/check-selection/v0.1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ChangedPathCoverage {
+    RmsOwned,
+    NativeBoundary,
+    OutsideCoverage,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CheckSelectedPath {
+    path: String,
+    status: String,
+    digest: String,
+    coverage: ChangedPathCoverage,
+    category: ImpactCategory,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    module: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_workflow: Option<String>,
+    consumer_visible: bool,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CheckSelectedClosure {
+    module: String,
+    path: String,
+    members: Vec<String>,
+    trigger_paths: Vec<String>,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CheckSkippedClosure {
+    module: String,
+    path: String,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CheckSelectionReceipt {
+    spec: &'static str,
+    receipt_id: String,
+    mode: CheckMode,
+    baseline: Option<String>,
+    candidate: String,
+    coverage_status: String,
+    paths: Vec<CheckSelectedPath>,
+    closures: Vec<CheckSelectedClosure>,
+    skipped_closures: Vec<CheckSkippedClosure>,
+    native_handoffs: Vec<surface_projection::NativeWorkflowHandoff>,
 }
 
 fn run_check(
@@ -37475,7 +37593,7 @@ fn run_check(
     if module.is_some() && !matches!(mode, CheckMode::Changes | CheckMode::Committed) {
         bail!("--module is supported only with --changes or --committed");
     }
-    let strict_execution = if mode == CheckMode::Committed {
+    let strict_execution = if matches!(mode, CheckMode::Committed | CheckMode::All) {
         let canonical_root = fs::canonicalize(root)
             .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
         let source_revision =
@@ -37541,6 +37659,37 @@ fn run_check(
             "- Unowned production paths: {} total, {} changed",
             surface.coverage.unowned_production_paths, surface.coverage.changed_unowned_paths
         );
+        if let Some(receipt) = &surface.delta.selection_receipt {
+            let _ = writeln!(rendered, "\nCandidate delta:");
+            let _ = writeln!(
+                rendered,
+                "- Coverage status: {}",
+                surface.delta.coverage_status
+            );
+            let _ = writeln!(rendered, "- Selection receipt: {receipt}");
+            if let Some(path) = &surface.delta.receipt_path {
+                let _ = writeln!(rendered, "- Receipt path: {path}");
+            }
+            let _ = writeln!(
+                rendered,
+                "- Changed paths: {} RMS-owned, {} native, {} outside coverage",
+                surface.delta.rms_owned_changed_paths.len(),
+                surface.delta.native_changed_paths.len(),
+                surface.delta.outside_coverage_changed_paths.len()
+            );
+            let _ = writeln!(
+                rendered,
+                "- Findings: {} candidate regression(s), {} unchanged baseline debt item(s)",
+                surface.delta.candidate_regressions.len(),
+                surface.delta.unchanged_baseline_debt.len()
+            );
+            let _ = writeln!(
+                rendered,
+                "- Skipped RMS closures: {}; reused proofs: {}",
+                surface.delta.skipped_rms_closures.len(),
+                surface.delta.reused_proofs.len()
+            );
+        }
         let _ = writeln!(
             rendered,
             "\nProof: {} observed, {} declared but not observed",
@@ -37593,8 +37742,24 @@ fn build_check_report_scoped_with_proof_cache(
         CheckMode::Committed => {
             build_committed_check_report_scoped_with_proof_cache(&root, module, proof_cache)
         }
+        CheckMode::All => {
+            let mut report = build_committed_check_report_with_proof_cache(&root, proof_cache)?;
+            report.mode = CheckMode::All;
+            report.summary = format!(
+                "RMS exhaustive all check {} across the complete discovered repository.",
+                report.result.label()
+            );
+            report.done_when = vec![
+                "Exhaustive strict audit passes against the clean committed repository."
+                    .to_string(),
+            ];
+            report.next_action = check_follow_up(&root, CheckMode::All, report.result);
+            Ok(report)
+        }
     }?;
-    if mode != CheckMode::Environment {
+    let affected_unscoped =
+        module.is_none() && matches!(mode, CheckMode::Changes | CheckMode::Committed);
+    if mode != CheckMode::Environment && !affected_unscoped {
         let contract_findings = restrict_behavioral_contract_findings_to_module_closure(
             &root,
             module,
@@ -37638,6 +37803,7 @@ fn build_check_report_scoped_with_proof_cache(
     }
     if module.is_none()
         && mode != CheckMode::Environment
+        && !affected_unscoped
         && workspace_coverage(&root) == WorkspaceCoverage::Complete
     {
         let modules = discover_module_manifests(&root)?;
@@ -37671,7 +37837,10 @@ fn build_check_report_scoped_with_proof_cache(
     }
     report.coverage = project_check_coverage(&root, mode, module, &report)?;
     report.proof = project_check_proof(&root, &report)?;
-    if report.coverage.mode == "progressive" && report.result == CheckResult::Pass {
+    if report.coverage.mode == "progressive"
+        && !affected_unscoped
+        && report.result == CheckResult::Pass
+    {
         report.summary = format!(
             "All selected RMS closures passed; {} production paths remain outside RMS coverage.",
             report.coverage.unowned_production_paths
@@ -38211,13 +38380,29 @@ fn project_check_coverage(
         .map(|path| load_manifest(&path))
         .transpose()?
         .and_then(|manifest| get_str(&manifest.value, &["module", "name"]).map(str::to_string));
+    let affected_names = report
+        .details
+        .get("selection")
+        .and_then(|selection| selection.get("closures"))
+        .and_then(JsonValue::as_array)
+        .map(|closures| {
+            closures
+                .iter()
+                .filter_map(|closure| closure.get("module").and_then(JsonValue::as_str))
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>()
+        });
     let mut roots = modules
         .values()
         .filter(|module| {
-            requested_name
-                .as_ref()
-                .map(|name| name == &module.name)
-                .unwrap_or_else(|| !contained.contains(&module.name))
+            if let Some(affected) = affected_names.as_ref() {
+                affected.contains(&module.name)
+            } else {
+                requested_name
+                    .as_ref()
+                    .map(|name| name == &module.name)
+                    .unwrap_or_else(|| !contained.contains(&module.name))
+            }
         })
         .collect::<Vec<_>>();
     roots.sort_by(|left, right| left.name.cmp(&right.name));
@@ -38260,7 +38445,9 @@ fn project_check_coverage(
         .iter()
         .filter(|path| changed.contains(*path))
         .count();
-    let coverage_mode = if requested.is_some() {
+    let coverage_mode = if affected_names.is_some() {
+        report.delta.coverage_status.as_str()
+    } else if requested.is_some() {
         "module"
     } else if workspace_coverage(root) == WorkspaceCoverage::Progressive {
         "progressive"
@@ -38268,6 +38455,11 @@ fn project_check_coverage(
         "complete"
     };
     let certification = match coverage_mode {
+        "partial" | "full" if affected_names.is_some() => format!(
+            "Affected candidate delta {} across {} selected RMS closure(s); native and outside-coverage paths are not certified by RMS.",
+            report.result.label(),
+            closures.len()
+        ),
         "module" => format!(
             "Selected module closure {} {}; no other closure or unowned path is certified.",
             requested_name.as_deref().unwrap_or("<unknown>"),
@@ -38603,10 +38795,7 @@ fn build_check_report(root: &Path, mode: CheckMode) -> Result<CheckReport> {
 fn build_changes_check_report_scoped(root: &Path, module: Option<&Path>) -> Result<CheckReport> {
     match module {
         Some(module) => build_module_scoped_check_report(root, module, CheckMode::Changes),
-        None if workspace_coverage(root) == WorkspaceCoverage::Progressive => {
-            build_progressive_workspace_check_report(root, CheckMode::Changes)
-        }
-        None => build_changes_check_report(root),
+        None => build_affected_check_report(root, CheckMode::Changes, None),
     }
 }
 
@@ -38627,25 +38816,326 @@ fn build_committed_check_report_scoped_with_proof_cache(
                 proof_cache,
             )
         }
-        None if workspace_coverage(root) == WorkspaceCoverage::Progressive => {
-            build_progressive_workspace_check_report_with_audit(
-                root,
-                CheckMode::Committed,
-                proof_cache,
-                || {
-                    execute_audit_with_proof_cache(
-                        root,
-                        true,
-                        false,
-                        false,
-                        DEFAULT_PROOF_TIMEOUT_SECONDS,
-                        proof_cache,
-                    )
-                },
-            )
-        }
-        None => build_committed_check_report_with_proof_cache(root, proof_cache),
+        None => build_affected_check_report(root, CheckMode::Committed, proof_cache),
     }
+}
+
+fn build_affected_check_report(
+    root: &Path,
+    mode: CheckMode,
+    proof_cache: Option<&verification::ProofCache>,
+) -> Result<CheckReport> {
+    let selection = build_check_selection(root, mode)?;
+    let receipt_path = persist_check_selection(root, &selection)?;
+    let mut rms_owned_changed_paths = Vec::new();
+    let mut native_changed_paths = Vec::new();
+    let mut outside_coverage_changed_paths = Vec::new();
+    for path in &selection.paths {
+        match path.coverage {
+            ChangedPathCoverage::RmsOwned => rms_owned_changed_paths.push(path.path.clone()),
+            ChangedPathCoverage::NativeBoundary => native_changed_paths.push(path.path.clone()),
+            ChangedPathCoverage::OutsideCoverage => {
+                outside_coverage_changed_paths.push(path.path.clone())
+            }
+        }
+    }
+    let mut delta = surface_projection::ChangeDeltaProjection {
+        selection_receipt: Some(selection.receipt_id.clone()),
+        receipt_path: Some(receipt_path.clone()),
+        coverage_status: selection.coverage_status.clone(),
+        rms_owned_changed_paths,
+        native_changed_paths,
+        outside_coverage_changed_paths,
+        candidate_regressions: Vec::new(),
+        unchanged_baseline_debt: Vec::new(),
+        native_handoffs: selection.native_handoffs.clone(),
+        skipped_rms_closures: selection
+            .skipped_closures
+            .iter()
+            .map(|closure| format!("{}: {}", closure.module, closure.reason))
+            .collect(),
+        reused_proofs: Vec::new(),
+    };
+
+    if selection.closures.is_empty() {
+        let summary = if selection.paths.is_empty() {
+            format!("RMS {} delta has no changed paths.", mode.label())
+        } else {
+            format!(
+                "RMS {} delta passes with no affected RMS closure; coverage is {}.",
+                mode.label(),
+                selection.coverage_status
+            )
+        };
+        let mut reasons = Vec::new();
+        if !delta.native_changed_paths.is_empty() {
+            reasons.push(format!(
+                "{} changed path(s) use explicit native workflow handoffs",
+                delta.native_changed_paths.len()
+            ));
+        }
+        if !delta.outside_coverage_changed_paths.is_empty() {
+            reasons.push(format!(
+                "{} changed path(s) remain outside current RMS coverage; no owner was invented",
+                delta.outside_coverage_changed_paths.len()
+            ));
+        }
+        if reasons.is_empty() {
+            reasons.push("no affected RMS closure was selected".to_string());
+        }
+        return Ok(CheckReport {
+            mode,
+            result: CheckResult::Pass,
+            summary,
+            reasons,
+            warnings: Vec::new(),
+            next_action: native_handoff_action(&selection.native_handoffs),
+            done_when: vec![
+                "RMS reports the candidate delta honestly; native and outside-coverage paths remain uncertified by RMS."
+                    .to_string(),
+            ],
+            components: Vec::new(),
+            coverage: Default::default(),
+            delta,
+            proof: Default::default(),
+            details: json!({
+                "selection": selection,
+                "selection_receipt_path": receipt_path,
+                "candidate_regressions": [],
+                "unchanged_baseline_debt": [],
+            }),
+        });
+    }
+
+    let shared_audit = build_audit_report_with_scope(root, true, false)?;
+    let verification_cache = CapturedVerificationCache::new(proof_cache);
+    let mut reports = Vec::new();
+    for closure in &selection.closures {
+        reports.push(build_module_scoped_check_report_with_audit(
+            root,
+            &root.join(&closure.path),
+            mode,
+            Some(&shared_audit),
+            Some(&verification_cache),
+            proof_cache,
+        )?);
+    }
+    let baseline_reports = build_baseline_closure_reports(root, &selection, mode)?;
+    let baseline_findings = baseline_reports
+        .iter()
+        .flat_map(check_report_findings)
+        .map(|finding| normalize_baseline_finding(&finding, root, None))
+        .collect::<BTreeSet<_>>();
+    let candidate_findings = reports
+        .iter()
+        .flat_map(check_report_findings)
+        .collect::<BTreeSet<_>>();
+    let candidate_regressions = candidate_findings
+        .difference(&baseline_findings)
+        .cloned()
+        .collect::<Vec<_>>();
+    let unchanged_baseline_debt = candidate_findings
+        .intersection(&baseline_findings)
+        .cloned()
+        .collect::<Vec<_>>();
+    delta.candidate_regressions = candidate_regressions.clone();
+    delta.unchanged_baseline_debt = unchanged_baseline_debt.clone();
+    let has_failure = candidate_regressions
+        .iter()
+        .any(|finding| finding.starts_with("fail: "));
+    let result = if has_failure {
+        CheckResult::Fail
+    } else if candidate_regressions.is_empty() {
+        CheckResult::Pass
+    } else {
+        CheckResult::ReviewRequired
+    };
+    let mut components = reports
+        .iter()
+        .flat_map(|report| report.components.clone())
+        .collect::<Vec<_>>();
+    for component in &mut components {
+        component.result =
+            if candidate_regressions.iter().any(|finding| {
+                finding.contains(&format!("[{subject}]", subject = component.subject))
+            }) {
+                "candidate-regression".to_string()
+            } else if unchanged_baseline_debt.iter().any(|finding| {
+                finding.contains(&format!("[{subject}]", subject = component.subject))
+            }) {
+                "baseline-debt".to_string()
+            } else {
+                "pass".to_string()
+            };
+    }
+    let warnings = reports
+        .iter()
+        .flat_map(|report| report.warnings.clone())
+        .chain(
+            unchanged_baseline_debt
+                .iter()
+                .map(|debt| format!("unchanged baseline debt: {debt}")),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let reasons = if result == CheckResult::Pass {
+        selection
+            .closures
+            .iter()
+            .map(|closure| format!("{}: {}", closure.module, closure.reason))
+            .collect()
+    } else {
+        candidate_regressions.clone()
+    };
+    let details = json!({
+        "selection": selection,
+        "selection_receipt_path": receipt_path,
+        "candidate_regressions": candidate_regressions,
+        "unchanged_baseline_debt": unchanged_baseline_debt,
+        "module_reports": reports.into_iter().map(|report| report.details).collect::<Vec<_>>(),
+        "baseline_module_reports": baseline_reports.into_iter().map(|report| report.details).collect::<Vec<_>>(),
+    });
+    Ok(CheckReport {
+        mode,
+        result,
+        summary: format!(
+            "RMS {} candidate delta {} for {} affected closure(s); coverage is {}.",
+            mode.label(),
+            result.label(),
+            selection.closures.len(),
+            selection.coverage_status
+        ),
+        reasons,
+        warnings,
+        next_action: if result == CheckResult::Pass {
+            native_handoff_action(&selection.native_handoffs)
+        } else {
+            check_follow_up(root, mode, result)
+        },
+        done_when: vec![
+            "Every selected RMS closure has no candidate regression; unchanged baseline debt and uncertified native paths remain explicit."
+                .to_string(),
+        ],
+        components,
+        coverage: Default::default(),
+        delta,
+        proof: Default::default(),
+        details,
+    })
+}
+
+fn check_report_findings(report: &CheckReport) -> Vec<String> {
+    let mut findings = Vec::new();
+    if report.result == CheckResult::Fail {
+        findings.extend(report.reasons.iter().map(|reason| {
+            format!(
+                "fail: [{}] {reason}",
+                report
+                    .components
+                    .first()
+                    .map(|component| component.subject.as_str())
+                    .unwrap_or("closure")
+            )
+        }));
+    }
+    if matches!(
+        report.result,
+        CheckResult::Fail | CheckResult::ReviewRequired
+    ) {
+        findings.extend(report.warnings.iter().map(|warning| {
+            format!(
+                "review-required: [{}] {warning}",
+                report
+                    .components
+                    .first()
+                    .map(|component| component.subject.as_str())
+                    .unwrap_or("closure")
+            )
+        }));
+    }
+    findings
+}
+
+fn normalize_baseline_finding(
+    finding: &str,
+    candidate_root: &Path,
+    baseline_root: Option<&Path>,
+) -> String {
+    baseline_root
+        .map(|baseline_root| {
+            finding.replace(
+                &baseline_root.display().to_string(),
+                &candidate_root.display().to_string(),
+            )
+        })
+        .unwrap_or_else(|| finding.to_string())
+}
+
+fn build_baseline_closure_reports(
+    root: &Path,
+    selection: &CheckSelectionReceipt,
+    mode: CheckMode,
+) -> Result<Vec<CheckReport>> {
+    let Some(baseline) = selection.baseline.as_deref() else {
+        return Ok(Vec::new());
+    };
+    let worktree = std::env::temp_dir().join(format!(
+        "rms-check-baseline-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    hunt::prepare_isolated_checkout(root, &worktree, baseline)?;
+    let result = (|| {
+        let shared_audit = build_audit_report_with_scope(&worktree, true, false)?;
+        let verification_cache = CapturedVerificationCache::new(None);
+        let mut reports = Vec::new();
+        for closure in &selection.closures {
+            let module = worktree.join(&closure.path);
+            if !module.is_file() {
+                continue;
+            }
+            let mut report = build_module_scoped_check_report_with_audit(
+                &worktree,
+                &module,
+                mode,
+                Some(&shared_audit),
+                Some(&verification_cache),
+                None,
+            )?;
+            report.reasons = report
+                .reasons
+                .iter()
+                .map(|finding| normalize_baseline_finding(finding, root, Some(&worktree)))
+                .collect();
+            report.warnings = report
+                .warnings
+                .iter()
+                .map(|finding| normalize_baseline_finding(finding, root, Some(&worktree)))
+                .collect();
+            reports.push(report);
+        }
+        Ok(reports)
+    })();
+    hunt::remove_isolated_checkout(root, &worktree);
+    result
+}
+
+fn native_handoff_action(
+    handoffs: &[surface_projection::NativeWorkflowHandoff],
+) -> Option<surface_projection::SurfaceAction> {
+    let command = handoffs
+        .iter()
+        .flat_map(|handoff| &handoff.local_proof)
+        .next()?;
+    Some(surface_projection::SurfaceAction::manual(
+        ActionPhase::Verify,
+        format!("Run the project-owned native proof command outside RMS certification: {command}"),
+        Authorization::None,
+    ))
 }
 
 fn workspace_coverage(root: &Path) -> WorkspaceCoverage {
@@ -38656,12 +39146,627 @@ fn workspace_coverage(root: &Path) -> WorkspaceCoverage {
         .unwrap_or(WorkspaceCoverage::Complete)
 }
 
-fn build_progressive_workspace_check_report(root: &Path, mode: CheckMode) -> Result<CheckReport> {
-    build_progressive_workspace_check_report_with_audit(root, mode, None, || {
-        execute_audit(root, true, false, false, DEFAULT_PROOF_TIMEOUT_SECONDS)
+fn git_revision(root: &Path, revision: &str) -> Option<String> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(["rev-parse", "--verify", revision])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn changed_paths_for_check(
+    root: &Path,
+    mode: CheckMode,
+) -> Result<(Vec<ChangedPath>, Option<String>, String)> {
+    match mode {
+        CheckMode::Changes => {
+            let baseline = git_revision(root, "HEAD");
+            let paths = read_git_changed_paths(root, None)?;
+            let candidate_digest = changed_path_set_digest(root, &paths)?;
+            Ok((paths, baseline, format!("worktree:{candidate_digest}")))
+        }
+        CheckMode::Committed => {
+            let dirty = read_git_changed_paths(root, None)?;
+            if !dirty.is_empty() {
+                bail!(
+                    "committed affected proof requires a clean worktree; dirty path(s): {}",
+                    dirty
+                        .iter()
+                        .map(|path| path.path.as_str())
+                        .take(20)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            let candidate = git_revision(root, "HEAD")
+                .ok_or_else(|| anyhow!("committed affected proof requires a Git HEAD"))?;
+            let baseline = git_revision(root, "HEAD^");
+            let paths = match baseline.as_deref() {
+                Some(baseline) => {
+                    read_git_changed_paths(root, Some(&format!("{baseline}..{candidate}")))?
+                }
+                None => read_root_commit_paths(root, &candidate)?,
+            };
+            Ok((paths, baseline, candidate))
+        }
+        _ => bail!("affected selection requires --changes or --committed"),
+    }
+}
+
+fn read_root_commit_paths(root: &Path, revision: &str) -> Result<Vec<ChangedPath>> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args([
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-status",
+            "-r",
+            revision,
+        ])
+        .output()?;
+    if !output.status.success() {
+        bail!(
+            "git root-commit changed-path query failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let mut paths = BTreeMap::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() >= 2 {
+            insert_changed_path(root, &mut paths, fields[0], fields[fields.len() - 1]);
+        }
+    }
+    Ok(paths.into_values().collect())
+}
+
+fn changed_path_set_digest(root: &Path, paths: &[ChangedPath]) -> Result<String> {
+    let mut bytes = Vec::new();
+    for path in paths {
+        bytes.extend_from_slice(path.status.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(path.path.as_bytes());
+        bytes.push(0);
+        let absolute = root.join(&path.path);
+        if absolute.is_file() {
+            bytes.extend_from_slice(&fs::read(absolute)?);
+        } else {
+            bytes.extend_from_slice(b"<absent>");
+        }
+        bytes.push(0);
+    }
+    Ok(sha256_bytes(&bytes))
+}
+
+fn changed_path_digest(root: &Path, path: &str) -> Result<String> {
+    let absolute = root.join(path);
+    if absolute.is_file() {
+        Ok(sha256_bytes(&fs::read(absolute)?))
+    } else {
+        Ok(sha256_bytes(b"<absent>"))
+    }
+}
+
+fn validate_native_workflows(config: &[NativeWorkflowConfig]) -> Result<()> {
+    let mut ids = BTreeSet::new();
+    for workflow in config {
+        if !is_stable_semantic_id(&workflow.id) {
+            bail!(
+                "workspace.native_workflows id `{}` must be a stable semantic id",
+                workflow.id
+            );
+        }
+        if !ids.insert(workflow.id.clone()) {
+            bail!(
+                "workspace.native_workflows contains duplicate id `{}`",
+                workflow.id
+            );
+        }
+        if workflow.paths.is_empty() {
+            bail!(
+                "workspace.native_workflows `{}` requires at least one safe relative path prefix",
+                workflow.id
+            );
+        }
+        for path in &workflow.paths {
+            if !safe_relative_prefix(path) {
+                bail!(
+                    "workspace.native_workflows `{}` path `{path}` must be a safe non-empty relative path prefix",
+                    workflow.id
+                );
+            }
+        }
+        for command in workflow
+            .proof
+            .local
+            .iter()
+            .chain(&workflow.proof.release)
+            .chain(&workflow.proof.hardware)
+        {
+            if command.trim().is_empty() {
+                bail!(
+                    "workspace.native_workflows `{}` proof commands must be nonblank",
+                    workflow.id
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn safe_relative_prefix(value: &str) -> bool {
+    let path = Path::new(value);
+    !value.trim().is_empty()
+        && !path.is_absolute()
+        && path.components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+        && path
+            .components()
+            .any(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+fn native_workflow_for_path<'a>(
+    path: &Path,
+    workflows: &'a [NativeWorkflowConfig],
+) -> Result<Option<&'a NativeWorkflowConfig>> {
+    let mut matches = workflows
+        .iter()
+        .filter_map(|workflow| {
+            workflow
+                .paths
+                .iter()
+                .filter_map(|prefix| {
+                    let prefix = normalize_relative_path(Path::new(prefix));
+                    (path == prefix || path.strip_prefix(&prefix).is_ok())
+                        .then_some(prefix.components().count())
+                })
+                .max()
+                .map(|specificity| (specificity, workflow))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.id.cmp(&right.1.id))
+    });
+    match matches.as_slice() {
+        [] => Ok(None),
+        [(.., workflow)] => Ok(Some(*workflow)),
+        [(specificity, first), (next_specificity, second), ..]
+            if specificity == next_specificity =>
+        {
+            bail!(
+                "native workflow routing for `{}` is ambiguous between `{}` and `{}` at equal path specificity",
+                path.display(),
+                first.id,
+                second.id
+            )
+        }
+        [(_, workflow), ..] => Ok(Some(*workflow)),
+    }
+}
+
+fn global_rms_impact(category: ImpactCategory) -> bool {
+    matches!(
+        category,
+        ImpactCategory::SystemManifest
+            | ImpactCategory::ContextMap
+            | ImpactCategory::Glossary
+            | ImpactCategory::ConformanceReport
+    )
+}
+
+fn rms_owned_impact(category: ImpactCategory) -> bool {
+    global_rms_impact(category)
+        || matches!(
+            category,
+            ImpactCategory::ModuleManifest
+                | ImpactCategory::Contract
+                | ImpactCategory::ImplementationBinding
+        )
+}
+
+fn implementation_consumer_projection(value: &YamlValue) -> JsonValue {
+    json!({
+        "public_behavior_bindings": get_path(value, &["architecture", "public_behavior_bindings"]),
+        "machine_effects": get_path(value, &["architecture", "machine", "effects"]),
+        "machine_effect_results": get_path(value, &["architecture", "machine", "effect_results"]),
+        "surfaces": get_path(value, &["architecture", "surfaces"]),
     })
 }
 
+fn module_consumer_projection(value: &YamlValue) -> JsonValue {
+    json!({
+        "provides": get_path(value, &["provides"]),
+        "effects": get_path(value, &["effects"]),
+        "composition_exports": get_path(value, &["composition", "exports"]),
+        "protocols": get_path(value, &["protocols"]),
+        "resources": get_path(value, &["resources"]),
+        "authorities": get_path(value, &["authorities"]),
+        "artifacts": get_path(value, &["artifacts"]),
+        "transformations": get_path(value, &["transformations"]),
+        "compatibility": get_path(value, &["compatibility"]),
+    })
+}
+
+fn git_yaml_at_revision(root: &Path, revision: &str, path: &str) -> Option<YamlValue> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .arg("show")
+        .arg(format!("{revision}:{path}"))
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| serde_yaml::from_slice(&output.stdout).ok())
+        .flatten()
+}
+
+fn changed_path_is_consumer_visible(
+    root: &Path,
+    baseline: Option<&str>,
+    path: &ImpactPath,
+) -> bool {
+    match path.category {
+        ImpactCategory::SystemManifest
+        | ImpactCategory::ContextMap
+        | ImpactCategory::Contract
+        | ImpactCategory::Glossary => true,
+        ImpactCategory::ModuleManifest => {
+            let candidate = load_manifest(&root.join(&path.path)).ok();
+            let baseline =
+                baseline.and_then(|revision| git_yaml_at_revision(root, revision, &path.path));
+            match (candidate, baseline) {
+                (Some(candidate), Some(baseline)) => {
+                    module_consumer_projection(&candidate.value)
+                        != module_consumer_projection(&baseline)
+                }
+                _ => true,
+            }
+        }
+        ImpactCategory::ImplementationBinding => {
+            let candidate = load_manifest(&root.join(&path.path)).ok();
+            let baseline =
+                baseline.and_then(|revision| git_yaml_at_revision(root, revision, &path.path));
+            match (candidate, baseline) {
+                (Some(candidate), Some(baseline)) => {
+                    implementation_consumer_projection(&candidate.value)
+                        != implementation_consumer_projection(&baseline)
+                }
+                _ => true,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn declared_module_dependencies(
+    root: &Path,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut dependencies = BTreeMap::<String, BTreeSet<String>>::new();
+    for child in composition_children(modules) {
+        dependencies
+            .entry(child.parent)
+            .or_default()
+            .insert(child.name);
+    }
+    for module in modules.values() {
+        for required in get_path(&module.value, &["requires", "modules"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(provider) = get_str(required, &["name"]) {
+                dependencies
+                    .entry(module.name.clone())
+                    .or_default()
+                    .insert(provider.to_string());
+            }
+        }
+        let implementation = module
+            .path
+            .parent()
+            .unwrap_or(root)
+            .join("implementation.yaml");
+        if let Ok(implementation) = load_manifest(&implementation) {
+            for binding in typed_yaml_sequence::<DependencyBehaviorBinding>(
+                &implementation.value,
+                &["architecture", "dependency_behavior_bindings"],
+            ) {
+                if binding.resolution == "module" {
+                    if let Some(provider) = binding.provider_module {
+                        dependencies
+                            .entry(module.name.clone())
+                            .or_default()
+                            .insert(provider);
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(composition) = compose_system(root) {
+        for finding in composition.findings {
+            if finding.status == ComposeStatus::Satisfied
+                && finding.check == "requires.capabilities.provider"
+            {
+                if let (Some(consumer), Some(provider)) = (finding.consumer, finding.provider) {
+                    dependencies.entry(consumer).or_default().insert(provider);
+                }
+            }
+        }
+    }
+    dependencies
+}
+
+fn reverse_module_dependents(
+    root: &Path,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut reverse = BTreeMap::<String, BTreeSet<String>>::new();
+    for (consumer, providers) in declared_module_dependencies(root, modules) {
+        for provider in providers {
+            reverse
+                .entry(provider)
+                .or_default()
+                .insert(consumer.clone());
+        }
+    }
+    reverse
+}
+
+fn transitive_reverse_dependents(
+    owners: &BTreeSet<String>,
+    reverse: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let mut selected = BTreeSet::new();
+    let mut pending = owners.iter().cloned().collect::<Vec<_>>();
+    while let Some(provider) = pending.pop() {
+        for consumer in reverse.get(&provider).into_iter().flatten() {
+            if selected.insert(consumer.clone()) {
+                pending.push(consumer.clone());
+            }
+        }
+    }
+    selected
+}
+
+fn build_check_selection(root: &Path, mode: CheckMode) -> Result<CheckSelectionReceipt> {
+    let (changed, baseline, candidate) = changed_paths_for_check(root, mode)?;
+    let impact_modules = discover_impact_modules(root)?;
+    let impact = build_impact_report_from_modules(root, None, &changed, &impact_modules);
+    let config = load_workbench_config(root)?
+        .map(|config| config.value.workspace)
+        .unwrap_or_default();
+    validate_native_workflows(&config.native_workflows)?;
+    let modules = discover_module_index(root)?;
+    let contained = composition_children(&modules)
+        .into_iter()
+        .map(|child| child.name)
+        .collect::<BTreeSet<_>>();
+    let mut selected_paths = Vec::new();
+    let mut changed_by_module = BTreeMap::<String, Vec<String>>::new();
+    let mut public_owners = BTreeSet::new();
+    let mut global_change_paths = Vec::new();
+    let mut native_changed = BTreeMap::<String, Vec<String>>::new();
+
+    for path in &impact.changed_paths {
+        let normalized = normalize_relative_path(Path::new(&path.path));
+        let native = if path.module.is_none() && !rms_owned_impact(path.category) {
+            native_workflow_for_path(&normalized, &config.native_workflows)?
+        } else {
+            None
+        };
+        let coverage = if path.module.is_some() || rms_owned_impact(path.category) {
+            ChangedPathCoverage::RmsOwned
+        } else if native.is_some() {
+            ChangedPathCoverage::NativeBoundary
+        } else {
+            ChangedPathCoverage::OutsideCoverage
+        };
+        let consumer_visible = coverage == ChangedPathCoverage::RmsOwned
+            && changed_path_is_consumer_visible(root, baseline.as_deref(), path);
+        if let Some(module) = &path.module {
+            changed_by_module
+                .entry(module.clone())
+                .or_default()
+                .push(path.path.clone());
+            if consumer_visible {
+                public_owners.insert(module.clone());
+            }
+        } else if coverage == ChangedPathCoverage::RmsOwned {
+            global_change_paths.push(path.path.clone());
+            if consumer_visible {
+                public_owners.extend(modules.keys().cloned());
+            }
+        }
+        if let Some(workflow) = native {
+            native_changed
+                .entry(workflow.id.clone())
+                .or_default()
+                .push(path.path.clone());
+        }
+        selected_paths.push(CheckSelectedPath {
+            path: path.path.clone(),
+            status: path.status.clone(),
+            digest: changed_path_digest(root, &path.path)?,
+            coverage,
+            category: path.category,
+            module: path.module.clone(),
+            native_workflow: native.map(|workflow| workflow.id.clone()),
+            consumer_visible,
+            reason: match coverage {
+                ChangedPathCoverage::RmsOwned if path.module.is_some() => {
+                    "path is inside the exact discovered RMS module owner".to_string()
+                }
+                ChangedPathCoverage::RmsOwned => {
+                    "path is a repository-level RMS semantic artifact".to_string()
+                }
+                ChangedPathCoverage::NativeBoundary => {
+                    "path matches an explicit native workflow boundary".to_string()
+                }
+                ChangedPathCoverage::OutsideCoverage => {
+                    "path has no discovered RMS owner or explicit native workflow".to_string()
+                }
+            },
+        });
+    }
+
+    let mut selected_roots = changed_by_module.keys().cloned().collect::<BTreeSet<_>>();
+    let reverse = reverse_module_dependents(root, &modules);
+    selected_roots.extend(transitive_reverse_dependents(&public_owners, &reverse));
+    if !global_change_paths.is_empty() {
+        selected_roots.extend(
+            modules
+                .values()
+                .filter(|module| !contained.contains(&module.name))
+                .map(|module| module.name.clone()),
+        );
+    }
+    let reverse_dependents = transitive_reverse_dependents(&public_owners, &reverse);
+    let mut closures = Vec::new();
+    for name in selected_roots {
+        let Some(module) = modules.get(&name) else {
+            continue;
+        };
+        let (members, unresolved) = module_dependency_closure(&name, &modules);
+        let mut members = members.into_iter().collect::<Vec<_>>();
+        members.extend(
+            unresolved
+                .into_iter()
+                .map(|member| format!("unresolved:{member}")),
+        );
+        let trigger_paths = changed_by_module
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| global_change_paths.clone());
+        closures.push(CheckSelectedClosure {
+            module: name.clone(),
+            path: display_relative(root, &module.path),
+            members,
+            trigger_paths,
+            reason: if changed_by_module.contains_key(&name) {
+                if public_owners.contains(&name) {
+                    "selected exact changed owner; consumer-visible behavior changed".to_string()
+                } else {
+                    "selected exact changed owner; change is private to its declared closure"
+                        .to_string()
+                }
+            } else if reverse_dependents.contains(&name) {
+                format!(
+                    "selected declared reverse dependent of consumer-visible owner(s): {}",
+                    public_owners.iter().cloned().collect::<Vec<_>>().join(", ")
+                )
+            } else {
+                "selected by repository-level RMS semantic change".to_string()
+            },
+        });
+    }
+    closures.sort_by(|left, right| left.module.cmp(&right.module));
+    let selected_closure_names = closures
+        .iter()
+        .map(|closure| closure.module.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut skipped_closures = modules
+        .values()
+        .filter(|module| {
+            !contained.contains(&module.name)
+                && !selected_closure_names.contains(module.name.as_str())
+        })
+        .map(|module| CheckSkippedClosure {
+            module: module.name.clone(),
+            path: display_relative(root, &module.path),
+            reason: "skipped because no changed owner or consumer-visible reverse dependency selected this closure"
+                .to_string(),
+        })
+        .collect::<Vec<_>>();
+    skipped_closures.sort_by(|left, right| left.module.cmp(&right.module));
+
+    let mut native_handoffs = Vec::new();
+    for workflow in &config.native_workflows {
+        let changed_paths = native_changed.remove(&workflow.id).unwrap_or_default();
+        let affected_consumption = workflow
+            .consumes
+            .iter()
+            .any(|module| public_owners.contains(module));
+        if changed_paths.is_empty() && !affected_consumption {
+            continue;
+        }
+        native_handoffs.push(surface_projection::NativeWorkflowHandoff {
+            id: workflow.id.clone(),
+            reason: if !changed_paths.is_empty() && affected_consumption {
+                "native boundary changed and consumes changed RMS public behavior".to_string()
+            } else if !changed_paths.is_empty() {
+                "native boundary path changed".to_string()
+            } else {
+                "native boundary consumes changed RMS public behavior".to_string()
+            },
+            changed_paths,
+            consumes: workflow.consumes.clone(),
+            local_proof: workflow.proof.local.clone(),
+            release_gates: workflow.proof.release.clone(),
+            hardware_gates: workflow.proof.hardware.clone(),
+        });
+    }
+    native_handoffs.sort_by(|left, right| left.id.cmp(&right.id));
+    selected_paths.sort_by(|left, right| left.path.cmp(&right.path));
+    let partial = workspace_coverage(root) == WorkspaceCoverage::Progressive
+        || selected_paths
+            .iter()
+            .any(|path| path.coverage != ChangedPathCoverage::RmsOwned)
+        || !native_handoffs.is_empty();
+    let coverage_status = if partial { "partial" } else { "full" }.to_string();
+    let material = json!({
+        "spec": CHECK_SELECTION_SPEC,
+        "mode": mode,
+        "baseline": baseline,
+        "candidate": candidate,
+        "coverage_status": coverage_status,
+        "paths": selected_paths,
+        "closures": closures,
+        "skipped_closures": skipped_closures,
+        "native_handoffs": native_handoffs,
+    });
+    let receipt_id = sha256_bytes(&serde_json::to_vec(&material)?);
+    Ok(CheckSelectionReceipt {
+        spec: CHECK_SELECTION_SPEC,
+        receipt_id,
+        mode,
+        baseline,
+        candidate,
+        coverage_status,
+        paths: selected_paths,
+        closures,
+        skipped_closures,
+        native_handoffs,
+    })
+}
+
+fn persist_check_selection(root: &Path, receipt: &CheckSelectionReceipt) -> Result<String> {
+    let relative =
+        Path::new(".rms/cache/check-selections").join(format!("{}.json", receipt.receipt_id));
+    let path = root.join(&relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    fs::write(&temporary, serde_json::to_vec_pretty(receipt)?)?;
+    fs::rename(&temporary, &path)?;
+    Ok(display_path(&relative))
+}
+
+#[cfg(test)]
 fn build_progressive_workspace_check_report_with_audit<F>(
     root: &Path,
     mode: CheckMode,
@@ -38687,7 +39792,7 @@ where
     let shared_audit = match mode {
         CheckMode::Committed => Some(build_audit()?),
         CheckMode::Changes => Some(build_audit_report_with_scope(root, true, false)?),
-        CheckMode::Project | CheckMode::Environment => None,
+        CheckMode::Project | CheckMode::Environment | CheckMode::All => None,
     };
     let verification_cache = CapturedVerificationCache::new(proof_cache);
     let mut reports = Vec::new();
@@ -38731,6 +39836,7 @@ where
         ],
         components,
         coverage: Default::default(),
+        delta: Default::default(),
         proof: Default::default(),
         details: json!({
             "coverage": "progressive",
@@ -38982,6 +40088,7 @@ fn build_module_scoped_check_report_with_audit(
         )],
         components: vec![component],
         coverage: Default::default(),
+        delta: Default::default(),
         proof: Default::default(),
         details: json!({
             "coverage": "module-closure",
@@ -39174,6 +40281,7 @@ fn build_project_check_report(root: &Path) -> Result<CheckReport> {
         ],
         components,
         coverage: Default::default(),
+        delta: Default::default(),
         proof: Default::default(),
         details,
     })
@@ -39268,16 +40376,13 @@ fn environment_check_report_from_diagnosis(root: &Path, diagnosis: DiagnoseRepor
         ],
         components: vec![component],
         coverage: Default::default(),
+        delta: Default::default(),
         proof: Default::default(),
         details,
     }
 }
 
-fn build_changes_check_report(root: &Path) -> Result<CheckReport> {
-    let gate = execute_gate(root, None, false)?;
-    Ok(changes_check_report_from_gate(root, gate))
-}
-
+#[cfg(test)]
 fn changes_check_report_from_gate(root: &Path, gate: GateReport) -> CheckReport {
     let result = match gate.result {
         GateResult::Pass => CheckResult::Pass,
@@ -39335,6 +40440,7 @@ fn changes_check_report_from_gate(root: &Path, gate: GateReport) -> CheckReport 
         ],
         components: vec![component],
         coverage: Default::default(),
+        delta: Default::default(),
         proof: Default::default(),
         details,
     }
@@ -39395,6 +40501,7 @@ fn committed_check_report_from_audit(root: &Path, audit: AuditReport) -> CheckRe
         done_when: vec!["Strict audit passes against the clean committed candidate.".to_string()],
         components: vec![component],
         coverage: Default::default(),
+        delta: Default::default(),
         proof: Default::default(),
         details,
     }
@@ -39440,6 +40547,7 @@ fn check_follow_up(
                 ))
             }
             CheckMode::Changes => None,
+            CheckMode::All => None,
         };
     }
     let mut args = vec!["check".to_string()];
@@ -39490,6 +40598,7 @@ fn project_check_report(
         mode: report.mode.label().to_string(),
         components: report.components.clone(),
         coverage: report.coverage.clone(),
+        delta: report.delta.clone(),
         proof,
     }
 }
@@ -102839,21 +103948,27 @@ semantic_functions: []
     #[test]
     fn check_facade_delegates_modes_and_preserves_authority() {
         assert_eq!(
-            CheckMode::from_flags(false, false, false),
+            CheckMode::from_flags(false, false, false, false),
             CheckMode::Project
         );
         assert_eq!(
-            CheckMode::from_flags(true, false, false),
+            CheckMode::from_flags(true, false, false, false),
             CheckMode::Environment
         );
         assert_eq!(
-            CheckMode::from_flags(false, true, false),
+            CheckMode::from_flags(false, true, false, false),
             CheckMode::Changes
         );
         assert_eq!(
-            CheckMode::from_flags(false, false, true),
+            CheckMode::from_flags(false, false, true, false),
             CheckMode::Committed
         );
+        assert_eq!(
+            CheckMode::from_flags(false, false, false, true),
+            CheckMode::All
+        );
+        assert!(Cli::try_parse_from(["rms", "check", "--changes", "--all"]).is_err());
+        assert!(Cli::try_parse_from(["rms", "check", "--environment", "--all"]).is_err());
         assert_eq!(
             aggregate_check_results([CheckResult::Pass, CheckResult::ReviewRequired]),
             CheckResult::ReviewRequired
@@ -109109,6 +110224,245 @@ semantic_functions:
     }
 
     #[test]
+    fn affected_selection_keeps_private_changes_inside_the_exact_owner_closure() {
+        let root = unique_test_dir("affected-private-selection");
+        fs::create_dir_all(root.join("modules/alpha/src")).unwrap();
+        fs::create_dir_all(root.join("modules/beta/src")).unwrap();
+        write_profile_manifest(
+            &root.join("modules/alpha/module.yaml"),
+            "rms/module/v0.1",
+            Some("alpha"),
+        );
+        write_profile_manifest(
+            &root.join("modules/beta/module.yaml"),
+            "rms/module/v0.1",
+            Some("beta"),
+        );
+        for name in ["alpha", "beta"] {
+            fs::write(
+                root.join("modules").join(name).join("implementation.yaml"),
+                format!(
+                    "spec: rms/implementation/v0.1\nmodule: {name}\nbinding: executable\nsource: {{root: src, public_entrypoint: src/main.sh}}\ncommands: {{verify: 'true'}}\narchitecture: {{shape: domain-engine, roles: {{}}}}\n"
+                ),
+            )
+            .unwrap();
+            fs::write(
+                root.join("modules").join(name).join("src/main.sh"),
+                "true\n",
+            )
+            .unwrap();
+        }
+        initialize_test_git(&root);
+        fs::write(root.join("modules/alpha/src/private.txt"), "changed\n").unwrap();
+
+        let first = build_check_selection(&root, CheckMode::Changes).unwrap();
+        let second = build_check_selection(&root, CheckMode::Changes).unwrap();
+
+        assert_eq!(first.receipt_id, second.receipt_id);
+        assert_eq!(
+            first
+                .closures
+                .iter()
+                .map(|closure| closure.module.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha"]
+        );
+        assert!(first.closures[0].reason.contains("private"));
+        assert!(first
+            .paths
+            .iter()
+            .any(|path| path.path == "modules/alpha/src/private.txt"
+                && path.coverage == ChangedPathCoverage::RmsOwned
+                && !path.consumer_visible));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn affected_selection_adds_only_declared_reverse_consumers_for_public_changes() {
+        let root = unique_test_dir("affected-public-selection");
+        for name in ["provider", "consumer", "unrelated"] {
+            fs::create_dir_all(root.join("modules").join(name).join("contracts")).unwrap();
+            write_profile_manifest(
+                &root.join("modules").join(name).join("module.yaml"),
+                "rms/module/v0.1",
+                Some(name),
+            );
+        }
+        fs::write(
+            root.join("modules/provider/contracts/service.yaml"),
+            "spec: rms/contract/v0.2\nname: service\nversion: '1'\nkind: capability\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("modules/consumer/implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: consumer
+binding: executable
+source: {root: ., public_entrypoint: run.sh}
+commands: {verify: 'true'}
+architecture:
+  shape: domain-engine
+  roles: {}
+  dependency_behavior_bindings:
+    - id: service-consumer
+      capability: service
+      consumer: run.sh#consume
+      resolution: module
+      provider_module: provider
+      provider_contract: ../provider/contracts/service.yaml
+"#,
+        )
+        .unwrap();
+        initialize_test_git(&root);
+        fs::write(
+            root.join("modules/provider/contracts/service.yaml"),
+            "spec: rms/contract/v0.2\nname: service\nversion: '1'\nkind: capability\nmeaning: Changed public meaning.\n",
+        )
+        .unwrap();
+
+        let selection = build_check_selection(&root, CheckMode::Changes).unwrap();
+        let selected = selection
+            .closures
+            .iter()
+            .map(|closure| closure.module.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(selected, BTreeSet::from(["consumer", "provider"]));
+        assert!(!selected.contains("unrelated"));
+        assert!(selection
+            .closures
+            .iter()
+            .find(|closure| closure.module == "consumer")
+            .is_some_and(|closure| closure.reason.contains("reverse dependent")));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn affected_selection_does_not_add_consumers_for_private_manifest_evidence() {
+        let root = unique_test_dir("affected-private-manifest-selection");
+        for name in ["provider", "consumer"] {
+            write_profile_manifest(
+                &root.join("modules").join(name).join("module.yaml"),
+                "rms/module/v0.1",
+                Some(name),
+            );
+        }
+        fs::write(
+            root.join("modules/consumer/implementation.yaml"),
+            r#"spec: rms/implementation/v0.1
+module: consumer
+binding: executable
+source: {root: ., public_entrypoint: run.sh}
+commands: {verify: 'true'}
+architecture:
+  shape: domain-engine
+  roles: {}
+  dependency_behavior_bindings:
+    - id: service-consumer
+      capability: service
+      consumer: run.sh#consume
+      resolution: module
+      provider_module: provider
+      provider_contract: service.yaml
+"#,
+        )
+        .unwrap();
+        initialize_test_git(&root);
+        let manifest = root.join("modules/provider/module.yaml");
+        let source = fs::read_to_string(&manifest).unwrap().replace(
+            "verification:\n  laws: []",
+            "verification:\n  laws:\n    - internal-evidence-refresh",
+        );
+        fs::write(&manifest, source).unwrap();
+
+        let selection = build_check_selection(&root, CheckMode::Changes).unwrap();
+        let selected = selection
+            .closures
+            .iter()
+            .map(|closure| closure.module.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(selected, BTreeSet::from(["provider"]));
+        assert!(selection
+            .paths
+            .iter()
+            .any(|path| { path.path == "modules/provider/module.yaml" && !path.consumer_visible }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn affected_selection_returns_native_handoffs_and_outside_coverage_without_closures() {
+        let root = unique_test_dir("affected-native-handoff");
+        fs::create_dir_all(root.join(".rms")).unwrap();
+        fs::create_dir_all(root.join("clients/native")).unwrap();
+        fs::create_dir_all(root.join("notes")).unwrap();
+        fs::write(
+            root.join(".rms/config.yaml"),
+            r#"workspace:
+  coverage: progressive
+  native_workflows:
+    - id: native-client
+      paths: [clients/native]
+      consumes: [service-provider]
+      proof:
+        local: [native-test]
+        release: [native-release]
+        hardware: [native-hardware]
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("clients/native/client.txt"), "baseline\n").unwrap();
+        fs::write(root.join("notes/idea.md"), "baseline\n").unwrap();
+        initialize_test_git(&root);
+        fs::write(root.join("clients/native/client.txt"), "candidate\n").unwrap();
+        fs::write(root.join("notes/idea.md"), "candidate\n").unwrap();
+
+        let selection = build_check_selection(&root, CheckMode::Changes).unwrap();
+
+        assert!(selection.closures.is_empty());
+        assert_eq!(selection.coverage_status, "partial");
+        assert!(selection.paths.iter().any(|path| {
+            path.path == "clients/native/client.txt"
+                && path.coverage == ChangedPathCoverage::NativeBoundary
+        }));
+        assert!(selection.paths.iter().any(|path| {
+            path.path == "notes/idea.md" && path.coverage == ChangedPathCoverage::OutsideCoverage
+        }));
+        assert_eq!(selection.native_handoffs.len(), 1);
+        assert_eq!(selection.native_handoffs[0].local_proof, ["native-test"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn affected_check_separates_unchanged_baseline_debt_from_candidate_regressions() {
+        let root = unique_test_dir("affected-baseline-debt");
+        fs::create_dir_all(root.join("modules/debt-owner")).unwrap();
+        let invalid = next_module_source("debt-owner", "Own existing debt.").replace(
+            "verification:\n  laws: []\n  contracts: []\n  scenarios: []\n  boundaries: []\n",
+            "",
+        );
+        fs::write(root.join("modules/debt-owner/module.yaml"), invalid).unwrap();
+        initialize_test_git(&root);
+        fs::write(
+            root.join("modules/debt-owner/private-note.txt"),
+            "candidate\n",
+        )
+        .unwrap();
+
+        let report = build_affected_check_report(&root, CheckMode::Changes, None).unwrap();
+
+        assert_eq!(report.result, CheckResult::Pass, "{report:#?}");
+        assert!(report.delta.candidate_regressions.is_empty());
+        assert!(!report.delta.unchanged_baseline_debt.is_empty());
+        assert!(report
+            .delta
+            .unchanged_baseline_debt
+            .iter()
+            .any(|finding| finding.contains("schema.validate")));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn impact_git_paths_are_normalized_against_requested_root() {
         let mut paths = BTreeMap::new();
 
@@ -113093,6 +114447,7 @@ properties:
             done_when: Vec::new(),
             components: Vec::new(),
             coverage: Default::default(),
+            delta: Default::default(),
             proof: Default::default(),
             details: json!({
                 "verification": [{"target": "implementation.yaml", "result": "pass"}],
@@ -113169,6 +114524,7 @@ properties:
                 },
             ],
             coverage: Default::default(),
+            delta: Default::default(),
             proof: Default::default(),
             details: json!({}),
         };
@@ -114182,10 +115538,10 @@ properties:
         );
         write_test_file(
             &root.join("PRODUCTION.md"),
-            "# Production\n\nfocused checks → check --changes → authorized candidate commit → check --committed\n\nfocused checks\n\nrms check --changes --root .\n\nauthorized candidate commit\n\nrms check --committed --root .\n",
+            "# Production\n\nfocused checks → check --changes → authorized candidate commit → check --committed\n\nfocused checks\n\nrms check --changes --root .\n\nauthorized candidate commit\n\nrms check --committed --root .\n\nrms check --all --root .\n",
         );
         let doorway = format!(
-            "# RMS\n\nrms next \"<intent>\"\nrms explain \"<question>\"\nrms check --root .\nrms help --all\n\nAgent schema: rms.surface/v2. Detected sources do not prove runtime activation.\n\n{COMMIT_AUTHORITY_POLICY}\n"
+            "# RMS\n\nrms next \"<intent>\"\nrms explain \"<question>\"\nrms check --root .\nrms check --all --root .\nrms help --all\n\nAgent schema: rms.surface/v2. Detected sources do not prove runtime activation.\n\n{COMMIT_AUTHORITY_POLICY}\n"
         );
         for document in [
             "README.md",
@@ -114235,6 +115591,30 @@ properties:
             }
         }
         destination
+    }
+
+    fn initialize_test_git(root: &Path) {
+        if !root.join(".git").exists() {
+            let status = Command::new("git")
+                .arg("init")
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        for args in [
+            ["config", "user.email", "rms@example.test"].as_slice(),
+            ["config", "user.name", "RMS Test"].as_slice(),
+            ["add", "-A"].as_slice(),
+            ["commit", "-m", "baseline"].as_slice(),
+        ] {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {} failed", args.join(" "));
+        }
     }
 
     fn snapshot_test_tree(root: &Path) -> BTreeMap<String, String> {

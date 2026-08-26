@@ -2542,7 +2542,11 @@ fn declaration_digest(
     Ok(sha256_bytes(&bytes))
 }
 
-fn prepare_isolated_checkout(root: &Path, worktree: &Path, revision: &str) -> Result<()> {
+pub(super) fn prepare_isolated_checkout(
+    root: &Path,
+    worktree: &Path,
+    revision: &str,
+) -> Result<()> {
     let _lock = acquire_worktree_admin_lock(root)?;
     if worktree.exists() {
         remove_isolated_checkout_unlocked(root, worktree);
@@ -2555,16 +2559,16 @@ fn prepare_isolated_checkout(root: &Path, worktree: &Path, revision: &str) -> Re
         .output()?;
     if !output.status.success() {
         bail!(
-            "failed to create isolated hunt checkout: {}",
+            "failed to create isolated checkout: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
     Ok(())
 }
 
-fn remove_isolated_checkout(root: &Path, worktree: &Path) {
+pub(super) fn remove_isolated_checkout(root: &Path, worktree: &Path) {
     let Ok(_lock) = acquire_worktree_admin_lock(root) else {
-        eprintln!("hunt cleanup deferred: could not acquire the Git worktree administration lock");
+        eprintln!("isolated checkout cleanup deferred: could not acquire the Git worktree administration lock");
         return;
     };
     remove_isolated_checkout_unlocked(root, worktree);

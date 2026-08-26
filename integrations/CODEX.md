@@ -27,7 +27,7 @@ rms view --root .
 
 Codex extracts typed facts without architecture fields; recorded read-only `--ai` extraction is also available. `next` validates those facts, then selects the owner, task lane, context, skill, and proof path. Codex should use its compact response first and request `--details` only when needed. `rms help --all` exposes specialist commands when the selected skill prescribes one. Read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change use native tools without `next`; if they reveal a proposed change, Codex stops before editing and routes that exact change task.
 
-Production completion is focused proof → `rms check --changes` → authorized candidate commit → `rms check --committed`.
+Local completion is focused proof → coverage-aware `rms check --changes` → authorized candidate commit → coverage-aware `rms check --committed`. These modes certify only selected RMS closures, separate new regressions from baseline debt, and return project-owned native handoffs without claiming RMS proof for native or outside-coverage paths. Use `rms check --all` for exhaustive release or CI certification and strict full-repository provenance evidence.
 
 Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness. Report the applicable pending state instead of executing or implying a commit.
 
@@ -40,6 +40,8 @@ RMS skills use the Agent Skills `SKILL.md` format. Project skills live under:
 ```
 
 The canonical source remains repository `skills/`. Generated project, embedded, and plugin copies must match it. Skills call the shared CLI and carry focused declaration and proof mechanics; they do not redefine manifests or contracts.
+
+Keep generic cadence in the RMS-distributed plugin and skills. Consumer repositories retain only project-specific path ownership, native proof commands, and release or hardware gates. Plugin installation must not overwrite consumer `AGENTS.md`, adoption ledgers, or deployment runbooks.
 
 `rms check --environment --json` reports observed skill sources. A detected project copy, user installation, marketplace entry, or plugin cache is not proof that Codex injected it into the current task. RMS reports `runtime_activation: unknown` and `precedence: host-defined`; the current injected Codex skill catalog is the runtime authority.
 

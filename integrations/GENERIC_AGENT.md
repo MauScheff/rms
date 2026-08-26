@@ -22,7 +22,7 @@ The agent extracts typed semantic facts from the user's words without proposing 
 4. apply semantic declarations before implementation and edit only declared roles;
 5. run focused proof and the prescribed `check` modes.
 
-Production completion is focused proof → `rms check --changes` → authorized candidate commit → `rms check --committed`. Git commits are required evidence, not implied authority; the agent acts only when task and host policy grant Git authority.
+Local completion is focused proof → coverage-aware `rms check --changes` → authorized candidate commit → coverage-aware `rms check --committed`. These modes select affected RMS closures, separate candidate regressions from baseline debt, and return project-owned native handoffs. They never certify native or outside-coverage paths. Use `rms check --all` for exhaustive release or CI certification and strict full-repository provenance evidence. Git commits are required evidence, not implied authority; the agent acts only when task and host policy grant Git authority.
 
 ## Agent JSON
 

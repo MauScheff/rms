@@ -22,11 +22,12 @@ All requirements must hold:
 | Canonical semantics are coherent | `rms check --root .` passes. |
 | Focused implementation proof passes | The task-selected native, semantic, machine, surface, property, trace, package, and compatibility checks pass where applicable. |
 | The candidate is ready to commit | `rms check --changes --root .` passes. |
-| The committed candidate is production-ready | `rms check --committed --root .` passes against a clean worktree. |
+| The affected committed delta is ready | `rms check --committed --root .` passes against a clean worktree and records candidate provenance. |
+| The complete repository is production-ready | `rms check --all --root .` passes its exhaustive strict audit. |
 | Evidence is concrete | No active promise relies on placeholder, bootstrap, unpinned, or semantic-shape-only evidence. |
 | Agents can start cold | Concise managed guidance and local skills match the pinned CLI. |
 
-The committed check must reject canonical revision drift, unrepresented public behavior, broken dependency closure, invalid machine/effect/executor structure, missing runnable delegation, unreplayed transition cases, incomplete properties, placeholder evidence, unpinned provenance, dirty production files, and managed-distribution drift when those obligations apply.
+The exhaustive `--all` check must reject canonical revision drift, unrepresented public behavior, broken dependency closure, invalid machine/effect/executor structure, missing runnable delegation, unreplayed transition cases, incomplete properties, placeholder evidence, unpinned provenance, dirty production files, and managed-distribution drift when those obligations apply.
 
 ## New or Adopted Project
 
@@ -55,7 +56,7 @@ rms init . --adopt \
 
 Adoption must preserve the glossary byte-for-byte and preserve project content outside marked RMS-managed sections.
 
-Adoption sets `workspace.coverage: progressive`. In that mode, root checks certify discovered RMS modules and their declared dependency closures only. Use `rms check --changes --module <module.yaml>` and `rms check --committed --module <module.yaml>` to certify one closure during migration. Promote with `rms adoption set --coverage complete --dry-run` only after `rms adoption status` reports no unowned production paths.
+Adoption sets `workspace.coverage: progressive`. In that mode, affected root checks select changed RMS owners, add actual consumers only for consumer-visible changes, and return typed native or outside-coverage handoffs. Use explicit `--module <module.yaml>` only for a deliberate caller-owned scope override. Promote with `rms adoption set --coverage complete --dry-run` only after `rms adoption status` reports no unowned production paths.
 
 When Git writes are authorized, create the authorized bootstrap commit as the provenance baseline before product design. Otherwise stop at exactly `bootstrap prepared; provenance baseline pending authorized commit`.
 
@@ -107,7 +108,13 @@ rms check --changes --root .
 rms check --committed --root .
 ```
 
-Completion is binary. Failed checks are blockers, not manual notes. Without Git authority, stop at exactly `candidate prepared; strict audit pending authorized commit`.
+The affected checks compare the selected candidate closure with the same baseline closure. New candidate regressions block the delta. Unchanged baseline debt remains visible. Run every returned project-owned native proof command. Native and outside-coverage paths are not RMS-certified, and an outside-coverage route does not imply automatic adoption.
+
+Completion of the affected local delta is binary. Failed checks are blockers, not manual notes. Without Git authority, stop at exactly `candidate prepared; strict audit pending authorized commit`. Before release, run:
+
+```bash
+rms check --all --root .
+```
 
 ## Semantic and Implementation Rules
 
@@ -148,7 +155,7 @@ Evidence names:
 - source revision or artifact identity;
 - trace, replay, counterexample, package, compatibility, protocol, resource, authority, or temporal proof when applicable.
 
-Before production, replace local-workspace, pre-commit, unknown-revision, bootstrap, scaffold, and placeholder claims. The committed check executes declared smoke proof as trusted project code, compares regenerated evidence with committed artifacts, and fails if proof mutates production files.
+Before production, replace local-workspace, pre-commit, unknown-revision, bootstrap, scaffold, and placeholder claims. The exhaustive `--all` check executes declared smoke proof as trusted project code, compares regenerated evidence with committed artifacts, and fails if proof mutates production files.
 
 ## CI Gate
 
@@ -159,9 +166,10 @@ Required RMS commands are:
 ```bash
 rms check --environment --root .
 rms check --root .
-# Run focused project-native and RMS proof.
-rms check --changes --root .
+# Run focused project-native and RMS proof before the candidate commit.
+# Then run affected committed proof and exhaustive certification.
 rms check --committed --root .
+rms check --all --root .
 ```
 
 Add implementation-specific build, test, simulator, integration, security, and performance checks according to project risk.
@@ -174,7 +182,8 @@ Add implementation-specific build, test, simulator, integration, security, and p
 | Default check fails | Canonical artifacts or composition are invalid. Do not release. |
 | Focused proof fails | The changed promise is unproved. Do not release. |
 | Change check fails | The candidate is not ready to commit. Do not release. |
-| Committed check fails | Production evidence is incomplete, dirty, drifted, or unpinned. Do not release. |
+| Committed affected check fails | The candidate delta has a regression or incomplete affected evidence. Do not release. |
+| Exhaustive `--all` check fails | Complete production evidence is incomplete, dirty, drifted, or unpinned. Do not release. |
 | RMS passes but native production checks fail | Architecture proof is insufficient for release. Do not release. |
 | All applicable checks pass | Continue with normal product, security, operational, and deployment approval. |
 

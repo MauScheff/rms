@@ -62,9 +62,9 @@ New or adopted systems follow `rms init [--adopt]` → authorized bootstrap comm
 - Derive strong verification lanes from declared risk. Fast checks require the lane or a focused exception; use `rms hunt --dry-run` to inspect expensive work and a budgeted `rms hunt` from a clean commit for unattended discovery. Every behavioral finding must replay, and bounded evidence never means bug-free.
 
 ## Completion
-Use focused native and RMS proof → `rms check --changes --root . [--module <module.yaml>]` → authorized candidate commit → `rms check --committed --root . [--module <module.yaml>]`.
+Use focused native and RMS proof → coverage-aware `rms check --changes --root .` → authorized candidate commit → coverage-aware `rms check --committed --root .`.
 
-- The change check must pass; resolve or report every manual obligation.
+- Affected checks select exact changed RMS owners and add reverse dependents only for consumer-visible changes. They do not certify native or outside-coverage paths.
+- Run each returned project-owned native proof command. Resolve candidate regressions, keep baseline debt visible, and adopt coverage gaps only through deliberate architecture work.
 - Without commit authority, stop at exactly `candidate prepared; strict audit pending authorized commit`.
-- The committed check must pass against the clean candidate. Record exact checks and remaining obligations.
-- In progressive workspaces, state that proof covers discovered RMS module closures only; never imply whole-repository certification.
+- The committed check must pass against the clean affected delta. Run `rms check --all --root .` for strict full-repository release or CI proof. State progressive proof scope precisely.

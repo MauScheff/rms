@@ -27,7 +27,7 @@ Reports, explanations, plans, prompts, graphs, packages, and command logs are de
 rms init [OPTIONS] --name <NAME> --purpose <PURPOSE> [PATH]
 rms next "<exact user task>" [--intent-json JSON | --intent-yaml YAML | --intent-file PATH | --ai [--refresh-intent]] [--root PATH] [--module MODULE] [--json] [--details]
 rms explain ["<question>"] [--root PATH] [--module MODULE] [--json] [--details]
-rms check [--environment | --changes | --committed] [--root PATH] [--json] [--details]
+rms check [--environment | --changes | --committed | --all] [--root PATH] [--json] [--details]
 rms view [OPTIONS]
 rms help --all
 ```
@@ -155,7 +155,24 @@ rms adoption status --root .
 rms adoption set --root . --coverage complete --dry-run
 ```
 
-Progressive root checks certify discovered RMS module closures only. `rms check --changes|--committed --module <module.yaml>` certifies the target, contained children, and transitive declared module providers; unrelated dirty paths are reported but do not invalidate that scoped proof. Complete coverage is rejected while production paths remain outside RMS ownership.
+Progressive affected root checks select changed RMS owners and add reverse dependents only for consumer-visible changes. They report native and outside-coverage paths without claiming RMS certification. Explicit `--module <module.yaml>` remains a caller-owned override that certifies the target, contained children, and transitive declared module providers. Complete exhaustive coverage is rejected while production paths remain outside RMS ownership.
+
+Projects can declare native boundaries without adopting them into RMS:
+
+```yaml
+workspace:
+  coverage: progressive
+  native_workflows:
+    - id: native-client
+      paths: [clients/native]
+      consumes: [service-provider]
+      proof:
+        local: [native-test]
+        release: [native-release]
+        hardware: [native-hardware]
+```
+
+RMS reports these commands but does not execute them. Equal-specificity path matches are invalid. Native and outside-coverage paths remain uncertified, and outside coverage records a gap rather than selecting an invented owner.
 
 ### `next`
 
@@ -252,12 +269,15 @@ Constructed reports, including insufficient evidence, exit `0`. Impossible const
 | --- | --- | --- |
 | `rms check --root .` | `project` | Validation plus composition |
 | `rms check --environment --root .` | `environment` | Repository, tool, guidance, configuration, effective provider/model, and detected skill diagnosis |
-| `rms check --changes --root .` | `changes` | Git-impact-selected RMS gate before the candidate commit |
-| `rms check --committed --root .` | `committed` | Strict audit against the clean committed candidate |
+| `rms check --changes --root .` | `changes` | Affected worktree delta against `HEAD` with baseline-debt comparison |
+| `rms check --committed --root .` | `committed` | Affected clean `HEAD` delta against its first parent with committed provenance |
+| `rms check --all --root .` | `all` | Exhaustive strict release/CI audit of the complete discovered repository |
 
 The mode flags are mutually exclusive. Exit `0` means every check selected by the mode passed. Any failed or review-required aggregate exits `1`; syntax errors exit `2`.
 
 `check` does not recursively invoke the CLI, duplicate delegated policy, mutate canonical semantics, or convert a dirty candidate into committed evidence.
+
+Affected output includes a content-bound deterministic selection receipt, exact RMS-owned closures and selection reasons, native workflow handoffs, outside-coverage paths, candidate regressions, unchanged baseline debt, and full or partial coverage status. Only new candidate regressions block an otherwise unchanged baseline finding. Use `--all` when the claim requires complete-repository certification, strict proof regeneration, or release provenance.
 
 ### `view`
 
@@ -432,6 +452,7 @@ focused proof
 → rms check --changes --root .
 → authorized candidate commit
 → rms check --committed --root .
+→ rms check --all --root . for exhaustive release or CI certification
 ```
 
 Without commit authority, stop at:
@@ -440,7 +461,7 @@ Without commit authority, stop at:
 candidate prepared; strict audit pending authorized commit
 ```
 
-Git commits are required evidence, not implied authority. A commit establishes provenance only when the user task and host policy authorize it. Strict audit must run against the clean committed candidate before RMS completion or production readiness is claimed.
+Git commits are required evidence, not implied authority. A commit establishes provenance only when the user task and host policy authorize it. The affected committed check records local candidate provenance. Exhaustive strict `rms check --all` must run against the clean committed candidate before complete RMS production readiness is claimed.
 
 ## Agents, Skills, and Providers
 

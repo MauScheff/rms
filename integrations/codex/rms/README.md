@@ -28,7 +28,7 @@ rms check --root .
 
 Use native project tools for read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change. If that work reveals a proposed change, stop before editing and route the exact change task through RMS.
 
-Use `rms help --all` for specialist commands. The plugin must not carry a second RMS workflow.
+Use coverage-aware `rms check --changes` and `rms check --committed` for local deltas. Run returned project-owned native proof commands and report outside-coverage gaps without claiming RMS certification. Use `rms check --all` for exhaustive release or CI certification. Use `rms help --all` for specialist commands. The plugin must not carry a second RMS workflow.
 
 Specialist selection is narrow:
 
@@ -43,7 +43,7 @@ Specialist selection is narrow:
 
 Generated analyses, assemblies, models, and proof certificates are evidence. They never authorize semantic edits. The packaged `inspect-module`, `implement-change`, `compose-modules`, `verify-module`, and `hunt-bugs` skills contain the detailed decision rules.
 
-Machine-facing doorway reports use `rms.surface/v2`. Detected skill files do not prove runtime activation; `rms diagnose` reports that distinction. Git commits are required evidence, not implied authority, and production proof completes only through the committed RMS check.
+Machine-facing doorway reports use `rms.surface/v2`. Detected skill files do not prove runtime activation; `rms diagnose` reports that distinction. Git commits are required evidence, not implied authority. Affected committed proof records local candidate provenance; exhaustive production proof completes through `rms check --all`.
 
 ## Refresh Skills
 
@@ -54,6 +54,8 @@ The plugin carries a copy of the canonical skills so it can be distributed as a 
 ```
 
 Do not edit `integrations/codex/rms/skills/` directly unless the same change is made in canonical `skills/`.
+
+Plugin and skill installation must not overwrite consumer `AGENTS.md`, adoption ledgers, deployment runbooks, release decisions, or hardware procedures. Those files remain project-owned.
 
 After local plugin synchronization, start a new Codex task. The existing task retains the skill catalog injected when it started.
 

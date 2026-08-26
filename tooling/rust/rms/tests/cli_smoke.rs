@@ -483,3 +483,93 @@ fn concurrent_multi_module_hunt_dry_runs_do_not_race_git_worktrees() {
     );
     fs::remove_dir_all(root).expect("remove hunt fixture");
 }
+
+#[test]
+fn check_changes_reports_outside_coverage_without_broad_verification() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("rms-check-outside-cli-{unique}"));
+    fs::create_dir_all(root.join("native")).expect("create outside-coverage fixture");
+    fs::write(root.join(".gitignore"), ".rms/cache/\n").expect("write ignore file");
+    fs::write(root.join("native/client.txt"), "baseline\n").expect("write baseline file");
+    for arguments in [
+        ["init"].as_slice(),
+        ["config", "user.email", "rms@example.test"].as_slice(),
+        ["config", "user.name", "RMS Test"].as_slice(),
+        ["add", "."].as_slice(),
+        ["commit", "-m", "baseline"].as_slice(),
+    ] {
+        let output = Command::new("git")
+            .current_dir(&root)
+            .args(arguments)
+            .output()
+            .expect("prepare check git fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::write(root.join("native/client.txt"), "candidate\n").expect("write candidate file");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rms"))
+        .current_dir(&root)
+        .args(["check", "--changes", "--root", ".", "--json", "--details"])
+        .output()
+        .expect("run affected check");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("affected check JSON");
+    assert_eq!(report["schema"], "rms.surface/v2");
+    assert_eq!(report["mode"], "changes");
+    assert_eq!(report["result"], "pass");
+    assert_eq!(
+        report["coverage"]["closures"].as_array().map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(report["delta"]["coverage_status"], "partial");
+    assert_eq!(
+        report["delta"]["outside_coverage_changed_paths"][0],
+        "native/client.txt"
+    );
+    assert!(report["coverage"]["certification"]
+        .as_str()
+        .is_some_and(|value| value.contains("not certified by RMS")));
+
+    for arguments in [
+        ["add", "native/client.txt"].as_slice(),
+        ["commit", "-m", "outside candidate"].as_slice(),
+    ] {
+        let output = Command::new("git")
+            .current_dir(&root)
+            .args(arguments)
+            .output()
+            .expect("commit outside-coverage candidate");
+        assert!(output.status.success());
+    }
+    let exhaustive = Command::new(env!("CARGO_BIN_EXE_rms"))
+        .current_dir(&root)
+        .args(["check", "--all", "--root", ".", "--json", "--details"])
+        .output()
+        .expect("run exhaustive check");
+    assert!(!exhaustive.status.success());
+    let exhaustive: Value =
+        serde_json::from_slice(&exhaustive.stdout).expect("exhaustive check JSON");
+    assert_eq!(exhaustive["mode"], "all");
+    assert_eq!(exhaustive["result"], "fail");
+    assert!(exhaustive["next_action"]["args"]
+        .as_array()
+        .is_some_and(|args| args.iter().any(|arg| arg == "--all")));
+    assert!(exhaustive["details"]["audit"]["checks"]
+        .as_array()
+        .is_some_and(|checks| checks
+            .iter()
+            .any(|check| { check["id"] == "modules.discovered" && check["result"] == "fail" })));
+
+    fs::remove_dir_all(root).expect("remove outside-coverage fixture");
+}

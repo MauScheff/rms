@@ -129,8 +129,9 @@ The primary command is deterministic and provider-free. Provider-backed explanat
 | --- | --- | --- |
 | `rms check --environment` | Is this checkout ready to work in? | Environment and detected-skill diagnosis |
 | `rms check` | Are canonical artifacts valid together? | Validation plus composition |
-| `rms check --changes` | Is the current candidate ready to commit? | Affected change gate |
-| `rms check --committed` | Is the clean committed candidate production-ready? | Strict audit |
+| `rms check --changes` | Does the affected worktree delta add a regression? | Owner and consumer selection plus baseline comparison |
+| `rms check --committed` | Does the affected clean committed delta add a regression? | First-parent selection, baseline comparison, and committed provenance |
+| `rms check --all` | Is the complete repository ready for release or exhaustive CI? | Strict full-repository audit |
 
 Modes are explicit rather than inferred from repository state. `check` exits zero only when its selected checks pass; `--details` exposes constituent results.
 
@@ -139,6 +140,8 @@ Production order is:
 ```text
 focused checks → check --changes → authorized candidate commit → check --committed
 ```
+
+The affected modes report selected RMS closures, native handoffs, outside-coverage gaps, candidate regressions, unchanged baseline debt, and coverage status. They never claim RMS certification for native or outside-coverage paths. Run project-owned native proof commands separately. Use `rms check --all --root .` for exhaustive release or CI certification.
 
 Without commit authority, stop at exactly `candidate prepared; strict audit pending authorized commit`.
 

@@ -33,7 +33,7 @@ cargo run -p rms -- --help
 rms init [OPTIONS] [PATH]
 rms next "<exact user task>" --root PATH --ai [--refresh-intent] [--module MODULE] [--json] [--details]
 rms explain ["<question>"] [--root PATH] [--module MODULE] [--json] [--details]
-rms check [--environment | --changes | --committed] [--root PATH] [--json] [--details]
+rms check [--environment | --changes | --committed | --all] [--root PATH] [--json] [--details]
 rms view [OPTIONS]
 ```
 
@@ -71,9 +71,11 @@ Complete a candidate:
 rms check --changes --root .
 # Authorized manual candidate commit, when host policy allows it.
 rms check --committed --root .
+# Exhaustive release or CI certification.
+rms check --all --root .
 ```
 
-Production order is `focused checks → check --changes → authorized candidate commit → check --committed`.
+Local order is `focused checks → check --changes → authorized candidate commit → check --committed`. The two delta modes select exact RMS owners, add actual reverse consumers only for consumer-visible changes, and separate candidate regressions from unchanged baseline debt. They return typed native-workflow handoffs and outside-coverage gaps without claiming RMS certification for those paths. Exhaustive release and CI use `check --all`.
 
 Strict verification and the maintainer release gate emit bounded phase/runner progress with elapsed time, an ETA class, and child state. Content-addressed run locks reject a duplicate active invocation for the same source, declarations, tools, and seed. Successful exact proof runners and release phases are cached under ignored `.rms/cache/verification/`; a retry resumes them only while that identity is unchanged. A successful unfiltered Rust suite is reused only for exact tests whose `... ok` result is present in that suite's output. `package-lock-wait`, active child execution, and silent-child/deadlock-not-proven states are reported distinctly.
 
@@ -95,8 +97,11 @@ Git commits are required evidence, not implied authority. This guidance does not
 | --- | --- |
 | `--environment` | Environment and detected-skill readiness |
 | default | Canonical validation and composition |
-| `--changes` | Candidate change gate |
-| `--committed` | Strict committed-candidate audit |
+| `--changes` | Affected worktree delta against `HEAD` |
+| `--committed` | Affected clean `HEAD` delta against its first parent |
+| `--all` | Exhaustive strict release/CI audit of the complete discovered repository |
+
+Affected JSON and human reports include a deterministic selection receipt, RMS-owned closures, native paths, outside-coverage paths, candidate regressions, unchanged baseline debt, coverage status, and project-owned native proof commands. RMS reports native commands but does not execute them. Configure only project routing under `workspace.native_workflows`; keep adoption ledgers, deployment runbooks, release decisions, and hardware procedures project-owned.
 
 `view` is an experimental loopback-only, read-only semantic explorer. It does not edit canonical artifacts or become another semantic source.
 

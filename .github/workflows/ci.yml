@@ -77,8 +77,8 @@ jobs:
         run: |
           cargo fmt --all --check
           cargo build -p rms --locked
-      - name: RMS strict committed audit
-        run: target/debug/rms check --committed --root .
+      - name: RMS exhaustive strict audit
+        run: target/debug/rms check --all --root .
 
   behavioral-contracts:
     strategy:

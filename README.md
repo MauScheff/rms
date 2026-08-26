@@ -72,7 +72,7 @@ Then give an agent one real product outcome. The agent extracts `rms/intent-mode
 | `rms init` | Establish a new RMS system or adopt an existing repository. |
 | `rms next` | Turn an intent into the immediate prescribed action. |
 | `rms explain` | Reveal the canonical reason when the prescription is unclear. |
-| `rms check` | Check the environment, project, candidate change, or committed proof. |
+| `rms check` | Check the environment, project, affected delta, or exhaustive release proof. |
 | `rms view` | Explore the system as a read-only semantic graph. |
 
 The ordinary lifecycle is:
@@ -81,9 +81,10 @@ The ordinary lifecycle is:
 init → authorized bootstrap commit
 → next → explain when needed → follow the prescribed work
 → check --changes → authorized candidate commit → check --committed
+→ rms check --all for exhaustive release or CI certification
 ```
 
-`next`, `explain`, and `check` render `Outcome or answer → Why → Next → Done when`. Add `--details` for deeper evidence, `--json` for their versioned `rms.surface/v2` agent contract, and use `rms help --all` only when prescribed work requires a specialist command.
+`check --changes` and `check --committed` select affected RMS owners and actual public-behavior consumers. They distinguish candidate regressions, unchanged baseline debt, native handoffs, and outside-coverage paths. `check --all` retains strict complete-repository certification. `next`, `explain`, and `check` render `Outcome or answer → Why → Next → Done when`. Add `--details` for deeper evidence, `--json` for their versioned `rms.surface/v2` agent contract, and use `rms help --all` only when prescribed work requires a specialist command.
 
 For unattended reliability work, the specialist command `rms hunt --root . --budget 8h` replays old failures, regenerates traces, explores finite models, and orchestrates declared fuzz, sanitizer, and mutation lanes in an isolated checkout. Every behavioral finding must replay. A clean result is explicitly bounded evidence, never a global bug-free claim.
 

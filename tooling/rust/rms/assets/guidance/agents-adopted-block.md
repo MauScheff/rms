@@ -13,9 +13,11 @@ Project instructions outside this section remain authoritative. Canonical RMS ar
 - Keep pure roles pure, IO in declared effects, cross-module access on public facades, and runnable surfaces delegated to exact callables.
 - Temporal promises use typed observations, explicit assumptions, closed expressions, and dimensionally valid quantities; bounded exploration is inconclusive unless exhausted.
 - Derive strong verification lanes from risk. Inspect unattended work with `rms hunt --dry-run`; run it from a clean commit, require replayable behavioral findings, and never call bounded evidence bug-free.
-- Finish with focused proof → `rms check --changes --root .` → authorized candidate commit → `rms check --committed --root .`.
+- Finish local work with focused proof → coverage-aware `rms check --changes --root .` → authorized candidate commit → coverage-aware `rms check --committed --root .`.
+- Run returned project-owned native proof commands. Treat outside-coverage paths as typed handoffs, not RMS-certified work or automatic adoption requests.
+- Use `rms check --all --root .` for exhaustive release or CI certification. Keep committed provenance evidence and strict full-repository gates intact.
 - Without commit authority, stop at exactly `candidate prepared; strict audit pending authorized commit`.
-- Progressive checks certify RMS module closures only, not unrelated repository paths.
+- Affected checks certify selected RMS module closures only. They keep candidate regressions, unchanged baseline debt, native paths, and outside-coverage paths distinct.
 
 Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness.
 

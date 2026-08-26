@@ -62,3 +62,26 @@ For finite machine-, protocol-, resource-, artifact-, or composition-scope proof
 Derive strong lanes from risk when adding or changing software: generated or exhaustive checks for pure and numeric decisions; finite exploration for machines and workflows; coverage fuzzing for untrusted boundaries; schedule and fault exploration for distributed behavior; analyzers or sanitizers for unsafe authority; mutation testing for important reusable oracles; and real-trace evaluation plus violation search for temporal promises. Preserve historical counterexamples as smoke replays.
 
 Fast commit checks require the appropriate lane or a focused `verification.hunt_exceptions` reason, but do not run overnight work. Use `rms hunt --root . --dry-run` to inspect the campaign and `rms hunt --root . --budget 8h` from a clean commit to run it. `clean-under-recorded-bounds` is bounded evidence, not a bug-free guarantee.
+
+## Coverage-Aware Local Cadence
+
+Use `rms check --changes --root .` before an authorized candidate commit and `rms check --committed --root .` after it. These local modes select exact changed RMS owners. They add declared reverse consumers only when a public contract, capability, effect, export, or other consumer-visible projection changed. Their deterministic receipt explains every selected, native, outside-coverage, and skipped path.
+
+The check compares the selected candidate closure with the same baseline closure. New candidate regressions block the delta. Unchanged baseline debt stays visible but does not masquerade as a new failure. A native workflow is a project-owned handoff: run its local proof commands, preserve its release and hardware gates, and never call its paths RMS-certified. An outside-coverage path records a gap and continues through the project-native workflow; RMS adoption remains separate architecture work.
+
+Repositories declare only project-specific native routing under `.rms/config.yaml`:
+
+```yaml
+workspace:
+  coverage: progressive
+  native_workflows:
+    - id: native-client
+      paths: [clients/native]
+      consumes: [service-provider]
+      proof:
+        local: [native-test]
+        release: [native-release]
+        hardware: [native-hardware]
+```
+
+RMS reports these commands but does not execute them. Keep consumer adoption ledgers, deployment runbooks, release decisions, and hardware procedures project-owned. Use `rms check --all --root .` for exhaustive release or CI certification. `--all` retains strict full-repository provenance, composition, proof regeneration, and coverage requirements.

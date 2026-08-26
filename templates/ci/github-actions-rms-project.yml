@@ -44,8 +44,8 @@ jobs:
       # - npm test
       # - npm run lint
 
-      - name: Check RMS candidate changes
-        run: rms check --changes --root .
-
-      - name: Check committed RMS candidate
+      - name: Check affected committed RMS candidate
         run: rms check --committed --root .
+
+      - name: Check exhaustive RMS release proof
+        run: rms check --all --root .
