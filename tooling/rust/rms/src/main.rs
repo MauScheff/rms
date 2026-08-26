@@ -15584,6 +15584,11 @@ fn resolve_probe_implementation(explicit: Option<&Path>) -> Result<PathBuf> {
 
 fn load_probe_binding(path: &Path) -> Result<ProbeBinding> {
     let implementation = load_manifest(path)?;
+    load_probe_binding_manifest(implementation)
+}
+
+fn load_probe_binding_manifest(implementation: LoadedManifest) -> Result<ProbeBinding> {
+    let path = &implementation.path;
     if !is_implementation_spec(get_str(&implementation.value, &["spec"])) {
         bail!("`{}` is not an RMS implementation binding", path.display());
     }
@@ -20360,7 +20365,7 @@ fn validate_property_target_report(
             ),
         );
     }
-    validate_property_explorations(manifest, base, target, diagnostics);
+    validate_property_explorations(manifest, base, target, None, diagnostics);
     validate_temporal_target_report(manifest, target, diagnostics);
 }
 
@@ -20434,6 +20439,7 @@ fn validate_property_explorations(
     manifest: &LoadedManifest,
     base: &Path,
     target: &PropertyTargetReport,
+    implementation_overlay: Option<&LoadedManifest>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let Some(explorations) =
@@ -20465,9 +20471,18 @@ fn validate_property_explorations(
                     index + 1
                 ),
             ));
-        } else if let Err(source_error) =
-            probe::validate_assembly_declaration(&assembly_path, DEFAULT_PROOF_TIMEOUT_SECONDS)
-        {
+        } else if let Err(source_error) = match implementation_overlay {
+            Some(implementation) => {
+                probe::validate_assembly_declaration_with_implementation_overlay(
+                    &assembly_path,
+                    DEFAULT_PROOF_TIMEOUT_SECONDS,
+                    implementation,
+                )
+            }
+            None => {
+                probe::validate_assembly_declaration(&assembly_path, DEFAULT_PROOF_TIMEOUT_SECONDS)
+            }
+        } {
             diagnostics.push(error(
                     "semantic.property-exploration-invalid",
                     &manifest.path,
@@ -20519,7 +20534,13 @@ fn validate_spec_candidate_property_explorations(
             .into_iter()
             .chain(fuzz_targets_from_module(module))
         {
-            validate_property_explorations(module, base, &target, diagnostics);
+            validate_property_explorations(
+                module,
+                base,
+                &target,
+                candidate.implementation.as_ref(),
+                diagnostics,
+            );
         }
         return;
     }
@@ -20541,7 +20562,13 @@ fn validate_spec_candidate_property_explorations(
         &["architecture", "reliability", "fuzz_targets"],
         "fuzz",
     )) {
-        validate_property_explorations(implementation, base, &target, diagnostics);
+        validate_property_explorations(
+            implementation,
+            base,
+            &target,
+            candidate.implementation.as_ref(),
+            diagnostics,
+        );
     }
 }
 

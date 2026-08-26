@@ -1,8 +1,8 @@
 use super::{
     apply_probe_trace_conformance, execute_proof_command, get_path, get_str, load_manifest,
-    load_probe_binding, load_yaml_value, probe_conformance_diagnostic_summary, property,
+    load_probe_binding_manifest, load_yaml_value, probe_conformance_diagnostic_summary, property,
     schema_generator, sha256_bytes, trace_has_errors, validate_probe_description,
-    validate_probe_trace_shape, ProbeBinding,
+    validate_probe_trace_shape, LoadedManifest, ProbeBinding,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use jsonschema::validator_for;
@@ -789,11 +789,27 @@ fn validate_assembly_schema(value: &Value) -> Result<()> {
 }
 
 pub(super) fn validate_assembly_declaration(path: &Path, timeout_seconds: u64) -> Result<()> {
+    validate_assembly_declaration_with_overlay(path, timeout_seconds, None)
+}
+
+pub(super) fn validate_assembly_declaration_with_implementation_overlay(
+    path: &Path,
+    timeout_seconds: u64,
+    implementation: &LoadedManifest,
+) -> Result<()> {
+    validate_assembly_declaration_with_overlay(path, timeout_seconds, Some(implementation))
+}
+
+fn validate_assembly_declaration_with_overlay(
+    path: &Path,
+    timeout_seconds: u64,
+    implementation_overlay: Option<&LoadedManifest>,
+) -> Result<()> {
     let (assembly_value, base_dir) = load_input(path)?;
     validate_assembly_schema(&assembly_value)?;
     let assembly: ProbeAssembly = serde_json::from_value(assembly_value.clone())
         .context("invalid canonical probe assembly")?;
-    Engine::new(
+    Engine::new_with_implementation_overlay(
         assembly,
         assembly_value,
         base_dir,
@@ -801,6 +817,7 @@ pub(super) fn validate_assembly_declaration(path: &Path, timeout_seconds: u64) -
         None,
         None,
         timeout_seconds,
+        implementation_overlay,
     )?;
     Ok(())
 }
@@ -1388,6 +1405,28 @@ impl Engine {
         max_states: Option<usize>,
         timeout_seconds: u64,
     ) -> Result<Self> {
+        Self::new_with_implementation_overlay(
+            assembly,
+            assembly_value,
+            base_dir,
+            max_steps,
+            max_schedules,
+            max_states,
+            timeout_seconds,
+            None,
+        )
+    }
+
+    fn new_with_implementation_overlay(
+        assembly: ProbeAssembly,
+        assembly_value: Value,
+        base_dir: PathBuf,
+        max_steps: Option<usize>,
+        max_schedules: Option<usize>,
+        max_states: Option<usize>,
+        timeout_seconds: u64,
+        implementation_overlay: Option<&LoadedManifest>,
+    ) -> Result<Self> {
         if !is_assembly_spec(Some(&assembly.spec)) {
             bail!(
                 "probe assembly must declare `spec: {ASSEMBLY_SPEC}`, `spec: {ASSEMBLY_SPEC_V2}`, or `spec: {ASSEMBLY_SPEC_V3}`"
@@ -1404,16 +1443,27 @@ impl Engine {
         let mut instances = BTreeMap::new();
         for spec in &assembly.instances {
             let path = resolve_implementation(&base_dir, &spec.implementation)?;
-            let binding = load_probe_binding(&path)?;
-            let manifest_yaml = load_manifest(&path)?.value;
+            let overlay = implementation_overlay.filter(|implementation| {
+                fs::canonicalize(&implementation.path)
+                    .is_ok_and(|overlay_path| overlay_path == path)
+            });
+            let loaded = match overlay {
+                Some(implementation) => implementation.clone(),
+                None => load_manifest(&path)?,
+            };
+            let binding = load_probe_binding_manifest(loaded.clone())?;
+            let manifest_yaml = loaded.value;
             let manifest = serde_json::to_value(&manifest_yaml)?;
             let module = manifest
                 .get("module")
                 .and_then(Value::as_str)
                 .unwrap_or("<unknown>")
                 .to_string();
-            let source =
-                fs::read(&path).with_context(|| format!("failed to read `{}`", path.display()))?;
+            let source = match overlay {
+                Some(_) => serde_yaml::to_string(&manifest_yaml)?.into_bytes(),
+                None => fs::read(&path)
+                    .with_context(|| format!("failed to read `{}`", path.display()))?,
+            };
             let digest = sha256_bytes(&source);
             instances.insert(
                 spec.id.clone(),
@@ -5116,6 +5166,59 @@ mod tests {
 
         let error = validate_assembly_declaration(&path, 30).unwrap_err();
         assert!(error.to_string().contains("unresolved effect `Work`"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn assembly_declaration_uses_exact_candidate_implementation_overlay() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root");
+        let implementation_path = repository.join("examples/rust/implementation.yaml");
+        let root = probe_temp_root("rms-candidate-implementation-overlay");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("assembly.yaml");
+        let value = json!({
+            "spec": ASSEMBLY_SPEC_V2,
+            "instances": [{
+                "id": "example",
+                "implementation": implementation_path
+            }],
+            "stimuli": [{
+                "target": "example",
+                "input": {"kind": "command", "name": "RejectEmptyName", "data": {}}
+            }]
+        });
+        fs::write(&path, serde_yaml::to_string(&value).unwrap()).unwrap();
+
+        let disk_error = validate_assembly_declaration(&path, 30).unwrap_err();
+        assert!(disk_error
+            .to_string()
+            .contains("`RejectEmptyName` is not a public machine input"));
+
+        let mut candidate = load_manifest(&implementation_path).unwrap();
+        let mut candidate_json = serde_json::to_value(&candidate.value).unwrap();
+        candidate_json
+            .pointer_mut("/architecture/public_behavior_bindings")
+            .and_then(Value::as_array_mut)
+            .unwrap()
+            .push(json!({
+                "id": "reject-empty-name-public",
+                "public_kind": "query",
+                "public_name": "describe-widget",
+                "contract": "contracts/describe-widget.v1.yaml",
+                "semantic_function": "describe-widget-query",
+                "machine_inputs": ["RejectEmptyName"],
+                "machine_outputs": ["EmptyWidgetName"],
+                "observation_source": {
+                    "kind": "invocation-record",
+                    "command": "trace"
+                }
+            }));
+        candidate.value = serde_yaml::to_value(candidate_json).unwrap();
+
+        validate_assembly_declaration_with_implementation_overlay(&path, 30, &candidate).unwrap();
         let _ = fs::remove_dir_all(root);
     }
 
