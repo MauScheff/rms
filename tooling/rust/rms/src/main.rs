@@ -2604,6 +2604,13 @@ struct SemanticChange {
     /// child edges. Provider bytes are never caller- or planner-owned syntax.
     #[serde(skip)]
     composite_contract_syncs: Vec<SemanticCompositeContractSync>,
+    /// Exact required contracts are derived from a module-resolution binding
+    /// declared in the same change. Provider bytes are never caller- or
+    /// planner-owned syntax.
+    #[serde(skip)]
+    required_contract_syncs: Vec<SemanticRequiredContractSync>,
+    #[serde(skip)]
+    required_contract_sync_diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -2692,6 +2699,16 @@ struct SemanticCompositeContractSync {
     name: String,
     from: String,
     parent_contract: String,
+    provider_contract: String,
+    provider_path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct SemanticRequiredContractSync {
+    name: String,
+    version: String,
+    consumer_contract: String,
+    provider_module: String,
     provider_contract: String,
     provider_path: PathBuf,
 }
@@ -56609,7 +56626,7 @@ fn render_spec_plan_repair_prompt(
             )
         })
         .then_some(
-            "\n\nExact provider contract repair rule: a module-resolution dependency must preserve the complete exact provider artifact. Copy the literal artifact from `Named Provider Contract (exact-copy source)`, including its wrapper, version, meaning, observations, external property evaluations, clauses, case ids, expressions, and permits unchanged. If the required consumer capability is absent, create one `contracts.add[]` item with only `name`, `kind: capability`, `direction: required`, `version`, `meaning`, `semantics`, and optional `protocol`; copy those contract fields exactly from the provider artifact. Add one dependency-contract evidence obligation shaped exactly as `{kind: contract, proves: <capability-name>, path: <unique module-relative verification path>}`. Never put `id`, `role`, `contract`, `provider_module`, or `provider_contract` in a contract change item. Those fields belong to dependency bindings, not contracts. Use `contracts.set[]` only when the matching consumer contract already exists. For a composition-only parent, never reproduce a contained-child contract under `contracts.add[]` or `contracts.set[]`. Declare the exact child edge under `composition_exports.add[]` for both a new export and an existing export repair, plus contract evidence; RMS materializes the selected provider bytes deterministically. Provider external property ids remain exact: the module-resolution dependency binding delegates their executable closure to the provider, so never replace them with unresolved clauses or invent consumer-local substitutes. Preserve every unrelated law, property, function, binding, role, surface, evidence item, and machine transition exactly. Do not synthesize consumer- or parent-specific cases, copy a subset, or change a path to hide the mismatch. A composition-only parent removes parent-local behavioral properties and keeps behavioral proof in the runnable child; it never relabels that proof as composition evidence.",
+            "\n\nExact provider contract repair rule: a module-resolution dependency must preserve the complete exact provider artifact. For a new required capability, declare one `contracts.add[]` identity item with only `name`, `kind: capability`, `direction: required`, and `version`. Use `contracts.set[]` only when that required capability already exists. Declare the matching module-resolution dependency binding and one dependency-contract evidence obligation shaped exactly as `{kind: contract, proves: <capability-name>, path: <unique module-relative verification path>}`. Never reproduce provider `meaning`, `semantics`, observations, clauses, cases, expressions, protocol, or permits in the required contract item: RMS resolves exactly one provider export at the declared version, discards any planner body, and materializes the provider bytes deterministically. Never put `id`, `role`, `contract`, `provider_module`, or `provider_contract` in a contract change item. Those fields belong to dependency bindings. For a composition-only parent, never reproduce a contained-child contract under `contracts.add[]` or `contracts.set[]`. Declare the exact child edge under `composition_exports.add[]` for both a new export and an existing export repair, plus contract evidence; RMS materializes the selected provider bytes deterministically. Provider external property ids remain exact because the dependency binding delegates their executable closure to the provider. Preserve every unrelated law, property, function, binding, role, surface, evidence item, and machine transition exactly. Do not synthesize consumer- or parent-specific cases, copy a subset, or change a path to hide the mismatch. A composition-only parent removes parent-local behavioral properties and keeps behavioral proof in the runnable child; it never relabels that proof as composition evidence.",
         )
         .unwrap_or_default();
     let runner_selection_repair = diagnostics
@@ -56863,7 +56880,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
                     "### Named Provider Contract (exact-copy source): {}",
                     provider.path.display()
                 )?;
-                writeln!(out, "The task explicitly names provider module `{provider_name}`, required capability `{capability_name}`, and provider contract `{provider_contract}`. To introduce the missing required capability, emit one `contracts.add[]` item with `name: {capability_name}`, `kind: capability`, `direction: required`, and the provider's exact `version`, `meaning`, `semantics`, and optional `protocol`. Do not emit `id`, `role`, `contract`, `provider_module`, or `provider_contract` in `contracts.add[]`; those are not contract-change fields. Add one dependency-contract evidence obligation exactly shaped as `{{kind: contract, proves: {capability_name}, path: <unique module-relative verification path>}}`. Then add the separately shaped dependency behavior binding. Copy the complete provider behavior unchanged, including every observation, external property evaluation, clause, case, expression, and permits field.")?;
+                writeln!(out, "The task explicitly names provider module `{provider_name}`, required capability `{capability_name}`, and provider contract `{provider_contract}`. To introduce the missing required capability, emit one `contracts.add[]` identity item with only `name: {capability_name}`, `kind: capability`, `direction: required`, and the provider's exact `version`. Do not reproduce the provider body and do not emit `id`, `role`, `contract`, `provider_module`, or `provider_contract` in `contracts.add[]`. Add one dependency-contract evidence obligation exactly shaped as `{{kind: contract, proves: {capability_name}, path: <unique module-relative verification path>}}`, then add the separately shaped module-resolution dependency behavior binding. RMS resolves the unique provider export and materializes its complete bytes at apply time.")?;
                 writeln!(out, "```yaml")?;
                 write!(out, "{}", serde_yaml::to_string(&provider.value)?)?;
                 writeln!(out, "```")?;
@@ -57521,10 +57538,10 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "  add: []")?;
     writeln!(out, "  remove: []")?;
     writeln!(out, "```")?;
-    writeln!(out, "When a module-resolution binding names `provider_module` and `provider_contract`, the required consumer `contract` artifact must be an exact semantic copy of that provider contract, including its wrapper, version, meaning, observations, clauses, case ids, expressions, and permits. Do not synthesize consumer-specific cases under the provider capability name. The semantic-plan candidate gate compares the planned artifact with the named provider before it permits a response or apply.")?;
+    writeln!(out, "When the same semantic change adds or sets a required capability and declares its module-resolution binding, emit only the required contract identity (`name`, `kind: capability`, `direction: required`, and `version`), the binding, and contract evidence. RMS resolves exactly one provider module export at that version, discards any planner-owned contract body, and materializes the provider bytes unchanged. Zero or ambiguous providers, conflicting versions or paths, and missing evidence fail closed. A required-capability replacement without a newly declared provider binding remains an ordinary consumer-owned replacement.")?;
     writeln!(out, "Before applying, replace every empty machine list that changes product behavior. After `--dry-run`, stop if `final_machine` still contains generic scaffold cases such as `Accept`, `Reject`, `Execute`, `Succeeded`, or `Failed` instead of the intended product semantics.")?;
     writeln!(out)?;
-    writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; add/set also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and structured `semantics` for the retained contract wrapper. New independent contract artifacts use v0.3 total behavior. A newly added required capability that exactly mirrors one unambiguous module provider preserves that provider artifact's wrapper, including v0.2; never add `observability` or `assumptions` to an exact v0.2 mirror. A `contracts.set` entry revises the exact directly referenced artifact in place. It preserves a non-conventional path such as `*.behavior.yaml`; it does not create a conventionally named replacement. Existing v0.2 artifacts preserve their v0.2 wrapper and caller-obligation semantics until the task explicitly requests migration. Omit an unchanged contract from `contracts.set`. For command, query, and capability contracts, `contracts.add[].semantics` and `contracts.set[].semantics` must contain an exact `behavior` object; there is no `semantic_profile` field. Event contracts use an exact `event` object and API contracts use an exact `api` object. When setting an existing contract, copy its complete current behavior first, then change only task-owned meaning; preserve its wrapper, version, evaluation strategy (`core` versus `external`), clause ids, case ids, and every unaffected field. Requirements, guarantees, failures, invariants, assumptions, and case `ensures` entries are clauses. Each clause uses exactly one `evaluation.kind: core|external`; an external clause names its exact property. A behavior `cases` item is not a clause and never contains `evaluation`: it requires `id`, `statement`, a closed core `when` predicate, `outcome: {{kind: accepted|rejected, optional category, expression}}`, clause-list `ensures`, and `permits: {{state_changes, events, effects}}`. Every identifier is globally unique across one behavior object's assumptions, requirements, guarantees, failures, invariants, case ensures, and cases; never reuse one id for a clause and a case. Rejected outcomes require a stable `category`; accepted outcomes forbid it. Declare typed `{{id, source, value}}` observations for every observation id used by `when` or `outcome.expression`. In v0.3, declare scalar `observability: full|sampled|delayed|partial|none` and an explicit `assumptions` clause list. Predicates use only the closed contract predicate variants; `{{observation: id}}` is a term inside `equals` or `compare`, never a predicate by itself. Every `permits.state_changes` item is an absolute JSON pointer beginning with `/`. Omit an unchanged or absent protocol; `protocol: null` is invalid. `unresolved` is migration-draft-only and fails strict checks. Legacy `accepts`, `ensures`, and `rejects` inputs produce unresolved drafts and are not completion-ready. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`: only capability contracts may be required. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
+    writeln!(out, "Contract add/set/remove entries always declare `kind: command|query|event|capability`; ordinary add/set items also declare scalar `name`, optional `direction: provided|required`, `version`, product-specific `meaning`, and structured `semantics` for the retained contract wrapper. The exception is a deterministic required-provider sync marker paired with a module-resolution binding in the same change: it declares only `name`, `kind: capability`, `direction: required`, and `version`, because RMS materializes the provider body. New independent contract artifacts use v0.3 total behavior. A `contracts.set` entry revises the exact directly referenced artifact in place. It preserves a non-conventional path such as `*.behavior.yaml`; it does not create a conventionally named replacement. Existing v0.2 artifacts preserve their v0.2 wrapper and caller-obligation semantics until the task explicitly requests migration. Omit an unchanged contract from `contracts.set`. For ordinary command, query, and capability changes, `contracts.add[].semantics` and `contracts.set[].semantics` must contain an exact `behavior` object; there is no `semantic_profile` field. Event contracts use an exact `event` object and API contracts use an exact `api` object. When setting an existing consumer-owned contract, copy its complete current behavior first, then change only task-owned meaning; preserve its wrapper, version, evaluation strategy (`core` versus `external`), clause ids, case ids, and every unaffected field. Requirements, guarantees, failures, invariants, assumptions, and case `ensures` entries are clauses. Each clause uses exactly one `evaluation.kind: core|external`; an external clause names its exact property. A behavior `cases` item is not a clause and never contains `evaluation`: it requires `id`, `statement`, a closed core `when` predicate, `outcome: {{kind: accepted|rejected, optional category, expression}}`, clause-list `ensures`, and `permits: {{state_changes, events, effects}}`. Every identifier is globally unique across one behavior object's assumptions, requirements, guarantees, failures, invariants, case ensures, and cases; never reuse one id for a clause and a case. Rejected outcomes require a stable `category`; accepted outcomes forbid it. Declare typed `{{id, source, value}}` observations for every observation id used by `when` or `outcome.expression`. In v0.3, declare scalar `observability: full|sampled|delayed|partial|none` and an explicit `assumptions` clause list. Predicates use only the closed contract predicate variants; `{{observation: id}}` is a term inside `equals` or `compare`, never a predicate by itself. Every `permits.state_changes` item is an absolute JSON pointer beginning with `/`. Omit an unchanged or absent protocol; `protocol: null` is invalid. `unresolved` is migration-draft-only and fails strict checks. Legacy `accepts`, `ensures`, and `rejects` inputs produce unresolved drafts and are not completion-ready. `provided` writes the matching `provides.*` collection. Only `kind: capability` may use `direction: required`, which writes `requires.capabilities`: only capability contracts may be required. Publishing a capability on a standalone module never changes topology and requires its public or dependency behavior binding in the same final change.")?;
     writeln!(out, "Contract observation sources are closed. Use `{{kind: input, name: ExactInput}}` plus `value: occurrence` for an input occurrence, or `{{kind: input, pointer: /absolute/json/pointer}}` plus a non-occurrence value type for an input field. Use `{{kind: output, output_kind: reply, name: ExactReply}}` plus `value: occurrence` for an output occurrence, or `{{kind: output, pointer: /absolute/json/pointer}}` plus a non-occurrence value type for an output field. Use `{{kind: transition, case: exact_case_id}}` plus `value: occurrence` for a transition. Use `{{kind: state, phase: before|after, pointer: /absolute/json/pointer}}` plus a non-occurrence value type for state; `instance` is optional. Protocol-message and protocol-state sources require `name` and `value: occurrence`. Trace-metric sources require `name` and a quantity value. `output_kind`, state `phase`, source `name`, source `case`, and source `pointer` must never be empty.")?;
     writeln!(out, "Core clause evaluations require both fields: `{{kind: core, expression: <closed predicate>}}`. `{{kind: core}}` is invalid. External clause evaluations are exactly `{{kind: external, property: <exact property id>}}`.")?;
     writeln!(out, "A provided capability binding uses `public_kind: capability` and `public_name` equal to the exact capability contract `name`. The binding `id` does not select the target. Both `public_behavior_bindings[].contract` and `semantic_functions[].discharges.contracts[]` use the exact module-relative contract path, never only the contract name.")?;
@@ -57939,6 +57956,7 @@ fn prepare_semantic_change_for_apply(
     }
     normalize_composite_export_contract_syncs(context, &mut change);
     normalize_semantic_contract_directions(context, &mut change);
+    normalize_required_contract_provider_syncs(context, &mut change);
     normalize_required_contract_provider_specs(context, &mut change);
     let base = spec_target_base(context);
     let changes_dir = base.join("verification").join("changes");
@@ -58139,6 +58157,262 @@ fn normalize_composite_export_contract_syncs(
         }
     }
     change.composite_contract_syncs = syncs;
+}
+
+fn normalize_required_contract_provider_syncs(
+    context: &SpecTargetContext,
+    change: &mut SemanticChange,
+) {
+    let (Some(module), Some(binding_change), Some(contracts)) = (
+        context.module.as_ref(),
+        change
+            .dependency_behavior_bindings
+            .as_ref()
+            .filter(|change| dependency_behavior_bindings_change_has_operations(change)),
+        change.contracts.as_ref(),
+    ) else {
+        return;
+    };
+    let declared_bindings = binding_change
+        .replace
+        .iter()
+        .flatten()
+        .chain(&binding_change.add)
+        .collect::<Vec<_>>();
+    if declared_bindings.is_empty() {
+        return;
+    }
+    let root = rms_root_for(&module.path);
+    let requested = contracts
+        .add
+        .iter()
+        .chain(&contracts.replace)
+        .filter(|contract| {
+            contract.kind == Some(SemanticContractKind::Capability)
+                && contract.direction == Some(SemanticContractDirection::Required)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut syncs = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    for contract in requested {
+        let consumer_contract = semantic_contract_change_path(&module.value, &contract);
+        let declared_for_capability = declared_bindings
+            .iter()
+            .filter(|binding| binding.capability == contract.name)
+            .copied()
+            .collect::<Vec<_>>();
+        if declared_for_capability.is_empty() {
+            // A required-capability replacement without a newly declared
+            // provider edge remains an ordinary caller-owned replacement.
+            continue;
+        }
+        let matching = declared_for_capability
+            .iter()
+            .copied()
+            .filter(|binding| {
+                binding.resolution == "module"
+                    && binding.contract.as_deref().unwrap_or(&consumer_contract)
+                        == consumer_contract
+            })
+            .collect::<Vec<_>>();
+        let [binding] = matching.as_slice() else {
+            diagnostics.push(error_diagnostic(
+                "semantic.required-contract-sync-binding-ambiguous",
+                &context.target,
+                format!(
+                    "required capability `{}` declares {} provider binding candidates, but exactly one module-resolution binding must name consumer contract `{consumer_contract}`",
+                    contract.name,
+                    declared_for_capability.len()
+                ),
+            ));
+            continue;
+        };
+        let (Some(provider_module), Some(provider_contract)) = (
+            binding.provider_module.as_deref(),
+            binding.provider_contract.as_deref(),
+        ) else {
+            diagnostics.push(error_diagnostic(
+                "semantic.required-contract-sync-provider-unresolved",
+                &context.target,
+                format!(
+                    "required capability `{}` provider sync must name one provider_module and provider_contract",
+                    contract.name
+                ),
+            ));
+            continue;
+        };
+        let providers = find_named_provider_modules_strict(&root, module, provider_module);
+        let [provider] = providers.as_slice() else {
+            diagnostics.push(error_diagnostic(
+                "semantic.required-contract-sync-provider-ambiguous",
+                &context.target,
+                format!(
+                    "required capability `{}` must resolve provider module `{provider_module}` exactly once; RMS found {} matches",
+                    contract.name,
+                    providers.len()
+                ),
+            ));
+            continue;
+        };
+        let version = contract.version.clone().or_else(|| {
+            load_manifest(
+                &module
+                    .path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(&consumer_contract),
+            )
+            .ok()
+            .and_then(|contract| get_str(&contract.value, &["version"]).map(ToString::to_string))
+        });
+        let Some(version) = version else {
+            diagnostics.push(error_diagnostic(
+                "semantic.required-contract-sync-version-missing",
+                &context.target,
+                format!(
+                    "required capability `{}` provider sync must declare one contract version",
+                    contract.name
+                ),
+            ));
+            continue;
+        };
+        let provider_exports = get_path(&provider.value, &["provides", "capabilities"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter(|item| get_str(item, &["name"]) == Some(contract.name.as_str()))
+            .filter_map(|item| get_str(item, &["contract"]))
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let published_versions = provider_exports
+            .iter()
+            .filter_map(|reference| {
+                let path = provider
+                    .path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(reference);
+                let artifact = load_manifest(&path).ok()?;
+                (get_str(&artifact.value, &["name"]) == Some(contract.name.as_str())
+                    && get_str(&artifact.value, &["kind"]) == Some("capability"))
+                .then(|| get_str(&artifact.value, &["version"]).map(ToString::to_string))
+                .flatten()
+            })
+            .collect::<BTreeSet<_>>();
+        let exported = provider_exports
+            .iter()
+            .filter_map(|reference| {
+                let path = provider
+                    .path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(reference);
+                let artifact = load_manifest(&path).ok()?;
+                (get_str(&artifact.value, &["name"]) == Some(contract.name.as_str())
+                    && get_str(&artifact.value, &["kind"]) == Some("capability")
+                    && get_str(&artifact.value, &["version"]) == Some(version.as_str()))
+                .then(|| (reference.clone(), path))
+            })
+            .collect::<Vec<_>>();
+        if exported.is_empty()
+            && !published_versions.is_empty()
+            && !published_versions.contains(&version)
+        {
+            diagnostics.push(error_diagnostic(
+                "semantic.required-contract-sync-version-conflict",
+                &context.target,
+                format!(
+                    "required capability `{}` declares version `{version}`, but provider module `{provider_module}` publishes version(s) [{}]",
+                    contract.name,
+                    published_versions.into_iter().collect::<Vec<_>>().join(", ")
+                ),
+            ));
+            continue;
+        }
+        let [(exported_contract, provider_path)] = exported.as_slice() else {
+            diagnostics.push(error_diagnostic(
+                "semantic.required-contract-sync-export-ambiguous",
+                &context.target,
+                format!(
+                    "provider module `{provider_module}` must export exactly one `{}` capability contract at version `{version}`; RMS found {} exact exports",
+                    contract.name,
+                    exported.len()
+                ),
+            ));
+            continue;
+        };
+        if exported_contract != provider_contract {
+            diagnostics.push(error_diagnostic(
+                "semantic.required-contract-sync-provider-contract-conflict",
+                &context.target,
+                format!(
+                    "required capability `{}` binding names provider contract `{provider_contract}`, but the unique provider export for version `{version}` is `{exported_contract}`",
+                    contract.name
+                ),
+            ));
+            continue;
+        }
+        if !change.evidence.as_ref().is_some_and(|evidence| {
+            evidence
+                .add
+                .iter()
+                .any(|item| item.kind == "contract" && item.proves == contract.name)
+        }) {
+            diagnostics.push(error_diagnostic(
+                "semantic.required-contract-sync-without-evidence",
+                &context.target,
+                format!(
+                    "required capability `{}` deterministic provider sync requires one contract evidence obligation",
+                    contract.name
+                ),
+            ));
+            continue;
+        }
+        syncs.push(SemanticRequiredContractSync {
+            name: contract.name,
+            version,
+            consumer_contract,
+            provider_module: provider_module.to_string(),
+            provider_contract: provider_contract.to_string(),
+            provider_path: provider_path.clone(),
+        });
+    }
+
+    syncs.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.consumer_contract.cmp(&right.consumer_contract))
+    });
+    syncs.dedup_by(|left, right| {
+        left.name == right.name && left.consumer_contract == right.consumer_contract
+    });
+    if !syncs.is_empty() {
+        if let Some(contracts) = change.contracts.as_mut() {
+            let materialized = |contract: &SemanticContractChange| {
+                let path = semantic_contract_change_path(&module.value, contract);
+                syncs
+                    .iter()
+                    .any(|sync| sync.name == contract.name && sync.consumer_contract == path)
+            };
+            for contract in contracts.add.iter_mut().chain(&mut contracts.replace) {
+                if !materialized(contract) {
+                    continue;
+                }
+                contract.command = None;
+                contract.meaning = None;
+                contract.accepts.clear();
+                contract.ensures.clear();
+                contract.rejects.clear();
+                contract.semantics = None;
+                contract.protocol = None;
+                contract.inferred_contract_spec = None;
+            }
+        }
+    }
+    change.required_contract_syncs = syncs;
+    change.required_contract_sync_diagnostics = diagnostics;
 }
 
 fn normalize_required_contract_provider_specs(
@@ -59351,6 +59625,7 @@ fn validate_semantic_change(
     validate_semantic_module_declaration(context, change, &mut diagnostics);
     validate_semantic_laws(context, change, evidence_items, &mut diagnostics);
     validate_semantic_contracts(context, change, evidence_items, &mut diagnostics);
+    validate_semantic_required_contract_syncs(context, change, &mut diagnostics);
     validate_semantic_composition_exports(context, change, &mut diagnostics);
     validate_semantic_proof_delegations(context, change, &mut diagnostics);
     validate_semantic_properties(context, change, evidence_items, &mut diagnostics);
@@ -59946,6 +60221,57 @@ fn semantic_composition_exports_change_has_operations(
     change: &SemanticCompositionExportsChange,
 ) -> bool {
     change.replace.is_some() || !change.add.is_empty() || !change.remove.is_empty()
+}
+
+fn validate_semantic_required_contract_syncs(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    diagnostics.extend(change.required_contract_sync_diagnostics.iter().cloned());
+    for sync in &change.required_contract_syncs {
+        match load_manifest(&sync.provider_path) {
+            Ok(provider) => {
+                validate_loaded_manifest(&provider, diagnostics);
+                if get_str(&provider.value, &["name"]) != Some(sync.name.as_str())
+                    || get_str(&provider.value, &["kind"]) != Some("capability")
+                    || get_str(&provider.value, &["version"]) != Some(sync.version.as_str())
+                {
+                    diagnostics.push(error_diagnostic(
+                        "semantic.required-contract-sync-provider-identity",
+                        &sync.provider_path,
+                        format!(
+                            "provider `{}` contract `{}` must retain exact capability `{}` version `{}` identity",
+                            sync.provider_module, sync.provider_contract, sync.name, sync.version
+                        ),
+                    ));
+                }
+            }
+            Err(error) => diagnostics.push(error_diagnostic(
+                "semantic.required-contract-sync-provider-contract-unreadable",
+                &sync.provider_path,
+                format!(
+                    "required capability `{}` provider contract is unreadable: {error:#}",
+                    sync.name
+                ),
+            )),
+        }
+        if !change.evidence.as_ref().is_some_and(|evidence| {
+            evidence
+                .add
+                .iter()
+                .any(|item| item.kind == "contract" && item.proves == sync.name)
+        }) {
+            diagnostics.push(error_diagnostic(
+                "semantic.required-contract-sync-without-evidence",
+                &context.target,
+                format!(
+                    "required capability `{}` deterministic provider sync requires one contract evidence obligation",
+                    sync.name
+                ),
+            ));
+        }
+    }
 }
 
 fn validate_semantic_composition_exports(
@@ -61303,6 +61629,11 @@ fn validate_semantic_contracts(
                 ),
             ));
         }
+        let deterministic_required_sync = module
+            .is_some_and(|module| semantic_contract_is_required_sync(module, change, contract));
+        if deterministic_required_sync {
+            continue;
+        }
         if contract.meaning.as_deref().unwrap_or("").trim().is_empty() {
             diagnostics.push(error(
                 "semantic.contract-meaning-missing",
@@ -61587,6 +61918,12 @@ fn changed_semantic_contract_paths(
             .iter()
             .map(|sync| sync.parent_contract.clone()),
     );
+    paths.extend(
+        change
+            .required_contract_syncs
+            .iter()
+            .map(|sync| sync.consumer_contract.clone()),
+    );
     paths
 }
 
@@ -61764,6 +62101,44 @@ fn find_named_provider_module(
     })
 }
 
+fn find_named_provider_modules_strict(
+    root: &Path,
+    consumer: &LoadedManifest,
+    provider_name: &str,
+) -> Vec<LoadedManifest> {
+    let consumer_parent = consumer.path.parent().unwrap_or_else(|| Path::new("."));
+    let mut paths = BTreeSet::from([
+        root.join("modules").join(provider_name).join("module.yaml"),
+        root.join(provider_name).join("module.yaml"),
+        consumer_parent
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(provider_name)
+            .join("module.yaml"),
+    ]);
+    if root.join("system.yaml").is_file() || root.join("context-map.yaml").is_file() {
+        if let Ok(discovered) =
+            discover_targets(root, vec![], vec![], vec![], vec![], vec![], vec![])
+        {
+            paths.extend(discovered);
+        }
+    }
+    let mut matches = BTreeMap::new();
+    for path in paths {
+        let Ok(manifest) = load_manifest(&path) else {
+            continue;
+        };
+        if get_str(&manifest.value, &["spec"]) != Some("rms/module/v0.1")
+            || get_str(&manifest.value, &["module", "name"]) != Some(provider_name)
+        {
+            continue;
+        }
+        let identity = fs::canonicalize(&manifest.path).unwrap_or_else(|_| manifest.path.clone());
+        matches.insert(identity, manifest);
+    }
+    matches.into_values().collect()
+}
+
 fn validate_spec_candidate_composite_export_contracts(
     candidate: &SpecTargetContext,
     change: &SemanticChange,
@@ -61921,6 +62296,20 @@ fn candidate_contract_manifest(
     change: &SemanticChange,
     reference: &str,
 ) -> Result<LoadedManifest> {
+    if let Some(sync) = change
+        .required_contract_syncs
+        .iter()
+        .find(|sync| sync.consumer_contract == reference)
+    {
+        let mut provider = load_manifest(&sync.provider_path).with_context(|| {
+            format!(
+                "failed to load deterministic required-capability provider `{}`",
+                sync.provider_path.display()
+            )
+        })?;
+        provider.path = path.to_path_buf();
+        return Ok(provider);
+    }
     if let Some(sync) = change
         .composite_contract_syncs
         .iter()
@@ -64889,6 +65278,15 @@ fn planned_spec_apply_writes(
                 .display()
                 .to_string()
         }));
+        writes.extend(change.required_contract_syncs.iter().map(|sync| {
+            module
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(&sync.consumer_contract)
+                .display()
+                .to_string()
+        }));
         if let Some(evidence) = &change.evidence {
             for item in &evidence.add {
                 writes.push(
@@ -65562,6 +65960,7 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
     if let Some(contracts) = &change.contracts {
         apply_semantic_contract_changes_to_module(value, contracts);
     }
+    apply_semantic_required_contract_sync_references(value, &change.required_contract_syncs);
     if let Some(exports) = change
         .composition_exports
         .as_ref()
@@ -65773,6 +66172,28 @@ fn apply_semantic_composite_contract_sync_references(
             }) {
                 set_yaml_string_path(export, &["contract"], &sync.parent_contract);
             }
+        }
+    }
+}
+
+fn apply_semantic_required_contract_sync_references(
+    value: &mut YamlValue,
+    syncs: &[SemanticRequiredContractSync],
+) {
+    for sync in syncs {
+        let required = ensure_yaml_sequence_path(value, &["requires", "capabilities"]);
+        let mut item = serde_yaml::Mapping::new();
+        item.insert(yaml_key("name"), YamlValue::String(sync.name.clone()));
+        item.insert(
+            yaml_key("contract"),
+            YamlValue::String(sync.consumer_contract.clone()),
+        );
+        match required
+            .iter_mut()
+            .find(|item| get_str(item, &["name"]) == Some(sync.name.as_str()))
+        {
+            Some(reference) => *reference = YamlValue::Mapping(item),
+            None => required.push(YamlValue::Mapping(item)),
         }
     }
 }
@@ -66248,6 +66669,18 @@ fn semantic_contract_path(contract: &SemanticContractChange) -> String {
     semantic_contract_path_parts(&contract.name, contract.version.as_deref())
 }
 
+fn semantic_contract_is_required_sync(
+    module: &YamlValue,
+    change: &SemanticChange,
+    contract: &SemanticContractChange,
+) -> bool {
+    let path = semantic_contract_change_path(module, contract);
+    change
+        .required_contract_syncs
+        .iter()
+        .any(|sync| sync.name == contract.name && sync.consumer_contract == path)
+}
+
 fn semantic_contract_change_path(module: &YamlValue, contract: &SemanticContractChange) -> String {
     let Some(kind) = contract.kind else {
         return semantic_contract_path(contract);
@@ -66285,6 +66718,9 @@ fn write_semantic_contracts_and_evidence(
     let retained_contract_paths = module_contract_reference_paths(&module.value);
     if let Some(contracts) = &change.contracts {
         for contract in &contracts.add {
+            if semantic_contract_is_required_sync(&module.value, change, contract) {
+                continue;
+            }
             let path = base.join(semantic_contract_path(contract));
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)
@@ -66294,6 +66730,9 @@ fn write_semantic_contracts_and_evidence(
                 .with_context(|| format!("failed to write `{}`", path.display()))?;
         }
         for contract in &contracts.replace {
+            if semantic_contract_is_required_sync(&module.value, change, contract) {
+                continue;
+            }
             let path = base.join(semantic_contract_change_path(&module.value, contract));
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)
@@ -66355,6 +66794,39 @@ fn write_semantic_contracts_and_evidence(
         if written != provider_bytes {
             bail!(
                 "materialized composite export contract `{}` is not byte-equivalent to provider `{}`",
+                path.display(),
+                sync.provider_path.display()
+            );
+        }
+    }
+    for sync in &change.required_contract_syncs {
+        let path = base.join(&sync.consumer_contract);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create `{}`", parent.display()))?;
+        }
+        let provider_bytes = fs::read(&sync.provider_path).with_context(|| {
+            format!(
+                "failed to read required-capability provider contract `{}`",
+                sync.provider_path.display()
+            )
+        })?;
+        fs::write(&path, &provider_bytes).with_context(|| {
+            format!(
+                "failed to materialize exact required-capability contract `{}` from `{}`",
+                path.display(),
+                sync.provider_path.display()
+            )
+        })?;
+        let written = fs::read(&path).with_context(|| {
+            format!(
+                "failed to verify materialized required-capability contract `{}`",
+                path.display()
+            )
+        })?;
+        if written != provider_bytes {
+            bail!(
+                "materialized required-capability contract `{}` is not byte-equivalent to provider `{}`",
                 path.display(),
                 sync.provider_path.display()
             );
@@ -104215,21 +104687,20 @@ contracts:
         fs::remove_dir_all(root).unwrap();
         assert!(prompt.contains("Named Provider Contract (exact-copy source)"));
         assert!(prompt.contains("Exact task-named provider contract marker."));
-        assert!(prompt.contains("emit one `contracts.add[]` item"));
+        assert!(prompt.contains("emit one `contracts.add[]` identity item"));
         assert!(prompt.contains("`direction: required`"));
         assert!(prompt.contains("dependency-contract evidence obligation"));
         assert!(repair.contains("Exact-provider repair context"));
         assert!(repair.contains("Exact task-named provider contract marker."));
-        assert!(repair.contains("If the required consumer capability is absent"));
+        assert!(repair.contains("declare one `contracts.add[]` identity item"));
         assert!(repair.contains("Never put `id`, `role`, `contract`, `provider_module`"));
         assert!(repair.contains("{kind: contract, proves: <capability-name>"));
-        assert!(repair.contains(
-            "Use `contracts.set[]` only when the matching consumer contract already exists"
-        ));
+        assert!(repair
+            .contains("Use `contracts.set[]` only when that required capability already exists"));
     }
 
     #[test]
-    fn required_contract_add_preserves_exact_v02_provider_wrapper() {
+    fn required_contract_add_materializes_exact_provider_bytes_without_ai_body() {
         let root = unique_test_dir("semantic-required-contract-provider-v02");
         fs::create_dir_all(root.join("provider/contracts")).unwrap();
         fs::create_dir_all(root.join("consumer")).unwrap();
@@ -104247,7 +104718,8 @@ contracts:
             "",
             "",
         );
-        let provider_contract = r#"spec: rms/contract/v0.2
+        let provider_contract = r#"# exact provider formatting is authority
+spec: rms/contract/v0.2
 name: playout-liveness
 version: '1'
 kind: capability
@@ -104274,17 +104746,14 @@ compatibility: {policy: backward-compatible-within-major}
         )
         .unwrap();
         let context = load_spec_target(&root.join("consumer/implementation.yaml")).unwrap();
-        let change = parse_semantic_change(
-            None,
-            Some(
-                r#"spec: rms/semantic-change/v0.1
+        let change_source = r#"spec: rms/semantic-change/v0.1
 contracts:
   add:
     - name: playout-liveness
       kind: capability
       direction: required
       version: '1'
-      meaning: Preserve exact provider liveness behavior.
+      meaning: AI-owned consumer-specific behavior must be discarded.
       semantics:
         behavior:
           observations: []
@@ -104306,35 +104775,112 @@ dependency_behavior_bindings:
       resolution: module
       provider_module: provider
       provider_contract: contracts/playout-liveness.v1.yaml
-"#,
-            ),
-            None,
-        )
-        .unwrap();
+"#;
+        let change = parse_semantic_change(None, Some(change_source), None).unwrap();
         let prepared = prepare_semantic_change_for_apply(&context, change);
-        let added = &prepared.contracts.as_ref().unwrap().add[0];
-
-        assert_eq!(
-            added.inferred_contract_spec.as_deref(),
-            Some(behavioral_contract::CONTRACT_SPEC_V2)
+        let marker = &prepared.contracts.as_ref().unwrap().add[0];
+        assert!(marker.meaning.is_none());
+        assert!(marker.semantics.is_none());
+        assert_eq!(prepared.required_contract_syncs.len(), 1);
+        assert!(prepared.required_contract_sync_diagnostics.is_empty());
+        let canonical_change = serde_yaml::to_string(&prepared).unwrap();
+        assert!(!canonical_change.contains("AI-owned consumer-specific"));
+        assert!(!canonical_change.contains("required_contract_syncs"));
+        let replayed = prepare_semantic_change_for_apply(
+            &context,
+            parse_semantic_change(None, Some(&canonical_change), None).unwrap(),
         );
-        let rendered: YamlValue = serde_yaml::from_str(&render_semantic_contract(added)).unwrap();
-        let provider: YamlValue = serde_yaml::from_str(provider_contract).unwrap();
-        assert_eq!(rendered, provider);
-        assert!(!serde_yaml::to_string(&prepared)
-            .unwrap()
-            .contains("inferred_contract_spec"));
+        assert_eq!(replayed.required_contract_syncs.len(), 1);
 
         let candidate = spec_apply_candidate_context(&context, &prepared, None).unwrap();
-        let mut diagnostics = Vec::new();
-        validate_rendered_semantic_contract(&context, added, &mut diagnostics);
+        let mut diagnostics = validate_semantic_change(&context, &prepared);
         validate_spec_candidate_capability_contracts(&candidate, &prepared, &mut diagnostics);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != Severity::Error),
+            "{diagnostics:#?}"
+        );
+
+        let mut missing_evidence = parse_semantic_change(None, Some(change_source), None).unwrap();
+        missing_evidence.evidence = None;
+        let missing_evidence = prepare_semantic_change_for_apply(&context, missing_evidence);
+        assert!(validate_semantic_change(&context, &missing_evidence)
+            .iter()
+            .any(
+                |diagnostic| diagnostic.check == "semantic.required-contract-sync-without-evidence"
+            ));
+
+        let mut conflicting_version =
+            parse_semantic_change(None, Some(change_source), None).unwrap();
+        conflicting_version.contracts.as_mut().unwrap().add[0].version = Some("2".to_string());
+        conflicting_version
+            .dependency_behavior_bindings
+            .as_mut()
+            .unwrap()
+            .add[0]
+            .contract = Some("contracts/playout-liveness.v2.yaml".to_string());
+        let conflicting_version = prepare_semantic_change_for_apply(&context, conflicting_version);
+        assert!(validate_semantic_change(&context, &conflicting_version)
+            .iter()
+            .any(
+                |diagnostic| diagnostic.check == "semantic.required-contract-sync-version-conflict"
+            ));
+
+        let mut missing_provider = parse_semantic_change(None, Some(change_source), None).unwrap();
+        missing_provider
+            .dependency_behavior_bindings
+            .as_mut()
+            .unwrap()
+            .add[0]
+            .provider_module = Some("missing-provider".to_string());
+        let missing_provider = prepare_semantic_change_for_apply(&context, missing_provider);
+        assert!(validate_semantic_change(&context, &missing_provider)
+            .iter()
+            .any(|diagnostic| diagnostic.check
+                == "semantic.required-contract-sync-provider-ambiguous"));
+
+        fs::create_dir_all(root.join("consumer/provider/contracts")).unwrap();
+        write_compose_module(
+            &root.join("consumer/provider/module.yaml"),
+            "provider",
+            "  capabilities:\n    - name: playout-liveness\n      contract: contracts/playout-liveness.v1.yaml\n",
+            "",
+            "",
+        );
+        fs::write(
+            root.join("consumer/provider/contracts/playout-liveness.v1.yaml"),
+            provider_contract,
+        )
+        .unwrap();
+        let ambiguous_provider = prepare_semantic_change_for_apply(
+            &context,
+            parse_semantic_change(None, Some(change_source), None).unwrap(),
+        );
+        assert!(validate_semantic_change(&context, &ambiguous_provider)
+            .iter()
+            .any(|diagnostic| diagnostic.check
+                == "semantic.required-contract-sync-provider-ambiguous"));
+        fs::remove_dir_all(root.join("consumer/provider")).unwrap();
+
+        let mut applying = context.clone();
+        apply_semantic_change(&mut applying, &candidate, &prepared, None).unwrap();
+        assert_eq!(
+            fs::read(root.join("consumer/contracts/playout-liveness.v1.yaml")).unwrap(),
+            fs::read(root.join("provider/contracts/playout-liveness.v1.yaml")).unwrap()
+        );
+        let consumer = load_manifest(&root.join("consumer/module.yaml")).unwrap();
+        assert_eq!(
+            declared_required_capabilities(&consumer.value)
+                .get("playout-liveness")
+                .and_then(Option::as_deref),
+            Some("contracts/playout-liveness.v1.yaml")
+        );
         fs::remove_dir_all(root).unwrap();
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]
-    fn required_contract_add_does_not_infer_wrapper_from_ambiguous_bindings() {
+    fn required_contract_sync_rejects_ambiguous_provider_bindings() {
         let root = unique_test_dir("semantic-required-contract-provider-ambiguous");
         fs::create_dir_all(root.join("provider/contracts")).unwrap();
         fs::create_dir_all(root.join("consumer")).unwrap();
@@ -104381,10 +104927,59 @@ dependency_behavior_bindings:
         .unwrap();
         let prepared = prepare_semantic_change_for_apply(&context, change);
         let added = &prepared.contracts.as_ref().unwrap().add[0];
+        let diagnostics = validate_semantic_change(&context, &prepared);
 
         fs::remove_dir_all(root).unwrap();
         assert!(added.inferred_contract_spec.is_none());
         assert!(render_semantic_contract(added).contains("spec: rms/contract/v0.3"));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "semantic.required-contract-sync-binding-ambiguous"
+        }));
+    }
+
+    #[test]
+    fn required_contract_set_without_declared_provider_sync_keeps_replacement_body() {
+        let root = unique_test_dir("semantic-required-contract-independent-replacement");
+        fs::create_dir_all(root.join("consumer/contracts")).unwrap();
+        write_compose_module(
+            &root.join("consumer/module.yaml"),
+            "consumer",
+            "  capabilities: []\n",
+            "",
+            "  capabilities:\n    - name: local-policy\n      contract: contracts/local-policy.v1.yaml\n",
+        );
+        fs::write(
+            root.join("consumer/contracts/local-policy.v1.yaml"),
+            "spec: rms/contract/v0.3\nname: local-policy\nversion: '1'\nkind: capability\nmeaning: Old local policy.\nsemantics: {behavior: {observability: none, observations: [], assumptions: [], requires: [], guarantees: [], failures: [], cases: [], invariants: [], case_policy: {coverage: exhaustive, overlap: forbidden}}}\ncompatibility: {policy: backward-compatible-within-major}\n",
+        )
+        .unwrap();
+        let context = load_spec_target(&root.join("consumer/module.yaml")).unwrap();
+        let change = parse_semantic_change(
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+contracts:
+  set:
+    - {name: local-policy, kind: capability, direction: required, version: '1', meaning: Intentional consumer-owned policy., semantics: {behavior: {observability: none, observations: [], assumptions: [], requires: [], guarantees: [], failures: [], cases: [], invariants: [], case_policy: {coverage: exhaustive, overlap: forbidden}}}}
+evidence:
+  add:
+    - {kind: contract, proves: local-policy, path: verification/contracts/local-policy.md}
+"#,
+            ),
+            None,
+        )
+        .unwrap();
+        let prepared = prepare_semantic_change_for_apply(&context, change);
+
+        assert!(prepared.required_contract_syncs.is_empty());
+        assert_eq!(prepared.contracts.as_ref().unwrap().replace.len(), 1);
+        assert_eq!(
+            prepared.contracts.as_ref().unwrap().replace[0]
+                .meaning
+                .as_deref(),
+            Some("Intentional consumer-owned policy.")
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -104448,10 +105043,10 @@ dependency_behavior_bindings:
         assert!(repair.contains("provider-explicit-outcome-property"));
         assert!(repair.contains("provider-rejected-request-property"));
         assert!(repair.contains("Provider external property ids remain exact"));
-        assert!(repair.contains("never replace them with unresolved clauses"));
+        assert!(repair.contains("dependency binding delegates their executable closure"));
         assert!(
-            repair.find("Named Provider Contract (exact-copy source)")
-                < repair.find("Direct Public Contract:")
+            repair.find("Exact-provider repair context")
+                < repair.find("Exact-contract repair context")
         );
     }
 
