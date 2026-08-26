@@ -39982,9 +39982,17 @@ fn normalize_provider_existing_owner_scope(
     let Ok(modules) = load_module_index(root) else {
         return false;
     };
+    let explicitly_owned = explicit_task_existing_owner_modules(task, &modules);
     let exact = longest_exact_task_module_mentions(task, &modules);
-    let [owner] = exact.as_slice() else {
-        return false;
+    let owner = match explicitly_owned.as_slice() {
+        [owner] => *owner,
+        [] => {
+            let [owner] = exact.as_slice() else {
+                return false;
+            };
+            *owner
+        }
+        _ => return false,
     };
     let owner_segment = semantic_id_segment(&owner.name);
     let explicitly_scoped = task
@@ -41298,6 +41306,49 @@ fn resolve_next_owner_for_task(
             ));
         }
 
+        let explicit_owner_modules = explicit_task_existing_owner_modules(task, modules);
+        if explicit_owner_modules.len() == 1 {
+            let selected = explicit_owner_modules[0];
+            let summary = route_module_summary(selected, None);
+            return Ok(OwnerResolution::selected(
+                "task explicitly scopes work to one existing canonical module".to_string(),
+                summary.clone(),
+                vec![RouteCandidate {
+                    module: summary,
+                    score: 1,
+                    reasons: vec![format!(
+                        "task explicitly identifies module `{}` as the sole existing owner",
+                        selected.name
+                    )],
+                }],
+                vec![selected.path.display().to_string()],
+                Vec::new(),
+            ));
+        }
+        if explicit_owner_modules.len() > 1 {
+            let candidates = explicit_owner_modules
+                .into_iter()
+                .map(|module| RouteCandidate {
+                    module: route_module_summary(module, None),
+                    score: 1,
+                    reasons: vec![format!(
+                        "task explicitly identifies module `{}` as an existing owner",
+                        module.name
+                    )],
+                })
+                .collect();
+            return Ok(OwnerResolution::unresolved(
+                UnselectedOwnerStatus::Ambiguous,
+                "task explicitly scopes work to multiple existing canonical modules".to_string(),
+                candidates,
+                Vec::new(),
+                vec![
+                    "RMS will not choose among conflicting explicit existing-owner clauses"
+                        .to_string(),
+                ],
+            ));
+        }
+
         let exact_task_modules = longest_exact_task_module_mentions(task, modules);
         if exact_task_modules.len() == 1 {
             let selected = exact_task_modules[0];
@@ -41633,6 +41684,56 @@ fn exact_structured_subject_modules<'a>(
         .values()
         .filter(|module| subjects.contains(module.name.as_str()))
         .collect::<Vec<_>>();
+    matches.sort_by(|left, right| left.path.cmp(&right.path));
+    matches
+}
+
+fn explicit_task_existing_owner_modules<'a>(
+    task: &str,
+    modules: &'a BTreeMap<String, ModuleIndexEntry>,
+) -> Vec<&'a ModuleIndexEntry> {
+    let clauses = task
+        .split(['.', ';', '\n'])
+        .map(semantic_id_segment)
+        .collect::<Vec<_>>();
+    let mut canonical_matches = Vec::new();
+    let mut scoped_matches = Vec::new();
+    for module in modules.values() {
+        let module_id = semantic_id_segment(&module.name);
+        let canonical_owner = clauses.iter().any(|clause| {
+            clause.contains("canonical-owner")
+                && (clause == &module_id || clause.ends_with(&format!("-{module_id}")))
+        });
+        let scoped = clauses.iter().any(|clause| {
+            let scoped = ["in", "within", "inside"].iter().any(|prefix| {
+                [
+                    format!("{prefix}-{module_id}"),
+                    format!("{prefix}-existing-{module_id}"),
+                    format!("{prefix}-the-existing-{module_id}"),
+                ]
+                .iter()
+                .any(|owner_prefix| {
+                    clause == owner_prefix || clause.starts_with(&format!("{owner_prefix}-"))
+                })
+            });
+            scoped
+        });
+        if canonical_owner {
+            canonical_matches.push(module);
+        } else if scoped {
+            scoped_matches.push(module);
+        }
+    }
+    let mut matches = if canonical_matches.is_empty() {
+        scoped_matches
+    } else {
+        canonical_matches
+    };
+    let longest = matches
+        .iter()
+        .map(|module| semantic_id_segment(&module.name).split('-').count())
+        .max();
+    matches.retain(|module| Some(semantic_id_segment(&module.name).split('-').count()) == longest);
     matches.sort_by(|left, right| left.path.cmp(&right.path));
     matches
 }
@@ -101268,7 +101369,7 @@ semantic_functions: []
         );
         assert_eq!(
             humanized_child.reason,
-            "task exactly names canonical module"
+            "task explicitly scopes work to one existing canonical module"
         );
         assert_eq!(humanized_child.route.len(), 1);
 
@@ -101360,6 +101461,81 @@ semantic_functions: []
         fs::remove_dir_all(&cycle_root).unwrap();
         assert_eq!(cycle.status(), OwnerStatus::Ambiguous);
         assert_eq!(cycle.route.len(), 1);
+    }
+
+    #[test]
+    fn next_explicit_existing_owner_outranks_capability_identifier_participants() {
+        let root = unique_test_dir("next-explicit-owner-participant-prefix");
+        let connection = root.join("modules/beepbeep-connection/module.yaml");
+        let voice_media = root.join("modules/voice-media/module.yaml");
+        fs::create_dir_all(connection.parent().unwrap()).unwrap();
+        fs::create_dir_all(voice_media.parent().unwrap()).unwrap();
+        fs::write(
+            &connection,
+            next_module_source("beepbeep-connection", "Own connection decisions"),
+        )
+        .unwrap();
+        fs::write(
+            &voice_media,
+            next_module_source("voice-media", "Own voice media decisions"),
+        )
+        .unwrap();
+        let profile = build_repository_profile(&root).unwrap();
+
+        for task in [
+            "In beepbeep-connection only, replace the required-capability semantics with typed evidence from the voice-media-lane-admission capability.",
+            "Replace the required-capability semantics with typed evidence from voice-media-lane-admission. The canonical owner of this decision change is beepbeep-connection.",
+            "In the existing beepbeep-connection module, replace dependency semantics with VoiceMediaLaneAdmissionEvidence from voice-media-lane-admission.",
+        ] {
+            let selected = resolve_next_owner_for_task(
+                &root,
+                None,
+                task,
+                "beepbeep-connection voice-media-lane-admission",
+                &profile.modules,
+                false,
+            )
+            .unwrap();
+            assert_eq!(selected.status(), OwnerStatus::Selected, "{task}");
+            assert_eq!(
+                selected
+                    .selected_module()
+                    .map(|module| module.name.as_str()),
+                Some("beepbeep-connection"),
+                "{task}"
+            );
+            assert_eq!(
+                selected.reason,
+                "task explicitly scopes work to one existing canonical module"
+            );
+        }
+
+        let participant_tie = resolve_next_owner_for_task(
+            &root,
+            None,
+            "Replace beepbeep-connection dependency semantics for voice-media-lane-admission.",
+            "beepbeep-connection voice-media-lane-admission",
+            &profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(participant_tie.status(), OwnerStatus::Ambiguous);
+
+        let conflicting_scope = resolve_next_owner_for_task(
+            &root,
+            None,
+            "In beepbeep-connection only, change the consumer. In voice-media only, change the provider.",
+            "beepbeep-connection voice-media",
+            &profile.modules,
+            false,
+        )
+        .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(conflicting_scope.status(), OwnerStatus::Ambiguous);
+        assert_eq!(
+            conflicting_scope.reason,
+            "task explicitly scopes work to multiple existing canonical modules"
+        );
     }
 
     #[test]
