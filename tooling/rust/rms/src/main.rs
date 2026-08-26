@@ -56699,7 +56699,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Use only the task, schema, diagnostics, and bounded canonical context in this prompt. Do not inspect files, call tools, load skills or plugins, or seek broader repository context. Return the requested final response immediately after reasoning from this input.")?;
     writeln!(out)?;
     writeln!(out, "## Bounded Canonical Context")?;
-    writeln!(out, "The target manifests, their directly referenced public contracts, exact provider contracts for declared composite exports or module-resolution bindings, and no other repository content are the complete canonical planning context. Referenced source, unrelated sibling modules, and prior run artifacts are intentionally outside this provider interaction.")?;
+    writeln!(out, "The target manifests, their directly referenced public contracts, exact provider contracts for declared composite exports or module-resolution bindings, one exact task-named capability contract from one contained child when adding a composite export, and no other repository content are the complete canonical planning context. Referenced source, unrelated sibling modules and contracts, and prior run artifacts are intentionally outside this provider interaction.")?;
     if let Some(module) = &context.module {
         writeln!(out)?;
         writeln!(out, "### Module Manifest: {}", module.path.display())?;
@@ -56922,15 +56922,89 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
             writeln!(out, "```")?;
         }
     }
-    // A composite export is also an explicit, bounded cross-module edge. Give
-    // the provider the exact child artifact so parent repair never reconstructs
-    // exported behavior from prose or scans unrelated repository context.
+    // A new composite export does not yet provide an export edge from which to
+    // discover its provider contract. Resolve only exact capability names in
+    // the task against declared contained children. One provider is required;
+    // ambiguous capabilities and unrelated child contracts remain unavailable.
     if let Some(module) = context
         .module
         .as_ref()
         .filter(|module| get_str(&module.value, &["module", "kind"]) == Some("composite"))
     {
-        let mut provider_paths = BTreeSet::new();
+        let mut task_named_capabilities = BTreeMap::<String, Vec<(String, String, PathBuf)>>::new();
+        for child in get_path(&module.value, &["composition", "contains"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+        {
+            let Some(child_name) = get_str(child, &["name"]) else {
+                continue;
+            };
+            let Some(provider_module) = find_named_provider_module(root, module, child_name) else {
+                continue;
+            };
+            for provided in get_path(&provider_module.value, &["provides", "capabilities"])
+                .and_then(YamlValue::as_sequence)
+                .into_iter()
+                .flatten()
+            {
+                let (Some(capability_name), Some(provider_contract)) = (
+                    get_str(provided, &["name"]),
+                    get_str(provided, &["contract"]),
+                ) else {
+                    continue;
+                };
+                if !task_mentions_token(task, capability_name) {
+                    continue;
+                }
+                task_named_capabilities
+                    .entry(capability_name.to_string())
+                    .or_default()
+                    .push((
+                        child_name.to_string(),
+                        provider_contract.to_string(),
+                        provider_module
+                            .path
+                            .parent()
+                            .unwrap_or_else(|| Path::new("."))
+                            .join(provider_contract),
+                    ));
+            }
+        }
+        for (capability_name, providers) in task_named_capabilities {
+            let [(provider_name, provider_contract, provider_path)] = providers.as_slice() else {
+                continue;
+            };
+            if !provider_path.is_file() || !named_provider_paths.insert(provider_path.clone()) {
+                continue;
+            }
+            let provider = load_manifest(provider_path).with_context(|| {
+                format!(
+                    "failed to load task-named contained-child provider contract {} for semantic planning",
+                    provider_path.display()
+                )
+            })?;
+            writeln!(out)?;
+            writeln!(
+                out,
+                "### Composite Export Provider Contract (exact-copy source): {}",
+                provider.path.display()
+            )?;
+            writeln!(out, "The task explicitly names contained-child capability `{capability_name}`, provided uniquely by `{provider_name}` through `{provider_contract}`. To add the composite export, copy this complete contract object unchanged into one provided capability `contracts.add[]` item and add the separately shaped `composition_exports.add[]` item with `group: capabilities`, `name: {capability_name}`, and `from: {provider_name}`. Preserve the provider wrapper, version, meaning, observations, clauses, cases, expressions, protocol, and permits exactly; do not infer behavior from task prose.")?;
+            writeln!(out, "```yaml")?;
+            write!(out, "{}", serde_yaml::to_string(&provider.value)?)?;
+            writeln!(out, "```")?;
+        }
+    }
+    // A declared composite export is also an explicit, bounded cross-module
+    // edge. Give the provider the exact child artifact so parent repair never
+    // reconstructs exported behavior from prose or scans unrelated context.
+    // Paths already rendered for a task-named new export are not repeated.
+    if let Some(module) = context
+        .module
+        .as_ref()
+        .filter(|module| get_str(&module.value, &["module", "kind"]) == Some("composite"))
+    {
         for export in get_path(&module.value, &["composition", "exports"])
             .and_then(YamlValue::as_sequence)
             .into_iter()
@@ -56961,7 +57035,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
                 .parent()
                 .unwrap_or_else(|| Path::new("."))
                 .join(provider_contract);
-            if !provider_paths.insert(provider_path.clone()) || !provider_path.is_file() {
+            if !provider_path.is_file() || !named_provider_paths.insert(provider_path.clone()) {
                 continue;
             }
             let provider = load_manifest(&provider_path).with_context(|| {
@@ -104497,6 +104571,123 @@ properties:
         }));
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn semantic_plan_includes_only_unique_task_named_contained_child_capability() {
+        let root = unique_test_dir("semantic-plan-new-composite-export-provider");
+        fs::create_dir_all(root.join("child-a/contracts")).unwrap();
+        fs::create_dir_all(root.join("child-b/contracts")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: {name: parent, version: 0.1.0, kind: composite, purpose: Parent fixture.}
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides: {commands: [], queries: [], events: [], capabilities: []}
+requires: {modules: [], capabilities: []}
+composition:
+  contains: [{name: child-a, visibility: internal, path: child-a/module.yaml}]
+  exports: []
+invariants: []
+effects: []
+compatibility: {policy: backward-compatible-within-major}
+verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("child-a/module.yaml"),
+            r#"spec: rms/module/v0.1
+module: {name: child-a, version: 0.1.0, kind: library, purpose: Child A.}
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities:
+    - {name: lane-admission, contract: contracts/lane-admission.v1.yaml}
+    - {name: unrelated-child-capability, contract: contracts/unrelated.v1.yaml}
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: []
+compatibility: {policy: backward-compatible-within-major}
+verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("child-a/contracts/lane-admission.v1.yaml"),
+            "spec: rms/contract/v0.2\nname: lane-admission\nversion: '1'\nkind: capability\nmeaning: Unique task-named child contract marker.\nsemantics: {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("child-a/contracts/unrelated.v1.yaml"),
+            "spec: rms/contract/v0.2\nname: unrelated-child-capability\nversion: '1'\nkind: capability\nmeaning: Unrelated child contract marker.\nsemantics: {}\n",
+        )
+        .unwrap();
+
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let prompt = render_spec_plan_prompt(
+            &context,
+            &root,
+            "In parent only, add lane-admission from child-a as a new composite capability export.",
+        )
+        .unwrap();
+        assert!(prompt.contains("Composite Export Provider Contract (exact-copy source)"));
+        assert!(prompt.contains("Unique task-named child contract marker."));
+        assert!(!prompt.contains("Unrelated child contract marker."));
+        assert!(prompt.contains("`composition_exports.add[]` item"));
+        assert!(prompt.contains("`contracts.add[]` item"));
+
+        fs::write(
+            root.join("child-b/module.yaml"),
+            r#"spec: rms/module/v0.1
+module: {name: child-b, version: 0.1.0, kind: library, purpose: Child B.}
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides: {commands: [], queries: [], events: [], capabilities: [{name: lane-admission, contract: contracts/lane-admission.v1.yaml}]}
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: []
+compatibility: {policy: backward-compatible-within-major}
+verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("child-b/contracts/lane-admission.v1.yaml"),
+            "spec: rms/contract/v0.2\nname: lane-admission\nversion: '1'\nkind: capability\nmeaning: Ambiguous second child contract marker.\nsemantics: {}\n",
+        )
+        .unwrap();
+        let mut parent = load_manifest(&root.join("module.yaml")).unwrap();
+        set_yaml_sequence_path(
+            &mut parent.value,
+            &["composition", "contains"],
+            vec![
+                serde_yaml::from_str(
+                    "{name: child-a, visibility: internal, path: child-a/module.yaml}",
+                )
+                .unwrap(),
+                serde_yaml::from_str(
+                    "{name: child-b, visibility: internal, path: child-b/module.yaml}",
+                )
+                .unwrap(),
+            ],
+        );
+        write_yaml_manifest(&parent).unwrap();
+        let ambiguous_context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let ambiguous = render_spec_plan_prompt(
+            &ambiguous_context,
+            &root,
+            "In parent only, add lane-admission as a new composite capability export.",
+        )
+        .unwrap();
+
+        fs::remove_dir_all(root).unwrap();
+        assert!(!ambiguous.contains("Unique task-named child contract marker."));
+        assert!(!ambiguous.contains("Ambiguous second child contract marker."));
     }
 
     #[cfg(unix)]
