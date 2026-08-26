@@ -2600,6 +2600,10 @@ struct SemanticChange {
     public_behavior_bindings: Option<PublicBehaviorBindingsChange>,
     #[serde(default)]
     dependency_behavior_bindings: Option<DependencyBehaviorBindingsChange>,
+    /// Exact composite export contracts are derived from declared contained
+    /// child edges. Provider bytes are never caller- or planner-owned syntax.
+    #[serde(skip)]
+    composite_contract_syncs: Vec<SemanticCompositeContractSync>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -2680,6 +2684,16 @@ struct SemanticCompositionExport {
 struct SemanticCompositionExportKey {
     group: String,
     name: String,
+}
+
+#[derive(Clone, Debug)]
+struct SemanticCompositeContractSync {
+    group: String,
+    name: String,
+    from: String,
+    parent_contract: String,
+    provider_contract: String,
+    provider_path: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -56595,7 +56609,7 @@ fn render_spec_plan_repair_prompt(
             )
         })
         .then_some(
-            "\n\nExact provider contract repair rule: a module-resolution dependency or composite export must preserve the complete exact provider artifact. Copy the literal artifact from `Named Provider Contract (exact-copy source)` or `Composite Export Provider Contract (exact-copy source)`, including its wrapper, version, meaning, observations, external property evaluations, clauses, case ids, expressions, and permits unchanged. If the required consumer capability is absent, create one `contracts.add[]` item with only `name`, `kind: capability`, `direction: required`, `version`, `meaning`, `semantics`, and optional `protocol`; copy those contract fields exactly from the provider artifact. Add one dependency-contract evidence obligation shaped exactly as `{kind: contract, proves: <capability-name>, path: <unique module-relative verification path>}`. Never put `id`, `role`, `contract`, `provider_module`, or `provider_contract` in a contract change item. Those fields belong to dependency bindings, not contracts. Use `contracts.set[]` only when the matching consumer contract already exists. Change only the matching required or exported `contracts.set` item when it exists. Provider external property ids remain exact: the module-resolution dependency binding delegates their executable closure to the provider, so never replace them with unresolved clauses or invent consumer-local substitutes. Preserve every unrelated law, property, function, binding, role, surface, evidence item, and machine transition exactly. Do not synthesize consumer- or parent-specific cases, copy a subset, or change a path to hide the mismatch. A composition-only parent removes parent-local behavioral properties and keeps behavioral proof in the runnable child; it never relabels that proof as composition evidence.",
+            "\n\nExact provider contract repair rule: a module-resolution dependency must preserve the complete exact provider artifact. Copy the literal artifact from `Named Provider Contract (exact-copy source)`, including its wrapper, version, meaning, observations, external property evaluations, clauses, case ids, expressions, and permits unchanged. If the required consumer capability is absent, create one `contracts.add[]` item with only `name`, `kind: capability`, `direction: required`, `version`, `meaning`, `semantics`, and optional `protocol`; copy those contract fields exactly from the provider artifact. Add one dependency-contract evidence obligation shaped exactly as `{kind: contract, proves: <capability-name>, path: <unique module-relative verification path>}`. Never put `id`, `role`, `contract`, `provider_module`, or `provider_contract` in a contract change item. Those fields belong to dependency bindings, not contracts. Use `contracts.set[]` only when the matching consumer contract already exists. For a composition-only parent, never reproduce a contained-child contract under `contracts.add[]` or `contracts.set[]`. Declare the exact child edge under `composition_exports.add[]` for both a new export and an existing export repair, plus contract evidence; RMS materializes the selected provider bytes deterministically. Provider external property ids remain exact: the module-resolution dependency binding delegates their executable closure to the provider, so never replace them with unresolved clauses or invent consumer-local substitutes. Preserve every unrelated law, property, function, binding, role, surface, evidence item, and machine transition exactly. Do not synthesize consumer- or parent-specific cases, copy a subset, or change a path to hide the mismatch. A composition-only parent removes parent-local behavioral properties and keeps behavioral proof in the runnable child; it never relabels that proof as composition evidence.",
         )
         .unwrap_or_default();
     let runner_selection_repair = diagnostics
@@ -56990,7 +57004,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
                 "### Composite Export Provider Contract (exact-copy source): {}",
                 provider.path.display()
             )?;
-            writeln!(out, "The task explicitly names contained-child capability `{capability_name}`, provided uniquely by `{provider_name}` through `{provider_contract}`. To add the composite export, copy this complete contract object unchanged into one provided capability `contracts.add[]` item and add the separately shaped `composition_exports.add[]` item with `group: capabilities`, `name: {capability_name}`, and `from: {provider_name}`. Preserve the provider wrapper, version, meaning, observations, clauses, cases, expressions, protocol, and permits exactly; do not infer behavior from task prose.")?;
+            writeln!(out, "The task explicitly names contained-child capability `{capability_name}`, provided uniquely by `{provider_name}` through `{provider_contract}`. To add the composite export, emit only one `composition_exports.add[]` item with `group: capabilities`, `name: {capability_name}`, `from: {provider_name}`, and optional parent `contract` path, plus one contract evidence obligation. Do not emit this capability under `contracts.add[]` or `contracts.set[]`. RMS materializes the complete provider artifact byte-for-byte at apply time; the planner does not reproduce its wrapper, version, meaning, observations, clauses, cases, expressions, protocol, or permits.")?;
             writeln!(out, "```yaml")?;
             write!(out, "{}", serde_yaml::to_string(&provider.value)?)?;
             writeln!(out, "```")?;
@@ -57052,7 +57066,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
             )?;
             writeln!(
                 out,
-                "The parent export `{name}` is backed by `{provider_name}`. A parent contracts.set repair must copy this complete object unchanged, including its wrapper, version, meaning, observations, clauses, cases, expressions, and permits."
+                "The parent export `{name}` is backed by `{provider_name}`. To synchronize an existing export, emit its exact existing edge under `composition_exports.add[]` plus contract evidence. Do not emit the export under `contracts.set[]`; RMS copies this provider artifact byte-for-byte at apply time."
             )?;
             writeln!(out, "```yaml")?;
             write!(out, "{}", serde_yaml::to_string(&provider.value)?)?;
@@ -57408,7 +57422,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "    exhaustive: true")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `implementation_commands.set` replaces named existing stable command keys. `implementation_commands.add` creates a stable key only when an integration-test realization, runnable surface smoke command, or probe in the same change references it. `implementation_commands.remove` deletes exact obsolete keys, including invalid legacy keys created by older RMS versions. All set/add values are complete non-empty shell commands. Omitted keys and unrelated declarations are preserved. A realization `command` is always a stable key, never shell text. Integration command bindings must select the declared package and exact test through `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION` or exact literals. Never put executable command strings under `machine.commands`, which declares semantic input variants. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. Change provided public contracts and their composition exports atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2|v0.3` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `implementation_commands.set` replaces named existing stable command keys. `implementation_commands.add` creates a stable key only when an integration-test realization, runnable surface smoke command, or probe in the same change references it. `implementation_commands.remove` deletes exact obsolete keys, including invalid legacy keys created by older RMS versions. All set/add values are complete non-empty shell commands. Omitted keys and unrelated declarations are preserved. A realization `command` is always a stable key, never shell text. Integration command bindings must select the declared package and exact test through `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION` or exact literals. Never put executable command strings under `machine.commands`, which declares semantic input variants. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. On a composition-only parent, `.add[]` also synchronizes an already-declared identical edge: RMS materializes the contained-child provider contract byte-for-byte. Never reproduce that exported contract under `contracts.add[]` or `contracts.set[]`; declare contract evidence separately. Non-composite provided-contract changes still change their contract and public surface atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2|v0.3` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
     writeln!(out, "The exact property exploration shape is:")?;
     writeln!(out, "```yaml")?;
     writeln!(out, "explorations:")?;
@@ -57923,6 +57937,7 @@ fn prepare_semantic_change_for_apply(
     {
         let _ = normalize_spec_plan_pure_scaffold_replacement(context, &summary, &mut change);
     }
+    normalize_composite_export_contract_syncs(context, &mut change);
     normalize_semantic_contract_directions(context, &mut change);
     normalize_required_contract_provider_specs(context, &mut change);
     let base = spec_target_base(context);
@@ -57938,6 +57953,192 @@ fn prepare_semantic_change_for_apply(
         }
     }
     change
+}
+
+fn semantic_contract_kind_export_group(kind: SemanticContractKind) -> &'static str {
+    match kind {
+        SemanticContractKind::Command => "commands",
+        SemanticContractKind::Query => "queries",
+        SemanticContractKind::Event => "events",
+        SemanticContractKind::Capability => "capabilities",
+    }
+}
+
+fn normalize_composite_export_contract_syncs(
+    context: &SpecTargetContext,
+    change: &mut SemanticChange,
+) {
+    let Some(module) = context
+        .module
+        .as_ref()
+        .filter(|module| get_str(&module.value, &["module", "kind"]) == Some("composite"))
+    else {
+        return;
+    };
+    let current_exports = get_path(&module.value, &["composition", "exports"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| serde_yaml::from_value::<SemanticCompositionExport>(item.clone()).ok())
+        .collect::<Vec<_>>();
+
+    // Older planners expressed an exact export repair as contracts.set. Turn
+    // that intent into an explicit synchronization of the already-declared
+    // edge before discarding the AI-rewritten body.
+    let legacy_export_names = change
+        .contracts
+        .as_ref()
+        .into_iter()
+        .flat_map(|contracts| contracts.add.iter().chain(&contracts.replace))
+        .filter(|contract| {
+            contract
+                .direction
+                .unwrap_or(SemanticContractDirection::Provided)
+                == SemanticContractDirection::Provided
+        })
+        .filter_map(|contract| {
+            let kind = contract.kind?;
+            current_exports
+                .iter()
+                .find(|export| {
+                    export.name == contract.name
+                        && export.group == semantic_contract_kind_export_group(kind)
+                })
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+    if !legacy_export_names.is_empty() {
+        let exports = change
+            .composition_exports
+            .get_or_insert_with(SemanticCompositionExportsChange::default);
+        for export in legacy_export_names {
+            if !exports
+                .add
+                .iter()
+                .any(|candidate| candidate.group == export.group && candidate.name == export.name)
+                && exports.replace.as_ref().is_none_or(|replacement| {
+                    !replacement.iter().any(|candidate| {
+                        candidate.group == export.group && candidate.name == export.name
+                    })
+                })
+            {
+                exports.add.push(export);
+            }
+        }
+    }
+
+    let requested = change
+        .composition_exports
+        .as_ref()
+        .into_iter()
+        .flat_map(|exports| &exports.add)
+        .cloned()
+        .collect::<Vec<_>>();
+    if requested.is_empty() {
+        return;
+    }
+    let root = rms_root_for(&module.path);
+    let mut syncs = Vec::new();
+    for export in requested {
+        let current = current_exports
+            .iter()
+            .find(|candidate| candidate.group == export.group && candidate.name == export.name);
+        if current.is_some_and(|current| current.from != export.from) {
+            continue;
+        }
+        let Some(provider) = find_named_provider_module(&root, module, &export.from) else {
+            continue;
+        };
+        let providers = get_path(&provider.value, &["provides", &export.group])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter(|item| get_str(item, &["name"]) == Some(export.name.as_str()))
+            .filter_map(|item| get_str(item, &["contract"]))
+            .collect::<Vec<_>>();
+        let [provider_contract] = providers.as_slice() else {
+            continue;
+        };
+        let parent_contract = export
+            .contract
+            .clone()
+            .or_else(|| current.and_then(|current| current.contract.clone()))
+            .or_else(|| {
+                get_path(&module.value, &["provides", &export.group])
+                    .and_then(YamlValue::as_sequence)
+                    .into_iter()
+                    .flatten()
+                    .find(|item| get_str(item, &["name"]) == Some(export.name.as_str()))
+                    .and_then(|item| get_str(item, &["contract"]))
+                    .map(ToString::to_string)
+            })
+            .unwrap_or_else(|| (*provider_contract).to_string());
+        if !is_safe_relative_artifact_path(&parent_contract) {
+            continue;
+        }
+        syncs.push(SemanticCompositeContractSync {
+            group: export.group,
+            name: export.name,
+            from: export.from,
+            parent_contract,
+            provider_contract: (*provider_contract).to_string(),
+            provider_path: provider
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(provider_contract),
+        });
+    }
+    syncs.sort_by(|left, right| {
+        left.group
+            .cmp(&right.group)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    syncs.dedup_by(|left, right| left.group == right.group && left.name == right.name);
+    if syncs.is_empty() {
+        return;
+    }
+
+    if let Some(exports) = change.composition_exports.as_mut() {
+        for export in &mut exports.add {
+            if let Some(sync) = syncs
+                .iter()
+                .find(|sync| sync.group == export.group && sync.name == export.name)
+            {
+                export.contract = Some(sync.parent_contract.clone());
+            }
+        }
+    }
+    if let Some(contracts) = change.contracts.as_mut() {
+        let is_materialized = |contract: &SemanticContractChange| {
+            contract.kind.is_some_and(|kind| {
+                syncs.iter().any(|sync| {
+                    sync.name == contract.name
+                        && sync.group == semantic_contract_kind_export_group(kind)
+                })
+            }) && contract
+                .direction
+                .unwrap_or(SemanticContractDirection::Provided)
+                == SemanticContractDirection::Provided
+        };
+        contracts.add.retain(|contract| !is_materialized(contract));
+        contracts
+            .replace
+            .retain(|contract| !is_materialized(contract));
+        if contracts.add.is_empty() && contracts.replace.is_empty() && contracts.remove.is_empty() {
+            change.contracts = None;
+        }
+    }
+    if let Some(evidence) = change.evidence.as_mut() {
+        for item in &mut evidence.add {
+            if syncs.iter().any(|sync| sync.name == item.proves)
+                && Path::new(&item.path).starts_with("verification/contracts")
+            {
+                item.kind = "contract".to_string();
+            }
+        }
+    }
+    change.composite_contract_syncs = syncs;
 }
 
 fn normalize_required_contract_provider_specs(
@@ -59776,6 +59977,11 @@ fn validate_semantic_composition_exports(
         .flatten()
         .filter_map(|item| get_str(item, &["name"]))
         .collect::<BTreeSet<_>>();
+    let current_exports = get_path(&module.value, &["composition", "exports"])
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let validate_export = |export: &SemanticCompositionExport,
                            diagnostics: &mut Vec<Diagnostic>| {
         if !matches!(
@@ -59823,8 +60029,113 @@ fn validate_semantic_composition_exports(
             ));
         }
     };
-    for export in exports.replace.iter().flatten().chain(exports.add.iter()) {
+    for export in &exports.add {
         validate_export(export, diagnostics);
+    }
+    for export in &exports.add {
+        if let Some(current) = current_exports.iter().find(|item| {
+            get_str(item, &["group"]) == Some(export.group.as_str())
+                && get_str(item, &["name"]) == Some(export.name.as_str())
+        }) {
+            let same_provider = get_str(current, &["from"]) == Some(export.from.as_str());
+            let same_contract = export
+                .contract
+                .as_deref()
+                .is_none_or(|contract| get_str(current, &["contract"]) == Some(contract));
+            if !same_provider || !same_contract {
+                diagnostics.push(error(
+                    "semantic.composition-export-add-conflict",
+                    &context.target,
+                    format!(
+                        "composition export add `{}` conflicts with its existing edge; use `composition_exports.set` for an intentional edge replacement",
+                        export.name
+                    ),
+                ));
+            }
+        }
+    }
+    let root = rms_root_for(&module.path);
+    let evidence = change
+        .evidence
+        .as_ref()
+        .map(|evidence| evidence.add.as_slice())
+        .unwrap_or(&[]);
+    // `set` is a generic topology replacement. Deterministic contract
+    // materialization is intentionally an `add` operation, including an
+    // idempotent add of an existing edge used as a repair trigger.
+    for export in &exports.add {
+        if !children.contains(export.from.as_str()) {
+            continue;
+        }
+        let Some(provider) = find_named_provider_module(&root, module, &export.from) else {
+            diagnostics.push(error(
+                "semantic.composition-export-provider-unresolved",
+                &context.target,
+                format!(
+                    "contained child `{}` cannot be resolved for export `{}`",
+                    export.from, export.name
+                ),
+            ));
+            continue;
+        };
+        let provider_contracts = get_path(&provider.value, &["provides", &export.group])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter(|item| get_str(item, &["name"]) == Some(export.name.as_str()))
+            .filter_map(|item| get_str(item, &["contract"]))
+            .collect::<Vec<_>>();
+        let [provider_contract] = provider_contracts.as_slice() else {
+            diagnostics.push(error(
+                "semantic.composition-export-provider-ambiguous",
+                &context.target,
+                format!(
+                    "contained child `{}` must publish exactly one `{}` contract for export `{}`; RMS will not guess or synthesize it",
+                    export.from, export.group, export.name
+                ),
+            ));
+            continue;
+        };
+        let Some(sync) = change.composite_contract_syncs.iter().find(|sync| {
+            sync.group == export.group
+                && sync.name == export.name
+                && sync.from == export.from
+                && sync.provider_contract == **provider_contract
+        }) else {
+            diagnostics.push(error(
+                "semantic.composition-export-sync-unresolved",
+                &context.target,
+                format!(
+                    "composition export `{}` did not resolve to one deterministic contained-child contract synchronization",
+                    export.name
+                ),
+            ));
+            continue;
+        };
+        match load_manifest(&sync.provider_path) {
+            Ok(contract) => validate_loaded_manifest(&contract, diagnostics),
+            Err(error_value) => diagnostics.push(error(
+                "semantic.composition-export-provider-contract-unreadable",
+                &sync.provider_path,
+                format!(
+                    "provider contract for export `{}` is unreadable: {error_value:#}",
+                    export.name
+                ),
+            )),
+        }
+        if !evidence
+            .iter()
+            .any(|item| item.kind == "contract" && item.proves == export.name)
+        {
+            diagnostics.push(error(
+                "semantic.composition-export-without-evidence",
+                &context.target,
+                format!(
+                    "composition export `{}` requires one contract evidence obligation",
+                    export.name
+                ),
+            ));
+        }
     }
     for removed in &exports.remove {
         if !matches!(
@@ -61259,7 +61570,7 @@ fn changed_semantic_contract_paths(
     change: &SemanticChange,
 ) -> BTreeSet<String> {
     let module = context.module.as_ref().map(|module| &module.value);
-    change
+    let mut paths = change
         .contracts
         .as_ref()
         .into_iter()
@@ -61269,7 +61580,14 @@ fn changed_semantic_contract_paths(
                 .map(|module| semantic_contract_change_path(module, contract))
                 .unwrap_or_else(|| semantic_contract_path(contract))
         })
-        .collect()
+        .collect::<BTreeSet<_>>();
+    paths.extend(
+        change
+            .composite_contract_syncs
+            .iter()
+            .map(|sync| sync.parent_contract.clone()),
+    );
+    paths
 }
 
 fn validate_unchanged_candidate_contract_artifacts(
@@ -61603,6 +61921,20 @@ fn candidate_contract_manifest(
     change: &SemanticChange,
     reference: &str,
 ) -> Result<LoadedManifest> {
+    if let Some(sync) = change
+        .composite_contract_syncs
+        .iter()
+        .find(|sync| sync.parent_contract == reference)
+    {
+        let mut provider = load_manifest(&sync.provider_path).with_context(|| {
+            format!(
+                "failed to load deterministic composite export provider `{}`",
+                sync.provider_path.display()
+            )
+        })?;
+        provider.path = path.to_path_buf();
+        return Ok(provider);
+    }
     let module = context.module.as_ref().map(|module| &module.value);
     if let Some(contract) = change.contracts.as_ref().and_then(|contracts| {
         contracts
@@ -64548,6 +64880,15 @@ fn planned_spec_apply_writes(
                 );
             }
         }
+        writes.extend(change.composite_contract_syncs.iter().map(|sync| {
+            module
+                .path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(&sync.parent_contract)
+                .display()
+                .to_string()
+        }));
         if let Some(evidence) = &change.evidence {
             for item in &evidence.add {
                 writes.push(
@@ -65228,6 +65569,7 @@ fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChang
     {
         apply_semantic_composition_export_changes_to_module(value, exports);
     }
+    apply_semantic_composite_contract_sync_references(value, &change.composite_contract_syncs);
     if let Some(properties) = &change.properties {
         apply_semantic_property_changes_to_module(value, properties);
     }
@@ -65398,6 +65740,39 @@ fn apply_semantic_composition_export_changes_to_module(
         });
         if !already_present {
             exports.push(semantic_composition_export_yaml(export));
+        }
+    }
+}
+
+fn apply_semantic_composite_contract_sync_references(
+    value: &mut YamlValue,
+    syncs: &[SemanticCompositeContractSync],
+) {
+    for sync in syncs {
+        let provided = ensure_yaml_sequence_path(value, &["provides", &sync.group]);
+        let reference = provided
+            .iter_mut()
+            .find(|item| get_str(item, &["name"]) == Some(sync.name.as_str()));
+        let mut item = serde_yaml::Mapping::new();
+        item.insert(yaml_key("name"), YamlValue::String(sync.name.clone()));
+        item.insert(
+            yaml_key("contract"),
+            YamlValue::String(sync.parent_contract.clone()),
+        );
+        match reference {
+            Some(reference) => *reference = YamlValue::Mapping(item),
+            None => provided.push(YamlValue::Mapping(item)),
+        }
+        if let Some(exports) =
+            get_path_mut(value, &["composition", "exports"]).and_then(YamlValue::as_sequence_mut)
+        {
+            if let Some(export) = exports.iter_mut().find(|item| {
+                get_str(item, &["group"]) == Some(sync.group.as_str())
+                    && get_str(item, &["name"]) == Some(sync.name.as_str())
+                    && get_str(item, &["from"]) == Some(sync.from.as_str())
+            }) {
+                set_yaml_string_path(export, &["contract"], &sync.parent_contract);
+            }
         }
     }
 }
@@ -65950,6 +66325,39 @@ fn write_semantic_contracts_and_evidence(
                     }
                 }
             }
+        }
+    }
+    for sync in &change.composite_contract_syncs {
+        let path = base.join(&sync.parent_contract);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create `{}`", parent.display()))?;
+        }
+        let provider_bytes = fs::read(&sync.provider_path).with_context(|| {
+            format!(
+                "failed to read composite export provider contract `{}`",
+                sync.provider_path.display()
+            )
+        })?;
+        fs::write(&path, &provider_bytes).with_context(|| {
+            format!(
+                "failed to materialize exact composite export contract `{}` from `{}`",
+                path.display(),
+                sync.provider_path.display()
+            )
+        })?;
+        let written = fs::read(&path).with_context(|| {
+            format!(
+                "failed to verify materialized composite export contract `{}`",
+                path.display()
+            )
+        })?;
+        if written != provider_bytes {
+            bail!(
+                "materialized composite export contract `{}` is not byte-equivalent to provider `{}`",
+                path.display(),
+                sync.provider_path.display()
+            );
         }
     }
     if let Some(evidence) = &change.evidence {
@@ -104639,7 +105047,8 @@ verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
         assert!(prompt.contains("Unique task-named child contract marker."));
         assert!(!prompt.contains("Unrelated child contract marker."));
         assert!(prompt.contains("`composition_exports.add[]` item"));
-        assert!(prompt.contains("`contracts.add[]` item"));
+        assert!(prompt.contains("Do not emit this capability under `contracts.add[]`"));
+        assert!(prompt.contains("materializes the complete provider artifact byte-for-byte"));
 
         fs::write(
             root.join("child-b/module.yaml"),
@@ -104688,6 +105097,166 @@ verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
         fs::remove_dir_all(root).unwrap();
         assert!(!ambiguous.contains("Unique task-named child contract marker."));
         assert!(!ambiguous.contains("Ambiguous second child contract marker."));
+    }
+
+    #[test]
+    fn composite_export_apply_materializes_exact_provider_bytes_without_ai_contract_body() {
+        let root = unique_test_dir("semantic-composite-export-byte-materialization");
+        fs::create_dir_all(root.join("child/contracts")).unwrap();
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: {name: parent, version: 0.1.0, kind: composite, purpose: Parent fixture.}
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: [{name: existing-export, contract: contracts/existing-export.v1.yaml}]
+requires: {modules: [], capabilities: []}
+composition:
+  contains: [{name: child, visibility: internal, path: child/module.yaml}]
+  exports: [{group: capabilities, name: existing-export, from: child, contract: contracts/existing-export.v1.yaml}]
+invariants: []
+effects: []
+compatibility: {policy: backward-compatible-within-major}
+verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("child/module.yaml"),
+            r#"spec: rms/module/v0.1
+module: {name: child, version: 0.1.0, kind: library, purpose: Child fixture.}
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities:
+    - {name: existing-export, contract: contracts/existing-export.v1.yaml}
+    - {name: new-export, contract: contracts/new-export.v1.yaml}
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: []
+compatibility: {policy: backward-compatible-within-major}
+verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
+"#,
+        )
+        .unwrap();
+        let provider_contract = |name: &str, marker: &str| {
+            format!(
+                "# {marker}\nspec: rms/contract/v0.2\nname: {name}\nversion: '1'\nkind: capability\nmeaning: Exact provider behavior.\nsemantics:\n  behavior:\n    observations: []\n    requires: []\n    guarantees: []\n    failures: []\n    cases:\n      - id: accepted\n        statement: The capability is accepted.\n        when: {{constant: true}}\n        outcome: {{kind: accepted, expression: {{constant: true}}}}\n        ensures: []\n        permits: {{state_changes: [], events: [], effects: []}}\n    invariants: []\n    case_policy: {{coverage: exhaustive, overlap: forbidden}}\ncompatibility: {{policy: backward-compatible-within-major}}\n"
+            )
+        };
+        let existing_bytes = provider_contract("existing-export", "existing-provider-bytes");
+        let new_bytes = provider_contract("new-export", "new-provider-bytes");
+        fs::write(
+            root.join("child/contracts/existing-export.v1.yaml"),
+            &existing_bytes,
+        )
+        .unwrap();
+        fs::write(root.join("child/contracts/new-export.v1.yaml"), &new_bytes).unwrap();
+        fs::write(
+            root.join("contracts/existing-export.v1.yaml"),
+            existing_bytes.replace("Exact provider behavior.", "Drifted parent behavior."),
+        )
+        .unwrap();
+
+        let repair = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent: {summary: Synchronize the existing export.}
+contracts:
+  set:
+    - name: existing-export
+      kind: capability
+      direction: provided
+      version: '1'
+      meaning: AI-rewritten malformed body that RMS must ignore.
+      semantics: {behavior: {observations: [], cases: malformed}}
+composition_exports:
+  add:
+    - {group: capabilities, name: existing-export, from: child, contract: contracts/existing-export.v1.yaml}
+evidence:
+  add:
+    - {kind: contract, proves: existing-export, path: verification/contracts/existing-export.md}
+"#;
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let parsed: SemanticChange = serde_yaml::from_str(repair).unwrap();
+        let prepared = prepare_semantic_change_for_apply(&context, parsed);
+        assert!(prepared.contracts.is_none());
+        assert_eq!(prepared.composite_contract_syncs.len(), 1);
+        let serialized = serde_yaml::to_string(&prepared).unwrap();
+        assert!(!serialized.contains("AI-rewritten malformed body"));
+        assert!(!validate_semantic_change(&context, &prepared)
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error));
+        run_spec_apply(&root.join("module.yaml"), None, Some(repair), None, false).unwrap();
+        assert_eq!(
+            fs::read(root.join("contracts/existing-export.v1.yaml")).unwrap(),
+            existing_bytes.as_bytes()
+        );
+
+        let addition = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent: {summary: Add the new exact child export.}
+composition_exports:
+  add:
+    - {group: capabilities, name: new-export, from: child}
+evidence:
+  add:
+    - {kind: contract, proves: new-export, path: verification/contracts/new-export.md}
+"#;
+        run_spec_apply(&root.join("module.yaml"), None, Some(addition), None, false).unwrap();
+        assert_eq!(
+            fs::read(root.join("contracts/new-export.v1.yaml")).unwrap(),
+            new_bytes.as_bytes()
+        );
+        let parent = load_manifest(&root.join("module.yaml")).unwrap();
+        assert!(get_path(&parent.value, &["provides", "capabilities"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .any(|item| {
+                get_str(item, &["name"]) == Some("new-export")
+                    && get_str(item, &["contract"]) == Some("contracts/new-export.v1.yaml")
+            }));
+
+        let missing_evidence: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+composition_exports:
+  add: [{group: capabilities, name: new-export, from: child}]
+"#,
+        )
+        .unwrap();
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let missing_evidence = prepare_semantic_change_for_apply(&context, missing_evidence);
+        assert!(validate_semantic_change(&context, &missing_evidence)
+            .iter()
+            .any(|diagnostic| {
+                diagnostic.check == "semantic.composition-export-without-evidence"
+            }));
+
+        let mut child = load_manifest(&root.join("child/module.yaml")).unwrap();
+        let capabilities = get_path_mut(&mut child.value, &["provides", "capabilities"])
+            .and_then(YamlValue::as_sequence_mut)
+            .unwrap();
+        capabilities.push(capabilities[1].clone());
+        write_yaml_manifest(&child).unwrap();
+        let ambiguous_context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let ambiguous: SemanticChange = serde_yaml::from_str(addition).unwrap();
+        let ambiguous = prepare_semantic_change_for_apply(&ambiguous_context, ambiguous);
+        assert!(validate_semantic_change(&ambiguous_context, &ambiguous)
+            .iter()
+            .any(|diagnostic| {
+                diagnostic.check == "semantic.composition-export-provider-ambiguous"
+            }));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
@@ -105735,9 +106304,9 @@ machine:
         assert!(repair.contains("Diagnostic-scoped repair rule"));
         assert!(repair.contains("this is a patch to the candidate, not a new plan"));
         assert!(repair.contains("Never shorten or empty an unrelated `set` or `add` list"));
-        assert!(
-            repair.contains("Change only the matching required or exported `contracts.set` item")
-        );
+        assert!(repair.contains(
+            "Declare the exact child edge under `composition_exports.add[]` for both a new export and an existing export repair"
+        ));
         assert!(repair.contains(
             "`surface` is exactly one of browser|cli|mobile-ui|desktop-ui|http|batch|executable"
         ));
