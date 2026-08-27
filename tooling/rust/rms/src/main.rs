@@ -3298,6 +3298,12 @@ struct SemanticContractChange {
     /// syntax and must never appear in a semantic change receipt.
     #[serde(skip)]
     inferred_contract_spec: Option<String>,
+    /// `contracts.set` normally keeps the currently declared artifact path.
+    /// A version migration instead targets a new canonical path so the prior
+    /// version remains immutable. This is derived from canonical state and is
+    /// never caller-owned change syntax.
+    #[serde(skip)]
+    resolved_artifact_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -57042,7 +57048,7 @@ fn validate_prepared_spec_plan_change(
             if let Some(implementation) = &candidate.implementation {
                 validate_against_embedded_schema(implementation, &mut diagnostics);
             }
-            validate_unchanged_candidate_contract_artifacts(&candidate, change, &mut diagnostics);
+            validate_candidate_contract_artifacts(&candidate, change, &mut diagnostics);
             validate_spec_candidate_capability_contracts(&candidate, change, &mut diagnostics);
             validate_spec_candidate_composite_export_contracts(
                 &candidate,
@@ -58874,7 +58880,7 @@ fn run_spec_apply(
     if let Some(implementation) = &candidate.implementation {
         validate_against_embedded_schema(implementation, &mut diagnostics);
     }
-    validate_unchanged_candidate_contract_artifacts(&candidate, &change, &mut diagnostics);
+    validate_candidate_contract_artifacts(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_capability_contracts(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_composite_export_contracts(&candidate, &change, &mut diagnostics);
     validate_spec_candidate_proof_delegations(&candidate, &change, &mut diagnostics);
@@ -59101,6 +59107,7 @@ fn prepare_semantic_change_for_apply(
     }
     normalize_composite_export_contract_syncs(context, &mut change);
     normalize_semantic_contract_directions(context, &mut change);
+    normalize_semantic_contract_artifact_targets(context, &mut change);
     normalize_required_contract_provider_syncs(context, &mut change);
     normalize_required_contract_provider_specs(context, &mut change);
     let base = spec_target_base(context);
@@ -59696,6 +59703,63 @@ fn normalize_semantic_contract_directions(
             })
             .unwrap_or_default();
         contract.direction = resolve_existing_semantic_contract_direction(&existing, None).ok();
+    }
+}
+
+fn normalize_semantic_contract_artifact_targets(
+    context: &SpecTargetContext,
+    change: &mut SemanticChange,
+) {
+    let (Some(module), Some(contracts)) = (context.module.as_ref(), change.contracts.as_mut())
+    else {
+        return;
+    };
+    let base = module.path.parent().unwrap_or_else(|| Path::new("."));
+    for contract in &mut contracts.replace {
+        let Some(kind) = contract.kind else {
+            continue;
+        };
+        let direction = contract
+            .direction
+            .unwrap_or(SemanticContractDirection::Provided);
+        let Some(existing_reference) = kind
+            .module_path(direction)
+            .and_then(|path| get_path(&module.value, path))
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .find(|item| get_str(item, &["name"]) == Some(contract.name.as_str()))
+            .and_then(|item| get_str(item, &["contract"]))
+            .map(ToString::to_string)
+        else {
+            continue;
+        };
+        let existing = load_manifest(&base.join(&existing_reference)).ok();
+        if let Some(spec) = existing
+            .as_ref()
+            .and_then(|manifest| get_str(&manifest.value, &["spec"]))
+            .filter(|spec| behavioral_contract::is_contract_spec(Some(spec)))
+        {
+            contract.inferred_contract_spec = Some(spec.to_string());
+        }
+        let requested_version = contract
+            .version
+            .as_deref()
+            .map(|version| version.strip_prefix('v').unwrap_or(version));
+        let existing_version = existing
+            .as_ref()
+            .and_then(|manifest| get_str(&manifest.value, &["version"]))
+            .map(|version| version.strip_prefix('v').unwrap_or(version));
+        contract.resolved_artifact_path = Some(
+            if requested_version.is_some()
+                && existing_version.is_some()
+                && requested_version != existing_version
+            {
+                semantic_contract_path(contract)
+            } else {
+                existing_reference
+            },
+        );
     }
 }
 
@@ -63072,7 +63136,7 @@ fn changed_semantic_contract_paths(
     paths
 }
 
-fn validate_unchanged_candidate_contract_artifacts(
+fn validate_candidate_contract_artifacts(
     candidate: &SpecTargetContext,
     change: &SemanticChange,
     diagnostics: &mut Vec<Diagnostic>,
@@ -63080,20 +63144,16 @@ fn validate_unchanged_candidate_contract_artifacts(
     let Some(module) = candidate.module.as_ref() else {
         return;
     };
-    let changed_paths = changed_semantic_contract_paths(candidate, change);
     let base = module.path.parent().unwrap_or_else(|| Path::new("."));
     for reference in module_contract_reference_paths(&module.value) {
-        if changed_paths.contains(&reference) {
-            continue;
-        }
         let path = base.join(&reference);
-        match load_manifest(&path) {
+        match candidate_contract_manifest(candidate, &path, change, &reference) {
             Ok(contract) => validate_loaded_manifest(&contract, diagnostics),
             Err(load_error) => diagnostics.push(error(
                 "semantic.contract-artifact-unreadable",
                 &path,
                 format!(
-                    "the exact post-write module still references an unreadable contract artifact: {load_error:#}"
+                    "the exact post-write module references an unreadable candidate contract artifact: {load_error:#}"
                 ),
             )),
         }
@@ -67846,6 +67906,9 @@ fn semantic_contract_is_required_sync(
 }
 
 fn semantic_contract_change_path(module: &YamlValue, contract: &SemanticContractChange) -> String {
+    if let Some(path) = &contract.resolved_artifact_path {
+        return path.clone();
+    }
     let Some(kind) = contract.kind else {
         return semantic_contract_path(contract);
     };
@@ -93110,6 +93173,128 @@ evidence:
         assert!(!root
             .join("contracts/talk-turn-decision.v0.2.0.yaml")
             .exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn spec_apply_contract_set_migrates_version_with_candidate_artifact_overlay() {
+        let root = unique_test_dir("spec-apply-contract-set-version-migration");
+        run_add_module(
+            add_module_request(
+                &root,
+                "lane-selection",
+                "Decide one lane selection from validated inputs.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("swift"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let target = root.join("module.yaml");
+        run_spec_apply(
+            &target,
+            None,
+            Some(
+                r#"spec: rms/semantic-change/v0.1
+contracts:
+  add:
+    - name: lane-selection
+      kind: capability
+      direction: provided
+      version: 1.0.0
+      meaning: Decide one lane selection from validated inputs.
+      accepts: [one validated lane-selection request]
+      ensures: [one explicit lane-selection decision]
+      rejects: [an invalid lane-selection request]
+semantic_functions:
+  set:
+    - id: transition-model
+      symbol: Sources/LaneSelection/Transition.swift#transition
+      kind: transition
+      purity: pure
+      discharges:
+        contracts: [contracts/lane-selection.v1.0.0.yaml]
+      evidence:
+        contracts: [verification/contracts/lane_selection_v1.md]
+public_behavior_bindings:
+  add:
+    - id: lane-selection-public
+      public_kind: capability
+      public_name: lane-selection
+      contract: contracts/lane-selection.v1.0.0.yaml
+      semantic_function: transition-model
+      machine_inputs: [Accept, Reject]
+      machine_outputs: [Accepted, InvalidCommand]
+evidence:
+  add:
+    - kind: contract
+      proves: lane-selection
+      path: verification/contracts/lane_selection_v1.md
+"#,
+            ),
+            None,
+            false,
+        )
+        .unwrap();
+        let v1_path = root.join("contracts/lane-selection.v1.0.0.yaml");
+        let v1_before = fs::read(&v1_path).unwrap();
+        let migration = r#"spec: rms/semantic-change/v0.1
+contracts:
+  set:
+    - name: lane-selection
+      kind: capability
+      direction: provided
+      version: 2.0.0
+      meaning: Decide one lane selection with current generation proof.
+      accepts: [one validated lane-selection request with current generation proof]
+      ensures: [one explicit current-generation lane-selection decision]
+      rejects: [an invalid or stale lane-selection request]
+semantic_functions:
+  set:
+    - id: transition-model
+      symbol: Sources/LaneSelection/Transition.swift#transition
+      kind: transition
+      purity: pure
+      discharges:
+        contracts: [contracts/lane-selection.v2.0.0.yaml]
+      evidence:
+        contracts: [verification/contracts/lane_selection_v2.md]
+public_behavior_bindings:
+  set:
+    - id: lane-selection-public
+      public_kind: capability
+      public_name: lane-selection
+      contract: contracts/lane-selection.v2.0.0.yaml
+      semantic_function: transition-model
+      machine_inputs: [Accept, Reject]
+      machine_outputs: [Accepted, InvalidCommand]
+evidence:
+  add:
+    - kind: contract
+      proves: lane-selection
+      path: verification/contracts/lane_selection_v2.md
+"#;
+
+        run_spec_apply(&target, None, Some(migration), None, true).unwrap();
+        assert!(!root.join("contracts/lane-selection.v2.0.0.yaml").exists());
+        assert_eq!(fs::read(&v1_path).unwrap(), v1_before);
+
+        run_spec_apply(&target, None, Some(migration), None, false).unwrap();
+        let module = fs::read_to_string(&target).unwrap();
+        let implementation = fs::read_to_string(root.join("implementation.yaml")).unwrap();
+        let v2_path = root.join("contracts/lane-selection.v2.0.0.yaml");
+        let v2 = load_manifest(&v2_path).unwrap();
+
+        assert_eq!(fs::read(&v1_path).unwrap(), v1_before);
+        assert!(module.contains("contracts/lane-selection.v2.0.0.yaml"));
+        assert!(implementation.contains("contracts/lane-selection.v2.0.0.yaml"));
+        assert_eq!(get_str(&v2.value, &["version"]), Some("2.0.0"));
+        assert_eq!(
+            get_str(&v2.value, &["spec"]),
+            Some(behavioral_contract::CONTRACT_SPEC)
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
