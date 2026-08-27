@@ -42727,7 +42727,16 @@ fn declared_ownership_candidates(
         .map(semantic_id_segment)
         .collect::<Vec<_>>();
     let evolution_verbs = BTreeSet::from([
-        "amend", "change", "evolve", "extend", "fix", "repair", "replace", "revise", "update",
+        "amend",
+        "change",
+        "evolve",
+        "extend",
+        "fix",
+        "implement",
+        "repair",
+        "replace",
+        "revise",
+        "update",
     ]);
     let ownership_stop_words = BTreeSet::from([
         "behavior",
@@ -42771,9 +42780,8 @@ fn declared_ownership_candidates(
                     continue;
                 }
                 let matching_clause = clauses.iter().find(|clause| {
-                    let words = clause.split('-').collect::<BTreeSet<_>>();
-                    core.iter().all(|word| words.contains(word.as_str()))
-                        && words.iter().any(|word| evolution_verbs.contains(*word))
+                    locally_mentions_ordered_phrase(clause, &core)
+                        && has_positive_evolution_verb(clause, &evolution_verbs)
                 });
                 if matching_clause.is_none() {
                     continue;
@@ -42806,6 +42814,37 @@ fn declared_ownership_candidates(
             .then_with(|| left.module.name.cmp(&right.module.name))
     });
     candidates
+}
+
+fn locally_mentions_ordered_phrase(clause: &str, phrase: &[String]) -> bool {
+    let Some(first) = phrase.first() else {
+        return false;
+    };
+    let words = clause.split('-').collect::<Vec<_>>();
+    let max_width = phrase.len().saturating_mul(2);
+    words.iter().enumerate().any(|(start, word)| {
+        if *word != first {
+            return false;
+        }
+        let mut cursor = start + 1;
+        for expected in phrase.iter().skip(1) {
+            let Some(offset) = words[cursor..].iter().position(|word| *word == expected) else {
+                return false;
+            };
+            cursor += offset + 1;
+        }
+        cursor - start <= max_width
+    })
+}
+
+fn has_positive_evolution_verb(clause: &str, evolution_verbs: &BTreeSet<&str>) -> bool {
+    let words = clause.split('-').collect::<Vec<_>>();
+    words.iter().enumerate().any(|(index, word)| {
+        evolution_verbs.contains(*word)
+            && !words[index.saturating_sub(2)..index]
+                .iter()
+                .any(|prior| matches!(*prior, "no" | "not" | "without"))
+    })
 }
 
 fn exact_task_canonical_artifact_modules<'a>(
@@ -103992,6 +104031,66 @@ semantic_functions: []
             Some("connection")
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn next_declared_ownership_does_not_join_distant_task_words() {
+        let root = unique_test_dir("next-declared-owner-locality");
+        let connection = root.join("modules/beepbeep-connection/module.yaml");
+        let ptt_recovery =
+            root.join("modules/public-ptt-secure-media-generation-recovery-decisions/module.yaml");
+        fs::create_dir_all(connection.parent().unwrap()).unwrap();
+        fs::create_dir_all(ptt_recovery.parent().unwrap()).unwrap();
+        fs::write(
+            &connection,
+            next_module_source(
+                "beepbeep-connection",
+                "Own live Call connection and handover decisions.",
+            )
+            .replace("  data: []", "  data:\n    - network generation"),
+        )
+        .unwrap();
+        fs::write(
+            &ptt_recovery,
+            next_module_source(
+                "public-ptt-secure-media-generation-recovery-decisions",
+                "Own public PTT recovery decisions.",
+            )
+            .replace(
+                "  concepts: []",
+                "  concepts:\n    - participant device authority",
+            ),
+        )
+        .unwrap();
+        let profile = build_repository_profile(&root).unwrap();
+        let task = "Implement the native live Call handover signal-delivery effect for the existing Connection ordered-install contract: durably enqueue participant-install-request and candidate-installed messages on authenticated runtime control before reporting the existing local-send observation, optionally duplicate them on candidate Direct control, fence inbound duplicates by exact Call authority, attempt, peer Device, and network generation, and do not change Connection semantics or PTT behavior.";
+
+        let declared = declared_ownership_candidates(task, &profile.modules);
+        assert_eq!(declared.len(), 1);
+        assert_eq!(declared[0].module.name, "beepbeep-connection");
+        assert!(declared_ownership_candidates(
+            "Preserve participant device authority. Do not change participant device authority.",
+            &profile.modules,
+        )
+        .is_empty());
+
+        let selected = resolve_next_owner_for_task(
+            &root,
+            None,
+            task,
+            "authenticated-runtime-control call-handover-signal-delivery candidate-direct-control connection-ordered-install-contract inbound-duplicate-fence",
+            &profile.modules,
+            false,
+        )
+        .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(selected.status(), OwnerStatus::Selected);
+        assert_eq!(
+            selected
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("beepbeep-connection")
+        );
     }
 
     #[test]
