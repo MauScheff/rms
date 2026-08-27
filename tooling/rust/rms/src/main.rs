@@ -42912,6 +42912,15 @@ fn longest_exact_task_module_mentions<'a>(
     let mut matches = modules
         .values()
         .filter(|module| task_mentions_token(task, &module.name))
+        .filter(|module| {
+            // A shorter canonical name is not a qualified identity when it is
+            // also a complete segment sequence of another canonical name.
+            // Explicit owner clauses, artifact paths, and --module resolve
+            // that collision before this implicit-name shortcut runs.
+            !modules.values().any(|other| {
+                other.path != module.path && task_mentions_token(&other.name, &module.name)
+            })
+        })
         .collect::<Vec<_>>();
     let Some(longest) = matches
         .iter()
@@ -103626,6 +103635,75 @@ semantic_functions: []
             conflicting_scope.reason,
             "task explicitly scopes work to multiple existing canonical modules"
         );
+    }
+
+    #[test]
+    fn next_bare_colliding_module_segment_defers_to_declared_ownership() {
+        let root = unique_test_dir("next-bare-colliding-module-segment");
+        let generic = root.join("modules/connection/module.yaml");
+        let lifecycle = root.join("modules/client-connection/module.yaml");
+        fs::create_dir_all(generic.parent().unwrap()).unwrap();
+        fs::create_dir_all(lifecycle.parent().unwrap()).unwrap();
+        fs::write(
+            &generic,
+            next_module_source(
+                "connection",
+                "Select one transport from immutable scoring facts without effects.",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &lifecycle,
+            next_module_source(
+                "client-connection",
+                "Own live session network recovery, lane-failure decisions, and audio continuity.",
+            )
+            .replace("profiles: [core]", "profiles: [core, workflow]")
+            .replace(
+                "  decisions: []",
+                "  decisions:\n    - live session network recovery\n    - lane-failure decisions\n    - audio continuity",
+            ),
+        )
+        .unwrap();
+        let profile = build_repository_profile(&root).unwrap();
+
+        let task = "Fix live session network recovery so a transient send failure preserves audio continuity; Connection remains the lane-failure owner and the session resumes when transport becomes ready.";
+        let selected = resolve_next_owner_for_task(
+            &root,
+            None,
+            task,
+            "connection-lane-failure live-session-network-recovery audio-continuity",
+            &profile.modules,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(selected.status(), OwnerStatus::Selected);
+        assert_eq!(
+            selected
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("client-connection")
+        );
+        assert_ne!(selected.reason, "task exactly names canonical module");
+
+        let explicit = resolve_next_owner_for_task(
+            &root,
+            Some(&generic),
+            task,
+            "connection-lane-failure live-session-network-recovery audio-continuity",
+            &profile.modules,
+            false,
+        )
+        .unwrap();
+        assert_eq!(explicit.status(), OwnerStatus::Selected);
+        assert_eq!(
+            explicit
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("connection")
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
