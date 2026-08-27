@@ -9,7 +9,7 @@ Product intent is sufficient input. Apply semantic changes before code, edit onl
 ## Catalog
 
 - `inspect-module`: establish ownership, boundaries, contracts, effects, and evidence before planning.
-- `implement-change`: implement a feature or fix inside declared RMS roles.
+- `implement-change`: implement a feature or fix inside declared RMS roles, using a probe-first red/green loop for observable RMS-owned behavior and the narrowest native fallback otherwise.
 - `refactor-module`: improve internal structure without changing declared public meaning.
 - `prune-module`: remove unnecessary implementation residue while preserving obligations.
 - `add-module`: design and add a coherent module or recursive capability.

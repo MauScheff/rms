@@ -86729,7 +86729,7 @@ import struct ExternalKit.Widget
         assert!(agents.contains("schema-constrained extraction"));
         assert!(agents.contains("--route-receipt"));
         assert!(agents.contains("recommended standalone or recursive scaffold"));
-        assert!(agents.contains("focused native and RMS proof"));
+        assert!(agents.contains("applicable probe-first focused proof"));
         assert!(agents.contains("authorized candidate commit"));
         assert!(agents.contains("rms check --changes --root ."));
         assert!(agents.contains("rms check --committed --root ."));
@@ -87519,6 +87519,39 @@ realizations:
                 "hunt guidance contains contradictory instruction: {contradictory}"
             );
         }
+
+        let implement =
+            fs::read_to_string(canonical_root.join("implement-change/SKILL.md")).unwrap();
+        ensure_document_markers(
+            "canonical implement-change probe-first loop",
+            &implement,
+            &[
+                "formulate one public law",
+                "focused failing probe or replayable counterexample",
+                "After each meaningful semantic edit",
+                "affected behavioral neighborhood",
+                "smallest touched behavioral composition",
+                "Run full `rms verify`",
+            ],
+        )
+        .unwrap();
+        for required in [
+            "representation-only changes",
+            "ownerless or native-only behavior",
+            "missing probe adapter",
+            "outside RMS coverage",
+            "does not replace declared properties, evidence, native proof, or final gates",
+            "focused red probe",
+            "exact replay",
+            "neighborhood exploration",
+            "composition probe",
+            "native fallback",
+        ] {
+            assert!(
+                implement.contains(required),
+                "implement-change probe-first loop is missing `{required}`"
+            );
+        }
     }
 
     #[test]
@@ -87711,9 +87744,11 @@ realizations:
             assert!(INIT_AGENTS_MD.contains(required));
         }
         assert!(INIT_AGENTS_MD.contains("<!-- RMS generated full guidance -->"));
+        assert!(INIT_AGENTS_MD.contains("probe-first focused proof"));
         assert!(INIT_ADOPTED_AGENTS_BLOCK.contains(RMS_MANAGED_AGENTS_START));
         assert!(INIT_ADOPTED_AGENTS_BLOCK.contains(RMS_MANAGED_AGENTS_END));
         assert!(INIT_ADOPTED_AGENTS_BLOCK.contains(COMMIT_AUTHORITY_POLICY));
+        assert!(INIT_ADOPTED_AGENTS_BLOCK.contains("probe-first focused proof"));
         assert!(INIT_CLAUDE_MD.contains("@AGENTS.md"));
         assert!(INIT_CLAUDE_MD.contains("<!-- RMS generated Claude guidance -->"));
 

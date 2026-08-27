@@ -62,7 +62,7 @@ New or adopted systems follow `rms init [--adopt]` → authorized bootstrap comm
 - Derive strong verification lanes from declared risk. Fast checks require the lane or a focused exception; use `rms hunt --dry-run` to inspect expensive work and a budgeted `rms hunt` from a clean commit for unattended discovery. Every behavioral finding must replay, and bounded evidence never means bug-free.
 
 ## Completion
-Use focused native and RMS proof → coverage-aware `rms check --changes --root .` → authorized candidate commit → coverage-aware `rms check --committed --root .`.
+Use applicable probe-first focused proof → coverage-aware `rms check --changes --root .` → authorized candidate commit → coverage-aware `rms check --committed --root .`.
 
 - Affected checks select exact changed RMS owners and add reverse dependents only for consumer-visible changes. They do not certify native or outside-coverage paths.
 - Run each returned project-owned native proof command. Resolve candidate regressions, keep baseline debt visible, and adopt coverage gaps only through deliberate architecture work.
