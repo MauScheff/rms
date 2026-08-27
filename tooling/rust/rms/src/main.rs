@@ -66327,6 +66327,25 @@ fn validate_spec_candidate_property_evidence_writes(
         .map(|property| (property, false))
         .chain(properties.replace.iter().map(|property| (property, true)))
     {
+        let duplicate_obligation = property.evidence.as_ref().and_then(|property_evidence| {
+            change.evidence.as_ref().and_then(|evidence| {
+                evidence
+                    .add
+                    .iter()
+                    .find(|item| item.path == property_evidence.path)
+            })
+        });
+        if let Some(duplicate) = duplicate_obligation {
+            diagnostics.push(error(
+                "semantic.property-evidence-duplicate-obligation",
+                &context.target,
+                format!(
+                    "property `{}` owns evidence path `{}`; remove the duplicate `evidence.add` item `{}` because `properties.add` and `properties.set` materialize their evidence obligations deterministically",
+                    property.id, duplicate.path, duplicate.proves
+                ),
+            ));
+            continue;
+        }
         match property_evidence_write_disposition(module, change, property, replacing) {
             Ok(PropertyEvidenceWriteDisposition::Unsafe) => {
                 let path = property
@@ -94091,6 +94110,55 @@ properties:
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.check == "evidence.placeholder"));
+    }
+
+    #[test]
+    fn spec_apply_dry_run_rejects_duplicate_property_evidence_before_writes() {
+        let root = unique_test_dir("spec-apply-duplicate-property-evidence");
+        fs::create_dir_all(&root).unwrap();
+        let module_path = root.join("module.yaml");
+        fs::write(
+            &module_path,
+            next_module_source("line-selection", "Select lines deterministically."),
+        )
+        .unwrap();
+        let before = snapshot_test_tree(&root);
+        let change = r#"spec: rms/semantic-change/v0.1
+module: module.yaml
+intent:
+  summary: Add one generated line-selection property.
+properties:
+  add:
+    - id: selected-lines-are-monotonic
+      proves: line-selection-order
+      kind: property
+      input_space: {lines: generated newline-delimited text}
+      operation: select-lines
+      oracle: [selected line numbers are monotonically increasing]
+      evidence:
+        kind: property
+        path: verification/properties/selected_lines_are_monotonic.md
+      counterexamples:
+        path: verification/fuzz/counterexamples
+      realizations:
+        - profile: smoke
+          strategy: generated-property
+          command: properties
+          generator: src/property.rs#generate_cases
+          runner: src/property.rs#check_generated_cases
+evidence:
+  add:
+    - kind: property
+      proves: selected-lines-are-monotonic
+      path: verification/properties/selected_lines_are_monotonic.md
+  remove: []
+"#;
+
+        assert!(run_spec_apply(&module_path, None, Some(change), None, true).is_err());
+        assert_eq!(snapshot_test_tree(&root), before);
+        assert!(run_spec_apply(&module_path, None, Some(change), None, false).is_err());
+        assert_eq!(snapshot_test_tree(&root), before);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
