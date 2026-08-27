@@ -43073,7 +43073,7 @@ fn score_declared_module_language(task: &str, value: &YamlValue) -> i32 {
         .iter()
         .filter(|word| task_mentions_token(task, word))
         .count()
-        .min(4) as i32
+        .min(8) as i32
 }
 
 fn route_next_owner(
@@ -44369,10 +44369,7 @@ fn build_route_report(module: &Path, root: &Path, task: &str) -> Result<RouteRep
         let mut score = score_route_candidate(task, child_entry, &mut reasons);
         if task_mentions_module(task, &child.name) {
             score += 5;
-            reasons.push(format!(
-                "task mentions child module `{}` or one of its semantic name segments",
-                child.name
-            ));
+            reasons.push(format!("task names child module `{}`", child.name));
         }
         for export in exports.iter().filter(|export| export.from == child.name) {
             if task_mentions_token(task, &export.name) || task_mentions_boundary_surface(task) {
@@ -44710,10 +44707,6 @@ fn score_keywords(task: &str, keywords: &[&str]) -> i32 {
 
 fn task_mentions_module(task: &str, module_name: &str) -> bool {
     task_mentions_token(task, module_name)
-        || module_name
-            .split(['-', '_'])
-            .filter(|segment| segment.len() > 2)
-            .any(|segment| task_mentions_token(task, segment))
 }
 
 fn task_mentions_boundary_surface(task: &str) -> bool {
@@ -104079,6 +104072,55 @@ semantic_functions: []
             None,
             task,
             "authenticated-runtime-control call-handover-signal-delivery candidate-direct-control connection-ordered-install-contract inbound-duplicate-fence",
+            &profile.modules,
+            false,
+        )
+        .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(selected.status(), OwnerStatus::Selected);
+        assert_eq!(
+            selected
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("beepbeep-connection")
+        );
+    }
+
+    #[test]
+    fn next_generic_module_segment_does_not_displace_richer_semantic_owner() {
+        let root = unique_test_dir("next-generic-module-segment");
+        let connection = root.join("modules/beepbeep-connection/module.yaml");
+        let audio = root.join("modules/apple-audio-effect-boundary/module.yaml");
+        fs::create_dir_all(connection.parent().unwrap()).unwrap();
+        fs::create_dir_all(audio.parent().unwrap()).unwrap();
+        fs::write(
+            &connection,
+            next_module_source(
+                "beepbeep-connection",
+                "Own live Call Relay-to-Direct handover identity, Direct optimization attempts, Relay proof continuity, and capped retry backoff.",
+            )
+            .replace(
+                "  decisions: []",
+                "  decisions:\n    - consume a failed Direct handover candidate\n    - preserve the active Relay proof\n    - retry Direct optimization with capped backoff",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &audio,
+            next_module_source(
+                "apple-audio-effect-boundary",
+                "Own Apple audio effect execution for live Call and PTT runtime behavior.",
+            ),
+        )
+        .unwrap();
+        let profile = build_repository_profile(&root).unwrap();
+        let task = "Ensure a failed or timed-out live Call Relay-to-Direct handover consumes the failed Direct candidate, preserves the exact active Relay proof and audio, and schedules one fresh isolated Direct optimization attempt with existing capped backoff after cleanup; the fresh Direct attempt must create a new shared handover identity, duplicate messages within one handover remain idempotent, stale messages from the aborted handover are inert, and PTT behavior remains unchanged.";
+
+        let selected = resolve_next_owner_for_task(
+            &root,
+            None,
+            task,
+            "direct-candidate direct-optimization-attempt handover-identity handover-messages live-call-relay-to-direct-handover ptt-behavior relay-audio relay-proof",
             &profile.modules,
             false,
         )
