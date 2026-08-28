@@ -42645,19 +42645,19 @@ fn resolve_next_owner_for_task(
             (
                 Some(direct.path.clone()),
                 "direct root module".to_string(),
-                vec![owner_candidate(subject_route, direct)],
+                vec![owner_candidate(subject_route, direct, modules)],
             )
         } else {
             if top_level.len() == 1 {
                 (
                     Some(top_level[0].path.clone()),
                     "sole top-level module".to_string(),
-                    vec![owner_candidate(subject_route, &top_level[0])],
+                    vec![owner_candidate(subject_route, &top_level[0], modules)],
                 )
             } else {
                 let mut ranked = top_level
                     .iter()
-                    .map(|module| owner_candidate(subject_route, module))
+                    .map(|module| owner_candidate(subject_route, module, modules))
                     .collect::<Vec<_>>();
                 ranked.sort_by(|left, right| {
                     right
@@ -42956,16 +42956,7 @@ fn longest_exact_task_module_mentions<'a>(
 ) -> Vec<&'a ModuleIndexEntry> {
     let mut matches = modules
         .values()
-        .filter(|module| task_mentions_token(task, &module.name))
-        .filter(|module| {
-            // A shorter canonical name is not a qualified identity when it is
-            // also a complete segment sequence of another canonical name.
-            // Explicit owner clauses, artifact paths, and --module resolve
-            // that collision before this implicit-name shortcut runs.
-            !modules.values().any(|other| {
-                other.path != module.path && task_mentions_token(&other.name, &module.name)
-            })
-        })
+        .filter(|module| task_qualifiedly_mentions_module(task, module, modules))
         .collect::<Vec<_>>();
     let Some(longest) = matches
         .iter()
@@ -43018,10 +43009,14 @@ fn explicit_composite_export_reconciliation_modules<'a>(
     matches
 }
 
-fn owner_candidate(task: &str, module: &ModuleIndexEntry) -> RouteCandidate {
+fn owner_candidate(
+    task: &str,
+    module: &ModuleIndexEntry,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+) -> RouteCandidate {
     let mut reasons = Vec::new();
     let mut score = score_route_candidate(task, module, &mut reasons);
-    if task_mentions_module(task, &module.name) {
+    if task_qualifiedly_mentions_module(task, module, modules) {
         score += 6;
         reasons.push(format!("task names module `{}`", module.name));
     }
@@ -43029,7 +43024,7 @@ fn owner_candidate(task: &str, module: &ModuleIndexEntry) -> RouteCandidate {
     if declared_match > 0 {
         score += declared_match;
         reasons.push(format!(
-            "task matches {declared_match} declared purpose, ownership, or public-surface term(s)"
+            "task matches {declared_match} declared purpose, ownership, behavior, or public-surface term(s)"
         ));
     }
     if reasons.is_empty() {
@@ -43059,6 +43054,14 @@ fn score_declared_module_language(task: &str, value: &YamlValue) -> i32 {
             .into_iter()
             .map(|(_, name)| name),
     );
+    if let Some(invariants) = get_path(value, &["invariants"]).and_then(YamlValue::as_sequence) {
+        declared.extend(
+            invariants
+                .iter()
+                .filter_map(|invariant| get_str(invariant, &["id"]))
+                .map(str::to_string),
+        );
+    }
     let words = declared
         .iter()
         .flat_map(|text| {
@@ -44367,7 +44370,7 @@ fn build_route_report(module: &Path, root: &Path, task: &str) -> Result<RouteRep
         };
         let mut reasons = Vec::new();
         let mut score = score_route_candidate(task, child_entry, &mut reasons);
-        if task_mentions_module(task, &child.name) {
+        if task_qualifiedly_mentions_module(task, child_entry, &modules) {
             score += 5;
             reasons.push(format!("task names child module `{}`", child.name));
         }
@@ -44705,8 +44708,17 @@ fn score_keywords(task: &str, keywords: &[&str]) -> i32 {
         .count() as i32
 }
 
-fn task_mentions_module(task: &str, module_name: &str) -> bool {
-    task_mentions_token(task, module_name)
+fn task_qualifiedly_mentions_module(
+    task: &str,
+    module: &ModuleIndexEntry,
+    modules: &BTreeMap<String, ModuleIndexEntry>,
+) -> bool {
+    // A short canonical name is not a qualified identity when the same
+    // complete segment sequence belongs to another canonical module name.
+    task_mentions_token(task, &module.name)
+        && !modules.values().any(|other| {
+            other.path != module.path && task_mentions_token(&other.name, &module.name)
+        })
 }
 
 fn task_mentions_boundary_surface(task: &str) -> bool {
@@ -104121,6 +104133,65 @@ semantic_functions: []
             None,
             task,
             "direct-candidate direct-optimization-attempt handover-identity handover-messages live-call-relay-to-direct-handover ptt-behavior relay-audio relay-proof",
+            &profile.modules,
+            false,
+        )
+        .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(selected.status(), OwnerStatus::Selected);
+        assert_eq!(
+            selected
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("beepbeep-connection")
+        );
+    }
+
+    #[test]
+    fn next_short_colliding_module_identity_does_not_receive_name_bonus() {
+        let root = unique_test_dir("next-short-colliding-module-identity");
+        let scoring = root.join("backend/modules/connection/module.yaml");
+        let generic_handover = root.join("modules/connection-media-epoch-delivery/module.yaml");
+        let handover = root.join("modules/beepbeep-connection/module.yaml");
+        fs::create_dir_all(scoring.parent().unwrap()).unwrap();
+        fs::create_dir_all(generic_handover.parent().unwrap()).unwrap();
+        fs::create_dir_all(handover.parent().unwrap()).unwrap();
+        fs::write(
+            &scoring,
+            next_module_source(
+                "connection",
+                "Select a Fast Relay transport from immutable candidate facts.",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &generic_handover,
+            next_module_source(
+                "connection-media-epoch-delivery",
+                "Own live Call Relay-to-Direct handover delivery over runtime control.",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &handover,
+            next_module_source(
+                "beepbeep-connection",
+                "Own live Call Relay-to-Direct handover runtime authority and PTT preservation.",
+            )
+            .replace(
+                "invariants: []",
+                "invariants:\n  - id: connection-acquisition-call-ordered-install-barrier\n    statement: The exact ordered install barrier aborts to the unchanged Relay proof.",
+            ),
+        )
+        .unwrap();
+        let profile = build_repository_profile(&root).unwrap();
+        let task = "Implement the native reciprocal live Call handover-abort delivery for the existing Connection ordered-install contract: when the coordinator aborts an exact Relay-to-Direct handover, durably send one authenticated abort observation over runtime control before retiring Direct; the participant must accept only the exact current Call authority, handover, attempt, peer Device, and network generation, restore and resume the unchanged Relay lane at the live edge, retire the failed Direct candidate, treat duplicates and stale aborts as inert, and keep PTT behavior unchanged.";
+
+        let selected = resolve_next_owner_for_task(
+            &root,
+            None,
+            task,
+            "call-handover-abort-delivery connection-ordered-install ptt-behavior relay-to-direct-handover runtime-control",
             &profile.modules,
             false,
         )
