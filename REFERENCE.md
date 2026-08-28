@@ -449,11 +449,17 @@ Strict verification and `rms release check` use a content-addressed identity ove
 
 Outcomes are `bugs-found`, `proof-gaps-found`, `clean-under-recorded-bounds`, `inconclusive`, `invalid`, or `unsupported`. Surviving mutants and weak coverage are proof gaps. v0.2 findings have stable semantic IDs, occurrence counts, their property/check and first bad transition when available, and the shortest retained replay. Only explicitly exhaustive strategies can support a finite proof; guided and completed fuzz budgets remain bounded evidence.
 
+During active implementation, run only the narrowest deterministic regression or compile check that can falsify the current hypothesis. For a hardware or distributed failure, run the focused project-owned physical smoke as soon as applicable prerequisite safety proof passes and one identical signed artifact is ready for every target. If the smoke fails, collect correlated evidence from that attempt and return to the narrow loop. Do not rerun unchanged broad gates. Migrations, destructive changes, security-sensitive changes, and changes that cannot safely reach hardware require applicable prerequisite proof before deployment.
+
+After the focused happy path passes, leave the narrow loop. Run full owning-module verification, affected native suites, the affected RMS check, every returned broader acceptance or hardware gate, and the committed audit. This order does not waive candidate or release gates. The consumer repository owns the exact signing, installation, device, topology, and evidence procedure.
+
 The project completion order is:
 
 ```text
-focused proof
+focused happy-path proof
+→ owning-module verification and affected native suites
 → rms check --changes --root .
+→ returned broader acceptance or hardware gates
 → authorized candidate commit
 → rms check --committed --root .
 → rms check --all --root . for exhaustive release or CI certification

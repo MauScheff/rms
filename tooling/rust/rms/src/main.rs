@@ -88,6 +88,7 @@ const BOOTSTRAP_PENDING_AUTHORIZED_COMMIT: &str =
     "bootstrap prepared; provenance baseline pending authorized commit";
 const CANDIDATE_PENDING_AUTHORIZED_COMMIT: &str =
     "candidate prepared; strict audit pending authorized commit";
+const ITERATIVE_PROOF_CADENCE: &str = "During active implementation, run only the narrowest deterministic regression or compile check that can falsify the current hypothesis. For a hardware or distributed failure, once prerequisite safety proof passes and one identical signed artifact is ready, install that artifact on every target and run the focused hardware or distributed smoke before full owning-module verification or progressive checks. If the smoke fails, collect correlated evidence and return to the narrow loop. Do not rerun unchanged broad gates. Migrations, destructive changes, security-sensitive changes, and changes that cannot safely reach hardware require applicable prerequisite proof before deployment. After the focused happy path passes, run every Verify and Complete step. This cadence does not waive final candidate or release gates.";
 const IMPLEMENTATION_V1_SPEC: &str = "rms/implementation/v0.1";
 const IMPLEMENTATION_V2_SPEC: &str = "rms/implementation/v0.2";
 const RMS_FULL_GUIDANCE_SIGNATURE: &str = "<!-- RMS generated full guidance -->";
@@ -43872,6 +43873,10 @@ fn build_next_steps(
         }
     }
 
+    if result == NextResult::Ready && classification.lane.prepares_candidate() {
+        implement.push(manual_next_step(ITERATIVE_PROOF_CADENCE, None));
+    }
+
     let verify = if result == NextResult::Blocked {
         Vec::new()
     } else {
@@ -85829,6 +85834,23 @@ mod tests {
                 step.description
                     .contains("Implement only the native boundary realization")
             }));
+        let cadence = report
+            .steps
+            .iter()
+            .flat_map(|group| &group.steps)
+            .find(|step| {
+                step.description
+                    .contains("narrowest deterministic regression or compile check")
+            })
+            .expect("ready change routes must define iterative proof cadence");
+        for required in [
+            "focused hardware or distributed smoke",
+            "Do not rerun unchanged broad gates",
+            "Migrations, destructive changes, security-sensitive changes",
+            "does not waive final candidate or release gates",
+        ] {
+            assert!(cadence.description.contains(required), "{required}");
+        }
         assert!(receipt.payload.allowed_action_families.is_empty());
     }
 
@@ -88027,7 +88049,8 @@ realizations:
                 "After each meaningful semantic edit",
                 "affected behavioral neighborhood",
                 "smallest touched behavioral composition",
-                "Run full `rms verify`",
+                "After the focused happy path passes",
+                "full owning-module verification and affected native suites",
             ],
         )
         .unwrap();
@@ -88042,6 +88065,12 @@ realizations:
             "neighborhood exploration",
             "composition probe",
             "native fallback",
+            "narrowest deterministic regression or compile check",
+            "identical signed artifact",
+            "focused physical smoke",
+            "Do not rerun unchanged broad gates",
+            "Migrations, destructive changes, security-sensitive changes",
+            "does not waive final candidate or release gates",
         ] {
             assert!(
                 implement.contains(required),
