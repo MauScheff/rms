@@ -13680,7 +13680,7 @@ fn canonical_provider_surface_kind(value: &str) -> Option<String> {
 
 fn render_intent_extraction_prompt(task: &str) -> String {
     format!(
-        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. This is a bounded transformation: use only the task and schema in this prompt, do not inspect files or call tools, and return the object immediately. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Each fact contains only disposition, basis, source_quote, and rationale. Subjects are stable kebab-case identifiers. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Keep facts and responsibilities consistent: domain_decisions is required exactly when at least one responsibility is a decision; a workflow responsibility forbids lifecycle=absent; a storage or integration responsibility forbids effects=absent; and surface-change forbids runnable_surface=absent. A boundary or implementation adapter is not by itself evidence of an external effect or runnable surface. Domain events, replies, and rejections are semantic machine outputs, not external effects. An executable property, proof, test, probe, or runner is verification evidence, not a product runnable surface. Canonical transitions, states, cases, contracts, laws, and properties are semantic-change work even when their realization names an implementation manifest. Reusing or evolving an exact existing canonical module or artifact in place is existing-module semantic-change work, not design, unless the task actually changes topology. Adopting an existing source or runtime boundary into a missing canonical owner is new-module design work; modules named only as consumed evidence, dependencies, executors, or consumers are participants, not the owner. A request that explicitly preserves runtime behavior and changes only contract or proof binding can establish lifecycle=absent when it introduces no ordering or transition change. Surface kinds may contain only browser|cli|mobile-ui|desktop-ui|http|batch|executable; never list product features, integrations, APIs, documentation, onboarding, sign-in, or sign-out as surface kinds. Binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
+        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. This is a bounded transformation: use only the task and schema in this prompt, do not inspect files or call tools, and return the object immediately. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Each fact contains only disposition, basis, source_quote, and rationale. Subjects are stable kebab-case identifiers. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Keep facts and responsibilities consistent: domain_decisions is required exactly when at least one responsibility is a decision; a workflow responsibility forbids lifecycle=absent; a storage or integration responsibility forbids effects=absent; and surface-change forbids runnable_surface=absent. A boundary or implementation adapter is not by itself evidence of an external effect or runnable surface. Domain events, replies, and rejections are semantic machine outputs, not external effects. An executable property, proof, test, probe, or runner is verification evidence, not a product runnable surface. Canonical transitions, states, cases, contracts, laws, and properties are semantic-change work even when their realization names an implementation manifest. Implementing a native adapter, handler, executor, envelope, or wire mapping for an explicitly identified existing contract is implementation-change when the task requests no canonical change; detailed acceptance criteria can restate that existing promise. Never infer existing canonical coverage from implementation language alone. Reusing or evolving an exact existing canonical module or artifact in place is existing-module semantic-change work, not design, unless the task actually changes topology. Adopting an existing source or runtime boundary into a missing canonical owner is new-module design work; modules named only as consumed evidence, dependencies, executors, or consumers are participants, not the owner. A request that explicitly preserves runtime behavior and changes only contract or proof binding can establish lifecycle=absent when it introduces no ordering or transition change. Surface kinds may contain only browser|cli|mobile-ui|desktop-ui|http|batch|executable; never list product features, integrations, APIs, documentation, onboarding, sign-in, or sign-out as surface kinds. Binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
         serde_json::to_string_pretty(&intent_model_template()).unwrap_or_default()
     )
 }
@@ -40740,10 +40740,19 @@ fn build_next_report_with_optional_program(
     }
     let extraction_diagnostics = intent_diagnostics.clone();
     let profile = build_repository_profile(&root)?;
-    let classification = intent
+    let mut classification = intent
         .as_ref()
         .map(classify_intent_model)
         .unwrap_or_else(undetermined_task_classification);
+    let native_existing_realization = classification.lane == TaskLane::ImplementationCandidate
+        && task_requests_existing_contract_native_realization(task);
+    if native_existing_realization {
+        classification.confidence = "deterministic".to_string();
+        classification.reasons = vec![
+            "task explicitly requests native realization of an identified existing canonical contract"
+                .to_string(),
+        ];
+    }
     let mut diagnostics = collect_validation_diagnostics(
         &root,
         Vec::new(),
@@ -40812,6 +40821,10 @@ fn build_next_report_with_optional_program(
         )
     };
     let mut context = build_next_context(&root, &profile.report, owner.selected_module())?;
+    if native_existing_realization && owner.status() == OwnerStatus::Selected {
+        context.edit_authority = "The selected RMS owner supplies canonical meaning only. This route grants no canonical edit authority. Native implementation paths remain governed by the project workflow and are reported as native or outside RMS coverage by progressive checks."
+            .to_string();
+    }
     let machine_repair = if legacy_machine_migration_ready(
         &root,
         explicit_module,
@@ -41011,10 +41024,15 @@ fn build_next_report_with_optional_program(
             TaskLane::SemanticPlusSurface => {
                 allowed_actions.extend(["spec-apply", "machine-apply", "surface-apply"]);
             }
-            TaskLane::ImplementationCandidate => allowed_actions.push("add-binding"),
+            TaskLane::ImplementationCandidate
+                if !native_existing_realization && context.implementation.is_none() =>
+            {
+                allowed_actions.push("add-binding")
+            }
+            TaskLane::ImplementationCandidate => {}
             _ => {}
         }
-        if context.implementation.is_some() {
+        if context.implementation.is_some() && !native_existing_realization {
             allowed_actions.push("binding-migrate");
         }
     }
@@ -41233,6 +41251,69 @@ fn task_requests_implementation_binding_attachment(task: &str) -> bool {
     binding && attach
 }
 
+fn task_requests_existing_contract_native_realization(task: &str) -> bool {
+    let normalized = task.to_ascii_lowercase();
+    let preamble = normalized
+        .split_once(':')
+        .map(|(preamble, _)| preamble)
+        .unwrap_or(normalized.as_str());
+    let requests_implementation = ["implement", "realize", "realise", "wire"]
+        .iter()
+        .any(|verb| task_mentions_token(preamble, verb));
+    let names_native_boundary = [
+        "native",
+        "adapter",
+        "handler",
+        "executor",
+        "envelope",
+        "wire",
+        "runtime-control",
+        "runtime control",
+    ]
+    .iter()
+    .any(|term| {
+        if term.contains(' ') {
+            preamble.contains(term)
+        } else {
+            task_mentions_token(preamble, term)
+        }
+    });
+    let names_existing_declaration = task_mentions_token(preamble, "existing")
+        && ["contract", "invariant", "command", "input", "behavior"]
+            .iter()
+            .any(|term| task_mentions_token(preamble, term));
+    let requests_canonical_change = [
+        "add a contract",
+        "add contract",
+        "change the contract",
+        "change contract",
+        "evolve the contract",
+        "evolve contract",
+        "extend the contract",
+        "extend contract",
+        "replace the contract",
+        "replace contract",
+        "new contract",
+        "new behavior",
+        "new invariant",
+        "new command",
+        "new input",
+        "new effect",
+        "new state",
+        "new transition",
+        "change semantics",
+        "evolve semantics",
+        "new semantics",
+    ]
+    .iter()
+    .any(|phrase| preamble.contains(phrase));
+
+    requests_implementation
+        && names_native_boundary
+        && names_existing_declaration
+        && !requests_canonical_change
+}
+
 fn normalize_provider_implementation_binding_for_task(model: &mut IntentModel) -> bool {
     if model.operation == IntentOperation::ImplementationChange
         && model.change_scope == IntentChangeScope::ExistingModule
@@ -41432,6 +41513,14 @@ fn normalize_provider_intent_for_task(task: &str, model: &mut IntentModel) -> bo
             source_quote: None,
             rationale: Some("The task explicitly reuses an existing canonical asset.".to_string()),
         };
+        changed = true;
+    }
+
+    if model.change_scope == IntentChangeScope::ExistingModule
+        && model.operation == IntentOperation::SemanticChange
+        && task_requests_existing_contract_native_realization(task)
+    {
+        model.operation = IntentOperation::ImplementationChange;
         changed = true;
     }
 
@@ -43530,7 +43619,11 @@ fn build_next_steps(
                 None,
             )),
             TaskLane::ImplementationCandidate => declare.push(manual_next_step(
-                "Confirm the task changes only existing declared role bodies; escalate to `rms spec plan` if meaning or architecture changes.",
+                if task_requests_existing_contract_native_realization(task) {
+                    "Confirm the selected canonical contract already declares every task-owned input, output, invariant, and failure rule. Make no canonical change. If any promise is missing, stop and rerun `rms next` with that exact semantic change."
+                } else {
+                    "Confirm the task changes only existing declared role bodies; escalate to `rms spec plan` if meaning or architecture changes."
+                },
                 None,
             )),
             TaskLane::Undetermined => declare.push(executable_next_step(
@@ -43554,23 +43647,32 @@ fn build_next_steps(
                 TaskLane::ReadOnly | TaskLane::RepositoryOperation | TaskLane::Design
             )
         {
-            implement.push(executable_next_step(
-                "Render bounded implementation guidance for the selected owner",
-                "rms",
-                vec![
-                    "implement".to_string(),
-                    selected.path.clone(),
-                    "--root".to_string(),
-                    root.display().to_string(),
-                    "--task".to_string(),
-                    task.to_string(),
-                ],
-                cwd.clone(),
-            ));
-            implement.push(manual_next_step(
-                "Fill only RMS-declared role bodies and keep every boundary effect and dependency inside its declared authority.",
-                None,
-            ));
+            if classification.lane == TaskLane::ImplementationCandidate
+                && task_requests_existing_contract_native_realization(task)
+            {
+                implement.push(manual_next_step(
+                    "Implement only the native boundary realization of the existing contract. Do not edit canonical artifacts or change declared meaning. Use project-owned native proof; RMS progressive checks report native and outside-coverage paths without certifying them.",
+                    None,
+                ));
+            } else {
+                implement.push(executable_next_step(
+                    "Render bounded implementation guidance for the selected owner",
+                    "rms",
+                    vec![
+                        "implement".to_string(),
+                        selected.path.clone(),
+                        "--root".to_string(),
+                        root.display().to_string(),
+                        "--task".to_string(),
+                        task.to_string(),
+                    ],
+                    cwd.clone(),
+                ));
+                implement.push(manual_next_step(
+                    "Fill only RMS-declared role bodies and keep every boundary effect and dependency inside its declared authority.",
+                    None,
+                ));
+            }
         }
     }
 
@@ -85378,6 +85480,132 @@ mod tests {
             &mut reuse,
         ));
         assert_eq!(reuse.operation, IntentOperation::SemanticChange);
+    }
+
+    #[test]
+    fn provider_intent_normalization_keeps_existing_contract_native_realization_out_of_semantic_lane(
+    ) {
+        let task = "Implement the native reciprocal live Call handover-abort delivery for the existing Connection ordered-install contract: when the coordinator aborts an exact Relay-to-Direct handover, durably send one authenticated abort observation over runtime control before retiring Direct; the participant must accept only the exact current Call authority, handover, attempt, peer Device, and network generation, restore and resume the unchanged Relay lane at the live edge, retire the failed Direct candidate, treat duplicates and stale aborts as inert, and keep PTT behavior unchanged.";
+        let source = r#"{
+          "spec":"rms/intent-model/v0.1",
+          "operation":"semantic-change",
+          "change_scope":"existing-module",
+          "subjects":["call-handover-abort","connection-ordered-install","ptt-behavior","relay-to-direct-handover","runtime-control"],
+          "facts":{
+            "domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"the participant must accept only the exact current Call authority, handover, attempt, peer Device, and network generation"},
+            "lifecycle":{"disposition":"required","basis":"explicit","source_quote":"restore and resume the unchanged Relay lane at the live edge, retire the failed Direct candidate, treat duplicates and stale aborts as inert"},
+            "effects":{"disposition":"required","basis":"explicit","source_quote":"durably send one authenticated abort observation over runtime control before retiring Direct"},
+            "runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"No runnable product surface is requested."},
+            "reuse":{"disposition":"required","basis":"explicit","source_quote":"for the existing Connection ordered-install contract"}
+          },
+          "responsibilities":[
+            {"id":"abort-observation-delivery","kind":"integration","summary":"Deliver the existing abort observation."},
+            {"id":"abort-authority-validation","kind":"decision","summary":"Realize the existing exact-authority decision."},
+            {"id":"handover-abort-recovery","kind":"workflow","summary":"Realize the existing abort recovery."}
+          ],
+          "surface_kinds":[],
+          "binding_preferences":[],
+          "open_questions":[]
+        }"#;
+        let mut realization = parse_intent_model_source(source).unwrap();
+
+        assert!(normalize_provider_intent_for_task(task, &mut realization));
+        assert_eq!(realization.operation, IntentOperation::ImplementationChange);
+        assert_eq!(
+            classify_intent_model(&realization).lane,
+            TaskLane::ImplementationCandidate
+        );
+
+        for semantic_task in [
+            "Evolve the existing Connection ordered-install contract to add a new authenticated abort observation and new retirement ordering.",
+            "Implement the native adapter for the existing Connection contract to add a new input and a new effect.",
+        ] {
+            let mut evolution = parse_intent_model_source(source).unwrap();
+            assert!(!normalize_provider_intent_for_task(
+                semantic_task,
+                &mut evolution,
+            ));
+            assert_eq!(evolution.operation, IntentOperation::SemanticChange);
+        }
+    }
+
+    #[test]
+    fn next_routes_existing_contract_native_realization_without_canonical_mutation_authority() {
+        let root = copy_minimal_fixture("next-native-existing-contract-realization");
+        initialize_test_git_repository(&root);
+        let module = root.join("module.yaml");
+        let task = "Implement the native reciprocal live Call handover-abort delivery for the existing Connection ordered-install contract: when the coordinator aborts an exact Relay-to-Direct handover, durably send one authenticated abort observation over runtime control before retiring Direct; the participant must accept only the exact current Call authority, handover, attempt, peer Device, and network generation, restore and resume the unchanged Relay lane at the live edge, retire the failed Direct candidate, treat duplicates and stale aborts as inert, and keep PTT behavior unchanged.";
+        let mut model = parse_intent_model_source(
+            r#"{
+              "spec":"rms/intent-model/v0.1",
+              "operation":"semantic-change",
+              "change_scope":"existing-module",
+              "subjects":["call-handover-abort","connection-ordered-install","runtime-control"],
+              "facts":{
+                "domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"the participant must accept only the exact current Call authority, handover, attempt, peer Device, and network generation"},
+                "lifecycle":{"disposition":"required","basis":"explicit","source_quote":"restore and resume the unchanged Relay lane at the live edge, retire the failed Direct candidate, treat duplicates and stale aborts as inert"},
+                "effects":{"disposition":"required","basis":"explicit","source_quote":"durably send one authenticated abort observation over runtime control before retiring Direct"},
+                "runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"No runnable product surface is requested."},
+                "reuse":{"disposition":"required","basis":"explicit","source_quote":"for the existing Connection ordered-install contract"}
+              },
+              "responsibilities":[
+                {"id":"abort-observation-delivery","kind":"integration","summary":"Deliver the existing abort observation."},
+                {"id":"abort-authority-validation","kind":"decision","summary":"Realize the existing authority decision."},
+                {"id":"handover-abort-recovery","kind":"workflow","summary":"Realize the existing abort recovery."}
+              ],
+              "surface_kinds":[],
+              "binding_preferences":[],
+              "open_questions":[]
+            }"#,
+        )
+        .unwrap();
+        assert!(normalize_provider_intent_for_task(task, &mut model));
+
+        let report = build_next_report_with_intent(
+            &root,
+            Some(&module),
+            task,
+            RawIntentInput {
+                yaml: Some(serde_yaml::to_string(&model).unwrap()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(report.result, NextResult::Ready, "{:#?}", report.blockers);
+        assert_eq!(
+            report.task_classification.lane,
+            TaskLane::ImplementationCandidate
+        );
+        assert!(report.task_classification.reasons.iter().any(|reason| {
+            reason.contains("native realization of an identified existing canonical contract")
+        }));
+        assert!(report
+            .context
+            .edit_authority
+            .contains("no canonical edit authority"));
+        assert!(report
+            .steps
+            .iter()
+            .flat_map(|group| &group.steps)
+            .all(|step| {
+                step.display
+                    .as_deref()
+                    .is_none_or(|display| !display.contains("rms spec plan"))
+            }));
+        assert!(report
+            .steps
+            .iter()
+            .flat_map(|group| &group.steps)
+            .any(|step| {
+                step.description
+                    .contains("Implement only the native boundary realization")
+            }));
+        assert!(receipt.payload.allowed_action_families.is_empty());
     }
 
     #[test]

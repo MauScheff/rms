@@ -223,11 +223,13 @@ Task lanes are:
 | `semantic` | Meaning, laws, contracts, properties, effects, dependencies, authorities, or evidence obligations |
 | `surface` | CLI, UI, HTTP, batch, app, or another runnable boundary |
 | `semantic-plus-surface` | Public meaning and its runnable boundary change together |
-| `implementation-candidate` | Existing declared role bodies can realize the request without changing canonical meaning |
+| `implementation-candidate` | Existing declared role bodies or an explicitly identified native boundary can realize existing canonical meaning |
 | `repository-operation` | Installation, skill/plugin synchronization, or Git status/fetch/commit/rebase/merge/push |
 | `undetermined` | Observable evidence cannot yet select a truthful lane |
 
 Classification confidence is `deterministic` after model validation. `operation` chooses the lane, structured `subjects` route ownership, and facts/responsibilities choose topology. Explicit adoption of an existing source or runtime boundary into a missing canonical owner normalizes to `design` with `new-module` scope. Existing modules named only as consumed evidence, dependencies, executors, or consumers cannot become that new owner. Exact canonical owner paths, explicit in-place existing-owner work, and `--module` overrides keep their existing-owner semantics. Other raw task words, including words inside negation, have no architectural authority.
+
+An explicit request to implement a native adapter, handler, executor, envelope, or wire mapping for an identified existing contract normalizes to `implementation-candidate` when the request does not change canonical meaning. Detailed acceptance criteria can restate the existing promise. The ready receipt grants no canonical mutation family, does not prescribe `spec plan`, and reports native or outside-coverage source honestly through progressive checks. If the task adds or changes a contract, law, input, output, effect, protocol, ordering rule, or evidence obligation, the lane remains `semantic`.
 
 `no-rms-change` contains no design, specification, source-edit, gate, audit, or pending-candidate prescription, even when the readable root is uninitialized. It reports only the repository operation and its applicable authority boundary.
 
