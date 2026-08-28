@@ -229,7 +229,7 @@ Task lanes are:
 
 Classification confidence is `deterministic` after model validation. `operation` chooses the lane, structured `subjects` route ownership, and facts/responsibilities choose topology. Explicit adoption of an existing source or runtime boundary into a missing canonical owner normalizes to `design` with `new-module` scope. Existing modules named only as consumed evidence, dependencies, executors, or consumers cannot become that new owner. Exact canonical owner paths, explicit in-place existing-owner work, and `--module` overrides keep their existing-owner semantics. Other raw task words, including words inside negation, have no architectural authority.
 
-An explicit request to implement a native adapter, handler, executor, envelope, or wire mapping for an identified existing contract normalizes to `implementation-candidate` when the request does not change canonical meaning. Detailed acceptance criteria can restate the existing promise. The ready receipt grants no canonical mutation family, does not prescribe `spec plan`, and reports native or outside-coverage source honestly through progressive checks. If the task adds or changes a contract, law, input, output, effect, protocol, ordering rule, or evidence obligation, the lane remains `semantic`.
+An explicit request to implement a native adapter, handler, executor, envelope, or wire mapping for an identified existing contract normalizes to `implementation-candidate` when the request does not change canonical meaning. The same rule applies to a native repair that explicitly preserves the identified existing contract. Detailed acceptance criteria can restate the existing promise. The ready receipt grants no canonical mutation family, does not prescribe `spec plan`, and reports native or outside-coverage source honestly through progressive checks. If the task adds or changes a contract, law, input, output, effect, protocol, ordering rule, or evidence obligation, the lane remains `semantic`.
 
 `no-rms-change` contains no design, specification, source-edit, gate, audit, or pending-candidate prescription, even when the readable root is uninitialized. It reports only the repository operation and its applicable authority boundary.
 
@@ -241,6 +241,8 @@ Owner selection is deterministic:
 4. Otherwise select one unique positive match from structured semantic subjects.
 5. Recurse through declared composites using route evidence and cycle protection.
 6. Stop at `needs-owner` for ties, non-positive multi-candidate matches, or recursive ambiguity.
+
+Prospective declared-language scoring retains the full count of distinct matching purpose, ownership, behavior, and public-surface terms. It does not saturate stronger evidence into an artificial tie.
 
 A recursive ownership cycle makes the owner invalid and produces `blocked`, not `needs-owner`. Direct-root and sole-top-level selection do not require a positive task-language score.
 

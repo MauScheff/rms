@@ -4,6 +4,8 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as FmtWrite;
@@ -157,7 +159,11 @@ struct CachedRustFile {
 }
 
 thread_local! {
+    #[cfg(test)]
+    static SWIFT_FUNCTION_SOURCE_CALLS: Cell<u64> = const { Cell::new(0) };
     static RUST_SOURCE_CACHE: RefCell<BTreeMap<PathBuf, CachedRustFile>> =
+        RefCell::new(BTreeMap::new());
+    static SWIFT_FUNCTION_INDEX_CACHE: RefCell<BTreeMap<PathBuf, SwiftFunctionIndex>> =
         RefCell::new(BTreeMap::new());
 }
 
@@ -178,6 +184,10 @@ fn with_cached_rust_file<T>(path: &Path, inspect: impl FnOnce(&syn::File) -> T) 
         }
         cache.get(path).map(|cached| inspect(&cached.file))
     })
+}
+
+fn clear_swift_function_index_cache() {
+    SWIFT_FUNCTION_INDEX_CACHE.with(|cache| cache.borrow_mut().clear());
 }
 
 fn verification_reference_categories() -> impl Iterator<Item = &'static str> {
@@ -10743,6 +10753,7 @@ fn collect_validation_diagnostics(
     implementations: Vec<PathBuf>,
     conformance_reports: Vec<PathBuf>,
 ) -> Result<Vec<Diagnostic>> {
+    clear_swift_function_index_cache();
     let full_root_scan = modules.is_empty()
         && systems.is_empty()
         && context_maps.is_empty()
@@ -13680,7 +13691,7 @@ fn canonical_provider_surface_kind(value: &str) -> Option<String> {
 
 fn render_intent_extraction_prompt(task: &str) -> String {
     format!(
-        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. This is a bounded transformation: use only the task and schema in this prompt, do not inspect files or call tools, and return the object immediately. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Each fact contains only disposition, basis, source_quote, and rationale. Subjects are stable kebab-case identifiers. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Keep facts and responsibilities consistent: domain_decisions is required exactly when at least one responsibility is a decision; a workflow responsibility forbids lifecycle=absent; a storage or integration responsibility forbids effects=absent; and surface-change forbids runnable_surface=absent. A boundary or implementation adapter is not by itself evidence of an external effect or runnable surface. Domain events, replies, and rejections are semantic machine outputs, not external effects. An executable property, proof, test, probe, or runner is verification evidence, not a product runnable surface. Canonical transitions, states, cases, contracts, laws, and properties are semantic-change work even when their realization names an implementation manifest. Implementing a native adapter, handler, executor, envelope, or wire mapping for an explicitly identified existing contract is implementation-change when the task requests no canonical change; detailed acceptance criteria can restate that existing promise. Never infer existing canonical coverage from implementation language alone. Reusing or evolving an exact existing canonical module or artifact in place is existing-module semantic-change work, not design, unless the task actually changes topology. Adopting an existing source or runtime boundary into a missing canonical owner is new-module design work; modules named only as consumed evidence, dependencies, executors, or consumers are participants, not the owner. A request that explicitly preserves runtime behavior and changes only contract or proof binding can establish lifecycle=absent when it introduces no ordering or transition change. Surface kinds may contain only browser|cli|mobile-ui|desktop-ui|http|batch|executable; never list product features, integrations, APIs, documentation, onboarding, sign-in, or sign-out as surface kinds. Binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
+        "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. This is a bounded transformation: use only the task and schema in this prompt, do not inspect files or call tools, and return the object immediately. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Each fact contains only disposition, basis, source_quote, and rationale. Subjects are stable kebab-case identifiers. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Keep facts and responsibilities consistent: domain_decisions is required exactly when at least one responsibility is a decision; a workflow responsibility forbids lifecycle=absent; a storage or integration responsibility forbids effects=absent; and surface-change forbids runnable_surface=absent. A boundary or implementation adapter is not by itself evidence of an external effect or runnable surface. Domain events, replies, and rejections are semantic machine outputs, not external effects. An executable property, proof, test, probe, or runner is verification evidence, not a product runnable surface. Canonical transitions, states, cases, contracts, laws, and properties are semantic-change work even when their realization names an implementation manifest. Implementing a native adapter, handler, executor, envelope, or wire mapping for an explicitly identified existing contract is implementation-change when the task requests no canonical change. Repairing native runtime behavior is also implementation-change when the task explicitly preserves an identified existing contract. Detailed acceptance criteria can restate that existing promise. Never infer existing canonical coverage from implementation language alone. Reusing or evolving an exact existing canonical module or artifact in place is existing-module semantic-change work, not design, unless the task actually changes topology. Adopting an existing source or runtime boundary into a missing canonical owner is new-module design work; modules named only as consumed evidence, dependencies, executors, or consumers are participants, not the owner. A request that explicitly preserves runtime behavior and changes only contract or proof binding can establish lifecycle=absent when it introduces no ordering or transition change. Surface kinds may contain only browser|cli|mobile-ui|desktop-ui|http|batch|executable; never list product features, integrations, APIs, documentation, onboarding, sign-in, or sign-out as surface kinds. Binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
         serde_json::to_string_pretty(&intent_model_template()).unwrap_or_default()
     )
 }
@@ -19561,8 +19572,19 @@ fn validate_property_module(module: &LoadedManifest, diagnostics: &mut Vec<Diagn
         let path = base.join("implementation.yaml");
         path.is_file().then(|| load_manifest(&path).ok()).flatten()
     };
+    let swift_index = implementation
+        .as_ref()
+        .filter(|implementation| get_str(&implementation.value, &["binding"]) == Some("swift"))
+        .map(|_| SwiftFunctionIndex::from_swift_sources_under(base));
     for target in properties.iter().chain(fuzz_targets.iter()) {
-        validate_property_target_report(module, base, target, implementation.as_ref(), diagnostics);
+        validate_property_target_report(
+            module,
+            base,
+            target,
+            implementation.as_ref(),
+            swift_index.as_ref(),
+            diagnostics,
+        );
     }
 
     let profiles = get_string_array(&module.value, &["profiles"]);
@@ -19984,12 +20006,15 @@ fn validate_property_implementation(
     );
     let has_parser_property =
         implementation_has_executable_parser_property(implementation, &properties);
+    let swift_index = (get_str(&implementation.value, &["binding"]) == Some("swift"))
+        .then(|| SwiftFunctionIndex::from_swift_sources_under(base));
     for target in properties.iter().chain(fuzz_targets.iter()) {
         validate_property_target_report(
             implementation,
             base,
             target,
             Some(implementation),
+            swift_index.as_ref(),
             diagnostics,
         );
     }
@@ -20066,6 +20091,7 @@ fn validate_property_target_report(
     base: &Path,
     target: &PropertyTargetReport,
     implementation: Option<&LoadedManifest>,
+    swift_index: Option<&SwiftFunctionIndex>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     validate_algebraic_property(manifest, target, diagnostics);
@@ -20285,11 +20311,12 @@ fn validate_property_target_report(
                         ),
                     );
                 } else {
-                    if !binding_function_references_symbol(
+                    if !binding_function_references_symbol_with_swift_index(
                         &realization_base,
                         implementation,
                         &realization.runner,
                         binding_reference_symbol(generator).unwrap_or(generator),
+                        swift_index,
                     ) {
                         push_unique_warning(
                             diagnostics,
@@ -20320,12 +20347,13 @@ fn validate_property_target_report(
                     }
                 }
             }
-            if !property_runner_calls_operation(
+            if !property_runner_calls_operation_with_swift_index(
                 &realization_base,
                 implementation,
                 &realization.runner,
                 realization.generator.as_deref(),
                 get_path(&target.definition, &["operation"]),
+                swift_index,
             ) {
                 push_unique_warning(
                     diagnostics,
@@ -21028,6 +21056,22 @@ fn binding_function_references_symbol(
     function_reference: &str,
     target_symbol: &str,
 ) -> bool {
+    binding_function_references_symbol_with_swift_index(
+        base,
+        implementation,
+        function_reference,
+        target_symbol,
+        None,
+    )
+}
+
+fn binding_function_references_symbol_with_swift_index(
+    base: &Path,
+    implementation: &LoadedManifest,
+    function_reference: &str,
+    target_symbol: &str,
+    swift_index: Option<&SwiftFunctionIndex>,
+) -> bool {
     let Some((path, function_symbol)) =
         binding_reference_parts_in_workspace(function_reference, base, &implementation.path)
     else {
@@ -21046,12 +21090,23 @@ fn binding_function_references_symbol(
             match binding {
                 Some("js") | Some("javascript") => js_function_source(&source, function_symbol)
                     .is_some_and(|function| source_identifier_occurs(&function, target_symbol)),
-                Some("swift") => swift_function_transitively_references_symbol(
-                    base,
-                    &full_path,
-                    function_symbol,
-                    target_symbol,
-                ),
+                Some("swift") => swift_index
+                    .filter(|index| index.covers_swift_analysis_base(base))
+                    .map(|index| {
+                        index.swift_call_graph_transitively_references_symbol(
+                            &full_path,
+                            function_symbol,
+                            target_symbol,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        cached_swift_function_transitively_references_symbol(
+                            base,
+                            &full_path,
+                            function_symbol,
+                            target_symbol,
+                        )
+                    }),
                 Some("python") => python_function_source(&source, function_symbol)
                     .is_some_and(|function| source_identifier_occurs(function, target_symbol)),
                 Some("executable") => true,
@@ -21064,73 +21119,173 @@ fn binding_function_references_symbol(
     }
 }
 
+#[cfg(test)]
 fn swift_function_transitively_references_symbol(
     base: &Path,
     start_path: &Path,
     start_symbol: &str,
     target_symbol: &str,
 ) -> bool {
-    let mut files = WalkDir::new(base)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| {
-            !matches!(
-                entry.file_name().to_str(),
-                Some(".build" | ".git" | "target" | ".rms")
-            )
-        })
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("swift"))
-        .filter_map(|entry| {
-            fs::read_to_string(entry.path())
-                .ok()
-                .map(|source| (entry.into_path(), source))
-        })
-        .collect::<Vec<_>>();
-    files.sort_by(|left, right| left.0.cmp(&right.0));
-    let known_functions = files
-        .iter()
-        .flat_map(|(_, source)| source.lines().filter_map(parse_swift_function_name))
-        .collect::<BTreeSet<_>>();
-    let target_leaf = semantic_symbol_name(target_symbol)
-        .rsplit('.')
-        .next()
-        .unwrap_or(target_symbol);
-    let mut queue = VecDeque::from([(start_path.to_path_buf(), start_symbol.to_string())]);
-    let mut visited = BTreeSet::new();
+    SwiftFunctionIndex::from_swift_sources_under(base)
+        .swift_call_graph_transitively_references_symbol(start_path, start_symbol, target_symbol)
+}
 
-    while let Some((path, symbol)) = queue.pop_front() {
-        if visited.len() >= 256 || !visited.insert((path.clone(), symbol.clone())) {
-            continue;
-        }
-        let Some(source) = files
-            .iter()
-            .find(|(candidate, _)| candidate == &path)
-            .map(|(_, source)| source.as_str())
-        else {
-            continue;
+struct SwiftFunctionIndex {
+    base: PathBuf,
+    functions: BTreeMap<(PathBuf, String), String>,
+    paths_by_name: BTreeMap<String, Vec<PathBuf>>,
+}
+
+impl SwiftFunctionIndex {
+    fn from_swift_sources_under(base: &Path) -> Self {
+        let mut index = Self {
+            base: base.to_path_buf(),
+            functions: BTreeMap::new(),
+            paths_by_name: BTreeMap::new(),
         };
-        let Some(function) = swift_function_source(source, semantic_symbol_name(&symbol)) else {
-            continue;
-        };
-        if source_identifier_occurs(function, target_leaf)
-            || function.contains(&format!(".{target_leaf}("))
-        {
-            return true;
+        let mut files = WalkDir::new(base)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| {
+                !matches!(
+                    entry.file_name().to_str(),
+                    Some(".build" | ".git" | "target" | ".rms")
+                )
+            })
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .filter(|entry| {
+                entry.path().extension().and_then(|value| value.to_str()) == Some("swift")
+            })
+            .filter_map(|entry| {
+                fs::read_to_string(entry.path())
+                    .ok()
+                    .map(|source| (entry.into_path(), source))
+            })
+            .collect::<Vec<_>>();
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        for (path, source) in files {
+            for (name, function) in swift_function_sources(&source) {
+                let key = (path.clone(), name.clone());
+                if index.functions.contains_key(&key) {
+                    continue;
+                }
+                index.functions.insert(key, function.to_string());
+                index
+                    .paths_by_name
+                    .entry(name)
+                    .or_default()
+                    .push(path.clone());
+            }
         }
-        for helper in &known_functions {
-            if helper == semantic_symbol_name(&symbol) || !source_calls_symbol(function, helper) {
+        index
+    }
+
+    fn covers_swift_analysis_base(&self, base: &Path) -> bool {
+        self.base == base
+    }
+
+    fn swift_call_graph_transitively_references_symbol(
+        &self,
+        start_path: &Path,
+        start_symbol: &str,
+        target_symbol: &str,
+    ) -> bool {
+        let target_leaf = semantic_symbol_name(target_symbol)
+            .rsplit('.')
+            .next()
+            .unwrap_or(target_symbol);
+        let mut queue = VecDeque::from([(
+            start_path.to_path_buf(),
+            semantic_symbol_name(start_symbol).to_string(),
+        )]);
+        let mut visited = BTreeSet::new();
+
+        while let Some((path, symbol)) = queue.pop_front() {
+            if visited.len() >= 256 || !visited.insert((path.clone(), symbol.clone())) {
                 continue;
             }
-            for (helper_path, helper_source) in &files {
-                if swift_function_source(helper_source, helper).is_some() {
+            let Some(function) = self.functions.get(&(path, symbol.clone())) else {
+                continue;
+            };
+            if source_identifier_occurs(function, target_leaf)
+                || function.contains(&format!(".{target_leaf}("))
+            {
+                return true;
+            }
+            for helper in swift_called_function_names(function) {
+                if helper == symbol {
+                    continue;
+                }
+                for helper_path in self.paths_by_name.get(&helper).into_iter().flatten() {
                     queue.push_back((helper_path.clone(), helper.clone()));
                 }
             }
         }
+        false
     }
-    false
+}
+
+fn cached_swift_function_transitively_references_symbol(
+    base: &Path,
+    start_path: &Path,
+    start_symbol: &str,
+    target_symbol: &str,
+) -> bool {
+    SWIFT_FUNCTION_INDEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache
+            .entry(base.to_path_buf())
+            .or_insert_with(|| SwiftFunctionIndex::from_swift_sources_under(base))
+            .swift_call_graph_transitively_references_symbol(
+                start_path,
+                start_symbol,
+                target_symbol,
+            )
+    })
+}
+
+fn swift_called_function_names(source: &str) -> BTreeSet<String> {
+    source
+        .match_indices('(')
+        .filter_map(|(open, _)| {
+            let prefix = &source[..open];
+            let end = prefix
+                .char_indices()
+                .rev()
+                .find(|(_, character)| !character.is_whitespace())
+                .map(|(index, character)| index + character.len_utf8())?;
+            let start = prefix[..end]
+                .char_indices()
+                .rev()
+                .find(|(_, character)| !swift_identifier_character(*character))
+                .map(|(index, character)| index + character.len_utf8())
+                .unwrap_or(0);
+            let name = &prefix[start..end];
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .collect()
+}
+
+fn swift_function_sources(source: &str) -> Vec<(String, &str)> {
+    source
+        .match_indices("func ")
+        .filter_map(|(start, _)| {
+            let mut line_start = 0;
+            for (index, character) in source[..start].char_indices() {
+                if character == '\n' {
+                    line_start = index + character.len_utf8();
+                }
+            }
+            let line_end = source[start..]
+                .find('\n')
+                .map(|index| start + index)
+                .unwrap_or(source.len());
+            let name = parse_swift_function_name(&source[line_start..line_end])?;
+            let function = swift_function_source(&source[start..], &name)?;
+            Some((name, function))
+        })
+        .collect()
 }
 
 fn trace_producer_serializes_transition_records(
@@ -21310,12 +21465,31 @@ impl RustFunctionProofVisitor<'_> {
     }
 }
 
+#[cfg(test)]
 fn property_runner_calls_operation(
     base: &Path,
     implementation: &LoadedManifest,
     runner: &str,
     generator: Option<&str>,
     operation: Option<&YamlValue>,
+) -> bool {
+    property_runner_calls_operation_with_swift_index(
+        base,
+        implementation,
+        runner,
+        generator,
+        operation,
+        None,
+    )
+}
+
+fn property_runner_calls_operation_with_swift_index(
+    base: &Path,
+    implementation: &LoadedManifest,
+    runner: &str,
+    generator: Option<&str>,
+    operation: Option<&YamlValue>,
+    swift_index: Option<&SwiftFunctionIndex>,
 ) -> bool {
     if get_str(&implementation.value, &["binding"]) == Some("executable") {
         return true;
@@ -21389,7 +21563,13 @@ fn property_runner_calls_operation(
     symbols.into_iter().any(|reference| {
         let symbol = semantic_symbol_name(&reference);
         binding_reference_symbol(runner) != Some(symbol)
-            && binding_function_references_symbol(base, implementation, runner, symbol)
+            && binding_function_references_symbol_with_swift_index(
+                base,
+                implementation,
+                runner,
+                symbol,
+                swift_index,
+            )
     })
 }
 
@@ -35891,6 +36071,8 @@ fn braced_source_from_open(source: &str, open: usize) -> Option<&str> {
 }
 
 fn swift_function_source<'a>(source: &'a str, function_name: &str) -> Option<&'a str> {
+    #[cfg(test)]
+    SWIFT_FUNCTION_SOURCE_CALLS.with(|count| count.set(count.get() + 1));
     let marker = format!("func {function_name}(");
     source.match_indices(&marker).find_map(|(start, _)| {
         let before_is_identifier = source[..start]
@@ -41257,7 +41439,7 @@ fn task_requests_existing_contract_native_realization(task: &str) -> bool {
         .split_once(':')
         .map(|(preamble, _)| preamble)
         .unwrap_or(normalized.as_str());
-    let requests_implementation = ["implement", "realize", "realise", "wire"]
+    let requests_direct_realization = ["implement", "realize", "realise", "wire"]
         .iter()
         .any(|verb| task_mentions_token(preamble, verb));
     let names_native_boundary = [
@@ -41282,6 +41464,21 @@ fn task_requests_existing_contract_native_realization(task: &str) -> bool {
         && ["contract", "invariant", "command", "input", "behavior"]
             .iter()
             .any(|term| task_mentions_token(preamble, term));
+    let explicitly_preserves_existing_declaration = [
+        "without changing the existing",
+        "without changing existing",
+        "preserve the existing contract",
+        "preserve existing contract",
+        "keep the existing contract unchanged",
+        "keep existing contract unchanged",
+        "no contract change",
+    ]
+    .iter()
+    .any(|phrase| preamble.contains(phrase));
+    let requests_preserving_repair = ["repair", "fix"]
+        .iter()
+        .any(|verb| task_mentions_token(preamble, verb))
+        && explicitly_preserves_existing_declaration;
     let requests_canonical_change = [
         "add a contract",
         "add contract",
@@ -41308,7 +41505,7 @@ fn task_requests_existing_contract_native_realization(task: &str) -> bool {
     .iter()
     .any(|phrase| preamble.contains(phrase));
 
-    requests_implementation
+    (requests_direct_realization || requests_preserving_repair)
         && names_native_boundary
         && names_existing_declaration
         && !requests_canonical_change
@@ -43164,8 +43361,7 @@ fn score_declared_module_language(task: &str, value: &YamlValue) -> i32 {
     words
         .iter()
         .filter(|word| task_mentions_token(task, word))
-        .count()
-        .min(8) as i32
+        .count() as i32
 }
 
 fn route_next_owner(
@@ -85516,6 +85712,15 @@ mod tests {
             TaskLane::ImplementationCandidate
         );
 
+        let repair_task = "Repair the native live Call handover lifecycle so it works across repeated network generations without changing the existing Connection contract: preserve the successful Direct Wi-Fi to Relay cellular to Direct QUIC cellular receive-rebase flow, allow the next Wi-Fi generation to prepare and install a fresh exact Direct attempt, release all attempt-scoped authority and cleanup state from the prior completed or aborted handover, keep stale and duplicate signals inert, preserve uninterrupted Relay recovery and PTT behavior, and add a deterministic regression for two consecutive Relay-to-Direct handovers.";
+        let mut repair = parse_intent_model_source(source).unwrap();
+        assert!(normalize_provider_intent_for_task(repair_task, &mut repair,));
+        assert_eq!(repair.operation, IntentOperation::ImplementationChange);
+        assert_eq!(
+            classify_intent_model(&repair).lane,
+            TaskLane::ImplementationCandidate
+        );
+
         for semantic_task in [
             "Evolve the existing Connection ordered-install contract to add a new authenticated abort observation and new retirement ordering.",
             "Implement the native adapter for the existing Connection contract to add a new input and a new effect.",
@@ -85527,6 +85732,25 @@ mod tests {
             ));
             assert_eq!(evolution.operation, IntentOperation::SemanticChange);
         }
+    }
+
+    #[test]
+    fn declared_language_scoring_preserves_strength_above_eight_matches() {
+        let task = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima";
+        let precise: YamlValue = serde_yaml::from_str(
+            "module:\n  purpose: alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima\n",
+        )
+        .unwrap();
+        let weaker: YamlValue = serde_yaml::from_str(
+            "module:\n  purpose: alpha bravo charlie delta echo foxtrot golf hotel\n",
+        )
+        .unwrap();
+
+        assert!(
+            score_declared_module_language(task, &precise)
+                > score_declared_module_language(task, &weaker),
+            "stronger declared behavior evidence must not collapse into an ownership tie"
+        );
     }
 
     #[test]
@@ -100073,6 +100297,49 @@ architecture:
         ));
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn swift_property_call_graph_indexes_each_function_once() {
+        let root = unique_test_dir("swift-property-call-graph-index");
+        fs::create_dir_all(&root).unwrap();
+        let runner_path = root.join("Runner.swift");
+        let helper_calls = (0..24)
+            .map(|index| format!("helper{index}()"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(
+            &runner_path,
+            format!("func propertyRunner() {{\n{helper_calls}\n}}\n"),
+        )
+        .unwrap();
+        for index in 0..3 {
+            fs::write(
+                root.join(format!("Support{index}.swift")),
+                "struct Support {}\n",
+            )
+            .unwrap();
+        }
+        let helpers = (0..24)
+            .map(|index| format!("func helper{index}() {{}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(root.join("Support3.swift"), helpers).unwrap();
+
+        SWIFT_FUNCTION_SOURCE_CALLS.with(|count| count.set(0));
+        assert!(!swift_function_transitively_references_symbol(
+            &root,
+            &runner_path,
+            "propertyRunner",
+            "missingOperation",
+        ));
+        let extraction_count = SWIFT_FUNCTION_SOURCE_CALLS.with(Cell::get);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            extraction_count <= 32,
+            "Swift call-graph analysis extracted function bodies {extraction_count} times"
+        );
     }
 
     #[test]
