@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add receipt-gated `rms binding add-external-crate` for Rust implementation v0.2 bindings. The mutator records the Rust import identity, published Cargo package identity, exact version-requirement policy, and allowlist entry without editing `Cargo.toml` or changing RMS-local `dependencies.local_modules`; validation checks later native Cargo edits against that declaration.
 - Close design intent `binding_preferences` over `rust`, `swift`, `js`, `python`, and `executable`. Discard provider rationale prose during normalization, reject unsupported typed values, and prevent ready receipts from carrying impossible scaffold bindings.
 - Let `.rms/config.yaml` select a closed Codex `reasoning_effort`. Pass the selected effort explicitly even for isolated constrained transformations, validate it against the selected model's bundled catalog entry, include it in intent-cache identity, and record it in request and provider evidence.
 - Keep provider-extracted `new-module/design` intent from overriding an exact existing canonical owner when the task explicitly scopes maintenance to that module. Give narrow `In <module> only`, existing-module, and canonical-owner clauses precedence over capability identifiers and dependency participants during owner selection; conflicting explicit owner clauses remain ambiguous. Consumer and executor mentions remain participants, while explicit adoption and new-topology requests remain design work. Expose `--provider-timeout-seconds` on `rms next --ai` through the existing bounded provider cancellation path.

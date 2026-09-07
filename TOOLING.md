@@ -224,6 +224,36 @@ Bindings should inspect native project shape and represent RMS roles idiomatical
 
 The initial binding set includes Rust, Swift, JavaScript, Python, and opaque executable projects. Native compilers and test frameworks remain the authority for language-specific correctness; RMS checks their declared relationship to canonical semantics.
 
+An external Rust registry dependency has two identities and one version policy. Declare them before the native Cargo edit:
+
+```bash
+rms binding add-external-crate implementation.yaml \
+  --crate regex \
+  --package regex \
+  --version-requirement '1.11' \
+  --route-receipt <RUN_ID> \
+  --dry-run
+
+rms binding add-external-crate implementation.yaml \
+  --crate regex \
+  --package regex \
+  --version-requirement '1.11' \
+  --route-receipt <RUN_ID>
+```
+
+The declaration has this exact shape under `dependencies`:
+
+```yaml
+allowed_external_crates:
+  - regex
+external_crates:
+  - crate: regex
+    package: regex
+    version_requirement: "1.11"
+```
+
+`crate` is the Rust import identity and Cargo dependency key. `package` is the published Cargo package identity, which permits an explicit renamed dependency. `version_requirement` is the exact Cargo requirement string. The RMS mutator changes only `implementation.yaml`; the agent then edits `Cargo.toml` normally inside the declared native role. RMS validates the Cargo package and version requirement when that dependency is present. RMS-local module edges remain exclusively under `dependencies.local_modules` and the semantic `binding_dependencies` mutator.
+
 ## 5. Deterministic Enforcement
 
 The toolchain should fail when it can prove a contradiction and report an obligation when proof is incomplete.

@@ -1471,6 +1471,32 @@ enum AdoptionCommands {
 
 #[derive(Subcommand)]
 enum BindingCommands {
+    /// Declare an allowed external Rust crate without editing Cargo.toml.
+    AddExternalCrate {
+        /// Path to a Rust implementation.yaml.
+        implementation: PathBuf,
+
+        /// Rust import identity used by source and the Cargo dependency key.
+        #[arg(long = "crate")]
+        crate_name: String,
+
+        /// Published Cargo package identity.
+        #[arg(long)]
+        package: String,
+
+        /// Exact Cargo version-requirement string to enforce.
+        #[arg(long = "version-requirement")]
+        version_requirement: String,
+
+        /// Ready route receipt authorizing this canonical dependency declaration.
+        #[arg(long = "route-receipt")]
+        route_receipt: PathBuf,
+
+        /// Print the candidate implementation binding without writing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Deterministically migrate implementation metadata to a newer schema.
     Migrate {
         /// Path to implementation.yaml.
@@ -10698,6 +10724,32 @@ fn run_main() -> Result<()> {
             Ok(())
         }
         Commands::Binding { command } => match command {
+            BindingCommands::AddExternalCrate {
+                implementation,
+                crate_name,
+                package,
+                version_requirement,
+                route_receipt,
+                dry_run,
+            } => {
+                let root = repository_root_for_target(&implementation)?;
+                let receipt = require_route_receipt(
+                    &root,
+                    &route_receipt,
+                    "external-crate-add",
+                    &implementation,
+                    None,
+                );
+                run_add_external_rust_crate(
+                    &implementation,
+                    &crate_name,
+                    &package,
+                    &version_requirement,
+                    dry_run,
+                )?;
+                println!("route receipt: {}", receipt.receipt_id);
+                Ok(())
+            }
             BindingCommands::Migrate {
                 implementation,
                 to,
@@ -31755,6 +31807,7 @@ fn validate_rust_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec
     validate_cargo_package_shape(manifest, diagnostics, &cargo_manifest, &cargo);
     validate_declared_rust_package(manifest, diagnostics, &cargo);
     validate_rust_dependency_allowlist(manifest, diagnostics, &cargo);
+    validate_rust_external_crate_policies(manifest, diagnostics, &cargo);
     validate_rust_public_modules(manifest, diagnostics, &public_entrypoint);
     validate_rust_source_boundaries(manifest, diagnostics, &source_root, &cargo);
     validate_rust_typing(manifest, diagnostics, base, &source_root);
@@ -32737,6 +32790,128 @@ fn validate_rust_dependency_allowlist(
                     "Cargo dependency `{dependency}` is not declared in `dependencies.allowed_external_crates`"
                 ),
             ));
+        }
+    }
+}
+
+fn cargo_dependency_entries<'a>(cargo: &'a TomlValue) -> Vec<(&'a str, &'a TomlValue)> {
+    let mut entries = Vec::new();
+    for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(table) = cargo.get(table_name).and_then(TomlValue::as_table) {
+            entries.extend(table.iter().map(|(name, value)| (name.as_str(), value)));
+        }
+    }
+    if let Some(targets) = cargo.get("target").and_then(TomlValue::as_table) {
+        for target in targets.values() {
+            for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                if let Some(table) = target.get(table_name).and_then(TomlValue::as_table) {
+                    entries.extend(table.iter().map(|(name, value)| (name.as_str(), value)));
+                }
+            }
+        }
+    }
+    entries
+}
+
+fn cargo_dependency_package_and_version<'a>(
+    import_name: &'a str,
+    value: &'a TomlValue,
+) -> (&'a str, Option<&'a str>) {
+    match value {
+        TomlValue::String(version) => (import_name, Some(version)),
+        TomlValue::Table(table) => (
+            table
+                .get("package")
+                .and_then(TomlValue::as_str)
+                .unwrap_or(import_name),
+            table.get("version").and_then(TomlValue::as_str),
+        ),
+        _ => (import_name, None),
+    }
+}
+
+fn validate_rust_external_crate_policies(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    cargo: &TomlValue,
+) {
+    let declarations = match external_rust_crate_declarations(&manifest.value) {
+        Ok(declarations) => declarations,
+        Err(parse_error) => {
+            diagnostics.push(error(
+                "implementation.rust.dependencies.external-crates",
+                &manifest.path,
+                parse_error.to_string(),
+            ));
+            return;
+        }
+    };
+    let allowed = get_string_array(
+        &manifest.value,
+        &["dependencies", "allowed_external_crates"],
+    )
+    .into_iter()
+    .map(|name| canonical_rust_crate_name(&name))
+    .collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    let cargo_entries = cargo_dependency_entries(cargo);
+    for declaration in declarations {
+        if let Err(validation_error) = validate_external_rust_crate_declaration(&declaration) {
+            diagnostics.push(error(
+                "implementation.rust.dependencies.external-crates",
+                &manifest.path,
+                validation_error.to_string(),
+            ));
+            continue;
+        }
+        if !seen.insert(declaration.crate_name.clone()) {
+            diagnostics.push(error(
+                "implementation.rust.dependencies.external-crates",
+                &manifest.path,
+                format!(
+                    "external Rust crate `{}` is declared more than once",
+                    declaration.crate_name
+                ),
+            ));
+            continue;
+        }
+        if !allowed.contains(&canonical_rust_crate_name(&declaration.crate_name)) {
+            diagnostics.push(error(
+                "implementation.rust.dependencies.allowlist",
+                &manifest.path,
+                format!(
+                    "external Rust crate `{}` must also appear in `dependencies.allowed_external_crates`",
+                    declaration.crate_name
+                ),
+            ));
+        }
+        for (import_name, cargo_value) in cargo_entries
+            .iter()
+            .copied()
+            .filter(|(name, _)| canonical_rust_crate_name(name) == declaration.crate_name)
+        {
+            let (package, version) = cargo_dependency_package_and_version(import_name, cargo_value);
+            if package != declaration.package {
+                diagnostics.push(error(
+                    "implementation.rust.dependencies.package",
+                    &manifest.path,
+                    format!(
+                        "Cargo dependency `{import_name}` resolves package `{package}`, but the canonical declaration requires `{}`",
+                        declaration.package
+                    ),
+                ));
+            }
+            if version != Some(declaration.version_requirement.as_str()) {
+                diagnostics.push(error(
+                    "implementation.rust.dependencies.version-requirement",
+                    &manifest.path,
+                    format!(
+                        "Cargo dependency `{import_name}` uses version requirement `{}`, but the canonical declaration requires `{}`",
+                        version.unwrap_or("<none>"),
+                        declaration.version_requirement
+                    ),
+                ));
+            }
         }
     }
 }
@@ -41051,6 +41226,15 @@ fn build_next_report_with_optional_program(
                 .to_string(),
         ];
     }
+    let external_rust_crate_declaration = task_requests_external_rust_crate_declaration(task);
+    if external_rust_crate_declaration {
+        classification.lane = TaskLane::ImplementationCandidate;
+        classification.confidence = "deterministic".to_string();
+        classification.reasons = vec![
+            "task explicitly requests canonical identity, version policy, or allowlisting for an external Rust crate"
+                .to_string(),
+        ];
+    }
     let mut diagnostics = collect_validation_diagnostics(
         &root,
         Vec::new(),
@@ -41333,6 +41517,9 @@ fn build_next_report_with_optional_program(
         if context.implementation.is_some() && !native_existing_realization {
             allowed_actions.push("binding-migrate");
         }
+        if context.implementation.is_some() && external_rust_crate_declaration {
+            allowed_actions.push("external-crate-add");
+        }
     }
     let owner_path = owner
         .selected_module()
@@ -41547,6 +41734,27 @@ fn task_requests_implementation_binding_attachment(task: &str) -> bool {
     .iter()
     .any(|verb| task_mentions_token(task, verb));
     binding && attach
+}
+
+fn task_requests_external_rust_crate_declaration(task: &str) -> bool {
+    let normalized = task.to_ascii_lowercase();
+    let names_external_crate = normalized.contains("external rust crate")
+        || normalized.contains("external crate")
+        || normalized.contains("rust external package")
+        || normalized.contains("external rust package")
+        || normalized.contains("cargo dependency")
+        || normalized.contains("crates.io");
+    let names_declaration = [
+        "declare",
+        "declaration",
+        "allowlist",
+        "package identity",
+        "version policy",
+        "version requirement",
+    ]
+    .iter()
+    .any(|term| normalized.contains(term));
+    names_external_crate && names_declaration
 }
 
 fn task_requests_existing_contract_native_realization(task: &str) -> bool {
@@ -43931,7 +44139,9 @@ fn build_next_steps(
                 None,
             )),
             TaskLane::ImplementationCandidate => declare.push(manual_next_step(
-                if task_requests_existing_contract_native_realization(task) {
+                if task_requests_external_rust_crate_declaration(task) {
+                    "Declare the external Rust dependency with `rms binding add-external-crate <implementation.yaml> --crate <IMPORT_ID> --package <CARGO_PACKAGE> --version-requirement <CARGO_REQUIREMENT> --route-receipt <RUN_ID>`. Review with `--dry-run` first. Then edit Cargo.toml normally inside the declared native role; use the exact dependency key, package, and version requirement that RMS recorded. This command does not edit Cargo.toml and does not change `dependencies.local_modules`."
+                } else if task_requests_existing_contract_native_realization(task) {
                     "Confirm the selected canonical contract already declares every task-owned input, output, invariant, and failure rule. Make no canonical change. If any promise is missing, stop and rerun `rms next` with that exact semantic change."
                 } else {
                     "Confirm the task changes only existing declared role bodies; escalate to `rms spec plan` if meaning or architecture changes."
@@ -43960,6 +44170,13 @@ fn build_next_steps(
             )
         {
             if classification.lane == TaskLane::ImplementationCandidate
+                && task_requests_external_rust_crate_declaration(task)
+            {
+                implement.push(manual_next_step(
+                    "After the canonical declaration applies, edit only Cargo.toml and declared Rust role bodies. Keep RMS-local module dependencies under `dependencies.local_modules`; do not put registry packages in `binding_dependencies`.",
+                    None,
+                ));
+            } else if classification.lane == TaskLane::ImplementationCandidate
                 && task_requests_existing_contract_native_realization(task)
             {
                 implement.push(manual_next_step(
@@ -75251,6 +75468,156 @@ fn run_add_binding(request: AddBindingRequest) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalRustCrateDeclaration {
+    #[serde(rename = "crate")]
+    crate_name: String,
+    package: String,
+    version_requirement: String,
+}
+
+fn external_rust_crate_declarations(
+    value: &YamlValue,
+) -> Result<Vec<ExternalRustCrateDeclaration>> {
+    let Some(sequence) =
+        get_path(value, &["dependencies", "external_crates"]).and_then(YamlValue::as_sequence)
+    else {
+        return Ok(Vec::new());
+    };
+    sequence
+        .iter()
+        .cloned()
+        .map(|item| {
+            serde_yaml::from_value(item)
+                .context("dependencies.external_crates entries must declare only crate, package, and version_requirement")
+        })
+        .collect()
+}
+
+fn valid_cargo_package_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+fn valid_rust_crate_identity(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+fn validate_external_rust_crate_declaration(
+    declaration: &ExternalRustCrateDeclaration,
+) -> Result<()> {
+    if !valid_rust_crate_identity(&declaration.crate_name) {
+        bail!(
+            "external Rust crate import identity `{}` must match [A-Za-z_][A-Za-z0-9_]*",
+            declaration.crate_name
+        );
+    }
+    if !valid_cargo_package_identity(&declaration.package) {
+        bail!(
+            "external Cargo package identity `{}` must contain only ASCII letters, digits, `-`, or `_`",
+            declaration.package
+        );
+    }
+    if declaration.version_requirement.trim().is_empty()
+        || declaration
+            .version_requirement
+            .chars()
+            .any(char::is_control)
+    {
+        bail!(
+            "external Cargo version requirement must be nonblank and contain no control characters"
+        );
+    }
+    Ok(())
+}
+
+fn run_add_external_rust_crate(
+    implementation: &Path,
+    crate_name: &str,
+    package: &str,
+    version_requirement: &str,
+    dry_run: bool,
+) -> Result<()> {
+    let mut manifest = load_manifest(implementation)?;
+    if get_str(&manifest.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC) {
+        bail!(
+            "external Rust crate declarations require rms/implementation/v0.2; migrate `{}` first",
+            implementation.display()
+        );
+    }
+    if get_str(&manifest.value, &["binding"]) != Some("rust") {
+        bail!("external Rust crate declarations require `binding: rust`");
+    }
+    let declaration = ExternalRustCrateDeclaration {
+        crate_name: crate_name.trim().to_string(),
+        package: package.trim().to_string(),
+        version_requirement: version_requirement.trim().to_string(),
+    };
+    validate_external_rust_crate_declaration(&declaration)?;
+
+    let mut declarations = external_rust_crate_declarations(&manifest.value)?;
+    if let Some(existing) = declarations
+        .iter()
+        .find(|existing| existing.crate_name == declaration.crate_name)
+    {
+        if existing != &declaration {
+            bail!(
+                "external Rust crate `{}` already has a different canonical package or version requirement",
+                declaration.crate_name
+            );
+        }
+    } else {
+        declarations.push(declaration.clone());
+    }
+    declarations.sort_by(|left, right| left.crate_name.cmp(&right.crate_name));
+    let rendered_declarations = declarations
+        .iter()
+        .map(serde_yaml::to_value)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    set_yaml_sequence_path(
+        &mut manifest.value,
+        &["dependencies", "external_crates"],
+        rendered_declarations,
+    );
+    let mut allowed = get_string_array(
+        &manifest.value,
+        &["dependencies", "allowed_external_crates"],
+    );
+    if !allowed.iter().any(|item| item == &declaration.crate_name) {
+        allowed.push(declaration.crate_name.clone());
+    }
+    allowed.sort();
+    allowed.dedup();
+    set_yaml_string_sequence_path(
+        &mut manifest.value,
+        &["dependencies", "allowed_external_crates"],
+        &allowed,
+    );
+
+    let rendered = serde_yaml::to_string(&manifest.value)?;
+    if dry_run {
+        print!("{rendered}");
+    } else {
+        atomic_replace_file(implementation, rendered.as_bytes())?;
+        println!(
+            "declared external Rust crate `{}` from package `{}` with version requirement `{}` in {}",
+            declaration.crate_name,
+            declaration.package,
+            declaration.version_requirement,
+            implementation.display()
+        );
+    }
+    Ok(())
+}
+
 fn run_binding_migrate(
     implementation: &Path,
     target: &str,
@@ -86065,6 +86432,88 @@ mod tests {
     }
 
     #[test]
+    fn next_routes_external_rust_crate_declaration_to_bounded_mutator() {
+        let root = unique_test_dir("next-external-rust-crate-declaration");
+        run_add_module(
+            add_module_request(
+                &root,
+                "phone-number-normalization",
+                "Normalize phone numbers.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("rust"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        initialize_test_git_repository(&root);
+        let module = root.join("module.yaml");
+        let task = "Declare canonical Rust external package identity/version policy and allowlist for regex before editing Cargo.toml.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [phone-number-normalization]
+facts:
+  domain_decisions: {disposition: absent, basis: inferred, rationale: package metadata does not change domain decisions}
+  lifecycle: {disposition: absent, basis: inferred, rationale: package metadata does not change lifecycle}
+  effects: {disposition: absent, basis: inferred, rationale: package metadata does not add effects}
+  runnable_surface: {disposition: absent, basis: inferred, rationale: package metadata does not add a surface}
+  reuse: {disposition: required, basis: explicit, source_quote: Rust external package}
+responsibilities: []
+surface_kinds: []
+binding_preferences: [rust]
+open_questions: []
+"#;
+
+        let report = build_next_report_with_intent(
+            &root,
+            Some(&module),
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
+
+        assert_eq!(report.result, NextResult::Ready, "{report:#?}");
+        assert_eq!(
+            report.task_classification.lane,
+            TaskLane::ImplementationCandidate
+        );
+        assert!(receipt
+            .payload
+            .allowed_action_families
+            .contains(&"external-crate-add".to_string()));
+        assert!(report
+            .steps
+            .iter()
+            .flat_map(|group| &group.steps)
+            .any(|step| { step.description.contains("rms binding add-external-crate") }));
+        assert!(validate_route_receipt(
+            &root,
+            Path::new(&report.receipt_path),
+            "external-crate-add",
+            &root.join("implementation.yaml"),
+            None,
+        )
+        .is_ok());
+        assert!(validate_route_receipt(
+            &root,
+            Path::new(&report.receipt_path),
+            "spec-apply",
+            &module,
+            None,
+        )
+        .is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn explicit_semantic_only_module_binding_request_forces_add_binding_lane() {
         let root = unique_test_dir("explicit-semantic-only-binding-route");
         let module = root.join("module.yaml");
@@ -87153,6 +87602,106 @@ libc = "0.2"
         assert!(dependencies.contains("serde"));
         assert!(dependencies.contains("proptest"));
         assert!(dependencies.contains("libc"));
+    }
+
+    #[test]
+    fn external_rust_crate_declaration_is_canonical_and_does_not_edit_cargo() {
+        let root = unique_test_dir("external-rust-crate-declaration");
+        fs::create_dir_all(&root).unwrap();
+        let cargo_path = root.join("Cargo.toml");
+        let cargo_before = "[package]\nname = \"phone-number-normalization\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+        fs::write(&cargo_path, cargo_before).unwrap();
+        let implementation_path = root.join("implementation.yaml");
+        fs::write(
+            &implementation_path,
+            r#"spec: rms/implementation/v0.2
+module: phone-number-normalization
+binding: rust
+source: { root: ., public_entrypoint: src/lib.rs }
+commands: { verify: cargo test --manifest-path Cargo.toml }
+toolchain: { cargo_manifest: Cargo.toml, package: phone-number-normalization }
+dependencies:
+  local_modules: [phone-number-domain]
+  allowed_external_crates: []
+architecture: { roles: {} }
+"#,
+        )
+        .unwrap();
+
+        run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.11", false).unwrap();
+        let first_declaration = fs::read(&implementation_path).unwrap();
+        run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.11", false).unwrap();
+        assert_eq!(fs::read(&implementation_path).unwrap(), first_declaration);
+        assert!(
+            run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.10", false,)
+                .unwrap_err()
+                .to_string()
+                .contains("different canonical package or version requirement")
+        );
+
+        let implementation = load_manifest(&implementation_path).unwrap();
+        assert_eq!(
+            get_string_array(&implementation.value, &["dependencies", "local_modules"]),
+            vec!["phone-number-domain"]
+        );
+        assert_eq!(
+            get_string_array(
+                &implementation.value,
+                &["dependencies", "allowed_external_crates"]
+            ),
+            vec!["regex"]
+        );
+        let declarations = external_rust_crate_declarations(&implementation.value).unwrap();
+        assert_eq!(
+            declarations,
+            vec![ExternalRustCrateDeclaration {
+                crate_name: "regex".to_string(),
+                package: "regex".to_string(),
+                version_requirement: "1.11".to_string(),
+            }]
+        );
+        assert_eq!(fs::read_to_string(&cargo_path).unwrap(), cargo_before);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn external_rust_crate_policy_checks_cargo_package_and_version() {
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: serde_yaml::from_str(
+                r#"spec: rms/implementation/v0.2
+module: example
+binding: rust
+dependencies:
+  allowed_external_crates: [phone_regex]
+  external_crates:
+    - crate: phone_regex
+      package: regex
+      version_requirement: "1.11"
+architecture: {}
+"#,
+            )
+            .unwrap(),
+        };
+        let matching: TomlValue = r#"[dependencies]
+phone_regex = { package = "regex", version = "1.11" }
+"#
+        .parse()
+        .unwrap();
+        let mismatching: TomlValue = r#"[dependencies]
+phone_regex = { package = "regex", version = "1.10" }
+"#
+        .parse()
+        .unwrap();
+
+        let mut diagnostics = Vec::new();
+        validate_rust_external_crate_policies(&manifest, &mut diagnostics, &matching);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+        validate_rust_external_crate_policies(&manifest, &mut diagnostics, &mismatching);
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "implementation.rust.dependencies.version-requirement"
+        }));
     }
 
     #[test]
@@ -115666,6 +116215,7 @@ open_questions: []
             &["add-module"][..],
             &["add-binding"][..],
             &["add-capability-tree"][..],
+            &["binding", "add-external-crate"][..],
             &["machine", "apply"][..],
             &["surface", "apply"][..],
             &["spec", "apply"][..],
