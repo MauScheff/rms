@@ -57,7 +57,7 @@ const RMS_LONG_VERSION: &str = concat!(
 const DEFAULT_RUN_ROOT: &str = ".rms/runs";
 const DEFAULT_INTENT_CACHE_ROOT: &str = ".rms/cache/intent";
 const INTENT_SCHEMA_SPEC: &str = "rms/intent-model/v0.1";
-const INTENT_EXTRACTION_PROMPT_VERSION: &str = "rms-intent-extraction/v5";
+const INTENT_EXTRACTION_PROMPT_VERSION: &str = "rms-intent-extraction/v6";
 const CONSTRAINED_PROVIDER_FEATURES: &[&str] = &[
     "apps",
     "browser_use",
@@ -13684,7 +13684,11 @@ fn provider_binding_preference(value: &JsonValue) -> Option<String> {
             return Some(binding.to_string());
         }
     }
-    Some(raw.to_string())
+    None
+}
+
+fn is_supported_design_binding(binding: &str) -> bool {
+    matches!(binding, "rust" | "swift" | "js" | "python" | "executable")
 }
 
 fn normalize_provider_responsibility(
@@ -13921,6 +13925,17 @@ fn validate_intent_model(task: &str, root: &Path, model: &IntentModel) -> Vec<Di
             "surface_kinds contains an unsupported semantic surface",
         ));
     }
+    if model
+        .binding_preferences
+        .iter()
+        .any(|binding| !is_supported_design_binding(binding))
+    {
+        diagnostics.push(error(
+            "intent.model-invalid",
+            root,
+            "binding_preferences contains an unsupported implementation binding",
+        ));
+    }
     let mut ids = BTreeSet::new();
     for responsibility in &model.responsibilities {
         if !is_stable_semantic_id(&responsibility.id)
@@ -13996,7 +14011,11 @@ fn decide_architecture(task: &str, model: &IntentModel) -> ArchitectureDecision 
         .first()
         .cloned()
         .unwrap_or_else(|| "rms-module".to_string());
-    let binding = model.binding_preferences.first().cloned();
+    let binding = model
+        .binding_preferences
+        .iter()
+        .find(|binding| is_supported_design_binding(binding))
+        .cloned();
     let has_decisions = model.facts.domain_decisions.disposition == IntentDisposition::Required;
     let has_lifecycle = model.facts.lifecycle.disposition == IntentDisposition::Required;
     let has_effects = model.facts.effects.disposition == IntentDisposition::Required;
@@ -84376,7 +84395,7 @@ fn intent_model_json_schema() -> JsonValue {
                 }
             },
             "surface_kinds": {"type": "array", "items": {"type": "string", "enum": ["browser", "cli", "mobile-ui", "desktop-ui", "http", "batch", "executable"]}},
-            "binding_preferences": {"type": "array", "items": {"type": "string"}},
+            "binding_preferences": {"type": "array", "items": {"type": "string", "enum": ["rust", "swift", "js", "python", "executable"]}},
             "open_questions": {"type": "array", "items": {"type": "string"}}
         }
     })
@@ -85745,6 +85764,61 @@ mod tests {
         let unchanged = normalize_provider_intent_source(&forbidden);
         assert_eq!(unchanged, forbidden);
         assert!(parse_intent_model_source(&unchanged).is_err());
+    }
+
+    #[test]
+    fn provider_binding_preferences_are_closed_before_design() {
+        let source = r#"{
+          "spec":"rms/intent-model/v0.1",
+          "operation":"design",
+          "change_scope":"new-module",
+          "subjects":["phone-number-normalization"],
+          "facts":{
+            "domain_decisions":{"disposition":"required","basis":"explicit","source_quote":"one pure Rust library"},
+            "lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No lifecycle."},
+            "effects":{"disposition":"absent","basis":"inferred","rationale":"No effects."},
+            "runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"No surface."},
+            "reuse":{"disposition":"required","basis":"explicit","source_quote":"one pure Rust library"}
+          },
+          "responsibilities":[{"id":"phone-number-normalization","kind":"decision","summary":"Normalize phone numbers."}],
+          "surface_kinds":[],
+          "binding_preferences":[
+            "Contact normalization stays on-device before APSI in the later integration.",
+            "Assess against Google C++ before adopting a production dependency.",
+            "rust"
+          ],
+          "open_questions":[]
+        }"#;
+
+        let raw_model = parse_intent_model_source(source).unwrap();
+        assert!(
+            validate_intent_model("one pure Rust library", Path::new("."), &raw_model)
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic.check == "intent.model-invalid"
+                        && diagnostic.message.contains("binding_preferences")
+                })
+        );
+
+        let normalized = normalize_provider_intent_source(source);
+        let model = parse_intent_model_source(&normalized).unwrap();
+        let decision = decide_architecture("one pure Rust library", &model);
+
+        assert_eq!(model.binding_preferences, vec!["rust"]);
+        assert_eq!(decision.modules[0].binding.as_deref(), Some("rust"));
+        assert_eq!(
+            decision
+                .scaffold
+                .args
+                .windows(2)
+                .find(|args| args[0] == "--binding")
+                .map(|args| args[1].as_str()),
+            Some("rust")
+        );
+        assert_eq!(
+            intent_model_json_schema()["properties"]["binding_preferences"]["items"]["enum"],
+            json!(["rust", "swift", "js", "python", "executable"])
+        );
     }
 
     #[test]

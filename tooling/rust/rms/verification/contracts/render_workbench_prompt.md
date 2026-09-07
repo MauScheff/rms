@@ -8,6 +8,7 @@ Executable coverage:
 
 - `prompt_options_use_configured_ai_defaults` verifies `--ai` resolves the configured provider, Codex model, reasoning effort, sandbox, provider timeout, and run-record directory from `.rms/config.yaml`.
 - `configured_reasoning_effort_reaches_constrained_provider_and_cache_evidence` verifies isolated Codex execution receives the exact configured reasoning effort and that request evidence, provider evidence, and intent-cache identity preserve it.
+- `provider_binding_preferences_are_closed_before_design` verifies the provider intent schema, normalization, typed validation, and deterministic design action share one closed implementation-binding vocabulary.
 - `prompt_options_reject_zero_provider_timeout` verifies configured provider timeouts must be positive.
 - `prompt_options_default_workspace_write_to_module_scope` verifies configured Codex `workspace-write` defaults to module write scope.
 - `prompt_options_allow_configured_root_write_scope` verifies config can deliberately widen Codex `workspace-write` execution to repository-root scope.
