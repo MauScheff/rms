@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Follow Rust trace serialization through bounded cross-file helper calls, including helpers reused from declared probe roles, while retaining the requirement that the reachable producer path writes canonical transition-record fields.
 - Route an exact existing public behavior observation-source repair to its named owner even when unrelated repository or owner-local validation debt remains. Keep all debt visible, retain schema, semantic-revision, intent, and ownership blockers, and leave candidate and committed gates unchanged.
 - Keep Rust effect analysis lexical instead of substring-based for metadata and standard value-query methods, while preserving genuine filesystem and dynamic-dispatch findings. Resolve crate-visible associated methods as implementation symbols without treating them as public constructor evidence.
 - Require a command or capability observed through its declared transition-record trace producer to use transition-record observations. Retain invocation records for queries and commands observed through a different command path. Stop invalid trace producers before execution, and defer `--record` writes until every selected producer passes so a failed trace run cannot replace committed evidence.

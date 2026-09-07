@@ -15,6 +15,7 @@ Command/tool:
 
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml trace_run_records_and_detects_committed_bundle_drift`
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml failed_trace_preflight_does_not_replace_committed_evidence`
+- `cargo test --manifest-path tooling/rust/rms/Cargo.toml rust_trace_producer_may_reuse_a_cross_file_probe_serializer`
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml transition_backed_capability_rejects_invocation_record_observation`
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml trace_run_reports_producer_timeout`
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml rust_module_scaffold_generates_valid_binding_artifacts`
@@ -26,6 +27,7 @@ Expected result:
 - Rust, Swift, JavaScript, and Python producers record valid transition-derived bundles.
 - Normal comparison reports drift after committed evidence changes.
 - A command or capability observed through its declared transition-record trace producer uses transition records. Invocation records remain valid for stateless queries and commands observed through another command path.
+- A Rust trace producer can reuse a serializer through bounded local and cross-file helper calls, including a declared probe-role helper. The reachable path must still serialize the canonical transition-record fields and write the generated bundle.
 - A failed producer preflight does not execute the producer. A failed selected-producer suite does not replace committed evidence.
 - Timeout terminates the producer process group and reports the exact producer.
 

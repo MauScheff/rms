@@ -21501,15 +21501,7 @@ fn trace_producer_serializes_transition_records(
         return false;
     };
     match get_str(&implementation.value, &["binding"]) {
-        Some("rust") => {
-            source_identifier_occurs(&source, runner_symbol)
-                && source.contains("record.state_before")
-                && source.contains("record.state_after")
-                && source.contains("record.output")
-                && source.contains("record.source")
-                && source.contains("serde_json")
-                && source.contains("std::fs::write")
-        }
+        Some("rust") => rust_trace_serialization_reachable(base, path, runner_symbol),
         Some("swift") => swift_function_source(&source, runner_symbol).is_some_and(|function| {
             function.contains("record.stateBefore")
                 && function.contains("record.stateAfter")
@@ -21534,6 +21526,201 @@ fn trace_producer_serializes_transition_records(
         }),
         _ => false,
     }
+}
+
+#[derive(Clone, Debug, Default)]
+struct RustTraceFunctionFacts {
+    calls: Vec<Vec<String>>,
+    record_fields: BTreeSet<String>,
+    macro_tokens: Vec<String>,
+    uses_json: bool,
+    writes_file: bool,
+}
+
+#[derive(Default)]
+struct RustTraceFunctionVisitor {
+    facts: RustTraceFunctionFacts,
+}
+
+impl<'ast> Visit<'ast> for RustTraceFunctionVisitor {
+    fn visit_expr_call(&mut self, node: &'ast ExprCall) {
+        if let syn::Expr::Path(path) = node.func.as_ref() {
+            let segments = path
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>();
+            self.facts.uses_json |= segments.iter().any(|segment| segment == "serde_json");
+            self.facts.writes_file |= segments.windows(2).any(|window| window == ["fs", "write"]);
+            self.facts.calls.push(segments);
+        }
+        visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_field(&mut self, node: &'ast syn::ExprField) {
+        if let syn::Member::Named(field) = &node.member {
+            self.facts.record_fields.insert(field.to_string());
+        }
+        visit::visit_expr_field(self, node);
+    }
+
+    fn visit_macro(&mut self, node: &'ast Macro) {
+        let macro_name = node
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string());
+        self.facts.uses_json |= macro_name.as_deref() == Some("json")
+            || node
+                .path
+                .segments
+                .iter()
+                .any(|segment| segment.ident == "serde_json");
+        let compact = node.tokens.to_string().replace(char::is_whitespace, "");
+        for field in ["state_before", "state_after", "output", "source"] {
+            if compact.contains(&format!("record.{field}")) {
+                self.facts.record_fields.insert(field.to_string());
+            }
+        }
+        self.facts.macro_tokens.push(compact);
+        visit::visit_macro(self, node);
+    }
+}
+
+fn rust_trace_serialization_reachable(base: &Path, runner_path: &str, runner_symbol: &str) -> bool {
+    let mut functions = BTreeMap::<(PathBuf, String), RustTraceFunctionFacts>::new();
+    let mut paths_by_name = BTreeMap::<String, Vec<PathBuf>>::new();
+    let mut source_paths = rust_source_files(base);
+    source_paths.sort();
+    for path in source_paths {
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(parsed) = syn::parse_file(&source) else {
+            continue;
+        };
+        collect_rust_trace_functions(&path, &parsed.items, &mut functions, &mut paths_by_name);
+    }
+
+    let start = (base.join(runner_path), runner_symbol.to_string());
+    if !functions.contains_key(&start) {
+        return false;
+    }
+    let function_names = paths_by_name.keys().cloned().collect::<Vec<_>>();
+    let mut pending = vec![start];
+    let mut visited = BTreeSet::new();
+    let mut fields = BTreeSet::new();
+    let mut uses_json = false;
+    let mut writes_file = false;
+    while let Some(key) = pending.pop() {
+        if visited.len() >= 256 || !visited.insert(key.clone()) {
+            continue;
+        }
+        let Some(facts) = functions.get(&key) else {
+            continue;
+        };
+        fields.extend(facts.record_fields.iter().cloned());
+        uses_json |= facts.uses_json;
+        writes_file |= facts.writes_file;
+        let mut calls = facts.calls.clone();
+        for name in &function_names {
+            if facts
+                .macro_tokens
+                .iter()
+                .any(|tokens| rust_compact_tokens_call(tokens, name))
+            {
+                calls.push(vec![name.clone()]);
+            }
+        }
+        for call in calls {
+            pending.extend(resolve_rust_trace_call(
+                &key.0,
+                &call,
+                &functions,
+                &paths_by_name,
+            ));
+        }
+    }
+
+    ["state_before", "state_after", "output", "source"]
+        .iter()
+        .all(|field| fields.contains(*field))
+        && uses_json
+        && writes_file
+}
+
+fn collect_rust_trace_functions(
+    path: &Path,
+    items: &[Item],
+    functions: &mut BTreeMap<(PathBuf, String), RustTraceFunctionFacts>,
+    paths_by_name: &mut BTreeMap<String, Vec<PathBuf>>,
+) {
+    for item in items {
+        match item {
+            Item::Fn(function) => {
+                let name = function.sig.ident.to_string();
+                let mut visitor = RustTraceFunctionVisitor::default();
+                visitor.visit_block(&function.block);
+                functions.insert((path.to_path_buf(), name.clone()), visitor.facts);
+                paths_by_name
+                    .entry(name)
+                    .or_default()
+                    .push(path.to_path_buf());
+            }
+            Item::Mod(module) => {
+                if let Some((_, items)) = &module.content {
+                    collect_rust_trace_functions(path, items, functions, paths_by_name);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rust_compact_tokens_call(tokens: &str, symbol: &str) -> bool {
+    tokens.match_indices(symbol).any(|(start, _)| {
+        let before = tokens[..start].chars().next_back();
+        let after = tokens[start + symbol.len()..].chars().next();
+        before.is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_')
+            && after == Some('(')
+    })
+}
+
+fn resolve_rust_trace_call(
+    current_path: &Path,
+    call: &[String],
+    functions: &BTreeMap<(PathBuf, String), RustTraceFunctionFacts>,
+    paths_by_name: &BTreeMap<String, Vec<PathBuf>>,
+) -> Vec<(PathBuf, String)> {
+    let Some(name) = call.last() else {
+        return Vec::new();
+    };
+    let same_file = (current_path.to_path_buf(), name.clone());
+    if call.len() == 1 && functions.contains_key(&same_file) {
+        return vec![same_file];
+    }
+    let qualifier = call.get(call.len().saturating_sub(2));
+    let mut candidates = paths_by_name
+        .get(name)
+        .into_iter()
+        .flatten()
+        .filter(|path| {
+            qualifier.is_none_or(|qualifier| {
+                matches!(qualifier.as_str(), "crate" | "self" | "super")
+                    || path.file_stem().and_then(|stem| stem.to_str()) == Some(qualifier)
+                    || path
+                        .parent()
+                        .and_then(Path::file_name)
+                        .and_then(|parent| parent.to_str())
+                        == Some(qualifier)
+            })
+        })
+        .map(|path| (path.clone(), name.clone()))
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.dedup();
+    candidates
 }
 
 fn trace_command_uses_invocation_records(implementation: &LoadedManifest, command: &str) -> bool {
@@ -96684,6 +96871,47 @@ fn produce_transition_trace() {
                     .message
                     .contains("serializes returned records: false")
         }));
+    }
+
+    #[test]
+    fn rust_trace_producer_may_reuse_a_cross_file_probe_serializer() {
+        let root = unique_test_dir("trace-producer-cross-file-serializer");
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(
+            root.join("tests/trace_producer.rs"),
+            r#"fn record_json(record: &Record) -> serde_json::Value {
+    crate::machine_probe::record_json(record)
+}
+
+fn produce_transition_trace() {
+    let record = transition_record(Input::Accept);
+    let document = serde_json::json!({"records": [record_json(&record)]});
+    std::fs::write("trace.json", serde_json::to_vec(&document).unwrap()).unwrap();
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("tests/machine_probe.rs"),
+            r#"pub(crate) fn record_json(record: &Record) -> serde_json::Value {
+    serde_json::json!({
+        "state_before": record.state_before,
+        "state_after": record.state_after,
+        "input": record.input,
+        "output": record.output,
+        "source": record.source,
+    })
+}
+"#,
+        )
+        .unwrap();
+
+        assert!(rust_trace_serialization_reachable(
+            &root,
+            "tests/trace_producer.rs",
+            "produce_transition_trace"
+        ));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
