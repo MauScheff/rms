@@ -92,6 +92,19 @@ Without commit authority, the exact state is `bootstrap prepared; provenance bas
 rms next "<exact change task>" --root . --ai
 ```
 
+Pin both Codex dimensions in project configuration when provider identity must be reproducible:
+
+```yaml
+ai:
+  default_provider: codex
+  codex:
+    model: gpt-6-astra
+    reasoning_effort: medium
+    sandbox: read-only
+```
+
+RMS passes the selected reasoning effort explicitly during isolated provider execution. RMS includes the effort in provider evidence and intent-cache identity. `rms check --environment --root .` verifies that the selected model supports the effort.
+
 Managed agents use native project tools for read-only investigation, explanation, review, status or history inspection, ordinary Git/repository/tool operations, and discussion that requests no change. If that work reveals a proposed change, they stop before editing and invoke `next` with the exact change task. Change routing uses schema-constrained recorded extraction; typed intent flags remain available for CI, offline, and intentionally pre-structured callers. Every invocation returns `run_id`, `receipt_id`, and `receipt_path`. Ready receipts are required by canonical semantic and topology mutators, including dry-runs; they grant neither source-edit nor Git authority.
 
 Use `--codex-profile <name>` with `rms next --ai` for a one-run Codex CLI profile fallback. RMS forwards the value as `codex exec --profile <name>`, includes it in provider run evidence, and separates its validated intent cache from other profiles. The profile is not stored as a project default.

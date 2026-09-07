@@ -4831,6 +4831,10 @@ enum ConfigCommands {
         #[arg(long)]
         model: Option<String>,
 
+        /// Optional Codex reasoning effort to write.
+        #[arg(long)]
+        reasoning_effort: Option<CodexReasoningEffort>,
+
         /// Run-record directory to write.
         #[arg(long, default_value = ".rms/runs")]
         run_root: PathBuf,
@@ -5183,6 +5187,19 @@ enum CodexSandbox {
     WorkspaceWrite,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+enum CodexReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+    Ultra,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum ProviderWriteScope {
     Module,
@@ -5195,6 +5212,7 @@ struct PromptRunOptions {
     record: bool,
     run_root: PathBuf,
     model: Option<String>,
+    reasoning_effort: Option<CodexReasoningEffort>,
     profile: Option<String>,
     sandbox: CodexSandbox,
     write_scope: ProviderWriteScope,
@@ -5232,6 +5250,7 @@ struct AiConfig {
 #[serde(default, deny_unknown_fields)]
 struct CodexConfig {
     model: Option<String>,
+    reasoning_effort: Option<CodexReasoningEffort>,
     sandbox: Option<String>,
     write_scope: Option<String>,
     timeout_seconds: Option<u64>,
@@ -5426,6 +5445,7 @@ struct ConfigReadiness {
     status: String,
     default_provider: Option<String>,
     codex_model: Option<String>,
+    codex_reasoning_effort: Option<CodexReasoningEffort>,
     codex_sandbox: Option<String>,
     codex_write_scope: Option<String>,
     codex_timeout_seconds: Option<u64>,
@@ -5833,6 +5853,21 @@ impl CodexSandbox {
     }
 }
 
+impl CodexReasoningEffort {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+            Self::Ultra => "ultra",
+        }
+    }
+}
+
 impl ProviderWriteScope {
     fn as_str(self) -> &'static str {
         match self {
@@ -5880,6 +5915,11 @@ fn resolve_prompt_run_options(root: &Path, raw: RawPromptRunOptions) -> Result<P
             None
         }
     });
+    let reasoning_effort = if provider == Provider::Codex {
+        config_value.and_then(|config| config.ai.codex.reasoning_effort)
+    } else {
+        None
+    };
     let profile = None;
 
     let sandbox = if let Some(sandbox) = raw.sandbox {
@@ -5929,6 +5969,7 @@ fn resolve_prompt_run_options(root: &Path, raw: RawPromptRunOptions) -> Result<P
         record: raw.record,
         run_root,
         model,
+        reasoning_effort,
         profile,
         sandbox,
         write_scope,
@@ -5961,6 +6002,7 @@ fn run_config_init(
     root: &Path,
     provider: Provider,
     model: Option<&str>,
+    reasoning_effort: Option<CodexReasoningEffort>,
     run_root: &Path,
     force: bool,
 ) -> Result<()> {
@@ -5975,7 +6017,7 @@ fn run_config_init(
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create `{}`", parent.display()))?;
     }
-    let rendered = render_workbench_config(provider, model, run_root);
+    let rendered = render_workbench_config(provider, model, reasoning_effort, run_root);
     fs::write(&path, rendered).with_context(|| format!("failed to write `{}`", path.display()))?;
     println!("created {}", path.display());
     Ok(())
@@ -6050,7 +6092,7 @@ fn write_agent_guidance(
     if write_config || !config_path.exists() {
         write_agent_file(
             &config_path,
-            &render_workbench_config(Provider::Codex, None, Path::new(DEFAULT_RUN_ROOT)),
+            &render_workbench_config(Provider::Codex, None, None, Path::new(DEFAULT_RUN_ROOT)),
             overwrite_guidance,
         )?;
     }
@@ -9347,13 +9389,25 @@ fn run_release_agent_distribution_smoke(rms_exe: &Path) -> Result<()> {
     result
 }
 
-fn render_workbench_config(provider: Provider, model: Option<&str>, run_root: &Path) -> String {
-    render_workbench_config_with_coverage(provider, model, run_root, WorkspaceCoverage::Complete)
+fn render_workbench_config(
+    provider: Provider,
+    model: Option<&str>,
+    reasoning_effort: Option<CodexReasoningEffort>,
+    run_root: &Path,
+) -> String {
+    render_workbench_config_with_coverage(
+        provider,
+        model,
+        reasoning_effort,
+        run_root,
+        WorkspaceCoverage::Complete,
+    )
 }
 
 fn render_workbench_config_with_coverage(
     provider: Provider,
     model: Option<&str>,
+    reasoning_effort: Option<CodexReasoningEffort>,
     run_root: &Path,
     coverage: WorkspaceCoverage,
 ) -> String {
@@ -9363,6 +9417,9 @@ fn render_workbench_config_with_coverage(
     out.push_str("  codex:\n");
     if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
         let _ = writeln!(out, "    model: {}", yaml_quote(model));
+    }
+    if let Some(reasoning_effort) = reasoning_effort {
+        let _ = writeln!(out, "    reasoning_effort: {}", reasoning_effort.as_str());
     }
     out.push_str("    sandbox: read-only\n");
     out.push_str("    # Provider edits are opt-in; when needed, uncomment both lines below.\n");
@@ -10428,9 +10485,17 @@ fn run_main() -> Result<()> {
                 root,
                 provider,
                 model,
+                reasoning_effort,
                 run_root,
                 force,
-            } => run_config_init(&root, provider, model.as_deref(), &run_root, force),
+            } => run_config_init(
+                &root,
+                provider,
+                model.as_deref(),
+                reasoning_effort,
+                &run_root,
+                force,
+            ),
         },
         Commands::Agent { command } => match command {
             AgentCommands::Diagnose { root, target } => run_agent_diagnose(&root, target),
@@ -11210,6 +11275,14 @@ fn print_diagnose_report(report: &DiagnoseReport) {
             .unwrap_or("<provider-default>")
     );
     println!(
+        "Codex reasoning effort: {}",
+        report
+            .config
+            .codex_reasoning_effort
+            .map(CodexReasoningEffort::as_str)
+            .unwrap_or("<provider-default>")
+    );
+    println!(
         "Codex sandbox: {}",
         report
             .config
@@ -11401,6 +11474,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
                             status: "invalid".to_string(),
                             default_provider: Some(value.to_string()),
                             codex_model: loaded.value.ai.codex.model,
+                            codex_reasoning_effort: loaded.value.ai.codex.reasoning_effort,
                             codex_sandbox: loaded.value.ai.codex.sandbox,
                             codex_write_scope: loaded.value.ai.codex.write_scope,
                             codex_timeout_seconds: loaded.value.ai.codex.timeout_seconds,
@@ -11424,6 +11498,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
                         status: "invalid".to_string(),
                         default_provider,
                         codex_model: loaded.value.ai.codex.model,
+                        codex_reasoning_effort: loaded.value.ai.codex.reasoning_effort,
                         codex_sandbox: Some(value.to_string()),
                         codex_write_scope: loaded.value.ai.codex.write_scope,
                         codex_timeout_seconds: loaded.value.ai.codex.timeout_seconds,
@@ -11445,6 +11520,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
                         status: "invalid".to_string(),
                         default_provider,
                         codex_model: loaded.value.ai.codex.model,
+                        codex_reasoning_effort: loaded.value.ai.codex.reasoning_effort,
                         codex_sandbox: loaded.value.ai.codex.sandbox,
                         codex_write_scope: Some(value.to_string()),
                         codex_timeout_seconds: loaded.value.ai.codex.timeout_seconds,
@@ -11467,6 +11543,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
                         status: "invalid".to_string(),
                         default_provider,
                         codex_model: loaded.value.ai.codex.model,
+                        codex_reasoning_effort: loaded.value.ai.codex.reasoning_effort,
                         codex_sandbox: loaded.value.ai.codex.sandbox,
                         codex_write_scope: loaded.value.ai.codex.write_scope,
                         codex_timeout_seconds: Some(value),
@@ -11486,6 +11563,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
                 status: "present".to_string(),
                 default_provider,
                 codex_model: loaded.value.ai.codex.model,
+                codex_reasoning_effort: loaded.value.ai.codex.reasoning_effort,
                 codex_sandbox: loaded.value.ai.codex.sandbox,
                 codex_write_scope: loaded.value.ai.codex.write_scope,
                 codex_timeout_seconds: loaded.value.ai.codex.timeout_seconds,
@@ -11504,6 +11582,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
             status: "missing".to_string(),
             default_provider: None,
             codex_model: None,
+            codex_reasoning_effort: None,
             codex_sandbox: None,
             codex_write_scope: None,
             codex_timeout_seconds: None,
@@ -11515,6 +11594,7 @@ fn diagnose_config(root: &Path) -> ConfigReadiness {
             status: "invalid".to_string(),
             default_provider: None,
             codex_model: None,
+            codex_reasoning_effort: None,
             codex_sandbox: None,
             codex_write_scope: None,
             codex_timeout_seconds: None,
@@ -12783,6 +12863,7 @@ fn intent_cache_key(task: &str, options: &PromptRunOptions) -> Result<String> {
         "prompt_version": INTENT_EXTRACTION_PROMPT_VERSION,
         "provider": options.provider.label(),
         "model": options.model.as_deref().unwrap_or("<provider-default>"),
+        "reasoning_effort": options.reasoning_effort.map(CodexReasoningEffort::as_str).unwrap_or("<provider-default>"),
         "profile": options.profile.as_deref().unwrap_or("<provider-default>"),
         "normalization_version": INTENT_NORMALIZATION_VERSION,
     }))?))
@@ -13077,6 +13158,7 @@ fn finalize_provider_operational_failure(
         serde_json::to_string_pretty(&json!({
             "provider": options.provider.label(),
             "model": options.model,
+            "reasoning_effort": options.reasoning_effort.map(CodexReasoningEffort::as_str),
             "profile": options.profile,
             "cache": "not-written",
             "cache_key": cache_key,
@@ -13190,6 +13272,7 @@ fn extract_provider_intent_with_program(
                 serde_json::to_string_pretty(&json!({
                     "provider": options.provider.label(),
                     "model": options.model,
+                    "reasoning_effort": options.reasoning_effort.map(CodexReasoningEffort::as_str),
                     "profile": options.profile,
                     "cache": "hit",
                     "cache_key": cache_key,
@@ -13229,6 +13312,7 @@ fn extract_provider_intent_with_program(
                 serde_json::to_string_pretty(&json!({
                     "provider": options.provider.label(),
                     "model": options.model,
+                    "reasoning_effort": options.reasoning_effort.map(CodexReasoningEffort::as_str),
                     "profile": options.profile,
                     "cache": "hit-after-wait",
                     "cache_key": cache_key,
@@ -13323,6 +13407,7 @@ fn extract_provider_intent_with_program(
                     serde_json::to_string_pretty(&json!({
                         "provider": options.provider.label(),
                         "model": options.model,
+                        "reasoning_effort": options.reasoning_effort.map(CodexReasoningEffort::as_str),
                         "profile": options.profile,
                         "cache": if refresh { "refreshed" } else { "miss" },
                         "cache_key": cache_key,
@@ -13356,6 +13441,7 @@ fn extract_provider_intent_with_program(
         serde_json::to_string_pretty(&json!({
             "provider": options.provider.label(),
             "model": options.model,
+            "reasoning_effort": options.reasoning_effort.map(CodexReasoningEffort::as_str),
             "profile": options.profile,
             "cache": "not-written",
             "cache_key": cache_key,
@@ -14473,6 +14559,12 @@ fn execute_codex_provider_attempt_with_interaction(
     if let Some(model) = &options.model {
         command.arg("--model").arg(model);
     }
+    if let Some(reasoning_effort) = options.reasoning_effort {
+        command.arg("--config").arg(format!(
+            "model_reasoning_effort=\"{}\"",
+            reasoning_effort.as_str()
+        ));
+    }
     if let Some(profile) = &options.profile {
         command.arg("--profile").arg(profile);
     }
@@ -14499,6 +14591,7 @@ fn execute_codex_provider_attempt_with_interaction(
             &json!({
                 "provider": options.provider.label(),
                 "model": options.model,
+                "reasoning_effort": options.reasoning_effort.map(CodexReasoningEffort::as_str),
                 "profile": options.profile,
                 "interaction": "constrained-transformation",
                 "attempts": attempt,
@@ -23442,6 +23535,9 @@ fn render_run_request_yaml(
     }
     if let Some(model) = &options.model {
         let _ = writeln!(out, "model: {}", yaml_quote(model));
+    }
+    if let Some(reasoning_effort) = options.reasoning_effort {
+        let _ = writeln!(out, "reasoning_effort: {}", reasoning_effort.as_str());
     }
     let _ = writeln!(out, "sandbox: {}", yaml_quote(options.sandbox.as_str()));
     let _ = writeln!(
@@ -51684,6 +51780,7 @@ fn execute_machine_plan_provider_with_program(
         serde_json::to_string_pretty(&json!({
             "provider": options.provider.label(),
             "model": options.model,
+            "reasoning_effort": options.reasoning_effort.map(CodexReasoningEffort::as_str),
             "interaction": "agentic-machine-plan",
             "attempts": 1,
             "elapsed_ms": metadata.elapsed_ms,
@@ -55911,6 +56008,7 @@ fn execute_spec_plan_provider_with_program(
             &json!({
                 "provider": options.provider.label(),
                 "model": options.model,
+                "reasoning_effort": options.reasoning_effort.map(CodexReasoningEffort::as_str),
                 "interaction": "constrained-transformation",
                 "attempts": attempt,
                 "elapsed_ms": started.elapsed().as_millis(),
@@ -55971,6 +56069,7 @@ fn execute_spec_plan_provider_with_program(
                     &json!({
                         "provider": options.provider.label(),
                         "model": options.model,
+                        "reasoning_effort": options.reasoning_effort.map(CodexReasoningEffort::as_str),
                         "interaction": "constrained-transformation",
                         "attempts": attempt,
                         "elapsed_ms": started.elapsed().as_millis(),
@@ -56017,6 +56116,7 @@ fn execute_spec_plan_provider_with_program(
                 &json!({
                     "provider": options.provider.label(),
                     "model": options.model,
+                    "reasoning_effort": options.reasoning_effort.map(CodexReasoningEffort::as_str),
                     "interaction": "constrained-transformation",
                     "attempts": attempt,
                     "elapsed_ms": started.elapsed().as_millis(),
@@ -56040,6 +56140,7 @@ fn execute_spec_plan_provider_with_program(
         &json!({
             "provider": options.provider.label(),
             "model": options.model,
+            "reasoning_effort": options.reasoning_effort.map(CodexReasoningEffort::as_str),
             "interaction": "constrained-transformation",
             "attempts": 2,
             "elapsed_ms": started.elapsed().as_millis(),
@@ -74604,6 +74705,7 @@ fn init_artifacts(
             contents: render_workbench_config_with_coverage(
                 Provider::Codex,
                 None,
+                None,
                 Path::new(DEFAULT_RUN_ROOT),
                 if adopt {
                     WorkspaceCoverage::Progressive
@@ -83849,7 +83951,11 @@ fn codex_provider_readiness_with_program(
             command: "codex".to_string(),
             status: "available".to_string(),
             detail: Some(format!(
-                "{version}; structured output supported; effective model uses {model_source}"
+                "{version}; structured output supported; effective model uses {model_source}; effective reasoning effort `{}`",
+                config
+                    .codex_reasoning_effort
+                    .map(CodexReasoningEffort::as_str)
+                    .unwrap_or("provider-default")
             )),
         };
     };
@@ -83916,11 +84022,37 @@ fn codex_provider_readiness_with_program(
         };
     }
 
+    if let Some(reasoning_effort) = config.codex_reasoning_effort {
+        let supported = model_entry
+            .get("supported_reasoning_levels")
+            .and_then(JsonValue::as_array)
+            .is_some_and(|levels| {
+                levels.iter().any(|level| {
+                    level.get("effort").and_then(JsonValue::as_str)
+                        == Some(reasoning_effort.as_str())
+                })
+            });
+        if !supported {
+            return CommandReadiness {
+                command: "codex".to_string(),
+                status: "provider-incompatible".to_string(),
+                detail: Some(format!(
+                    "{version} model `{model}` does not support reasoning effort `{}` from RMS project config",
+                    reasoning_effort.as_str()
+                )),
+            };
+        }
+    }
+
     CommandReadiness {
         command: "codex".to_string(),
         status: "available".to_string(),
         detail: Some(format!(
-            "{version}; effective model `{model}` from {model_source} is present in the bundled catalog; structured output supported"
+            "{version}; effective model `{model}` from {model_source} is present in the bundled catalog; effective reasoning effort `{}`; structured output supported",
+            config
+                .codex_reasoning_effort
+                .map(CodexReasoningEffort::as_str)
+                .unwrap_or("provider-default")
         )),
     }
 }
@@ -84277,6 +84409,10 @@ fn create_route_run_record(
             "run_id": run_id,
             "command": command,
             "task": task,
+            "provider": options.map(|value| value.provider.label()),
+            "model": options.and_then(|value| value.model.as_deref()),
+            "reasoning_effort": options.and_then(|value| value.reasoning_effort.map(CodexReasoningEffort::as_str)),
+            "profile": options.and_then(|value| value.profile.as_deref()),
             "created_unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).map(|value| value.as_millis()).unwrap_or(0),
         }))?,
     )?;
@@ -110863,6 +110999,7 @@ semantic_functions:
             record: true,
             run_root: PathBuf::from("runs"),
             model: None,
+            reasoning_effort: None,
             profile: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
@@ -110942,6 +111079,7 @@ semantic_functions:
             record: true,
             run_root: PathBuf::from("runs"),
             model: None,
+            reasoning_effort: None,
             profile: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
@@ -110995,6 +111133,7 @@ semantic_functions:
             record: true,
             run_root: PathBuf::from("runs"),
             model: Some("test-model".to_string()),
+            reasoning_effort: Some(CodexReasoningEffort::Medium),
             profile: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
@@ -111071,6 +111210,7 @@ semantic_functions:
             record: true,
             run_root: PathBuf::from("runs"),
             model: None,
+            reasoning_effort: None,
             profile: None,
             sandbox: CodexSandbox::WorkspaceWrite,
             write_scope: ProviderWriteScope::Module,
@@ -111736,6 +111876,7 @@ architecture:
             record: true,
             run_root: PathBuf::from("runs"),
             model: None,
+            reasoning_effort: None,
             profile: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
@@ -112813,6 +112954,7 @@ architecture:
   default_provider: codex
   codex:
     model: gpt-test
+    reasoning_effort: medium
     sandbox: read-only
     timeout_seconds: 45
 runs:
@@ -112841,6 +112983,7 @@ runs:
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(options.provider, Provider::Codex);
         assert_eq!(options.model.as_deref(), Some("gpt-test"));
+        assert_eq!(options.reasoning_effort, Some(CodexReasoningEffort::Medium));
         assert!(options.profile.is_none());
         assert!(matches!(options.sandbox, CodexSandbox::ReadOnly));
         assert_eq!(options.write_scope, ProviderWriteScope::Root);
@@ -113105,6 +113248,7 @@ esac
             status: "present".to_string(),
             default_provider: Some("codex".to_string()),
             codex_model: None,
+            codex_reasoning_effort: None,
             codex_sandbox: Some("read-only".to_string()),
             codex_write_scope: None,
             codex_timeout_seconds: None,
@@ -113151,6 +113295,42 @@ esac
         assert_eq!(project.status, "available");
         assert!(project.detail.unwrap().contains("from RMS project config"));
 
+        let effort_catalog = write_fake_codex_readiness(
+            &root,
+            Some(
+                r#"{"models":[{"slug":"project-model","upgrade":null,"supported_reasoning_levels":[{"effort":"medium"}]}]}"#,
+            ),
+        );
+        let effort_config = ConfigReadiness {
+            codex_reasoning_effort: Some(CodexReasoningEffort::Medium),
+            ..project_config
+        };
+        let effort_ready = codex_provider_readiness_with_program(
+            &effort_config,
+            &effort_catalog,
+            Some("ignored-user-model"),
+        );
+        assert_eq!(effort_ready.status, "available");
+        assert!(effort_ready
+            .detail
+            .unwrap()
+            .contains("effective reasoning effort `medium`"));
+
+        let unsupported_effort = ConfigReadiness {
+            codex_reasoning_effort: Some(CodexReasoningEffort::High),
+            ..effort_config
+        };
+        let effort_incompatible = codex_provider_readiness_with_program(
+            &unsupported_effort,
+            &effort_catalog,
+            Some("ignored-user-model"),
+        );
+        assert_eq!(effort_incompatible.status, "provider-incompatible");
+        assert!(effort_incompatible
+            .detail
+            .unwrap()
+            .contains("does not support reasoning effort `high`"));
+
         let mut diagnosis = build_diagnose_report(&root).unwrap();
         diagnosis.config.default_provider = Some("codex".to_string());
         let provider = diagnosis
@@ -113181,6 +113361,7 @@ esac
   default_provider: codex
   codex:
     model: gpt-test
+    reasoning_effort: medium
     timeout_seconds: 45
 runs:
   directory: .rms/test-runs
@@ -113194,6 +113375,10 @@ runs:
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(report.config.status, "present");
         assert_eq!(report.config.default_provider.as_deref(), Some("codex"));
+        assert_eq!(
+            report.config.codex_reasoning_effort,
+            Some(CodexReasoningEffort::Medium)
+        );
         assert_eq!(report.config.codex_timeout_seconds, Some(45));
         assert_eq!(report.config.run_directory, ".rms/test-runs");
         assert!(rendered.contains("\"ai_providers\""));
@@ -113269,25 +113454,37 @@ runs:
             &root,
             Provider::Codex,
             Some("gpt-test"),
+            Some(CodexReasoningEffort::Medium),
             Path::new(".rms/test-runs"),
             false,
         )
         .unwrap();
         let loaded = load_workbench_config(&root).unwrap().unwrap();
         let generated = fs::read_to_string(root.join(".rms/config.yaml")).unwrap();
-        let overwrite_error =
-            run_config_init(&root, Provider::Codex, None, Path::new(".rms/runs"), false)
-                .unwrap_err()
-                .to_string();
+        let overwrite_error = run_config_init(
+            &root,
+            Provider::Codex,
+            None,
+            None,
+            Path::new(".rms/runs"),
+            false,
+        )
+        .unwrap_err()
+        .to_string();
 
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(loaded.value.ai.default_provider.as_deref(), Some("codex"));
         assert_eq!(loaded.value.ai.codex.model.as_deref(), Some("gpt-test"));
         assert_eq!(
+            loaded.value.ai.codex.reasoning_effort,
+            Some(CodexReasoningEffort::Medium)
+        );
+        assert_eq!(
             loaded.value.runs.directory.as_deref(),
             Some(Path::new(".rms/test-runs"))
         );
         assert!(generated.contains("# timeout_seconds: 900"));
+        assert!(generated.contains("reasoning_effort: medium"));
         assert!(overwrite_error.contains("already exists"));
     }
 
@@ -115874,6 +116071,91 @@ printf '%s\n' "$response" > "$output"
 
     #[cfg(unix)]
     #[test]
+    fn configured_reasoning_effort_reaches_constrained_provider_and_cache_evidence() {
+        let root = unique_test_dir("provider-reasoning-effort");
+        fs::create_dir_all(root.join(".rms")).unwrap();
+        fs::write(
+            root.join(".rms/config.yaml"),
+            r#"ai:
+  default_provider: codex
+  codex:
+    model: gpt-test
+    reasoning_effort: medium
+    sandbox: read-only
+runs:
+  directory: .rms/runs
+"#,
+        )
+        .unwrap();
+        let (program, _, invocation) = write_fake_codex(&root, "success");
+        let options = resolve_prompt_run_options(
+            &root,
+            RawPromptRunOptions {
+                ai: true,
+                provider: None,
+                record: false,
+                run_root: None,
+                model: None,
+                sandbox: None,
+                write_scope: None,
+                provider_timeout_seconds: None,
+            },
+        )
+        .unwrap();
+        let medium_cache_key = intent_cache_key("reasoning task", &options).unwrap();
+        let result = extract_provider_intent_with_program(
+            &root,
+            "next",
+            "reasoning task",
+            &options,
+            false,
+            &program,
+        )
+        .unwrap();
+        let invocation = fs::read_to_string(invocation).unwrap();
+        let provider: JsonValue =
+            serde_json::from_slice(&fs::read(result.run_dir.join("provider.json")).unwrap())
+                .unwrap();
+        let request = fs::read_to_string(result.run_dir.join("request.yaml")).unwrap();
+
+        fs::write(
+            root.join(".rms/config.yaml"),
+            r#"ai:
+  default_provider: codex
+  codex:
+    model: gpt-test
+    reasoning_effort: high
+    sandbox: read-only
+runs:
+  directory: .rms/runs
+"#,
+        )
+        .unwrap();
+        let high_options = resolve_prompt_run_options(
+            &root,
+            RawPromptRunOptions {
+                ai: true,
+                provider: None,
+                record: false,
+                run_root: None,
+                model: None,
+                sandbox: None,
+                write_scope: None,
+                provider_timeout_seconds: None,
+            },
+        )
+        .unwrap();
+        let high_cache_key = intent_cache_key("reasoning task", &high_options).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(invocation.contains("<--config> <model_reasoning_effort=\"medium\">"));
+        assert_eq!(provider["reasoning_effort"], "medium");
+        assert!(request.contains("reasoning_effort: medium"));
+        assert_ne!(medium_cache_key, high_cache_key);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn ai_extracted_explicit_owner_route_writes_checks_and_ready_receipt() {
         let root = prompt_fixture("provider-explicit-owner-route");
         let module = root.join("module.yaml");
@@ -116752,6 +117034,7 @@ properties:
             record: false,
             run_root: PathBuf::from("runs"),
             model: None,
+            reasoning_effort: None,
             profile: None,
             sandbox: CodexSandbox::ReadOnly,
             write_scope: ProviderWriteScope::Root,
