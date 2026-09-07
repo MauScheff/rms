@@ -84,6 +84,7 @@ struct FunctionNode {
     qualified_name: String,
     calls: BTreeSet<String>,
     direct_authorities: BTreeSet<String>,
+    rust_regex_match_names: BTreeSet<String>,
     swift_standard_value_names: BTreeSet<String>,
 }
 
@@ -453,6 +454,7 @@ fn collect_closure(
             continue;
         }
         if known_pure_call(call)
+            || rust_regex_match_offset_query(call, &node.rust_regex_match_names)
             || swift_standard_value_method(call, &node.swift_standard_value_names)
         {
             continue;
@@ -479,6 +481,15 @@ fn collect_closure(
             unresolved.insert(call.clone());
         }
     }
+}
+
+fn rust_regex_match_offset_query(call: &str, regex_match_names: &BTreeSet<String>) -> bool {
+    if !matches!(symbol_name(call), "start" | "end") {
+        return false;
+    }
+    call.rsplit_once('.')
+        .map(|(receiver, _)| receiver.trim_end_matches("()"))
+        .is_some_and(|receiver| regex_match_names.contains(receiver))
 }
 
 fn resolve_local_call(index: usize, call: &str, nodes: &[FunctionNode]) -> Vec<usize> {
@@ -1120,6 +1131,8 @@ struct RustCallCollector {
     authorities: BTreeSet<String>,
     dynamic_symbols: BTreeSet<String>,
     local_closures: BTreeSet<String>,
+    regex_names: BTreeSet<String>,
+    regex_match_names: BTreeSet<String>,
 }
 
 impl<'ast> Visit<'ast> for RustCallCollector {
@@ -1202,7 +1215,60 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 self.local_closures.insert(ident.ident.to_string());
             }
         }
+        if let Some(init) = node.init.as_ref() {
+            if rust_expr_constructs_regex(&init.expr) {
+                collect_rust_pattern_identifiers(&node.pat, &mut self.regex_names);
+            } else if rust_expr_finds_regex_match(&init.expr, &self.regex_names) {
+                collect_rust_pattern_identifiers(&node.pat, &mut self.regex_match_names);
+            }
+        }
         visit::visit_local(self, node);
+    }
+}
+
+fn rust_expr_constructs_regex(expression: &Expr) -> bool {
+    let Expr::Call(call) = expression else {
+        return false;
+    };
+    let Expr::Path(path) = call.func.as_ref() else {
+        return false;
+    };
+    let segments = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    segments.ends_with(&["Regex".to_string(), "new".to_string()])
+}
+
+fn rust_expr_finds_regex_match(expression: &Expr, regex_names: &BTreeSet<String>) -> bool {
+    let Expr::MethodCall(call) = expression else {
+        return false;
+    };
+    call.method == "find"
+        && rust_expr_root_ident(&call.receiver).is_some_and(|name| regex_names.contains(&name))
+}
+
+fn collect_rust_pattern_identifiers(pattern: &Pat, names: &mut BTreeSet<String>) {
+    match pattern {
+        Pat::Ident(ident) => {
+            names.insert(ident.ident.to_string());
+        }
+        Pat::TupleStruct(tuple) => {
+            for element in &tuple.elems {
+                collect_rust_pattern_identifiers(element, names);
+            }
+        }
+        Pat::Tuple(tuple) => {
+            for element in &tuple.elems {
+                collect_rust_pattern_identifiers(element, names);
+            }
+        }
+        Pat::Reference(reference) => collect_rust_pattern_identifiers(&reference.pat, names),
+        Pat::Type(typed) => collect_rust_pattern_identifiers(&typed.pat, names),
+        Pat::Paren(paren) => collect_rust_pattern_identifiers(&paren.pat, names),
+        _ => {}
     }
 }
 
@@ -1342,6 +1408,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             name,
             calls: calls.calls,
             direct_authorities: calls.authorities,
+            rust_regex_match_names: calls.regex_match_names,
             swift_standard_value_names: BTreeSet::new(),
         });
     }
@@ -1363,6 +1430,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             name,
             calls: calls.calls,
             direct_authorities: calls.authorities,
+            rust_regex_match_names: calls.regex_match_names,
             swift_standard_value_names: BTreeSet::new(),
         });
     }
@@ -1579,6 +1647,7 @@ fn extract_tree_sitter_functions(
                 qualified_name,
                 calls,
                 direct_authorities,
+                rust_regex_match_names: BTreeSet::new(),
                 swift_standard_value_names,
             })
         })
@@ -2308,6 +2377,33 @@ mod tests {
             expectation("format_number", "pure", &[]),
         );
         assert_eq!(regex.result, AnalysisResult::Pass, "{regex:#?}");
+
+        let match_offset = report(
+            "rust",
+            "src/normalization.rs",
+            "fn has_extension(raw: &str) -> bool { let Ok(suffix) = Regex::new(\"ext$\") else { return false; }; let Some(found) = suffix.find(raw) else { return false; }; found.start() > 0 }",
+            expectation("has_extension", "pure", &[]),
+        );
+        assert_eq!(
+            match_offset.result,
+            AnalysisResult::Pass,
+            "{match_offset:#?}"
+        );
+
+        let unknown_start = report(
+            "rust",
+            "src/runtime.rs",
+            "fn launch(service: &Service) { service.start(); }",
+            expectation("launch", "pure", &[]),
+        );
+        assert_eq!(
+            unknown_start.result,
+            AnalysisResult::Fail,
+            "{unknown_start:#?}"
+        );
+        assert!(unknown_start.functions[0]
+            .transitive_authorities
+            .contains(&"dynamic-dispatch".to_string()));
 
         let dynamic = report(
             "rust",
