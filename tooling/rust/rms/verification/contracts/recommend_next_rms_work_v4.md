@@ -14,6 +14,7 @@ Command/tool:
 
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml provider_pipeline_repairs_caches_refreshes_and_deduplicates --no-fail-fast`
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml non_ready_routes_never_select_an_owner --no-fail-fast`
+- `cargo test --manifest-path tooling/rust/rms/Cargo.toml exact_observation_source_repair_routes_despite_unrelated_validation_debt --no-fail-fast`
 
 Expected result:
 
@@ -22,5 +23,6 @@ Expected result:
 - A one-run profile is forwarded, audited, and cache-separated without changing ownership policy.
 - Non-ready routes expose no selected owner or owner-scoped implementation step.
 - Ready routes retain deterministic owner selection and receipt-gated actions.
+- An exact named observation-source repair reaches its existing owner while unrelated validation debt remains visible. Intent, ownership, schema, and semantic-revision failures still block it, and later candidate gates remain unchanged.
 
 Source revision: recorded by git commit or strict audit provenance before production use.

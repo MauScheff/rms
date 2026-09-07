@@ -25,7 +25,7 @@ Expected result:
 
 - Rust, Swift, JavaScript, and Python producers record valid transition-derived bundles.
 - Normal comparison reports drift after committed evidence changes.
-- A transition-backed command or capability uses transition records. Invocation records remain valid for stateless queries and non-transition boundary behavior.
+- A command or capability observed through its declared transition-record trace producer uses transition records. Invocation records remain valid for stateless queries and commands observed through another command path.
 - A failed producer preflight does not execute the producer. A failed selected-producer suite does not replace committed evidence.
 - Timeout terminates the producer process group and reports the exact producer.
 

@@ -27555,17 +27555,15 @@ fn validate_implementation_universal_bindings(
                 ));
             }
         }
-        let transition_backed = get_path(&implementation.value, &["semantic_functions"])
-            .and_then(YamlValue::as_sequence)
-            .into_iter()
-            .flatten()
-            .any(|function| {
-                get_str(function, &["id"]) == Some(binding.semantic_function.as_str())
-                    && get_str(function, &["kind"]) == Some("transition")
-            });
+        let transition_trace_backed = binding.observation_source.as_ref().is_some_and(|source| {
+            source.kind == "invocation-record"
+                && trace_producers_from_implementation(implementation)
+                    .iter()
+                    .any(|producer| producer.command == source.command)
+        });
         if binding.public_kind != "query"
             && !binding.machine_inputs.is_empty()
-            && transition_backed
+            && transition_trace_backed
             && get_str(
                 &implementation.value,
                 &["architecture", "machine", "transition_record_function"],
@@ -27580,7 +27578,7 @@ fn validate_implementation_universal_bindings(
                 "semantic.machine-behavior-observation-source",
                 &implementation.path,
                 format!(
-                    "transition-backed public {} binding `{}` must use transition-record observations; invocation-record is reserved for stateless query or non-transition boundary behavior",
+                    "transition-trace-backed public {} binding `{}` must use transition-record observations; invocation-record is reserved for stateless query or a command without a transition-record trace producer",
                     binding.public_kind, binding.id
                 ),
             ));
@@ -41301,6 +41299,18 @@ fn build_next_report_with_optional_program(
                 .to_string(),
         ];
     }
+    let profile_error_keys = profile
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .map(|diagnostic| {
+            (
+                diagnostic.check.clone(),
+                diagnostic.path.clone(),
+                diagnostic.message.clone(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
     let mut diagnostics = collect_validation_diagnostics(
         &root,
         Vec::new(),
@@ -41399,6 +41409,8 @@ fn build_next_report_with_optional_program(
         &owner,
     )
     .then_some(SpecRepairRoute::ContractBehaviorCases);
+    let bounded_observation_source_repair =
+        exact_public_observation_source_repair_ready(task, &owner);
     let skill_sources = detect_skill_sources(&root, home_dir().ok().as_deref());
     let mut warnings = if classification.lane == TaskLane::RepositoryOperation {
         Vec::new()
@@ -41427,6 +41439,9 @@ fn build_next_report_with_optional_program(
     if let Some(repair) = spec_repair {
         warnings.push(repair.warning().to_string());
     }
+    if bounded_observation_source_repair {
+        warnings.push("The exact existing public behavior binding is eligible for a bounded observation-source repair. Unrelated validation debt remains visible and must still pass the candidate and committed gates.".to_string());
+    }
     warnings.sort();
     warnings.dedup();
 
@@ -41436,7 +41451,15 @@ fn build_next_report_with_optional_program(
         validation
             .diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .filter(|diagnostic| {
+                diagnostic.severity == Severity::Error
+                    && (!bounded_observation_source_repair
+                        || bounded_observation_repair_hard_blocker(
+                            diagnostic,
+                            &owner,
+                            &profile_error_keys,
+                        ))
+            })
             .map(|diagnostic| {
                 format!(
                     "{} [{}]: {}",
@@ -42188,6 +42211,66 @@ fn inferred_absent_intent_fact(rationale: &str) -> IntentFact {
         source_quote: None,
         rationale: Some(rationale.to_string()),
     }
+}
+
+fn exact_public_observation_source_repair_ready(task: &str, owner: &OwnerResolution) -> bool {
+    let normalized = task.to_ascii_lowercase();
+    if !(normalized.contains("observation_source") || normalized.contains("observation source"))
+        || !normalized.contains("invocation-record")
+        || !normalized.contains("transition-record")
+    {
+        return false;
+    }
+    let Some(selected) = owner.selected_module() else {
+        return false;
+    };
+    let implementation_path = Path::new(&selected.path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("implementation.yaml");
+    let Ok(implementation) = load_manifest(&implementation_path) else {
+        return false;
+    };
+    typed_yaml_sequence::<PublicBehaviorBinding>(
+        &implementation.value,
+        &["architecture", "public_behavior_bindings"],
+    )
+    .into_iter()
+    .filter(|binding| {
+        normalized.contains(&binding.id.to_ascii_lowercase())
+            && binding
+                .observation_source
+                .as_ref()
+                .is_some_and(|source| source.kind == "invocation-record")
+    })
+    .count()
+        == 1
+}
+
+fn bounded_observation_repair_hard_blocker(
+    diagnostic: &Diagnostic,
+    owner: &OwnerResolution,
+    profile_error_keys: &BTreeSet<(String, String, String)>,
+) -> bool {
+    if diagnostic.check.starts_with("intent.")
+        || profile_error_keys.contains(&(
+            diagnostic.check.clone(),
+            diagnostic.path.clone(),
+            diagnostic.message.clone(),
+        ))
+    {
+        return true;
+    }
+    let Some(selected) = owner.selected_module() else {
+        return true;
+    };
+    let owner_dir = Path::new(&selected.path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let diagnostic_path = Path::new(&diagnostic.path);
+    diagnostic_path.starts_with(owner_dir)
+        && (diagnostic.check == "schema.validate"
+            || diagnostic.check.starts_with("semantic.revision"))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58541,6 +58624,14 @@ fn render_spec_plan_repair_prompt(
         "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for transition-backed command or capability behavior or `{{kind: invocation-record, command: trace}}` for stateless query or non-transition boundary behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{contract_proof_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{probe_trace_projection_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{machine_identifier_repair}{pure_scaffold_replacement_repair}{required_role_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
+    )
+    .replace(
+        "for transition-backed command or capability behavior",
+        "when that command is a declared transition-record trace producer",
+    )
+    .replace(
+        "for stateless query or non-transition boundary behavior",
+        "for a stateless query or a command without a transition-record trace producer",
     )
 }
 
@@ -96742,6 +96833,96 @@ fn produce_transition_trace() {
             diagnostic.check == "semantic.machine-behavior-observation-source"
                 && diagnostic.message.contains("must use transition-record")
         }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn transition_function_binding_allows_invocation_without_a_shared_trace_producer() {
+        let root = unique_test_dir("transition-invocation-without-trace-producer");
+        run_add_module(
+            add_module_request(
+                &root,
+                "transition-invocation-without-trace-producer",
+                "Expose one independently observed transition function.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("rust"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let mut implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let bindings = [PublicBehaviorBinding {
+            id: "machine-capability-public".to_string(),
+            public_kind: "capability".to_string(),
+            public_name: "machine-capability".to_string(),
+            contract: "contracts/machine-capability.v1.yaml".to_string(),
+            semantic_function: "transition-model".to_string(),
+            machine_inputs: vec!["Accept".to_string()],
+            machine_outputs: vec!["Accepted".to_string()],
+            observation_source: Some(BehaviorObservationSource {
+                kind: "invocation-record".to_string(),
+                command: "probe".to_string(),
+            }),
+        }];
+        set_yaml_sequence_path(
+            &mut implementation.value,
+            &["architecture", "public_behavior_bindings"],
+            bindings.iter().map(public_behavior_binding_yaml).collect(),
+        );
+        let mut diagnostics = Vec::new();
+
+        validate_implementation_universal_bindings(&implementation, &mut diagnostics);
+
+        assert!(diagnostics.iter().all(|diagnostic| {
+            diagnostic.check != "semantic.machine-behavior-observation-source"
+        }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn exact_observation_source_repair_routes_despite_unrelated_validation_debt() {
+        let root = route_capability_fixture("observation-source-repair-route");
+        let implementation_path = root.join("modules/play-game-domain/implementation.yaml");
+        let mut implementation = load_manifest(&implementation_path).unwrap();
+        let mut bindings = typed_yaml_sequence::<PublicBehaviorBinding>(
+            &implementation.value,
+            &["architecture", "public_behavior_bindings"],
+        );
+        let binding = bindings.first_mut().expect("generated public binding");
+        let binding_id = binding.id.clone();
+        binding.observation_source = Some(BehaviorObservationSource {
+            kind: "invocation-record".to_string(),
+            command: "trace".to_string(),
+        });
+        set_yaml_sequence_path(
+            &mut implementation.value,
+            &["architecture", "public_behavior_bindings"],
+            bindings.iter().map(public_behavior_binding_yaml).collect(),
+        );
+        write_yaml_manifest(&implementation).unwrap();
+        initialize_test_git_repository(&root);
+        let task = format!(
+            "Correct only the existing play-game-domain {binding_id} public behavior binding observation_source.kind from invocation-record to transition-record. Preserve the complete existing binding and all product semantics."
+        );
+
+        let report = build_next_report(&root, None, &task).unwrap();
+
+        assert_eq!(report.result, NextResult::Ready, "{report:#?}");
+        assert_eq!(
+            report
+                .owner
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("play-game-domain")
+        );
+        assert!(report.blockers.is_empty());
+        assert_eq!(report.validation.status, "fail");
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| { warning.contains("bounded observation-source repair") }));
         fs::remove_dir_all(&root).unwrap();
     }
 
