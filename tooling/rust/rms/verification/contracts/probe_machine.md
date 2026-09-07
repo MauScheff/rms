@@ -3,6 +3,7 @@
 Covered by native Rust tests, CLI smoke tests, schema fixtures, topology fixtures, and maintained Rust, Swift, JavaScript, and Python adapter roundtrips.
 
 - Existing describe, inline, and file probes call the exact transition-record path, chain `state_after`, validate canonical cases, and report the first expectation failure.
+- A v0.2 inline probe keeps CLI final-state and final-case expectations in RMS. The adapter receives only the closed v0.2 request shape, and RMS evaluates the returned trace against the retained expectations.
 - v0.2 adapters batch independent `{state,input}` evaluations; v0.1 adapters retain the one-transition fallback.
 - Assembly fixtures exercise series, fan-in, fan-out, cycles, simultaneous commands, repeated modules, and five-instance slices.
 - v0.2 workload fixtures derive only public command examples, enforce per-action budgets, and record the exact normalized injection in replay decisions; v0.1 assemblies remain unchanged.

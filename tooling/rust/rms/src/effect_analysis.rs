@@ -601,7 +601,6 @@ fn authority_for_call(binding: &str, call: &str) -> Option<String> {
         "walkdir",
         "canonicalize",
         "create_dir",
-        "metadata",
         "read_dir",
         "remove_dir",
         "remove_file",
@@ -787,9 +786,11 @@ fn known_pure_call(call: &str) -> bool {
             | "borrow"
             | "borrow_mut"
             | "byte_range"
+            | "bytes"
             | "chain"
             | "char_indices"
             | "chars"
+            | "captures"
             | "checked_add"
             | "checked_mul"
             | "checked_neg"
@@ -818,6 +819,7 @@ fn known_pure_call(call: &str) -> bool {
             | "description"
             | "drop"
             | "emit"
+            | "end"
             | "ends_with"
             | "endswith"
             | "enumerate"
@@ -881,6 +883,7 @@ fn known_pure_call(call: &str) -> bool {
             | "is_i64"
             | "is_ident"
             | "is_mapping"
+            | "is_match"
             | "is_multiple_of"
             | "is_none"
             | "is_none_or"
@@ -951,6 +954,7 @@ fn known_pure_call(call: &str) -> bool {
             | "range"
             | "remove"
             | "replace"
+            | "replace_range"
             | "replacen"
             | "rpartition"
             | "rev"
@@ -995,10 +999,12 @@ fn known_pure_call(call: &str) -> bool {
             | "then_some"
             | "then_with"
             | "to_ascii_lowercase"
+            | "to_digit"
             | "to_le_bytes"
             | "to_lowercase"
             | "toLowerCase"
             | "to_os_string"
+            | "to_owned"
             | "to_path_buf"
             | "to_string"
             | "to_string_lossy"
@@ -2252,6 +2258,67 @@ mod tests {
         );
         assert_eq!(result.result, AnalysisResult::Fail);
         assert!(result.functions[0].reasons[0].contains("filesystem"));
+    }
+
+    #[test]
+    fn rust_static_metadata_and_standard_value_queries_stay_pure() {
+        let source = r#"
+            struct Metadata { region: &'static str }
+            static METADATA: &[Metadata] = &[];
+            fn region_metadata(region: &str) -> Option<&'static Metadata> {
+                METADATA.iter().find(|item| item.region == region)
+            }
+            struct E164(String);
+            impl E164 {
+                fn new(value: String) -> Option<Self> {
+                    let digits = value.strip_prefix('+')?;
+                    if digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                        Some(Self(value))
+                    } else {
+                        None
+                    }
+                }
+            }
+            fn owned(value: &str) -> String { value.to_owned() }
+        "#;
+        for symbol in ["region_metadata", "E164::new", "owned"] {
+            let result = report(
+                "rust",
+                "src/representation.rs",
+                source,
+                expectation(symbol, "pure", &[]),
+            );
+            assert_eq!(result.result, AnalysisResult::Pass, "{symbol}: {result:#?}");
+        }
+        let filesystem = report(
+            "rust",
+            "src/adapter.rs",
+            "fn inspect(path: &std::path::Path) { std::fs::metadata(path).ok(); }",
+            expectation("inspect", "effectful", &["filesystem"]),
+        );
+        assert_eq!(filesystem.result, AnalysisResult::Pass, "{filesystem:#?}");
+    }
+
+    #[test]
+    fn rust_regex_read_queries_stay_pure_without_hiding_dynamic_callbacks() {
+        let regex = report(
+            "rust",
+            "src/normalization.rs",
+            "fn format_number(regex: &Regex, number: &str) -> String { let _ = '1'.to_digit(10); let mut owned = number.to_owned(); if regex.is_match(number) { if let Some(captures) = regex.captures(number) { if let Some(matched) = captures.get(0) { owned.replace_range(..matched.end(), number); } } } owned }",
+            expectation("format_number", "pure", &[]),
+        );
+        assert_eq!(regex.result, AnalysisResult::Pass, "{regex:#?}");
+
+        let dynamic = report(
+            "rust",
+            "src/normalization.rs",
+            "fn decide(callback: impl Fn(&str), number: &str) { callback(number); }",
+            expectation("decide", "pure", &[]),
+        );
+        assert_eq!(dynamic.result, AnalysisResult::Fail, "{dynamic:#?}");
+        assert!(dynamic.functions[0]
+            .transitive_authorities
+            .contains(&"dynamic-dispatch".to_string()));
     }
 
     #[test]

@@ -15377,7 +15377,8 @@ fn run_single_machine_probe(options: ProbeCliRequest) -> Result<()> {
     let implementation_path = resolve_probe_implementation(options.implementation.as_deref())?;
     let binding = load_probe_binding(&implementation_path)?;
     let request = build_probe_request(&options, &binding.protocol)?;
-    validate_probe_request(&request, &binding.implementation)?;
+    let adapter_request = probe_adapter_request(&request, &binding.protocol)?;
+    validate_probe_request(&adapter_request, &binding.implementation)?;
 
     let temp_root = std::env::temp_dir().join(format!(
         "rms-probe-{}-{}",
@@ -15393,7 +15394,7 @@ fn run_single_machine_probe(options: ProbeCliRequest) -> Result<()> {
     let output_path = temp_root.join("output.json");
     let result = (|| {
         let request_json = serde_json::to_vec_pretty(
-            &serde_json::to_value(&request).context("failed to normalize probe request")?,
+            &serde_json::to_value(&adapter_request).context("failed to normalize probe request")?,
         )?;
         fs::write(&request_path, request_json)
             .with_context(|| format!("failed to write `{}`", request_path.display()))?;
@@ -15447,7 +15448,7 @@ fn run_single_machine_probe(options: ProbeCliRequest) -> Result<()> {
             print_probe_description(&description, &binding.implementation.path, options.json)?;
             return Ok(());
         }
-        if get_str(&request, &["operation"]) == Some("evaluate") {
+        if get_str(&adapter_request, &["operation"]) == Some("evaluate") {
             let evaluation = load_yaml_value(&output_path)?;
             validate_probe_evaluation(&evaluation, &request, &binding, &temp_root)?;
             if let Some(destination) = options.out.as_deref() {
@@ -15516,6 +15517,17 @@ fn run_single_machine_probe(options: ProbeCliRequest) -> Result<()> {
     })();
     let _ = fs::remove_dir_all(&temp_root);
     result
+}
+
+fn probe_adapter_request(request: &YamlValue, protocol: &str) -> Result<YamlValue> {
+    let mut adapter_request = request.clone();
+    if protocol == "rms/machine-probe/v0.2" {
+        let mapping = adapter_request
+            .as_mapping_mut()
+            .ok_or_else(|| anyhow!("probe request must be an object"))?;
+        mapping.remove(YamlValue::String("expect".to_string()));
+    }
+    Ok(adapter_request)
 }
 
 fn validate_probe_evaluation(
@@ -16645,10 +16657,12 @@ fn execute_trace_producers(
         fs::create_dir_all(&temp_root)?;
     }
     let mut reports = Vec::new();
+    let mut pending_recordings = Vec::new();
     let producer_total = selected.len();
     let producer_suite_started = Instant::now();
     let mut producer_current = 0usize;
     for producer in selected {
+        let preflight_diagnostic_count = diagnostics.len();
         let Some(command) = get_str(&manifest.value, &["commands", &producer.command]) else {
             diagnostics.push(error(
                 "trace.producer-command-missing",
@@ -16726,6 +16740,20 @@ fn execute_trace_producers(
                 .and_then(|name| name.to_str())
                 .unwrap_or("trace.yaml")
         ));
+        if diagnostics.len() > preflight_diagnostic_count {
+            reports.push(TraceProducerRunReport {
+                id: producer.id.clone(),
+                bundle: producer.bundle.clone(),
+                command: command.to_string(),
+                runner: producer.runner.clone(),
+                status: "fail".to_string(),
+                exit_code: None,
+                elapsed_ms: 0,
+                stdout: String::new(),
+                stderr: "producer preflight failed; command was not executed".to_string(),
+            });
+            continue;
+        }
         if dry_run {
             reports.push(TraceProducerRunReport {
                 id: producer.id.clone(),
@@ -16802,15 +16830,7 @@ fn execute_trace_producers(
                 Ok(generated) if !trace_has_errors(&generated) => {
                     let committed_path = root.join(&producer.bundle);
                     if record {
-                        if let Some(parent) = committed_path.parent() {
-                            fs::create_dir_all(parent)?;
-                        }
-                        fs::copy(&output_path, &committed_path).with_context(|| {
-                            format!(
-                                "failed to record generated trace `{}`",
-                                committed_path.display()
-                            )
-                        })?;
+                        pending_recordings.push((output_path.clone(), committed_path));
                     } else if !committed_path.is_file() {
                         diagnostics.push(error(
                             "trace.generated-bundle-missing",
@@ -16870,14 +16890,27 @@ fn execute_trace_producers(
             stderr: process.stderr,
         });
     }
+    let suite_failed = diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+        || reports.iter().any(|producer| producer.status == "fail");
+    if record && !dry_run && !suite_failed {
+        for (generated_path, committed_path) in &pending_recordings {
+            if let Some(parent) = committed_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(generated_path, committed_path).with_context(|| {
+                format!(
+                    "failed to record generated trace `{}`",
+                    committed_path.display()
+                )
+            })?;
+        }
+    }
     if !dry_run {
         let _ = fs::remove_dir_all(&temp_root);
     }
-    let result = if diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.severity == Severity::Error)
-        || reports.iter().any(|producer| producer.status == "fail")
-    {
+    let result = if suite_failed {
         "fail"
     } else if dry_run {
         "dry-run"
@@ -27522,6 +27555,36 @@ fn validate_implementation_universal_bindings(
                 ));
             }
         }
+        let transition_backed = get_path(&implementation.value, &["semantic_functions"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .any(|function| {
+                get_str(function, &["id"]) == Some(binding.semantic_function.as_str())
+                    && get_str(function, &["kind"]) == Some("transition")
+            });
+        if binding.public_kind != "query"
+            && !binding.machine_inputs.is_empty()
+            && transition_backed
+            && get_str(
+                &implementation.value,
+                &["architecture", "machine", "transition_record_function"],
+            )
+            .is_some()
+            && binding
+                .observation_source
+                .as_ref()
+                .is_some_and(|source| source.kind == "invocation-record")
+        {
+            diagnostics.push(error(
+                "semantic.machine-behavior-observation-source",
+                &implementation.path,
+                format!(
+                    "transition-backed public {} binding `{}` must use transition-record observations; invocation-record is reserved for stateless query or non-transition boundary behavior",
+                    binding.public_kind, binding.id
+                ),
+            ));
+        }
         match binding.observation_source {
             Some(source)
                 if matches!(
@@ -33416,7 +33479,7 @@ fn validate_rust_constructor_evidence(
         if allowed_missing_constructors.contains(struct_name) {
             continue;
         }
-        let Some(methods) = summary.impl_methods.get(struct_name) else {
+        let Some(methods) = summary.public_impl_methods.get(struct_name) else {
             diagnostics.push(warning(
                 "implementation.rust.typing.constructor",
                 &implementation.path,
@@ -33858,6 +33921,7 @@ struct RustTypingSummary {
     private_types: BTreeSet<String>,
     public_structs_with_private_fields: BTreeSet<String>,
     impl_methods: std::collections::BTreeMap<String, BTreeSet<String>>,
+    public_impl_methods: std::collections::BTreeMap<String, BTreeSet<String>>,
     functions: BTreeSet<String>,
     public_functions: BTreeSet<String>,
     enum_variants: std::collections::BTreeMap<String, BTreeSet<String>>,
@@ -34618,11 +34682,13 @@ fn collect_rust_impl_methods(item_impl: &syn::ItemImpl, summary: &mut RustTyping
         return;
     };
 
-    let methods = summary.impl_methods.entry(type_name).or_default();
+    let methods = summary.impl_methods.entry(type_name.clone()).or_default();
+    let public_methods = summary.public_impl_methods.entry(type_name).or_default();
     for item in &item_impl.items {
         if let ImplItem::Fn(function) = item {
+            methods.insert(function.sig.ident.to_string());
             if matches!(function.vis, Visibility::Public(_)) {
-                methods.insert(function.sig.ident.to_string());
+                public_methods.insert(function.sig.ident.to_string());
             }
         }
     }
@@ -58472,7 +58538,7 @@ fn render_spec_plan_repair_prompt(
         )
         .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for stateful behavior or `{{kind: invocation-record, command: trace}}` for stateless query behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{contract_proof_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{probe_trace_projection_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{machine_identifier_repair}{pure_scaffold_replacement_repair}{required_role_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for transition-backed command or capability behavior or `{{kind: invocation-record, command: trace}}` for stateless query or non-transition boundary behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{contract_proof_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{probe_trace_projection_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{machine_identifier_repair}{pure_scaffold_replacement_repair}{required_role_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -96570,6 +96636,116 @@ fn produce_transition_trace() {
     }
 
     #[test]
+    fn failed_trace_preflight_does_not_replace_committed_evidence() {
+        let root = unique_test_dir("trace-record-preflight-transaction");
+        run_add_module(
+            add_module_request(
+                &root,
+                "trace-record-preflight-transaction",
+                "Keep committed evidence unchanged when producer preflight fails.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("rust"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let implementation_path = root.join("implementation.yaml");
+        let mut implementation = load_manifest(&implementation_path).unwrap();
+        let bindings = [PublicBehaviorBinding {
+            id: "machine-capability-public".to_string(),
+            public_kind: "capability".to_string(),
+            public_name: "machine-capability".to_string(),
+            contract: "contracts/machine-capability.v1.yaml".to_string(),
+            semantic_function: "transition-model".to_string(),
+            machine_inputs: vec!["Accept".to_string()],
+            machine_outputs: vec!["Accepted".to_string()],
+            observation_source: Some(BehaviorObservationSource {
+                kind: "invocation-record".to_string(),
+                command: "trace".to_string(),
+            }),
+        }];
+        set_yaml_sequence_path(
+            &mut implementation.value,
+            &["architecture", "public_behavior_bindings"],
+            bindings.iter().map(public_behavior_binding_yaml).collect(),
+        );
+        write_yaml_manifest(&implementation).unwrap();
+        let trace_path = root.join("verification/traces/transition_trace.yaml");
+        fs::create_dir_all(trace_path.parent().unwrap()).unwrap();
+        let committed = b"existing committed evidence\n";
+        fs::write(&trace_path, committed).unwrap();
+
+        let report = execute_trace_producers(
+            &implementation_path,
+            PropertyProfile::Smoke,
+            true,
+            false,
+            30,
+        )
+        .unwrap();
+
+        assert_eq!(report.result, "fail", "{report:#?}");
+        assert_eq!(fs::read(&trace_path).unwrap(), committed);
+        assert!(report
+            .producers
+            .iter()
+            .all(|producer| producer.exit_code.is_none()));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "trace.producer-bypasses-invocation-record" }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn transition_backed_capability_rejects_invocation_record_observation() {
+        let root = unique_test_dir("machine-capability-invocation-observation");
+        run_add_module(
+            add_module_request(
+                &root,
+                "machine-capability-invocation-observation",
+                "Expose one machine-backed capability.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("rust"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let mut implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let bindings = [PublicBehaviorBinding {
+            id: "machine-capability-public".to_string(),
+            public_kind: "capability".to_string(),
+            public_name: "machine-capability".to_string(),
+            contract: "contracts/machine-capability.v1.yaml".to_string(),
+            semantic_function: "transition-model".to_string(),
+            machine_inputs: vec!["Accept".to_string()],
+            machine_outputs: vec!["Accepted".to_string()],
+            observation_source: Some(BehaviorObservationSource {
+                kind: "invocation-record".to_string(),
+                command: "trace".to_string(),
+            }),
+        }];
+        set_yaml_sequence_path(
+            &mut implementation.value,
+            &["architecture", "public_behavior_bindings"],
+            bindings.iter().map(public_behavior_binding_yaml).collect(),
+        );
+        let mut diagnostics = Vec::new();
+
+        validate_implementation_universal_bindings(&implementation, &mut diagnostics);
+
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.check == "semantic.machine-behavior-observation-source"
+                && diagnostic.message.contains("must use transition-record")
+        }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn rust_batch_proof_requires_an_exact_passed_test_from_an_unfiltered_suite() {
         let batch = RustBatchProofEvidence {
             verify_command: "cargo test --manifest-path Cargo.toml".to_string(),
@@ -100933,6 +101109,43 @@ records:
     }
 
     #[test]
+    fn probe_v02_projects_cli_final_expectations_out_of_the_adapter_request() {
+        let options = ProbeCliRequest {
+            implementation: None,
+            describe: false,
+            inputs: vec![r#"{"kind":"command","name":"Normalize"}"#.to_string()],
+            file: None,
+            state: None,
+            expect_final_state: None,
+            expect_final_case: Some("normalized".to_string()),
+            out: None,
+            json: true,
+            timeout_seconds: 30,
+        };
+        let request = build_probe_request(&options, "rms/machine-probe/v0.2").unwrap();
+        let adapter_request = probe_adapter_request(&request, "rms/machine-probe/v0.2").unwrap();
+
+        assert_eq!(
+            get_str(&request, &["expect", "final_case"]),
+            Some("normalized")
+        );
+        assert!(get_path(&adapter_request, &["expect"]).is_none());
+        assert_eq!(
+            get_path(&adapter_request, &["steps"])
+                .and_then(YamlValue::as_sequence)
+                .map(Vec::len),
+            Some(1)
+        );
+
+        let v01_adapter_request =
+            probe_adapter_request(&request, "rms/machine-probe/v0.1").unwrap();
+        assert_eq!(
+            get_str(&v01_adapter_request, &["expect", "final_case"]),
+            Some("normalized")
+        );
+    }
+
+    #[test]
     fn probe_conformance_failure_preserves_exact_trace_diagnostics() {
         let diagnostics = vec![
             TraceDiagnostic {
@@ -101802,6 +102015,26 @@ pub fn run_plan(_state: WidgetState, _input: WidgetInput) -> WidgetTransition {
         assert!(rust_symbol_exists(&summary, "crate::widget::Widget::new"));
         assert!(rust_symbol_exists(&summary, "src/widget.rs#Widget::new"));
         assert!(!rust_symbol_exists(&summary, "Widget::missing"));
+    }
+
+    #[test]
+    fn rust_semantic_function_symbols_accept_crate_visible_associated_methods() {
+        let root = rust_typing_fixture(
+            "crate-visible-associated-method",
+            &["core"],
+            "\nsemantic_functions:\n  - id: e164-constructor\n    symbol: src/lib.rs#E164::new\n    kind: constructor\n    purity: pure\n",
+            "pub struct E164(String);\nimpl E164 { pub(crate) fn new(value: String) -> Self { Self(value) } }\n",
+        );
+
+        let diagnostics = validate_fixture_implementation(&root);
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(diagnostics.iter().all(|diagnostic| {
+            diagnostic.check != "implementation.rust.semantic-functions.symbol"
+        }));
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.check == "implementation.rust.typing.constructor" }));
     }
 
     #[test]
