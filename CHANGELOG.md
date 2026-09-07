@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Keep an exact existing-module task in the implementation-candidate lane when it completes declared role bodies and proof runners while explicitly preserving product semantics. Select the declared owner despite unrelated or task-addressed implementation debt, retain hard intent, ownership, profile, owner-schema, and semantic-revision blockers, and leave candidate and committed gates unchanged.
 - Follow Rust trace serialization through bounded cross-file helper calls, including helpers reused from declared probe roles, while retaining the requirement that the reachable producer path writes canonical transition-record fields.
 - Route an exact existing public behavior observation-source repair to its named owner even when unrelated repository or owner-local validation debt remains. Keep all debt visible, retain schema, semantic-revision, intent, and ownership blockers, and leave candidate and committed gates unchanged.
 - Keep Rust effect analysis lexical instead of substring-based for metadata and standard value-query methods, while preserving genuine filesystem and dynamic-dispatch findings. Resolve crate-visible associated methods as implementation symbols without treating them as public constructor evidence.

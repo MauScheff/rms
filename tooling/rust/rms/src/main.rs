@@ -41598,6 +41598,9 @@ fn build_next_report_with_optional_program(
     .then_some(SpecRepairRoute::ContractBehaviorCases);
     let bounded_observation_source_repair =
         exact_public_observation_source_repair_ready(task, &owner);
+    let bounded_existing_implementation = classification.lane == TaskLane::ImplementationCandidate
+        && task_requests_declared_role_implementation_completion(task)
+        && owner.status() == OwnerStatus::Selected;
     let skill_sources = detect_skill_sources(&root, home_dir().ok().as_deref());
     let mut warnings = if classification.lane == TaskLane::RepositoryOperation {
         Vec::new()
@@ -41629,6 +41632,9 @@ fn build_next_report_with_optional_program(
     if bounded_observation_source_repair {
         warnings.push("The exact existing public behavior binding is eligible for a bounded observation-source repair. Unrelated validation debt remains visible and must still pass the candidate and committed gates.".to_string());
     }
+    if bounded_existing_implementation {
+        warnings.push("The exact existing module is eligible for bounded implementation and declared-proof completion without canonical mutation authority. Unrelated and task-addressed validation debt remains visible and must still pass the candidate and committed gates.".to_string());
+    }
     warnings.sort();
     warnings.dedup();
 
@@ -41640,8 +41646,8 @@ fn build_next_report_with_optional_program(
             .iter()
             .filter(|diagnostic| {
                 diagnostic.severity == Severity::Error
-                    && (!bounded_observation_source_repair
-                        || bounded_observation_repair_hard_blocker(
+                    && (!(bounded_observation_source_repair || bounded_existing_implementation)
+                        || bounded_existing_owner_route_hard_blocker(
                             diagnostic,
                             &owner,
                             &profile_error_keys,
@@ -42321,6 +42327,38 @@ fn normalize_provider_intent_for_task(task: &str, model: &mut IntentModel) -> bo
         changed = true;
     }
 
+    if task_requests_declared_role_implementation_completion(task)
+        && model.facts.domain_decisions.basis == IntentBasis::Inferred
+    {
+        if model.operation != IntentOperation::ImplementationChange {
+            model.operation = IntentOperation::ImplementationChange;
+            changed = true;
+        }
+        if model.change_scope != IntentChangeScope::ExistingModule {
+            model.change_scope = IntentChangeScope::ExistingModule;
+            changed = true;
+        }
+        if model.facts.domain_decisions.disposition != IntentDisposition::Absent {
+            model.facts.domain_decisions = inferred_absent_intent_fact(
+                "The task implements existing declared roles and explicitly preserves product semantics.",
+            );
+            changed = true;
+        }
+        if model.facts.reuse.disposition == IntentDisposition::Unknown
+            && model.facts.reuse.basis == IntentBasis::Inferred
+        {
+            model.facts.reuse = inferred_absent_intent_fact(
+                "Completing an existing module does not change its reuse semantics.",
+            );
+            changed = true;
+        }
+        let previous_len = model.responsibilities.len();
+        model
+            .responsibilities
+            .retain(|responsibility| responsibility.kind != ResponsibilityKind::Decision);
+        changed |= model.responsibilities.len() != previous_len;
+    }
+
     if changed
         && model.change_scope != IntentChangeScope::Unknown
         && [
@@ -42336,6 +42374,52 @@ fn normalize_provider_intent_for_task(task: &str, model: &mut IntentModel) -> bo
         model.open_questions.clear();
     }
     changed
+}
+
+fn task_requests_declared_role_implementation_completion(task: &str) -> bool {
+    let normalized = task.to_ascii_lowercase();
+    let preserves_semantics = [
+        "without changing its product semantics",
+        "without changing product semantics",
+        "without changing semantics",
+        "preserve its product semantics",
+        "preserve product semantics",
+        "preserve existing semantics",
+        "semantics unchanged",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+    let requests_implementation = ["complete", "implement", "fill", "repair", "fix"]
+        .iter()
+        .any(|verb| task_mentions_token(task, verb))
+        && [
+            "implementation",
+            "declared role",
+            "proof runner",
+            "property test",
+            "oracle check",
+            "parser",
+            "formatter",
+        ]
+        .iter()
+        .any(|term| normalized.contains(term));
+    let requests_canonical_mutation = [
+        "change the contract",
+        "evolve the contract",
+        "add a contract",
+        "change the law",
+        "add a law",
+        "change the invariant",
+        "add an invariant",
+        "change the transition",
+        "add a transition",
+        "change semantics",
+        "evolve semantics",
+        "new semantics",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+    preserves_semantics && requests_implementation && !requests_canonical_mutation
 }
 
 fn provider_task_adopts_new_canonical_owner(
@@ -42434,7 +42518,7 @@ fn exact_public_observation_source_repair_ready(task: &str, owner: &OwnerResolut
         == 1
 }
 
-fn bounded_observation_repair_hard_blocker(
+fn bounded_existing_owner_route_hard_blocker(
     diagnostic: &Diagnostic,
     owner: &OwnerResolution,
     profile_error_keys: &BTreeSet<(String, String, String)>,
@@ -86661,6 +86745,53 @@ mod tests {
     }
 
     #[test]
+    fn provider_intent_normalization_keeps_declared_role_completion_in_implementation_lane() {
+        let task = "Complete the existing phone-number-normalization implementation and declared proof runners without changing its product semantics: use bounded arithmetic in the pure parser/formatter, implement generated property tests and oracle checks in existing declared roles, and verify the module.";
+        let source = r#"{
+          "spec":"rms/intent-model/v0.1",
+          "operation":"semantic-change",
+          "change_scope":"existing-module",
+          "subjects":["phone-number-normalization"],
+          "facts":{
+            "domain_decisions":{"disposition":"required","basis":"inferred","rationale":"The parser applies existing rules."},
+            "lifecycle":{"disposition":"absent","basis":"inferred","rationale":"No lifecycle change."},
+            "effects":{"disposition":"absent","basis":"inferred","rationale":"Pure implementation."},
+            "runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"Proof only."},
+            "reuse":{"disposition":"unknown","basis":"inferred","rationale":"Consumption is unknown."}
+          },
+          "responsibilities":[
+            {"id":"normalization","kind":"decision","summary":"Implement existing rules."},
+            {"id":"normalization-proof","kind":"monitor","summary":"Run declared proof."}
+          ],
+          "surface_kinds":[],
+          "binding_preferences":[],
+          "open_questions":["Is this module reused?"]
+        }"#;
+        let mut model = parse_intent_model_source(source).unwrap();
+
+        assert!(normalize_provider_intent_for_task(task, &mut model));
+
+        assert_eq!(model.operation, IntentOperation::ImplementationChange);
+        assert_eq!(model.change_scope, IntentChangeScope::ExistingModule);
+        assert_eq!(
+            model.facts.domain_decisions.disposition,
+            IntentDisposition::Absent
+        );
+        assert_eq!(model.facts.reuse.disposition, IntentDisposition::Absent);
+        assert!(model
+            .responsibilities
+            .iter()
+            .all(|responsibility| responsibility.kind != ResponsibilityKind::Decision));
+        assert!(validate_intent_model(task, Path::new("."), &model)
+            .iter()
+            .all(|diagnostic| diagnostic.check != "intent.material-unknown"));
+        assert_eq!(
+            classify_intent_model(&model).lane,
+            TaskLane::ImplementationCandidate
+        );
+    }
+
+    #[test]
     fn declared_language_scoring_preserves_strength_above_eight_matches() {
         let task = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima";
         let precise: YamlValue = serde_yaml::from_str(
@@ -97151,6 +97282,69 @@ fn produce_transition_trace() {
             .warnings
             .iter()
             .any(|warning| { warning.contains("bounded observation-source repair") }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn exact_declared_role_completion_routes_with_task_addressed_implementation_debt() {
+        let root = route_capability_fixture("declared-role-completion-route");
+        let transition_path = root.join("modules/play-game-domain/src/transition.rs");
+        let mut transition = fs::read_to_string(&transition_path).unwrap();
+        let function_start = transition.find("pub fn transition(").unwrap();
+        let body_offset = transition[function_start..].find('{').unwrap();
+        transition.insert_str(
+            function_start + body_offset + 1,
+            "\n    let retry_count = 0usize;\n    let next_retry_count = retry_count + 1;\n    let _ = next_retry_count;",
+        );
+        fs::write(&transition_path, transition).unwrap();
+        initialize_test_git_repository(&root);
+        let task = "Complete the existing play-game-domain implementation and declared proof runners without changing its product semantics: use bounded arithmetic in the pure parser/formatter, implement generated property tests and oracle checks in existing declared roles, and verify the module.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: implementation-change
+change_scope: existing-module
+subjects: [play-game-domain]
+facts:
+  domain_decisions: {disposition: absent, basis: inferred, rationale: Existing decisions remain unchanged.}
+  lifecycle: {disposition: absent, basis: inferred, rationale: Existing lifecycle remains unchanged.}
+  effects: {disposition: absent, basis: inferred, rationale: Existing effects remain unchanged.}
+  runnable_surface: {disposition: absent, basis: inferred, rationale: No surface is requested.}
+  reuse: {disposition: absent, basis: inferred, rationale: Existing reuse remains unchanged.}
+responsibilities:
+  - {id: complete-proof, kind: monitor, summary: Complete the declared proof runners.}
+surface_kinds: []
+binding_preferences: []
+open_questions: []
+"#;
+
+        let report = build_next_report_with_intent(
+            &root,
+            None,
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(report.result, NextResult::Ready, "{report:#?}");
+        assert_eq!(
+            report.task_classification.lane,
+            TaskLane::ImplementationCandidate
+        );
+        assert_eq!(
+            report
+                .owner
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("play-game-domain")
+        );
+        assert!(report.blockers.is_empty());
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("bounded implementation")));
         fs::remove_dir_all(&root).unwrap();
     }
 
